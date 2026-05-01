@@ -10,9 +10,8 @@ The hard problem isn't the PDF byte format — it's the HTML/CSS layout engine (
 
 ## Where we are right now
 
-- **Status:** End of Phase 0 (architecture lock). Public API frozen, scaffolding in place, 12/12 tests passing.
-- **Tagged release:** `0.0.1-phase0` (private GitHub release; nuget.org placeholder pushed and unlisted).
-- **Next phase:** Phase 1 — PDF writer + text foundation. Target tag `0.1.0-alpha`.
+The single source of truth for current status is [`PROGRESS.md`](PROGRESS.md). Read it first.
+
 - **Repository:** `https://github.com/raroche/NetPdf` (currently **PRIVATE**; flips public at `1.0.0` launch).
 - **Open-source strategy:** Develop privately through Phases 1–5. At v1.0 launch, push a clean orphan-branch initial commit to a fresh public repo + publish NuGet package. See [docs/phases/phase-5-packaging-and-release.md](docs/phases/phase-5-packaging-and-release.md).
 
@@ -49,6 +48,7 @@ These are non-negotiable. Every PR/commit must honor them.
 
 | If you need to... | Read |
 |---|---|
+| Know what phase / task we're on right now | [PROGRESS.md](PROGRESS.md) — single source of truth, updated as each task/phase ships. |
 | Know what to build next | [docs/phases/](docs/phases/) — pick the active phase doc; follow the work breakdown. |
 | Know what CSS features are in/out of scope | [docs/compatibility-matrix.md](docs/compatibility-matrix.md) |
 | Know the legal contract | [docs/clean-room-policy.md](docs/clean-room-policy.md) |

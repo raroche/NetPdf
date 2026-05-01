@@ -90,10 +90,21 @@ internal sealed class DisplayList : IDisposable
         }
     }
 
-    /// <summary>Append a command. Grows the buffer (re-renting from the pool) if full.</summary>
+    /// <summary>
+    /// Append a command. Grows the buffer (re-renting from the pool) if full.
+    /// Rejects <see cref="DisplayCommandKind.None"/> — that's the uninitialized sentinel
+    /// and must never reach the rendering pipeline.
+    /// </summary>
     public void Add(in DisplayCommand command)
     {
         ThrowIfDisposed();
+        if (command.Kind == DisplayCommandKind.None)
+        {
+            throw new ArgumentException(
+                "Cannot append an uninitialized DisplayCommand (Kind == None). Construct " +
+                "via a DisplayCommand factory (RectFill, TextRun, etc.).",
+                nameof(command));
+        }
         if (_count == _buffer!.Length)
         {
             Grow();
@@ -101,21 +112,60 @@ internal sealed class DisplayList : IDisposable
         _buffer[_count++] = command;
     }
 
-    /// <summary>Append a <see cref="TextRun"/> to the side table; returns its sequential index.</summary>
+    /// <summary>
+    /// Append a <see cref="TextRun"/> to the side table; returns its sequential index.
+    /// Validates that <see cref="TextRun.FontSize"/> is positive and finite, and that
+    /// <see cref="TextRun.GlyphIds"/> and <see cref="TextRun.Advances"/> have matching
+    /// lengths when either is populated.
+    /// </summary>
     public int AddTextRun(TextRun textRun)
     {
         ArgumentNullException.ThrowIfNull(textRun);
         ThrowIfDisposed();
+
+        if (!double.IsFinite(textRun.FontSize) || textRun.FontSize <= 0)
+        {
+            throw new ArgumentException(
+                $"TextRun.FontSize must be a positive finite number; got {textRun.FontSize}.",
+                nameof(textRun));
+        }
+        if ((!textRun.GlyphIds.IsEmpty || !textRun.Advances.IsEmpty)
+            && textRun.GlyphIds.Length != textRun.Advances.Length)
+        {
+            throw new ArgumentException(
+                $"TextRun.GlyphIds and TextRun.Advances must have matching lengths when either is populated; " +
+                $"got {textRun.GlyphIds.Length} glyph(s) vs {textRun.Advances.Length} advance(s).",
+                nameof(textRun));
+        }
+
         _textRuns ??= [];
         _textRuns.Add(textRun);
         return _textRuns.Count - 1;
     }
 
-    /// <summary>Append a <see cref="RasterImage"/> to the side table; returns its sequential index.</summary>
+    /// <summary>
+    /// Append a <see cref="RasterImage"/> to the side table; returns its sequential index.
+    /// Validates that <see cref="RasterImage.EncodedBytes"/> is non-empty and that pixel
+    /// dimensions are positive.
+    /// </summary>
     public int AddImage(RasterImage image)
     {
         ArgumentNullException.ThrowIfNull(image);
         ThrowIfDisposed();
+
+        if (image.EncodedBytes.IsEmpty)
+        {
+            throw new ArgumentException(
+                "RasterImage.EncodedBytes must not be empty.",
+                nameof(image));
+        }
+        if (image.PixelWidth <= 0 || image.PixelHeight <= 0)
+        {
+            throw new ArgumentException(
+                $"RasterImage pixel dimensions must be positive; got {image.PixelWidth}×{image.PixelHeight}.",
+                nameof(image));
+        }
+
         _images ??= [];
         _images.Add(image);
         return _images.Count - 1;

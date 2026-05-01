@@ -21,14 +21,23 @@ namespace NetPdf.Paint;
 /// <para>
 /// Why factories instead of public payload fields: a tagged union is only sound if the
 /// active payload matches <see cref="Kind"/>. Factories own the invariant by setting both
-/// in lock-step; <c>As*</c> accessors verify it on read. Code-gen-wise the pair compiles to
-/// a single 64-byte write and a register-resident kind check on read.
+/// in lock-step on a fresh <c>default</c>; <c>As*</c> accessors verify it on read. The
+/// kind discriminator is a private field exposed through a read-only <see cref="Kind"/>
+/// property — external callers can observe it but cannot retag a constructed command,
+/// which would leave the overlaid payload misinterpreted.
+/// </para>
+/// <para>
+/// Factories also reject non-finite geometry (NaN, ±∞) so layout / paint bugs surface at
+/// the IR boundary instead of much later when the PDF emitter tries to serialize garbage.
 /// </para>
 /// </remarks>
 [StructLayout(LayoutKind.Explicit, Size = 64)]
 internal struct DisplayCommand : IEquatable<DisplayCommand>
 {
-    [FieldOffset(0)] public DisplayCommandKind Kind;
+    [FieldOffset(0)] private DisplayCommandKind _kind;
+
+    /// <summary>Active payload discriminator. Read-only — set exclusively by factory methods.</summary>
+    public readonly DisplayCommandKind Kind => _kind;
 
     // All payloads share offset 8. Adding a new kind: define a payload struct that fits
     // in 56 bytes (64 - 8 for Kind/padding), declare it here at FieldOffset(8), add a
@@ -44,8 +53,13 @@ internal struct DisplayCommand : IEquatable<DisplayCommand>
 
     public static DisplayCommand RectFill(double x, double y, double width, double height, RgbaColor color)
     {
+        EnsureFinite(x, nameof(x));
+        EnsureFinite(y, nameof(y));
+        EnsureFinite(width, nameof(width));
+        EnsureFinite(height, nameof(height));
+
         DisplayCommand cmd = default;
-        cmd.Kind = DisplayCommandKind.RectFill;
+        cmd._kind = DisplayCommandKind.RectFill;
         cmd._rectFill = new RectFillPayload
         {
             X = x,
@@ -65,8 +79,11 @@ internal struct DisplayCommand : IEquatable<DisplayCommand>
                 nameof(textRunIndex), textRunIndex,
                 "Text run index must be non-negative (it points into DisplayList.TextRuns).");
         }
+        EnsureFinite(x, nameof(x));
+        EnsureFinite(y, nameof(y));
+
         DisplayCommand cmd = default;
-        cmd.Kind = DisplayCommandKind.TextRun;
+        cmd._kind = DisplayCommandKind.TextRun;
         cmd._textRun = new TextRunPayload
         {
             TextRunIndex = textRunIndex,
@@ -84,8 +101,13 @@ internal struct DisplayCommand : IEquatable<DisplayCommand>
                 nameof(imageIndex), imageIndex,
                 "Image index must be non-negative (it points into DisplayList.Images).");
         }
+        EnsureFinite(x, nameof(x));
+        EnsureFinite(y, nameof(y));
+        EnsureFinite(width, nameof(width));
+        EnsureFinite(height, nameof(height));
+
         DisplayCommand cmd = default;
-        cmd.Kind = DisplayCommandKind.ImageDraw;
+        cmd._kind = DisplayCommandKind.ImageDraw;
         cmd._imageDraw = new ImageDrawPayload
         {
             ImageIndex = imageIndex,
@@ -99,8 +121,15 @@ internal struct DisplayCommand : IEquatable<DisplayCommand>
 
     public static DisplayCommand TransformPush(double a, double b, double c, double d, double e, double f)
     {
+        EnsureFinite(a, nameof(a));
+        EnsureFinite(b, nameof(b));
+        EnsureFinite(c, nameof(c));
+        EnsureFinite(d, nameof(d));
+        EnsureFinite(e, nameof(e));
+        EnsureFinite(f, nameof(f));
+
         DisplayCommand cmd = default;
-        cmd.Kind = DisplayCommandKind.TransformPush;
+        cmd._kind = DisplayCommandKind.TransformPush;
         cmd._transformPush = new TransformPushPayload
         {
             A = a, B = b, C = c, D = d, E = e, F = f,
@@ -111,7 +140,7 @@ internal struct DisplayCommand : IEquatable<DisplayCommand>
     public static DisplayCommand TransformPop()
     {
         DisplayCommand cmd = default;
-        cmd.Kind = DisplayCommandKind.TransformPop;
+        cmd._kind = DisplayCommandKind.TransformPop;
         return cmd;
     }
 
@@ -124,7 +153,7 @@ internal struct DisplayCommand : IEquatable<DisplayCommand>
                 "Alpha must be a finite number in [0, 1].");
         }
         DisplayCommand cmd = default;
-        cmd.Kind = DisplayCommandKind.OpacityPush;
+        cmd._kind = DisplayCommandKind.OpacityPush;
         cmd._opacityPush = new OpacityPushPayload { Alpha = alpha };
         return cmd;
     }
@@ -132,42 +161,53 @@ internal struct DisplayCommand : IEquatable<DisplayCommand>
     public static DisplayCommand OpacityPop()
     {
         DisplayCommand cmd = default;
-        cmd.Kind = DisplayCommandKind.OpacityPop;
+        cmd._kind = DisplayCommandKind.OpacityPop;
         return cmd;
+    }
+
+    private static void EnsureFinite(double value, string paramName)
+    {
+        if (!double.IsFinite(value))
+        {
+            throw new ArgumentOutOfRangeException(
+                paramName, value,
+                "Value must be a finite number (no NaN, no ±∞). The IR boundary rejects non-finite " +
+                "geometry so producer bugs surface here instead of inside the PDF emitter.");
+        }
     }
 
     // ───── Read accessors with kind verification ─────────────────────────────
 
-    public RectFillPayload AsRectFill()
+    public readonly RectFillPayload AsRectFill()
         => Kind == DisplayCommandKind.RectFill ? _rectFill : throw KindMismatch(nameof(RectFill));
 
-    public TextRunPayload AsTextRun()
+    public readonly TextRunPayload AsTextRun()
         => Kind == DisplayCommandKind.TextRun ? _textRun : throw KindMismatch(nameof(TextRun));
 
-    public ImageDrawPayload AsImageDraw()
+    public readonly ImageDrawPayload AsImageDraw()
         => Kind == DisplayCommandKind.ImageDraw ? _imageDraw : throw KindMismatch(nameof(ImageDraw));
 
-    public TransformPushPayload AsTransformPush()
+    public readonly TransformPushPayload AsTransformPush()
         => Kind == DisplayCommandKind.TransformPush ? _transformPush : throw KindMismatch(nameof(TransformPush));
 
-    public OpacityPushPayload AsOpacityPush()
+    public readonly OpacityPushPayload AsOpacityPush()
         => Kind == DisplayCommandKind.OpacityPush ? _opacityPush : throw KindMismatch(nameof(OpacityPush));
 
-    private InvalidOperationException KindMismatch(string expected)
+    private readonly InvalidOperationException KindMismatch(string expected)
         => new($"DisplayCommand kind is {Kind}; expected {expected}.");
 
     // ───── Equality (bitwise — payload bytes outside the active variant are zeroed by default-init) ─────
 
-    public bool Equals(DisplayCommand other)
+    public readonly bool Equals(DisplayCommand other)
     {
         var self = MemoryMarshal.AsBytes(new ReadOnlySpan<DisplayCommand>(in this));
         var that = MemoryMarshal.AsBytes(new ReadOnlySpan<DisplayCommand>(in other));
         return self.SequenceEqual(that);
     }
 
-    public override bool Equals(object? obj) => obj is DisplayCommand other && Equals(other);
+    public override readonly bool Equals(object? obj) => obj is DisplayCommand other && Equals(other);
 
-    public override int GetHashCode()
+    public override readonly int GetHashCode()
     {
         var hash = new HashCode();
         hash.AddBytes(MemoryMarshal.AsBytes(new ReadOnlySpan<DisplayCommand>(in this)));
@@ -177,7 +217,7 @@ internal struct DisplayCommand : IEquatable<DisplayCommand>
     public static bool operator ==(DisplayCommand left, DisplayCommand right) => left.Equals(right);
     public static bool operator !=(DisplayCommand left, DisplayCommand right) => !left.Equals(right);
 
-    public override string ToString() => Kind switch
+    public override readonly string ToString() => Kind switch
     {
         DisplayCommandKind.None => "None",
         DisplayCommandKind.RectFill => $"RectFill({_rectFill.X}, {_rectFill.Y}, {_rectFill.Width}×{_rectFill.Height}, {_rectFill.Color})",

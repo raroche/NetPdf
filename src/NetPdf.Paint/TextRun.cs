@@ -11,13 +11,25 @@ namespace NetPdf.Paint;
 /// here by index.
 /// </summary>
 /// <remarks>
+/// <para>
 /// <see cref="GlyphIds"/> and <see cref="Advances"/> are populated by the text-shaping stage
 /// (Phase 1 Tasks 6–9). Until shaping lands, callers may emit a run with empty buffers and
 /// the source <see cref="Text"/> string only — the PDF emitter will fall back to encoding
 /// codepoints through the resolved font's <c>cmap</c>.
+/// </para>
+/// <para>
+/// <b>Buffer ownership.</b> The <see cref="GlyphIds"/> and <see cref="Advances"/> setters
+/// copy their input into a private array on assignment. A caller that mutates the source
+/// buffer afterward cannot affect what this <see cref="TextRun"/> represents. Cost: one
+/// short array allocation (typically &lt; 1 KB) per shaped run, which preserves the
+/// determinism guarantee that <see cref="DisplayList"/> documents at the class level.
+/// </para>
 /// </remarks>
 internal sealed class TextRun
 {
+    private readonly ReadOnlyMemory<ushort> _glyphIds = ReadOnlyMemory<ushort>.Empty;
+    private readonly ReadOnlyMemory<float> _advances = ReadOnlyMemory<float>.Empty;
+
     /// <summary>Resolved font registry id. <c>-1</c> means "font not yet resolved".</summary>
     public required int FontId { get; init; }
 
@@ -37,10 +49,26 @@ internal sealed class TextRun
     /// Shaped glyph indices in the (subset) font. Empty before shaping; the emitter falls back
     /// to encoding <see cref="Text"/> through the font's <c>cmap</c> in that case.
     /// </summary>
-    public ReadOnlyMemory<ushort> GlyphIds { get; init; } = ReadOnlyMemory<ushort>.Empty;
+    /// <remarks>
+    /// Setter copies the input into a private array — caller mutations to the source
+    /// buffer after assignment do not affect this run.
+    /// </remarks>
+    public ReadOnlyMemory<ushort> GlyphIds
+    {
+        get => _glyphIds;
+        init => _glyphIds = value.IsEmpty ? ReadOnlyMemory<ushort>.Empty : value.ToArray();
+    }
 
     /// <summary>
     /// Per-glyph x-advance in CSS px. Same length as <see cref="GlyphIds"/> when shaped.
     /// </summary>
-    public ReadOnlyMemory<float> Advances { get; init; } = ReadOnlyMemory<float>.Empty;
+    /// <remarks>
+    /// Setter copies the input into a private array — caller mutations to the source
+    /// buffer after assignment do not affect this run.
+    /// </remarks>
+    public ReadOnlyMemory<float> Advances
+    {
+        get => _advances;
+        init => _advances = value.IsEmpty ? ReadOnlyMemory<float>.Empty : value.ToArray();
+    }
 }

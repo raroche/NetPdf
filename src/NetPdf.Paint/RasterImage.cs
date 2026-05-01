@@ -9,12 +9,35 @@ namespace NetPdf.Paint;
 /// <see cref="DisplayCommandKind.ImageDraw"/> commands reference an entry here by index.
 /// </summary>
 /// <remarks>
+/// <para>
 /// The same instance can also represent a Skia-rendered subtree raster fallback (Phase 4)
 /// — the painter re-encodes such tiles as PNG and embeds them through this same path.
+/// </para>
+/// <para>
+/// <b>Buffer ownership contract.</b> Unlike <see cref="TextRun"/> (which copies its small
+/// glyph buffers on assignment), <see cref="EncodedBytes"/> is held by reference. Encoded
+/// payloads can be tens or hundreds of kilobytes and the typical lifecycle is:
+/// </para>
+/// <list type="bullet">
+///   <item><description>An image-decoder cache (Phase 4) loads the bytes once.</description></item>
+///   <item><description>Each page that draws the image references the same cache slot.</description></item>
+///   <item><description>The cache treats slots as frozen between flushes.</description></item>
+/// </list>
+/// <para>
+/// Copying on every insert would defeat that sharing. Callers therefore <b>must</b> ensure
+/// the underlying buffer behind <see cref="EncodedBytes"/> is not mutated for the lifetime
+/// of this <see cref="RasterImage"/>. The image-cache layer (when it lands) will satisfy
+/// this contract structurally; ad-hoc producers should pass owned arrays they don't keep
+/// references into.
+/// </para>
 /// </remarks>
 internal sealed class RasterImage
 {
-    /// <summary>The encoded image bytes (PNG or JPEG bitstream).</summary>
+    /// <summary>
+    /// The encoded image bytes (PNG or JPEG bitstream). The caller-owned buffer behind this
+    /// memory MUST be treated as frozen for the lifetime of this <see cref="RasterImage"/>;
+    /// see the type-level remarks for the rationale.
+    /// </summary>
     public required ReadOnlyMemory<byte> EncodedBytes { get; init; }
 
     /// <summary>Encoding of <see cref="EncodedBytes"/>.</summary>

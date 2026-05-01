@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-01 (post-Task-4 hardening ✅ — color validation, IContentStream callback, format normalization)
+**Last updated:** 2026-05-01 (Task 5 ✅ — `DisplayCommand` IR + `DisplayList` buffer)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -40,7 +40,7 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
 - **Doc:** [`docs/phases/phase-1-pdf-writer-and-text.md`](docs/phases/phase-1-pdf-writer-and-text.md)
 
 ### Active task
-**Task 5 — `DisplayCommand` IR + `DisplayList` buffer** (mini-est. 2 days)
+**Task 6 — Font subsetter (TTF/OTF) and font registry** (mini-est. 5 days)
 
 ### Subtasks completed
 
@@ -107,6 +107,17 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
   - **Compression-determinism test**: `Build_compressed_is_deterministic` renders the same body twice with `compress: true` and asserts byte-equal output, locking down `ZLibStream`'s deterministic behavior (it's currently deterministic — the test catches if a future BCL change introduces nondeterminism).
   - 22 new tests (color out-of-range/NaN/infinity per component × 4 setters, endpoint + midpoint acceptance, compressed determinism, compile-time `IContentStream` callback assertion); 3 existing tests updated for the `Do`/`BMC`/`BDC` format change.
   - Total tests: **253 unit / 264 solution-wide passing**.
+
+- **Task 5 — `DisplayCommand` IR + `DisplayList` buffer** ✅ (2026-05-01)
+  - `DisplayCommand` (`src/NetPdf.Paint/DisplayCommand.cs`) — 64-byte tagged-union value type via `[StructLayout(LayoutKind.Explicit, Size = 64)]`. `Kind` discriminator at offset 0; per-kind payload structs (`RectFillPayload`, `TextRunPayload`, `ImageDrawPayload`, `TransformPushPayload`, `OpacityPushPayload`) overlay at offset 8 via `[FieldOffset(8)]`. Cache-line-aligned for fast sequential walks. Static factories pair the kind + payload write so the union invariant can never be partially set; `As*` accessors verify the kind on read and throw on mismatch. Bitwise equality via `MemoryMarshal.AsBytes` so identical-input commands compare equal even though `[FieldOffset]` overlap defeats the BCL's default `ValueType.Equals` heuristics.
+  - `DisplayCommandKind` (`src/NetPdf.Paint/DisplayCommandKind.cs`) — `byte`-backed enum. Phase 1 vocabulary: `None`, `RectFill`, `TextRun`, `ImageDraw`, `TransformPush`, `TransformPop`, `OpacityPush`, `OpacityPop`. Append-only — Phase 3 will extend with `PathFill`, `PathStroke`, `ClipPush/Pop`, `LinkAnnotation`, `BookmarkAnchor`.
+  - `RgbaColor` (`src/NetPdf.Paint/RgbaColor.cs`) — packed `0xRRGGBBAA` `readonly struct` (4 bytes). Fits inside command payloads. Convenience converters (`ToNormalizedRgb`, `NormalizedAlpha`) bridge to PDF DeviceRGB/DeviceGray normalized components. Wide-gamut (display-p3, oklch) deliberately out of scope for Phase 1.
+  - `TextRun` (`src/NetPdf.Paint/TextRun.cs`) — sealed reference type for the side table. Carries `FontId`, `FontSize`, `Color`, source `Text`, optional shaped `GlyphIds` + `Advances`. Side-table because shaped glyph buffers are variable-length. Until shaping lands (Phase 1 Tasks 6–9), the emitter falls back to encoding `Text` through the resolved font's `cmap`.
+  - `RasterImage` (`src/NetPdf.Paint/RasterImage.cs`) + `ImageEncoding` enum — sealed reference type with `EncodedBytes`, `Encoding` (Png/Jpeg in Phase 1; WebP/AVIF post-Phase-4), `PixelWidth`/`PixelHeight`, `HasAlpha`. The same path serves both source images and Phase 4 raster-fallback tiles.
+  - `DisplayList` (`src/NetPdf.Paint/DisplayList.cs`) — `ArrayPool<DisplayCommand>.Shared`-rented buffer. Initial capacity 64; doubles on grow with cap `1 << 28` (safety brake against runaway layouts). `Add(in DisplayCommand)` for the command stream; `AddTextRun(TextRun)` / `AddImage(RasterImage)` return sequential indices into the side tables (`List<TextRun>`, `List<RasterImage>`). `IDisposable`: returns the buffer to the pool with `clearArray: false` (no GC refs in `DisplayCommand`); post-dispose access to any member throws `ObjectDisposedException` so a stale span can't read pooled memory after another consumer rents it. `Dispose` is idempotent.
+  - **Project hygiene**: dropped the placeholder `Placeholder.cs` and the unused project refs (`NetPdf.Layout`, `NetPdf.Text`) and `SkiaSharp` package ref from `NetPdf.Paint.csproj`. The csproj documents which Phase pulls each dep back in. Same hardening rule that trimmed `NetPdf.Pdf.csproj` after Task 1.
+  - 49 new tests (`tests/NetPdf.UnitTests/Paint/`) covering: 64-byte struct size, default-init kind = `None`, every payload's factory + accessor round-trip, factory rejects (negative side-table index, alpha out-of-range/NaN/±∞), bitwise equality across kinds and payloads, `DisplayList` insertion order, growth past initial capacity (1000 commands → multiple `ArrayPool` rents), sequential side-table indices, null guards on side-table inserts, `GetTextRun`/`GetImage` out-of-range throws, identical-build-sequence value equality (determinism), all post-`Dispose` member access throws, idempotent `Dispose`, `RgbaColor` channel packing / round-trip / equality / formatting.
+  - Total tests: **302 unit / 313 solution-wide passing**.
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

@@ -25,7 +25,7 @@ That skill (under `.claude/skills/phase-status.md`) reports the active phase, bu
 
 ## Cross-cutting rules — apply to every change
 
-These are non-negotiable. Every PR/commit must honor them.
+These are non-negotiable. Every PR/commit must honor them. Detailed coding standards (SOLID, DRY-with-rule-of-three, YAGNI, naming, testing patterns, code review checklist) live in [`docs/coding-standards.md`](docs/coding-standards.md).
 
 1. **Clean-room development.** Algorithms come from W3C / ISO / UAX specs, not from reading other implementations' source code. If you read another engine (Servo, Taffy, WeasyPrint, Chromium) for understanding, leave a one-line comment in the file noting it. Full policy in [docs/clean-room-policy.md](docs/clean-room-policy.md).
 2. **Banned dependencies.** No `System.Drawing`, no browser engines, no AGPL/copyleft, no revenue-capped libraries. The `NetPdf.BannedAnalyzer` Roslyn analyzer enforces this at compile time. Approved deps: AngleSharp, AngleSharp.Css, HarfBuzzSharp, SkiaSharp (raster fallback only). Adding a new dep requires an entry in [docs/legal/dependency-dossier.md](docs/legal/dependency-dossier.md) reviewed and merged before the PackageVersion lands.
@@ -56,6 +56,7 @@ These are non-negotiable. Every PR/commit must honor them.
 | Emit a new diagnostic | [docs/diagnostics-codes.md](docs/diagnostics-codes.md) — and run `/add-diagnostic-code`. |
 | Look up a PDF spec interpretation | [docs/pdf-spec-notes.md](docs/pdf-spec-notes.md) |
 | Manage secrets / API keys | [docs/secrets-and-credentials.md](docs/secrets-and-credentials.md) |
+| Know how we write code (SOLID, DRY, naming, testing) | [docs/coding-standards.md](docs/coding-standards.md) |
 | Run a recurring task | [.claude/skills/](.claude/skills/) — `phase-status`, `add-diagnostic-code`, `add-corpus-sample`, `add-css-property`, `render-corpus`, `bench`, `aot-check`, `uax-test`. |
 
 ## Build, test, run

@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-01 (Task 1 ✅)
+**Last updated:** 2026-05-01 (Task 2 ✅)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -40,17 +40,23 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
 - **Doc:** [`docs/phases/phase-1-pdf-writer-and-text.md`](docs/phases/phase-1-pdf-writer-and-text.md)
 
 ### Active task
-**Task 2 — Indirect-object store + xref table writer** (mini-est. 2 days)
+**Task 3 — Trailer `/ID` from content SHA-256** (mini-est. 1 day)
 
 ### Subtasks completed
 
 - **Task 1 — PDF object model + `WriteTo`** ✅ (2026-05-01)
   - `PdfWriter` byte writer over `IBufferWriter<byte>` with cumulative position tracking, plus `Hex` helper.
   - `PdfObject` abstract base + 11 concrete types: `PdfBoolean`, `PdfNull`, `PdfInteger`, `PdfReal`, `PdfName`, `PdfLiteralString`, `PdfHexString`, `PdfArray`, `PdfDictionary`, `PdfStream`, `PdfIndirectRef`. All emit byte sequences conforming to ISO 32000-2:2020 §7.3.
-  - `PdfNames` static class with ~85 pre-allocated standard names (`/Type`, `/Pages`, `/Catalog`, font/image/metadata/annotation/structure names) used throughout the rest of Phase 1+.
+  - `PdfNames` static class with ~85 pre-allocated standard names used throughout the rest of Phase 1+.
   - `PdfDictionary` uses .NET 10's `OrderedDictionary<TKey, TValue>` so insertion order is preserved → byte-deterministic output.
-  - 85 unit tests (`tests/NetPdf.UnitTests/Pdf/Objects/`) covering primitives, name escaping (delimiters + `#` introducer), literal-string octal escapes, hex-string UTF-16BE-with-BOM helper, array/dictionary nesting, stream `/Length` auto-set, and a determinism property test (same input → same bytes).
-  - Total tests: 97/97 passing across the solution.
+  - 85 unit tests covering primitives, name escaping, literal-string octal escapes, hex-string UTF-16BE-with-BOM, array/dictionary nesting, stream `/Length` auto-set, determinism property test.
+
+- **Task 2 — Indirect-object store + xref table writer** ✅ (2026-05-01)
+  - `IndirectObjectStore` — 1-based deterministic numbering, `Allocate`/`Add`/`Assign` for forward references, byte-offset recording, `ValidateAllAssigned` gate before emit.
+  - `PdfDocumentWriter` — orchestrates header → indirect objects → xref → trailer → `startxref` → `%%EOF`. Header emits binary marker (4 bytes ≥ 0x80) per §7.5.2. xref entries are **exactly 20 bytes** including the 2-byte ` LF` terminator per §7.5.4. Trailer `/Size` is auto-managed (real objects + free-list head). `startxref` byte offset is captured at write time from `PdfWriter.Position`.
+  - `Version` is a `string` property (e.g., `"1.7"`) on the writer rather than the public `PdfVersion` enum — keeps `NetPdf.Pdf` decoupled from the public-API project (the facade does the enum→string translation at the API boundary).
+  - 30 unit tests covering header/binary marker, all 5 PDF version strings, sequential numbering, xref entry byte-exactness (positions 10/16/18/19), xref offsets matching actual indirect-object byte positions, `/Size` correctness, `startxref` correctness, EOF marker, validation throws on unassigned objects, **determinism property test**, and a "minimal valid PDF" end-to-end structure assertion.
+  - Total tests: **127/127 passing** across the solution (116 unit + 11 from other projects).
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

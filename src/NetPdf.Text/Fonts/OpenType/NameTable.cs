@@ -35,29 +35,36 @@ internal sealed class NameTable
     public required IReadOnlyList<NameRecord> Records { get; init; }
 
     /// <summary>
-    /// Pick the first record matching <paramref name="nameId"/>, preferring Windows-Unicode
-    /// over Mac. Returns <c>null</c> if no record matches.
+    /// Pick the first record matching <paramref name="nameId"/>, preferring
+    /// Windows-Unicode → Unicode-platform → Macintosh. Records whose <see cref="NameRecord.Text"/>
+    /// failed to decode are skipped so a partially-readable font still surfaces names from
+    /// usable records. Returns <c>null</c> if no record matches.
     /// </summary>
     public string? GetName(ushort nameId)
     {
-        NameRecord? winUnicode = null;
+        NameRecord? windows = null;
+        NameRecord? unicode = null;
         NameRecord? mac = null;
         foreach (var r in Records)
         {
-            if (r.NameId != nameId)
+            if (r.NameId != nameId || r.Text is null)
             {
                 continue;
             }
-            if (r.PlatformId == PlatformIdWindows && winUnicode is null)
+            switch (r.PlatformId)
             {
-                winUnicode = r;
-            }
-            else if (r.PlatformId == PlatformIdMacintosh && mac is null)
-            {
-                mac = r;
+                case PlatformIdWindows when windows is null:
+                    windows = r;
+                    break;
+                case PlatformIdUnicode when unicode is null:
+                    unicode = r;
+                    break;
+                case PlatformIdMacintosh when mac is null:
+                    mac = r;
+                    break;
             }
         }
-        return winUnicode?.Text ?? mac?.Text;
+        return windows?.Text ?? unicode?.Text ?? mac?.Text;
     }
 
     /// <summary>Convenience — returns the family name (nameID = 1).</summary>

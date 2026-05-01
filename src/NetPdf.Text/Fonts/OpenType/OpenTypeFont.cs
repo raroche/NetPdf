@@ -57,6 +57,8 @@ internal sealed class OpenTypeFont
         var hmtx = HmtxTable.Parse(directory.GetTableBytes(OpenTypeTags.Hmtx, span), hhea.NumberOfHMetrics, maxp.NumGlyphs);
         var cmap = CmapTable.Parse(directory.GetTableBytes(OpenTypeTags.Cmap, span));
 
+        ValidateCmapAgainstMaxp(cmap, maxp);
+
         LocaTable? loca = null;
         GlyfTable? glyf = null;
         if (directory.IsTrueType)
@@ -94,5 +96,29 @@ internal sealed class OpenTypeFont
             Loca = loca,
             Glyf = glyf,
         };
+    }
+
+    /// <summary>
+    /// The parser is the trust boundary for downstream shaping / embedding. Every glyph id
+    /// reachable through <see cref="CmapTable"/> must fall within the universe declared by
+    /// <see cref="MaxpTable.NumGlyphs"/>, otherwise later code would index <c>hmtx</c> /
+    /// <c>loca</c> / <c>glyf</c> out of range.
+    /// </summary>
+    private static void ValidateCmapAgainstMaxp(CmapTable cmap, MaxpTable maxp)
+    {
+        foreach (var group in cmap.Groups)
+        {
+            // The largest glyph id in a contiguous group is StartGlyphId + (EndCodePoint - StartCodePoint).
+            var range = group.EndCodePoint - group.StartCodePoint;
+            var maxGlyphId = (uint)group.StartGlyphId + range;
+            if (maxGlyphId >= maxp.NumGlyphs)
+            {
+                throw new InvalidDataException(
+                    $"OpenType: cmap group [U+{group.StartCodePoint:X4}..U+{group.EndCodePoint:X4}] " +
+                    $"maps to glyph id {maxGlyphId}, but maxp.numGlyphs is {maxp.NumGlyphs}. " +
+                    "Font is internally inconsistent — rejecting at the parse boundary so downstream " +
+                    "shaping / embedding never indexes hmtx / loca / glyf out of range.");
+            }
+        }
     }
 }

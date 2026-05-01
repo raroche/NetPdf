@@ -73,52 +73,105 @@ internal sealed class CmapTable
             encodings[i] = (platformId, encodingId, subtableOffset);
         }
 
-        var (chosenIndex, chosenScore) = (-1, -1);
+        // Selection considers BOTH encoding priority AND subtable-format support.
+        // A font that puts its preferred Unicode subtable in an unsupported format (say
+        // format 6) but also carries a lower-priority format-4 fallback is still usable;
+        // we'd silently drop to the fallback rather than fail the whole parse.
+        var (chosenIndex, chosenFormat, chosenScore) = (-1, (ushort)0, -1);
         for (var i = 0; i < numTables; i++)
         {
             var score = ScoreEncoding(encodings[i].PlatformId, encodings[i].EncodingId);
+            if (score < 0)
+            {
+                continue;
+            }
+            if (!TryPeekFormat(tableBytes, encodings[i].SubtableOffset, out var format))
+            {
+                continue;
+            }
+            if (!IsSupportedFormat(format))
+            {
+                continue;
+            }
             if (score > chosenScore)
             {
-                (chosenIndex, chosenScore) = (i, score);
+                (chosenIndex, chosenFormat, chosenScore) = (i, format, score);
             }
         }
         if (chosenIndex < 0)
         {
-            throw new InvalidDataException("cmap: no usable Unicode subtable found.");
+            throw new InvalidDataException(
+                "cmap: no usable Unicode subtable in a supported format. " +
+                "Phase 1 supports format 4 (BMP) and format 12 (full Unicode) on Unicode / Microsoft platforms.");
         }
 
         var (selPlatform, selEncoding, selOffset) = encodings[chosenIndex];
-        if (selOffset >= (uint)tableBytes.Length)
-        {
-            throw new InvalidDataException(
-                $"cmap: subtable offset {selOffset} exceeds table length {tableBytes.Length}.");
-        }
-        var subtable = tableBytes[(int)selOffset..];
-        if (subtable.Length < 2)
-        {
-            throw new InvalidDataException("cmap: subtable too small to read format.");
-        }
-        var format = BigEndianFormat(subtable);
+        var subtable = ClampSubtableToDeclaredLength(tableBytes, selOffset, chosenFormat);
 
-        IReadOnlyList<CmapGroup> groups = format switch
+        IReadOnlyList<CmapGroup> groups = chosenFormat switch
         {
             4 => ParseFormat4(subtable),
             12 => ParseFormat12(subtable),
             _ => throw new InvalidDataException(
-                $"cmap: unsupported subtable format {format}. Phase 1 supports 4 and 12 only."),
+                $"cmap: unsupported subtable format {chosenFormat}. Phase 1 supports 4 and 12 only."),
         };
 
         return new CmapTable
         {
             SelectedPlatformId = selPlatform,
             SelectedEncodingId = selEncoding,
-            SelectedFormat = format,
+            SelectedFormat = chosenFormat,
             Groups = groups,
         };
     }
 
-    private static ushort BigEndianFormat(ReadOnlySpan<byte> subtable)
-        => (ushort)((subtable[0] << 8) | subtable[1]);
+    private static bool IsSupportedFormat(ushort format) => format is 4 or 12;
+
+    private static bool TryPeekFormat(ReadOnlySpan<byte> tableBytes, uint subtableOffset, out ushort format)
+    {
+        format = 0;
+        if (subtableOffset + 2 > (uint)tableBytes.Length)
+        {
+            return false;
+        }
+        format = (ushort)((tableBytes[(int)subtableOffset] << 8) | tableBytes[(int)subtableOffset + 1]);
+        return true;
+    }
+
+    /// <summary>
+    /// Slice the cmap bytes to exactly the declared length of the chosen subtable. Without
+    /// this clamp a malformed subtable could read past its declared end into the next
+    /// subtable's bytes, defeating parser isolation.
+    /// </summary>
+    private static ReadOnlySpan<byte> ClampSubtableToDeclaredLength(ReadOnlySpan<byte> tableBytes, uint subtableOffset, ushort format)
+    {
+        if (subtableOffset >= (uint)tableBytes.Length)
+        {
+            throw new InvalidDataException(
+                $"cmap: subtable offset {subtableOffset} exceeds table length {tableBytes.Length}.");
+        }
+        var open = tableBytes[(int)subtableOffset..];
+        long declared = format switch
+        {
+            // Format 4: uint16 length at offset 2.
+            4 when open.Length >= 4 => (open[2] << 8) | open[3],
+            // Format 12: uint32 length at offset 4.
+            12 when open.Length >= 8 =>
+                ((uint)open[4] << 24) | ((uint)open[5] << 16) | ((uint)open[6] << 8) | open[7],
+            _ => -1,
+        };
+        if (declared <= 0)
+        {
+            throw new InvalidDataException(
+                $"cmap: subtable at offset {subtableOffset} is too small or has an invalid declared length.");
+        }
+        if (declared > open.Length)
+        {
+            throw new InvalidDataException(
+                $"cmap: subtable declared length {declared} exceeds bytes available after offset {subtableOffset} ({open.Length}).");
+        }
+        return open[..(int)declared];
+    }
 
     /// <summary>Higher score = preferred subtable. Mirrors the priority list in the type-level remarks.</summary>
     private static int ScoreEncoding(ushort platformId, ushort encodingId) => (platformId, encodingId) switch

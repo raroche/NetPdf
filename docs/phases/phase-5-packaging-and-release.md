@@ -82,6 +82,14 @@ All three samples under `samples/`:
 - **Memory linearity test**: render a 10-page, 100-page, 1000-page synthetic doc; assert allocated memory grows linearly (within 10% of slope).
 - **Allocation discipline audit**: profile against allocation hot-paths (cascade, line builder, paint emit) — flag any hot path over 1 KB/iteration.
 
+### Secrets & API keys
+
+Already set up in Phase 0:
+- **`NUGET_API_KEY`** — stored as a GitHub Actions repository secret on `raroche/NetPdf`. Glob scope `NetPdf*` (covers main + all Languages packs).
+- **NuGet package ID `NetPdf`** — reserved on nuget.org via the `0.0.1-phase0` placeholder (unlisted).
+
+Full inventory and rotation policy in [docs/secrets-and-credentials.md](../secrets-and-credentials.md). The release workflow (`.github/workflows/release.yml`) consumes `NUGET_API_KEY` via `${{ secrets.NUGET_API_KEY }}` — the value never appears in code, logs, or chat.
+
 ### NuGet package validation
 
 - `dotnet pack -c Release` produces:

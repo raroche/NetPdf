@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>NetPdf</RootNamespace>
+    <AssemblyName>NetPdf</AssemblyName>
+    <Description>Pure C# HTML/CSS-to-PDF rendering engine. Apache-2.0. No browser, no native binaries beyond optional raster fallback. The public-facing facade project.</Description>
+    <PackageId>NetPdf</PackageId>
+    <PackageTags>pdf;html;css;rendering;paged-media;document;invoice;report</PackageTags>
+    <IsPackable>true</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NetPdf.Css\NetPdf.Css.csproj" />
+    <ProjectReference Include="..\NetPdf.Layout\NetPdf.Layout.csproj" />
+    <ProjectReference Include="..\NetPdf.Paginate\NetPdf.Paginate.csproj" />
+    <ProjectReference Include="..\NetPdf.Paint\NetPdf.Paint.csproj" />
+    <ProjectReference Include="..\NetPdf.Pdf\NetPdf.Pdf.csproj" />
+    <ProjectReference Include="..\NetPdf.Text\NetPdf.Text.csproj" />
+    <ProjectReference Include="..\NetPdf.Svg\NetPdf.Svg.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="AngleSharp" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="NetPdf.UnitTests" />
+    <InternalsVisibleTo Include="NetPdf.LayoutSnapshots" />
+    <InternalsVisibleTo Include="NetPdf.PaginationGolden" />
+    <InternalsVisibleTo Include="NetPdf.PdfValidation" />
+    <InternalsVisibleTo Include="NetPdf.RenderingCorpus" />
+    <InternalsVisibleTo Include="NetPdf.W3cConformance" />
+    <InternalsVisibleTo Include="NetPdf.RealDocuments" />
+    <InternalsVisibleTo Include="NetPdf.TestKit" />
+    <InternalsVisibleTo Include="NetPdf.Benchmarks" />
+  </ItemGroup>
+
+</Project>

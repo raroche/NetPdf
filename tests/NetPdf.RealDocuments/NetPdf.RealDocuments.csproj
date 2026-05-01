@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net10.0</TargetFrameworks>
+    <IsTestProject>true</IsTestProject>
+    <RootNamespace>NetPdf.RealDocuments</RootNamespace>
+    <AssemblyName>NetPdf.RealDocuments</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\NetPdf\NetPdf.csproj" />
+    <ProjectReference Include="..\NetPdf.TestKit\NetPdf.TestKit.csproj" />
+  </ItemGroup>
+
+  <!-- Ship the corpus next to the test binary so tests work in both IDE and CI runs. -->
+  <ItemGroup>
+    <None Include="Corpus\**\*.*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="coverlet.collector" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,172 @@
+# NetPdf v1 Compatibility Matrix
+
+This document is the authoritative answer to "does NetPdf support feature X?" Updated as features ship.
+
+**Legend:**
+- ✅ Supported — fully implemented and tested.
+- 🧪 Partial — implemented with documented caveats (see notes column).
+- 📥 Parsed only — CSS grammar accepted; rendering not yet implemented; emits a structured diagnostic with stable code.
+- ❌ Out of scope for v1 — not parsed or not rendered; emits diagnostic.
+
+Phase column shows the milestone in which the feature first ships.
+
+---
+
+## HTML
+
+| Feature | Status | Phase | Notes |
+|---|---|---|---|
+| HTML5 parsing | ✅ | 2 | Via AngleSharp; quirks-mode supported. |
+| `<script>` execution | ❌ | — | Collected and emitted as `HTML-SCRIPT-IGNORED-001`. |
+| `<style>` & inline `style=""` | ✅ | 2 | |
+| `<img>` | ✅ | 4 | JPEG/PNG/WebP/AVIF/GIF (first frame). |
+| `<svg>` inline | ✅ | 4 | Static subset; see SVG section. |
+| `<a>` hyperlinks | ✅ | 4 | Emitted as PDF `Link` annotations. |
+| `<table>` / `<thead>` / `<tbody>` / `<tfoot>` | ✅ | 3 | `<thead>`/`<tfoot>` repeat across pages when `display: table-header-group`/`-footer-group`. |
+| `<form>` widgets | ❌ | post-v1 | Tagged for future AcroForm support. |
+| `<video>` / `<audio>` | ❌ | — | Out of scope — emits `HTML-MEDIA-UNSUPPORTED-001`. |
+| `<iframe>` | ❌ | — | Out of scope — emits `HTML-IFRAME-UNSUPPORTED-001`. |
+
+---
+
+## CSS — Layout
+
+| Feature | Status | Phase | Notes |
+|---|---|---|---|
+| Block layout (margins, padding, borders, sizing) | ✅ | 3 | Including margin collapsing, BFC. |
+| Inline layout (line boxes, vertical-align, line-height, white-space) | ✅ | 3 | |
+| Floats (`float`, `clear`) | ✅ | 3 | |
+| `position: static` / `relative` / `absolute` | ✅ | 3 | |
+| `position: fixed` | ✅ | 3 | Repeated on every page. |
+| `position: sticky` | ❌ | post-v1 | Emits `CSS-POSITION-STICKY-UNSUPPORTED-001`. |
+| Tables (auto + fixed layout, border-collapse, span) | ✅ | 3 | |
+| Multi-column (`column-count`, `column-width`) | ✅ | 3 | |
+| Flexbox (CSS Flexible Box Layout L1) | ✅ | 3 | Full L1 spec. |
+| CSS Grid (Level 1) | ✅ | 3 | Track sizing with `auto`/`fr`/`minmax`/`fit-content`/`repeat`/`auto-fill`/`auto-fit`; sparse + dense auto-placement; `grid-template-areas`. |
+| CSS Grid Level 2 (subgrid) | ❌ | post-v1 | Parsed only; emits `CSS-SUBGRID-UNSUPPORTED-001`. Roadmap v1.3. |
+
+---
+
+## CSS — Paged Media
+
+| Feature | Status | Phase | Notes |
+|---|---|---|---|
+| `@page` size, margin | ✅ | 3 | |
+| `@page :first` / `:left` / `:right` / `:blank` | ✅ | 3 | |
+| Page-margin boxes (`@top-left`, `@top-center`, `@top-right`, `@bottom-*`, `@left-*`, `@right-*`) | ✅ | 3 | All 16 boxes. |
+| `string()`, `element()`, named pages | ✅ | 3 | |
+| `break-before`, `break-after`, `break-inside` | ✅ | 3 | |
+| `widows`, `orphans` | ✅ | 3 | Honored by the pagination optimizer's cost model. |
+| `<thead>` / `<tfoot>` repetition | ✅ | 3 | |
+
+---
+
+## CSS — Typography
+
+| Feature | Status | Phase | Notes |
+|---|---|---|---|
+| `font-family`, `font-size`, `font-weight`, `font-style`, `font-stretch` | ✅ | 2 | |
+| `@font-face` with TTF, OTF, WOFF, **WOFF2** | ✅ | 1 | WOFF2 decompressed via `System.IO.Compression.BrotliStream` (built into .NET, no extra dep). |
+| Web font fetching via `IResourceLoader` | ✅ | 1 | |
+| Font fallback chain | ✅ | 1 | |
+| OpenType ligatures, kerning | ✅ | 1 | Via HarfBuzz. |
+| Bidi (RTL/LTR mixed text) | ✅ | 1 | UAX #9. |
+| Complex scripts (Indic, Arabic, Hebrew, CJK, Thai) | ✅ | 1 | Via HarfBuzz; quality varies by script — known limitations documented. |
+| Hyphenation (`hyphens: auto`) | ✅ | 1 | Liang patterns; ~15 languages bundled. |
+| `text-align`, `text-decoration`, `text-transform`, `letter-spacing`, `word-spacing` | ✅ | 2 | |
+| `writing-mode` (vertical) | 🧪 | 4 | `vertical-rl`/`vertical-lr` supported; sideways modes not. |
+
+---
+
+## CSS — Visual
+
+| Feature | Status | Phase | Notes |
+|---|---|---|---|
+| `color` (named, hex, rgb, hsl, hwb, lab, lch, oklab, oklch) | ✅ | 2 | All modern color functions. |
+| `color-mix()` | ✅ | 2 | |
+| `background-color` | ✅ | 3 | |
+| `background-image: url(...)` | ✅ | 4 | |
+| `background-image: linear-gradient()` | ✅ | 4 | PDF native shading pattern. |
+| `background-image: radial-gradient()` | ✅ | 4 | PDF native shading pattern. |
+| `background-image: conic-gradient()` | 🧪 | 4 | Skia raster fallback. |
+| Multiple backgrounds | ✅ | 4 | |
+| `background-size`, `-position`, `-repeat`, `-clip`, `-origin` | ✅ | 4 | |
+| `border`, `border-style` (all variants) | ✅ | 3 | |
+| `border-radius` | ✅ | 3 | PDF Bezier paths. |
+| `border-image` | 🧪 | 4 | Decoded and 9-sliced; complex outsets may differ from Chrome. |
+| `box-shadow` (sharp) | ✅ | 4 | Native PDF emit. |
+| `box-shadow` (blurred) | 🧪 | 4 | Skia raster fallback. |
+| `text-shadow` (sharp / blurred) | 🧪 | 4 | Same as box-shadow. |
+| `outline` | ✅ | 3 | |
+| `opacity` | ✅ | 4 | PDF ExtGState `/ca`. |
+| `mix-blend-mode` | ✅ | 4 | PDF ExtGState `/BM`. |
+| `clip-path: rect()` / `inset()` / `polygon()` | ✅ | 4 | Native PDF clipping. |
+| `clip-path: path()` | 🧪 | 4 | Skia raster fallback. |
+| `mask`, `mask-image` | 🧪 | 4 | Skia raster fallback. |
+| `filter: blur` / `drop-shadow` / `brightness` / `contrast` / `saturate` / `sepia` / `hue-rotate` / `invert` / `grayscale` | 🧪 | 4 | Skia raster fallback per filtered subtree. |
+| `transform` (2D) | ✅ | 4 | Translate, rotate, scale, skew, matrix. |
+| `transform` (3D) | ❌ | — | Emits `CSS-TRANSFORM-3D-UNSUPPORTED-001`. |
+| Animations / transitions | ❌ | — | PDF is static. Emits `CSS-ANIMATION-UNSUPPORTED-001`. |
+
+---
+
+## CSS — Modern syntax
+
+| Feature | Status | Phase | Notes |
+|---|---|---|---|
+| Custom properties (`--*`, `var()`) | ✅ | 2 | |
+| `calc()` / `min()` / `max()` / `clamp()` / `abs()` / `sign()` | ✅ | 2 | |
+| CSS Nesting (`& { ... }`) | ✅ | 2 | |
+| `@layer` cascade layers | ✅ | 2 | |
+| `:has()` selector — parsing | ✅ | 2 | Selector compiles. |
+| `:has()` selector — rendering | 📥 | post-v1 | Currently treated as no-match; emits `CSS-HAS-RENDERING-NOT-IMPLEMENTED-001`. Roadmap v1.4. |
+| `:is()`, `:where()`, `:not()` | ✅ | 2 | |
+| Container queries (`@container`) — parsing | ✅ | 2 | |
+| Container queries — rendering | 📥 | post-v1 | Emits `CSS-CONTAINER-QUERY-UNSUPPORTED-001`. Roadmap v1.4. |
+| Anchor positioning | 📥 | post-v1 | Parsed; emits `CSS-ANCHOR-POSITIONING-UNSUPPORTED-001`. |
+| `@media print` | ✅ | 2 | Default media in NetPdf. |
+| `@media screen` | ✅ | 2 | Opt-in via `MediaType` option. |
+| `@supports` | ✅ | 2 | |
+
+---
+
+## SVG (inline only)
+
+| Feature | Status | Phase | Notes |
+|---|---|---|---|
+| Shapes (`rect`, `circle`, `ellipse`, `line`, `polyline`, `polygon`, `path`) | ✅ | 4 | |
+| Fills, strokes, dashes | ✅ | 4 | |
+| Linear/radial gradients | ✅ | 4 | |
+| 2D transforms | ✅ | 4 | |
+| `<text>` | ✅ | 4 | |
+| `<image>` (raster) | ✅ | 4 | |
+| `<use>` / `<symbol>` / `<defs>` | ✅ | 4 | |
+| `<filter>` primitives | ❌ | post-v1 | CSS `filter` covers most needs. |
+| `<animate>`, SMIL | ❌ | — | Static document. |
+| `<foreignObject>` | ❌ | — | No HTML-in-SVG embedding. |
+
+---
+
+## PDF features
+
+| Feature | Status | Phase | Notes |
+|---|---|---|---|
+| PDF 1.7 emission | ✅ | 1 | Default. |
+| PDF 2.0 emission (xref streams, object streams) | ✅ | 1 | Opt-in via `EmittedPdfVersion = V2_0`. |
+| Font subsetting + ToUnicode CMap | ✅ | 1 | Searchable/copyable text. |
+| Hyperlinks (Link annotations) | ✅ | 4 | |
+| Outlines (bookmarks from headings) | 🧪 | 4 | Opt-in via `Features.GenerateOutlines`. |
+| Tagged PDF / PDF/UA-1 | 📥 | post-v1 | Semantic IR built; emission deferred to v1.1. |
+| PDF/A-3u | 📥 | post-v1 | Roadmap v1.2. |
+| PDF/A-2u | 📥 | post-v1 | Roadmap v1.2. |
+| AES-256 encryption | 📥 | post-v1 | Skip RC4 (broken). |
+
+---
+
+## Diagnostic codes
+
+Every ❌ / 📥 / 🧪 entry above corresponds to a stable diagnostic code in `docs/diagnostics-codes.md`. Codes are versioned: once published, a code's meaning never changes; new codes are added for new conditions.
+
+---
+
+Last updated: 2026-04-30 (Phase 0).

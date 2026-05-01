@@ -1,0 +1,7 @@
+{
+  "version": "0.0.1-phase0",
+  "phase": 0,
+  "phaseDescription": "Legal & architecture lock",
+  "publicApiFrozen": true,
+  "lastUpdated": "2026-04-30"
+}

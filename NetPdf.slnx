@@ -1,0 +1,36 @@
+<Solution>
+  <Folder Name="/samples/" />
+  <Folder Name="/samples/invoice-cli/">
+    <Project Path="samples/invoice-cli/InvoiceCli.csproj" />
+  </Folder>
+  <Folder Name="/samples/readme-snippets/">
+    <Project Path="samples/readme-snippets/ReadmeSnippets.csproj" />
+  </Folder>
+  <Folder Name="/samples/report-aspnet/">
+    <Project Path="samples/report-aspnet/ReportAspNet.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/NetPdf.Css/NetPdf.Css.csproj" />
+    <Project Path="src/NetPdf.Layout/NetPdf.Layout.csproj" />
+    <Project Path="src/NetPdf.Paginate/NetPdf.Paginate.csproj" />
+    <Project Path="src/NetPdf.Paint/NetPdf.Paint.csproj" />
+    <Project Path="src/NetPdf.Pdf/NetPdf.Pdf.csproj" />
+    <Project Path="src/NetPdf.SourceGen/NetPdf.SourceGen.csproj" />
+    <Project Path="src/NetPdf.Svg/NetPdf.Svg.csproj" />
+    <Project Path="src/NetPdf.Text/NetPdf.Text.csproj" />
+    <Project Path="src/NetPdf/NetPdf.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/NetPdf.AotSmoke/NetPdf.AotSmoke.csproj" />
+    <Project Path="tests/NetPdf.Benchmarks/NetPdf.Benchmarks.csproj" />
+    <Project Path="tests/NetPdf.Fuzz/NetPdf.Fuzz.csproj" />
+    <Project Path="tests/NetPdf.LayoutSnapshots/NetPdf.LayoutSnapshots.csproj" />
+    <Project Path="tests/NetPdf.PaginationGolden/NetPdf.PaginationGolden.csproj" />
+    <Project Path="tests/NetPdf.PdfValidation/NetPdf.PdfValidation.csproj" />
+    <Project Path="tests/NetPdf.RealDocuments/NetPdf.RealDocuments.csproj" />
+    <Project Path="tests/NetPdf.RenderingCorpus/NetPdf.RenderingCorpus.csproj" />
+    <Project Path="tests/NetPdf.TestKit/NetPdf.TestKit.csproj" />
+    <Project Path="tests/NetPdf.UnitTests/NetPdf.UnitTests.csproj" />
+    <Project Path="tests/NetPdf.W3cConformance/NetPdf.W3cConformance.csproj" />
+  </Folder>
+</Solution>

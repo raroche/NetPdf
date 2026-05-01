@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net10.0</TargetFrameworks>
+    <IsTestProject>true</IsTestProject>
+    <RootNamespace>NetPdf.UnitTests</RootNamespace>
+    <AssemblyName>NetPdf.UnitTests</AssemblyName>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\NetPdf\NetPdf.csproj" />
+    <ProjectReference Include="..\..\src\NetPdf.Css\NetPdf.Css.csproj" />
+    <ProjectReference Include="..\..\src\NetPdf.Layout\NetPdf.Layout.csproj" />
+    <ProjectReference Include="..\..\src\NetPdf.Paginate\NetPdf.Paginate.csproj" />
+    <ProjectReference Include="..\..\src\NetPdf.Paint\NetPdf.Paint.csproj" />
+    <ProjectReference Include="..\..\src\NetPdf.Pdf\NetPdf.Pdf.csproj" />
+    <ProjectReference Include="..\..\src\NetPdf.Text\NetPdf.Text.csproj" />
+    <ProjectReference Include="..\..\src\NetPdf.Svg\NetPdf.Svg.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" />
+    <PackageReference Include="xunit" />
+    <PackageReference Include="xunit.runner.visualstudio" />
+    <PackageReference Include="coverlet.collector" />
+  </ItemGroup>
+
+</Project>

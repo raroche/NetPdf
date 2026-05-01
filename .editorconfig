@@ -1,0 +1,52 @@
+# top-most EditorConfig file
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+[*.{md,json,yaml,yml}]
+indent_size = 2
+
+[*.{csproj,props,targets}]
+indent_size = 2
+
+[*.cs]
+# Prefer file-scoped namespaces.
+csharp_style_namespace_declarations = file_scoped:warning
+
+# Code-style: var when type is apparent; explicit when not.
+csharp_style_var_when_type_is_apparent = true:suggestion
+csharp_style_var_elsewhere = false:suggestion
+
+# Modifier order.
+csharp_preferred_modifier_order = public, private, protected, internal, file, static, extern, new, virtual, abstract, sealed, override, readonly, unsafe, required, volatile, async:suggestion
+
+# Expression-bodied members where they fit.
+csharp_style_expression_bodied_methods = when_on_single_line:suggestion
+csharp_style_expression_bodied_constructors = false:suggestion
+csharp_style_expression_bodied_operators = when_on_single_line:suggestion
+csharp_style_expression_bodied_properties = when_on_single_line:suggestion
+
+# Nullable annotations.
+dotnet_style_null_propagation = true:warning
+dotnet_style_coalesce_expression = true:warning
+
+# Pattern matching.
+csharp_style_prefer_pattern_matching = true:warning
+csharp_style_pattern_matching_over_is_with_cast_check = true:warning
+csharp_style_pattern_matching_over_as_with_null_check = true:warning
+
+# Forbid LINQ in hot paths — enforced by analyzer NETPDF0001.
+dotnet_diagnostic.NETPDF0001.severity = error
+
+# Forbid banned dependencies — enforced by NetPdf.BannedAnalyzer (NETPDF0002+).
+dotnet_diagnostic.NETPDF0002.severity = error
+dotnet_diagnostic.NETPDF0003.severity = error
+
+# Apache-2.0 file header — enforced by NetPdf.HeaderAnalyzer.
+dotnet_diagnostic.NETPDF0010.severity = error

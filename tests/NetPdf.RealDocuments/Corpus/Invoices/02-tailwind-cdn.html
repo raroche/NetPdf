@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Professional Invoice Template</title>
+    <!-- Load Tailwind CSS via CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom print styling to hide the print button and ensure a clean page break */
+        @media print {
+            .print-hidden {
+                display: none !important;
+            }
+            body {
+                margin: 0;
+            }
+            .invoice-container {
+                box-shadow: none !important;
+                border: none !important;
+                padding: 0 !important;
+                margin: 0 !important;
+            }
+        }
+        /* Setting the default font to Inter, as required */
+        body {
+            font-family: "Inter", sans-serif;
+        }
+    </style>
+    <!-- Configuring Tailwind to use Inter font if available (optional, but good practice) -->
+    <script>
+        tailwind.config = {
+          theme: {
+            extend: {
+              fontFamily: {
+                sans: ['Inter', 'sans-serif'],
+              },
+            }
+          }
+        }
+    </script>
+</head>
+<body class="bg-gray-100 p-4 md:p-8">
+
+    <div class="invoice-container max-w-4xl mx-auto bg-white shadow-xl rounded-lg overflow-hidden border border-gray-200">
+        <div class="p-6 md:p-10 space-y-8">
+            
+            <!-- Header Section -->
+            <header class="flex flex-col md:flex-row justify-between items-start md:items-center border-b pb-6">
+                
+                <!-- Company Logo & Info -->
+                <div class="mb-4 md:mb-0">
+                    <div class="text-4xl font-extrabold text-indigo-700">
+                        <span class="bg-indigo-700 text-white px-2 py-1 rounded-md">PRO</span>Corp
+                    </div>
+                    <p class="mt-3 text-sm text-gray-600">
+                        123 Main Street, Suite 400<br>
+                        Business City, CA 90210<br>
+                        (555) 123-4567 | info@procorp.com
+                    </p>
+                </div>
+
+                <!-- Invoice Title and Details -->
+                <div class="text-right">
+                    <h1 class="text-5xl font-bold text-gray-800 uppercase">Invoice</h1>
+                    <div class="mt-4 text-gray-700">
+                        <div class="flex justify-end space-x-4">
+                            <span class="font-semibold w-24 text-left">Invoice #:</span>
+                            <span class="w-24 text-right">INV-2024-001A</span>
+                        </div>
+                        <div class="flex justify-end space-x-4">
+                            <span class="font-semibold w-24 text-left">Date:</span>
+                            <span class="w-24 text-right">Dec 17, 2025</span>
+                        </div>
+                        <div class="flex justify-end space-x-4">
+                            <span class="font-semibold w-24 text-left">Due Date:</span>
+                            <span class="w-24 text-right text-red-600">Jan 16, 2026</span>
+                        </div>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Client and Vendor Addresses -->
+            <section class="flex flex-col sm:flex-row justify-between pt-4">
+                
+                <!-- Billed To -->
+                <div class="w-full sm:w-1/2 mb-6 sm:mb-0 pr-4">
+                    <h2 class="text-lg font-bold text-gray-800 border-b-2 border-indigo-500 inline-block pb-1 mb-3">Billed To</h2>
+                    <p class="font-semibold text-gray-900">Acme Solutions Ltd.</p>
+                    <p class="text-sm text-gray-600">
+                        John Doe, Financial Director<br>
+                        456 Oak Avenue, Unit B<br>
+                        Client Town, NY 10001
+                    </p>
+                </div>
+
+                <!-- Shipped To (Optional, show only if necessary) -->
+                <div class="w-full sm:w-1/2 pl-4">
+                    <h2 class="text-lg font-bold text-gray-800 border-b-2 border-gray-400 inline-block pb-1 mb-3">Service Provided By</h2>
+                    <p class="font-semibold text-gray-900">Sarah Connor</p>
+                    <p class="text-sm text-gray-600">
+                        Project Lead, Global Services<br>
+                        sarah.connor@procorp.com<br>
+                        (555) 987-6543
+                    </p>
+                </div>
+            </section>
+
+            <!-- Itemized Table Section -->
+            <section class="pt-6">
+                <div class="overflow-x-auto rounded-lg border border-gray-200">
+                    <table class="min-w-full divide-y divide-gray-200">
+                        <thead class="bg-indigo-600 text-white">
+                            <tr>
+                                <th class="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider hidden sm:table-cell">#</th>
+                                <th class="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider">Description</th>
+                                <th class="px-3 py-3 text-right text-xs font-semibold uppercase tracking-wider">Qty</th>
+                                <th class="px-3 py-3 text-right text-xs font-semibold uppercase tracking-wider hidden md:table-cell">Rate</th>
+                                <th class="px-3 py-3 text-right text-xs font-semibold uppercase tracking-wider">Amount</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-gray-200 text-sm text-gray-700">
+                            <!-- Item 1 -->
+                            <tr>
+                                <td class="px-3 py-4 whitespace-nowrap hidden sm:table-cell">1</td>
+                                <td class="px-3 py-4">
+                                    <p class="font-medium text-gray-900">Website Development (Phase 1)</p>
+                                    <p class="text-xs text-gray-500 sm:hidden">Qty: 40 | Rate: $75.00</p>
+                                </td>
+                                <td class="px-3 py-4 whitespace-nowrap text-right">40</td>
+                                <td class="px-3 py-4 whitespace-nowrap text-right hidden md:table-cell">$75.00</td>
+                                <td class="px-3 py-4 whitespace-nowrap text-right font-semibold">$3,000.00</td>
+                            </tr>
+                            <!-- Item 2 -->
+                            <tr>
+                                <td class="px-3 py-4 whitespace-nowrap hidden sm:table-cell">2</td>
+                                <td class="px-3 py-4">
+                                    <p class="font-medium text-gray-900">Monthly Hosting & Maintenance</p>
+                                    <p class="text-xs text-gray-500 sm:hidden">Qty: 1 | Rate: $250.00</p>
+                                </td>
+                                <td class="px-3 py-4 whitespace-nowrap text-right">1</td>
+                                <td class="px-3 py-4 whitespace-nowrap text-right hidden md:table-cell">$250.00</td>
+                                <td class="px-3 py-4 whitespace-nowrap text-right font-semibold">$250.00</td>
+                            </tr>
+                            <!-- Item 3 -->
+                            <tr>
+                                <td class="px-3 py-4 whitespace-nowrap hidden sm:table-cell">3</td>
+                                <td class="px-3 py-4">
+                                    <p class="font-medium text-gray-900">API Integration Consulting</p>
+                                    <p class="text-xs text-gray-500 sm:hidden">Qty: 10 | Rate: $90.00</p>
+                                </td>
+                                <td class="px-3 py-4 whitespace-nowrap text-right">10</td>
+                                <td class="px-3 py-4 whitespace-nowrap text-right hidden md:table-cell">$90.00</td>
+                                <td class="px-3 py-4 whitespace-nowrap text-right font-semibold">$900.00</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Totals and Notes Section -->
+            <section class="flex justify-end">
+                <div class="w-full md:w-1/2 lg:w-1/3">
+                    
+                    <!-- Calculation Summary -->
+                    <div class="space-y-2 text-right text-sm">
+                        
+                        <div class="flex justify-between items-center pt-4 border-t border-gray-300">
+                            <span class="text-gray-600">Subtotal:</span>
+                            <span class="font-medium text-gray-800">$4,150.00</span>
+                        </div>
+                        
+                        <div class="flex justify-between items-center">
+                            <span class="text-gray-600">Sales Tax (5%):</span>
+                            <span class="font-medium text-gray-800">$207.50</span>
+                        </div>
+
+                        <div class="flex justify-between items-center pt-3 border-t-2 border-indigo-700">
+                            <span class="text-lg font-bold text-indigo-700">TOTAL DUE:</span>
+                            <span class="text-lg font-bold text-indigo-700">$4,357.50</span>
+                        </div>
+                    </div>
+
+                    <!-- Payment Information -->
+                    <div class="mt-8 p-4 bg-indigo-50 rounded-lg border border-indigo-200">
+                        <h3 class="font-bold text-md text-indigo-800 mb-2">Payment Details</h3>
+                        <p class="text-xs text-indigo-700">
+                            Bank Transfer: Account #123456789 | SWIFT: PROCORPXX<br>
+                            Please remit payment within 30 days of the invoice date.
+                        </p>
+                    </div>
+
+                </div>
+            </section>
+
+            <!-- Additional Notes -->
+            <footer class="mt-8 pt-4 border-t">
+                <h3 class="text-md font-bold text-gray-800 mb-2">Notes</h3>
+                <p class="text-sm text-gray-600 italic">
+                    Thank you for your business. We appreciate the opportunity to work with Acme Solutions Ltd. For any inquiries regarding this invoice, please contact Sarah Connor.
+                </p>
+            </footer>
+        </div>
+
+        <!-- Print Button (Hidden on Print) -->
+        <div class="print-hidden p-6 md:p-10 bg-gray-50 flex justify-center border-t">
+            <button onclick="window.print()" class="px-6 py-3 bg-indigo-600 text-white font-semibold rounded-lg shadow-md hover:bg-indigo-700 transition duration-150 transform hover:scale-105">
+                🖨️ Print / Save as PDF
+            </button>
+        </div>
+
+    </div>
+
+</body>
+</html>

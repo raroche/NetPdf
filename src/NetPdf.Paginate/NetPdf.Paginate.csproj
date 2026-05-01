@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>NetPdf.Paginate</RootNamespace>
+    <AssemblyName>NetPdf.Paginate</AssemblyName>
+    <Description>NetPdf internal: bounded dynamic-programming pagination optimizer with cost model. Widows/orphans, table-header repetition, fixed-element-per-page handling.</Description>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NetPdf.Layout\NetPdf.Layout.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="NetPdf" />
+    <InternalsVisibleTo Include="NetPdf.Paint" />
+    <InternalsVisibleTo Include="NetPdf.UnitTests" />
+    <InternalsVisibleTo Include="NetPdf.PaginationGolden" />
+    <InternalsVisibleTo Include="NetPdf.TestKit" />
+  </ItemGroup>
+
+</Project>

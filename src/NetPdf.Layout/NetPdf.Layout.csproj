@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>NetPdf.Layout</RootNamespace>
+    <AssemblyName>NetPdf.Layout</AssemblyName>
+    <Description>NetPdf internal: box generation, block/inline, tables, flexbox, CSS Grid Level 1, multicol, absolute/fixed positioning, intrinsic sizing.</Description>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NetPdf.Css\NetPdf.Css.csproj" />
+    <ProjectReference Include="..\NetPdf.Text\NetPdf.Text.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="AngleSharp" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="NetPdf" />
+    <InternalsVisibleTo Include="NetPdf.Paginate" />
+    <InternalsVisibleTo Include="NetPdf.Paint" />
+    <InternalsVisibleTo Include="NetPdf.Svg" />
+    <InternalsVisibleTo Include="NetPdf.UnitTests" />
+    <InternalsVisibleTo Include="NetPdf.LayoutSnapshots" />
+    <InternalsVisibleTo Include="NetPdf.PaginationGolden" />
+    <InternalsVisibleTo Include="NetPdf.W3cConformance" />
+    <InternalsVisibleTo Include="NetPdf.TestKit" />
+  </ItemGroup>
+
+</Project>

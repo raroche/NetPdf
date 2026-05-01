@@ -1,0 +1,259 @@
+# Phase 5 — Packaging, Hardening, Release
+
+**Status:** ⏳ pending (after Phase 4).
+**Time:** team estimate 5 wk → Claude Opus 4.7 high: **1–2 wk**.
+**Tagged release:** `1.0.0` — first stable release.
+
+## Goal
+
+Ship NetPdf 1.0. Lock cross-platform CI, finalize documentation, polish samples, build the optional language packs, lock BenchmarkDotNet baselines, run the full corpus acceptance gate, and tag `1.0.0`.
+
+## Prerequisites
+
+- Phases 0–4 complete; `0.9.0-rc1` tagged.
+- Visual fidelity is locked from Phase 4.
+- Pinned-Chrome Docker image is reproducible; reference PNGs are committed.
+
+## Deliverables
+
+### Cross-platform CI matrix
+
+`.github/workflows/ci.yml` (or equivalent):
+
+| OS | Arch | TFM | AOT |
+|---|---|---|---|
+| ubuntu-latest | x64 | net10.0 | smoke + publish |
+| ubuntu-latest | arm64 | net10.0 | smoke + publish |
+| alpine (musl) | x64 | net10.0 | smoke + publish |
+| windows-latest | x64 | net10.0 | smoke + publish |
+| macos-latest | x64 | net10.0 | smoke + publish |
+| macos-latest | arm64 | net10.0 | smoke + publish |
+
+Each matrix entry runs:
+1. `dotnet build -c Release` — must pass with 0 errors.
+2. `dotnet test` — all xUnit projects pass.
+3. `dotnet run --project tests/NetPdf.AotSmoke` after `dotnet publish -p:PublishAot=true` — must run and produce expected output.
+4. Visual-regression diff (in the pinned-Chrome Docker image) — must pass tolerance.
+5. BenchmarkDotNet performance gate — no regression vs baseline.
+6. veraPDF (post-v1.1 conformance) — skipped in v1.
+
+### `NetPdf.Languages.*` optional packs
+
+Each is a separate NuGet package consumed via `dotnet add package NetPdf.Languages.<name>`. They register additional hyphenation patterns and segmentation data with the core's font/text registry on assembly load (via a module initializer).
+
+| Package | Contents |
+|---|---|
+| `NetPdf.Languages.European` | Hyphenation patterns: de, fr, es, it, pt, nl, sv, no, da, fi, pl, cs, hu, ru, uk |
+| `NetPdf.Languages.Cjk` | Better CJK line-break heuristics + dictionary-based word segmentation for Chinese/Japanese/Korean |
+| `NetPdf.Languages.Indic` | Indic script segmentation refinements + hyphenation: hi, bn, gu, ta, te, kn, ml, pa, ur |
+| `NetPdf.Languages.Arabic` | Arabic justification kashida heuristics + hyphenation: ar, fa |
+| `NetPdf.Languages.All` | Meta-package; depends on all above. |
+
+Patterns sourced from CTAN `tex-hyphen` (LPPL); attribution preserved per-language in `NOTICE`.
+
+### Documentation site
+
+DocFX-based, served from GitHub Pages.
+
+- `docs-site/index.md` — landing.
+- `docs-site/getting-started.md` — `dotnet add package NetPdf` + minimal example.
+- `docs-site/api/` — auto-generated from XML docs.
+- `docs-site/compatibility/` — rendered version of `docs/compatibility-matrix.md`.
+- `docs-site/diagnostics/` — rendered version of `docs/diagnostics-codes.md`.
+- `docs-site/performance.md` — benchmark methodology + reference numbers.
+- `docs-site/migrations.md` — empty for 1.0; populated as breaking changes ship in v2+.
+- `docs-site/contributing.md` — clean-room policy summary + how to contribute.
+
+### Samples polished
+
+All three samples under `samples/`:
+
+- `samples/invoice-cli/` — drop the `NotImplementedException` catch; replace `sample-invoice.html` with a richer, real-world example. README explains the CLI flags.
+- `samples/report-aspnet/` — production-shape ASP.NET endpoint with proper `Results.File()`, ETag support, content-disposition headers.
+- `samples/readme-snippets/` — drop the `NotImplementedException` catches; every README example runs and produces a valid PDF.
+
+### Performance hardening
+
+- **BenchmarkDotNet baselines locked**. Per `tests/NetPdf.Benchmarks`:
+  - 3-page invoice ≤ 200 ms p50 ✅
+  - 20-page report ≤ 1.5 s p50 ✅
+  - 100-page report linear in pages
+  - 1000-page synthetic stress test < 60 s
+- **Memory linearity test**: render a 10-page, 100-page, 1000-page synthetic doc; assert allocated memory grows linearly (within 10% of slope).
+- **Allocation discipline audit**: profile against allocation hot-paths (cascade, line builder, paint emit) — flag any hot path over 1 KB/iteration.
+
+### NuGet package validation
+
+- `dotnet pack -c Release` produces:
+  - `NetPdf.1.0.0.nupkg`
+  - `NetPdf.1.0.0.snupkg` (symbol package)
+  - All 5 `NetPdf.Languages.*.1.0.0.nupkg`
+- Each package validated via NuGet Package Explorer (manually) before push:
+  - License is Apache-2.0 SPDX expression.
+  - README is bundled.
+  - NOTICE + THIRD-PARTY-NOTICES are bundled.
+  - Source Link metadata present in PDB.
+  - Symbol package contains source (via `EmbedUntrackedSources`).
+- Enable `<EnablePackageValidation>true</EnablePackageValidation>` for v1.0+ builds (catches breaking changes against the v1.0 baseline starting in v1.1).
+
+### Final corpus acceptance gate
+
+The release-candidate gate. All of:
+1. Every file in `tests/NetPdf.RealDocuments/Corpus/Invoices/` renders within Chrome reference tolerance.
+2. Every file in any other `Corpus/` subfolders (statements, contracts, reports, certificates, catalogs, dense tables added in Phase 4) renders within tolerance.
+3. Pass-rates published to README:
+   - W3C CSS 2.2 layout: ≥ 90%
+   - W3C Flexbox: ≥ 85%
+   - W3C Grid L1: ≥ 70%
+   - W3C Fragmentation: ≥ 80%
+   - W3C Backgrounds & Borders: ≥ 90%
+   - W3C Transforms: ≥ 85%
+
+## Spec references
+
+| Topic | Source |
+|---|---|
+| .NET 10 publishing | https://learn.microsoft.com/dotnet/core/whats-new/dotnet-10/ |
+| NuGet package authoring | https://learn.microsoft.com/nuget/create-packages/package-authoring-best-practices |
+| Native AOT | https://learn.microsoft.com/dotnet/core/deploying/native-aot/ |
+| Source Link | https://github.com/dotnet/sourcelink |
+| DocFX | https://dotnet.github.io/docfx/ |
+| Semantic Versioning | https://semver.org/spec/v2.0.0.html |
+
+## Work breakdown (ordered)
+
+| # | Task | Mini-est. | Depends on |
+|---|---|---|---|
+| 1 | GitHub Actions matrix workflow (Linux x64/arm64, Alpine, Windows, macOS x64/arm64) | 2 d | — |
+| 2 | AOT publish gate per matrix entry | 1 d | 1 |
+| 3 | Visual-regression Docker integration in CI | 1 d | 1 |
+| 4 | BenchmarkDotNet performance gate in CI | 1 d | 1 |
+| 5 | `NetPdf.Languages.European` package | 1 d | — |
+| 6 | `NetPdf.Languages.Cjk` package | 1 d | — |
+| 7 | `NetPdf.Languages.Indic` package | 1 d | — |
+| 8 | `NetPdf.Languages.Arabic` package | 1 d | — |
+| 9 | `NetPdf.Languages.All` meta-package | 0.5 d | 5–8 |
+| 10 | DocFX site setup | 1 d | — |
+| 11 | Getting-started + API + compat + diag pages | 2 d | 10 |
+| 12 | GitHub Pages deployment workflow | 0.5 d | 10 |
+| 13 | Polish `samples/invoice-cli` (replace placeholder content) | 0.5 d | — |
+| 14 | Polish `samples/report-aspnet` (real ETag, headers) | 0.5 d | — |
+| 15 | Polish `samples/readme-snippets` (drop catches) | 0.5 d | — |
+| 16 | BenchmarkDotNet baseline lock (commit baseline JSON) | 1 d | 4 |
+| 17 | Memory-linearity test | 1 d | 16 |
+| 18 | Allocation hot-path audit | 1 d | 17 |
+| 19 | NuGet pack + manual NuGet Package Explorer review | 1 d | 1, 5–9 |
+| 20 | `EnablePackageValidation` baseline at v1.0 | 0.5 d | 19 |
+| 21 | Run full corpus acceptance gate | 1 d | all-of-above |
+| 22 | Publish W3C pass-rates to README | 0.5 d | 21 |
+| 23 | Tag `1.0.0` + release notes + GitHub release | 0.5 d | all |
+| 24 | Push to NuGet.org | 0.5 d | 23 |
+
+**Total: ~20 days. With Claude Opus 4.7 high + daily Roland review: 1–2 calendar weeks.**
+
+## Implementation notes
+
+### Module initializer for language packs
+```csharp
+// In NetPdf.Languages.European/ModuleInit.cs
+internal static class ModuleInit
+{
+    [System.Runtime.CompilerServices.ModuleInitializer]
+    internal static void Init()
+    {
+        NetPdf.Internal.HyphenationRegistry.Register("de", LoadDe());
+        NetPdf.Internal.HyphenationRegistry.Register("fr", LoadFr());
+        // ...
+    }
+}
+```
+The core exposes a non-public registration API consumable only by the language-pack assemblies via `[InternalsVisibleTo]`.
+
+### NuGet package metadata snapshot
+Every NuGet package in the family ships with:
+- `<PackageId>NetPdf</PackageId>` (or `NetPdf.Languages.<Name>`)
+- `<Version>1.0.0</Version>`
+- `<Authors>Roland Aroche and NetPdf contributors</Authors>`
+- `<Description>...</Description>`
+- `<PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>`
+- `<PackageProjectUrl>...</PackageProjectUrl>`
+- `<RepositoryUrl>...</RepositoryUrl>` + `<RepositoryType>git</RepositoryType>`
+- `<PackageTags>pdf;html;css;rendering;paged-media;...</PackageTags>`
+- `<PackageReadmeFile>README.md</PackageReadmeFile>`
+- `<IncludeSymbols>true</IncludeSymbols>` + `<SymbolPackageFormat>snupkg</SymbolPackageFormat>`
+- `<EmbedUntrackedSources>true</EmbedUntrackedSources>`
+- `<PublishRepositoryUrl>true</PublishRepositoryUrl>`
+- Source Link via `Microsoft.SourceLink.GitHub`
+
+### Release notes format
+Each tagged release on GitHub gets release notes auto-generated from `CHANGELOG.md`'s `[Unreleased]` section, which we then promote to `[1.0.0]` heading and start a fresh `[Unreleased]`.
+
+### Release workflow
+1. Branch `release/1.0.0` from main.
+2. Bump `<VersionPrefix>` in `Directory.Build.props` to `1.0.0`; clear `<VersionSuffix>`.
+3. Promote `[Unreleased]` to `[1.0.0]` in CHANGELOG; start a new `[Unreleased]`.
+4. Open PR, run full CI matrix, ensure all gates green.
+5. Merge.
+6. Tag `v1.0.0` on main.
+7. GitHub Actions publishes to NuGet.org via `NUGET_API_KEY` secret.
+8. Verify packages on nuget.org.
+9. Publish GitHub release with auto-generated notes.
+
+## Test plan
+
+| Component | Test | Notes |
+|---|---|---|
+| CI matrix | Integration | Every matrix entry must pass on the v1.0 release branch. |
+| AOT publish | Per-matrix | `dotnet publish -p:PublishAot=true` of `samples/invoice-cli` produces a binary that runs and emits a valid PDF. |
+| Language packs | Unit | Each pack registers its patterns; `de` hyphenation works after referencing `NetPdf.Languages.European`. |
+| DocFX site | Build | `docfx build` produces a clean static site with no broken links. |
+| NuGet packages | Manual | NuGet Package Explorer review of every package before publish. |
+| Performance | Benchmark | Baseline locked; CI runs every commit and fails on regression > 10%. |
+| Memory linearity | Benchmark | Allocated bytes scale linearly with pages within 10%. |
+| Corpus acceptance | Reference | All corpus files within Chrome diff tolerance. |
+| W3C pass-rates | Conformance | Numbers match what we publish in README. |
+
+## Exit criteria
+
+Phase 5 (and v1.0) is complete when:
+
+1. ✅ All cross-platform matrix entries pass full build + test + AOT smoke.
+2. ✅ Visual regression passes for every corpus file.
+3. ✅ Performance gates pass and baseline is committed.
+4. ✅ Memory linearity verified.
+5. ✅ All NuGet packages produced cleanly: `NetPdf`, `NetPdf.Languages.European`, `NetPdf.Languages.Cjk`, `NetPdf.Languages.Indic`, `NetPdf.Languages.Arabic`, `NetPdf.Languages.All`.
+6. ✅ Documentation site builds and deploys.
+7. ✅ Samples are polished and produce valid PDFs.
+8. ✅ W3C pass-rates published in README.
+9. ✅ CHANGELOG `[1.0.0]` section finalized.
+10. ✅ `v1.0.0` tag created.
+11. ✅ Packages published to nuget.org.
+12. ✅ GitHub release published.
+
+## Common pitfalls
+
+- **NuGet package metadata gaps.** Missing `<Description>` or `<PackageTags>` makes the package unsearchable. Use NuGet Package Explorer to review before push.
+- **AOT-incompatible ASP.NET sample.** Minimal APIs use reflection in `MapGet`. The sample `samples/report-aspnet` opts out of AOT analysis (already configured in Phase 0); don't accidentally re-enable.
+- **Pinned Chrome version drift.** When you upgrade the Docker image, the pinned Chrome version may change subtly. Lock to a specific tag, not `latest`.
+- **Reference PNG noise from font fallback.** A missing pinned font causes Chrome to fall back to a system font, generating noisy diffs. Verify the pinned-fonts pack covers every glyph used in the corpus.
+- **Module-initializer ordering.** Language packs use `[ModuleInitializer]` to register patterns. .NET runs initializers in unspecified order across assemblies; design the registry to be order-independent (idempotent registration).
+- **`EnablePackageValidation` on first release.** There's no baseline to validate against on v1.0. Enable validation *after* v1.0 ships (in v1.0.1 onwards, baseline = v1.0.0).
+- **Symbol package size bloat.** `EmbedAllSources=true` (different from `EmbedUntrackedSources`) embeds all sources, potentially blowing up symbol-package size. Stick with `EmbedUntrackedSources=true` (just the tracked ones).
+- **CHANGELOG format drift.** Stick to Keep a Changelog format. Auto-generated GitHub release notes parse it.
+- **NuGet API key in CI logs.** Use GitHub Actions secret + masked-output. Never log the raw key.
+- **Native asset packaging for language packs.** Hyphenation patterns are ~hundreds of KB per language; embed as compiled resources via source generator, not as external `.dic` files. Avoids cross-platform path issues.
+
+## Hand-off after `1.0.0`
+
+State of the project after Phase 5:
+- `1.0.0` is published on NuGet.org.
+- Documentation site is live.
+- CI is green across the full cross-platform matrix.
+- The compatibility matrix accurately describes what's supported.
+
+Post-v1 roadmap continues per the plan:
+- **v1.1** — tagged PDF (PDF/UA-1).
+- **v1.2** — PDF/A-3u, PDF/A-2u.
+- **v1.3** — CSS Grid L2 (subgrid).
+- **v1.4** — container queries, `:has()` rendering, anchor positioning.
+- **v2.0** — optional rendering APIs (PDF→image preview, programmatic PDF append/merge), AES-256 encryption.

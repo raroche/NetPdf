@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>NetPdf.Pdf</RootNamespace>
+    <AssemblyName>NetPdf.Pdf</AssemblyName>
+    <Description>NetPdf internal: our PDF byte writer. Object model, indirect refs, xref tables/streams, content stream emission, font subsetting, image XObjects, ToUnicode CMaps, deterministic serialization.</Description>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NetPdf.Paint\NetPdf.Paint.csproj" />
+    <ProjectReference Include="..\NetPdf.Text\NetPdf.Text.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SkiaSharp" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="NetPdf" />
+    <InternalsVisibleTo Include="NetPdf.UnitTests" />
+    <InternalsVisibleTo Include="NetPdf.PdfValidation" />
+    <InternalsVisibleTo Include="NetPdf.RenderingCorpus" />
+    <InternalsVisibleTo Include="NetPdf.TestKit" />
+  </ItemGroup>
+
+</Project>

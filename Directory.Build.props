@@ -1,0 +1,101 @@
+<Project>
+
+  <!-- Common properties for every project in the NetPdf solution. -->
+
+  <PropertyGroup>
+    <!-- Target .NET 10 only. C# 14 features (required/init/primary constructors) need
+         BCL primitives that netstandard2.1 lacks; shipping a backport TFM is post-v1.x work. -->
+    <TargetFrameworks>net10.0</TargetFrameworks>
+
+    <!-- Language: C# 14, latest-and-greatest. -->
+    <LangVersion>preview</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <WarningsAsErrors>nullable</WarningsAsErrors>
+
+    <!-- Determinism. Critical for byte-equal output testing. -->
+    <Deterministic>true</Deterministic>
+    <ContinuousIntegrationBuild Condition="'$(CI)' == 'true'">true</ContinuousIntegrationBuild>
+
+    <!-- AOT readiness — only valid on net8.0+ TFMs; netstandard2.1 doesn't support these. -->
+    <IsAotCompatible Condition="$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net8.0'))">true</IsAotCompatible>
+    <IsTrimmable Condition="$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net8.0'))">true</IsTrimmable>
+    <EnableTrimAnalyzer Condition="$([MSBuild]::IsTargetFrameworkCompatible('$(TargetFramework)', 'net8.0'))">true</EnableTrimAnalyzer>
+
+    <!-- Documentation. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591;NU5104</NoWarn> <!-- CS1591: missing XML doc on internals; NU5104: prerelease deps in stable package (we'll fix at v1.0). -->
+  </PropertyGroup>
+
+  <!-- NuGet package authoring best practices. -->
+  <PropertyGroup>
+    <!-- Authorship. -->
+    <Authors>Roland Aroche and NetPdf contributors</Authors>
+    <Company>NetPdf</Company>
+    <Product>NetPdf</Product>
+    <Copyright>Copyright (c) 2026 Roland Aroche and NetPdf contributors</Copyright>
+
+    <!-- License (SPDX expression preferred over LICENSE file reference). -->
+    <PackageLicenseExpression>Apache-2.0</PackageLicenseExpression>
+    <PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
+
+    <!-- URLs. RepositoryUrl is essential for Source Link. -->
+    <PackageProjectUrl>https://github.com/raroche/NetPdf</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/raroche/NetPdf</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+
+    <!-- README + tags. -->
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+
+    <!-- Versioning sourced from build/version.json. -->
+    <VersionPrefix>0.0.1</VersionPrefix>
+    <VersionSuffix>phase0</VersionSuffix>
+
+    <!-- Symbols & Source Link: enable source-stepping for downstream consumers. -->
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
+
+    <!-- Package validation: warn on breaking changes once we have a baseline. -->
+    <!-- Will be flipped on at v1.0:
+         <EnablePackageValidation>true</EnablePackageValidation>
+         <PackageValidationBaselineVersion>1.0.0</PackageValidationBaselineVersion> -->
+
+    <!-- NuGet client requirement. -->
+    <MinClientVersion>5.0.0</MinClientVersion>
+  </PropertyGroup>
+
+  <!-- Test projects opt out of AOT, packing, doc-gen. -->
+  <PropertyGroup Condition="'$(IsTestProject)' == 'true'">
+    <IsAotCompatible>false</IsAotCompatible>
+    <IsTrimmable>false</IsTrimmable>
+    <IsPackable>false</IsPackable>
+    <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <IncludeSymbols>false</IncludeSymbols>
+  </PropertyGroup>
+
+  <!-- Source-gen project opts out of AOT (Roslyn analyzers run in compile process). -->
+  <PropertyGroup Condition="'$(IsRoslynComponent)' == 'true'">
+    <IsAotCompatible>false</IsAotCompatible>
+    <IsTrimmable>false</IsTrimmable>
+    <IsPackable>false</IsPackable>
+    <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+  </PropertyGroup>
+
+  <!-- Source Link from GitHub (needed for symbol-package source debugging).
+       Version is in Directory.Packages.props (Central Package Management). -->
+  <ItemGroup Condition="'$(IsTestProject)' != 'true' AND '$(IsRoslynComponent)' != 'true'">
+    <PackageReference Include="Microsoft.SourceLink.GitHub" PrivateAssets="All" />
+  </ItemGroup>
+
+  <!-- Pack the README + NOTICE + THIRD-PARTY-NOTICES into shipping packages. -->
+  <ItemGroup Condition="'$(IsPackable)' == 'true'">
+    <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Visible="false" />
+    <None Include="$(MSBuildThisFileDirectory)NOTICE" Pack="true" PackagePath="\" Visible="false" />
+    <None Include="$(MSBuildThisFileDirectory)THIRD-PARTY-NOTICES.md" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
+
+</Project>

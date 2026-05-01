@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFrameworks>net10.0</TargetFrameworks>
+    <RootNamespace>NetPdf.Samples.ReadmeSnippets</RootNamespace>
+    <AssemblyName>readme-snippets</AssemblyName>
+    <Description>Sample: every code snippet from README.md, runnable so docs stay in sync.</Description>
+    <IsPackable>false</IsPackable>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\NetPdf\NetPdf.csproj" />
+  </ItemGroup>
+
+</Project>

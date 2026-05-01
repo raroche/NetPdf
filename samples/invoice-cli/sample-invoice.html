@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Invoice INV-2026-001</title>
+  <style>
+    @page { size: A4; margin: 1in; }
+    body { font-family: "Inter", "Helvetica", sans-serif; color: #222; line-height: 1.45; }
+    h1 { margin: 0 0 .25rem; font-size: 28pt; }
+    .muted { color: #888; }
+    table { width: 100%; border-collapse: collapse; margin-top: 2rem; }
+    th, td { padding: .5rem .75rem; text-align: left; border-bottom: 1px solid #eee; }
+    th { background: #f6f6f6; font-weight: 600; }
+    td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    tfoot td { font-weight: 600; border-top: 2px solid #333; }
+  </style>
+</head>
+<body>
+  <header style="display: flex; justify-content: space-between; align-items: flex-end;">
+    <div>
+      <h1>Invoice</h1>
+      <div class="muted">INV-2026-001 &middot; 2026-05-01</div>
+    </div>
+    <div style="text-align: right;">
+      <strong>Acme Corp</strong><br>
+      <span class="muted">123 Example Way<br>San Francisco, CA</span>
+    </div>
+  </header>
+
+  <section style="margin-top: 2rem;">
+    <strong>Bill to:</strong> Globex Industries
+  </section>
+
+  <table>
+    <thead>
+      <tr><th>Item</th><th class="num">Qty</th><th class="num">Unit</th><th class="num">Total</th></tr>
+    </thead>
+    <tbody>
+      <tr><td>NetPdf consulting</td><td class="num">8</td><td class="num">$200.00</td><td class="num">$1,600.00</td></tr>
+      <tr><td>HTML/CSS audit</td><td class="num">4</td><td class="num">$180.00</td><td class="num">$720.00</td></tr>
+    </tbody>
+    <tfoot>
+      <tr><td colspan="3">Total</td><td class="num">$2,320.00</td></tr>
+    </tfoot>
+  </table>
+</body>
+</html>

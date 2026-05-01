@@ -1,0 +1,50 @@
+# Build artefacts
+bin/
+obj/
+out/
+artifacts/
+*.user
+*.suo
+.vs/
+.vscode/
+.idea/
+
+# Native AOT outputs
+publish/
+*.pdb
+*.dll.config
+
+# Test outputs
+TestResults/
+coverage/
+*.coverage
+*.coveragexml
+BenchmarkDotNet.Artifacts/
+
+# OS noise
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# NuGet
+*.nupkg
+*.snupkg
+.nuget/
+
+# Local secrets / env
+*.local.json
+.env
+.env.local
+secrets.json
+
+# Tooling caches
+.tool-versions
+.fake/
+.paket/
+.config/dotnet-tools.json.lock
+
+# Generated NetPdf assets
+src/**/Generated/
+
+# Plan files (already external)
+plans/

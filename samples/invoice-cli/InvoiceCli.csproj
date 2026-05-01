@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFrameworks>net10.0</TargetFrameworks>
+    <RootNamespace>NetPdf.Samples.InvoiceCli</RootNamespace>
+    <AssemblyName>invoice-cli</AssemblyName>
+    <Description>Sample: render an HTML invoice to PDF from the command line.</Description>
+    <IsPackable>false</IsPackable>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\NetPdf\NetPdf.csproj" />
+  </ItemGroup>
+
+</Project>

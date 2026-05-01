@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>NetPdf.Svg</RootNamespace>
+    <AssemblyName>NetPdf.Svg</AssemblyName>
+    <Description>NetPdf internal: static SVG subset renderer. Shapes, paths, fills/strokes, transforms, gradients, text. Translates SVG to NetPdf.Paint display commands. (Phase 4)</Description>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\NetPdf.Css\NetPdf.Css.csproj" />
+    <ProjectReference Include="..\NetPdf.Layout\NetPdf.Layout.csproj" />
+    <ProjectReference Include="..\NetPdf.Paint\NetPdf.Paint.csproj" />
+    <ProjectReference Include="..\NetPdf.Text\NetPdf.Text.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="NetPdf" />
+    <InternalsVisibleTo Include="NetPdf.UnitTests" />
+    <InternalsVisibleTo Include="NetPdf.RenderingCorpus" />
+    <InternalsVisibleTo Include="NetPdf.TestKit" />
+  </ItemGroup>
+
+</Project>

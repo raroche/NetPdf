@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFrameworks>net10.0</TargetFrameworks>
+    <RootNamespace>NetPdf.Samples.ReportAspNet</RootNamespace>
+    <AssemblyName>report-aspnet</AssemblyName>
+    <Description>Sample: an ASP.NET Core minimal-API endpoint that returns a generated PDF.</Description>
+    <IsPackable>false</IsPackable>
+    <!-- ASP.NET Core minimal APIs use reflection in MapGet — opt out of AOT analysis here.
+         The NetPdf library itself remains fully AOT-clean; only this demonstration host is not. -->
+    <IsAotCompatible>false</IsAotCompatible>
+    <IsTrimmable>false</IsTrimmable>
+    <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+    <EnableAotAnalyzer>false</EnableAotAnalyzer>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\NetPdf\NetPdf.csproj" />
+  </ItemGroup>
+
+</Project>

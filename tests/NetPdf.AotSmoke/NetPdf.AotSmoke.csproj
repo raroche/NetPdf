@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFrameworks>net10.0</TargetFrameworks>
+    <IsTestProject>true</IsTestProject>
+    <RootNamespace>NetPdf.AotSmoke</RootNamespace>
+    <AssemblyName>NetPdf.AotSmoke</AssemblyName>
+    <PublishAot>false</PublishAot> <!-- Set true via CLI args when publishing for AOT smoke. -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\NetPdf\NetPdf.csproj" />
+  </ItemGroup>
+
+</Project>

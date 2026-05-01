@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Professional Responsive Invoice</title>
+    <!-- Load Tailwind CSS via CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Custom print styling */
+        @media print {
+            .print-hidden {
+                display: none !important;
+            }
+            body {
+                background-color: white !important;
+                padding: 0 !important;
+            }
+            .invoice-container {
+                box-shadow: none !important;
+                border: none !important;
+                max-width: 100% !important;
+                width: 100% !important;
+                margin: 0 !important;
+                padding: 0 !important;
+            }
+        }
+
+        /* Responsive Table adjustments for very small screens */
+        @media (max-width: 639px) {
+            .responsive-table thead {
+                display: none;
+            }
+            .responsive-table tbody tr {
+                display: block;
+                border-bottom: 2px solid #f1f5f9;
+                padding: 1rem 0;
+            }
+            .responsive-table td {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                padding: 0.5rem 1rem !important;
+                border: none !important;
+                text-align: right !important;
+                width: 100%;
+            }
+            .responsive-table td::before {
+                content: attr(data-label);
+                font-weight: 700;
+                text-align: left;
+                color: #64748b;
+                font-size: 0.75rem;
+                text-transform: uppercase;
+                letter-spacing: 0.05em;
+                margin-right: 1rem;
+            }
+            /* Special handling for the Service column to wrap text better */
+            .responsive-table td[data-label="Services"] {
+                flex-direction: column;
+                align-items: flex-start;
+                text-align: left !important;
+            }
+            .responsive-table td[data-label="Services"]::before {
+                margin-bottom: 0.5rem;
+            }
+        }
+
+        body {
+            font-family: "Inter", system-ui, -apple-system, sans-serif;
+        }
+    </style>
+</head>
+<body class="bg-slate-50 min-h-screen py-4 px-2 sm:py-8 sm:px-4">
+
+    <div class="invoice-container max-w-4xl mx-auto bg-white shadow-2xl rounded-xl overflow-hidden border border-gray-100">
+        <div class="p-4 sm:p-8 md:p-12 space-y-8">
+            
+            <!-- Header Section -->
+            <header class="flex flex-col md:flex-row justify-between items-start gap-6 border-b border-gray-100 pb-8">
+                
+                <!-- Company Brand -->
+                <div class="space-y-4 w-full md:w-auto">
+                    <div class="text-3xl sm:text-4xl font-black tracking-tight text-indigo-600 flex items-center">
+                        <div class="bg-indigo-600 text-white w-10 h-10 sm:w-12 sm:h-12 flex items-center justify-center rounded-lg mr-3">P</div>
+                        PRO<span class="text-slate-800">Corp</span>
+                    </div>
+                    <div class="text-sm text-slate-500 leading-relaxed">
+                        <p class="font-bold text-slate-700">ProCorp Industries LLC</p>
+                        <p>123 Innovation Way, Tech Park</p>
+                        <p>San Francisco, CA 94105</p>
+                        <p>contact@procorp.io | +1 (555) 000-1111</p>
+                    </div>
+                </div>
+
+                <!-- Invoice Meta Info -->
+                <div class="w-full md:w-auto flex flex-col items-start md:items-end">
+                    <h1 class="text-4xl sm:text-5xl font-black text-slate-200 uppercase tracking-widest mb-4">Invoice</h1>
+                    <div class="grid grid-cols-2 gap-x-8 gap-y-1 text-sm">
+                        <span class="text-slate-400 font-medium">Invoice Number</span>
+                        <span class="text-slate-900 font-bold text-right">#INV-2026-042</span>
+                        
+                        <span class="text-slate-400 font-medium">Issue Date</span>
+                        <span class="text-slate-900 font-semibold text-right">Jan 09, 2026</span>
+                        
+                        <span class="text-slate-400 font-medium">Due Date</span>
+                        <span class="text-rose-600 font-bold text-right underline decoration-rose-200">Feb 08, 2026</span>
+                    </div>
+                </div>
+            </header>
+
+            <!-- Addresses Section -->
+            <section class="grid grid-cols-1 sm:grid-cols-2 gap-8">
+                <div class="p-4 rounded-xl bg-slate-50 border border-slate-100">
+                    <h2 class="text-xs font-bold text-indigo-600 uppercase tracking-wider mb-2">Billed To</h2>
+                    <p class="font-bold text-slate-900 text-lg">Acme Solutions Ltd.</p>
+                    <p class="text-sm text-slate-500 mt-1 leading-relaxed">
+                        Attn: Finance Department<br>
+                        456 Commerce Blvd, Suite 12<br>
+                        New York, NY 10001
+                    </p>
+                </div>
+                <div class="p-4">
+                    <h2 class="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">Project Details</h2>
+                    <p class="font-bold text-slate-800">Enterprise Cloud Migration</p>
+                    <p class="text-sm text-slate-500 mt-1 leading-relaxed">
+                        Project ID: PRO-ACM-99<br>
+                        Manager: Sarah Connor<br>
+                        Billing Cycle: Monthly
+                    </p>
+                </div>
+            </section>
+
+            <!-- Table Section -->
+            <section>
+                <div class="sm:rounded-xl overflow-hidden border border-slate-200">
+                    <table class="responsive-table min-w-full divide-y divide-slate-200">
+                        <thead class="bg-slate-800 text-white">
+                            <tr>
+                                <th class="px-6 py-4 text-left text-xs font-bold uppercase tracking-wider">Services</th>
+                                <th class="px-6 py-4 text-center text-xs font-bold uppercase tracking-wider">Qty/Hours</th>
+                                <th class="px-6 py-4 text-right text-xs font-bold uppercase tracking-wider">Rate</th>
+                                <th class="px-6 py-4 text-right text-xs font-bold uppercase tracking-wider">Total</th>
+                            </tr>
+                        </thead>
+                        <tbody class="bg-white divide-y divide-slate-100">
+                            <!-- Item 1 -->
+                            <tr>
+                                <td data-label="Services" class="px-6 py-4">
+                                    <div class="font-bold text-slate-900 text-base">Cloud Infrastructure Setup</div>
+                                    <div class="text-xs text-slate-400 mt-0.5">Deployment of AWS multi-region architecture</div>
+                                </td>
+                                <td data-label="Qty/Hours" class="px-6 py-4 text-center text-slate-600">45</td>
+                                <td data-label="Rate" class="px-6 py-4 text-right text-slate-600">$150.00</td>
+                                <td data-label="Total" class="px-6 py-4 text-right font-bold text-slate-900">$6,750.00</td>
+                            </tr>
+                            <!-- Item 2 -->
+                            <tr>
+                                <td data-label="Services" class="px-6 py-4">
+                                    <div class="font-bold text-slate-900 text-base">Security Audit & Compliance</div>
+                                    <div class="text-xs text-slate-400 mt-0.5">Full SOC2 readiness assessment</div>
+                                </td>
+                                <td data-label="Qty/Hours" class="px-6 py-4 text-center text-slate-600">12</td>
+                                <td data-label="Rate" class="px-6 py-4 text-right text-slate-600">$200.00</td>
+                                <td data-label="Total" class="px-6 py-4 text-right font-bold text-slate-900">$2,400.00</td>
+                            </tr>
+                            <!-- Item 3 -->
+                            <tr>
+                                <td data-label="Services" class="px-6 py-4">
+                                    <div class="font-bold text-slate-900 text-base">Monthly Support Retainer</div>
+                                    <div class="text-xs text-slate-400 mt-0.5">24/7 Priority technical support</div>
+                                </td>
+                                <td data-label="Qty/Hours" class="px-6 py-4 text-center text-slate-600">1</td>
+                                <td data-label="Rate" class="px-6 py-4 text-right text-slate-600">$1,200.00</td>
+                                <td data-label="Total" class="px-6 py-4 text-right font-bold text-slate-900">$1,200.00</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Summary & Payment -->
+            <section class="flex flex-col md:flex-row justify-between gap-12 pt-4">
+                
+                <!-- Payment Info -->
+                <div class="w-full md:w-1/2 space-y-4">
+                    <div class="p-5 bg-indigo-50 rounded-2xl border border-indigo-100">
+                        <h3 class="text-indigo-900 font-black uppercase text-xs tracking-widest mb-3">Payment Instructions</h3>
+                        <div class="space-y-2 text-sm text-indigo-800">
+                            <div class="flex justify-between border-b border-indigo-200/50 pb-1">
+                                <span class="opacity-70">Bank Name</span>
+                                <span class="font-bold">Global First Bank</span>
+                            </div>
+                            <div class="flex justify-between border-b border-indigo-200/50 pb-1">
+                                <span class="opacity-70">Account Name</span>
+                                <span class="font-bold">PROCORP INDUSTRIES</span>
+                            </div>
+                            <div class="flex justify-between">
+                                <span class="opacity-70">Swift/BIC</span>
+                                <span class="font-bold">GFLB US 33 XXX</span>
+                            </div>
+                        </div>
+                    </div>
+                    <p class="text-[10px] text-slate-400 uppercase font-bold tracking-tighter">Please include invoice #INV-2026-042 in the payment reference.</p>
+                </div>
+
+                <!-- Totals -->
+                <div class="w-full md:w-1/3 space-y-3">
+                    <div class="flex justify-between text-sm">
+                        <span class="text-slate-500">Subtotal</span>
+                        <span class="text-slate-900 font-semibold">$10,350.00</span>
+                    </div>
+                    <div class="flex justify-between text-sm">
+                        <span class="text-slate-500">Tax (8%)</span>
+                        <span class="text-slate-900 font-semibold">$828.00</span>
+                    </div>
+                    <div class="flex justify-between text-sm pb-3 border-b border-slate-100">
+                        <span class="text-slate-500">Discount (Promo)</span>
+                        <span class="text-emerald-600 font-semibold">-$200.00</span>
+                    </div>
+                    <div class="flex justify-between items-center pt-2">
+                        <span class="text-lg font-black text-slate-900">Total Due</span>
+                        <span class="text-3xl font-black text-indigo-600 tracking-tighter">$10,978.00</span>
+                    </div>
+                </div>
+            </section>
+
+            <!-- Footer -->
+            <footer class="pt-12 text-center">
+                <p class="text-sm text-slate-400">Questions? Reach out to <span class="text-indigo-600 font-medium">billing@procorp.io</span></p>
+                <div class="mt-4 flex justify-center gap-4 grayscale opacity-50">
+                    <!-- Placeholder for social or company icons -->
+                    <div class="w-2 h-2 rounded-full bg-slate-300"></div>
+                    <div class="w-2 h-2 rounded-full bg-slate-300"></div>
+                    <div class="w-2 h-2 rounded-full bg-slate-300"></div>
+                </div>
+            </footer>
+        </div>
+
+        <!-- Action Bar (Hidden on Print) -->
+        <div class="print-hidden bg-slate-900 p-6 flex flex-col sm:flex-row items-center justify-between gap-4 border-t border-slate-800">
+            <div class="text-white/60 text-xs font-medium">
+                Drafting as <span class="text-white font-bold underline">Admin</span>
+            </div>
+            <div class="flex gap-3 w-full sm:w-auto">
+                <button onclick="window.print()" class="flex-1 sm:flex-none px-8 py-3 bg-indigo-500 hover:bg-indigo-400 text-white font-black rounded-lg transition-all active:scale-95 shadow-lg shadow-indigo-500/20 text-sm uppercase tracking-widest">
+                    Print Invoice
+                </button>
+            </div>
+        </div>
+
+    </div>
+
+</body>
+</html>

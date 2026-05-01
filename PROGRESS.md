@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-01 (post-Task-6 hardening ✅ — cmap fallback, subtable length clamp, GetName Platform 0, cross-table validation)
+**Last updated:** 2026-05-01 (Task 7 ✅ — CFF v1 parser + OpenTypeFont integration)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -40,7 +40,7 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
 - **Doc:** [`docs/phases/phase-1-pdf-writer-and-text.md`](docs/phases/phase-1-pdf-writer-and-text.md)
 
 ### Active task
-**Task 7 — OTF / CFF parser** (mini-est. 3 days)
+**Task 8 — Glyph subsetter (TTF first; CFF later)** (mini-est. 4 days)
 
 ### Subtasks completed
 
@@ -150,6 +150,15 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
   - **Cross-table validation in `OpenTypeFont.Parse` (P2)**: the parser is the trust boundary for downstream shaping / embedding. After `cmap` and `maxp` parse, `ValidateCmapAgainstMaxp` walks every cmap group and rejects fonts whose reachable glyph ids extend past `maxp.numGlyphs` — preventing later code from indexing `hmtx`/`loca`/`glyf` out of range on internally inconsistent fonts.
   - 10 new tests (`CmapTableHardeningTests.cs`, `NameTableHardeningTests.cs`, `OpenTypeFontHardeningTests.cs`) covering: selector fallback with two records (preferred unsupported + lower-priority supported); selector throws when no supported format present; subtable with declared length > available bytes; subtable with declared length 0; format-4 parser doesn't read past clamped length into trailing sentinel bytes; `GetName` returns Platform 0 Unicode-only PostScript name; preference order Windows > Unicode > Mac when multiple platforms present; cross-table integration test rejecting a font where `cmap` maps a code point to a glyph id beyond a shrunk `maxp.numGlyphs` (with `hhea.numberOfHMetrics` mutated in lock-step so the test reaches the cross-table validator instead of failing earlier per-table).
   - Total tests: **438 unit / 449 solution-wide passing**.
+
+- **Task 7 — OTF / CFF v1 parser** ✅ (2026-05-01)
+  - Five components under `src/NetPdf.Text/Fonts/OpenType/Cff/`: `CffHeader` (4-byte fixed header), `CffIndex` (generic INDEX with variable-width 1-based offsets and bounds checking on every offset), `CffDict` (operand-then-operator pairs with all five integer-encoding forms + 5-byte real with `0xF` terminator), `CffCharset` (formats 0/1/2 with implicit `.notdef` at glyph 0), `CffTable` orchestrator (header → Name INDEX → Top DICT INDEX → String INDEX → Global Subr INDEX → Charset → CharStrings INDEX, with ROS-based CID detection).
+  - **Spec basis (clean-room)**: Adobe Technical Note #5176. Per-file rationale + section pointers documented in summary headers.
+  - **`OpenTypeFont.Parse` integration**: when `directory.IsCff`, the orchestrator slices the `CFF ` table, parses it via `CffTable.Parse`, and runs the same cross-table consistency check as TTF — `CharStrings.Count` must equal `maxp.numGlyphs`. The `Cff` property hangs alongside `Loca` / `Glyf` (all three nullable, mutually exclusive: TTF has `Loca` + `Glyf`, OTF/CFF has `Cff`).
+  - **CFF2 deferred**: `CffHeader.Parse` rejects `major != 1` with a precise diagnostic naming v1 as the only supported version. CFF2 (variable fonts) is gated to Phase 1.x — variable fonts are post-v1.0 work.
+  - **Phase 1 scope** intentionally excludes: predefined-charset fallback (consumers always provide an explicit charset), Encoding parsing (legacy Type 1 use, not relevant to OpenType-embedded fonts), FDSelect parsing (CID-keyed mapping needed by the subsetter; will land alongside CFF subsetting in Task 8 or later), deep Type 2 charstring decoding (subsetter Task 8). The parser exposes byte-level access so these future consumers have what they need.
+  - **Dual-layer tests**: 39 per-class unit tests across 5 test files plus a `SyntheticCff` builder that emits a 3-glyph valid CFF byte stream (header, name INDEX, Top DICT with charset + CharStrings + Private offsets, String + Global Subr empty INDEXes, format-0 charset, CharStrings INDEX with `0x0E` "endchar" stub charstrings); `SyntheticOtf` wraps that CFF inside an SFNT envelope (sfntVersion = 'OTTO', tables sorted in canonical order, no loca/glyf) by reusing the per-table builders from `SyntheticFont`; 6 integration tests in `OpenTypeFontCffTests` drive the full SFNT-directory → 8-table-parser → CFF-orchestrator pipeline and assert glyph-count consistency across `maxp` / `hmtx` / `cmap` / `Cff.NumGlyphs`, mutually-exclusive-outline-flavor invariants (`HasCffOutlines` true when `HasTrueTypeOutlines` false), and end-to-end charstring resolution through `font.Cff!.GetCharStringBytes`.
+  - Total tests: **483 unit / 494 solution-wide passing**.
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

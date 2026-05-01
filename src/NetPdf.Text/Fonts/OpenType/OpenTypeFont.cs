@@ -1,6 +1,8 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using NetPdf.Text.Fonts.OpenType.Cff;
+
 namespace NetPdf.Text.Fonts.OpenType;
 
 /// <summary>
@@ -32,11 +34,15 @@ internal sealed class OpenTypeFont
     public required HmtxTable Hmtx { get; init; }
     public required CmapTable Cmap { get; init; }
 
-    /// <summary>TTF outlines only. Null on CFF fonts (which carry glyphs in the <c>CFF </c> table — Phase 1 Task 7).</summary>
+    /// <summary>TTF outlines only. Null on CFF fonts (which carry glyphs in the <c>CFF </c> table).</summary>
     public LocaTable? Loca { get; init; }
     public GlyfTable? Glyf { get; init; }
 
+    /// <summary>CFF outlines only. Null on TTF fonts. Populated when <see cref="TableDirectory.IsCff"/> is true.</summary>
+    public CffTable? Cff { get; init; }
+
     public bool HasTrueTypeOutlines => Loca is not null && Glyf is not null;
+    public bool HasCffOutlines => Cff is not null;
 
     public static OpenTypeFont Parse(ReadOnlyMemory<byte> fontBytes)
     {
@@ -61,6 +67,7 @@ internal sealed class OpenTypeFont
 
         LocaTable? loca = null;
         GlyfTable? glyf = null;
+        CffTable? cff = null;
         if (directory.IsTrueType)
         {
             var locaBytes = directory.GetTableBytes(OpenTypeTags.Loca, span);
@@ -80,6 +87,28 @@ internal sealed class OpenTypeFont
             var glyfMemory = fontBytes.Slice((int)glyfRecord.Offset, (int)glyfRecord.Length);
             glyf = new GlyfTable(loca) { RawBytes = glyfMemory };
         }
+        else if (directory.IsCff)
+        {
+            if (!directory.TryGetRecord(OpenTypeTags.Cff, out var cffRecord))
+            {
+                throw new InvalidDataException("CFF/OTF font is missing required 'CFF ' table.");
+            }
+            if ((long)cffRecord.Offset + cffRecord.Length > fontBytes.Length)
+            {
+                throw new InvalidDataException(
+                    $"CFF: table at offset {cffRecord.Offset} length {cffRecord.Length} " +
+                    $"extends past font end ({fontBytes.Length}).");
+            }
+            var cffMemory = fontBytes.Slice((int)cffRecord.Offset, (int)cffRecord.Length);
+            cff = CffTable.Parse(cffMemory);
+
+            if (cff.NumGlyphs != maxp.NumGlyphs)
+            {
+                throw new InvalidDataException(
+                    $"OpenType: CFF CharStrings INDEX has {cff.NumGlyphs} entr(ies) but maxp.numGlyphs is {maxp.NumGlyphs}. " +
+                    "Font is internally inconsistent.");
+            }
+        }
 
         return new OpenTypeFont
         {
@@ -95,6 +124,7 @@ internal sealed class OpenTypeFont
             Cmap = cmap,
             Loca = loca,
             Glyf = glyf,
+            Cff = cff,
         };
     }
 

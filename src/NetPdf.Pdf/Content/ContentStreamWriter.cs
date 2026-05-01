@@ -21,7 +21,7 @@ namespace NetPdf.Pdf.Content;
 /// a balanced state — call it before extracting bytes for embedding in a <see cref="PdfStream"/>.
 /// </para>
 /// </summary>
-internal sealed class ContentStreamWriter
+internal sealed class ContentStreamWriter : IContentStream
 {
     private readonly PdfWriter _writer;
     private int _saveDepth;
@@ -159,36 +159,59 @@ internal sealed class ContentStreamWriter
 
     // --------------------------------------------------- Device color (rg/RG/g/G)
 
-    /// <summary>§8.6.8 — <c>rg</c>: set the non-stroking color to DeviceRGB(r, g, b). Components in [0, 1].</summary>
+    /// <summary>§8.6.8 — <c>rg</c>: set the non-stroking color to DeviceRGB(r, g, b). Each component must be in [0, 1].</summary>
     public void SetFillRgb(double r, double g, double b)
     {
         EnsureNotFinished();
+        EnsureNormalizedComponent(r, nameof(r));
+        EnsureNormalizedComponent(g, nameof(g));
+        EnsureNormalizedComponent(b, nameof(b));
         WriteOperands(r, g, b);
         EmitOperator("rg");
     }
 
-    /// <summary>§8.6.8 — <c>RG</c>: set the stroking color to DeviceRGB(r, g, b).</summary>
+    /// <summary>§8.6.8 — <c>RG</c>: set the stroking color to DeviceRGB(r, g, b). Each component must be in [0, 1].</summary>
     public void SetStrokeRgb(double r, double g, double b)
     {
         EnsureNotFinished();
+        EnsureNormalizedComponent(r, nameof(r));
+        EnsureNormalizedComponent(g, nameof(g));
+        EnsureNormalizedComponent(b, nameof(b));
         WriteOperands(r, g, b);
         EmitOperator("RG");
     }
 
-    /// <summary>§8.6.8 — <c>g</c>: set the non-stroking color to DeviceGray(value). Range [0, 1].</summary>
+    /// <summary>§8.6.8 — <c>g</c>: set the non-stroking color to DeviceGray(value). Value must be in [0, 1].</summary>
     public void SetFillGray(double gray)
     {
         EnsureNotFinished();
+        EnsureNormalizedComponent(gray, nameof(gray));
         WriteOperands(gray);
         EmitOperator("g");
     }
 
-    /// <summary>§8.6.8 — <c>G</c>: set the stroking color to DeviceGray(value).</summary>
+    /// <summary>§8.6.8 — <c>G</c>: set the stroking color to DeviceGray(value). Value must be in [0, 1].</summary>
     public void SetStrokeGray(double gray)
     {
         EnsureNotFinished();
+        EnsureNormalizedComponent(gray, nameof(gray));
         WriteOperands(gray);
         EmitOperator("G");
+    }
+
+    /// <summary>
+    /// Validate that <paramref name="value"/> is a finite number in [0, 1]. Out-of-range or
+    /// NaN inputs would produce viewer-dependent clamping; we reject at the API boundary so
+    /// later layers can trust normalized colors.
+    /// </summary>
+    private static void EnsureNormalizedComponent(double value, string paramName)
+    {
+        if (double.IsNaN(value) || value < 0 || value > 1)
+        {
+            throw new ArgumentOutOfRangeException(
+                paramName, value,
+                "Color component must be a finite number in [0, 1] (PDF DeviceRGB / DeviceGray colors are normalized).");
+        }
     }
 
     // --------------------------------------------------- Line width (w)
@@ -317,9 +340,8 @@ internal sealed class ContentStreamWriter
         EnsureNotFinished();
         EnsureOutsideText("PaintXObject (Do)");
         xobjectResourceName.WriteTo(_writer);
-        _writer.WriteNewLine();
-        _writer.WriteAscii("Do");
-        _writer.WriteNewLine();
+        _writer.WriteSpace();
+        EmitOperator("Do");
     }
 
     // --------------------------------------------------- Marked content (BMC/BDC/EMC)
@@ -331,9 +353,8 @@ internal sealed class ContentStreamWriter
         EnsureNotFinished();
         _markedContentDepth++;
         tag.WriteTo(_writer);
-        _writer.WriteNewLine();
-        _writer.WriteAscii("BMC");
-        _writer.WriteNewLine();
+        _writer.WriteSpace();
+        EmitOperator("BMC");
     }
 
     /// <summary>§14.6 — <c>BDC</c>: begin a marked-content sequence with a tag and properties.</summary>
@@ -346,9 +367,8 @@ internal sealed class ContentStreamWriter
         tag.WriteTo(_writer);
         _writer.WriteSpace();
         properties.WriteTo(_writer);
-        _writer.WriteNewLine();
-        _writer.WriteAscii("BDC");
-        _writer.WriteNewLine();
+        _writer.WriteSpace();
+        EmitOperator("BDC");
     }
 
     /// <summary>§14.6 — <c>EMC</c>: end the current marked-content sequence.</summary>

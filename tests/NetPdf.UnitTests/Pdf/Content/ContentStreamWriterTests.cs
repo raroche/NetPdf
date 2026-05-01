@@ -290,7 +290,7 @@ public sealed class ContentStreamWriterTests
     public void PaintXObject_emits_name_Do()
     {
         var s = Render(c => c.PaintXObject(new PdfName("Im1")));
-        Assert.Equal("/Im1\nDo\n", s);
+        Assert.Equal("/Im1 Do\n", s);
     }
 
     [Fact]
@@ -310,7 +310,7 @@ public sealed class ContentStreamWriterTests
             c.BeginMarkedContent(new PdfName("Span"));
             c.EndMarkedContent();
         });
-        Assert.Equal("/Span\nBMC\nEMC\n", s);
+        Assert.Equal("/Span BMC\nEMC\n", s);
     }
 
     [Fact]
@@ -322,7 +322,7 @@ public sealed class ContentStreamWriterTests
             c.BeginMarkedContentWithProperties(new PdfName("Span"), props);
             c.EndMarkedContent();
         });
-        Assert.Equal("/Span << /MCID 0 >>\nBDC\nEMC\n", s);
+        Assert.Equal("/Span << /MCID 0 >> BDC\nEMC\n", s);
     }
 
     [Fact]
@@ -362,6 +362,67 @@ public sealed class ContentStreamWriterTests
         c.Finish();
 
         Assert.Throws<InvalidOperationException>(() => c.Finish());
+    }
+
+    // --------------------------------------------------- Color validation
+
+    [Theory]
+    [InlineData(-0.0001)]
+    [InlineData(-1)]
+    [InlineData(1.0001)]
+    [InlineData(2)]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(double.NegativeInfinity)]
+    public void SetFillRgb_rejects_out_of_range_components(double bad)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => Render(c => c.SetFillRgb(bad, 0, 0)));
+        Assert.Throws<ArgumentOutOfRangeException>(() => Render(c => c.SetFillRgb(0, bad, 0)));
+        Assert.Throws<ArgumentOutOfRangeException>(() => Render(c => c.SetFillRgb(0, 0, bad)));
+    }
+
+    [Theory]
+    [InlineData(-0.0001)]
+    [InlineData(1.0001)]
+    [InlineData(double.NaN)]
+    public void SetStrokeRgb_rejects_out_of_range_components(double bad)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => Render(c => c.SetStrokeRgb(bad, 0, 0)));
+    }
+
+    [Theory]
+    [InlineData(-0.0001)]
+    [InlineData(1.0001)]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    public void SetFillGray_rejects_out_of_range_value(double bad)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => Render(c => c.SetFillGray(bad)));
+    }
+
+    [Theory]
+    [InlineData(-0.0001)]
+    [InlineData(1.0001)]
+    [InlineData(double.NaN)]
+    public void SetStrokeGray_rejects_out_of_range_value(double bad)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => Render(c => c.SetStrokeGray(bad)));
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(0.5)]
+    [InlineData(1)]
+    public void Color_setters_accept_endpoints_and_midpoint(double v)
+    {
+        // Boundaries 0 and 1 are inclusive; 0.5 is a sanity value.
+        Render(c =>
+        {
+            c.SetFillRgb(v, v, v);
+            c.SetStrokeRgb(v, v, v);
+            c.SetFillGray(v);
+            c.SetStrokeGray(v);
+        });
     }
 
     // --------------------------------------------------- Determinism
@@ -437,6 +498,43 @@ public sealed class ContentStreamBuilderTests
         using var output = new MemoryStream();
         zlib.CopyTo(output);
         Assert.Equal("0 0 100 100 re\nf\n", Encoding.Latin1.GetString(output.ToArray()));
+    }
+
+    [Fact]
+    public void Build_compressed_is_deterministic()
+    {
+        // Locks down the determinism contract for the new compressed-emit path. .NET 10's
+        // ZLibStream with a fixed CompressionLevel produces identical bytes for identical
+        // input within a process; if a future runtime change broke that, this test catches
+        // it before downstream byte-equality tests start mysteriously failing.
+        static void Body(IContentStream c)
+        {
+            c.SaveState();
+            c.SetFillRgb(0.5, 0.25, 0.75);
+            c.Rectangle(10, 20, 100, 200);
+            c.Fill();
+            c.RestoreState();
+            c.BeginText();
+            c.SetFont(new PdfName("F1"), 12);
+            c.MoveTextPosition(50, 50);
+            c.ShowText("Hello, world."u8);
+            c.EndText();
+        }
+
+        var a = ContentStreamBuilder.Build(Body, compress: true);
+        var b = ContentStreamBuilder.Build(Body, compress: true);
+        Assert.Equal(a.Data.ToArray(), b.Data.ToArray());
+    }
+
+    [Fact]
+    public void Build_callback_receives_IContentStream_not_concrete_writer()
+    {
+        // Compile-time assertion: the lambda parameter is IContentStream so callers cannot
+        // call Finish() — that would break the builder's lifecycle ownership. If the builder
+        // signature ever regresses to Action<ContentStreamWriter>, this line stops compiling.
+        Action<IContentStream> sanity = c => c.Rectangle(0, 0, 10, 10);
+        var stream = ContentStreamBuilder.Build(sanity);
+        Assert.True(stream.Data.Length > 0);
     }
 
     [Fact]

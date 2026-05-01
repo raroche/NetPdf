@@ -16,12 +16,13 @@ namespace NetPdf.Pdf.Content;
 internal static class ContentStreamBuilder
 {
     /// <summary>
-    /// Run <paramref name="body"/> against a fresh <see cref="ContentStreamWriter"/>, then
-    /// wrap the resulting bytes in a <see cref="PdfStream"/>. When <paramref name="compress"/>
-    /// is true the bytes are zlib-deflated and <c>/Filter /FlateDecode</c> is set on the
-    /// stream dictionary.
+    /// Run <paramref name="body"/> against an <see cref="IContentStream"/> and wrap the
+    /// resulting bytes in a <see cref="PdfStream"/>. The callback sees only the operator
+    /// surface — lifecycle (<c>Finish</c>) is owned by the builder, so callbacks cannot
+    /// double-finalize and create a downstream throw. When <paramref name="compress"/> is
+    /// true the bytes are zlib-deflated and <c>/Filter /FlateDecode</c> is set on the dictionary.
     /// </summary>
-    public static PdfStream Build(Action<ContentStreamWriter> body, bool compress = false)
+    public static PdfStream Build(Action<IContentStream> body, bool compress = false)
     {
         ArgumentNullException.ThrowIfNull(body);
 

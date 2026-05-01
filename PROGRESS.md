@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-01 (Task 4 ✅ — content stream writer + minimal operator vocab)
+**Last updated:** 2026-05-01 (post-Task-4 hardening ✅ — color validation, IContentStream callback, format normalization)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -99,6 +99,14 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
   - `ContentStreamBuilder.Build(body, compress)` — convenience facade returning a fully-formed `PdfStream`. Optional `compress: true` zlib-deflates via `System.IO.Compression.ZLibStream` (the PDF `FlateDecode` filter expects zlib-framed bytes, not raw deflate) and sets `/Filter /FlateDecode` on the dictionary.
   - 47 new tests covering: every operator's exact byte output; state-validation throws (unbalanced `q`/`Q`, double `BT`, orphan `ET`/`EMC`, text-op outside text, path-op inside text, op-after-`Finish`, `Finish` twice); literal-string escape correctness in `Tj`; `TJ` array with mixed strings + offsets; builder produces correct `PdfStream`; FlateDecode round-trip via `ZLibStream` decompression; compression actually shrinks repetitive content; determinism property test.
   - Total tests: **231 unit / 242 solution-wide passing**.
+
+- **Post-Task-4 hardening pass** ✅ (2026-05-01) — fourth review-driven round.
+  - **Color-component validation**: `SetFillRgb`, `SetStrokeRgb`, `SetFillGray`, `SetStrokeGray` now reject components outside `[0, 1]` and reject `NaN`/`±∞` via a single `EnsureNormalizedComponent` helper, with parameter-targeted `ArgumentOutOfRangeException`. Previously the docs said `[0, 1]` but the code happily emitted `2 0 0 rg`. PDF DeviceRGB / DeviceGray spaces are normalized; out-of-range values produce undefined viewer behavior. Endpoints (`0`, `1`) and midpoints continue to round-trip exactly.
+  - **`IContentStream` callback narrowing** (`src/NetPdf.Pdf/Content/IContentStream.cs`): new internal interface listing the 26 operator-emission methods on `ContentStreamWriter` but **not** `Finish()`. `ContentStreamBuilder.Build` now takes `Action<IContentStream>` instead of `Action<ContentStreamWriter>`. The builder retains lifecycle ownership: a callback can no longer call `Finish()` early and trip every later operator into "after-finish" throws. Direct callers who genuinely need lifecycle control still use `ContentStreamWriter` concretely.
+  - **`Do`/`BMC`/`BDC` format normalization**: emission was inconsistent — most operators wrote operand + space + operator on the same line, but `PaintXObject`, `BeginMarkedContent`, and `BeginMarkedContentWithProperties` separated operand from operator with a newline (e.g., `/Im1\nDo\n`). All three now use the same-line convention (`/Im1 Do\n`, `/Span BMC\n`, `/Span << ... >> BDC\n`). The output is still byte-deterministic; just consistent and easier to eyeball.
+  - **Compression-determinism test**: `Build_compressed_is_deterministic` renders the same body twice with `compress: true` and asserts byte-equal output, locking down `ZLibStream`'s deterministic behavior (it's currently deterministic — the test catches if a future BCL change introduces nondeterminism).
+  - 22 new tests (color out-of-range/NaN/infinity per component × 4 setters, endpoint + midpoint acceptance, compressed determinism, compile-time `IContentStream` callback assertion); 3 existing tests updated for the `Do`/`BMC`/`BDC` format change.
+  - Total tests: **253 unit / 264 solution-wide passing**.
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

@@ -10,10 +10,23 @@ namespace NetPdf.Pdf;
 /// Object numbers are 1-based and assigned in allocation order, giving deterministic
 /// numbering for byte-equal output. Object 0 is the implicit free-list head and is
 /// emitted by <see cref="PdfDocumentWriter"/>; this store does not represent it.
+/// <para>
+/// Each store has a unique <see cref="Id"/>. References returned by <see cref="Allocate"/>
+/// and <see cref="Add"/> are tagged with that id so cross-store binding (using a ref from
+/// store A to <see cref="Assign"/> in store B) is rejected as a programming error.
+/// Externally-constructed refs (from the public <see cref="PdfIndirectRef"/> constructor)
+/// have id 0 and remain rejected from <see cref="Assign"/> — they're for emit-only use
+/// (e.g., constructing a <c>/Root</c> placeholder when the catalog object number is known).
+/// </para>
 /// </summary>
 internal sealed class IndirectObjectStore
 {
+    private static int s_nextStoreId;
+
     private readonly List<Entry> _entries = new();
+
+    /// <summary>Opaque id distinguishing this store from any other in the process.</summary>
+    public int Id { get; } = Interlocked.Increment(ref s_nextStoreId);
 
     /// <summary>Number of real (non-free-list-head) objects allocated.</summary>
     public int Count => _entries.Count;
@@ -28,7 +41,7 @@ internal sealed class IndirectObjectStore
     public PdfIndirectRef Allocate()
     {
         _entries.Add(default);
-        return new PdfIndirectRef(_entries.Count);
+        return new PdfIndirectRef(_entries.Count, generation: 0, storeId: Id);
     }
 
     /// <summary>Allocate and bind in one step. Returns the new reference.</summary>
@@ -36,7 +49,7 @@ internal sealed class IndirectObjectStore
     {
         ArgumentNullException.ThrowIfNull(obj);
         _entries.Add(new Entry(obj, 0));
-        return new PdfIndirectRef(_entries.Count);
+        return new PdfIndirectRef(_entries.Count, generation: 0, storeId: Id);
     }
 
     /// <summary>Bind an object to a previously-allocated reference.</summary>
@@ -44,6 +57,16 @@ internal sealed class IndirectObjectStore
     {
         ArgumentNullException.ThrowIfNull(reference);
         ArgumentNullException.ThrowIfNull(obj);
+
+        if (reference.StoreId != Id)
+        {
+            throw new InvalidOperationException(
+                reference.StoreId == 0
+                    ? "Reference is synthetic (StoreId = 0) and cannot be Assigned. " +
+                      "Use Allocate() or Add() to obtain a store-bound reference."
+                    : $"Reference belongs to a different IndirectObjectStore " +
+                      $"(StoreId {reference.StoreId}, this store is {Id}); cross-store binding is rejected.");
+        }
 
         int idx = reference.ObjectNumber - 1;
         if (idx < 0 || idx >= _entries.Count)
@@ -66,6 +89,14 @@ internal sealed class IndirectObjectStore
         int idx = reference.ObjectNumber - 1;
         return (idx >= 0 && idx < _entries.Count) ? _entries[idx].Object : null;
     }
+
+    /// <summary>
+    /// Returns true when <paramref name="reference"/>'s object number is in this store's
+    /// allocated range (regardless of <see cref="PdfIndirectRef.StoreId"/>). Used by the
+    /// preflight validator to detect dangling references before emit.
+    /// </summary>
+    internal bool HasAllocatedNumber(PdfIndirectRef reference) =>
+        reference.ObjectNumber >= 1 && reference.ObjectNumber <= _entries.Count;
 
     /// <summary>
     /// Throws if any allocated reference has not been assigned an object.

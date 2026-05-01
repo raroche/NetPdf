@@ -38,4 +38,9 @@ internal sealed class PdfStream : PdfObject
         }
         writer.WriteAscii("endstream");
     }
+
+    public override IEnumerable<PdfObject> EnumerateChildren()
+    {
+        yield return Dictionary;
+    }
 }

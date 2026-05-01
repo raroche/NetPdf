@@ -44,12 +44,55 @@ public sealed class IndirectObjectStoreTests
     }
 
     [Fact]
-    public void Assign_unallocated_reference_throws()
+    public void Assign_synthetic_reference_throws()
+    {
+        // Synthetic refs (constructed via the public ctor, StoreId = 0) are emit-only —
+        // they can appear in trailer /Root or as values in dictionaries, but they cannot
+        // be used to bind an object to any store.
+        var s = new IndirectObjectStore();
+        var synthetic = new PdfIndirectRef(99);
+
+        var ex = Assert.Throws<InvalidOperationException>(() => s.Assign(synthetic, PdfBoolean.True));
+        Assert.Contains("synthetic", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Assign_reference_from_a_different_store_throws()
+    {
+        var storeA = new IndirectObjectStore();
+        var storeB = new IndirectObjectStore();
+
+        // Allocate in store A; try to bind in store B.
+        var refFromA = storeA.Allocate();
+
+        var ex = Assert.Throws<InvalidOperationException>(() => storeB.Assign(refFromA, PdfBoolean.True));
+        Assert.Contains("different IndirectObjectStore", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Each_store_has_a_unique_id()
+    {
+        var a = new IndirectObjectStore();
+        var b = new IndirectObjectStore();
+        Assert.NotEqual(a.Id, b.Id);
+    }
+
+    [Fact]
+    public void Allocate_and_Add_tag_refs_with_store_id()
     {
         var s = new IndirectObjectStore();
-        var stranger = new PdfIndirectRef(99);
+        var allocated = s.Allocate();
+        var added = s.Add(PdfBoolean.True);
 
-        Assert.Throws<ArgumentOutOfRangeException>(() => s.Assign(stranger, PdfBoolean.True));
+        Assert.Equal(s.Id, allocated.StoreId);
+        Assert.Equal(s.Id, added.StoreId);
+    }
+
+    [Fact]
+    public void Synthetic_refs_have_store_id_zero()
+    {
+        var synthetic = new PdfIndirectRef(1);
+        Assert.Equal(0, synthetic.StoreId);
     }
 
     [Fact]

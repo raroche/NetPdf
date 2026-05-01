@@ -37,7 +37,7 @@ public sealed class PdfDocumentWriterTests
     public void Each_pdf_version_emits_expected_header(string version, string expectedHeader)
     {
         var w = new PdfDocumentWriter { Version = version };
-        var rootRef = w.Objects.Add(NewMinimalCatalog(w));
+        var rootRef = w.Objects.Add(NewMinimalCatalog());
         w.Trailer.Set(PdfNames.Root, rootRef);
 
         var ascii = AsciiRender(w);
@@ -228,12 +228,12 @@ public sealed class PdfDocumentWriterTests
     private static PdfDocumentWriter SeededWriter()
     {
         var w = new PdfDocumentWriter();
-        var rootRef = w.Objects.Add(NewMinimalCatalog(w));
+        var rootRef = w.Objects.Add(NewMinimalCatalog());
         w.Trailer.Set(PdfNames.Root, rootRef);
         return w;
     }
 
-    private static PdfDictionary NewMinimalCatalog(PdfDocumentWriter w)
+    private static PdfDictionary NewMinimalCatalog()
         => new PdfDictionary().Set(PdfNames.Type, PdfNames.Catalog);
 
     private static byte[] BuildMinimalPdf()

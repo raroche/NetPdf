@@ -11,6 +11,12 @@ namespace NetPdf.Pdf;
 /// header → indirect objects → xref table → trailer → <c>startxref</c> → <c>%%EOF</c>.
 /// All numbering and byte offsets are deterministic given identical input — a property test
 /// asserts byte-equal output for byte-equal input.
+/// <para>
+/// Before any bytes are written, <see cref="PdfPreflightValidator.Validate"/> runs structural
+/// checks (version is supported, all refs are assigned, /Root present and points to an
+/// allocated /Catalog, no dangling refs, all generations are 0). Convention violations
+/// fail at the writer's API boundary instead of producing corrupt PDFs.
+/// </para>
 /// </summary>
 internal sealed class PdfDocumentWriter
 {
@@ -21,21 +27,22 @@ internal sealed class PdfDocumentWriter
     public PdfDictionary Trailer { get; } = new();
 
     /// <summary>
-    /// PDF version string emitted in the header (e.g., <c>"1.7"</c>, <c>"2.0"</c>). The facade
-    /// translates the public <c>PdfVersion</c> enum to this string at the API boundary so the
-    /// writer stays decoupled from the public-API project.
+    /// PDF version string emitted in the header — must be one of <see cref="PdfFormat.SupportedVersions"/>.
+    /// The facade translates the public <c>PdfVersion</c> enum to this string at the API boundary
+    /// so <c>NetPdf.Pdf</c> stays decoupled from the public-API project.
     /// </summary>
     public string Version { get; init; } = "1.7";
 
     public void WriteTo(IBufferWriter<byte> output)
     {
         ArgumentNullException.ThrowIfNull(output);
-        Objects.ValidateAllAssigned();
+        PdfPreflightValidator.Validate(this);
 
         var w = new PdfWriter(output);
         WriteHeader(w);
         WriteIndirectObjects(w);
         long xrefStart = w.Position;
+        EnsureXrefOffsetFits(xrefStart);
         WriteXrefTable(w);
         WriteTrailer(w, xrefStart);
     }
@@ -51,10 +58,7 @@ internal sealed class PdfDocumentWriter
         // as binary. Without it, transports that handle ASCII (e.g., FTP ASCII mode) might
         // mangle the file. Bytes chosen to match Adobe's canonical example.
         w.WriteByte((byte)'%');
-        w.WriteByte(0xE2);
-        w.WriteByte(0xE3);
-        w.WriteByte(0xCF);
-        w.WriteByte(0xD3);
+        w.Write(PdfFormat.BinaryMarkerBytes);
         w.WriteNewLine();
     }
 
@@ -64,7 +68,9 @@ internal sealed class PdfDocumentWriter
         for (int i = 0; i < entries.Count; i++)
         {
             int objectNumber = i + 1;
-            Objects.RecordOffset(objectNumber, w.Position);
+            long offset = w.Position;
+            EnsureXrefOffsetFits(offset);
+            Objects.RecordOffset(objectNumber, offset);
 
             // "<n> 0 obj\n<body>\nendobj\n"
             w.WriteInteger(objectNumber);
@@ -82,10 +88,8 @@ internal sealed class PdfDocumentWriter
         w.WriteInteger(Objects.TotalIncludingFreeListHead);
         w.WriteNewLine();
 
-        // Object 0: free-list head, generation 65535, marker 'f'.
-        WriteXrefEntry(w, byteOffset: 0, generation: 65535, isInUse: false);
+        WriteXrefEntry(w, byteOffset: 0, generation: PdfFormat.FreeListHeadGeneration, isInUse: false);
 
-        // Real objects, in numeric order (= allocation order).
         for (int i = 0; i < Objects.AllEntries.Count; i++)
         {
             int objectNumber = i + 1;
@@ -94,32 +98,50 @@ internal sealed class PdfDocumentWriter
     }
 
     /// <summary>
-    /// Writes one xref entry as exactly 20 bytes per §7.5.4:
+    /// Writes one xref entry as exactly <see cref="PdfFormat.XrefEntrySize"/> (20) bytes per §7.5.4:
     /// <c>nnnnnnnnnn ggggg n[space][LF]</c> — 10-digit zero-padded byte offset, single space,
     /// 5-digit zero-padded generation, single space, 'n' or 'f', single space, single LF.
     /// The trailing "space + LF" is a 2-byte EOL that satisfies the 20-byte exactness rule
-    /// portably across platforms (a CRLF or single LF would be off-by-one).
+    /// portably across platforms (a single LF would be off-by-one).
     /// </summary>
     private static void WriteXrefEntry(PdfWriter w, long byteOffset, int generation, bool isInUse)
     {
-        Span<byte> buffer = stackalloc byte[20];
-        WriteFixedDecimal(buffer[..10], byteOffset, 10);
-        buffer[10] = (byte)' ';
-        WriteFixedDecimal(buffer.Slice(11, 5), generation, 5);
-        buffer[16] = (byte)' ';
-        buffer[17] = isInUse ? (byte)'n' : (byte)'f';
-        buffer[18] = (byte)' ';
-        buffer[19] = (byte)'\n';
+        const int OffsetEnd = PdfFormat.XrefOffsetDigits;            // 10
+        const int GenerationStart = OffsetEnd + 1;                   // 11
+        const int GenerationEnd = GenerationStart + PdfFormat.XrefGenerationDigits; // 16
+        const int InUseMarker = GenerationEnd + 1;                   // 17
+        const int TrailingSpace = InUseMarker + 1;                   // 18
+        const int TrailingLf = TrailingSpace + 1;                    // 19
+
+        Span<byte> buffer = stackalloc byte[PdfFormat.XrefEntrySize];
+        WriteFixedDecimal(buffer[..OffsetEnd], byteOffset);
+        buffer[OffsetEnd] = (byte)' ';
+        WriteFixedDecimal(buffer.Slice(GenerationStart, PdfFormat.XrefGenerationDigits), generation);
+        buffer[GenerationEnd] = (byte)' ';
+        buffer[InUseMarker] = isInUse ? (byte)'n' : (byte)'f';
+        buffer[TrailingSpace] = (byte)' ';
+        buffer[TrailingLf] = (byte)'\n';
         w.Write(buffer);
     }
 
-    /// <summary>Right-aligned, zero-padded decimal into a fixed-width span.</summary>
-    private static void WriteFixedDecimal(Span<byte> destination, long value, int digits)
+    /// <summary>Right-aligned, zero-padded decimal into the destination span (width = span length).</summary>
+    private static void WriteFixedDecimal(Span<byte> destination, long value)
     {
-        for (int i = digits - 1; i >= 0; i--)
+        for (int i = destination.Length - 1; i >= 0; i--)
         {
             destination[i] = (byte)('0' + (value % 10));
             value /= 10;
+        }
+    }
+
+    private static void EnsureXrefOffsetFits(long offset)
+    {
+        if (offset > PdfFormat.MaxXrefByteOffset)
+        {
+            throw new InvalidOperationException(
+                $"Byte offset {offset} exceeds the classic xref limit of {PdfFormat.MaxXrefByteOffset} " +
+                $"(10 digits). Files larger than ~10 GB require xref streams (PDF 1.5+); " +
+                $"opt in via EmittedPdfVersion = V2_0 or higher and the v2 emit path.");
         }
     }
 
@@ -134,5 +156,4 @@ internal sealed class PdfDocumentWriter
         w.WriteInteger(xrefStart);
         w.WriteAscii("\n%%EOF\n");
     }
-
 }

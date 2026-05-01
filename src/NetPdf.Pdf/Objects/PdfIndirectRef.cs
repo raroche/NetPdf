@@ -5,19 +5,40 @@ namespace NetPdf.Pdf.Objects;
 
 /// <summary>
 /// ISO 32000-2 §7.3.10 — indirect reference. Emits <c>N G R</c> where N is the object
-/// number and G is the generation. NetPdf uses generation 0 throughout v1 (no incremental updates).
+/// number and G is the generation. NetPdf uses generation 0 throughout v1 (no incremental
+/// updates); non-zero generations are rejected by the preflight validator.
+/// <para>
+/// References carry an opaque <see cref="StoreId"/> that ties them to the
+/// <see cref="IndirectObjectStore"/> that allocated them. <see cref="IndirectObjectStore.Assign"/>
+/// rejects refs from a different store. Externally-constructed refs (e.g.,
+/// <c>new PdfIndirectRef(N)</c> for a known target number when setting <c>/Root</c> in tests)
+/// have <see cref="StoreId"/> of 0 and are accepted as opaque pointers — they emit correctly
+/// but cannot be used to <see cref="IndirectObjectStore.Assign"/> against any store.
+/// </para>
 /// </summary>
 internal sealed class PdfIndirectRef : PdfObject
 {
     public int ObjectNumber { get; }
     public int Generation { get; }
 
+    /// <summary>
+    /// Identifier of the <see cref="IndirectObjectStore"/> that allocated this reference,
+    /// or 0 for refs constructed via the public constructor (treated as synthetic / opaque).
+    /// </summary>
+    internal int StoreId { get; }
+
     public PdfIndirectRef(int objectNumber, int generation = 0)
+        : this(objectNumber, generation, storeId: 0)
+    {
+    }
+
+    internal PdfIndirectRef(int objectNumber, int generation, int storeId)
     {
         if (objectNumber < 1) throw new ArgumentOutOfRangeException(nameof(objectNumber), "Object numbers start at 1.");
         if (generation < 0) throw new ArgumentOutOfRangeException(nameof(generation));
         ObjectNumber = objectNumber;
         Generation = generation;
+        StoreId = storeId;
     }
 
     public override void WriteTo(PdfWriter writer)

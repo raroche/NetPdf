@@ -35,6 +35,14 @@ internal sealed class PdfDictionary : PdfObject, IEnumerable<KeyValuePair<PdfNam
     public IEnumerator<KeyValuePair<PdfName, PdfObject>> GetEnumerator() => _entries.GetEnumerator();
     IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
+    public override IEnumerable<PdfObject> EnumerateChildren()
+    {
+        foreach (var entry in _entries)
+        {
+            yield return entry.Value;
+        }
+    }
+
     public override void WriteTo(PdfWriter writer)
     {
         writer.WriteAscii("<<");

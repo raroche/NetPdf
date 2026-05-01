@@ -34,6 +34,8 @@ internal sealed class PdfArray : PdfObject, IEnumerable<PdfObject>
     public IEnumerator<PdfObject> GetEnumerator() => _items.GetEnumerator();
     IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
 
+    public override IEnumerable<PdfObject> EnumerateChildren() => _items;
+
     public override void WriteTo(PdfWriter writer)
     {
         writer.WriteByte((byte)'[');

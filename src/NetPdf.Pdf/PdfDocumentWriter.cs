@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
 using System.Buffers;
+using System.Security.Cryptography;
 using NetPdf.Pdf.Objects;
 
 namespace NetPdf.Pdf;
@@ -22,8 +23,12 @@ internal sealed class PdfDocumentWriter
 {
     public IndirectObjectStore Objects { get; } = new();
 
-    /// <summary>The trailer dictionary. <c>/Size</c> is auto-set on emit; the caller is
-    /// responsible for at minimum setting <c>/Root</c> (and typically <c>/Info</c>, <c>/ID</c>).</summary>
+    /// <summary>
+    /// The trailer dictionary. <c>/Size</c> and <c>/ID</c> are auto-managed on emit; the
+    /// caller is responsible for at minimum setting <c>/Root</c>. If <c>/ID</c> is set
+    /// explicitly before <see cref="WriteTo"/>, the explicit value is preserved; otherwise
+    /// it is derived from a SHA-256 of the body bytes (header + indirect objects + xref).
+    /// </summary>
     public PdfDictionary Trailer { get; } = new();
 
     /// <summary>
@@ -38,13 +43,46 @@ internal sealed class PdfDocumentWriter
         ArgumentNullException.ThrowIfNull(output);
         PdfPreflightValidator.Validate(this);
 
-        var w = new PdfWriter(output);
+        // If the user already provided /ID, skip auto-derivation and don't pay the hash cost.
+        bool autoDeriveId = !Trailer.ContainsKey(PdfNames.ID);
+
+        using var hash = autoDeriveId ? IncrementalHash.CreateHash(HashAlgorithmName.SHA256) : null;
+        var w = new PdfWriter(output, hashSink: hash);
+
         WriteHeader(w);
         WriteIndirectObjects(w);
         long xrefStart = w.Position;
         EnsureXrefOffsetFits(xrefStart);
         WriteXrefTable(w);
+
+        if (autoDeriveId)
+        {
+            Trailer.Set(PdfNames.ID, BuildContentDerivedId(hash!));
+        }
+
+        // Trailer bytes are NOT included in the hash — /ID lives inside the trailer, so
+        // including the trailer would create a chicken-and-egg dependency.
+        w.StopHashing();
         WriteTrailer(w, xrefStart);
+    }
+
+    /// <summary>
+    /// Build the trailer <c>/ID</c> array from the body hash. Per ISO 32000-2 §14.4 the
+    /// array contains two byte strings — original-doc id and current-revision id — both
+    /// equal for fresh files. NetPdf uses the first 16 bytes of SHA-256 (the conventional
+    /// 128-bit ID size), encoded as <see cref="PdfHexString"/>.
+    /// </summary>
+    private static PdfArray BuildContentDerivedId(IncrementalHash hash)
+    {
+        const int IdLength = 16;
+        Span<byte> digest = stackalloc byte[32];
+        if (!hash.TryGetCurrentHash(digest, out int written) || written != 32)
+        {
+            throw new InvalidOperationException("SHA-256 incremental hash did not produce a 32-byte digest.");
+        }
+        var idBytes = digest[..IdLength].ToArray();
+        var hex = new PdfHexString(idBytes);
+        return new PdfArray().Add(hex).Add(hex);
     }
 
     private void WriteHeader(PdfWriter w)

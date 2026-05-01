@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-01 (Task 2 ✅)
+**Last updated:** 2026-05-01 (Task 3 ✅, hardening pass landed)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -40,7 +40,7 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
 - **Doc:** [`docs/phases/phase-1-pdf-writer-and-text.md`](docs/phases/phase-1-pdf-writer-and-text.md)
 
 ### Active task
-**Task 3 — Trailer `/ID` from content SHA-256** (mini-est. 1 day)
+**Task 4 — Content stream writer + minimal operator vocab** (mini-est. 3 days)
 
 ### Subtasks completed
 
@@ -53,10 +53,25 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
 
 - **Task 2 — Indirect-object store + xref table writer** ✅ (2026-05-01)
   - `IndirectObjectStore` — 1-based deterministic numbering, `Allocate`/`Add`/`Assign` for forward references, byte-offset recording, `ValidateAllAssigned` gate before emit.
-  - `PdfDocumentWriter` — orchestrates header → indirect objects → xref → trailer → `startxref` → `%%EOF`. Header emits binary marker (4 bytes ≥ 0x80) per §7.5.2. xref entries are **exactly 20 bytes** including the 2-byte ` LF` terminator per §7.5.4. Trailer `/Size` is auto-managed (real objects + free-list head). `startxref` byte offset is captured at write time from `PdfWriter.Position`.
-  - `Version` is a `string` property (e.g., `"1.7"`) on the writer rather than the public `PdfVersion` enum — keeps `NetPdf.Pdf` decoupled from the public-API project (the facade does the enum→string translation at the API boundary).
-  - 30 unit tests covering header/binary marker, all 5 PDF version strings, sequential numbering, xref entry byte-exactness (positions 10/16/18/19), xref offsets matching actual indirect-object byte positions, `/Size` correctness, `startxref` correctness, EOF marker, validation throws on unassigned objects, **determinism property test**, and a "minimal valid PDF" end-to-end structure assertion.
-  - Total tests: **127/127 passing** across the solution (116 unit + 11 from other projects).
+  - `PdfDocumentWriter` — orchestrates header → indirect objects → xref → trailer → `startxref` → `%%EOF`. Header emits binary marker (4 bytes ≥ 0x80) per §7.5.2. xref entries are **exactly 20 bytes** including the 2-byte ` LF` terminator per §7.5.4. Trailer `/Size` auto-managed.
+  - `Version` is a `string` property; facade translates the public `PdfVersion` enum at the API boundary.
+  - 30 unit tests covering header/binary marker, all 5 PDF version strings, xref entry byte-exactness, xref offset correctness, `/Size`, `startxref`, EOF marker, determinism, minimal-valid-PDF end-to-end.
+
+- **Hardening pass** ✅ (2026-05-01) — review-driven correctness reinforcement before Task 3.
+  - `PdfFormat` constants (xref widths, byte-offset limit, generation max, binary-marker bytes, supported-versions allow-list) — connects emitted bytes to ISO 32000-2 sections explicitly.
+  - `PdfObject.EnumerateChildren()` virtual + container overrides — lets graph operations walk the tree without subtype switches.
+  - `PdfPreflightValidator` — single structural pass before write: version on allow-list, all refs assigned, `/Root` present + indirect + allocated + `/Catalog`-typed, every reachable indirect ref allocated (no dangling), every ref generation = 0.
+  - `PdfIndirectRef.StoreId` — refs allocated by a store carry that store's id; `Assign` rejects synthetic and cross-store refs. Catches the silent-corruption risk of cross-document binding.
+  - xref byte-offset limit enforced (`> 9_999_999_999` throws — files larger require xref streams).
+  - Dropped unused `NetPdf.Paint` / `NetPdf.Text` / `SkiaSharp` refs from `NetPdf.Pdf.csproj`.
+  - 25 new tests; total 141 unit / 152 solution-wide.
+
+- **Task 3 — Trailer `/ID` from content SHA-256** ✅ (2026-05-01)
+  - `PdfWriter` gains an optional `IncrementalHash` tee — every emitted byte is fed into the hash sink without buffering. `StopHashing()` detaches before the trailer (the trailer would otherwise self-reference).
+  - `PdfDocumentWriter.WriteTo` auto-derives `/ID` when not user-set: SHA-256 of header + indirect objects + xref, first 16 bytes (the conventional 128-bit ID size per §14.4), encoded as `PdfHexString`. The `/ID` array contains the 16-byte digest twice (original-doc id + current-revision id, equal for fresh files).
+  - User-provided `/ID` is preserved (writer skips auto-derivation when `Trailer.ContainsKey(/ID)` — pays no hash cost in that path).
+  - 7 new tests including a strong correctness assertion that re-derives the hash externally (`SHA256.HashData(bytes[..trailerOffset])`) and compares against the emitted `/ID`. Determinism preserved end-to-end (identical input → identical hash → identical `/ID` → byte-equal output).
+  - Total tests: **159/159 passing** across the solution (148 unit + 11 from other projects).
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

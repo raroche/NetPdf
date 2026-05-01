@@ -12,12 +12,26 @@ namespace NetPdf.Pdf.Fonts;
 /// embedded subset font's BaseFont (e.g. <c>"AAAAAA+Helvetica"</c>, ISO 32000-2:2020 §9.6.4).
 /// </summary>
 /// <remarks>
+/// <para>
 /// The prefix must be unique per (font, used-glyph-set) combination so two subsets of the
 /// same source font with different glyph populations do not share a BaseFont — that would
-/// confuse cache layers and de-duplication logic in viewers. We derive it from the
-/// SHA-256 of (font name bytes || sorted used glyph ids encoded as 4-byte big-endian),
-/// then map the first 28 bits of the digest to six base-26 letters. 26⁶ ≈ 309 M
-/// combinations, and SHA-256 collisions in the prefix space are astronomically unlikely.
+/// confuse cache layers and de-duplication logic in viewers. We derive it from
+/// <c>SHA-256(NFC-normalized UTF-8 font name ‖ sorted used glyph ids encoded as 4-byte
+/// big-endian)</c>.
+/// </para>
+/// <para>
+/// <b>Algorithm.</b> Take the first 4 bytes of the digest as a big-endian
+/// <see cref="uint"/> seed (32 bits of entropy). Repeatedly emit <c>seed % 26</c> as a
+/// letter <c>A..Z</c> from the most-significant position, then divide by 26. The 6-letter
+/// alphabet has 26⁶ = 308,915,776 ≈ 2²⁸·² distinct prefixes — collisions for distinct
+/// inputs are astronomically unlikely.
+/// </para>
+/// <para>
+/// <b>Why UTF-8 + NFC.</b> A previous version hashed the font name as ASCII, which
+/// silently replaced non-ASCII characters with <c>?</c> — distinct international names
+/// like "Söhne" and "Sühne" would have hashed to the same bytes. NFC normalization
+/// ensures decomposed and precomposed forms of the same string also hash identically.
+/// </para>
 /// </remarks>
 internal static class SubsetPrefix
 {
@@ -43,7 +57,8 @@ internal static class SubsetPrefix
         // Stream the inputs through IncrementalHash so we never materialize the full
         // serialized buffer. AOT-friendly; no LINQ in the hash hot path.
         using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
-        var nameBytes = Encoding.ASCII.GetBytes(sourceFontName);
+        var normalized = sourceFontName.Normalize(NormalizationForm.FormC);
+        var nameBytes = Encoding.UTF8.GetBytes(normalized);
         hasher.AppendData(nameBytes);
 
         Span<byte> gidBytes = stackalloc byte[4];
@@ -60,8 +75,8 @@ internal static class SubsetPrefix
             throw new InvalidOperationException("SHA-256 produced fewer than 32 bytes — should be impossible.");
         }
 
-        // Take the first 32 bits of the digest as the seed; map to 6 base-26 letters.
-        // Repeated div/mod keeps the most-significant letters from the high-order bits.
+        // Take the first 32 bits of the digest as the seed; map to 6 base-26 letters via
+        // repeated div/mod 26. Effective output entropy is log2(26^6) ≈ 28.2 bits.
         var seed = ((uint)hash[0] << 24) | ((uint)hash[1] << 16) | ((uint)hash[2] << 8) | hash[3];
         Span<char> prefix = stackalloc char[PrefixLength];
         for (var pos = PrefixLength - 1; pos >= 0; pos--)

@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-01 (Task 8 ✅ — TTF glyph subsetter; CFF subsetting deferred)
+**Last updated:** 2026-05-01 (post-Task-8 hardening ✅ — preflight, shared composite walker, instruction trailer, NFC-UTF8 prefix, ReadOnlyMemory result)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -179,6 +179,17 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
   - **NetPdf.Pdf project re-references NetPdf.Text** (the Phase 1 hardening had trimmed it; comment in `NetPdf.Pdf.csproj` is updated accordingly).
   - **Dual-layer tests**: 25 tests across 3 test files covering each subsetter component in isolation plus an integration test that re-parses the emitted subset bytes through the OpenType table parsers from Task 6 (`HeadTable.Parse` / `MaxpTable.Parse` / `HmtxTable.Parse` / `LocaTable.Parse`) — the cross-component composition the dual-layer rule requires. `SyntheticFontWithComposite` test helper builds a 4-glyph TTF with composite glyph 3 referencing glyph 1, exercising the composite chase + glyphIndex rewrite end-to-end.
   - Total tests: **521 unit / 532 solution-wide passing**.
+
+- **Post-Task-8 hardening pass** ✅ (2026-05-01) — eighth review-driven round.
+  - **Shared composite-glyph walker (P1, #3)**: extracted `CompositeGlyph` (`src/NetPdf.Pdf/Fonts/CompositeGlyph.cs`) — a single source of truth for the OpenType §"glyf" component-record format. Exposes `IsComposite`, `EnsureValidHeader`, and `EnumerateComponents` returning `ComponentLocation` records (byte offset of `glyphIndex` + current value). Both the planner (`GlyphSubsetPlan.Build`) and the emitter (`TtfSubsetter.RewriteCompositeComponents`) now consume the same walker — eliminates the mirrored validation gaps that come from parsing the same wire format in two places.
+  - **`WE_HAVE_INSTRUCTIONS` trailer validation (P2, #4)**: walker now reads the optional `instructionLength` (uint16) after the last component when the flag is set, and verifies the declared instruction bytes fit inside the glyph. Prevents truncated instruction payloads from passing planning + emission and producing broken output fonts.
+  - **Short-glyph rejection (P2, #2)**: `CompositeGlyph.EnsureValidHeader` rejects any non-empty glyph payload smaller than the 10-byte glyph header. Called by both the planner (during composite chase) and the emitter (during `EmitGlyf`) — defense-in-depth at the trust boundary.
+  - **Strict subset-plan preflight (P1, #1)**: `GlyphSubsetPlan.Validate(font)` checks `NumGlyphs ∈ [1, 65535]` (uint16-bound for downstream PDF font tables), glyph 0 at new id 0, no duplicates, every old id within `font.Maxp.NumGlyphs`, and `OldToNew` is the exact inverse of `OrderedOldGlyphIds`. `TtfSubsetter.Subset` calls `Validate` first so hand-constructed or out-of-band plans cannot reach byte emission.
+  - **`TtfSubsetResult` ownership (P2, #7)**: every byte field switched from `byte[]` to `ReadOnlyMemory<byte>`. Downstream code can read via `.Span` for fast access but cannot mutate the emitted artifacts — silent corruption from accidental writes is no longer possible.
+  - **`SubsetPrefix` Unicode-stable hashing (P2, #5)**: source font name now hashed as NFC-normalized UTF-8 instead of ASCII. Distinct international names like "Söhne" / "Sühne" now produce distinct prefixes; precomposed and decomposed forms of the same string produce equal prefixes. Fixed the algorithm comment (#9) to match the actual 32-bit-seed → div/mod 26 implementation (effective entropy ~28.2 bits, matching 26⁶ output space).
+  - **Performance optimization (#6) deferred** per the review's recommendation — `EmitGlyf` could pre-compute padded glyf size and write into a single `byte[]` instead of through `MemoryStream.ToArray()`, but only after benchmarking confirms it matters.
+  - 28 new tests across 4 files: `CompositeGlyphTests` (12 tests covering `IsComposite` / `EnsureValidHeader` / `EnumerateComponents` for valid two-component chains, `WE_HAVE_INSTRUCTIONS` trailers, truncated instruction payloads, truncated component headers / argument pairs / transforms, simple-glyph rejection); `GlyphSubsetPlanHardeningTests` (8 tests for every preflight branch — glyph 0 misplaced, duplicate ids, out-of-range ids, mismatched dictionary size, non-inverse mapping, empty plan, cross-font plan); `TtfSubsetterHardeningTests` (4 tests verifying preflight runs before emission, cross-font plan rejected, short-glyph rejected at both planner and emitter); `SubsetPrefixHardeningTests` (3 tests confirming non-ASCII collision avoidance, NFC normalization equivalence, CJK family-name handling).
+  - Total tests: **549 unit / 560 solution-wide passing**.
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

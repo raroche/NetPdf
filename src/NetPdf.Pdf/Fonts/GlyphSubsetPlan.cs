@@ -1,7 +1,6 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
-using System.Buffers.Binary;
 using NetPdf.Text.Fonts.OpenType;
 
 namespace NetPdf.Pdf.Fonts;
@@ -18,7 +17,9 @@ namespace NetPdf.Pdf.Fonts;
 /// other glyphs through component records. If we subset away a referenced component, the
 /// composite renders as <c>.notdef</c>. <see cref="Build"/> walks the component graph
 /// transitively so every dependency lands in the subset before the plan is finalized.
-/// Composite-of-composite is supported via worklist iteration.
+/// Composite-of-composite is supported via worklist iteration. The component-record
+/// parsing is delegated to <see cref="CompositeGlyph"/> so the planner and the emitter
+/// share one validated wire-format walker.
 /// </para>
 /// <para>
 /// <b>Determinism.</b> The output ordering is "glyph 0, then the input set sorted by
@@ -74,27 +75,23 @@ internal sealed class GlyphSubsetPlan
         {
             var gid = worklist.Dequeue();
             var glyphBytes = font.Glyf!.GetGlyphBytes(gid);
-            if (glyphBytes.Length < 10)
+            CompositeGlyph.EnsureValidHeader(glyphBytes, gid);
+            if (!CompositeGlyph.IsComposite(glyphBytes))
             {
-                continue; // empty glyph or simple-but-tiny — no composite component records
+                continue;
             }
-            var numberOfContours = BinaryPrimitives.ReadInt16BigEndian(glyphBytes[..2]);
-            if (numberOfContours >= 0)
-            {
-                continue; // simple glyph
-            }
-            var components = CollectComponentGlyphIds(glyphBytes);
+            var components = CompositeGlyph.EnumerateComponents(glyphBytes);
             foreach (var component in components)
             {
-                if (component < 0 || component >= maxGlyphs)
+                if (component.GlyphIndex >= maxGlyphs)
                 {
                     throw new InvalidDataException(
-                        $"Composite glyph {gid} references out-of-range component glyph id {component} " +
+                        $"Composite glyph {gid} references out-of-range component glyph id {component.GlyphIndex} " +
                         $"(numGlyphs = {maxGlyphs}).");
                 }
-                if (visited.Add(component))
+                if (visited.Add(component.GlyphIndex))
                 {
-                    worklist.Enqueue(component);
+                    worklist.Enqueue(component.GlyphIndex);
                 }
             }
         }
@@ -102,7 +99,14 @@ internal sealed class GlyphSubsetPlan
         // Build the deterministic ordering: glyph 0 first, then everything else by
         // ascending original id.
         var ordered = new List<int>(visited.Count) { 0 };
-        var rest = visited.Where(g => g != 0).ToList();
+        var rest = new List<int>(visited.Count - 1);
+        foreach (var g in visited)
+        {
+            if (g != 0)
+            {
+                rest.Add(g);
+            }
+        }
         rest.Sort();
         ordered.AddRange(rest);
 
@@ -119,66 +123,60 @@ internal sealed class GlyphSubsetPlan
         };
     }
 
-    /// <summary>Collect the component glyph ids referenced by a composite glyph.</summary>
+    /// <summary>
+    /// Strict trust-boundary preflight for hand-constructed plans. Caller-built or
+    /// out-of-band plans go through this before any byte emission so structural
+    /// inconsistencies surface here, not as malformed PDF font data downstream.
+    /// </summary>
     /// <remarks>
-    /// Composite glyph component record per OpenType §"glyf":
-    /// <list type="bullet">
-    /// <item>uint16 flags</item>
-    /// <item>uint16 glyphIndex</item>
-    /// <item>arg1 / arg2 — int16 each if <c>ARG_1_AND_2_ARE_WORDS</c> (0x0001), else int8 each</item>
-    /// <item>optional transform: 1× F2DOT14 (0x0008) or 2× F2DOT14 (0x0040) or 4× F2DOT14 (0x0080)</item>
-    /// </list>
-    /// More components follow when <c>MORE_COMPONENTS</c> (0x0020) is set.
+    /// Checks: <c>NumGlyphs</c> in [1, 65535] (PDF font tables are uint16-bound),
+    /// <c>OrderedOldGlyphIds[0] == 0</c>, no duplicates, every old id in <c>[0, font.Maxp.NumGlyphs)</c>,
+    /// and <c>OldToNew</c> is the exact inverse of <c>OrderedOldGlyphIds</c>.
     /// </remarks>
-    private static List<int> CollectComponentGlyphIds(ReadOnlySpan<byte> span)
+    public void Validate(OpenTypeFont font)
     {
-        // Buffer into a List so the caller can iterate without holding the ref-struct span.
-        // Real fonts cap composite components in the low single digits; the spec maximum is
-        // 0xFFFF but never seen in practice.
-        var components = new List<int>(4);
-        var pos = 10; // skip header (numberOfContours + bbox = 2 + 4*2 = 10)
+        ArgumentNullException.ThrowIfNull(font);
 
-        while (true)
+        if (NumGlyphs == 0)
         {
-            if (pos + 4 > span.Length)
+            throw new InvalidOperationException("GlyphSubsetPlan: must contain at least .notdef (glyph 0).");
+        }
+        if (NumGlyphs > 0xFFFF)
+        {
+            throw new InvalidOperationException(
+                $"GlyphSubsetPlan: subset glyph count {NumGlyphs} exceeds the uint16 cap of PDF font tables (65535).");
+        }
+        if (OrderedOldGlyphIds[0] != 0)
+        {
+            throw new InvalidOperationException(
+                $"GlyphSubsetPlan: glyph 0 (.notdef) must be at new id 0; got original id {OrderedOldGlyphIds[0]}.");
+        }
+        if (OldToNew.Count != NumGlyphs)
+        {
+            throw new InvalidOperationException(
+                $"GlyphSubsetPlan: OldToNew size ({OldToNew.Count}) does not match OrderedOldGlyphIds size ({NumGlyphs}).");
+        }
+        var fontGlyphCount = font.Maxp.NumGlyphs;
+        var seen = new HashSet<int>(NumGlyphs);
+        for (var i = 0; i < NumGlyphs; i++)
+        {
+            var oldId = OrderedOldGlyphIds[i];
+            if (oldId < 0 || oldId >= fontGlyphCount)
             {
-                throw new InvalidDataException(
-                    $"Composite glyph: component record header truncated at offset {pos} (glyph bytes length {span.Length}).");
+                throw new InvalidOperationException(
+                    $"GlyphSubsetPlan: original glyph id {oldId} at new id {i} is outside the font's glyph universe [0, {fontGlyphCount}).");
             }
-            var flags = BinaryPrimitives.ReadUInt16BigEndian(span.Slice(pos, 2));
-            var componentGid = BinaryPrimitives.ReadUInt16BigEndian(span.Slice(pos + 2, 2));
-            components.Add(componentGid);
-            pos += 4;
-
-            // Argument-1/2 width
-            pos += (flags & 0x0001) != 0 ? 4 : 2;
-
-            // Optional transform
-            if ((flags & 0x0008) != 0)
+            if (!seen.Add(oldId))
             {
-                pos += 2;
+                throw new InvalidOperationException(
+                    $"GlyphSubsetPlan: duplicate original glyph id {oldId} appears at new id {i}.");
             }
-            else if ((flags & 0x0040) != 0)
+            if (!OldToNew.TryGetValue(oldId, out var mapped) || mapped != i)
             {
-                pos += 4;
-            }
-            else if ((flags & 0x0080) != 0)
-            {
-                pos += 8;
-            }
-
-            if (pos > span.Length)
-            {
-                throw new InvalidDataException(
-                    $"Composite glyph: component record body extends past glyph bytes (pos {pos}, length {span.Length}).");
-            }
-
-            if ((flags & 0x0020) == 0)
-            {
-                break; // last component
+                throw new InvalidOperationException(
+                    $"GlyphSubsetPlan: OldToNew[{oldId}] should be {i} but was " +
+                    (OldToNew.TryGetValue(oldId, out var actual) ? actual.ToString() : "missing") + ".");
             }
         }
-
-        return components;
     }
 }

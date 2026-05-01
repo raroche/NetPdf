@@ -14,12 +14,18 @@ namespace NetPdf.Pdf.Fonts;
 /// </summary>
 /// <remarks>
 /// <para>
+/// <b>Trust boundary.</b> <see cref="Subset"/> is the single entry point for any caller
+/// that wants subset bytes. It runs <see cref="GlyphSubsetPlan.Validate"/> first so a
+/// hand-constructed or out-of-band plan can't slip past — every old→new id correspondence
+/// and structural invariant (NumGlyphs in [1, 65535], glyph 0 at new id 0, no duplicates,
+/// every old id in font.Maxp range) is checked before any byte emission.
+/// </para>
+/// <para>
 /// <b>Composite glyph rewriting.</b> When a composite glyph appears in the subset, its
-/// component records reference other glyphs by original id. The emitter rewrites every
-/// component's <c>glyphIndex</c> field to the new id from <see cref="GlyphSubsetPlan.OldToNew"/>
-/// while leaving everything else (flags / args / transform) byte-identical. The
-/// composite-chase in <see cref="GlyphSubsetPlan.Build"/> guarantees every referenced
-/// component is in the subset.
+/// component records reference other glyphs by original id. The shared
+/// <see cref="CompositeGlyph"/> walker locates every glyphIndex byte offset and the
+/// emitter overwrites them with the new ids from <see cref="GlyphSubsetPlan.OldToNew"/>
+/// while leaving every other byte (flags / args / transform / instructions) byte-identical.
 /// </para>
 /// <para>
 /// <b>Glyph alignment.</b> TTF requires per-glyph data in <c>glyf</c> to start on a
@@ -42,6 +48,7 @@ internal static class TtfSubsetter
         {
             throw new InvalidOperationException("TtfSubsetter requires a TTF-flavored font.");
         }
+        plan.Validate(font);
 
         // 1. Re-emit glyf — copy each glyph's bytes (with composite components rewritten),
         //    pad to 2-byte alignment, record the new offsets for loca.
@@ -95,6 +102,7 @@ internal static class TtfSubsetter
             offsets[newId] = cursor;
             var oldId = plan.OrderedOldGlyphIds[newId];
             var glyphBytes = glyf.GetGlyphBytes(oldId);
+            CompositeGlyph.EnsureValidHeader(glyphBytes, oldId);
 
             if (glyphBytes.Length == 0)
             {
@@ -103,9 +111,11 @@ internal static class TtfSubsetter
                 continue;
             }
 
-            // For composite glyphs, copy the bytes and rewrite component glyphIndex fields
-            // in place. For simple glyphs, we can copy verbatim.
-            var rewritten = MaybeRewriteComposite(glyphBytes, plan);
+            // Composite glyphs need their component glyphIndex fields rewritten; simple
+            // glyphs are byte-identical.
+            var rewritten = CompositeGlyph.IsComposite(glyphBytes)
+                ? RewriteCompositeComponents(glyphBytes, plan)
+                : glyphBytes.ToArray();
             output.Write(rewritten);
             cursor += (uint)rewritten.Length;
 
@@ -120,61 +130,22 @@ internal static class TtfSubsetter
         return (output.ToArray(), offsets);
     }
 
-    private static byte[] MaybeRewriteComposite(ReadOnlySpan<byte> glyphBytes, GlyphSubsetPlan plan)
+    private static byte[] RewriteCompositeComponents(ReadOnlySpan<byte> glyphBytes, GlyphSubsetPlan plan)
     {
-        if (glyphBytes.Length < 10)
-        {
-            return glyphBytes.ToArray();
-        }
-        var numberOfContours = BinaryPrimitives.ReadInt16BigEndian(glyphBytes[..2]);
-        if (numberOfContours >= 0)
-        {
-            return glyphBytes.ToArray();
-        }
-
-        // Composite. Walk the component records and rewrite glyphIndex in place. The header
-        // (10 bytes: numberOfContours + bbox) and every byte we don't explicitly rewrite is
-        // preserved verbatim, so the glyph's geometry is byte-identical.
+        // Walk via the shared validator + locate every glyphIndex byte offset, then patch
+        // those offsets in place. Header / args / transform / instructions stay byte-equal,
+        // so the glyph's geometry is preserved bit-for-bit.
+        var locations = CompositeGlyph.EnumerateComponents(glyphBytes);
         var output = glyphBytes.ToArray();
-        var pos = 10;
-        while (true)
+        foreach (var location in locations)
         {
-            if (pos + 4 > output.Length)
-            {
-                throw new InvalidDataException(
-                    $"Composite glyph: component header truncated at offset {pos} of {output.Length}.");
-            }
-            var flags = BinaryPrimitives.ReadUInt16BigEndian(output.AsSpan(pos, 2));
-            var oldComponent = BinaryPrimitives.ReadUInt16BigEndian(output.AsSpan(pos + 2, 2));
-            if (!plan.OldToNew.TryGetValue(oldComponent, out var newComponent))
+            if (!plan.OldToNew.TryGetValue(location.GlyphIndex, out var newComponent))
             {
                 throw new InvalidOperationException(
-                    $"Composite component glyph {oldComponent} is missing from the subset plan — " +
+                    $"Composite component glyph {location.GlyphIndex} is missing from the subset plan — " +
                     "GlyphSubsetPlan.Build should have caught this; there is a bug in the composite chase.");
             }
-            BinaryPrimitives.WriteUInt16BigEndian(output.AsSpan(pos + 2, 2), (ushort)newComponent);
-            pos += 4;
-
-            // Skip the rest of this component record. Argument width:
-            pos += (flags & 0x0001) != 0 ? 4 : 2;
-
-            if ((flags & 0x0008) != 0)
-            {
-                pos += 2;
-            }
-            else if ((flags & 0x0040) != 0)
-            {
-                pos += 4;
-            }
-            else if ((flags & 0x0080) != 0)
-            {
-                pos += 8;
-            }
-
-            if ((flags & 0x0020) == 0)
-            {
-                break; // last component
-            }
+            BinaryPrimitives.WriteUInt16BigEndian(output.AsSpan(location.GlyphIndexByteOffset, 2), (ushort)newComponent);
         }
         return output;
     }

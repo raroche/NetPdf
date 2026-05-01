@@ -27,7 +27,7 @@ public sealed class TtfSubsetterTests
         var plan = GlyphSubsetPlan.Build(font, new HashSet<int> { 1 });
         var result = TtfSubsetter.Subset(font, plan);
 
-        var newMaxp = MaxpTable.Parse(result.MaxpBytes);
+        var newMaxp = MaxpTable.Parse(result.MaxpBytes.Span);
         Assert.Equal((ushort)2, newMaxp.NumGlyphs);
     }
 
@@ -38,10 +38,10 @@ public sealed class TtfSubsetterTests
         var plan = GlyphSubsetPlan.Build(font, new HashSet<int> { 1 });
         var result = TtfSubsetter.Subset(font, plan);
 
-        var newHhea = HheaTable.Parse(result.HheaBytes);
+        var newHhea = HheaTable.Parse(result.HheaBytes.Span);
         Assert.Equal((ushort)2, newHhea.NumberOfHMetrics);
 
-        var newHmtx = HmtxTable.Parse(result.HmtxBytes, newHhea.NumberOfHMetrics, plan.NumGlyphs.Equals(0) ? (ushort)0 : (ushort)plan.NumGlyphs);
+        var newHmtx = HmtxTable.Parse(result.HmtxBytes.Span, newHhea.NumberOfHMetrics, (ushort)plan.NumGlyphs);
         Assert.Equal(plan.NumGlyphs, newHmtx.AdvanceWidths.Length);
     }
 
@@ -52,8 +52,7 @@ public sealed class TtfSubsetterTests
         var plan = GlyphSubsetPlan.Build(font, new HashSet<int> { 1 });
         var result = TtfSubsetter.Subset(font, plan);
 
-        // Source glyph 1 had advance 500. After subsetting, new glyph 1 (mapped from old 1) keeps advance 500.
-        var newHmtx = HmtxTable.Parse(result.HmtxBytes, numberOfHMetrics: 2, numGlyphs: 2);
+        var newHmtx = HmtxTable.Parse(result.HmtxBytes.Span, numberOfHMetrics: 2, numGlyphs: 2);
         Assert.Equal(font.Hmtx.AdvanceWidths[0], newHmtx.AdvanceWidths[0]); // .notdef advance preserved
         Assert.Equal(font.Hmtx.AdvanceWidths[1], newHmtx.AdvanceWidths[1]); // glyph 1's advance preserved
     }
@@ -65,8 +64,8 @@ public sealed class TtfSubsetterTests
         var plan = GlyphSubsetPlan.Build(font, new HashSet<int> { 1 });
         var result = TtfSubsetter.Subset(font, plan);
 
-        var newHead = HeadTable.Parse(result.HeadBytes);
-        var newLoca = LocaTable.Parse(result.LocaBytes, (ushort)plan.NumGlyphs, newHead.IndexToLocFormat);
+        var newHead = HeadTable.Parse(result.HeadBytes.Span);
+        var newLoca = LocaTable.Parse(result.LocaBytes.Span, (ushort)plan.NumGlyphs, newHead.IndexToLocFormat);
 
         for (var i = 1; i < newLoca.Offsets.Length; i++)
         {
@@ -97,9 +96,7 @@ public sealed class TtfSubsetterTests
         var plan = GlyphSubsetPlan.Build(font, new HashSet<int> { 1 });
         var result = TtfSubsetter.Subset(font, plan);
 
-        // checkSumAdjustment is at offset 8 of head. Phase 1 Task 10 (the SFNT envelope
-        // assembler) recomputes it after the final layout, so the subsetter zeroes it.
-        var checkSum = BinaryPrimitives.ReadUInt32BigEndian(result.HeadBytes.AsSpan(8, 4));
+        var checkSum = BinaryPrimitives.ReadUInt32BigEndian(result.HeadBytes.Span.Slice(8, 4));
         Assert.Equal(0u, checkSum);
     }
 
@@ -124,20 +121,17 @@ public sealed class TtfSubsetterTests
         var plan = GlyphSubsetPlan.Build(font, new HashSet<int> { SyntheticFontWithComposite.CompositeGlyphIndex });
         var result = TtfSubsetter.Subset(font, plan);
 
-        // Look up the new id of the originally-composite glyph and find its bytes in the subset glyf.
         var newCompositeId = plan.OldToNew[SyntheticFontWithComposite.CompositeGlyphIndex];
-        var newHead = HeadTable.Parse(result.HeadBytes);
-        var newLoca = LocaTable.Parse(result.LocaBytes, (ushort)plan.NumGlyphs, newHead.IndexToLocFormat);
+        var newHead = HeadTable.Parse(result.HeadBytes.Span);
+        var newLoca = LocaTable.Parse(result.LocaBytes.Span, (ushort)plan.NumGlyphs, newHead.IndexToLocFormat);
 
         var compositeStart = (int)newLoca.Offsets[newCompositeId];
         var compositeEnd = (int)newLoca.Offsets[newCompositeId + 1];
-        var compositeBytes = result.GlyfBytes.AsSpan(compositeStart, compositeEnd - compositeStart);
+        var compositeBytes = result.GlyfBytes.Span.Slice(compositeStart, compositeEnd - compositeStart);
 
-        // Confirm it's still a composite (numberOfContours < 0) and read the rewritten glyphIndex.
         var numContours = BinaryPrimitives.ReadInt16BigEndian(compositeBytes[0..2]);
         Assert.True(numContours < 0);
         var rewrittenGlyphIndex = BinaryPrimitives.ReadUInt16BigEndian(compositeBytes[12..14]);
-        // Original component was glyph 1 — must now point at its new subset id.
         Assert.Equal(plan.OldToNew[SyntheticFontWithComposite.CompositeReferencedGlyph], rewrittenGlyphIndex);
     }
 
@@ -154,12 +148,12 @@ public sealed class TtfSubsetterTests
         var resultA = TtfSubsetter.Subset(fontA, planA);
         var resultB = TtfSubsetter.Subset(fontB, planB);
 
-        Assert.Equal(resultA.GlyfBytes, resultB.GlyfBytes);
-        Assert.Equal(resultA.LocaBytes, resultB.LocaBytes);
-        Assert.Equal(resultA.HmtxBytes, resultB.HmtxBytes);
-        Assert.Equal(resultA.HeadBytes, resultB.HeadBytes);
-        Assert.Equal(resultA.HheaBytes, resultB.HheaBytes);
-        Assert.Equal(resultA.MaxpBytes, resultB.MaxpBytes);
+        Assert.Equal(resultA.GlyfBytes.ToArray(), resultB.GlyfBytes.ToArray());
+        Assert.Equal(resultA.LocaBytes.ToArray(), resultB.LocaBytes.ToArray());
+        Assert.Equal(resultA.HmtxBytes.ToArray(), resultB.HmtxBytes.ToArray());
+        Assert.Equal(resultA.HeadBytes.ToArray(), resultB.HeadBytes.ToArray());
+        Assert.Equal(resultA.HheaBytes.ToArray(), resultB.HheaBytes.ToArray());
+        Assert.Equal(resultA.MaxpBytes.ToArray(), resultB.MaxpBytes.ToArray());
         Assert.Equal(resultA.SubsetBaseFontName, resultB.SubsetBaseFontName);
     }
 
@@ -172,24 +166,19 @@ public sealed class TtfSubsetterTests
         var plan = GlyphSubsetPlan.Build(font, new HashSet<int> { 1, 3 });
         var result = TtfSubsetter.Subset(font, plan);
 
-        // head re-parses with valid magic + valid indexToLocFormat.
-        var newHead = HeadTable.Parse(result.HeadBytes);
+        var newHead = HeadTable.Parse(result.HeadBytes.Span);
         Assert.True(newHead.IndexToLocFormat is 0 or 1);
 
-        // hhea re-parses; numberOfHMetrics matches subset.
-        var newHhea = HheaTable.Parse(result.HheaBytes);
+        var newHhea = HheaTable.Parse(result.HheaBytes.Span);
         Assert.Equal(plan.NumGlyphs, newHhea.NumberOfHMetrics);
 
-        // maxp re-parses.
-        var newMaxp = MaxpTable.Parse(result.MaxpBytes);
+        var newMaxp = MaxpTable.Parse(result.MaxpBytes.Span);
         Assert.Equal(plan.NumGlyphs, newMaxp.NumGlyphs);
 
-        // hmtx re-parses against the new (numberOfHMetrics, numGlyphs).
-        var newHmtx = HmtxTable.Parse(result.HmtxBytes, newHhea.NumberOfHMetrics, newMaxp.NumGlyphs);
+        var newHmtx = HmtxTable.Parse(result.HmtxBytes.Span, newHhea.NumberOfHMetrics, newMaxp.NumGlyphs);
         Assert.Equal(plan.NumGlyphs, newHmtx.AdvanceWidths.Length);
 
-        // loca re-parses — offsets non-decreasing, last offset matches glyf length.
-        var newLoca = LocaTable.Parse(result.LocaBytes, newMaxp.NumGlyphs, newHead.IndexToLocFormat);
+        var newLoca = LocaTable.Parse(result.LocaBytes.Span, newMaxp.NumGlyphs, newHead.IndexToLocFormat);
         Assert.Equal(plan.NumGlyphs, newLoca.NumGlyphs);
         Assert.Equal((uint)result.GlyfBytes.Length, newLoca.Offsets[^1]);
     }

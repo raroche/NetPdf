@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-01 (Task 3 ✅ + 2 hardening rounds: trailer-graph + foreign-store + cycle detection + transient trailer + tightened /Root + Get scope + WriteAscii fail-fast + PdfStream /Length self-correction)
+**Last updated:** 2026-05-01 (Task 4 ✅ — content stream writer + minimal operator vocab)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -40,7 +40,7 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
 - **Doc:** [`docs/phases/phase-1-pdf-writer-and-text.md`](docs/phases/phase-1-pdf-writer-and-text.md)
 
 ### Active task
-**Task 4 — Content stream writer + minimal operator vocab** (mini-est. 3 days)
+**Task 5 — `DisplayCommand` IR + `DisplayList` buffer** (mini-est. 2 days)
 
 ### Subtasks completed
 
@@ -91,6 +91,14 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
   - 6 existing tests using `/Root → ref-to-PdfInteger` migrated to use a properly-seeded catalog (they were testing emit format with structurally-invalid input).
   - 15 new tests: 4 for `/Root` validity (PdfInteger target, dict-without-Type, dict-with-non-name-Type, PdfArray target); 4 for `Get` scope (foreign rejected, synthetic resolves locally, local resolves, unallocated returns null); 4 for `WriteAscii` fail-fast (non-ASCII string throws, Unicode char throws, full ASCII range accepted, `Write(span)` still handles arbitrary bytes); 3 for `PdfStream` self-correction (overwritten `/Length` reset, removed `/Length` restored, idempotent on correct value).
   - Total tests: **184 unit / 195 solution-wide passing**.
+
+- **Task 4 — Content stream writer + minimal operator vocab** ✅ (2026-05-01)
+  - `ContentStreamWriter` (`src/NetPdf.Pdf/Content/`) — emits PDF content-stream operators per ISO 32000-2 §8/§9 with one operator per line for byte-deterministic, debuggable output. Phase 1 vocabulary covers: graphics state (`q`, `Q`, `cm`); path construction (`m`, `l`, `re`, `h`); path painting (`f`, `S`, `n`); device-color shorthands (`rg`, `RG`, `g`, `G`); line width (`w`); text (`BT`, `ET`, `Tf`, `Td`, `TD`, `Tj`, `TJ`); XObject (`Do`); marked content (`BMC`, `BDC`, `EMC`).
+  - **Runtime nesting invariants enforced**: `q`/`Q` balance, `BT`/`ET` pairing (no double-open, no orphan close), `BMC`/`BDC`/`EMC` depth, text-only operators rejected outside `BT`/`ET`, path operators rejected inside `BT`/`ET`. `Finish()` validates final balance and throws with specific messages on violation. Operations after `Finish` throw.
+  - `TextArrayElement` — discriminated value-type for `TJ` array elements (string or numeric advance offset).
+  - `ContentStreamBuilder.Build(body, compress)` — convenience facade returning a fully-formed `PdfStream`. Optional `compress: true` zlib-deflates via `System.IO.Compression.ZLibStream` (the PDF `FlateDecode` filter expects zlib-framed bytes, not raw deflate) and sets `/Filter /FlateDecode` on the dictionary.
+  - 47 new tests covering: every operator's exact byte output; state-validation throws (unbalanced `q`/`Q`, double `BT`, orphan `ET`/`EMC`, text-op outside text, path-op inside text, op-after-`Finish`, `Finish` twice); literal-string escape correctness in `Tj`; `TJ` array with mixed strings + offsets; builder produces correct `PdfStream`; FlateDecode round-trip via `ZLibStream` decompression; compression actually shrinks repetitive content; determinism property test.
+  - Total tests: **231 unit / 242 solution-wide passing**.
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

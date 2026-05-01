@@ -86,6 +86,17 @@ internal sealed class IndirectObjectStore
     public PdfObject? Get(PdfIndirectRef reference)
     {
         ArgumentNullException.ThrowIfNull(reference);
+
+        // Symmetric with Assign: refs from another store cannot be silently dereferenced
+        // against this store. Synthetic refs (StoreId == 0) are accepted as opaque pointers
+        // — the caller is asserting "I know this number resolves here."
+        if (reference.StoreId != 0 && reference.StoreId != Id)
+        {
+            throw new InvalidOperationException(
+                $"Reference belongs to a different IndirectObjectStore (StoreId {reference.StoreId}, " +
+                $"this store is {Id}); cross-store dereference is rejected.");
+        }
+
         int idx = reference.ObjectNumber - 1;
         return (idx >= 0 && idx < _entries.Count) ? _entries[idx].Object : null;
     }

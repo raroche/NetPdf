@@ -47,39 +47,36 @@ public sealed class PdfDocumentWriterTests
     [Fact]
     public void Indirect_object_uses_n_zero_obj_format()
     {
-        var w = new PdfDocumentWriter();
-        w.Objects.Add(new PdfInteger(42));
-        w.Trailer.Set(PdfNames.Root, new PdfIndirectRef(1));
+        var w = SeededWriter();                          // catalog → object 1
+        w.Objects.Add(new PdfInteger(42));               // object 2
 
         var ascii = AsciiRender(w);
-        Assert.Contains("1 0 obj\n42\nendobj\n", ascii);
+        Assert.Contains("2 0 obj\n42\nendobj\n", ascii);
     }
 
     [Fact]
     public void Multiple_objects_numbered_sequentially()
     {
-        var w = new PdfDocumentWriter();
-        w.Objects.Add(new PdfInteger(10));
-        w.Objects.Add(new PdfInteger(20));
-        w.Objects.Add(new PdfInteger(30));
-        w.Trailer.Set(PdfNames.Root, new PdfIndirectRef(1));
+        var w = SeededWriter();                          // catalog → object 1
+        w.Objects.Add(new PdfInteger(10));               // object 2
+        w.Objects.Add(new PdfInteger(20));               // object 3
+        w.Objects.Add(new PdfInteger(30));               // object 4
 
         var ascii = AsciiRender(w);
-        Assert.Contains("1 0 obj\n10\nendobj\n", ascii);
-        Assert.Contains("2 0 obj\n20\nendobj\n", ascii);
-        Assert.Contains("3 0 obj\n30\nendobj\n", ascii);
+        Assert.Contains("2 0 obj\n10\nendobj\n", ascii);
+        Assert.Contains("3 0 obj\n20\nendobj\n", ascii);
+        Assert.Contains("4 0 obj\n30\nendobj\n", ascii);
     }
 
     [Fact]
     public void Xref_section_header_is_zero_count_with_total_objects()
     {
-        var w = new PdfDocumentWriter();
-        w.Objects.Add(new PdfInteger(1));
-        w.Objects.Add(new PdfInteger(2));
-        w.Trailer.Set(PdfNames.Root, new PdfIndirectRef(1));
+        var w = SeededWriter();                          // catalog → 1
+        w.Objects.Add(new PdfInteger(1));                // object 2
+        w.Objects.Add(new PdfInteger(2));                // object 3
 
         var ascii = AsciiRender(w);
-        Assert.Contains("xref\n0 3\n", ascii);
+        Assert.Contains("xref\n0 4\n", ascii);           // 3 real + free-list head
     }
 
     [Fact]
@@ -101,17 +98,16 @@ public sealed class PdfDocumentWriterTests
     [Fact]
     public void Xref_entries_are_exactly_twenty_bytes()
     {
-        var w = new PdfDocumentWriter();
-        w.Objects.Add(new PdfInteger(42));
-        w.Trailer.Set(PdfNames.Root, new PdfIndirectRef(1));
+        var w = SeededWriter();                          // catalog → 1
+        w.Objects.Add(new PdfInteger(42));               // object 2
         var bytes = Render(w);
 
-        var marker = "xref\n0 2\n"u8;
+        var marker = "xref\n0 3\n"u8;                    // 2 real + free-list head
         int idx = bytes.AsSpan().IndexOf(marker);
         Assert.True(idx >= 0, "xref section marker not found");
 
         int entryStart = idx + marker.Length;
-        for (int i = 0; i < 2; i++)
+        for (int i = 0; i < 3; i++)
         {
             ReadOnlySpan<byte> entry = bytes.AsSpan(entryStart + i * 20, 20);
             Assert.Equal((byte)' ', entry[10]);
@@ -124,30 +120,30 @@ public sealed class PdfDocumentWriterTests
     [Fact]
     public void Xref_offsets_match_actual_indirect_object_byte_positions()
     {
-        var w = new PdfDocumentWriter();
-        w.Objects.Add(new PdfInteger(10));
-        w.Objects.Add(new PdfInteger(20));
-        w.Trailer.Set(PdfNames.Root, new PdfIndirectRef(1));
+        var w = SeededWriter();                          // catalog → 1
+        w.Objects.Add(new PdfInteger(10));               // object 2
+        w.Objects.Add(new PdfInteger(20));               // object 3
         var bytes = Render(w);
         var ascii = Encoding.Latin1.GetString(bytes);
 
         int obj1Pos = ascii.IndexOf("1 0 obj");
         int obj2Pos = ascii.IndexOf("2 0 obj");
+        int obj3Pos = ascii.IndexOf("3 0 obj");
 
         Assert.Contains($"{obj1Pos:D10} 00000 n \n", ascii);
         Assert.Contains($"{obj2Pos:D10} 00000 n \n", ascii);
+        Assert.Contains($"{obj3Pos:D10} 00000 n \n", ascii);
     }
 
     [Fact]
     public void Trailer_size_includes_free_list_head()
     {
-        var w = new PdfDocumentWriter();
-        w.Objects.Add(new PdfInteger(1));
-        w.Objects.Add(new PdfInteger(2));
-        w.Trailer.Set(PdfNames.Root, new PdfIndirectRef(1));
+        var w = SeededWriter();                          // catalog → 1
+        w.Objects.Add(new PdfInteger(1));                // object 2
+        w.Objects.Add(new PdfInteger(2));                // object 3
 
         var ascii = AsciiRender(w);
-        Assert.Contains("/Size 3", ascii); // 2 real objects + 1 free-list head
+        Assert.Contains("/Size 4", ascii);               // 3 real objects + free-list head
     }
 
     [Fact]

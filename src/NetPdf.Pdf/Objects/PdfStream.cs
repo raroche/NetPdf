@@ -27,6 +27,13 @@ internal sealed class PdfStream : PdfObject
 
     public override void WriteTo(PdfWriter writer)
     {
+        // Re-establish the /Length invariant. Stream length is intrinsic to the payload
+        // bytes; if the user mutated /Length between construction and emit (intentionally
+        // or by accident — e.g., dictionary cleared, /Filter swapped, /Length set wrong)
+        // this restores correctness silently. There is no legitimate reason a caller
+        // should override /Length, so we always trust the payload size.
+        Dictionary.Set(PdfNames.Length, new PdfInteger(_data.Length));
+
         Dictionary.WriteTo(writer);
         writer.WriteNewLine();
         writer.WriteAscii("stream\n");

@@ -60,9 +60,10 @@ internal sealed class PdfWriter
     }
 
     /// <summary>
-    /// Write the ASCII byte sequence of a string. The caller MUST ensure every char is in
-    /// the range 0x00..0x7F; non-ASCII chars are encoded as the low byte of their UTF-16
-    /// code unit, which is incorrect for PDF if not pure ASCII.
+    /// Write the ASCII byte sequence of a string. Throws <see cref="ArgumentException"/> if
+    /// any character is outside the range 0x00..0x7F — the writer fails fast rather than
+    /// silently truncating. For arbitrary byte sequences (Latin-1, encoded text, image data)
+    /// use <see cref="Write(ReadOnlySpan{byte})"/> instead.
     /// </summary>
     public void WriteAscii(ReadOnlySpan<char> chars)
     {
@@ -70,14 +71,20 @@ internal sealed class PdfWriter
         var dest = _output.GetSpan(chars.Length);
         for (int i = 0; i < chars.Length; i++)
         {
-            dest[i] = (byte)chars[i];
+            char c = chars[i];
+            if (c > 0x7F)
+            {
+                throw new ArgumentException(
+                    $"WriteAscii requires every character in [0x00, 0x7F]; got 0x{(int)c:X4} at index {i}. " +
+                    $"Use Write(ReadOnlySpan<byte>) for non-ASCII byte sequences.",
+                    nameof(chars));
+            }
+            dest[i] = (byte)c;
         }
         _output.Advance(chars.Length);
         Position += chars.Length;
         if (_hashSink is not null)
         {
-            // dest[0..chars.Length] is the byte slice we just wrote; AppendData reads it
-            // before the buffer writer's next GetSpan would invalidate the view.
             _hashSink.AppendData(dest[..chars.Length]);
         }
     }

@@ -67,12 +67,32 @@ internal static class PdfPreflightValidator
                 $"Trailer /Root points to object {rootRef.ObjectNumber}, " +
                 $"which is not allocated in the store (only {store.Count} objects exist).");
         }
-        if (store.Get(rootRef) is PdfDictionary rootDict
-            && rootDict.Get(PdfNames.Type) is PdfName typeName
-            && !typeName.Equals(PdfNames.Catalog))
+
+        // /Root must resolve to the document Catalog: a dictionary with /Type /Catalog.
+        // Any other shape (non-dict target, dict without /Type, dict with /Type other than
+        // /Catalog) would produce an invalid PDF, so reject up front.
+        var target = store.Get(rootRef);
+        if (target is not PdfDictionary rootDict)
         {
             throw new InvalidOperationException(
-                $"Trailer /Root points to a dictionary whose /Type is /{typeName.Value}; expected /Catalog.");
+                $"Trailer /Root must reference a dictionary; got {target?.GetType().Name ?? "null"}.");
+        }
+        var typeValue = rootDict.Get(PdfNames.Type);
+        if (typeValue is null)
+        {
+            throw new InvalidOperationException(
+                "Trailer /Root references a dictionary missing the /Type entry. " +
+                "Expected /Type /Catalog.");
+        }
+        if (typeValue is not PdfName typeName)
+        {
+            throw new InvalidOperationException(
+                $"Trailer /Root dictionary has /Type of {typeValue.GetType().Name}; expected a PdfName /Catalog.");
+        }
+        if (!typeName.Equals(PdfNames.Catalog))
+        {
+            throw new InvalidOperationException(
+                $"Trailer /Root dictionary has /Type /{typeName.Value}; expected /Catalog.");
         }
     }
 

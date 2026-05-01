@@ -1,11 +1,22 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <!--
+    Console-app benchmark host (BenchmarkDotNet). Not a unit-test project, so does not
+    set IsTestProject (which would make `dotnet test` try to run it via testhost).
+    Inherits AOT-compat / packing flags overrides directly so the project still opts
+    out of trim/AOT analysis and packing.
+  -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFrameworks>net10.0</TargetFrameworks>
-    <IsTestProject>true</IsTestProject>
     <RootNamespace>NetPdf.Benchmarks</RootNamespace>
     <AssemblyName>NetPdf.Benchmarks</AssemblyName>
+    <IsAotCompatible>false</IsAotCompatible>
+    <IsTrimmable>false</IsTrimmable>
+    <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+    <IsPackable>false</IsPackable>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <IncludeSymbols>false</IncludeSymbols>
   </PropertyGroup>
 
   <ItemGroup>

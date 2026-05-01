@@ -38,7 +38,13 @@ internal static class PdfFormat
     /// </summary>
     public static ReadOnlySpan<byte> BinaryMarkerBytes => [0xE2, 0xE3, 0xCF, 0xD3];
 
-    /// <summary>PDF versions the writer can emit. The header version must be one of these.</summary>
-    public static readonly IReadOnlySet<string> SupportedVersions =
-        new HashSet<string>(StringComparer.Ordinal) { "1.4", "1.5", "1.6", "1.7", "2.0" };
+    /// <summary>
+    /// PDF versions the writer can emit, in stable display order. Used for diagnostic messages
+    /// where deterministic ordering matters; for membership checks use <see cref="SupportedVersionSet"/>.
+    /// </summary>
+    public static readonly string[] SupportedVersions = ["1.4", "1.5", "1.6", "1.7", "2.0"];
+
+    /// <summary>O(1) membership check for <see cref="SupportedVersions"/>.</summary>
+    public static readonly IReadOnlySet<string> SupportedVersionSet =
+        new HashSet<string>(SupportedVersions, StringComparer.Ordinal);
 }

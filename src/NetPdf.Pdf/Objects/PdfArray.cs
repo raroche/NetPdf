@@ -27,6 +27,11 @@ internal sealed class PdfArray : PdfObject, IEnumerable<PdfObject>
     public PdfArray Add(PdfObject item)
     {
         ArgumentNullException.ThrowIfNull(item);
+        if (ReferenceEquals(item, this))
+        {
+            throw new InvalidOperationException(
+                "Cannot add a PdfArray as an element of itself; that would create a direct cycle.");
+        }
         _items.Add(item);
         return this;
     }

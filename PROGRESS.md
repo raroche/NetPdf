@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-01 (Task 3 ✅, hardening pass landed)
+**Last updated:** 2026-05-01 (Task 3 ✅ + post-Task-3 hardening: trailer-graph validation, foreign-store ref rejection, indirect-cycle detection, transient trailer emit)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -71,14 +71,32 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
   - `PdfDocumentWriter.WriteTo` auto-derives `/ID` when not user-set: SHA-256 of header + indirect objects + xref, first 16 bytes (the conventional 128-bit ID size per §14.4), encoded as `PdfHexString`. The `/ID` array contains the 16-byte digest twice (original-doc id + current-revision id, equal for fresh files).
   - User-provided `/ID` is preserved (writer skips auto-derivation when `Trailer.ContainsKey(/ID)` — pays no hash cost in that path).
   - 7 new tests including a strong correctness assertion that re-derives the hash externally (`SHA256.HashData(bytes[..trailerOffset])`) and compares against the emitted `/ID`. Determinism preserved end-to-end (identical input → identical hash → identical `/ID` → byte-equal output).
-  - Total tests: **159/159 passing** across the solution (148 unit + 11 from other projects).
+
+- **Post-Task-3 hardening pass** ✅ (2026-05-01) — second review-driven hardening round.
+  - **Trailer-graph traversal**: preflight now walks the entire trailer dictionary, not just `/Root`. Catches dangling/foreign refs in `/Info`, `/Encrypt`, future trailer entries.
+  - **Foreign-store ref rejection in preflight**: previously only `Assign()` rejected cross-store refs; refs embedded inside arrays/dictionaries could pass with in-range numbers. Validator now rejects `StoreId != 0 && StoreId != store.Id` everywhere.
+  - **Path-tracking cycle detection**: switched from "visit-once-and-skip" to "ancestor-set-and-throw." Indirect cycles (A→B→A in the direct object graph) are now rejected at preflight instead of silently passing then stack-overflowing in `PdfDictionary.WriteTo`. Sibling-shared direct objects still allowed.
+  - **Direct-cycle guard at `Add`/`Set`**: `arr.Add(arr)` and `dict.Set(_, dict)` throw immediately at insertion — eager rejection of the most common case.
+  - **Explicit `/ID` shape validation**: when a user provides `/ID`, preflight requires array of exactly 2 byte strings (rejects `PdfInteger`, single-element arrays, indirect-ref entries).
+  - **Transient trailer emit**: `WriteTo` no longer mutates the user's `Trailer` dictionary. `/Size` and auto-derived `/ID` live only in a per-write transient dict. Fixes the stale-`/ID`-on-reuse bug — mutating the body and re-writing now correctly re-derives the `/ID`. Also makes `WriteTo` exception-safe (no leaked state on partial failure).
+  - **`PdfFormat.SupportedVersions`**: ordered string array for deterministic diagnostic messages, plus a separate `IReadOnlySet` for O(1) lookup.
+  - **Support project reclassification**: `NetPdf.Benchmarks`, `NetPdf.Fuzz`, `NetPdf.AotSmoke`, `NetPdf.TestKit` no longer have `<IsTestProject>true</IsTestProject>`. They're not unit-test projects and shouldn't be invoked by `dotnet test`. Each now sets the AOT/pack/docs flags directly. `dotnet test NetPdf.slnx` now runs cleanly with no spurious "exited with error" messages.
+  - 21 new tests covering all the above. Total tests: **169 unit / 180 solution-wide passing** (cleanly — no "exited with error" noise from support projects).
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).
 
 ### How to test current Phase 1 progress
 ```bash
+# Build the full solution (zero errors, zero warnings expected).
 dotnet build NetPdf.slnx -c Release
+
+# Run all xUnit tests across the solution. With the post-Task-3 hardening, the
+# four support projects (Benchmarks, Fuzz, AotSmoke, TestKit) are no longer flagged
+# as unit-test projects, so this runs cleanly with no "exited with error" noise.
+dotnet test NetPdf.slnx -c Release --nologo
+
+# Or just the PDF byte writer tests for a fast inner loop:
 dotnet test tests/NetPdf.UnitTests/NetPdf.UnitTests.csproj -c Release \
   --filter "FullyQualifiedName~Pdf"
 ```

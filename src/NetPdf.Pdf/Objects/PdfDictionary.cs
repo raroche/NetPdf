@@ -26,6 +26,11 @@ internal sealed class PdfDictionary : PdfObject, IEnumerable<KeyValuePair<PdfNam
     {
         ArgumentNullException.ThrowIfNull(key);
         ArgumentNullException.ThrowIfNull(value);
+        if (ReferenceEquals(value, this))
+        {
+            throw new InvalidOperationException(
+                "Cannot set a PdfDictionary as a value of itself; that would create a direct cycle.");
+        }
         _entries[key] = value;
         return this;
     }

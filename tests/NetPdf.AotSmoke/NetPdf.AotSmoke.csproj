@@ -1,12 +1,24 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <!--
+    Console-app AOT smoke target. Published with `-p:PublishAot=true` in CI to verify
+    the runtime path stays AOT-clean. Not a unit-test project, so does not set
+    IsTestProject (which would make `dotnet test` try to run it via testhost).
+    AOT-compat is intentionally TRUE here so the analyzer flags any AOT-incompat code
+    at edit time — this project is the canary.
+  -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFrameworks>net10.0</TargetFrameworks>
-    <IsTestProject>true</IsTestProject>
     <RootNamespace>NetPdf.AotSmoke</RootNamespace>
     <AssemblyName>NetPdf.AotSmoke</AssemblyName>
-    <PublishAot>false</PublishAot> <!-- Set true via CLI args when publishing for AOT smoke. -->
+    <IsAotCompatible>true</IsAotCompatible>
+    <IsTrimmable>true</IsTrimmable>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <PublishAot>false</PublishAot> <!-- Set true via CLI args when publishing. -->
+    <IsPackable>false</IsPackable>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <IncludeSymbols>false</IncludeSymbols>
     <InvariantGlobalization>true</InvariantGlobalization>
   </PropertyGroup>
 

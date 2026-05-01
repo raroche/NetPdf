@@ -55,15 +55,16 @@ internal sealed class PdfDocumentWriter
         EnsureXrefOffsetFits(xrefStart);
         WriteXrefTable(w);
 
-        if (autoDeriveId)
-        {
-            Trailer.Set(PdfNames.ID, BuildContentDerivedId(hash!));
-        }
+        // Build a transient trailer view: user-provided entries + auto /Size + (when needed)
+        // auto /ID. We never mutate the user's Trailer, so calling WriteTo twice with body
+        // mutations between calls re-derives /ID fresh both times. This also keeps WriteTo
+        // exception-safe: if anything throws after this point, no leaked state.
+        PdfArray? autoId = autoDeriveId ? BuildContentDerivedId(hash!) : null;
 
         // Trailer bytes are NOT included in the hash — /ID lives inside the trailer, so
         // including the trailer would create a chicken-and-egg dependency.
         w.StopHashing();
-        WriteTrailer(w, xrefStart);
+        WriteTrailer(w, xrefStart, autoId);
     }
 
     /// <summary>
@@ -183,13 +184,25 @@ internal sealed class PdfDocumentWriter
         }
     }
 
-    private void WriteTrailer(PdfWriter w, long xrefStart)
+    private void WriteTrailer(PdfWriter w, long xrefStart, PdfArray? autoDerivedId)
     {
-        // /Size is auto-managed: total objects including the free-list head.
-        Trailer.Set(PdfNames.Size, new PdfInteger(Objects.TotalIncludingFreeListHead));
+        // Build a transient view of the trailer: user entries (in their insertion order),
+        // followed by the writer-managed entries (/Size always, /ID only when auto-derived).
+        // The user's Trailer is never mutated, so this method is reentrant and safe to call
+        // again after the body is mutated.
+        var emit = new PdfDictionary();
+        foreach (var entry in Trailer)
+        {
+            emit.Set(entry.Key, entry.Value);
+        }
+        emit.Set(PdfNames.Size, new PdfInteger(Objects.TotalIncludingFreeListHead));
+        if (autoDerivedId is not null)
+        {
+            emit.Set(PdfNames.ID, autoDerivedId);
+        }
 
         w.WriteAscii("trailer\n");
-        Trailer.WriteTo(w);
+        emit.WriteTo(w);
         w.WriteAscii("\nstartxref\n");
         w.WriteInteger(xrefStart);
         w.WriteAscii("\n%%EOF\n");

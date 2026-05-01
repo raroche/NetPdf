@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-01 (Task 9 ✅ — ToUnicode CMap generator)
+**Last updated:** 2026-05-01 (post-Task-9 hardening ✅ — Emit() trust boundary, FromSubset early-break, shaping-path doc)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -199,6 +199,14 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
   - **Ligature support staged** — the data shape supports multi-codepoint targets; today's `FromSubset` only produces single-codepoint mappings since shaping (Task 11+) hasn't yet labeled glyphs as ligatures.
   - **Dual-layer tests**: `ToUnicodeCMapTests` (10 unit tests) covers header / footer constants, ASCII-only output property, empty subset, single BMP codepoint, supplementary-plane surrogate pair, multi-codepoint ligature target, sort-by-subset-id determinism, multi-block chunking at 100/100/50 for a 250-entry mapping, byte-determinism property test, uppercase-hex convention. `ToUnicodeCMapIntegrationTests` (6 integration tests) drives the full `OpenTypeFont.Parse → GlyphSubsetPlan.Build → ToUnicodeCMap.FromSubset → Emit` pipeline against `SyntheticFont` and asserts: subset glyphs 1+2 map to "A"/"B" with the expected `<0001> <0041>` / `<0002> <0042>` lines, .notdef is excluded from the map, glyphs outside the subset are skipped, byte-determinism holds end-to-end, and cross-font plans are rejected.
   - Total tests: **565 unit / 576 solution-wide passing**.
+
+- **Post-Task-9 hardening pass** ✅ (2026-05-01) — ninth review-driven round.
+  - **`Emit()` trust boundary (P1)**: previously trusted whatever `SubsetGlyphIdToText` held. Direct construction via the `init` property bypassed `FromSubset`'s implicit validation, so a caller could ship invalid CMap content (wrapped CIDs > 65535, empty target strings, unpaired surrogates) that would look like valid ASCII bytes but break PDF readers. New `ValidateForEmit()` runs at the top of `Emit()`: rejects subset glyph ids outside `[0, 65535]` (Identity-H is 16-bit), rejects empty target strings, and validates UTF-16 surrogate pairing (no orphan high or low surrogates).
+  - **`FromSubset` asymptotic improvement (P2)**: tracked unresolved subset glyphs in a `HashSet<int>` and break out of the cmap walk as soon as it empties. For the typical case (small subset of a large CJK or symbol font) work is now bounded by the position of the last-needed cmap entry rather than full Unicode coverage. The "lowest-codepoint wins" tie-break is preserved naturally — `unresolved.Remove(originalGid)` only succeeds on the first encounter, and cmap groups are already sorted by codepoint.
+  - **Documentation: future shaping-derived path (P2)**: strengthened the type-level XML docs to make explicit that `FromSubset` is the **fallback** path (cmap-only). A future `FromShapedRuns` factory is reserved for Task 11+ when HarfBuzz lands and the shaper can label glyph runs with their exact source Unicode — at that point ligatures and GSUB substitutions round-trip correctly without needing cmap reverse-lookups.
+  - **Performance optimization (P2 #6) deferred** per the review's recommendation — `Emit()` builds a `StringBuilder` and converts to ASCII bytes; switching to a direct `ArrayBufferWriter<byte>` ASCII sink lands when benchmarks justify it.
+  - 8 new tests in `ToUnicodeCMapHardeningTests`: negative subset glyph id, glyph id above `0xFFFF`, empty target string, unpaired high surrogate (alone at end), high surrogate followed by non-low-surrogate BMP char, unpaired low surrogate (alone), low surrogate after BMP char, and a positive case confirming a valid supplementary-plane pair (U+1F600) still emits successfully.
+  - Total tests: **573 unit / 584 solution-wide passing**.
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

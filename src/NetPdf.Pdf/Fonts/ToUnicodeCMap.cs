@@ -24,12 +24,30 @@ namespace NetPdf.Pdf.Fonts;
 /// codepoints emit a surrogate pair (8 hex chars).
 /// </para>
 /// <para>
-/// <b>Ligature support.</b> The <see cref="SubsetGlyphIdToText"/> values are arbitrary
-/// strings — a ligature glyph can map to multiple codepoints (the canonical example is
-/// the "fi" ligature mapping to U+0066 U+0069). Phase 1 doesn't yet have GSUB-aware
-/// shaping that would identify ligatures, so the <see cref="FromSubset"/> factory only
-/// produces single-codepoint mappings derived from the <c>cmap</c>; the data shape is
-/// ready for ligatures when shaping lands.
+/// <b>Two ways to build a mapping.</b>
+/// <list type="bullet">
+/// <item>
+/// <see cref="FromSubset"/> derives subset glyph → codepoint mappings from the source
+/// font's <c>cmap</c>. This is the <b>fallback</b> path — sufficient for static text
+/// before shaping lands, but it can't recover the original Unicode for ligature glyphs
+/// (one glyph → multiple codepoints) or for codepoint aliases that share a glyph.
+/// </item>
+/// <item>
+/// A future <c>FromShapedRuns</c> factory will build mappings directly from shaped glyph
+/// runs once Task 11 wires HarfBuzz in. The shaper knows the exact Unicode that produced
+/// each glyph, so ligatures and GSUB substitutions round-trip correctly. Until then,
+/// shaping consumers can build the mapping by hand and pass it directly — see the
+/// <see cref="SubsetGlyphIdToText"/> property and <see cref="Emit"/>'s validation guard.
+/// </item>
+/// </list>
+/// </para>
+/// <para>
+/// <b>Trust boundary.</b> <see cref="Emit"/> is the single point of byte production. It
+/// validates every entry before serializing — subset glyph ids must fit in
+/// <c>[0, 65535]</c> (Identity-H is 16-bit), target strings must be non-empty, and any
+/// supplementary-plane characters must be expressed as well-formed UTF-16 surrogate
+/// pairs. Direct construction via the <c>init</c> property is allowed, but Emit will
+/// reject malformed inputs there too.
 /// </para>
 /// <para>
 /// <b>Determinism.</b> Entries are emitted in ascending subset-glyph-id order. When two
@@ -51,30 +69,59 @@ internal sealed class ToUnicodeCMap
     /// will embed it. Walks <see cref="OpenTypeFont.Cmap"/> and records the first (= lowest)
     /// codepoint that maps to each subset glyph.
     /// </summary>
+    /// <remarks>
+    /// <b>Asymptotic shape.</b> The walker tracks unresolved subset glyphs and breaks out
+    /// of the cmap walk as soon as every subset glyph has been mapped. For the typical
+    /// case — a small subset of a large CJK or symbol font — work is bounded by the
+    /// position of the last-needed cmap entry, not by the full Unicode coverage of the
+    /// font.
+    /// </remarks>
     public static ToUnicodeCMap FromSubset(OpenTypeFont font, GlyphSubsetPlan plan)
     {
         ArgumentNullException.ThrowIfNull(font);
         ArgumentNullException.ThrowIfNull(plan);
         plan.Validate(font);
 
+        // Build the unresolved set (everything except .notdef — it has no cmap entry).
+        var unresolved = new HashSet<int>(plan.NumGlyphs);
+        foreach (var oldId in plan.OrderedOldGlyphIds)
+        {
+            if (oldId != 0)
+            {
+                unresolved.Add(oldId);
+            }
+        }
+
         var mapping = new Dictionary<int, string>(plan.NumGlyphs);
+        if (unresolved.Count == 0)
+        {
+            return new ToUnicodeCMap { SubsetGlyphIdToText = mapping };
+        }
+
         foreach (var group in font.Cmap.Groups)
         {
+            if (unresolved.Count == 0)
+            {
+                break;
+            }
             for (uint cp = group.StartCodePoint; cp <= group.EndCodePoint; cp++)
             {
-                var originalGid = group.StartGlyphId + (cp - group.StartCodePoint);
-                if (!plan.OldToNew.TryGetValue((int)originalGid, out var newGid))
+                if (unresolved.Count == 0)
                 {
-                    continue;
-                }
-                if (mapping.ContainsKey(newGid))
-                {
-                    continue; // first (= lowest) codepoint wins; cmap groups are sorted
+                    break;
                 }
                 if (cp > 0x10FFFF)
                 {
-                    continue; // beyond Unicode max — malformed, skip
+                    continue; // beyond Unicode max — malformed source, skip
                 }
+
+                var originalGid = (int)(group.StartGlyphId + (cp - group.StartCodePoint));
+                if (!unresolved.Remove(originalGid))
+                {
+                    continue; // not in subset, or this glyph's lowest codepoint already recorded
+                }
+
+                var newGid = plan.OldToNew[originalGid];
                 mapping[newGid] = char.ConvertFromUtf32((int)cp);
             }
         }
@@ -84,10 +131,18 @@ internal sealed class ToUnicodeCMap
 
     /// <summary>
     /// Serialize the CMap to ASCII bytes ready for embedding as a PDF stream. Output is
-    /// byte-deterministic for a given <see cref="SubsetGlyphIdToText"/> mapping.
+    /// byte-deterministic for a given <see cref="SubsetGlyphIdToText"/> mapping. Validates
+    /// every entry before serializing — see the type-level remarks for the trust-boundary
+    /// contract.
     /// </summary>
+    /// <exception cref="InvalidOperationException">
+    /// Thrown when any entry has a subset glyph id outside <c>[0, 65535]</c>, an empty
+    /// target string, or malformed UTF-16 (unpaired surrogate).
+    /// </exception>
     public byte[] Emit()
     {
+        ValidateForEmit();
+
         var sortedKeys = new int[SubsetGlyphIdToText.Count];
         var i = 0;
         foreach (var key in SubsetGlyphIdToText.Keys)
@@ -104,6 +159,52 @@ internal sealed class ToUnicodeCMap
 
         // PDF CMaps are 7-bit ASCII; non-ASCII payload is hex-encoded inside <...> wrappers.
         return Encoding.ASCII.GetBytes(sb.ToString());
+    }
+
+    /// <summary>
+    /// Inspect every entry and throw if it would emit invalid CMap content. Runs once at
+    /// the start of <see cref="Emit"/> so byte production never sees malformed state.
+    /// </summary>
+    private void ValidateForEmit()
+    {
+        foreach (var pair in SubsetGlyphIdToText)
+        {
+            if (pair.Key < 0 || pair.Key > 0xFFFF)
+            {
+                throw new InvalidOperationException(
+                    $"ToUnicodeCMap: subset glyph id {pair.Key} is outside the 16-bit Identity-H range [0, 65535]. " +
+                    "PDF Identity-H encoding cannot represent values that wide.");
+            }
+            if (string.IsNullOrEmpty(pair.Value))
+            {
+                throw new InvalidOperationException(
+                    $"ToUnicodeCMap: subset glyph id {pair.Key} maps to an empty target string. " +
+                    "PDF readers reject zero-byte CMap targets.");
+            }
+            ValidateUtf16(pair.Key, pair.Value);
+        }
+    }
+
+    private static void ValidateUtf16(int subsetGid, string text)
+    {
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+            if (char.IsHighSurrogate(c))
+            {
+                if (i + 1 >= text.Length || !char.IsLowSurrogate(text[i + 1]))
+                {
+                    throw new InvalidOperationException(
+                        $"ToUnicodeCMap: subset glyph id {subsetGid} target has an unpaired high surrogate at index {i}.");
+                }
+                i++; // skip the low surrogate we just validated
+            }
+            else if (char.IsLowSurrogate(c))
+            {
+                throw new InvalidOperationException(
+                    $"ToUnicodeCMap: subset glyph id {subsetGid} target has an unpaired low surrogate at index {i}.");
+            }
+        }
     }
 
     private static void AppendHeader(StringBuilder sb)

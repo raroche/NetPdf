@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-01 (post-Task-5 hardening ✅ — Kind read-only, finite geometry, side-table validation)
+**Last updated:** 2026-05-01 (Task 6 ✅ — OpenType / TrueType parser; dual-layer testing rule formalized)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -40,7 +40,7 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
 - **Doc:** [`docs/phases/phase-1-pdf-writer-and-text.md`](docs/phases/phase-1-pdf-writer-and-text.md)
 
 ### Active task
-**Task 6 — Font subsetter (TTF/OTF) and font registry** (mini-est. 5 days)
+**Task 7 — OTF / CFF parser** (mini-est. 3 days)
 
 ### Subtasks completed
 
@@ -119,6 +119,12 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
   - 49 new tests (`tests/NetPdf.UnitTests/Paint/`) covering: 64-byte struct size, default-init kind = `None`, every payload's factory + accessor round-trip, factory rejects (negative side-table index, alpha out-of-range/NaN/±∞), bitwise equality across kinds and payloads, `DisplayList` insertion order, growth past initial capacity (1000 commands → multiple `ArrayPool` rents), sequential side-table indices, null guards on side-table inserts, `GetTextRun`/`GetImage` out-of-range throws, identical-build-sequence value equality (determinism), all post-`Dispose` member access throws, idempotent `Dispose`, `RgbaColor` channel packing / round-trip / equality / formatting.
   - Total tests: **302 unit / 313 solution-wide passing**.
 
+- **Testing discipline formalized** ✅ (2026-05-01)
+  - Per Roland: every shipped functionality must carry **both unit and integration test coverage**, in the same commit/PR as the functionality. Tests are the safety net that lets the codebase grow without regressions stalling refactors.
+  - Codified in [`docs/coding-standards.md`](docs/coding-standards.md) as the dual-layer rule (non-negotiable) — added to the testing-patterns section, the code-review checklist, and the "what to test" breakdown by layer (unit = per-class isolation, contract, edge cases, validation, invariants; integration = cross-component composition, specs as gates, real-world corpus, end-to-end determinism, external-tool validation).
+  - Saved as a feedback memory so future sessions inherit the rule automatically.
+  - Applied to Task 6 below: per-table unit tests + an `OpenTypeFontTests` integration suite exercising the full SFNT-directory → 10-table-parser → top-level orchestrator composition.
+
 - **Post-Task-5 hardening pass** ✅ (2026-05-01) — fifth review-driven round.
   - **Tagged-union invariant locked at the type level (P1)**: `DisplayCommand.Kind` was a public mutable field — any consumer or friend assembly could retag a constructed command, leaving the overlaid payload misinterpreted. Now `_kind` is a private `[FieldOffset(0)]` field with a `public readonly DisplayCommandKind Kind => _kind` getter. Factories assign `_kind` directly; no path exists to retag from outside `DisplayCommand` itself. All `As*` / `Equals` / `GetHashCode` / `ToString` members are now `readonly` so callers passing `in DisplayCommand` skip defensive copies.
   - **Finite-geometry rejection at IR boundary (P2)**: `RectFill`, `TextRun`, `ImageDraw`, and `TransformPush` factories now reject `NaN` / `±∞` for every coordinate, size, and matrix term via `EnsureFinite`. Negative coordinates and sizes remain accepted (PDF's `re` operator allows them; layout uses negatives routinely). Mirrors the round-4 color-component rejection — producer bugs surface at the IR boundary instead of much later in the PDF emitter.
@@ -127,6 +133,15 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
   - **Boundary validation in `AddTextRun` / `AddImage`**: `AddTextRun` rejects non-positive or non-finite `FontSize` and rejects mismatched `GlyphIds` / `Advances` lengths when either buffer is populated. `AddImage` rejects empty `EncodedBytes` and non-positive pixel dimensions. Contract violations surface at insertion, not at emit.
   - 41 new tests (`tests/NetPdf.UnitTests/Paint/DisplayCommandHardeningTests.cs` + `DisplayListHardeningTests.cs`) covering: reflection-level absence of a `Kind` setter; non-finite rejection per-parameter for every geometry-bearing factory (3 bad values × 4 RectFill params + 2 TextRun + 4 ImageDraw + 6 TransformPush); negative-geometry acceptance; default-command rejection at `Add`; all six `FontSize` rejection cases (zero, negative, NaN, ±∞); glyph/advance length-mismatch rejection in three shapes; empty `EncodedBytes` and bad pixel-dimension rejection; `TextRun` copy-on-init isolation (mutate source post-construction → run unchanged); empty-buffer no-allocation case.
   - Total tests: **343 unit / 354 solution-wide passing**.
+
+- **Task 6 — TTF / OpenType parser** ✅ (2026-05-01)
+  - All 10 required tables parsed under `src/NetPdf.Text/Fonts/OpenType/`: `head`, `hhea`, `hmtx`, `maxp`, `name`, `OS/2`, `post`, `cmap` (formats 4 and 12, with the OpenType-spec best-subtable selector), `loca` (short and long formats), and `glyf` (byte slices indexed by glyph id; deep glyph parsing deferred to Task 8 subsetter).
+  - **Foundation**: `BigEndianReader` `ref struct` over `ReadOnlySpan<byte>` for stack-resident, allocation-free reads via `BinaryPrimitives.Read*BigEndian`; `OpenTypeTags` for the 11 known table tags as `uint` constants (big-endian-encoded ASCII) and SFNT version magics; `TableRecord` 16-byte directory entry; `TableDirectory.Parse` walks the SFNT header + directory and returns a `FrozenDictionary<uint, TableRecord>` for O(1) tag lookup.
+  - **Top-level orchestrator** `OpenTypeFont.Parse(ReadOnlyMemory<byte>)` wires every table parser, validates required-table presence, and slices `glyf` via the directory record (the loca offsets are `glyf`-relative, not file-relative). Immutable, safe for concurrent reads. CFF outlines are punted to Task 7 — the type carries `Loca`/`Glyf` as nullable for the OTF/CFF case.
+  - **Spec basis (clean-room)**: Microsoft OpenType spec + Apple TrueType reference. No code transliterated from any third-party implementation; per-file rationale documented in summary headers.
+  - **Project hygiene**: dropped the placeholder `Placeholder.cs`. Trimmed `HarfBuzzSharp` + the three native-asset packages (`Linux`, `macOS`, `Win32`) from `NetPdf.Text.csproj` — the parser doesn't use them. Task 11 (HarfBuzz wrapper) re-adds. Same precedent as Phase 1 hardening trimmed `NetPdf.Pdf.csproj`.
+  - **Dual-layer tests** following the new discipline: `SyntheticFont` test helper builds a valid minimal TTF byte stream with all 10 tables (3 glyphs, format-4 cmap mapping `'A'`/`'B'`); 13 unit-test classes one-per-source-class (76 unit tests total) exercise each parser in isolation + edge / corruption / version-skew cases; `OpenTypeFontTests.cs` (9 integration tests) runs the full SFNT-directory → 10-parser → orchestrator pipeline and asserts cross-table consistency (glyph count agreement across `maxp`/`hmtx`/`loca`, cmap → loca → glyf round-trip for 'A', name-record decoding through `Encoding.BigEndianUnicode`, parser determinism on repeated calls, typo-metric agreement between `hhea` and `OS/2`).
+  - Total tests: **428 unit / 439 solution-wide passing**.
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

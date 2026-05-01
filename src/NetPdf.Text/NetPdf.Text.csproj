@@ -3,16 +3,20 @@
   <PropertyGroup>
     <RootNamespace>NetPdf.Text</RootNamespace>
     <AssemblyName>NetPdf.Text</AssemblyName>
-    <Description>NetPdf internal: HarfBuzz text shaping, bidi (UAX #9), line breaking (UAX #14), segmentation (UAX #29), Liang hyphenation, font registry, cross-platform system font enumeration.</Description>
+    <Description>NetPdf internal: HarfBuzz text shaping, bidi (UAX #9), line breaking (UAX #14), segmentation (UAX #29), Liang hyphenation, font registry, cross-platform system font enumeration, OpenType / TrueType parser.</Description>
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
-  <ItemGroup>
-    <PackageReference Include="HarfBuzzSharp" />
-    <PackageReference Include="HarfBuzzSharp.NativeAssets.Linux" />
-    <PackageReference Include="HarfBuzzSharp.NativeAssets.macOS" />
-    <PackageReference Include="HarfBuzzSharp.NativeAssets.Win32" />
-  </ItemGroup>
+  <!--
+    Phase 1 Task 6 ships the OpenType / TrueType parser only. The future references this
+    project will pick up:
+
+    - HarfBuzzSharp + native-asset packages: Phase 1 Task 11 (HarfBuzz wrapper / shaper).
+    - System.IO.Compression.Brotli (BCL): Phase 1 Task 18 (WOFF2 decoder).
+
+    Until each is actually used, we keep the .csproj lean — same hardening rule that
+    trimmed Paint/Text/SkiaSharp from NetPdf.Pdf.csproj after Task 1.
+  -->
 
   <ItemGroup>
     <InternalsVisibleTo Include="NetPdf" />
@@ -22,6 +26,7 @@
     <InternalsVisibleTo Include="NetPdf.Pdf" />
     <InternalsVisibleTo Include="NetPdf.Svg" />
     <InternalsVisibleTo Include="NetPdf.UnitTests" />
+    <InternalsVisibleTo Include="NetPdf.RealDocuments" />
     <InternalsVisibleTo Include="NetPdf.TestKit" />
   </ItemGroup>
 

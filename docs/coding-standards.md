@@ -132,6 +132,15 @@ Public API types get XML doc comments (`<summary>`, `<param>`, `<returns>`) beca
 
 ## Testing patterns
 
+### The dual-layer rule (non-negotiable)
+
+Every shipped functionality must have **both** unit-test coverage **and** integration-test coverage. Tests land in the same commit/PR as the functionality — never deferred. The dual layer is what makes the codebase safe to modify as it grows.
+
+- **Unit layer.** Lives in `tests/NetPdf.UnitTests/`. Each source file with non-trivial logic gets a mirrored test file in the parallel layout (`src/X/Y.cs` ↔ `tests/NetPdf.UnitTests/X/YTests.cs`). Exercises the type's behavior in isolation: contract, edge cases, invariants, validation, determinism property.
+- **Integration layer.** Lives in scenario test projects: `NetPdf.RenderingCorpus`, `NetPdf.PdfValidation`, `NetPdf.LayoutSnapshots`, `NetPdf.PaginationGolden`, `NetPdf.RealDocuments`, `NetPdf.W3cConformance`. Any feature that crosses a project boundary or composes multiple components also gets an integration test exercising the feature through its public/integration surface end-to-end.
+
+Both layers are required because they catch different failure modes. Unit tests catch regressions inside a class; integration tests catch composition bugs (the kind that pass every unit suite but break when the components meet). A feature is not "done" — and a PR is not ready to merge — until both layers cover it.
+
 ### Naming
 
 Test names describe behavior, not implementation:
@@ -152,19 +161,27 @@ Underscore-separated `Verb_state_expected` style. Reads like a sentence in the t
 - **One logical assertion per test.** Multiple `Assert.X` calls are fine if they all check the same behavior; if you find yourself testing two unrelated behaviors, split into two tests.
 - **Test names + assertion messages** are the documentation. Don't add `// expected: ...` comments.
 
-### What to test
+### What to test (unit layer)
 
-- **Public API behaviors.** Every method on a public type has tests covering its contract.
+- **Public/internal API behaviors.** Every method has tests covering its contract.
 - **Edge cases.** Empty inputs, max/min values, invalid arguments, boundary conditions.
+- **Validation.** Every guard / `ArgumentException` / `InvalidOperationException` has a test that triggers it.
 - **Determinism property.** For every byte-emitting component: same input → same bytes.
+- **Invariants.** For tagged unions, state machines, and similar — assert the invariant holds across all reachable states.
+
+### What to test (integration layer)
+
+- **Cross-component composition.** Layout → Paginate → Paint → Pdf bytes; ensure the seams hold.
 - **Specs as gates.** UAX reference test data for bidi/line-break/segmentation; W3C CSS test suites for layout.
 - **Real-world corpus.** `tests/NetPdf.RealDocuments/Corpus/` files render correctly.
+- **Determinism end-to-end.** Render the same input twice through the full pipeline; SHA-256 the bytes; assert equal.
+- **External-tool validation.** PDFium / qpdf parse + check the output; pixel-diff against pinned Chromium reference.
 
 ### What NOT to test
 
-- Internal helpers whose behavior is fully exercised through public API tests.
+- Trivial getters/setters with no logic.
 - Reflection-based behavior (we don't use reflection).
-- Trivial getters/setters.
+- Implementation details — refactors should not break tests when behavior is unchanged.
 
 ## Project conventions
 
@@ -201,7 +218,8 @@ For PRs that touch source code:
 
 - [ ] Apache-2.0 file header on every new file.
 - [ ] Public types have XML doc comments; internal types have minimal comments (WHY only).
-- [ ] Test added or updated for every behavioral change.
+- [ ] **Unit tests** added/updated for every behavioral change.
+- [ ] **Integration tests** added/updated when the change crosses a project boundary or composes multiple components.
 - [ ] No LINQ in hot paths.
 - [ ] No reflection / dynamic / `Activator.CreateInstance` in core paths.
 - [ ] Determinism preserved (no `DateTime.Now`, `Random`, ordering assumptions).
@@ -227,4 +245,4 @@ If a code-review comment cites "best practice" without referencing this doc, pus
 
 ---
 
-Last reviewed: 2026-05-01.
+Last reviewed: 2026-05-01 (added dual-layer testing rule).

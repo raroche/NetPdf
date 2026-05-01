@@ -70,6 +70,15 @@ internal sealed class CffTable
             throw new InvalidDataException(
                 $"CFF: Top DICT INDEX must contain exactly 1 entry for an OpenType-embedded font; got {topDictIndex.Count}.");
         }
+        if (nameIndex.Count != 1)
+        {
+            // Symmetric with Top DICT: an OpenType-embedded CFF identifies exactly one font.
+            // An empty Name INDEX would silently emit FontName="" and a multi-entry index would
+            // pick only the first — both weaken font-identity guarantees for downstream code
+            // (BaseFont names in the embedded PDF font dictionary).
+            throw new InvalidDataException(
+                $"CFF: Name INDEX must contain exactly 1 entry for an OpenType-embedded font; got {nameIndex.Count}.");
+        }
         var topDict = CffDict.Parse(topDictIndex.GetObjectBytes(0));
 
         var stringIndex = CffIndex.Parse(span[cursor..], tableBytes, cursor);
@@ -85,12 +94,7 @@ internal sealed class CffTable
         {
             throw new InvalidDataException("CFF Top DICT: missing or malformed CharStrings operator (17).");
         }
-        var charStringsOffset = (int)charStringsOperands[0];
-        if ((uint)charStringsOffset >= (uint)tableBytes.Length)
-        {
-            throw new InvalidDataException(
-                $"CFF Top DICT: CharStrings offset {charStringsOffset} exceeds table length {tableBytes.Length}.");
-        }
+        var charStringsOffset = RequireIntegralOffset(charStringsOperands[0], "CharStrings", tableBytes.Length);
         var charStringsIndex = CffIndex.Parse(span[charStringsOffset..], tableBytes, charStringsOffset);
 
         // Charset: when the operator is absent, CFF defaults to the predefined ISOAdobe
@@ -105,18 +109,11 @@ internal sealed class CffTable
                 "CFF Top DICT: missing explicit charset offset (15). " +
                 "Phase 1 requires an explicit charset; predefined-charset fallback is deferred.");
         }
-        var charsetOffset = (int)charsetOperands[0];
-        if ((uint)charsetOffset >= (uint)tableBytes.Length)
-        {
-            throw new InvalidDataException(
-                $"CFF Top DICT: charset offset {charsetOffset} exceeds table length {tableBytes.Length}.");
-        }
+        var charsetOffset = RequireIntegralOffset(charsetOperands[0], "charset", tableBytes.Length);
         var charset = CffCharset.Parse(span[charsetOffset..], charStringsIndex.Count);
 
         var isCidKeyed = topDict.ContainsKey(CffDict.OpRos);
-        var fontName = nameIndex.Count == 0
-            ? string.Empty
-            : System.Text.Encoding.Latin1.GetString(nameIndex.GetObjectBytes(0));
+        var fontName = System.Text.Encoding.Latin1.GetString(nameIndex.GetObjectBytes(0));
 
         return new CffTable
         {
@@ -131,5 +128,33 @@ internal sealed class CffTable
             FontName = fontName,
             IsCidKeyed = isCidKeyed,
         };
+    }
+
+    /// <summary>
+    /// CFF DICT operands surface as <see cref="double"/>. For structural pointer operators
+    /// (charset, CharStrings, Private, FDArray, FDSelect) the only valid encoding is a
+    /// non-negative finite integer offset within the parent <c>CFF </c> table. A direct
+    /// <c>(int)</c> cast would silently turn <c>NaN</c> into 0, infinities into the int
+    /// extremes, and fractional reals into truncated integers — retargeting parsing into
+    /// the wrong part of the table instead of failing at the trust boundary.
+    /// </summary>
+    private static int RequireIntegralOffset(double value, string operatorName, int upperBoundExclusive)
+    {
+        if (!double.IsFinite(value))
+        {
+            throw new InvalidDataException(
+                $"CFF Top DICT: {operatorName} offset must be a finite number; got {value}.");
+        }
+        if (value < 0 || value >= upperBoundExclusive)
+        {
+            throw new InvalidDataException(
+                $"CFF Top DICT: {operatorName} offset {value} is outside the valid range [0, {upperBoundExclusive}).");
+        }
+        if (Math.Floor(value) != value)
+        {
+            throw new InvalidDataException(
+                $"CFF Top DICT: {operatorName} offset must be an integer; got {value}.");
+        }
+        return (int)value;
     }
 }

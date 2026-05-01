@@ -147,8 +147,25 @@ internal static class CffDict
             }
         }
 
+        if (len == 0)
+        {
+            throw new InvalidDataException("CFF DICT: real operand contains no digits.");
+        }
+
+        // Use TryParse so semantically malformed sequences (empty exponent, repeated 'E',
+        // etc.) surface as InvalidDataException rather than escaping as FormatException /
+        // OverflowException — keeps malformed-font handling uniform across the parser.
         var text = new string(chars[..len]);
-        return double.Parse(text, System.Globalization.CultureInfo.InvariantCulture);
+        if (!double.TryParse(
+                text,
+                System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture,
+                out var result)
+            || !double.IsFinite(result))
+        {
+            throw new InvalidDataException($"CFF DICT: malformed real operand '{text}'.");
+        }
+        return result;
     }
 
     private static bool AppendNibble(int nibble, Span<char> chars, ref int len)

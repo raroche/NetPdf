@@ -117,6 +117,15 @@ internal sealed class CffCharset
                     $"CFF charset format {(nLeftSize == 1 ? 1 : 2)}: range starting at glyph {glyph} " +
                     $"with length {rangeLength} overruns numGlyphs ({numGlyphs}).");
             }
+            // Detect ranges that would silently wrap a SID/CID past 0xFFFF — without this guard
+            // the (ushort) cast inside the assignment loop would re-emit them as low values,
+            // corrupting the structural identity downstream consumers rely on.
+            if (first + (long)rangeLength - 1 > 0xFFFF)
+            {
+                throw new InvalidDataException(
+                    $"CFF charset format {(nLeftSize == 1 ? 1 : 2)}: range starting at SID/CID {first} " +
+                    $"with length {rangeLength} would wrap past 0xFFFF — last value would be {first + rangeLength - 1}.");
+            }
             for (var k = 0; k < rangeLength; k++)
             {
                 entries[glyph + k] = (ushort)(first + k);

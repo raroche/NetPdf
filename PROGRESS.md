@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-01 (post-Task-7 hardening ✅ — Top DICT offset validation, single-name CFF, real-operand exception fence, charset wraparound)
+**Last updated:** 2026-05-01 (Task 8 ✅ — TTF glyph subsetter; CFF subsetting deferred)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -40,7 +40,7 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
 - **Doc:** [`docs/phases/phase-1-pdf-writer-and-text.md`](docs/phases/phase-1-pdf-writer-and-text.md)
 
 ### Active task
-**Task 8 — Glyph subsetter (TTF first; CFF later)** (mini-est. 4 days)
+**Task 9 — ToUnicode CMap generator** (mini-est. 2 days)
 
 ### Subtasks completed
 
@@ -167,6 +167,18 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
   - **Charset range wraparound (P2)**: `CffCharset` formats 1 and 2 expanded ranges via `(ushort)(first + k)`, silently wrapping SID/CID values past `0xFFFF` back to low values — corrupting the structural identity downstream consumers rely on. New guard rejects ranges whose last value would exceed `0xFFFF`. Ranges ending exactly at `0xFFFF` still parse (boundary respected).
   - 13 new tests across `CffTableHardeningTests.cs` (6: fractional CharStrings offset, out-of-range CharStrings offset, negative CharStrings offset, fractional charset offset, empty Name INDEX, multi-entry Name INDEX), `CffDictHardeningTests.cs` (4: terminator-only real, repeated exponent marker, orphan `E-`, valid real still parses), `CffCharsetHardeningTests.cs` (3: format 1 wraparound, format 2 wraparound, format 1 boundary at exactly `0xFFFF` accepted).
   - Total tests: **496 unit / 507 solution-wide passing**.
+
+- **Task 8 — TTF glyph subsetter** ✅ (2026-05-01)
+  - Four components under `src/NetPdf.Pdf/Fonts/`: `GlyphSubsetPlan` (composite-glyph chase + ordered original-id list with .notdef always at new id 0), `TtfSubsetter` (emits subset bytes for `glyf` + `loca` + `hmtx` + `maxp` + `head` + `hhea`), `SubsetPrefix` (deterministic 6-uppercase-letter prefix from SHA-256 over font name + sorted used glyph ids → first 28 bits → base-26), `TtfSubsetResult` (output shape carrying every emitted byte stream + the plan + the prefixed BaseFont name).
+  - **Composite-glyph chase**: `GlyphSubsetPlan.Build` walks every composite glyph's component records (parsing the variable-width record format per OpenType §"glyf" — flags / glyphIndex / args / optional 1×/2×/4× F2DOT14 transform), transitively pulls every referenced component into the subset, and rejects out-of-range component glyph ids. Composite-of-composite supported via worklist iteration. The visit set bounds work to O(numGlyphs).
+  - **Component glyphIndex rewrite**: `TtfSubsetter.MaybeRewriteComposite` walks the same record format on emit, overwrites each component's glyphIndex bytes with the new id from the plan, leaves header / args / transform byte-identical so geometry is preserved bit-for-bit.
+  - **Glyph alignment**: every emitted glyph's bytes are padded to a 2-byte boundary so `loca`'s short format remains usable. The subsetter chooses short vs long `loca` based on the resulting `glyf` size and writes the corresponding `head.indexToLocFormat`.
+  - **`head.checkSumAdjustment` zeroed** — the SFNT envelope assembler in Task 10 recomputes it after final layout.
+  - **Determinism**: subset bytes are byte-equal for byte-equal inputs. No PRNG; iteration order driven by `OrderedOldGlyphIds`; subset prefix derived from SHA-256.
+  - **CFF subsetting deferred** to a follow-up under Task 8 ("CFF later") or merged with Task 10 — explicit `InvalidOperationException` from `GlyphSubsetPlan.Build` when called on a CFF font keeps the boundary clear.
+  - **NetPdf.Pdf project re-references NetPdf.Text** (the Phase 1 hardening had trimmed it; comment in `NetPdf.Pdf.csproj` is updated accordingly).
+  - **Dual-layer tests**: 25 tests across 3 test files covering each subsetter component in isolation plus an integration test that re-parses the emitted subset bytes through the OpenType table parsers from Task 6 (`HeadTable.Parse` / `MaxpTable.Parse` / `HmtxTable.Parse` / `LocaTable.Parse`) — the cross-component composition the dual-layer rule requires. `SyntheticFontWithComposite` test helper builds a 4-glyph TTF with composite glyph 3 referencing glyph 1, exercising the composite chase + glyphIndex rewrite end-to-end.
+  - Total tests: **521 unit / 532 solution-wide passing**.
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

@@ -8,13 +8,15 @@
   </PropertyGroup>
 
   <!--
-    Phase 1 Task 1-3 only need the byte-format primitives; no DisplayList consumption (Paint),
-    no font shaping (Text). Both project references will be re-added when their consumers
-    land: NetPdf.Text in Task 8 (font subsetter) and NetPdf.Paint when the high-level
-    PdfDocument builder (Task 22) wires emission to the display-list IR.
-
-    SkiaSharp is similarly Task 8+ — image decode for non-JPEG sources.
+    Phase 1 Task 8 brings in NetPdf.Text — the OpenType / TrueType parser is the input
+    to the font subsetter. NetPdf.Paint reference returns when the high-level PdfDocument
+    builder (Task 22) wires emission to the display-list IR. SkiaSharp returns with the
+    image-decode tasks (Task 21).
   -->
+
+  <ItemGroup>
+    <ProjectReference Include="..\NetPdf.Text\NetPdf.Text.csproj" />
+  </ItemGroup>
 
   <ItemGroup>
     <InternalsVisibleTo Include="NetPdf" />

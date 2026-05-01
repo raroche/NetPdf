@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-01 (post-Task-8 hardening ✅ — preflight, shared composite walker, instruction trailer, NFC-UTF8 prefix, ReadOnlyMemory result)
+**Last updated:** 2026-05-01 (Task 9 ✅ — ToUnicode CMap generator)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -40,7 +40,7 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
 - **Doc:** [`docs/phases/phase-1-pdf-writer-and-text.md`](docs/phases/phase-1-pdf-writer-and-text.md)
 
 ### Active task
-**Task 9 — ToUnicode CMap generator** (mini-est. 2 days)
+**Task 10 — Type 0 / CIDFontType2 wrapper for embedded fonts** (mini-est. 2 days)
 
 ### Subtasks completed
 
@@ -190,6 +190,15 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
   - **Performance optimization (#6) deferred** per the review's recommendation — `EmitGlyf` could pre-compute padded glyf size and write into a single `byte[]` instead of through `MemoryStream.ToArray()`, but only after benchmarking confirms it matters.
   - 28 new tests across 4 files: `CompositeGlyphTests` (12 tests covering `IsComposite` / `EnsureValidHeader` / `EnumerateComponents` for valid two-component chains, `WE_HAVE_INSTRUCTIONS` trailers, truncated instruction payloads, truncated component headers / argument pairs / transforms, simple-glyph rejection); `GlyphSubsetPlanHardeningTests` (8 tests for every preflight branch — glyph 0 misplaced, duplicate ids, out-of-range ids, mismatched dictionary size, non-inverse mapping, empty plan, cross-font plan); `TtfSubsetterHardeningTests` (4 tests verifying preflight runs before emission, cross-font plan rejected, short-glyph rejected at both planner and emitter); `SubsetPrefixHardeningTests` (3 tests confirming non-ASCII collision avoidance, NFC normalization equivalence, CJK family-name handling).
   - Total tests: **549 unit / 560 solution-wide passing**.
+
+- **Task 9 — ToUnicode CMap generator** ✅ (2026-05-01)
+  - `ToUnicodeCMap` (`src/NetPdf.Pdf/Fonts/ToUnicodeCMap.cs`) — produces the PDF CMap stream that PDF readers consume to recover original Unicode text from content streams using Identity-H encoding. The mapping is `SubsetGlyphIdToText : IReadOnlyDictionary<int, string>`; the value is an arbitrary string so ligature glyphs can map to multi-codepoint targets when GSUB-aware shaping lands later.
+  - **`FromSubset(font, plan)` factory** walks `font.Cmap.Groups` (which the Task 6 cmap parser already produces in ascending codepoint order), filters to the original glyph ids in `plan.OldToNew`, and records each subset glyph id → first-encountered (= lowest) source codepoint. The "lowest codepoint wins" tie-break is deterministic for fonts where multiple codepoints map to the same glyph (e.g. U+00B5 micro / U+03BC mu often share a glyph). The factory calls `plan.Validate(font)` first, so cross-font plans are rejected at the trust boundary before any cmap walking.
+  - **`Emit()` output** is byte-deterministic ASCII (Adobe "PDF Reference" §5.9 + ISO 32000-2:2020 §14.3.4 PostScript-style CMap). Header / `CIDSystemInfo` / `CMapName /Adobe-Identity-UCS` / `CMapType 2` / `1 begincodespacerange <0000> <FFFF>` are constant. Body emits sorted entries in `beginbfchar` blocks chunked at the spec cap of 100 entries per block. Source codes are 4-hex subset glyph ids; targets are UTF-16BE hex (4 hex per BMP char, surrogate pair = 8 hex for supplementary plane).
+  - **`bfrange` compaction deferred** — `beginbfchar` uses ~14 bytes per entry; `bfrange` saves ~⅓ on contiguous mappings. Phase 1 prioritizes simplicity; the optimization lands when benchmarks show it matters.
+  - **Ligature support staged** — the data shape supports multi-codepoint targets; today's `FromSubset` only produces single-codepoint mappings since shaping (Task 11+) hasn't yet labeled glyphs as ligatures.
+  - **Dual-layer tests**: `ToUnicodeCMapTests` (10 unit tests) covers header / footer constants, ASCII-only output property, empty subset, single BMP codepoint, supplementary-plane surrogate pair, multi-codepoint ligature target, sort-by-subset-id determinism, multi-block chunking at 100/100/50 for a 250-entry mapping, byte-determinism property test, uppercase-hex convention. `ToUnicodeCMapIntegrationTests` (6 integration tests) drives the full `OpenTypeFont.Parse → GlyphSubsetPlan.Build → ToUnicodeCMap.FromSubset → Emit` pipeline against `SyntheticFont` and asserts: subset glyphs 1+2 map to "A"/"B" with the expected `<0001> <0041>` / `<0002> <0042>` lines, .notdef is excluded from the map, glyphs outside the subset are skipped, byte-determinism holds end-to-end, and cross-font plans are rejected.
+  - Total tests: **565 unit / 576 solution-wide passing**.
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

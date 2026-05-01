@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-01 (post-Task-9 hardening ✅ — Emit() trust boundary, FromSubset early-break, shaping-path doc)
+**Last updated:** 2026-05-01 (Task 10 ✅ — Type 0 / CIDFontType2 wrapper + SFNT envelope builder)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -40,7 +40,7 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
 - **Doc:** [`docs/phases/phase-1-pdf-writer-and-text.md`](docs/phases/phase-1-pdf-writer-and-text.md)
 
 ### Active task
-**Task 10 — Type 0 / CIDFontType2 wrapper for embedded fonts** (mini-est. 2 days)
+**Task 11 — HarfBuzzSharp wrapper + `HbShaper.Shape`** (mini-est. 3 days)
 
 ### Subtasks completed
 
@@ -207,6 +207,16 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
   - **Performance optimization (P2 #6) deferred** per the review's recommendation — `Emit()` builds a `StringBuilder` and converts to ASCII bytes; switching to a direct `ArrayBufferWriter<byte>` ASCII sink lands when benchmarks justify it.
   - 8 new tests in `ToUnicodeCMapHardeningTests`: negative subset glyph id, glyph id above `0xFFFF`, empty target string, unpaired high surrogate (alone at end), high surrogate followed by non-low-surrogate BMP char, unpaired low surrogate (alone), low surrogate after BMP char, and a positive case confirming a valid supplementary-plane pair (U+1F600) still emits successfully.
   - Total tests: **573 unit / 584 solution-wide passing**.
+
+- **Task 10 — Type 0 / CIDFontType2 wrapper for embedded fonts** ✅ (2026-05-01)
+  - **`SfntEnvelopeBuilder`** (`src/NetPdf.Pdf/Fonts/SfntEnvelopeBuilder.cs`) — assembles a complete TTF SFNT byte stream from a tag → bytes table set: 12-byte header (TTF scaler 0x00010000 + numTables + binary-search fields), tag-sorted directory with per-table checksums, 4-byte-aligned tables, and `head.checkSumAdjustment` patched to the canonical `0xB1B0AFBA - file_checksum`. Output is byte-deterministic for byte-equal inputs.
+  - **`EmbeddedTtfFont.Build(sourceFont, subset, toUnicode)`** orchestrator (`src/NetPdf.Pdf/Fonts/EmbeddedTtfFont.cs`) wires every Phase 1 font piece together: subset bytes (Task 8) + pass-through `OS/2` / `name` / `post` tables → SFNT envelope; metrics-bearing FontDescriptor with scaled glyph-space units (1000/em), `/StemV` estimated from `OS/2.usWeightClass`, `/Flags` derived from `head.macStyle` + `OS/2.fsSelection` + `post.isFixedPitch`; CIDFontType2 with `/CIDToGIDMap /Identity` + `/W` widths array (compact `[0 [w0 w1 … wN]]` form, one width per subset glyph); Type 0 wrapper with `/Encoding /Identity-H` and `/ToUnicode` stream from Task 9.
+  - **Embedded SFNT scope**: ISO 32000-2 §9.7.4.2 lets us strip tables the PDF reader doesn't consume when `/CIDToGIDMap /Identity` is used. We strip `cmap` entirely (Identity-H + ToUnicode supersedes its role); keep `head` / `hhea` / `hmtx` / `maxp` / `glyf` / `loca` (required for rendering) and pass-through `OS/2` / `name` / `post` (useful for descriptor metrics + diagnostics). `FontFile2` carries `/Length1` (uncompressed SFNT length) per spec.
+  - **`EmbeddedFont` result type** (`src/NetPdf.Pdf/Fonts/EmbeddedFont.cs`) holds the full PDF-object tree — Type 0 dict + CIDFontType2 dict + FontDescriptor dict + FontFile2 stream + ToUnicode stream — with direct dictionary references between them. Task 22 (PdfDocument) walks the tree to assign indirect-object numbers and replaces the structural cross-references (`/FontDescriptor`, `/DescendantFonts[0]`, `/FontFile2`, `/ToUnicode`) with `PdfIndirectRef` values at emission.
+  - **Added font-descriptor `PdfNames`**: `FontName`, `Flags`, `FontBBox`, `ItalicAngle`, `Ascent`, `Descent`, `Leading`, `CapHeight`, `XHeight`, `StemV`, `StemH`, `AvgWidth`, `MaxWidth`, `MissingWidth`, `W`, `DW`, `Length1`.
+  - **CFF embedding** (`FontFile3` / subtype `CIDFontType0C`) deferred along with CFF subsetting; Phase 1 covers TTF only.
+  - **Dual-layer tests**: `SfntEnvelopeBuilderTests` (6 unit tests covering empty/missing-head rejection, scaler magic, tag-ordering, 4-byte alignment, `checkSumAdjustment` patching, byte-determinism); `EmbeddedTtfFontTests` (8 unit tests covering Type 0 / CIDFontType2 / FontDescriptor required keys, CIDSystemInfo Adobe-Identity-0 invariant, FontFile2 `/Length1` correctness, /W array shape, build determinism, OTF-rejection); `EmbeddedTtfFontIntegrationTests` (5 integration tests covering full pipeline round-trip — embedded SFNT re-parses through `TableDirectory.Parse` / `MaxpTable.Parse` / `HheaTable.Parse` / `LocaTable.Parse` with consistent glyph counts; ToUnicode round-trips to the expected `<0001> <0041>` / `<0002> <0042>` bfchar entries; DescendantFonts[0] is the same `PdfDictionary` instance as the result's `CidFontDictionary`; FontDescriptor inside CIDFont is the same instance as the result's `FontDescriptorDictionary`; FontFile2 inside FontDescriptor is the same instance as the result's `FontFile2Stream`).
+  - Total tests: **593 unit / 604 solution-wide passing**.
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

@@ -64,6 +64,25 @@ internal static class PdfNames
     public static readonly PdfName Ordering = new("Ordering");
     public static readonly PdfName Supplement = new("Supplement");
 
+    // Font descriptor metrics
+    public static readonly PdfName FontName = new("FontName");
+    public static readonly PdfName Flags = new("Flags");
+    public static readonly PdfName FontBBox = new("FontBBox");
+    public static readonly PdfName ItalicAngle = new("ItalicAngle");
+    public static readonly PdfName Ascent = new("Ascent");
+    public static readonly PdfName Descent = new("Descent");
+    public static readonly PdfName Leading = new("Leading");
+    public static readonly PdfName CapHeight = new("CapHeight");
+    public static readonly PdfName XHeight = new("XHeight");
+    public static readonly PdfName StemV = new("StemV");
+    public static readonly PdfName StemH = new("StemH");
+    public static readonly PdfName AvgWidth = new("AvgWidth");
+    public static readonly PdfName MaxWidth = new("MaxWidth");
+    public static readonly PdfName MissingWidth = new("MissingWidth");
+    public static readonly PdfName W = new("W");
+    public static readonly PdfName DW = new("DW");
+    public static readonly PdfName Length1 = new("Length1");
+
     // Images / XObjects
     public static readonly PdfName XObject = new("XObject");
     public static readonly PdfName Image = new("Image");

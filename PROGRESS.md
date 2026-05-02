@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-01 (post-Task-11 hardening ✅ — Cluster doc, ClusterLevel, removed defaults, exception safety, validation)
+**Last updated:** 2026-05-01 (Task 12 Stage 12.1 ✅ — UAX #9 Bidi foundation + paragraph-level resolution)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -40,7 +40,7 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
 - **Doc:** [`docs/phases/phase-1-pdf-writer-and-text.md`](docs/phases/phase-1-pdf-writer-and-text.md)
 
 ### Active task
-**Task 12 — UAX #9 Bidi + UCD test data validation** (mini-est. 4 days)
+**Task 12 Stage 12.2** — explicit / weak / neutral / implicit / reordering rules (X / W / N / I / L). After 12.2 lands, **Stage 12.3** wires UCD source-generator + `BidiTest.txt` + `BidiCharacterTest.txt` to 100% pass.
 
 ### Subtasks completed
 
@@ -249,6 +249,19 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
   - **ppem/ptem (P3 #8) deferred** to Phase 4 when optical sizing matters; **performance (P3 #9) deferred** until benchmarks justify; **itemization / bidi / fallback (P3 #10)** is the Tasks 12+ roadmap.
   - 7 new tests in `HbShaperHardeningTests.cs`: null script (`ArgumentException`), empty script, null language, empty language, supplementary-plane cluster proves UTF-16 code-unit semantics ("😀A" → cluster 0 then cluster 2), lone high surrogate resolves to .notdef per HarfBuzz's replacement policy, and 16-task concurrent shape-call stress (50 iterations each, 800 total Shape calls) producing consistent results.
   - Total tests: **631 unit / 642 solution-wide passing**.
+
+- **Task 12 Stage 12.1 — UAX #9 Bidi foundation** ✅ (2026-05-01)
+  - **Staged delivery**: UAX #9 is a multi-pass algorithm (~5,000 lines in canonical implementations like ICU's `ubidi.c`); Phase 1 ships in three reviewable stages.
+    - **Stage 12.1 (this commit)**: foundation — `BidiClass` enum, codepoint→class lookup, P-rules, public API surface.
+    - **Stage 12.2**: explicit (X1–X10), weak (W1–W7), neutral with paired brackets (N0–N2), implicit (I1–I2), reordering (L1–L4).
+    - **Stage 12.3**: source-generator-emitted UCD bidi-class table; `BidiTest.txt` + `BidiCharacterTest.txt` integration; iterate to 100% pass per the phase exit criteria.
+  - **`BidiClass` enum** (`src/NetPdf.Text/Bidi/BidiClass.cs`) — full UAX #9 23-class set: strong (L/R/AL), weak (EN/ES/ET/AN/CS/NSM/BN), neutral (B/S/WS/ON), explicit (LRE/LRO/RLE/RLO/PDF), and isolate (LRI/RLI/FSI/PDI). Names match UCD `DerivedBidiClass.txt` abbreviations so Stage 12.3 validation against UCD test data is direct.
+  - **`BidiClassTable.GetClass(int codepoint)`** (`src/NetPdf.Text/Bidi/BidiClassTable.cs`) — hand-built range table covering ASCII, Latin-1 supplement, Greek, Cyrillic (+ Supplement), Hebrew (R + NSM combining marks), Arabic (AL + AN/EN digits + NSM marks), Syriac, Arabic Supplement, and the 9 explicit-formatting characters. Defaults unhandled codepoints to L (matches UCD default for unallocated codepoints in BMP and supplementary planes — appropriate for Han, Hiragana, Katakana, Devanagari, Thai, etc.). Stage 12.3 swaps the body with a binary search over a UCD-derived sorted-range table; the public API stays identical so consumers see no break.
+  - **`ParagraphDirection` enum** (`src/NetPdf.Text/Bidi/ParagraphDirection.cs`) — `LeftToRight` / `RightToLeft` / `Auto`. The first two short-circuit to paragraph levels 0 / 1; `Auto` triggers P2/P3 first-strong-character inference.
+  - **`ParagraphLevelResolver.Resolve`** (`src/NetPdf.Text/Bidi/ParagraphLevelResolver.cs`) — full P2/P3 implementation. Walks the paragraph counting balanced isolate pairs (LRI/RLI/FSI ↔ PDI); strong characters inside isolates are skipped per spec, as is everything after an unmatched isolate initiator. First L → level 0; first R or AL → level 1; nothing strong → P3 default LTR (level 0). Reads codepoints correctly, including supplementary-plane surrogate pairs.
+  - **`BidiAlgorithm`** (`src/NetPdf.Text/Bidi/BidiAlgorithm.cs`) — public entry point. `ResolveParagraphLevel(text, direction = Auto)` ships now and is the answer for "what's the base direction of this paragraph". `ResolveLevels(text, direction)` is the eventual full-algorithm output (per-character embedding levels) and currently throws `NotImplementedException` with a precise Stage 12.2 staging message so consumers know they're depending on incomplete work.
+  - **Dual-layer tests** (66 total): `BidiClassTableTests` (28 unit) covers ASCII letter / digit / whitespace / separator / terminator classification, Hebrew letter / mark, Arabic letter / digit (AN vs EN), all 9 explicit-formatting characters, Greek / Cyrillic / Latin-1 letters, Latin-1 currency / no-break-space, the multiplication / division sign skip in the L range, paragraph separator, out-of-range rejection, and supplementary-plane fallback; `ParagraphLevelResolverTests` (10 unit) covers explicit-direction short-circuits, first-strong-L / -R / -AL detection, neutral-skipping, P3 default, balanced isolate pair skips strong chars inside, unmatched isolate initiator handling, supplementary-plane codepoint reading; `BidiAlgorithmIntegrationTests` (5 integration) drives the public API for pure-LTR / pure-RTL / mixed text, default-argument behavior, and verifies `ResolveLevels` throws `NotImplementedException` with the staging message.
+  - Total tests: **697 unit / 708 solution-wide passing**.
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

@@ -8,15 +8,18 @@
   </PropertyGroup>
 
   <!--
-    Phase 1 Task 6 ships the OpenType / TrueType parser only. The future references this
-    project will pick up:
-
-    - HarfBuzzSharp + native-asset packages: Phase 1 Task 11 (HarfBuzz wrapper / shaper).
-    - System.IO.Compression.Brotli (BCL): Phase 1 Task 18 (WOFF2 decoder).
-
-    Until each is actually used, we keep the .csproj lean — same hardening rule that
-    trimmed Paint/Text/SkiaSharp from NetPdf.Pdf.csproj after Task 1.
+    Phase 1 Task 11 brings HarfBuzzSharp in for text shaping. Native asset packages
+    are pulled in for all three platforms so cross-platform tests + Native AOT
+    publish work everywhere. System.IO.Compression.Brotli (BCL) joins in Task 18
+    for the WOFF2 decoder.
   -->
+
+  <ItemGroup>
+    <PackageReference Include="HarfBuzzSharp" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.Linux" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.macOS" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.Win32" />
+  </ItemGroup>
 
   <ItemGroup>
     <InternalsVisibleTo Include="NetPdf" />

@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-01 (post-Task-10 hardening ✅ — /W width fix, fsType policy, preflight, name sanitization, hinting passthrough)
+**Last updated:** 2026-05-01 (Task 11 ✅ — HarfBuzzSharp wrapper + `HbShaper.Shape`)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -40,7 +40,7 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
 - **Doc:** [`docs/phases/phase-1-pdf-writer-and-text.md`](docs/phases/phase-1-pdf-writer-and-text.md)
 
 ### Active task
-**Task 11 — HarfBuzzSharp wrapper + `HbShaper.Shape`** (mini-est. 3 days)
+**Task 12 — UAX #9 Bidi + UCD test data validation** (mini-est. 4 days)
 
 ### Subtasks completed
 
@@ -228,6 +228,16 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
   - **CIDSet (P2 #6)** and **FontDescriptor metric tuning (P2 #7)** explicitly deferred to Phase 1.x per the review.
   - 15 new tests in `EmbeddedTtfFontHardeningTests.cs` (advance width > 32767 preserved; restricted-license / no-subsetting / bitmap-only fsType all rejected; installable / preview-print / editable all accepted; hand-built subset with wrong hmtx length rejected; ToUnicode with out-of-subset CID rejected; cross-font subset rejected via plan validation; CJK family-name sanitization; sanitizer keeps allowed chars / drops disallowed / falls back to hash / truncates at 63 / determinism; hinting-table pass-through verified; absent hinting tables not invented). `FontByteMutator` test helper added for fsType / hmtx / name / table-replacement mutations.
   - Total tests: **608 unit / 619 solution-wide passing**.
+
+- **Task 11 — HarfBuzzSharp wrapper + `HbShaper.Shape`** ✅ (2026-05-01)
+  - `HbShaper` (`src/NetPdf.Text/Shaping/HbShaper.cs`) — `IDisposable` wrapper over HarfBuzzSharp's `Blob` / `Face` / `Font` native handles. `Shape(text, direction, scriptIso15924, language)` runs HarfBuzz against a UTF-16 text span with per-shape `Buffer` allocation, returning a `ShapedGlyph[]`. Concurrent shape calls are safe — Buffer is per-call, Face/Font are shared and HarfBuzz documents both as thread-safe for read-only use.
+  - **Scaling strategy**: HarfBuzz scale set to `(unitsPerEm, unitsPerEm)` so positions come back in font units; the wrapper converts to pixels at the requested size via `units × fontSizePx / unitsPerEm`. Keeps the HarfBuzz-side math integer-only and the consumer-facing fields in CSS px.
+  - `ShapedGlyph` (`src/NetPdf.Text/Shaping/ShapedGlyph.cs`) — `readonly record struct` carrying `GlyphId`, `XAdvance`, `YAdvance`, `XOffset`, `YOffset`, `Cluster`. Cluster preserves the source codepoint index — Phase 3 layout consumes this for line-break / bidi reordering and the future ligature-aware `ToUnicodeCMap.FromShapedRuns` factory will use it to round-trip ligature glyphs back to their source codepoints.
+  - `ShapingDirection` enum (`src/NetPdf.Text/Shaping/ShapingDirection.cs`) — LTR / RTL / TTB / BTT. Mirrors HarfBuzz's `hb_direction_t` but keeps the engine API independent of HarfBuzzSharp types so consumers don't take a transitive native dependency.
+  - **Phase 1 scope**: default OpenType features only (the script-default set HarfBuzz applies when no feature list is supplied). Custom features (small-caps, fractions, contextual alternates) land alongside CSS `font-feature-settings` in Phase 2.
+  - **HarfBuzzSharp packages re-added** to `NetPdf.Text.csproj`: `HarfBuzzSharp` + native-asset packages for Linux, macOS, Win32. Cross-platform integration tests run against the real HarfBuzz native library.
+  - **Dual-layer tests**: `ShapedGlyphTests` (2 unit tests covering field assignment and field-wise equality); `HbShaperTests` (5 unit tests covering empty-bytes rejection, invalid font size rejection (zero / negative / NaN / infinity), empty-text returns empty array, Shape-after-Dispose throws `ObjectDisposedException`, idempotent Dispose); `HbShaperIntegrationTests` (6 integration tests running real HarfBuzz against `SyntheticFont` — cmap-driven glyph resolution for "AB" returns glyphs 1 and 2, font-units → pixels scaling at 12 px gives advance 6.0 (500 × 12 / 1000), cluster preservation per-codepoint, deterministic shaping for identical inputs, advances scale linearly with font size (12 px → 24 px doubles), unmapped codepoint 'Z' falls back to glyph 0 .notdef).
+  - Total tests: **624 unit / 635 solution-wide passing**.
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

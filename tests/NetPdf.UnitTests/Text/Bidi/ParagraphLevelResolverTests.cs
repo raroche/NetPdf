@@ -163,4 +163,43 @@ public sealed class ParagraphLevelResolverTests
         // U+FE70 is AL (Arabic Presentation Forms-B) — pre-fix it defaulted to L.
         Assert.Equal((byte)1, ParagraphLevelResolver.Resolve("ﹰxyz", ParagraphDirection.Auto));
     }
+
+    // ───── Combining-mark NSM at paragraph start (Stage 12.2 hardening) ──────
+
+    [Fact]
+    public void Devanagari_combining_mark_followed_by_RTL_letter_resolves_to_RTL()
+    {
+        // U+093C (DEVANAGARI SIGN NUKTA) is NSM — not strong; the next strong char (R)
+        // wins. Pre-Stage-12.2 this returned 0 because the broad 0x0900-0x0DFF L range
+        // misclassified U+093C as L (a strong character).
+        Assert.Equal((byte)1, ParagraphLevelResolver.Resolve("़אבג", ParagraphDirection.Auto));
+    }
+
+    [Fact]
+    public void Balinese_combining_mark_followed_by_RTL_letter_resolves_to_RTL()
+    {
+        // U+1B00 (BALINESE SIGN ULU RICEM) is NSM — not strong; first strong R wins.
+        Assert.Equal((byte)1, ParagraphLevelResolver.Resolve("ᬀאבג", ParagraphDirection.Auto));
+    }
+
+    [Fact]
+    public void Thai_tone_mark_followed_by_RTL_letter_resolves_to_RTL()
+    {
+        // U+0E31 (THAI CHARACTER MAI HAN-AKAT) is NSM.
+        Assert.Equal((byte)1, ParagraphLevelResolver.Resolve("ัאבג", ParagraphDirection.Auto));
+    }
+
+    [Fact]
+    public void Tibetan_vowel_sign_followed_by_RTL_letter_resolves_to_RTL()
+    {
+        // U+0F71 (TIBETAN VOWEL SIGN AA) is NSM.
+        Assert.Equal((byte)1, ParagraphLevelResolver.Resolve("ཱאבג", ParagraphDirection.Auto));
+    }
+
+    [Fact]
+    public void Myanmar_dot_below_followed_by_RTL_letter_resolves_to_RTL()
+    {
+        // U+1037 (MYANMAR SIGN DOT BELOW) is NSM.
+        Assert.Equal((byte)1, ParagraphLevelResolver.Resolve("့אבג", ParagraphDirection.Auto));
+    }
 }

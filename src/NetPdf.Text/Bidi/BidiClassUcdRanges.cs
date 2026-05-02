@@ -1,16 +1,32 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 //
-// AUTO-GENERATED — DO NOT EDIT BY HAND.
+// MANUAL STOPGAP SNAPSHOT — NOT AUTOMATICALLY GENERATED.
 //
-// Source: Unicode UCD DerivedBidiClass.txt (Unicode 16.0, 2024-09).
-// Generator: tools/UcdBidiTableGen (Stage 12.2.x — currently maintained by hand
-// against UCD knowledge until the Roslyn source generator lands).
+// This file contains a sorted-range table hand-curated against UCD knowledge
+// (DerivedBidiClass.txt, Unicode 16.0). It is the Stage 12.2 stopgap until the
+// Roslyn source generator lands in Stage 12.2.x and emits a real
+// BidiClassUcdRanges.g.cs from a checked-in copy of DerivedBidiClass.txt.
 //
-// To regenerate (Stage 12.2.x):
-//   1. Download https://www.unicode.org/Public/UCD/latest/ucd/extracted/DerivedBidiClass.txt
-//   2. Run dotnet run --project tools/UcdBidiTableGen -- <path-to-DerivedBidiClass.txt>
-//   3. Replace the body of Ranges below with the generated entries.
+// Honest scope:
+//   • Coverage is comprehensive for ASCII / Latin / Greek / Cyrillic / Hebrew /
+//     Arabic / Syriac / Thaana / Mandaic / NKo / RTL ancient scripts / emoji /
+//     CJK / Hiragana / Katakana / Hangul / Tags / Variation Selectors.
+//   • Per-codepoint NSM/L splits are provided for Devanagari, Thai, Tibetan,
+//     Myanmar, and Balinese (the high-traffic combining-mark scripts).
+//   • Bengali, Gurmukhi, Gujarati, Oriya, Tamil, Telugu, Kannada, Malayalam,
+//     Sinhala, Lao, Combining Diacritical Marks Extended, Tai Tham, and other
+//     combining-mark-bearing scripts are still flattened to broad L.
+//     Stage 12.2.x with the actual UCD generator fixes the remaining gaps.
+//
+// Editing rules for this stopgap:
+//   • Ranges MUST stay sorted by Start ascending and MUST NOT overlap.
+//   • Test additions go in BidiClassUcdRangesTests / BidiClassTableTests so a
+//     future generator-emitted replacement matches the same contract.
+//
+// Stage 12.2.x will replace this file with BidiClassUcdRanges.g.cs (auto-generated
+// from DerivedBidiClass.txt). The public API (BidiClassUcdRanges.Lookup) stays
+// identical; consumers see no break.
 //
 // Lookup is a binary search by codepoint into a sorted, non-overlapping range table.
 // The default for any codepoint NOT covered by an explicit range is L — this matches
@@ -247,19 +263,80 @@ internal static class BidiClassUcdRanges
         new(0x08E2, 0x08E2, (byte)BidiClass.AN),
         new(0x08E3, 0x08FF, (byte)BidiClass.NSM),
 
-        // Indic scripts: Devanagari, Bengali, Gurmukhi, Gujarati, Oriya, Tamil, Telugu,
-        // Kannada, Malayalam, Sinhala. Treated as broad L ranges; Stage 12.2.x with the
-        // full UCD generator distinguishes per-codepoint NSM vs L for combining marks.
-        new(0x0900, 0x0DFF, (byte)BidiClass.L),
+        // ──── Devanagari (per-codepoint NSM/L split) ─────────────────────────
+        // The combining marks at 0x0900-0x0902, 0x093A, 0x093C, 0x0941-0x0948, 0x094D,
+        // 0x0951-0x0957, 0x0962-0x0963 are NSM; everything else in the block is L.
+        // Without this split, paragraph auto-direction is wrong for any string that
+        // begins with one of these marks (rule W1 also depends on accurate NSM data).
+        new(0x0900, 0x0902, (byte)BidiClass.NSM),
+        new(0x0903, 0x0939, (byte)BidiClass.L),
+        new(0x093A, 0x093A, (byte)BidiClass.NSM),
+        new(0x093B, 0x093B, (byte)BidiClass.L),
+        new(0x093C, 0x093C, (byte)BidiClass.NSM),
+        new(0x093D, 0x0940, (byte)BidiClass.L),
+        new(0x0941, 0x0948, (byte)BidiClass.NSM),
+        new(0x0949, 0x094C, (byte)BidiClass.L),
+        new(0x094D, 0x094D, (byte)BidiClass.NSM),
+        new(0x094E, 0x0950, (byte)BidiClass.L),
+        new(0x0951, 0x0957, (byte)BidiClass.NSM),
+        new(0x0958, 0x0961, (byte)BidiClass.L),
+        new(0x0962, 0x0963, (byte)BidiClass.NSM),
+        new(0x0964, 0x097F, (byte)BidiClass.L),
 
-        // Thai, Lao, Tibetan, Myanmar, Georgian
-        new(0x0E00, 0x0FFF, (byte)BidiClass.L),
+        // Bengali through Sinhala — broad L. Stage 12.2.x will refine per-codepoint
+        // NSM coverage for these scripts via the actual UCD source generator.
+        new(0x0980, 0x0DFF, (byte)BidiClass.L),
 
-        // Hangul Jamo + Ethiopic + Cherokee + Unified Canadian Aboriginal Syllabics + Ogham + Runic
-        new(0x1000, 0x16FF, (byte)BidiClass.L),
+        // ──── Thai (per-codepoint NSM/L split) ───────────────────────────────
+        new(0x0E00, 0x0E30, (byte)BidiClass.L),
+        new(0x0E31, 0x0E31, (byte)BidiClass.NSM),
+        new(0x0E32, 0x0E33, (byte)BidiClass.L),
+        new(0x0E34, 0x0E3A, (byte)BidiClass.NSM),
+        new(0x0E3B, 0x0E46, (byte)BidiClass.L),
+        new(0x0E47, 0x0E4E, (byte)BidiClass.NSM),
+        new(0x0E4F, 0x0E7F, (byte)BidiClass.L),
 
-        // Tagalog through Khmer + Mongolian
-        new(0x1700, 0x18AF, (byte)BidiClass.L),
+        // Lao — broad L (Stage 12.2.x refines).
+        new(0x0E80, 0x0EFF, (byte)BidiClass.L),
+
+        // ──── Tibetan (per-codepoint NSM/L split) ────────────────────────────
+        new(0x0F00, 0x0F70, (byte)BidiClass.L),
+        new(0x0F71, 0x0F7E, (byte)BidiClass.NSM),
+        new(0x0F7F, 0x0F7F, (byte)BidiClass.L),
+        new(0x0F80, 0x0F84, (byte)BidiClass.NSM),
+        new(0x0F85, 0x0F85, (byte)BidiClass.L),
+        new(0x0F86, 0x0F87, (byte)BidiClass.NSM),
+        new(0x0F88, 0x0FFF, (byte)BidiClass.L),
+
+        // ──── Myanmar (per-codepoint NSM/L split, key NSM ranges only) ──────
+        new(0x1000, 0x102C, (byte)BidiClass.L),
+        new(0x102D, 0x1030, (byte)BidiClass.NSM),
+        new(0x1031, 0x1031, (byte)BidiClass.L),
+        new(0x1032, 0x1037, (byte)BidiClass.NSM),
+        new(0x1038, 0x1038, (byte)BidiClass.L),
+        new(0x1039, 0x103A, (byte)BidiClass.NSM),
+        new(0x103B, 0x109F, (byte)BidiClass.L),
+
+        // Georgian, Hangul Jamo, Ethiopic, Cherokee, UCAS, Ogham, Runic — broad L.
+        new(0x10A0, 0x16FF, (byte)BidiClass.L),
+
+        // Tagalog through Khmer + Mongolian — broad L (Stage 12.2.x refines for
+        // combining marks in Tai Tham, Combining Diacritical Marks Extended, etc.).
+        new(0x1700, 0x1AFF, (byte)BidiClass.L),
+
+        // ──── Balinese (per-codepoint NSM/L split) ────────────────────────────
+        new(0x1B00, 0x1B03, (byte)BidiClass.NSM),
+        new(0x1B04, 0x1B33, (byte)BidiClass.L),
+        new(0x1B34, 0x1B34, (byte)BidiClass.NSM),
+        new(0x1B35, 0x1B35, (byte)BidiClass.L),
+        new(0x1B36, 0x1B3A, (byte)BidiClass.NSM),
+        new(0x1B3B, 0x1B3B, (byte)BidiClass.L),
+        new(0x1B3C, 0x1B3C, (byte)BidiClass.NSM),
+        new(0x1B3D, 0x1B41, (byte)BidiClass.L),
+        new(0x1B42, 0x1B42, (byte)BidiClass.NSM),
+        new(0x1B43, 0x1B6A, (byte)BidiClass.L),
+        new(0x1B6B, 0x1B73, (byte)BidiClass.NSM),
+        new(0x1B74, 0x1DFF, (byte)BidiClass.L),
 
         // Latin Extended Additional + Greek Extended + General Punctuation + Superscripts and Subscripts
         new(0x1E00, 0x1FFF, (byte)BidiClass.L),

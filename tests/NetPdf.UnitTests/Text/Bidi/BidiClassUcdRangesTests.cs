@@ -251,14 +251,13 @@ public sealed class BidiClassUcdRangesTests
     }
 
     [Fact]
-    public void Lookup_returns_default_L_for_codepoint_with_no_explicit_range()
+    public void Lookup_returns_default_L_for_codepoint_in_an_uncovered_unassigned_range()
     {
-        // BidiClassUcdRanges.Lookup itself doesn't validate the input range — that's
-        // the public wrapper BidiClassTable.GetClass. For a valid-but-uncovered
-        // codepoint, default is L per UCD's "default L" rule for unassigned ranges.
-        // U+0860 (Arabic Extended-B) IS covered (AL); pick something we deliberately
-        // didn't include — like U+1B00 (Balinese) which falls through to default.
-        Assert.Equal(BidiClass.L, BidiClassUcdRanges.Lookup(0x1B00));
+        // U+2FE0 sits in an unassigned reserved range between Kangxi Radicals (ends
+        // U+2FDF) and CJK Symbols and Punctuation (starts U+3000). UCD's default rule
+        // for unassigned codepoints in this region is L; the table doesn't enumerate
+        // it, so this exercises the binary-search fallthrough specifically.
+        Assert.Equal(BidiClass.L, BidiClassUcdRanges.Lookup(0x2FE0));
     }
 
     [Fact]
@@ -266,5 +265,94 @@ public sealed class BidiClassUcdRangesTests
     {
         // U+0000 NULL is BN per UCD (Boundary Neutral, control character).
         Assert.Equal(BidiClass.BN, BidiClassTable.GetClass(0x0000));
+    }
+
+    // ───── Post-Stage-12.2 hardening: combining-mark NSM coverage ─────────────
+
+    [Theory]
+    [InlineData(0x0900)] // DEVANAGARI SIGN INVERTED CANDRABINDU
+    [InlineData(0x0901)] // DEVANAGARI SIGN CANDRABINDU
+    [InlineData(0x0902)] // DEVANAGARI SIGN ANUSVARA
+    [InlineData(0x093A)] // DEVANAGARI VOWEL SIGN OE
+    [InlineData(0x093C)] // DEVANAGARI SIGN NUKTA
+    [InlineData(0x0941)] // DEVANAGARI VOWEL SIGN U
+    [InlineData(0x0948)] // DEVANAGARI VOWEL SIGN AI
+    [InlineData(0x094D)] // DEVANAGARI SIGN VIRAMA
+    [InlineData(0x0951)] // DEVANAGARI STRESS SIGN UDATTA
+    [InlineData(0x0962)] // DEVANAGARI VOWEL SIGN VOCALIC L
+    public void Devanagari_combining_marks_are_NSM(int codepoint)
+    {
+        Assert.Equal(BidiClass.NSM, BidiClassTable.GetClass(codepoint));
+    }
+
+    [Theory]
+    [InlineData(0x0903)] // DEVANAGARI SIGN VISARGA — L
+    [InlineData(0x0915)] // DEVANAGARI LETTER KA — L
+    [InlineData(0x093D)] // DEVANAGARI SIGN AVAGRAHA — L
+    [InlineData(0x0966)] // DEVANAGARI DIGIT ZERO — L (Devanagari digits are L not EN per UCD)
+    public void Devanagari_letters_and_signs_are_L(int codepoint)
+    {
+        Assert.Equal(BidiClass.L, BidiClassTable.GetClass(codepoint));
+    }
+
+    [Theory]
+    [InlineData(0x0E31)] // THAI CHARACTER MAI HAN-AKAT
+    [InlineData(0x0E34)] // THAI CHARACTER SARA I
+    [InlineData(0x0E37)] // THAI CHARACTER SARA UEE
+    [InlineData(0x0E3A)] // THAI CHARACTER PHINTHU
+    [InlineData(0x0E47)] // THAI CHARACTER MAITAIKHU
+    [InlineData(0x0E4E)] // THAI CHARACTER YAMAKKAN
+    public void Thai_combining_marks_are_NSM(int codepoint)
+    {
+        Assert.Equal(BidiClass.NSM, BidiClassTable.GetClass(codepoint));
+    }
+
+    [Theory]
+    [InlineData(0x0F71)] // TIBETAN VOWEL SIGN AA
+    [InlineData(0x0F75)] // TIBETAN VOWEL SIGN U-I (combining)
+    [InlineData(0x0F7E)] // TIBETAN SIGN RJES SU NGA RO
+    [InlineData(0x0F80)] // TIBETAN VOWEL SIGN REVERSED I
+    [InlineData(0x0F84)] // TIBETAN MARK HALANTA
+    [InlineData(0x0F86)] // TIBETAN SIGN LCI RTAGS
+    public void Tibetan_combining_marks_are_NSM(int codepoint)
+    {
+        Assert.Equal(BidiClass.NSM, BidiClassTable.GetClass(codepoint));
+    }
+
+    [Theory]
+    [InlineData(0x102D)] // MYANMAR VOWEL SIGN I
+    [InlineData(0x1030)] // MYANMAR VOWEL SIGN UU
+    [InlineData(0x1032)] // MYANMAR VOWEL SIGN AI
+    [InlineData(0x1037)] // MYANMAR SIGN DOT BELOW
+    [InlineData(0x1039)] // MYANMAR SIGN VIRAMA
+    [InlineData(0x103A)] // MYANMAR SIGN ASAT
+    public void Myanmar_combining_marks_are_NSM(int codepoint)
+    {
+        Assert.Equal(BidiClass.NSM, BidiClassTable.GetClass(codepoint));
+    }
+
+    [Theory]
+    [InlineData(0x1B00)] // BALINESE SIGN ULU RICEM
+    [InlineData(0x1B01)] // BALINESE SIGN ULU CANDRA
+    [InlineData(0x1B03)] // BALINESE SIGN SURANG
+    [InlineData(0x1B34)] // BALINESE SIGN REREKAN
+    [InlineData(0x1B36)] // BALINESE VOWEL SIGN ULU
+    [InlineData(0x1B3A)] // BALINESE VOWEL SIGN RA REPA
+    [InlineData(0x1B3C)] // BALINESE VOWEL SIGN LA LENGA
+    [InlineData(0x1B42)] // BALINESE VOWEL SIGN PEPET
+    [InlineData(0x1B6B)] // BALINESE MUSICAL SYMBOL COMBINING TEGEH
+    [InlineData(0x1B73)] // BALINESE MUSICAL SYMBOL COMBINING GONG
+    public void Balinese_combining_marks_are_NSM(int codepoint)
+    {
+        Assert.Equal(BidiClass.NSM, BidiClassTable.GetClass(codepoint));
+    }
+
+    [Theory]
+    [InlineData(0x1B05)] // BALINESE LETTER AKARA — L
+    [InlineData(0x1B33)] // BALINESE LETTER HA — L
+    [InlineData(0x1B50)] // BALINESE DIGIT ZERO — L
+    public void Balinese_letters_and_digits_are_L(int codepoint)
+    {
+        Assert.Equal(BidiClass.L, BidiClassTable.GetClass(codepoint));
     }
 }

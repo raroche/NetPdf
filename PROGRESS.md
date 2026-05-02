@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-02 (Task 14 Stage 14.1 UAX #29 grapheme cluster boundaries ✅ — 100% UCD GraphemeBreakTest.txt conformance)
+**Last updated:** 2026-05-02 (Post-Task-13 LB15b ZW fix + Latin-subset 100% gate ✅ — 99.952% full conformance, 100% on English/Spanish production envelope)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -444,6 +444,18 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
   - **Stages 14.2 (word boundaries) and 14.3 (sentence boundaries) deferred to post-Phase-1** — cursor movement and shaping only need grapheme clusters; word/sentence segmentation is needed for selection and navigation but those wait for Phase 3.
   - 20 new tests (19 granular + 1 conformance harness).
   - Total tests: **1071 unit / 1082 solution-wide passing**.
+
+- **Post-Task-13 LB15b ZW fix + Latin-script-subset 100% gate** ✅ (2026-05-02)
+  - **LB15b follower set extended to include ZW (P1)**: the only European-relevant of the 9 known LineBreakTest failures was a French Pi-QU + Pf-QU + Zero-Width-Space (U+200B) sequence: `« Citation »​Klein`. Spec rule [15.21] prohibits the break before the closing guillemet `»` when followed by ZW; my LB15b follower list was missing ZW. Added ZW alongside (eot|BK|CR|LF|NL|SP|GL|WJ|CL|QU|CP|EX|IS|SY). LineBreakTest.txt 99.946% → **99.952%** (16,664 / 16,672).
+  - **Latin-script-subset 100% gate (P1)**: new `LineBreakTest_txt_Latin_subset_passes_at_100_percent` filters the corpus to test cases whose codepoints are entirely within the production envelope for English / Spanish / general European text — ASCII, Latin-1, Latin Extended A/B, IPA, Combining Diacriticals, Greek, Cyrillic, General Punctuation (incl. ZWSP / curly quotes / em-dash), Currency, Number Forms, Mathematical Operators, Box Drawing, Geometric Shapes, Dingbats, Latin Extended Additional, Greek Extended. **5,880 / 5,880 cases pass at 100%** — the actual production envelope for the 90% English/Spanish user base is fully UAX #14-conformant.
+  - **Remaining 8 failures categorized as exotic-script-only**: all involve codepoints outside the Latin envelope:
+    - 5 cases — CJK ideographs adjacent to Western curly quotation marks (LB19a/b East-Asian quotation rules; pure CJK publishing context).
+    - 3 cases — Brahmic Indic-script conjunct edges: Sundanese/Batak (`U+1B00–U+1BFF`), Balinese (`U+1B00–U+1B7F`), Javanese (`U+A980–U+A9DF`).
+    - These remain pinned in `LineBreakKnownFailuresTests` for future hardening but do not affect the supported 90% English/Spanish user base.
+  - **`LineBreakKnownFailuresTests` updated**: the Pi-QU + ZWSP test flipped from `Known_failure_*` to `Resolved_*` since the case now passes.
+  - **Pass-count constant bumped** in `LineBreakUcdConformanceTests` from 16,663 → 16,664.
+  - 1 new test (`LineBreakTest_txt_Latin_subset_passes_at_100_percent`); 1 known-failure test flipped to resolved.
+  - Total tests: **1072 unit / 1083 solution-wide passing**.
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

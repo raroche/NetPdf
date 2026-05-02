@@ -495,9 +495,14 @@ internal static class LineBreakAlgorithm
 
     /// <summary>
     /// LB15b — When right is Pf (Punctuation_Final) QU and right is followed by one of
-    /// (eot | BK | CR | LF | NL | SP | GL | WJ | CL | QU | CP | EX | IS | SY), the break
-    /// before right is forbidden. Left can be anything (the rule is "× Pf-QU [...]").
+    /// (eot | BK | CR | LF | NL | SP | GL | WJ | CL | QU | CP | EX | IS | SY | ZW), the
+    /// break before right is forbidden. Left can be anything (the rule is "× Pf-QU [...]").
     /// </summary>
+    /// <remarks>
+    /// ZW is included so that closing quotation marks followed by a Zero-Width Space
+    /// (e.g., <c>« Citation »​...</c> in multilingual text) still trigger the
+    /// no-break-before-Pf-QU rule. Matches UAX #14 16.0 LB15.21 sub-rule.
+    /// </remarks>
     private static bool LB15bToFinalQuotation(CodepointInfo[] infos, int i)
     {
         var right = infos[i + 1];
@@ -508,7 +513,8 @@ internal static class LineBreakAlgorithm
         return follower is LineBreakClass.BK or LineBreakClass.CR or LineBreakClass.LF
             or LineBreakClass.NL or LineBreakClass.SP or LineBreakClass.GL
             or LineBreakClass.WJ or LineBreakClass.CL or LineBreakClass.QU
-            or LineBreakClass.CP or LineBreakClass.EX or LineBreakClass.IS or LineBreakClass.SY;
+            or LineBreakClass.CP or LineBreakClass.EX or LineBreakClass.IS or LineBreakClass.SY
+            or LineBreakClass.ZW;
     }
 
     /// <summary>LB16: (CL | CP) SP* × NS. The right is NS; walk back from i through SPs for CL/CP.</summary>

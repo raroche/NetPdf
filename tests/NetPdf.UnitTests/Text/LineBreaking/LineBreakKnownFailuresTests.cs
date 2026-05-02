@@ -80,15 +80,17 @@ public sealed class LineBreakKnownFailuresTests
         Assert.Equal(LineBreakOpportunity.Allowed, ops[1]);
     }
 
-    // ───── Pi-QU + ZWSP + AL edge case — 1 failure ────────────────────────────
+    // ───── Pi-QU + ZWSP + AL — RESOLVED ──────────────────────────────────────
 
     [Fact]
-    public void Known_failure_LB15_Pi_QU_text_Pf_QU_ZWSP_AL_currently_allows_break()
+    public void Resolved_LB15b_Pi_QU_text_Pf_QU_ZWSP_AL_now_prohibits_break_correctly()
     {
-        // From the long test: « Citation » ​ Klein. Position 10 (between SP and 00BB).
-        // Spec [15.21] prohibits; current impl allows.
+        // From the long test: « Citation »​Klein. Position 10 (between SP and 00BB).
+        // Spec [15.21] prohibits; LB15b follower set was missing ZW. Adding ZW (LB15b
+        // accepts ZW as one of the followers that triggers the no-break-before-Pf-QU
+        // rule) flipped this from Allowed → Prohibited and brings the corpus to 99.952%.
         var input = "« Citation »​Klein";
         var ops = LineBreakAlgorithm.FindBreaks(input);
-        Assert.Equal(LineBreakOpportunity.Allowed, ops[10]);
+        Assert.Equal(LineBreakOpportunity.Prohibited, ops[10]);
     }
 }

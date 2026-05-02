@@ -30,21 +30,24 @@ public sealed class LineBreakUcdConformanceTests
     /// </summary>
     /// <remarks>
     /// <para>
-    /// Currently 16,663 / 16,672 = 99.946%. The 9 remaining known failures fall into three
-    /// categories awaiting deeper UAX #14 16.0 spec integration:
+    /// Currently 16,664 / 16,672 = 99.952%. <b>All 8 remaining failures are non-Latin-script
+    /// edge cases that don't affect English / Spanish / European text rendering:</b>
     /// </para>
     /// <list type="bullet">
-    ///   <item>LB19a/b East-Asian-Width-aware quotation rules (5 failures) — the spec
-    ///         text in 16.0 introduces Pi-QU and Pf-QU sub-rules with EAW context that
-    ///         my partial-implementation attempt regressed cases. Documented as deferred
-    ///         until precise spec text is in hand.</item>
-    ///   <item>Brahmic-script LB28a edge cases (3 failures) — Balinese / Javanese
-    ///         conjunct interactions involving ZWNJ and the AK / AS / AP / VI / VF
-    ///         classes; requires fine-grained UCD class data check.</item>
-    ///   <item>LB15-style Pi-QU + ZWSP + AL edge case (1 failure).</item>
+    ///   <item>5 cases — East-Asian-quotation rules (LB19a/b with CJK ideographs adjacent
+    ///         to Western curly quotes). Pure CJK publishing context.</item>
+    ///   <item>3 cases — Brahmic Indic-script conjunct edge cases (Sundanese/Batak,
+    ///         Balinese, Javanese). Codepoints in ranges <c>U+1B00–U+1BFF</c> and
+    ///         <c>U+A980–U+A9DF</c>.</item>
     /// </list>
+    /// <para>
+    /// The Latin-script subset (<see cref="LineBreakTest_txt_Latin_subset_passes_at_100_percent"/>)
+    /// asserts 100% for all cases whose codepoints are entirely in Latin-1 / Latin Extended
+    /// / General Punctuation / standard ASCII ranges — the actual production envelope for
+    /// English and Spanish layout.
+    /// </para>
     /// </remarks>
-    private const int LineBreakTestExpectedPassCount = 16_663;
+    private const int LineBreakTestExpectedPassCount = 16_664;
 
     private readonly ITestOutputHelper _output;
 
@@ -56,7 +59,7 @@ public sealed class LineBreakUcdConformanceTests
     [Fact]
     public void LineBreakTest_txt_conformance_pins_exact_pass_count()
     {
-        var (passed, failed, samples) = RunLineBreakTest(sampleFailureLimit: 20);
+        var (passed, failed, samples) = RunLineBreakTest(sampleFailureLimit: 20, latinSubsetOnly: false);
 
         var total = passed + failed;
         var passRate = total == 0 ? 0.0 : (double)passed / total;
@@ -75,7 +78,78 @@ public sealed class LineBreakUcdConformanceTests
         Assert.Equal(LineBreakTestExpectedPassCount, passed);
     }
 
-    private static (int Passed, int Failed, IReadOnlyList<string> Failures) RunLineBreakTest(int sampleFailureLimit)
+    /// <summary>
+    /// Latin-script-subset conformance gate. Filters the corpus to test cases whose
+    /// codepoints fall entirely in the production envelope for English / Spanish / standard
+    /// European text (ASCII + Latin-1 + Latin Extended-A/B + General Punctuation +
+    /// Currency Symbols + Mathematical Operators + Number Forms). Asserts 100% pass on
+    /// that subset — the 8 known failures involve CJK or Brahmic Indic codepoints
+    /// outside this envelope.
+    /// </summary>
+    [Fact]
+    public void LineBreakTest_txt_Latin_subset_passes_at_100_percent()
+    {
+        var (passed, failed, samples) = RunLineBreakTest(sampleFailureLimit: 20, latinSubsetOnly: true);
+        var total = passed + failed;
+        _output.WriteLine($"LineBreakTest.txt (Latin subset): {passed} / {total} passed; {failed} failed.");
+        if (samples.Count > 0)
+        {
+            _output.WriteLine($"First {samples.Count} failures:");
+            foreach (var f in samples)
+            {
+                _output.WriteLine($"  {f}");
+            }
+        }
+        Assert.True(total > 0, "Latin subset filter eliminated all cases.");
+        Assert.Equal(0, failed);
+    }
+
+    /// <summary>
+    /// Returns true if the codepoint is within the "Latin-script production envelope"
+    /// — codepoints English / Spanish / general European users actually feed through
+    /// the line-break engine. Includes ASCII, Latin-1 supplement, Latin Extended A/B,
+    /// IPA, Spacing Modifiers, Combining Diacritical Marks, Greek + Cyrillic (since
+    /// many European technical documents include them), General Punctuation, Currency,
+    /// Number Forms, basic Mathematical operators, plus structural codes (CR, LF, etc.).
+    /// </summary>
+    private static bool IsLatinScriptCodepoint(int codepoint) => codepoint switch
+    {
+        // ASCII + Latin-1 + Latin Extended A/B + IPA + spacing/combining + Greek + Cyrillic
+        <= 0x024F => true,                          // Basic Latin / Latin-1 / Latin Extended-A/B
+        >= 0x0250 and <= 0x02FF => true,            // IPA / Spacing Modifier Letters
+        >= 0x0300 and <= 0x036F => true,            // Combining Diacritical Marks
+        >= 0x0370 and <= 0x03FF => true,            // Greek
+        >= 0x0400 and <= 0x04FF => true,            // Cyrillic
+        // General Punctuation (includes ZWSP, LRM/RLM, em-dash, quotation marks etc.)
+        >= 0x2000 and <= 0x206F => true,
+        // Currency Symbols
+        >= 0x20A0 and <= 0x20CF => true,
+        // Combining Diacritical Marks for Symbols
+        >= 0x20D0 and <= 0x20FF => true,
+        // Number Forms (fractions, Roman numerals)
+        >= 0x2150 and <= 0x218F => true,
+        // Mathematical Operators
+        >= 0x2200 and <= 0x22FF => true,
+        // Miscellaneous Technical
+        >= 0x2300 and <= 0x23FF => true,
+        // Box Drawing / Block Elements / Geometric Shapes
+        >= 0x2500 and <= 0x25FF => true,
+        // Miscellaneous Symbols (includes some emoji)
+        >= 0x2600 and <= 0x26FF => true,
+        // Dingbats
+        >= 0x2700 and <= 0x27BF => true,
+        // Supplementary Mathematical Operators / various
+        >= 0x2A00 and <= 0x2AFF => true,
+        // Latin Extended Additional
+        >= 0x1E00 and <= 0x1EFF => true,
+        // Greek Extended
+        >= 0x1F00 and <= 0x1FFF => true,
+        _ => false,
+    };
+
+    private static (int Passed, int Failed, IReadOnlyList<string> Failures) RunLineBreakTest(
+        int sampleFailureLimit,
+        bool latinSubsetOnly)
     {
         var assembly = typeof(LineBreakUcdConformanceTests).Assembly;
         var resourceName = "NetPdf.UnitTests.Resources.Ucd.LineBreakTest.txt.gz";
@@ -101,6 +175,18 @@ public sealed class LineBreakUcdConformanceTests
             var tokens = SplitWhitespace(line);
             var (codepoints, expectedSymbols) = ParseTokens(tokens);
             if (codepoints.Length == 0) continue;
+
+            // Apply the Latin-script subset filter if requested. Skip cases where ANY
+            // codepoint falls outside the Latin-script production envelope.
+            if (latinSubsetOnly)
+            {
+                var allLatin = true;
+                foreach (var cp in codepoints)
+                {
+                    if (!IsLatinScriptCodepoint(cp)) { allLatin = false; break; }
+                }
+                if (!allLatin) continue;
+            }
 
             // Build the UTF-16 input from codepoints.
             var sb = new StringBuilder();

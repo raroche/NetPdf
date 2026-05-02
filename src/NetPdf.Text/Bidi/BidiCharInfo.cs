@@ -42,4 +42,7 @@ internal struct BidiCharInfo
 
     /// <summary>Number of UTF-16 code units representing this codepoint (1 = BMP, 2 = surrogate pair).</summary>
     public byte Utf16Length;
+
+    /// <summary>The full Unicode codepoint (decoded once during pipeline build), used by N0 paired-bracket resolution and any future rule that needs codepoint identity rather than just bidi class.</summary>
+    public int Codepoint;
 }

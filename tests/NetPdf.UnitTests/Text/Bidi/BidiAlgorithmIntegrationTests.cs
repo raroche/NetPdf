@@ -43,14 +43,16 @@ public sealed class BidiAlgorithmIntegrationTests
     }
 
     [Fact]
-    public void ResolveLevels_throws_NotImplementedException_with_staging_message()
+    public void ResolveLevels_returns_empty_for_empty_input()
     {
-        // Stage 12.3a ships X-rules + BD13 segmentation (exposed via BidiPipeline). The
-        // public ResolveLevels API depends on the W/N/I/L rule passes that land in Stage
-        // 12.3b–d, so calling it before then must surface a precise diagnostic naming
-        // those stages so consumers know the gap.
-        var ex = Assert.Throws<NotImplementedException>(() =>
-            BidiAlgorithm.ResolveLevels("hello"));
-        Assert.Contains("Stage 12.3", ex.Message);
+        Assert.Empty(BidiAlgorithm.ResolveLevels(string.Empty));
+    }
+
+    [Fact]
+    public void ResolveLevels_returns_one_byte_per_utf16_code_unit_at_paragraph_level_for_pure_LTR()
+    {
+        var levels = BidiAlgorithm.ResolveLevels("Hello");
+        Assert.Equal(5, levels.Length);
+        Assert.All(levels, b => Assert.Equal(0, b));
     }
 }

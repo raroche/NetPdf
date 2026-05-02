@@ -98,10 +98,50 @@ public sealed class BidiPipelineIntegrationTests
     }
 
     [Fact]
-    public void ResolveLevels_still_throws_NotImplementedException_with_stage_12_3b_message()
+    public void ResolveLevels_returns_byte_per_utf16_code_unit_for_pure_LTR()
     {
-        var ex = Assert.Throws<NotImplementedException>(
-            () => BidiAlgorithm.ResolveLevels("Hello".AsSpan()));
-        Assert.Contains("Stage 12.3", ex.Message);
+        // After 12.3b/c, ResolveLevels is the public end-to-end entry point. Pure LTR
+        // string ⇒ one byte per code unit, all zero (paragraph level).
+        var levels = BidiAlgorithm.ResolveLevels("Hello".AsSpan());
+        Assert.Equal(5, levels.Length);
+        Assert.All(levels, b => Assert.Equal(0, b));
+    }
+
+    [Fact]
+    public void ResolveLevels_assigns_level_one_to_pure_RTL_Hebrew()
+    {
+        var levels = BidiAlgorithm.ResolveLevels("אבג".AsSpan());
+        Assert.Equal(3, levels.Length);
+        Assert.All(levels, b => Assert.Equal(1, b));
+    }
+
+    [Fact]
+    public void ResolveLevels_mixed_Latin_Hebrew_in_LTR_paragraph_assigns_level_one_to_Hebrew_runs()
+    {
+        // "Hello אבג!" — Latin at level 0, Hebrew at level 1 (after I1 bumps R one level).
+        // The trailing space + '!' L1-reset to paragraph level.
+        var input = "Hello אבג!";
+        var levels = BidiAlgorithm.ResolveLevels(input.AsSpan());
+        Assert.Equal(input.Length, levels.Length);
+        // 'H' at 0
+        Assert.Equal(0, levels[0]);
+        // 'אבג' at indices 6, 7, 8 — should be level 1.
+        Assert.Equal(1, levels[6]);
+        Assert.Equal(1, levels[7]);
+        Assert.Equal(1, levels[8]);
+        // Trailing '!' at level 0 (paragraph).
+        Assert.Equal(0, levels[^1]);
+    }
+
+    [Fact]
+    public void ResolveLevels_supplementary_plane_codepoint_assigns_same_level_to_both_surrogates()
+    {
+        // U+1F600 GRINNING FACE — supplementary plane. Both UTF-16 code units must share
+        // the codepoint's resolved level (emoji is bidi class ON, neutral; ends up at
+        // paragraph level in pure-LTR context).
+        var levels = BidiAlgorithm.ResolveLevels("A😀B".AsSpan());
+        Assert.Equal(4, levels.Length);
+        // levels[0] = 'A', levels[1..2] = surrogate pair (must match), levels[3] = 'B'.
+        Assert.Equal(levels[1], levels[2]);
     }
 }

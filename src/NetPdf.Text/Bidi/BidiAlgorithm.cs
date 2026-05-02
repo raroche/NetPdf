@@ -66,17 +66,17 @@ internal static class BidiAlgorithm
     /// representing its final embedding level.
     /// </summary>
     /// <remarks>
-    /// Stage 12.3b–d ship the W/N/I/L rule passes; until then this throws
-    /// <see cref="NotImplementedException"/>. Stage 12.3a (X-rules + BD13 segmentation)
-    /// is exposed through <see cref="BidiPipeline"/> for tests and downstream callers
-    /// that need only the structural foundation.
+    /// Output is one byte per UTF-16 code unit. Surrogate pairs share a level. Empty input
+    /// returns an empty array.
     /// </remarks>
     public static byte[] ResolveLevels(ReadOnlySpan<char> utf16Text, ParagraphDirection requested = ParagraphDirection.Auto)
     {
-        _ = utf16Text;
-        _ = requested;
-        throw new NotImplementedException(
-            "BidiAlgorithm.ResolveLevels is Stage 12.3b–d work — W (W1–W7) / N (N0–N2) / I (I1–I2) / L1 rule passes. " +
-            "Stage 12.3a ships X-rules (X1–X10) + BD7 level runs + BD13 isolating run sequences via BidiPipeline.");
+        if (utf16Text.IsEmpty)
+        {
+            return [];
+        }
+        var paragraphLevel = ParagraphLevelResolver.Resolve(utf16Text, requested);
+        var chars = BidiPipeline.BuildCharInfos(utf16Text);
+        return BidiPipeline.ResolveLevelsForUtf16(chars.AsSpan(), paragraphLevel, utf16Text.Length);
     }
 }

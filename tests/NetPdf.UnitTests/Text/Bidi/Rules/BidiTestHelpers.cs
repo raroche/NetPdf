@@ -32,6 +32,30 @@ internal static class BidiTestHelpers
                 IsRemovedByX9 = false,
                 Utf16Index = i,
                 Utf16Length = 1,
+                Codepoint = 0,
+            };
+        }
+        return infos;
+    }
+
+    /// <summary>
+    /// Build BidiCharInfo[] from explicit (class, codepoint) pairs — useful for N0 bracket
+    /// resolution tests where the codepoint identity matters as well as the class.
+    /// </summary>
+    public static BidiCharInfo[] FromClassesAndCodepoints(params (BidiClass Class, int Codepoint)[] pairs)
+    {
+        var infos = new BidiCharInfo[pairs.Length];
+        for (var i = 0; i < pairs.Length; i++)
+        {
+            infos[i] = new BidiCharInfo
+            {
+                OriginalClass = pairs[i].Class,
+                ResolvedClass = pairs[i].Class,
+                Level = 0,
+                IsRemovedByX9 = false,
+                Utf16Index = i,
+                Utf16Length = 1,
+                Codepoint = pairs[i].Codepoint,
             };
         }
         return infos;

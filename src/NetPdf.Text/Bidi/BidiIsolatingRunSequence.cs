@@ -38,18 +38,10 @@ internal sealed class BidiIsolatingRunSequence
     /// <summary>End-of-sequence direction — virtual boundary character following the last run.</summary>
     public required BidiClass Eos { get; init; }
 
-    /// <summary>The flat list of character indices (across all runs) in source order.</summary>
-    public IEnumerable<int> Indices
-    {
-        get
-        {
-            foreach (var run in Runs)
-            {
-                foreach (var idx in run.Indices)
-                {
-                    yield return idx;
-                }
-            }
-        }
-    }
+    /// <summary>
+    /// The flat character indices across all runs in source order — pre-computed by the
+    /// run segmenter so W/N/I rule passes can iterate by index without repeated
+    /// IEnumerable traversal across multiple rules.
+    /// </summary>
+    public required int[] FlatIndices { get; init; }
 }

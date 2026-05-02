@@ -156,16 +156,36 @@ internal static class BidiRunSegmenter
             var sequenceRuns = chain.ToArray();
             var seqLevel = sequenceRuns[0].Level;
             var (sos, eos) = ComputeSosEos(chars, sequenceRuns, seqLevel, paragraphLevel);
+            var flatIndices = FlattenIndices(sequenceRuns);
             sequences.Add(new BidiIsolatingRunSequence
             {
                 Runs = sequenceRuns,
                 Level = seqLevel,
                 Sos = sos,
                 Eos = eos,
+                FlatIndices = flatIndices,
             });
         }
 
         return sequences.ToArray();
+    }
+
+    /// <summary>Flatten the per-run index arrays into a single source-order int[].</summary>
+    private static int[] FlattenIndices(BidiLevelRun[] runs)
+    {
+        var total = 0;
+        foreach (var run in runs)
+        {
+            total += run.Indices.Length;
+        }
+        var flat = new int[total];
+        var pos = 0;
+        foreach (var run in runs)
+        {
+            run.Indices.AsSpan().CopyTo(flat.AsSpan(pos));
+            pos += run.Indices.Length;
+        }
+        return flat;
     }
 
     /// <summary>

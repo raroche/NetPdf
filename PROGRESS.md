@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-01 (Post-Stage-12.3a + WOFF hardening ✅ — UAX #9 X6a / retained-format / B-reset fixes + WOFF offset-order layout fix)
+**Last updated:** 2026-05-01 (Stage 12.3b/c UAX #9 W/N/I/L rules ✅ — full algorithm; ResolveLevels public API live)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -40,7 +40,7 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
 - **Doc:** [`docs/phases/phase-1-pdf-writer-and-text.md`](docs/phases/phase-1-pdf-writer-and-text.md)
 
 ### Active task
-**Task 12 Stage 12.3b — UAX #9 W-rules (W1–W7)**. Stage 12.3a (X-rules + BD13 segmentation) shipped; the W-rules operate on each isolating run sequence independently to resolve weak types (NSM following its preceding character, EN-after-AL → AN, ES/CS between numbers, ET adjacent to EN, etc.). Subsequent stages: 12.3c — N0 paired brackets + N1/N2 neutrals + I1/I2 implicit + L1 trailing-whitespace. Stage 12.4 — `BidiTest.txt` + `BidiCharacterTest.txt` UCD test integration.
+**Task 12 Stage 12.4 — UCD `BidiTest.txt` + `BidiCharacterTest.txt` validation**. Stages 12.3a/b/c are complete — the public `BidiAlgorithm.ResolveLevels` API runs every UAX #9 rule pass. Stage 12.4 imports the UCD conformance test files and iterates against any failures to reach the Phase 1 exit-criteria pass rate. May co-occur with Stage 12.2.x (Roslyn UCD generator) since both depend on a checked-in UCD snapshot.
 
 ### Subtasks completed
 
@@ -345,6 +345,27 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
   - **Performance follow-ups deferred** per the review's recommendation: `BidiRunSegmenter` dictionary/list backing (revisit when Stage 12.3b weights large-paragraph profiling), `BidiIsolatingRunSequence.Indices` IEnumerable yields (flatten if W/N/I rules iterate heavily), `WoffDecoder.DecompressTable` `compressedSlice.ToArray()` copy (defer until benchmarks justify the API switch to `ReadOnlyMemory<byte>` or unsafe span-backed `Stream` wrapper).
   - 11 new tests across `BidiX10ResolverHardeningTests` (8) + `WoffLayoutValidatorTests` (3 — including a full `OpenTypeFont.Parse` round-trip through reversed-payload layout).
   - Total tests: **938 unit / 949 solution-wide passing**.
+
+- **Task 12 Stage 12.3b + 12.3c — UAX #9 W/N/I/L rules** ✅ (2026-05-01)
+  - **Public API live**: `BidiAlgorithm.ResolveLevels(utf16Text, paragraphDirection?)` now returns one byte per UTF-16 code unit representing the final embedding level, with surrogate pairs sharing the codepoint's level. Empty input returns an empty array.
+  - **Spec basis (clean-room)**: Unicode UAX #9 §3.3.3 (W1–W7), §3.3.5 (N0 BD16 paired brackets, N1, N2), §3.3.6 (I1, I2), §3.4 (L1). Bracket data from UCD `BidiBrackets.txt` 16.0. No code transliterated from any third-party implementation; per-rule branches reference the exact rule number and the spec text the branch implements.
+  - **Components under `src/NetPdf.Text/Bidi/Rules/`**:
+    - `BidiW7Resolver` — W1 NSM resolution (with isolate-initiator special case mapping NSM→ON when preceded by LRI/RLI/FSI/PDI), W2 EN-after-AL→AN, W3 AL→R, W4 separators between numbers, W5 ET runs adjacent to EN, W6 leftover separators/terminators→ON, W7 EN-after-L→L.
+    - `BidiN0BracketResolver` — BD16 bracket-pair detection via opener stack with the 63-pair cap; N0 strong-type resolution per pair (embedding direction wins inside; opposing direction falls back to backward context scan; no strong type leaves brackets as ON for N1/N2 to resolve).
+    - `BidiN12NeutralResolver` — N1 surrounding-strong agreement (with EN/AN treated as R); N2 fallback to embedding direction.
+    - `BidiI12ImplicitResolver` — I1 (even level: R+1, AN/EN+2) and I2 (odd level: L/AN/EN+1) bumps.
+    - `BidiL1Resetter` — paragraph-wide L1 trailing-whitespace + S/B reset to paragraph level using `OriginalClass` (not `ResolvedClass`) per spec.
+  - **`BidiBrackets`** (new): static `FrozenDictionary<int, BracketEntry>` covering the full UCD `BidiBrackets.txt` 16.0 set (60+ canonical bracket pairs spanning ASCII, CJK halfwidth/fullwidth, math angle / square / curly brackets, Tibetan, ornament, ogham, etc.). Each entry stores the pair codepoint + open/close kind. Phase 1 hand-curated — Stage 12.4 will replace with a Roslyn source generator when that work lands. Lookup is O(1).
+  - **`BidiCharInfo.Codepoint`** field added so N0 can resolve brackets without re-decoding from the source UTF-16 text.
+  - **`BidiIsolatingRunSequence.FlatIndices`** (replaces the previous `IEnumerable Indices`): pre-computed `int[]` of all character indices across the sequence's runs in source order. Eliminates the `IEnumerable` yield-state allocation per W/N/I rule pass — the hot path of the algorithm now indexes directly into a flat array.
+  - **Pipeline orchestration**: `BidiPipeline.ResolveLevelsForUtf16` runs X-rules → BD13 segmentation → per-sequence (W → N0 → N1/N2 → I1/I2) → paragraph-wide L1 → expand per-codepoint levels back to per-UTF-16-code-unit byte array.
+  - **Dual-layer tests** (19 new, total bidi tests now 282):
+    - `BidiAlgorithmEndToEndTests` (15 integration) — pure LTR / RTL baselines for English / Hebrew / Arabic; mixed-script LTR-with-Hebrew-word and RTL-with-English-word; W2 (EN-after-AL → AN at level 2 in LTR) and W7 (EN-after-L → L at level 0); EN at paragraph start in LTR vs RTL contexts; L1 trailing-whitespace in LTR and RTL paragraphs; L1 reset of WS inside an embedded run when followed by a B (paragraph separator); N0 brackets in RTL paragraph with English inside; ResolveLevels determinism; embedding controls (RLE/PDF) promoting inner L to level 2 in LTR; empty + whitespace-only input.
+    - `BidiAlgorithmIntegrationTests` (2 updated) — empty input returns empty; pure LTR returns one byte per code unit at paragraph level.
+    - `BidiPipelineIntegrationTests` (3 updated) — pure-LTR end-to-end; pure-RTL Hebrew at level 1; mixed Latin-Hebrew elevates Hebrew runs to level 1; supplementary-plane surrogate pair shares the codepoint's level on both halves.
+  - **Performance optimizations** (review-flagged): `BidiIsolatingRunSequence.FlatIndices` pre-computed by the segmenter (was per-rule `IEnumerable` yield).
+  - **Phase 1 scope clarifications**: `BidiBrackets` is hand-curated from UCD 16.0 (full canonical set; replacement by source generator deferred to Stage 12.4 alongside the bidi-class generator).
+  - Total tests: **957 unit / 968 solution-wide passing**.
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

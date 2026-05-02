@@ -55,6 +55,7 @@ internal static class BidiPipeline
                 IsRemovedByX9 = false,
                 Utf16Index = i,
                 Utf16Length = unitLen,
+                Codepoint = codepoint,
             });
             i += unitLen;
         }
@@ -63,8 +64,8 @@ internal static class BidiPipeline
 
     /// <summary>
     /// Run the X-rules over <paramref name="chars"/> and produce the BD7 level runs +
-    /// BD13 isolating run sequences. This is Stage 12.3a's deliverable; future stages
-    /// add W/N/I/L passes that transform the output further.
+    /// BD13 isolating run sequences. This is Stage 12.3a's deliverable; the W/N/I/L
+    /// rule passes consume the sequences and transform the chars in place.
     /// </summary>
     public static (BidiLevelRun[] LevelRuns, BidiIsolatingRunSequence[] Sequences) RunX10AndSegment(
         Span<BidiCharInfo> chars,
@@ -74,5 +75,40 @@ internal static class BidiPipeline
         var levelRuns = BidiRunSegmenter.ComputeLevelRuns(chars);
         var sequences = BidiRunSegmenter.ComputeIsolatingRunSequences(chars, levelRuns, paragraphLevel);
         return (levelRuns, sequences);
+    }
+
+    /// <summary>
+    /// Apply every UAX #9 rule pass — X1–X10, BD13 segmentation, W1–W7, N0/N1/N2,
+    /// I1/I2, L1 — and expand per-codepoint <see cref="BidiCharInfo.Level"/> back to a
+    /// per-UTF-16-code-unit byte array of length <paramref name="utf16Length"/> (the
+    /// shape <see cref="BidiAlgorithm.ResolveLevels"/> returns).
+    /// </summary>
+    public static byte[] ResolveLevelsForUtf16(
+        Span<BidiCharInfo> chars,
+        byte paragraphLevel,
+        int utf16Length)
+    {
+        var (_, sequences) = RunX10AndSegment(chars, paragraphLevel);
+        foreach (var sequence in sequences)
+        {
+            BidiW7Resolver.Apply(chars, sequence);
+            BidiN0BracketResolver.Apply(chars, sequence);
+            BidiN12NeutralResolver.Apply(chars, sequence);
+            BidiI12ImplicitResolver.Apply(chars, sequence);
+        }
+        BidiL1Resetter.Apply(chars, paragraphLevel);
+
+        // Expand per-codepoint levels back to per-UTF-16-code-unit. Both halves of a
+        // surrogate pair share the codepoint's level.
+        var levels = new byte[utf16Length];
+        for (var i = 0; i < chars.Length; i++)
+        {
+            var ch = chars[i];
+            for (var k = 0; k < ch.Utf16Length; k++)
+            {
+                levels[ch.Utf16Index + k] = ch.Level;
+            }
+        }
+        return levels;
     }
 }

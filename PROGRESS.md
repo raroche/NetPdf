@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-01 (Post-Task-17 WOFF hardening ✅ — strict W3C §4 conformance + memory-cap security boundary)
+**Last updated:** 2026-05-01 (Stage 12.3a UAX #9 X-rules + BD7/BD13 segmentation ✅ — algorithm core foundation)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -40,7 +40,7 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
 - **Doc:** [`docs/phases/phase-1-pdf-writer-and-text.md`](docs/phases/phase-1-pdf-writer-and-text.md)
 
 ### Active task
-**Task 12 Stage 12.3 — UAX #9 Bidi X/W/N/I rules (algorithm core)**. Roland chose to skip Stage 12.2.x (Roslyn UCD generator) and proceed directly with Stage 12.3 against the manual stopgap data. Per the post-Stage-12.2 hardening note, the rule machinery should run only on scripts whose class data is already correct (Latin, Hebrew, Arabic + presentation forms, Devanagari, Thai, Tibetan, Myanmar, Balinese — all have per-codepoint NSM/L data). Tests against synthetic class sequences exercise the algorithm independently of script-specific UCD data.
+**Task 12 Stage 12.3b — UAX #9 W-rules (W1–W7)**. Stage 12.3a (X-rules + BD13 segmentation) shipped; the W-rules operate on each isolating run sequence independently to resolve weak types (NSM following its preceding character, EN-after-AL → AN, ES/CS between numbers, ET adjacent to EN, etc.). Subsequent stages: 12.3c — N0 paired brackets + N1/N2 neutrals + I1/I2 implicit + L1 trailing-whitespace. Stage 12.4 — `BidiTest.txt` + `BidiCharacterTest.txt` UCD test integration.
 
 ### Subtasks completed
 
@@ -315,6 +315,27 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
   - **Performance optimization deferred** per the review's recommendation — the `compressedSlice.ToArray()` copy before `ZLibStream` could be eliminated by switching to `ReadOnlyMemory<byte>` or a `ReadOnlySpan`-backed `Stream` wrapper, but only after benchmarks justify it. Strict validation correctness comes first.
   - 11 new tests across the WOFF test suite.
   - Total tests: **888 unit / 899 solution-wide passing**.
+
+- **Task 12 Stage 12.3a — UAX #9 X-rules + BD7/BD13 segmentation** ✅ (2026-05-01)
+  - **Pivot from Stage 12.2.x**: Roland chose to skip the Roslyn UCD source generator (Stage 12.2.x) and proceed directly to the algorithm core. Stage 12.3a runs against the manual-stopgap class data; per the post-Stage-12.2 hardening note, the rule machinery operates correctly on synthetic class sequences (which the UAX #9 spec's own test vectors use) and on scripts whose data is already correct (Latin / Hebrew / Arabic + presentation forms / Devanagari / Thai / Tibetan / Myanmar / Balinese — all have per-codepoint NSM/L data). UCD `BidiTest.txt` integration is the eventual Stage 12.4 milestone.
+  - **Staged delivery**: UAX #9's full algorithm is ~5,000 lines in canonical implementations. Stage 12.3 ships in three reviewable iterations: 12.3a (this commit) — X-rules + BD13 segmentation; 12.3b — W-rules (W1–W7); 12.3c — N0 paired brackets + N1/N2 neutrals + I1/I2 implicit + L1 trailing-whitespace.
+  - **Spec basis (clean-room)**: Unicode UAX #9 Recommendation §3.3.2 "Explicit Levels and Directions" (X1–X10), BD2 "maximum embedding level", BD7 "level run", BD13 "isolating run sequence". No code transliterated from any third-party implementation; per-rule branches reference the exact rule number.
+  - **Components under `src/NetPdf.Text/Bidi/`**:
+    - `BidiCharInfo` (per-codepoint mutable state — `OriginalClass` / `ResolvedClass` / `Level` / `IsRemovedByX9` / `Utf16Index` / `Utf16Length`).
+    - `DirectionalOverride` (enum — `Neutral` / `L` / `R` — used to type the BD13 stack entries unambiguously, avoiding confusion with `BidiClass.ON` as a sentinel for "no override").
+    - `DirectionalStatusStack` (BD13 stack — fixed-size backing array sized to `MaxEmbeddingLevel + 1` per BD2; `Push` / `Pop` / `Top` / `Clear`; throws on under/over-flow rather than silently misbehaving — overflow is the X-rule runner's responsibility, tracked via overflow counters).
+    - `BidiLevelRun` (BD7 — sparse list of indices over the X9-removed character set, sharing a single embedding level).
+    - `BidiIsolatingRunSequence` (BD13 — array of `BidiLevelRun`s linked through unmatched isolate initiators, with sos/eos directions).
+    - `Rules/BidiX10Resolver` (X1–X10 — single-pass walk over the paragraph applying every rule branch with an inline FSI direction inferer that runs P2/P3 over the FSI...PDI region).
+    - `Rules/BidiRunSegmenter` (BD7 + BD13 — produces level runs and isolating run sequences, with sos/eos derivation per the spec's "max of bordering level and sequence level" rule).
+    - `BidiPipeline` (UTF-16 → per-codepoint conversion handling supplementary-plane surrogate pairs; orchestrates `BuildCharInfos` + `RunX10AndSegment`; subsequent stages add W/N/I/L passes).
+  - **Public API**: `BidiAlgorithm.ResolveLevels` continues to throw `NotImplementedException` with an updated stage message naming Stages 12.3b–d as the gating work. Internal callers (tests, future W/N/I rule passes) drive the foundation through `BidiPipeline.RunX10AndSegment`.
+  - **Dual-layer tests** (39 new):
+    - `DirectionalStatusStackTests` (6 unit) covers empty-stack rejection, push/pop LIFO, multi-entry depth, clear-and-reuse, BD2 cap constant.
+    - `BidiX10ResolverTests` (16 unit) exercises every X-rule branch on synthetic class sequences (so each rule is tested in isolation, independent of the UCD lookup): X1 LTR/RTL initialization; X2 RLE pushes next-odd; X3 LRE pushes next-even; X4 RLO override → R; X5 LRO override → L; X5a RLI assigns top + pushes; X5b LRI in RTL paragraph; X5c FSI inferring direction (R / L / no-strong defaults to LTR); X6 generic class application + override; X7 unmatched PDF is no-op; X8 B uses paragraph level; X9 BN removed; BD2 embedding overflow above 125 stays bounded; unmatched PDI no-op; RLE-inside-RLI nesting compounds the levels.
+    - `BidiRunSegmenterTests` (8 unit) covers single-level-run paragraph, mixed-level run splitting, X9-removed exclusion from runs, plain-text single-sequence, RLI/PDI matching links runs into one sequence, unmatched RLI does not link, sos at paragraph start, sos/eos derivation using max(neighbor-level, sequence-level).
+    - `BidiPipelineIntegrationTests` (7 integration) drives the full UTF-16 → CharInfo → X-rules → segmentation pipeline against real strings: pure LTR (English), pure RTL (Hebrew), mixed scripts, supplementary-plane codepoints (emoji surrogate pair → one CharInfo with `Utf16Length = 2`), explicit RLE elevating Hebrew, RLI/PDI structural integrity around RTL text, public ResolveLevels still throws with Stage 12.3 message.
+  - Total tests: **927 unit / 938 solution-wide passing**.
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

@@ -12,28 +12,38 @@ namespace NetPdf.Text.Bidi;
 /// <remarks>
 /// <para>
 /// <b>Implementation roadmap.</b> UAX #9 is a multi-pass algorithm that ICU implements
-/// in ~5,000 lines. This module ships in three stages so each stage can be reviewed
+/// in ~5,000 lines. This module ships in incremental stages so each stage can be reviewed
 /// and hardened before the next:
 /// </para>
 /// <list type="number">
 ///   <item>
-///     <b>Stage 12.1 (current):</b> Foundation — bidi class enum, codepoint→class lookup
+///     <b>Stage 12.1 (shipped):</b> Foundation — bidi class enum, codepoint→class lookup
 ///     for ASCII / Latin-1 / Greek / Cyrillic / Hebrew / Arabic / explicit-formatting
 ///     characters; P2/P3 paragraph-level resolution; public API surface.
 ///   </item>
 ///   <item>
-///     <b>Stage 12.2:</b> Resolution rules — explicit levels (X1–X10), weak types
-///     (W1–W7), neutral types (N0–N2 with paired brackets), implicit levels (I1–I2),
-///     reordering (L1–L4).
+///     <b>Stage 12.2 (shipped):</b> UCD-derived bidi class table covering every assigned
+///     Unicode block under a binary-search lookup; per-codepoint NSM/L distinction for
+///     Devanagari, Thai, Tibetan, Myanmar, Balinese (combining-mark scripts where the
+///     paragraph-direction inference depends on per-codepoint precision).
 ///   </item>
 ///   <item>
-///     <b>Stage 12.3:</b> Source-generator-emitted compressed bidi-class table over the
-///     full UCD; <c>BidiTest.txt</c> + <c>BidiCharacterTest.txt</c> integration; iterate
-///     to 100% pass per the phase exit criteria.
+///     <b>Stage 12.3a (current):</b> Algorithm core — X1–X10 explicit/isolate processing
+///     via the BD13 directional status stack; level-run + isolating-run-sequence
+///     segmentation (BD7 / BD13). Foundation for the W/N/I rule passes.
+///   </item>
+///   <item>
+///     <b>Stage 12.3b–d (next):</b> W1–W7 weak resolution; N0 paired brackets (BD16);
+///     N1–N2 neutral resolution; I1–I2 implicit levels; L1 trailing-whitespace reset.
+///     Lights up <see cref="ResolveLevels"/> for the full per-character output.
+///   </item>
+///   <item>
+///     <b>Stage 12.4:</b> <c>BidiTest.txt</c> + <c>BidiCharacterTest.txt</c> integration;
+///     iterate to 100% pass per the Phase 1 exit criteria.
 ///   </item>
 /// </list>
 /// <para>
-/// Calling <see cref="ResolveLevels"/> before Stage 12.2 lands throws
+/// Calling <see cref="ResolveLevels"/> before Stage 12.3b lands throws
 /// <see cref="NotImplementedException"/> with a precise diagnostic so consumers know
 /// they're depending on incomplete work.
 /// </para>
@@ -56,15 +66,17 @@ internal static class BidiAlgorithm
     /// representing its final embedding level.
     /// </summary>
     /// <remarks>
-    /// Stage 12.2 ships the rule implementations; until then this throws
-    /// <see cref="NotImplementedException"/>.
+    /// Stage 12.3b–d ship the W/N/I/L rule passes; until then this throws
+    /// <see cref="NotImplementedException"/>. Stage 12.3a (X-rules + BD13 segmentation)
+    /// is exposed through <see cref="BidiPipeline"/> for tests and downstream callers
+    /// that need only the structural foundation.
     /// </remarks>
     public static byte[] ResolveLevels(ReadOnlySpan<char> utf16Text, ParagraphDirection requested = ParagraphDirection.Auto)
     {
         _ = utf16Text;
         _ = requested;
         throw new NotImplementedException(
-            "BidiAlgorithm.ResolveLevels is Stage 12.2 work — explicit / weak / neutral / implicit / reordering rules. " +
-            "Stage 12.1 ships paragraph-level resolution only via ResolveParagraphLevel.");
+            "BidiAlgorithm.ResolveLevels is Stage 12.3b–d work — W (W1–W7) / N (N0–N2) / I (I1–I2) / L1 rule passes. " +
+            "Stage 12.3a ships X-rules (X1–X10) + BD7 level runs + BD13 isolating run sequences via BidiPipeline.");
     }
 }

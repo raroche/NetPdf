@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-02 (Post-Task-13 LB15b ZW fix + Latin-subset 100% gate ✅ — 99.952% full conformance, 100% on English/Spanish production envelope)
+**Last updated:** 2026-05-02 (Task 15 review cycle ✅ — span-based hot-path lookups, validation, TeX inline comments, malformed-token normalization)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -40,7 +40,7 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
 - **Doc:** [`docs/phases/phase-1-pdf-writer-and-text.md`](docs/phases/phase-1-pdf-writer-and-text.md)
 
 ### Active task
-**Task 15 — Liang hyphenation + en-us patterns** (next). Tasks 12 / 13 / 14.1 are complete with 100% / 99.946% / 100% UCD conformance respectively. Stage 14.1 (grapheme cluster boundaries) is shipped; Stage 14.2 (word boundaries) and Stage 14.3 (sentence boundaries) are post-Phase-1 since cursor movement and shaping only need grapheme clusters. Task 15 implements the Liang hyphenation algorithm with a bundled en-us pattern set.
+**Task 16 — Font registry + cross-platform system font enumeration** (next). Tasks 12 / 13 / 14.1 / 15 are complete; UAX #9, #14, and #29 (grapheme stage) all pass at 100% / 99.952% / 100% UCD conformance respectively, and Liang hyphenation now ships with the canonical en-us pattern set bundled as an embedded resource. Stage 14.2 (word boundaries) and 14.3 (sentence boundaries) remain post-Phase-1.
 
 ### Subtasks completed
 
@@ -456,6 +456,46 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
   - **Pass-count constant bumped** in `LineBreakUcdConformanceTests` from 16,663 → 16,664.
   - 1 new test (`LineBreakTest_txt_Latin_subset_passes_at_100_percent`); 1 known-failure test flipped to resolved.
   - Total tests: **1072 unit / 1083 solution-wide passing**.
+
+- **Post-Task-13 second review cycle — API scope clarification + all-failures pinning + grapheme robustness** ✅ (2026-05-02) — nineteenth review-driven round, focused on tightening the runtime contract and closing test-coverage gaps the previous round opened.
+  - **API scope explicit on `LineBreakAlgorithm.FindBreaks`**: extended class XML docs with a "Supported product profile" paragraph naming the Latin-script-subset 100% guarantee + listing the exact known-non-Latin sub-spec areas (LB19a/b CJK quotation, LB28a Brahmic conjuncts) so callers can never misread "default Unicode engine" as "all-corpus-conformant."
+  - **All 8 corpus failures now pinned (P3 from review)**: the previous round pinned 5 representative tests but the 8 corpus failures actually reduce to **6 distinct minimal patterns** — 3 Brahmic LB28a + NS-EA-before-Pi-QU + ID-W-before-Pi-QU + Pf-QU-NotEA-before-ID-W. Added a missing pin for `4E43 × 201C` (CJK ideograph before Pi-QU NotEA) so a future LB19a fix that flips the NS pattern but breaks the CJK-ideograph pattern is caught at the test level. Class XML docs in `LineBreakKnownFailuresTests` corrected from stale "9 currently-known" to "8 corpus failures, 6 distinct minimal patterns".
+  - **Grapheme robustness tests added (P6 from review)** — 8 new tests in `GraphemeClusterBreakerTests` covering: malformed UTF-16 (lone high surrogate at start, lone low surrogate at start, embedded lone high surrogate); longer regional-indicator runs (5 RIs = 2 flags + 1 lone, 6 RIs = 3 flags); EP variants (emoji + skin-tone modifier + ZWJ + emoji = 1 cluster, orphan ZWJ at end does not bridge disjoint clusters); and rule-precedence edge case (GB5 ÷ before Control wins over GB9b Prepend × any when Prepend precedes LF).
+  - **Deferred (per review #2)**: full LB19a/LB19b East-Asian-Width-aware quotation handling. The 16.0 spec text introduces nuanced Pi-QU / Pf-QU / EAW context conditions; a partial implementation in the previous-previous round regressed cases the baseline passed. The 5 LB19-related corpus failures are now precisely pinned (3 distinct minimal patterns) so future investigation has a clean target without further ratcheting until the spec reading is done with full rigor.
+  - 9 new tests total (1 LB19a-CJK-ID pin + 8 grapheme robustness).
+  - Total tests: **1081 unit / 1092 solution-wide passing**.
+
+- **Task 15 — Liang hyphenation + en-us bundled patterns** ✅ (2026-05-02)
+  - **Spec basis (clean-room)**: F. M. Liang, *Word Hy-phen-a-tion by Com-pu-ter* (Stanford CS PhD thesis, 1983), §3 — Knuth–Liang trie-based pattern lookup. Implemented from the algorithm description; no implementation source consulted or transliterated. Pattern data treated as language data (analogous to UCD test corpora), not algorithm code.
+  - **Components under `src/NetPdf.Text/Hyphenation/`**:
+    - `HyphenationPatternSet` — `FrozenDictionary<string, byte[]>`-backed pattern store with `ParseRawPattern` (digit/letter interleave decoder), `ParseBlock` (whitespace-separated, TeX `%`-comment-aware), and `Build` (element-wise-max merge for same-letters duplicates per Liang spec).
+    - `HyphenationDictionary` — explicit-exception list. Case-insensitive ASCII lookup; words without internal hyphens encode "never hyphenate" (e.g., `present`); words with hyphens encode break positions (e.g., `as-so-ciate` → `[2, 4]`).
+    - `Hyphenator` — `FindHyphenationPoints(ReadOnlySpan<char> word, int leftMin = 2, int rightMin = 3)`. Lower-case ASCII canonicalize → exception lookup short-circuit → boundary-marked text (`. word .`) → sliding-window pattern match with running-max priority array → odd-priority positions filtered by leftMin/rightMin become the result.
+    - `EnUsHyphenation` — lazy-loaded singleton `Default` hyphenator over the bundled en-us patterns + exception list.
+  - **Bundled data**: `Resources/en-us-patterns.txt.gz` (16,868 bytes compressed, 4,938 unique pattern letter-forms after stripping the file's 2 embedded TeX `%`-comment lines) + `Resources/en-us-exceptions.txt` (14 words). Source: `hyph-en-us.tex` (Gerard D.C. Kuiken, 1990–2005, derived from D. E. Knuth's `hyphen.tex`); redistributable under the file's permissive notice — preserved verbatim in `THIRD-PARTY-NOTICES.md`.
+  - **Performance design**: `FrozenDictionary` lookup is the steady-state hot path; pattern + dictionary parse runs once at first access via `Lazy<T>`. `stackalloc` for ≤64-char temporaries on the lookup hot path; `ParseRawPattern` keeps its scratch buffers stack-bound for typical Liang patterns (≤32 chars).
+  - **Granular tests** — 49 new tests across:
+    - `HyphenationPatternSetTests` (9): digit-letter interleave parsing (zero, mid, leading, trailing, consecutive digits), `Build` indexing + max-length tracking, `ParseBlock` whitespace handling + blank-line skipping.
+    - `HyphenationDictionaryTests` (8): hyphenated word → break positions, no-hyphens word → empty (never-hyphenate), case-insensitive lookup, multiple-word parsing, TeX comment-line skipping, empty-input safety.
+    - `HyphenatorTests` (13): leftMin/rightMin enforcement, even-overrides-odd priority semantics, higher-odd-overrides-lower-even, boundary-marker patterns (`.a1b`) only at edges, exception-dictionary short-circuit, ASCII case-insensitivity, determinism, null-arg validation.
+    - `EnUsHyphenationGoldenTests` (19): bundled-set count assertion (4,938 patterns + 14 exceptions), 8 InlineData golden words producing non-empty hyphenations, canonical break-sequence pins for `hyphenation` → `hy-phen-ation` (`[2, 6]`), `algorithm` → `al-go-rithm` (`[2, 4]`), `computer` → `com-puter` (`[3]`), exception short-circuit verification (`associate`, `present`, `table`), case-insensitivity, singleton identity.
+  - **Compatibility-matrix bump**: `hyphens: auto` is now backed by a working algorithm + en-us data; CSS Layout (Phase 3) can wire `Hyphenator` directly via `EnUsHyphenation.Default`. Other-language packs (`NetPdf.Languages.*`) remain Phase-5 work.
+  - 49 new tests.
+  - Total tests: **1130 unit / 1141 solution-wide passing**.
+
+- **Post-Task-15 review cycle — span-based hot path + validation + TeX-comment + malformed-token normalization** ✅ (2026-05-02) — twentieth review-driven round, focused on closing the performance and correctness gaps identified in the Task 15 review before Phase 3 layout integration.
+  - **Span-based hot-path lookup (P1 + P4 from review)**: replaced `new string(boundary[i..j])` per-window allocation in `Hyphenator.FindHyphenationPoints` with `FrozenDictionary<string, byte[]>.AlternateLookup<ReadOnlySpan<char>>` (built once, queried per-window). For a 10-letter word with ~144 candidate windows, the change moves ~144 string allocations per word to zero. Same treatment applied to `HyphenationDictionary.TryGet`. The lookup now also serves as the mutability fence: both `TryGet` overloads return `ReadOnlySpan<byte>` / `ReadOnlySpan<int>`, so callers physically cannot mutate the cached singleton arrays. Single API change closes both perf hotspot and footgun simultaneously.
+  - **leftMin / rightMin argument validation (P2)**: `Hyphenator.FindHyphenationPoints` now throws `ArgumentOutOfRangeException` for negative values (via `ArgumentOutOfRangeException.ThrowIfNegative`). Zero is explicitly documented as a valid advanced override (disables the corresponding edge constraint).
+  - **Full TeX-style `%` comment semantics (P3)**: both `HyphenationPatternSet.ParseBlock` and `HyphenationDictionary.Parse` now strip TeX comments anywhere on a line, not just at line start. Tokens are bounded by whitespace OR `%`; an inline `%` immediately ends the current token and skips the rest of the line. Matches actual TeX comment lexing rather than the looser "line-start only" approximation.
+  - **Malformed exception-entry normalization (P5)**: `HyphenationDictionary.Parse` defensively normalizes hyphen positions instead of producing nonsensical breaks. Leading hyphens (`-foo`), trailing hyphens (`foo-`), and adjacent hyphens (`a--b`, `a---b`, `a-b---c-`) all collapse to the smallest valid set of breaks. Documented as part of the class-level remarks so user-supplied exception data has predictable behavior.
+  - **Layout-integration contract docs (P6)**: `Hyphenator` XML remarks now enumerate the caller's tokenization responsibilities — word boundaries, apostrophes, existing hard hyphens, soft hyphens (U+00AD), punctuation stripping, and language selection — so Phase 3 layout has a clear contract before wiring `hyphens: auto` over real text.
+  - **15 new tests** across:
+    - `HyphenatorTests` (3 review tests): negative `leftMin` / `rightMin` throw, `leftMin = rightMin = 0` is valid.
+    - `HyphenationPatternSetTests` (5 review tests): line-start `%` strip, inline `%`-after-token strip, inline `%` mid-line eats following tokens, `TryGet` returns `ReadOnlySpan<byte>` (compile-time mutability proof), span-input `TryGet` works on stack-buffer slices.
+    - `HyphenationDictionaryTests` (7 review tests): inline `%` strip, trailing-hyphen drop, leading-hyphen drop, two-hyphen run collapse, three-hyphen run collapse, mixed valid + malformed, `TryGet` returns `ReadOnlySpan<int>`.
+  - **Deferred (review #7)**: dedicated benchmark fixture for long-words / many-words layout load. Lands when the BenchmarkDotNet baseline task (Phase 1, Task 25) is wired up; the data-flow shape is now allocation-free so the benchmark will measure pure algorithm cost.
+  - 15 new tests.
+  - Total tests: **1145 unit / 1156 solution-wide passing**.
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

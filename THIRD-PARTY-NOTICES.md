@@ -61,10 +61,13 @@ This file is distributed alongside the NetPdf NuGet package and is referenced fr
 - **License text:** https://www.unicode.org/license.html
 - **Used for:** Bidi properties (UAX #9), line break classes (UAX #14), word/grapheme break properties (UAX #29), script extensions, joining types — embedded as compiled .NET resources.
 
-### Liang hyphenation patterns
-- **SPDX:** Various per-language; predominantly LPPL-1.3+ (TeX) for many languages
-- **Source:** https://www.ctan.org/tex-archive/language/hyph-utf8/tex/generic/hyph-utf8/patterns/
-- **Used for:** Hyphenation pattern data tables for `hyphens: auto` rendering. Each language pattern file's specific copyright and license is preserved in `src/NetPdf.Text/Hyphenation/Patterns/LICENSES.md`.
+### Liang hyphenation patterns — American English (en-us)
+- **SPDX:** Custom permissive (see notice below); also dual-licensed LPPL-1.3+ / MIT in the upstream `hyph-utf8` package.
+- **Copyright:** Copyright (C) 1990, 2004, 2005 Gerard D.C. Kuiken (derived from D. E. Knuth's `hyphen.tex`).
+- **Source:** https://ctan.org/tex-archive/language/hyph-utf8 — file `tex/generic/hyph-utf8/patterns/tex/hyph-en-us.tex`.
+- **Notice (preserved verbatim per the file's license text):**
+  > Copying and distribution of this file, with or without modification, are permitted in any medium without royalty provided the copyright notice and this notice are preserved.
+- **Used for:** Bundled American-English Liang hyphenation pattern data (4,938 unique pattern letter-forms + 14 exception words) embedded in `NetPdf.Text` as `Hyphenation/Resources/en-us-patterns.txt.gz` + `en-us-exceptions.txt`. Other languages move to optional `NetPdf.Languages.*` packs in Phase 5.
 
 ### sRGB v4 ICC profile
 - **SPDX:** Public domain / ICC license

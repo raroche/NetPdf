@@ -22,6 +22,17 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!--
+      Liang hyphenation: bundled American-English pattern set + exception dictionary.
+      Patterns gzipped (~16 KB compressed; ~33 KB raw, 4952 entries). Originates from
+      hyph-en-us.tex (Gerard D.C. Kuiken, 1990-2005, derived from Knuth's hyphen.tex);
+      redistributable under the file's permissive notice — see THIRD-PARTY-NOTICES.md.
+    -->
+    <EmbeddedResource Include="Hyphenation\Resources\en-us-patterns.txt.gz" />
+    <EmbeddedResource Include="Hyphenation\Resources\en-us-exceptions.txt" />
+  </ItemGroup>
+
+  <ItemGroup>
     <InternalsVisibleTo Include="NetPdf" />
     <InternalsVisibleTo Include="NetPdf.Css" />
     <InternalsVisibleTo Include="NetPdf.Layout" />

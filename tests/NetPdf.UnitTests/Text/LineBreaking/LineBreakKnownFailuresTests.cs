@@ -7,48 +7,66 @@ using Xunit;
 namespace NetPdf.UnitTests.Text.LineBreaking;
 
 /// <summary>
-/// Pin-down tests for the 9 currently-known LineBreakTest.txt 16.0 conformance failures.
-/// Each test names the failure category and asserts the CURRENT (incorrect) behavior so
-/// that any fix that flips the behavior shows up as a focused test failure here, not
+/// Pin-down tests for the LineBreakTest.txt 16.0 conformance failures. The full
+/// corpus shows <b>8 failing cases</b>, but those reduce to <b>6 distinct minimal
+/// patterns</b> (some patterns recur in multiple long-text corpus lines). Each test
+/// names the failure category and asserts the CURRENT (incorrect) behavior so that
+/// any fix that flips the behavior shows up as a focused test failure here, not
 /// only as a pass-rate change in <see cref="LineBreakUcdConformanceTests"/>.
 /// </summary>
 /// <remarks>
 /// <para>
 /// When a fix lands, the corresponding test here MUST be flipped to assert the spec-
 /// correct behavior + the conformance pass-count constant in
-/// <see cref="LineBreakUcdConformanceTests"/> bumped up. This forces a code review of the
-/// fix's full impact rather than letting it slide as an aggregate-rate movement.
+/// <see cref="LineBreakUcdConformanceTests"/> bumped up. This forces a code review of
+/// the fix's full impact rather than letting it slide as an aggregate-rate movement.
 /// </para>
 /// <para>
-/// The categories are documented in the class XML on
+/// All 6 patterns involve non-Latin scripts (CJK ideographs / Brahmic Indic) that
+/// fall outside NetPdf's primary English / Spanish / European production envelope.
+/// They are tracked here for spec completeness, not because they affect the supported
+/// product profile. The categories are documented in detail on
 /// <see cref="LineBreakUcdConformanceTests"/>.
 /// </para>
 /// </remarks>
 public sealed class LineBreakKnownFailuresTests
 {
-    // ───── East-Asian quotation cases (LB19a/b) — 5 failures ──────────────────
+    // ───── East-Asian quotation cases (LB19a/b) — 5 corpus failures, 3 patterns ──────
 
     [Fact]
-    public void Known_failure_LB19a_NS_before_Pi_QU_should_allow_but_currently_prohibits()
+    public void Known_failure_LB19a_NS_EA_before_Pi_QU_NotEA_should_allow_but_currently_prohibits()
     {
-        // Test corpus: × FF1A ÷ 201C (NS before Pi-QU NotEastAsian). Spec rule [999.0]
-        // (default ÷). Current implementation fires LB19 "× QU" → Prohibit.
-        // Pinned: when LB19a is implemented properly, flip this to Assert.Equal(Allowed).
+        // Test corpus: × FF1A ÷ 201C (NS EastAsian before Pi-QU NotEastAsian). Spec rule
+        // [999.0] (default ÷ via LB19a relaxation). Current LB19 "× QU" prohibits.
+        // Recurs in 2 corpus lines (long Chinese-text quotations).
+        // FF1A FULLWIDTH COLON (NS, F=EA-Wide); 201C LEFT DOUBLE QUOTATION MARK (Pi-QU, NotEA).
         var ops = LineBreakAlgorithm.FindBreaks("：“");
         Assert.Equal(LineBreakOpportunity.Prohibited, ops[0]);
     }
 
     [Fact]
-    public void Known_failure_LB19b_Pf_QU_before_EA_AL_should_allow_but_currently_prohibits()
+    public void Known_failure_LB19a_ID_W_before_Pi_QU_NotEA_should_allow_but_currently_prohibits()
     {
-        // Test corpus: × 201D ÷ 53F7 (Pf-QU NotEastAsian before AL EastAsian). Spec rule
-        // [999.0] (default ÷ via LB19b relaxation). Current LB19 "QU ×" prohibits.
-        // 201D RIGHT DOUBLE QUOTATION MARK (Pf-QU); 53F7 CJK UNIFIED IDEOGRAPH (ID, EAW).
+        // Test corpus: × 4E43 ÷ 201C (CJK ideograph EastAsian before Pi-QU NotEastAsian).
+        // Spec rule [999.0] (default ÷ via LB19a relaxation). Current LB19 "× QU" prohibits.
+        // Recurs in 2 corpus lines (different ideographs: 4E43, 5403 — same pattern).
+        // 4E43 CJK UNIFIED IDEOGRAPH 乃 (ID, EAW=W); 201C LEFT DOUBLE QUOTATION MARK (Pi-QU, NotEA).
+        var ops = LineBreakAlgorithm.FindBreaks("乃“");
+        Assert.Equal(LineBreakOpportunity.Prohibited, ops[0]);
+    }
+
+    [Fact]
+    public void Known_failure_LB19b_Pf_QU_NotEA_before_ID_W_should_allow_but_currently_prohibits()
+    {
+        // Test corpus: × 201D ÷ 53F7 (Pf-QU NotEastAsian before CJK ideograph EastAsian).
+        // Spec rule [999.0] (default ÷ via LB19b relaxation). Current LB19 "QU ×" prohibits.
+        // 201D RIGHT DOUBLE QUOTATION MARK (Pf-QU, NotEA); 53F7 CJK UNIFIED IDEOGRAPH 号
+        // (ID, EAW=W).
         var ops = LineBreakAlgorithm.FindBreaks("”号");
         Assert.Equal(LineBreakOpportunity.Prohibited, ops[0]);
     }
 
-    // ───── Brahmic-script LB28a edge cases — 3 failures ───────────────────────
+    // ───── Brahmic-script LB28a edge cases — 3 corpus failures, 3 patterns ──────────
 
     [Fact]
     public void Known_failure_LB28a_Balinese_conjunct_with_ZWNJ_currently_allows_break()

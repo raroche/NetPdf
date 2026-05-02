@@ -23,10 +23,28 @@ namespace NetPdf.Text.LineBreaking;
 /// 16.0; rules LB1–LB31 from §6 + §7. No code transliterated from any third-party
 /// implementation; per-rule branches reference the exact rule number.
 /// </para>
+/// <para>
+/// <b>Supported product profile.</b> NetPdf v1 targets English / Spanish / European
+/// (Latin / Greek / Cyrillic) layout as its primary production envelope and asserts
+/// 100% UAX #14 conformance for the Latin-script LineBreakTest.txt subset (5,880 / 5,880
+/// cases). The full corpus pass-rate is 99.952% (16,664 / 16,672); the 8 remaining
+/// corpus cases reduce to 6 minimal patterns — all involving CJK ideographs (LB19a/b
+/// East-Asian-Width-aware quotation handling) or Brahmic Indic conjuncts (LB28a
+/// Sundanese/Balinese/Javanese). Callers feeding such text may observe sub-spec output
+/// at quotation-mark or conjunct boundaries; the rest of the algorithm (hard breaks,
+/// spaces, hyphens, BK/CR/LF/NL, prefix/postfix numerics, words, ZW, RI flags,
+/// emoji-extension via LB30b, regional-indicator counting) operates per spec.
+/// Tracking issue: see <c>LineBreakKnownFailuresTests</c> for the exact pinned cases.
+/// </para>
 /// </remarks>
 internal static class LineBreakAlgorithm
 {
-    /// <summary>Find line-break opportunities in <paramref name="utf16Text"/>.</summary>
+    /// <summary>
+    /// Find line-break opportunities in <paramref name="utf16Text"/>. Output length
+    /// equals input length; the value at index <c>i</c> describes the opportunity
+    /// AFTER the UTF-16 code unit at <c>i</c> (i.e., between <c>i</c> and <c>i+1</c>).
+    /// The final element is always <see cref="LineBreakOpportunity.Mandatory"/> per LB3.
+    /// </summary>
     public static LineBreakOpportunity[] FindBreaks(ReadOnlySpan<char> utf16Text)
     {
         if (utf16Text.IsEmpty)

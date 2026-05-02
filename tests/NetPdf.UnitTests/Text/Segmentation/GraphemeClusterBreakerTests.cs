@@ -184,4 +184,104 @@ public sealed class GraphemeClusterBreakerTests
         var second = GraphemeClusterBreaker.FindBoundaries(input);
         Assert.Equal(first, second);
     }
+
+    // ───── Robustness: malformed UTF-16 (lone surrogates) ────────────────────
+
+    [Fact]
+    public void Lone_high_surrogate_at_start_does_not_crash_and_returns_well_formed_boundaries()
+    {
+        // U+D83D alone (no following low surrogate) — malformed UTF-16. Implementation
+        // must not throw and must still produce monotonic boundaries spanning the input.
+        var input = "\uD83Dx";
+        var b = GraphemeClusterBreaker.FindBoundaries(input);
+        Assert.Equal(0, b[0]);
+        Assert.Equal(input.Length, b[^1]);
+        for (var i = 1; i < b.Length; i++) Assert.True(b[i] > b[i - 1], "boundaries must be strictly increasing");
+    }
+
+    [Fact]
+    public void Lone_low_surrogate_at_start_does_not_crash_and_returns_well_formed_boundaries()
+    {
+        // U+DC00 alone — also malformed UTF-16.
+        var input = "\uDC00x";
+        var b = GraphemeClusterBreaker.FindBoundaries(input);
+        Assert.Equal(0, b[0]);
+        Assert.Equal(input.Length, b[^1]);
+        for (var i = 1; i < b.Length; i++) Assert.True(b[i] > b[i - 1]);
+    }
+
+    [Fact]
+    public void Embedded_lone_high_surrogate_does_not_crash()
+    {
+        // 'a' + lone high surrogate + 'b'. The lone surrogate must not cause the
+        // following 'b' to be silently joined to the preceding cluster.
+        var input = "a\uD83Db";
+        var b = GraphemeClusterBreaker.FindBoundaries(input);
+        Assert.Equal(0, b[0]);
+        Assert.Equal(input.Length, b[^1]);
+        for (var i = 1; i < b.Length; i++) Assert.True(b[i] > b[i - 1]);
+    }
+
+    // ───── GB12 / GB13: longer regional-indicator runs ───────────────────────
+
+    [Fact]
+    public void GB12_GB13_five_RIs_form_two_flags_plus_one_lone_RI()
+    {
+        // 5 regional indicators: spec pairs them left-to-right. RI1+RI2 = flag 1,
+        // RI3+RI4 = flag 2, RI5 stands alone as its own cluster. So 3 graphemes total.
+        // Each RI is a surrogate pair (2 UTF-16 code units), so total length is 10.
+        var input = "\U0001F1FA\U0001F1F8\U0001F1EF\U0001F1F5\U0001F1E9"; // US, JP, lone D
+        var b = GraphemeClusterBreaker.FindBoundaries(input);
+        Assert.Equal([0, 4, 8, 10], b);
+    }
+
+    [Fact]
+    public void GB12_GB13_six_RIs_form_three_flags()
+    {
+        // 6 regional indicators pair into 3 flags exactly: 4 boundaries.
+        var input =
+            "\U0001F1FA\U0001F1F8" + // US
+            "\U0001F1EF\U0001F1F5" + // JP
+            "\U0001F1E9\U0001F1EA";  // DE
+        var b = GraphemeClusterBreaker.FindBoundaries(input);
+        Assert.Equal([0, 4, 8, 12], b);
+    }
+
+    // ───── GB11: Extended_Pictographic ZWJ variants ──────────────────────────
+
+    [Fact]
+    public void GB11_emoji_with_skin_tone_modifier_then_ZWJ_emoji_is_single_grapheme()
+    {
+        // U+1F468 (man, EP) + U+1F3FB (light skin tone modifier, Extend) + U+200D (ZWJ)
+        // + U+1F680 (rocket, EP). GB11 walks (Extend|ZWJ)* between two EP codepoints,
+        // so the whole sequence is one cluster.
+        var input = "\U0001F468\U0001F3FB‍\U0001F680";
+        var b = GraphemeClusterBreaker.FindBoundaries(input);
+        Assert.Equal([0, input.Length], b);
+    }
+
+    [Fact]
+    public void GB11_orphan_ZWJ_at_end_does_not_join_disjoint_clusters()
+    {
+        // Trailing ZWJ with no following EP. ZWJ attaches to the preceding EP via GB9
+        // (× Extend|ZWJ). 'x' that follows is a fresh cluster.
+        var input = "\U0001F468‍x";
+        var b = GraphemeClusterBreaker.FindBoundaries(input);
+        // emoji+ZWJ as one cluster (3 code units), then 'x' as its own cluster.
+        Assert.Equal([0, 3, 4], b);
+    }
+
+    // ───── GB4 / GB5 vs GB9b precedence: Prepend before Control breaks ───────
+
+    [Fact]
+    public void GB5_takes_precedence_over_GB9b_Prepend_before_Control_still_breaks()
+    {
+        // U+0600 ARABIC NUMBER SIGN (Prepend) + U+000A LF (Control/LF). Although GB9b
+        // would say "Prepend × X", GB5's "÷ (Control|CR|LF)" has lower rule number and
+        // wins per the first-match-wins rule order. Boundary must fall between them.
+        var input = "؀\nx";
+        var b = GraphemeClusterBreaker.FindBoundaries(input);
+        // 3 separate clusters: Prepend, LF, x.
+        Assert.Equal([0, 1, 2, 3], b);
+    }
 }

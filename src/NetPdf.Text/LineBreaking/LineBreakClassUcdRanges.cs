@@ -10,11 +10,12 @@ namespace NetPdf.Text.LineBreaking;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Generation.</b> Built once from the canonical UCD file at
-/// <c>https://www.unicode.org/Public/16.0.0/ucd/LineBreak.txt</c>. Regeneration is a
-/// one-line awk/python pipeline; the result is committed verbatim so the table is
-/// reviewable by hand. Stage 12.4-style Roslyn source generator is the eventual
-/// path once we have one for the bidi class table.
+/// <b>Generation.</b> Built offline once from the canonical UCD file at
+/// <c>https://www.unicode.org/Public/16.0.0/ucd/LineBreak.txt</c>. The output is
+/// committed verbatim so the table is reviewable by hand and version-controlled with
+/// the rest of the codebase. A Roslyn source generator that consumes a checked-in
+/// UCD snapshot at build time is the eventual replacement; until then regeneration
+/// is a Python pipeline (one-off offline script).
 /// </para>
 /// <para>
 /// <b>Lookup.</b> Binary search over the sorted range table.

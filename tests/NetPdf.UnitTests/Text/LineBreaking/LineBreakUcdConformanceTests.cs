@@ -19,22 +19,32 @@ namespace NetPdf.UnitTests.Text.LineBreaking;
 public sealed class LineBreakUcdConformanceTests
 {
     /// <summary>
-    /// Minimum pass rate for <c>LineBreakTest.txt</c> (16,672 cases). Currently 99.940%
-    /// (16,662 / 16,672). The 10 remaining failures fall into three categories that need
-    /// additional UCD data not yet integrated:
+    /// Total cases in <c>LineBreakTest.txt</c> 16.0.
+    /// </summary>
+    private const int LineBreakTestTotalCases = 16_672;
+
+    /// <summary>
+    /// Exact expected pass count. Pinning this — instead of just a percentage threshold —
+    /// gates against silent "fix one regress one" behavior: any rule change that flips
+    /// even a single case requires updating either this constant or the algorithm.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Currently 16,663 / 16,672 = 99.946%. The 9 remaining known failures fall into three
+    /// categories awaiting deeper UAX #14 16.0 spec integration:
+    /// </para>
     /// <list type="bullet">
-    ///   <item>LB19a/b East-Asian-Width-aware quotation rules (5 failures): require full
-    ///         <c>EastAsianWidth.txt</c> integration for the QU position context.</item>
-    ///   <item>Brahmic-script LB28a edge cases (3 failures): subtle interactions between
-    ///         AK/AS/AP/VI/VF and ZWNJ in Balinese/Javanese conjuncts.</item>
-    ///   <item>LB30b Extended_Pictographic-with-Cn emoji rule (1 failure): unassigned
-    ///         emoji codepoints treated as EB; requires <c>emoji-data.txt</c>.</item>
+    ///   <item>LB19a/b East-Asian-Width-aware quotation rules (5 failures) — the spec
+    ///         text in 16.0 introduces Pi-QU and Pf-QU sub-rules with EAW context that
+    ///         my partial-implementation attempt regressed cases. Documented as deferred
+    ///         until precise spec text is in hand.</item>
+    ///   <item>Brahmic-script LB28a edge cases (3 failures) — Balinese / Javanese
+    ///         conjunct interactions involving ZWNJ and the AK / AS / AP / VI / VF
+    ///         classes; requires fine-grained UCD class data check.</item>
     ///   <item>LB15-style Pi-QU + ZWSP + AL edge case (1 failure).</item>
     /// </list>
-    /// Baseline pinned at 99.94 — covers regressions while leaving room for these known
-    /// edge cases. Future hardening work drives this to 100%.
-    /// </summary>
-    private const double LineBreakTestBaseline = 0.9994;
+    /// </remarks>
+    private const int LineBreakTestExpectedPassCount = 16_663;
 
     private readonly ITestOutputHelper _output;
 
@@ -44,7 +54,7 @@ public sealed class LineBreakUcdConformanceTests
     }
 
     [Fact]
-    public void LineBreakTest_txt_conformance_meets_baseline()
+    public void LineBreakTest_txt_conformance_pins_exact_pass_count()
     {
         var (passed, failed, samples) = RunLineBreakTest(sampleFailureLimit: 20);
 
@@ -59,9 +69,10 @@ public sealed class LineBreakUcdConformanceTests
                 _output.WriteLine($"  {f}");
             }
         }
-        Assert.True(total > 0, "Expected at least one LineBreakTest.txt case to run.");
-        Assert.True(passRate >= LineBreakTestBaseline,
-            $"LineBreakTest.txt pass rate {passRate:P3} below baseline {LineBreakTestBaseline:P3}.");
+        Assert.Equal(LineBreakTestTotalCases, total);
+        // Exact-count pin: any drop OR rise needs an explicit constant update so silent
+        // "fix one, regress one" stays caught.
+        Assert.Equal(LineBreakTestExpectedPassCount, passed);
     }
 
     private static (int Passed, int Failed, IReadOnlyList<string> Failures) RunLineBreakTest(int sampleFailureLimit)

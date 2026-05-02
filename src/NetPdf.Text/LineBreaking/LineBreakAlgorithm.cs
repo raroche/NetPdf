@@ -268,7 +268,12 @@ internal static class LineBreakAlgorithm
         // LB18: SP ÷ — break is permitted after SP (default for spaces).
         if (left == LineBreakClass.SP) return LineBreakOpportunity.Allowed;
 
-        // LB19: × QU, QU × (don't break before/after quotation).
+        // LB19: × QU, QU × — classic LB19 (no EA-Width relaxation in this implementation).
+        // UAX #14 16.0 introduced LB19a/b sub-rules that relax these in specific contexts
+        // for East-Asian quotation marks. The exact rule text is nuanced enough that a
+        // partial implementation regressed cases — keeping classic LB19 for now and
+        // pinning the 5 East-Asian quotation conformance failures as known gaps. Future
+        // hardening pass can drop in a precise LB19a/b when the spec text is in hand.
         if (left == LineBreakClass.QU || right == LineBreakClass.QU) return LineBreakOpportunity.Prohibited;
 
         // LB20: ÷ CB / CB ÷
@@ -403,8 +408,15 @@ internal static class LineBreakAlgorithm
         if (left == LineBreakClass.RI && right == LineBreakClass.RI && LB30aIsEvenRiCount(infos, i))
             return LineBreakOpportunity.Prohibited;
 
-        // LB30b: EB × EM
-        if (left == LineBreakClass.EB && right == LineBreakClass.EM) return LineBreakOpportunity.Prohibited;
+        // LB30b: EB × EM, plus the extension "[Extended_Pictographic & Cn] × EM" — an
+        // unassigned codepoint inside an Extended_Pictographic range is treated as if it
+        // were an Emoji_Base for the modifier rule.
+        if (right == LineBreakClass.EM
+            && (left == LineBreakClass.EB
+                || LineBreakAuxiliaryData.IsExtendedPictographicCn(infos[i].Codepoint)))
+        {
+            return LineBreakOpportunity.Prohibited;
+        }
 
         // LB31: ÷ ALL — default allow break.
         return LineBreakOpportunity.Allowed;

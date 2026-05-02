@@ -25,4 +25,14 @@
     <PackageReference Include="coverlet.collector" />
   </ItemGroup>
 
+  <!--
+    UCD bidi conformance test data (Stage 12.4). Files come from the canonical UCD at
+    https://www.unicode.org/Public/16.0.0/ucd/ . Stored gzipped (~1.7 MB combined vs.
+    ~15 MB raw) and decompressed at test time via System.IO.Compression.GZipStream.
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="Resources/Ucd/BidiTest.txt.gz" />
+    <EmbeddedResource Include="Resources/Ucd/BidiCharacterTest.txt.gz" />
+  </ItemGroup>
+
 </Project>

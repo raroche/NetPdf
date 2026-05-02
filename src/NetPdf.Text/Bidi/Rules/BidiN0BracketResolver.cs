@@ -63,11 +63,23 @@ internal static class BidiN0BracketResolver
     /// closer whose pair codepoint sits on the stack, emit the matched pair and discard
     /// every opener above it.
     /// </summary>
+    /// <remarks>
+    /// <b>Stack overflow handling.</b> Per UAX #9 BD16: "If an opening paired bracket is
+    /// encountered that would exceed this limit, neither it nor any subsequent matching
+    /// closing paired bracket is processed." So when an opener is skipped due to the
+    /// 63-entry cap, every subsequent closer whose codepoint matches the skipped opener's
+    /// canonical pair is also skipped — preventing the algorithm from forming "shifted"
+    /// pairs that would mis-match natural-nesting boundaries.
+    /// </remarks>
     private static List<BracketPair> FindBracketPairs(Span<BidiCharInfo> chars, BidiIsolatingRunSequence sequence)
     {
         var indices = sequence.FlatIndices;
         var pairs = new List<BracketPair>();
         var stack = new Stack<(int SeqPosition, int PairCodepoint)>();
+        // Tracks the canonical-pair codepoints of openers skipped due to the 63-entry stack
+        // cap. Subsequent closers whose canonical codepoint is in this set are also skipped.
+        HashSet<int>? skippedCloserCanonicals = null;
+
         for (var i = 0; i < indices.Length; i++)
         {
             ref var ch = ref chars[indices[i]];
@@ -84,21 +96,37 @@ internal static class BidiN0BracketResolver
             }
             if (entry.Value.Kind == BidiBrackets.BracketKind.Open)
             {
-                stack.Push((i, entry.Value.PairCodepoint));
+                if (stack.Count < MaxPairs)
+                {
+                    stack.Push((i, entry.Value.PairCodepoint));
+                }
+                else
+                {
+                    // BD16 stack cap exceeded: this opener AND all subsequent matching
+                    // closers are skipped from BD16 processing per the spec.
+                    skippedCloserCanonicals ??= [];
+                    skippedCloserCanonicals.Add(CanonicalizeBracket(entry.Value.PairCodepoint));
+                }
             }
             else
             {
-                // Closer: search the stack for a matching opener (top-down).
+                var closerCanonical = CanonicalizeBracket(ch.Codepoint);
+                if (skippedCloserCanonicals is not null && skippedCloserCanonicals.Contains(closerCanonical))
+                {
+                    continue;
+                }
                 if (stack.Count == 0)
                 {
                     continue;
                 }
                 // Iterate to find a matching opener; pop all openers above it including the match.
+                // UAX #9 BD16 says canonical-equivalent brackets (2329⇔3008, 232A⇔3009) match
+                // each other — compare via the canonical representative codepoint.
                 var temp = stack.ToArray();
                 var matchIdx = -1;
                 for (var s = 0; s < temp.Length; s++)
                 {
-                    if (temp[s].PairCodepoint == ch.Codepoint)
+                    if (CanonicalizeBracket(temp[s].PairCodepoint) == closerCanonical)
                     {
                         matchIdx = s;
                         break;
@@ -227,5 +255,18 @@ internal static class BidiN0BracketResolver
         BidiClass.EN => BidiClass.R,
         BidiClass.AN => BidiClass.R,
         _ => BidiClass.ON,
+    };
+
+    /// <summary>
+    /// Canonicalize bracket codepoints under canonical equivalence per UCD
+    /// <c>BidiMirroring.txt</c>. UAX #9 BD16 specifies that canonical-equivalent brackets
+    /// match each other for pair detection — so U+2329 and U+3008 (left-pointing angle
+    /// brackets) form a pair with either U+232A or U+3009 (right-pointing angle brackets).
+    /// </summary>
+    private static int CanonicalizeBracket(int codepoint) => codepoint switch
+    {
+        0x3008 => 0x2329, // 〈 LEFT ANGLE BRACKET — canonical-equivalent to U+2329
+        0x3009 => 0x232A, // 〉 RIGHT ANGLE BRACKET — canonical-equivalent to U+232A
+        _ => codepoint,
     };
 }

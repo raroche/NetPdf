@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-02 (CRLF paragraph fix + WOFF private-absent tests ✅ — pre-Stage-12.4 hardening)
+**Last updated:** 2026-05-02 (Stage 12.4 ✅ — UCD BidiTest.txt + BidiCharacterTest.txt 100.000% conformance)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -40,7 +40,7 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
 - **Doc:** [`docs/phases/phase-1-pdf-writer-and-text.md`](docs/phases/phase-1-pdf-writer-and-text.md)
 
 ### Active task
-**Task 12 Stage 12.4 — UCD `BidiTest.txt` + `BidiCharacterTest.txt` validation**. Stages 12.3a/b/c are complete — the public `BidiAlgorithm.ResolveLevels` API runs every UAX #9 rule pass. Stage 12.4 imports the UCD conformance test files and iterates against any failures to reach the Phase 1 exit-criteria pass rate. May co-occur with Stage 12.2.x (Roslyn UCD generator) since both depend on a checked-in UCD snapshot.
+**Task 13 — UAX #14 Line breaking** (next). Stage 12 (UAX #9 Bidi) is complete — including 100% conformance against the UCD `BidiTest.txt` + `BidiCharacterTest.txt` test corpora (Unicode 16.0). The bidi engine is now a "proven UAX #9-conformant" implementation. Task 13 implements the Unicode line-breaking algorithm needed for paragraph layout in Phase 3.
 
 ### Subtasks completed
 
@@ -386,6 +386,21 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
   - **`SyntheticWoff.BuildWithMetadataAndPrivate` privLength=0 fix**: when called with `privLength = 0`, the helper now correctly emits `privOffset = 0` (and stops the file at metadata-end) per the spec invariant that privOffset must be zero when private is absent. Prior behavior set a non-zero privOffset that immediately failed `WoffHeader.Parse`'s offset/length consistency check.
   - 15 new tests across `BidiMultiParagraphTests` (12) + `WoffLayoutValidatorTests` (3).
   - Total tests: **1013 unit / 1024 solution-wide passing**.
+
+- **Task 12 Stage 12.4 — UCD BidiTest.txt + BidiCharacterTest.txt 100% conformance** ✅ (2026-05-02)
+  - **Conformance results**: BidiTest.txt — **770,241 / 770,241 passed (100.000%)**; BidiCharacterTest.txt — **91,707 / 91,707 passed (100.000%)**. The UAX #9 implementation is now a proven UAX #9-conformant engine across the full official Unicode 16.0 test corpus.
+  - **Spec basis (clean-room)**: UCD <c>BidiTest.txt</c> and <c>BidiCharacterTest.txt</c> 16.0 from `https://www.unicode.org/Public/16.0.0/ucd/`. Files committed gzipped under `tests/NetPdf.UnitTests/Resources/Ucd/` (~1.7 MB combined vs. ~15 MB raw); decompressed at test time via `System.IO.Compression.GZipStream`.
+  - **Components**:
+    - `BidiUcdConformanceHarness` (`tests/NetPdf.UnitTests/Text/Bidi/Conformance/`): parsers for both UCD test file formats; runs every test case through the algorithm; tallies pass/fail; preserves up to 20 sample failures per run for diagnosis.
+    - `BidiUcdConformanceTests`: xUnit tests with `ITestOutputHelper` summary writes that drive the harness against each file. Baseline pass rate constants (now 1.0 for both) act as regression gates — any drop fails CI.
+    - Embedded-resource registration in `NetPdf.UnitTests.csproj`.
+  - **Bugs found and fixed by the conformance harness**:
+    - **U+061C ARABIC LETTER MARK class** (P1): was `BN` in my UCD ranges, but UCD 16.0 reclassified to `AL` (so it functions as an Arabic-direction marker analogous to LRM/RLM). Fixed in `BidiClassUcdRanges.cs`. Existing test `Arabic_letter_mark_U061C_is_BN` updated to `_is_AL` with a comment explaining the UCD 16.0 reclassification.
+    - **N0 canonical-equivalent brackets** (P1): U+2329/232A and U+3008/3009 are canonical equivalents per UCD `BidiMirroring.txt` — they should match each other for BD16 pair detection. Added `BidiN0BracketResolver.CanonicalizeBracket` and use it in the closer-matches-stack-entry comparison.
+    - **BD16 stack-cap skipped-closer rule** (P1): UAX #9 BD16 says "If an opening paired bracket is encountered that would exceed this limit, neither it nor any subsequent matching closing paired bracket is processed." My initial impl skipped only the opener, leaving subsequent closers to form "shifted" pairs with non-natural-nesting brackets. Fixed by tracking skipped openers' canonical pair codepoints in a `HashSet<int>` and skipping any subsequent closer whose canonical codepoint is in that set. The deeply-nested 64-pair test case now passes.
+  - **Performance**: BidiTest.txt (770K cases) runs in ~600 ms; BidiCharacterTest.txt (92K cases) in ~200 ms. The harness streams from the gzipped resource and minimizes per-case allocation.
+  - 2 new tests in `BidiUcdConformanceTests` (one per UCD file) plus the harness infrastructure. Existing test `Arabic_letter_mark_U061C_is_BN` updated.
+  - Total tests: **1015 unit / 1026 solution-wide passing**.
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

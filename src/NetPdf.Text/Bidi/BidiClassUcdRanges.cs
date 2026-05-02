@@ -186,7 +186,7 @@ internal static class BidiClassUcdRanges
         new(0x060E, 0x060F, (byte)BidiClass.ON),
         new(0x0610, 0x061A, (byte)BidiClass.NSM),
         new(0x061B, 0x061B, (byte)BidiClass.AL),
-        new(0x061C, 0x061C, (byte)BidiClass.BN), // ARABIC LETTER MARK
+        new(0x061C, 0x061C, (byte)BidiClass.AL), // ARABIC LETTER MARK (UCD 16.0 reclassified from BN to AL)
         new(0x061D, 0x061D, (byte)BidiClass.ON),
         new(0x061E, 0x064A, (byte)BidiClass.AL),
         new(0x064B, 0x065F, (byte)BidiClass.NSM),

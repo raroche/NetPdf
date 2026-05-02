@@ -190,9 +190,12 @@ public sealed class BidiClassTableTests
     }
 
     [Fact]
-    public void Arabic_letter_mark_U061C_is_BN()
+    public void Arabic_letter_mark_U061C_is_AL()
     {
-        Assert.Equal(BidiClass.BN, BidiClassTable.GetClass(0x061C));
+        // U+061C ARABIC LETTER MARK was reclassified from BN to AL in UCD 16.0 so it
+        // functions as an Arabic-direction marker (analogous to U+200E LRM and U+200F RLM
+        // for Latin/Hebrew). Without this class, ALM does not actually influence direction.
+        Assert.Equal(BidiClass.AL, BidiClassTable.GetClass(0x061C));
     }
 
     [Fact]

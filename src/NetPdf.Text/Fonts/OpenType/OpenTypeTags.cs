@@ -50,6 +50,18 @@ internal static class OpenTypeTags
     /// <summary>CFF / CFF2 outlines. Required for OTF/CFF.</summary>
     public const uint Cff = 0x43464620u;  // "CFF "
 
+    /// <summary>Control Value Table — TTF hinting data. Optional; pass through for raster fidelity.</summary>
+    public const uint Cvt = 0x63767420u;  // "cvt "
+
+    /// <summary>Font program — TTF hinting instructions executed once at startup. Optional; pass through.</summary>
+    public const uint Fpgm = 0x6670676Du; // "fpgm"
+
+    /// <summary>Pre-program (control value program) — TTF hinting init per font size. Optional; pass through.</summary>
+    public const uint Prep = 0x70726570u; // "prep"
+
+    /// <summary>Grid-fitting and scan-conversion procedure. Optional; pass through.</summary>
+    public const uint Gasp = 0x67617370u; // "gasp"
+
     /// <summary>SFNT magic for TTF (TrueType outlines). <c>0x00010000</c>.</summary>
     public const uint SfntVersionTtf = 0x00010000u;
 

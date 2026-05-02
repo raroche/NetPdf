@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-01 (Task 10 ✅ — Type 0 / CIDFontType2 wrapper + SFNT envelope builder)
+**Last updated:** 2026-05-01 (post-Task-10 hardening ✅ — /W width fix, fsType policy, preflight, name sanitization, hinting passthrough)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -217,6 +217,17 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
   - **CFF embedding** (`FontFile3` / subtype `CIDFontType0C`) deferred along with CFF subsetting; Phase 1 covers TTF only.
   - **Dual-layer tests**: `SfntEnvelopeBuilderTests` (6 unit tests covering empty/missing-head rejection, scaler magic, tag-ordering, 4-byte alignment, `checkSumAdjustment` patching, byte-determinism); `EmbeddedTtfFontTests` (8 unit tests covering Type 0 / CIDFontType2 / FontDescriptor required keys, CIDSystemInfo Adobe-Identity-0 invariant, FontFile2 `/Length1` correctness, /W array shape, build determinism, OTF-rejection); `EmbeddedTtfFontIntegrationTests` (5 integration tests covering full pipeline round-trip — embedded SFNT re-parses through `TableDirectory.Parse` / `MaxpTable.Parse` / `HheaTable.Parse` / `LocaTable.Parse` with consistent glyph counts; ToUnicode round-trips to the expected `<0001> <0041>` / `<0002> <0042>` bfchar entries; DescendantFonts[0] is the same `PdfDictionary` instance as the result's `CidFontDictionary`; FontDescriptor inside CIDFont is the same instance as the result's `FontDescriptorDictionary`; FontFile2 inside FontDescriptor is the same instance as the result's `FontFile2Stream`).
   - Total tests: **593 unit / 604 solution-wide passing**.
+
+- **Post-Task-10 hardening pass** ✅ (2026-05-01) — tenth review-driven round.
+  - **/W width bug fix (P1 #1)**: `BuildWidthsArray` was casting unsigned hmtx advance widths to `short` before scaling, wrapping any value > 32767 (legitimate for wide glyphs in some fonts) into a negative width. Fixed to read advances as `ushort` and pass `unitsPerEm` through once instead of re-reading head bytes per-glyph. Verified by test: a glyph with advance 60000 now produces a positive 60000-unit /W entry.
+  - **OS/2.fsType embedding policy (P1 #2)**: `EnforceEmbeddingPolicy` rejects fonts marked restricted-license (bit 1), no-subsetting (bit 8), or bitmap-only (bit 9). Honors the legal/licensing contract OpenType embeds in fsType — silent embedding of a restricted-license font is a compliance violation regardless of how the font reached us. Installable, preview-print, and editable fonts all pass through.
+  - **Trust-boundary preflight (P1 #3)**: `Validate(font, subset, toUnicode)` runs before any byte production. Calls `subset.Plan.Validate(font)` (defense in depth even though `TtfSubsetter` already validates), checks subset table lengths against the declared glyph count (head ≥ 54, hhea ≥ 36, maxp ≥ 6, hmtx == numGlyphs × 4, loca == (numGlyphs+1) × format-size), and verifies every ToUnicode key falls within `[0, plan.NumGlyphs)`. Hand-built or out-of-band `TtfSubsetResult` / `ToUnicodeCMap` values reject here instead of producing broken PDF font dictionaries.
+  - **PostScript-name sanitization (P2 #4)**: `PostScriptName.Sanitize(string)` keeps ASCII letters / digits / `-` / `+` / `_`, drops everything else, caps at 63 chars per the PLRM spec, and falls back to `"Font" + 8 hex of SHA-256(UTF-8(raw))` when nothing alphabetic survives. `TtfSubsetter` runs the source font's PostScriptName-or-FamilyName through it so embedded BaseFont stays ASCII-clean for international fonts (CJK, Cyrillic, etc.).
+  - **Hinting-table pass-through (P2 #5)**: `cvt`, `fpgm`, `prep`, `gasp` are now copied from the source font into the embedded SFNT when present. Optional but improves raster fidelity at small sizes in viewers that honor TrueType hinting. Fonts without hinting tables (e.g., the synthetic test fixture) embed the same minimal envelope as before.
+  - **Added OpenTypeTags constants** for `cvt`, `fpgm`, `prep`, `gasp`.
+  - **CIDSet (P2 #6)** and **FontDescriptor metric tuning (P2 #7)** explicitly deferred to Phase 1.x per the review.
+  - 15 new tests in `EmbeddedTtfFontHardeningTests.cs` (advance width > 32767 preserved; restricted-license / no-subsetting / bitmap-only fsType all rejected; installable / preview-print / editable all accepted; hand-built subset with wrong hmtx length rejected; ToUnicode with out-of-subset CID rejected; cross-font subset rejected via plan validation; CJK family-name sanitization; sanitizer keeps allowed chars / drops disallowed / falls back to hash / truncates at 63 / determinism; hinting-table pass-through verified; absent hinting tables not invented). `FontByteMutator` test helper added for fsType / hmtx / name / table-replacement mutations.
+  - Total tests: **608 unit / 619 solution-wide passing**.
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

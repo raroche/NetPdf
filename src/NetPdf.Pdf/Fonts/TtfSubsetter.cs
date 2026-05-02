@@ -73,8 +73,13 @@ internal static class TtfSubsetter
         //    upper bounds — they're maxima and remain valid for any subset.
         var maxpBytes = EmitMaxp(font, (ushort)plan.NumGlyphs);
 
-        // 7. Resolve the source font's PostScript / family name for the BaseFont prefix.
-        var sourceName = font.Name.PostScriptName ?? font.Name.FamilyName ?? "Subset";
+        // 7. Resolve the source font's PostScript / family name for the BaseFont. PostScript
+        //    names from the font are already ASCII-clean, but FamilyName fallbacks can carry
+        //    arbitrary Unicode (CJK fonts, decorative scripts) that's invalid in PDF names —
+        //    sanitize through PostScriptName.Sanitize so the embedded BaseFont stays
+        //    spec-clean and viewer-portable.
+        var rawName = font.Name.PostScriptName ?? font.Name.FamilyName ?? "Subset";
+        var sourceName = PostScriptName.Sanitize(rawName);
         var prefix = SubsetPrefix.Derive(sourceName, plan.OrderedOldGlyphIds);
 
         return new TtfSubsetResult

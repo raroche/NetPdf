@@ -1,6 +1,7 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System.Buffers.Binary;
 using NetPdf.Pdf.Objects;
 using NetPdf.Text.Fonts.OpenType;
 
@@ -14,12 +15,29 @@ namespace NetPdf.Pdf.Fonts;
 /// </summary>
 /// <remarks>
 /// <para>
+/// <b>Embedding policy.</b> The <c>OS/2</c> table's <c>fsType</c> field declares the font
+/// vendor's embedding-permission policy (OpenType §"OS/2 — fsType"). <see cref="Build"/>
+/// rejects fonts marked <i>restricted-license embedding</i> (bit 1), <i>no-subsetting</i>
+/// (bit 8), or <i>bitmap-only embedding</i> (bit 9). The remaining categories
+/// (installable, preview-print, editable) are allowed. Honoring fsType is a legal /
+/// licensing requirement; silently embedding a restricted-license font is a compliance
+/// violation regardless of how the font reached our hands.
+/// </para>
+/// <para>
+/// <b>Trust boundary.</b> Build runs a <see cref="Validate"/> preflight before any byte
+/// production: the plan is validated against the source font, subset table lengths must
+/// match the declared glyph count, and every ToUnicode key must fall within the subset
+/// CID range. Catches hand-built or out-of-band <see cref="TtfSubsetResult"/> /
+/// <see cref="ToUnicodeCMap"/> values before they produce broken PDF font dictionaries.
+/// </para>
+/// <para>
 /// <b>Tables embedded in the SFNT.</b> ISO 32000-2 §9.7.4.2 lets us strip tables that the
 /// PDF reader doesn't consume when <c>/CIDToGIDMap /Identity</c> is used:
 /// </para>
 /// <list type="bullet">
 /// <item>Required: <c>head</c>, <c>hhea</c>, <c>hmtx</c>, <c>maxp</c>, <c>glyf</c>, <c>loca</c>.</item>
 /// <item>Useful for the FontDescriptor descriptor: <c>OS/2</c>, <c>name</c>, <c>post</c>.</item>
+/// <item>Optional hinting tables (<c>cvt</c>, <c>fpgm</c>, <c>prep</c>, <c>gasp</c>) carried through when present — they improve rendering at small sizes in viewers that honor TrueType hinting.</item>
 /// <item>Stripped: <c>cmap</c> — Identity-H bypasses it; the PDF's <c>/ToUnicode</c> handles text extraction.</item>
 /// </list>
 /// <para>
@@ -32,7 +50,8 @@ namespace NetPdf.Pdf.Fonts;
 /// <para>
 /// <b>/W array</b> emits one width per subset glyph in the compact "[0 [w0 w1 … wN]]"
 /// form. Range-collapsed forms ("[a b w]" for runs of equal-width glyphs) are a future
-/// optimization.
+/// optimization. Per-glyph advance widths are read as <see cref="ushort"/> so values
+/// above 32767 (legitimately used by some fonts for wide glyphs) survive scaling.
 /// </para>
 /// </remarks>
 internal static class EmbeddedTtfFont
@@ -44,6 +63,11 @@ internal static class EmbeddedTtfFont
 
     /// <summary>head.macStyle italic bit (bit 1).</summary>
     private const ushort MacStyleItalic = 0x0002;
+
+    // OS/2 fsType embedding-permission bits per OpenType "OS/2" §"fsType".
+    private const ushort FsTypeRestrictedLicense = 0x0002;
+    private const ushort FsTypeNoSubsetting = 0x0100;
+    private const ushort FsTypeBitmapOnly = 0x0200;
 
     // FontDescriptor /Flags bits per ISO 32000-2 §9.8.2 Table 117.
     private const int FlagFixedPitch = 1 << 0;
@@ -60,6 +84,9 @@ internal static class EmbeddedTtfFont
             throw new InvalidOperationException("EmbeddedTtfFont.Build requires a TTF-flavored source font.");
         }
 
+        EnforceEmbeddingPolicy(sourceFont);
+        Validate(sourceFont, subset, toUnicode);
+
         // 1. Build the SFNT envelope from subset + pass-through tables.
         var sfntBytes = BuildSfntEnvelope(sourceFont, subset);
 
@@ -71,10 +98,11 @@ internal static class EmbeddedTtfFont
         var toUnicodeStream = new PdfStream(toUnicodeBytes);
 
         // 4. /FontDescriptor.
-        var descriptor = BuildFontDescriptor(sourceFont, subset, fontFile2);
+        var unitsPerEm = sourceFont.Head.UnitsPerEm;
+        var descriptor = BuildFontDescriptor(sourceFont, subset, fontFile2, unitsPerEm);
 
         // 5. CIDFontType2 (the descendant font).
-        var cidFont = BuildCidFont(subset, descriptor);
+        var cidFont = BuildCidFont(subset, descriptor, unitsPerEm);
 
         // 6. Type 0 wrapper.
         var type0 = BuildType0Font(subset, cidFont, toUnicodeStream);
@@ -90,9 +118,89 @@ internal static class EmbeddedTtfFont
         };
     }
 
+    private static void EnforceEmbeddingPolicy(OpenTypeFont sourceFont)
+    {
+        var fsType = sourceFont.Os2.FsType;
+        if ((fsType & FsTypeRestrictedLicense) != 0)
+        {
+            throw new InvalidOperationException(
+                "Font is licensed for restricted-license embedding only (OS/2.fsType bit 1). " +
+                "Embedding requires permission from the font vendor; not embedding by default.");
+        }
+        if ((fsType & FsTypeNoSubsetting) != 0)
+        {
+            throw new InvalidOperationException(
+                "Font has the no-subsetting bit set (OS/2.fsType bit 8). " +
+                "We always subset; cannot embed this font without violating its license.");
+        }
+        if ((fsType & FsTypeBitmapOnly) != 0)
+        {
+            throw new InvalidOperationException(
+                "Font has the bitmap-only embedding bit set (OS/2.fsType bit 9). " +
+                "Our outline-based path is incompatible with bitmap-only embedding.");
+        }
+    }
+
+    /// <summary>
+    /// Cross-component preflight: subset bytes must match the plan's declared glyph count
+    /// at structural-length level, and every ToUnicode key must be a valid subset CID.
+    /// </summary>
+    private static void Validate(OpenTypeFont sourceFont, TtfSubsetResult subset, ToUnicodeCMap toUnicode)
+    {
+        // Plan-vs-font (defense-in-depth — TtfSubsetter already validated, but a hand-built
+        // subset would skip that path).
+        subset.Plan.Validate(sourceFont);
+
+        if (subset.HeadBytes.Length < 54)
+        {
+            throw new InvalidOperationException(
+                $"Subset head table is {subset.HeadBytes.Length} bytes; need at least 54.");
+        }
+        if (subset.HheaBytes.Length < 36)
+        {
+            throw new InvalidOperationException(
+                $"Subset hhea table is {subset.HheaBytes.Length} bytes; need at least 36.");
+        }
+        if (subset.MaxpBytes.Length < 6)
+        {
+            throw new InvalidOperationException(
+                $"Subset maxp table is {subset.MaxpBytes.Length} bytes; need at least 6.");
+        }
+
+        // hmtx subsetter emits one long metric per subset glyph (4 bytes each, no lsb-only trail).
+        var expectedHmtx = subset.Plan.NumGlyphs * 4;
+        if (subset.HmtxBytes.Length != expectedHmtx)
+        {
+            throw new InvalidOperationException(
+                $"Subset hmtx table is {subset.HmtxBytes.Length} bytes; expected {expectedHmtx} for {subset.Plan.NumGlyphs} glyph(s).");
+        }
+
+        // loca: subset.NumGlyphs+1 entries × (2 or 4) bytes per entry depending on head.indexToLocFormat.
+        var indexToLocFormat = BinaryPrimitives.ReadInt16BigEndian(subset.HeadBytes.Span.Slice(50, 2));
+        var locaEntrySize = indexToLocFormat == 0 ? 2 : 4;
+        var expectedLoca = (subset.Plan.NumGlyphs + 1) * locaEntrySize;
+        if (subset.LocaBytes.Length != expectedLoca)
+        {
+            throw new InvalidOperationException(
+                $"Subset loca table is {subset.LocaBytes.Length} bytes; expected {expectedLoca} for " +
+                $"{subset.Plan.NumGlyphs}+1 entr(ies) × {locaEntrySize} byte(s) (indexToLocFormat = {indexToLocFormat}).");
+        }
+
+        // ToUnicode keys must fall within the subset CID range. The cmap-fallback factory
+        // already produces valid keys, but a hand-built ToUnicode could carry stale entries.
+        foreach (var key in toUnicode.SubsetGlyphIdToText.Keys)
+        {
+            if (key < 0 || key >= subset.Plan.NumGlyphs)
+            {
+                throw new InvalidOperationException(
+                    $"ToUnicode entry maps subset glyph id {key}, but the subset only covers [0, {subset.Plan.NumGlyphs}).");
+            }
+        }
+    }
+
     private static byte[] BuildSfntEnvelope(OpenTypeFont sourceFont, TtfSubsetResult subset)
     {
-        var tables = new Dictionary<uint, ReadOnlyMemory<byte>>(9)
+        var tables = new Dictionary<uint, ReadOnlyMemory<byte>>(13)
         {
             { OpenTypeTags.Head, subset.HeadBytes },
             { OpenTypeTags.Hhea, subset.HheaBytes },
@@ -101,11 +209,18 @@ internal static class EmbeddedTtfFont
             { OpenTypeTags.Loca, subset.LocaBytes },
             { OpenTypeTags.Glyf, subset.GlyfBytes },
         };
-        // Pass-through tables — copied verbatim from source. cmap intentionally stripped
-        // (Identity-H + /ToUnicode supersedes its role).
+        // Pass-through tables: descriptor metrics + diagnostics. cmap intentionally
+        // stripped (Identity-H + /ToUnicode supersede its role).
         AddPassThroughTable(tables, sourceFont, OpenTypeTags.Os2);
         AddPassThroughTable(tables, sourceFont, OpenTypeTags.Name);
         AddPassThroughTable(tables, sourceFont, OpenTypeTags.Post);
+
+        // Hinting tables: optional but improve raster fidelity at small sizes in viewers
+        // that honor TrueType hinting. Pass-through when present.
+        AddPassThroughTable(tables, sourceFont, OpenTypeTags.Cvt);
+        AddPassThroughTable(tables, sourceFont, OpenTypeTags.Fpgm);
+        AddPassThroughTable(tables, sourceFont, OpenTypeTags.Prep);
+        AddPassThroughTable(tables, sourceFont, OpenTypeTags.Gasp);
 
         return SfntEnvelopeBuilder.BuildTtf(tables);
     }
@@ -135,9 +250,9 @@ internal static class EmbeddedTtfFont
     private static PdfDictionary BuildFontDescriptor(
         OpenTypeFont sourceFont,
         TtfSubsetResult subset,
-        PdfStream fontFile2)
+        PdfStream fontFile2,
+        ushort unitsPerEm)
     {
-        var unitsPerEm = sourceFont.Head.UnitsPerEm;
         var bbox = new PdfArray()
             .Add(new PdfInteger(ScaleToGlyphSpace(sourceFont.Head.XMin, unitsPerEm)))
             .Add(new PdfInteger(ScaleToGlyphSpace(sourceFont.Head.YMin, unitsPerEm)))
@@ -172,14 +287,14 @@ internal static class EmbeddedTtfFont
         return descriptor;
     }
 
-    private static PdfDictionary BuildCidFont(TtfSubsetResult subset, PdfDictionary descriptor)
+    private static PdfDictionary BuildCidFont(TtfSubsetResult subset, PdfDictionary descriptor, ushort unitsPerEm)
     {
         var cidSystemInfo = new PdfDictionary()
             .Set(PdfNames.Registry, new PdfLiteralString("Adobe"))
             .Set(PdfNames.Ordering, new PdfLiteralString("Identity"))
             .Set(PdfNames.Supplement, new PdfInteger(0));
 
-        var widths = BuildWidthsArray(subset);
+        var widths = BuildWidthsArray(subset, unitsPerEm);
 
         return new PdfDictionary()
             .Set(PdfNames.Type, PdfNames.Font)
@@ -207,7 +322,7 @@ internal static class EmbeddedTtfFont
             .Set(PdfNames.ToUnicode, toUnicodeStream);
     }
 
-    private static PdfArray BuildWidthsArray(TtfSubsetResult subset)
+    private static PdfArray BuildWidthsArray(TtfSubsetResult subset, ushort unitsPerEm)
     {
         // Phase 1 emits the simple "[0 [w0 w1 … wN]]" form — one CID range starting at 0
         // with explicit per-glyph widths. Range-collapsed forms (run-length encoding for
@@ -218,21 +333,16 @@ internal static class EmbeddedTtfFont
         var perGlyph = new PdfArray();
         var hmtx = subset.HmtxBytes.Span;
         // Subset hmtx is "1 longHorMetric per glyph" so each entry is 4 bytes:
-        // uint16 advance + int16 lsb.
+        // uint16 advance + int16 lsb. Read advance as ushort (NOT short — fonts can have
+        // legitimate widths > 32767 that would wrap to negatives under signed cast).
         for (var i = 0; i < subset.Plan.NumGlyphs; i++)
         {
-            var advanceFontUnits = (hmtx[i * 4] << 8) | hmtx[(i * 4) + 1];
-            var advance = ScaleToGlyphSpace((short)advanceFontUnits, GetUnitsPerEmFromHead(subset.HeadBytes.Span));
+            var advanceFontUnits = (ushort)((hmtx[i * 4] << 8) | hmtx[(i * 4) + 1]);
+            var advance = ScaleToGlyphSpace(advanceFontUnits, unitsPerEm);
             perGlyph.Add(new PdfInteger(advance));
         }
         widths.Add(perGlyph);
         return widths;
-    }
-
-    private static ushort GetUnitsPerEmFromHead(ReadOnlySpan<byte> headBytes)
-    {
-        // unitsPerEm sits at offset 18 of head (uint16).
-        return (ushort)((headBytes[18] << 8) | headBytes[19]);
     }
 
     /// <summary>Scale a font-design-units value to PDF glyph space (1000 units / em).</summary>

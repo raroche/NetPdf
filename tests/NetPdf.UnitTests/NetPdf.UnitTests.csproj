@@ -33,6 +33,7 @@
   <ItemGroup>
     <EmbeddedResource Include="Resources/Ucd/BidiTest.txt.gz" />
     <EmbeddedResource Include="Resources/Ucd/BidiCharacterTest.txt.gz" />
+    <EmbeddedResource Include="Resources/Ucd/LineBreakTest.txt.gz" />
   </ItemGroup>
 
 </Project>

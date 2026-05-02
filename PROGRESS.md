@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-02 (Stage 12.4 ✅ — UCD BidiTest.txt + BidiCharacterTest.txt 100.000% conformance)
+**Last updated:** 2026-05-02 (Task 13 UAX #14 Line Breaking ✅ — 99.940% UCD LineBreakTest.txt conformance)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -40,7 +40,7 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
 - **Doc:** [`docs/phases/phase-1-pdf-writer-and-text.md`](docs/phases/phase-1-pdf-writer-and-text.md)
 
 ### Active task
-**Task 13 — UAX #14 Line breaking** (next). Stage 12 (UAX #9 Bidi) is complete — including 100% conformance against the UCD `BidiTest.txt` + `BidiCharacterTest.txt` test corpora (Unicode 16.0). The bidi engine is now a "proven UAX #9-conformant" implementation. Task 13 implements the Unicode line-breaking algorithm needed for paragraph layout in Phase 3.
+**Task 14 — UAX #29 Segmentation** (next). Tasks 12 (UAX #9 Bidi) and 13 (UAX #14 Line Breaking) are complete with 100% / 99.940% UCD test corpus conformance respectively. Task 14 implements grapheme-cluster, word, and sentence segmentation needed for cursor movement, selection, and shaping boundary detection in Phase 3 layout.
 
 ### Subtasks completed
 
@@ -401,6 +401,23 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
   - **Performance**: BidiTest.txt (770K cases) runs in ~600 ms; BidiCharacterTest.txt (92K cases) in ~200 ms. The harness streams from the gzipped resource and minimizes per-case allocation.
   - 2 new tests in `BidiUcdConformanceTests` (one per UCD file) plus the harness infrastructure. Existing test `Arabic_letter_mark_U061C_is_BN` updated.
   - Total tests: **1015 unit / 1026 solution-wide passing**.
+
+- **Task 13 — UAX #14 Line Breaking Algorithm** ✅ (2026-05-02)
+  - **Conformance result**: UCD `LineBreakTest.txt` 16.0 — **16,662 / 16,672 passed (99.940%)**. The 10 remaining failures are deep edge cases requiring additional UCD data integrations (East Asian Width for LB19a/b quotation rules, Extended_Pictographic for LB30b emoji-modifier rule, refined Brahmic-script LB28a interactions). Baseline pinned at 99.94% as a regression gate.
+  - **Spec basis (clean-room)**: UAX #14 16.0 (`https://www.unicode.org/reports/tr14/`). Class data from UCD `LineBreak.txt` 16.0; rules LB1–LB31 from §6 + §7. Auxiliary data (East-Asian-Wide OP/CP for LB30, Pi/Pf-QU for LB15a/b) from UCD `EastAsianWidth.txt` + `UnicodeData.txt`. No code transliterated from any third-party implementation.
+  - **Components under `src/NetPdf.Text/LineBreaking/`**:
+    - `LineBreakClass` enum (48 classes — non-tailorable + tailorable + Unicode 15+ Brahmic AK/AP/AS/VF/VI).
+    - `LineBreakClassUcdRanges` (~3,670 lines, generated from `LineBreak.txt` 16.0; binary-search lookup; default XX for unassigned).
+    - `LineBreakClassTable` (validating wrapper around the ranges lookup).
+    - `LineBreakOpportunity` enum (Mandatory / Allowed / Prohibited).
+    - `LineBreakAuxiliaryData` (FrozenSets for EAW OP/CP, Pi-QU, Pf-QU codepoints).
+    - `LineBreakAlgorithm.FindBreaks` — public entry point. UTF-16 → per-codepoint decode; LB1 class transformations (AI/SG/XX/CJ/SA → AL; CB stays CB so LB20 fires); LB9 + LB10 combining-mark / ZWJ attach to base; LB2-LB31 rule walk with first-match-wins ordering; per-UTF-16-code-unit output expansion (surrogate pairs share one opportunity at the trailing code unit).
+  - **Rule coverage**: LB2 (× sot), LB3 (eot ÷), LB4 (BK !), LB5 (CR/LF/NL handling with CRLF kept), LB6 (× BK/CR/LF/NL), LB7 (× SP/ZW), LB8 (ZW SP* ÷), LB8a (ZWJ ×), LB9 (× CM/ZWJ-after-base), LB11 (× WJ / WJ ×), LB12 (GL ×), LB12a ([^SP/BA/HY] × GL), LB13 (× CL/CP/EX/IS/SY), LB14 (OP SP* ×), LB15a (Pi-QU SP* ×), LB15b (SP × Pf-QU EOT|...), LB15c (SP ÷ IS NU — decimal-mark exception to LB13), LB16 ((CL|CP) SP* × NS), LB17 (B2 SP* × B2), LB18 (SP ÷), LB19 (× QU / QU ×), LB20 (÷ CB / CB ÷), LB20a ((sot|...) HY|U+2010 × AL — word-initial hyphen, CM-aware lookback), LB21 (× BA/HY/NS, BB ×), LB21a (HL HY|BA × [^HL]), LB21b (SY × HL), LB22 (× IN), LB23 (numbers + letters), LB23a (PR × ID/EB/EM, ID/EB/EM × PO), LB24 ((PR|PO) × (AL|HL), (AL|HL) × (PR|PO)), LB25 (full numeric-sequence with PR/PO × OP/HY/IS NU and NU body and trailing PR/PO), LB26 (Hangul JL/JV/JT/H2/H3 transitions), LB27 (Hangul + IN/PO + PR), LB28 ((AL|HL) × (AL|HL)), LB28a (AP/AK/AS/VF/VI Brahmic conjuncts with DOTTED_CIRCLE U+25CC equivalence), LB29 (IS × (AL|HL)), LB30 ((AL|HL|NU) × OP-EAW, CP-EAW × (AL|HL|NU)), LB30a (RI RI × with even-count rule and CM-aware), LB30b (EB × EM), LB31 (default ÷).
+  - **CM lookback handling**: dedicated `IsAttachedCombiningMark` helper that the lookback walks (LB8, LB14, LB15a, LB16, LB17, LB20a, LB30a) consult to skip CM/ZWJ positions LB9 has merged into the preceding base.
+  - **UCD test integration**: `BidiUcdConformanceHarness`-style infrastructure adapted for the line-break test format (` × CP × CP ÷ CP ÷` notation). `LineBreakTest.txt.gz` (190 KB compressed, 3 MB raw) committed as embedded resource. Per-line parser + per-codepoint expected-vs-actual comparison.
+  - **Pass-rate progression** during Stage 13.3 hardening: first run 82.054% → after LB9 ZWJ rewrite + LB13 IS 84.525% → after LB15a/b Pi/Pf + LB30 EAW 85.677% → after LB9 break-prohibition + LB25 NU-aware 99.178% → after LB1 keep CB + LB20a + LB25 IS×NU 99.412% → after CM-skip lookbacks + LB10 ZWJ + LB20a U+2010 + LB30a CM-skip 99.898% → after LB15c + LB21a HL exception + LB28a DC + LB28a VI fix **99.940%**.
+  - 1 new test in `LineBreakUcdConformanceTests` plus the harness infrastructure.
+  - Total tests: **1016 unit / 1027 solution-wide passing**.
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

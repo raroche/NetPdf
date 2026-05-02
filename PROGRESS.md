@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-02 (Post-Task-13 hardening ✅ — 99.946% conformance + LB30b extension + EAW/Pi/Pf/emoji aux data + granular tests + exact pass-count gate)
+**Last updated:** 2026-05-02 (Task 14 Stage 14.1 UAX #29 grapheme cluster boundaries ✅ — 100% UCD GraphemeBreakTest.txt conformance)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -40,7 +40,7 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
 - **Doc:** [`docs/phases/phase-1-pdf-writer-and-text.md`](docs/phases/phase-1-pdf-writer-and-text.md)
 
 ### Active task
-**Task 14 — UAX #29 Segmentation** (next). Tasks 12 (UAX #9 Bidi) and 13 (UAX #14 Line Breaking) are complete with 100% / 99.940% UCD test corpus conformance respectively. Task 14 implements grapheme-cluster, word, and sentence segmentation needed for cursor movement, selection, and shaping boundary detection in Phase 3 layout.
+**Task 15 — Liang hyphenation + en-us patterns** (next). Tasks 12 / 13 / 14.1 are complete with 100% / 99.946% / 100% UCD conformance respectively. Stage 14.1 (grapheme cluster boundaries) is shipped; Stage 14.2 (word boundaries) and Stage 14.3 (sentence boundaries) are post-Phase-1 since cursor movement and shaping only need grapheme clusters. Task 15 implements the Liang hyphenation algorithm with a bundled en-us pattern set.
 
 ### Subtasks completed
 
@@ -429,6 +429,21 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
   - **Readability cleanup**: removed the stale "Stage 12.4-style" comment in `LineBreakClassUcdRanges`; clarified the offline-Python regeneration model + the eventual Roslyn-source-generator path.
   - 36 new tests across `LineBreakAlgorithmTests` (24) + `LineBreakKnownFailuresTests` (5) + 7 conformance/API enhancement tests.
   - Total tests: **1052 unit / 1063 solution-wide passing**.
+
+- **Task 14 Stage 14.1 — UAX #29 Grapheme Cluster Boundaries** ✅ (2026-05-02)
+  - **Conformance result**: UCD `auxiliary/GraphemeBreakTest.txt` 16.0 — **1,093 / 1,093 passed (100.000%)** on first run. The grapheme-cluster engine is a proven UAX #29-conformant implementation across the full official test corpus.
+  - **Spec basis (clean-room)**: UAX #29 16.0 §3.1.1 (`https://www.unicode.org/reports/tr29/`). Class data from UCD `auxiliary/GraphemeBreakProperty.txt` 16.0; Extended_Pictographic data from `emoji-data.txt`; Indic_Conjunct_Break (InCB) Consonant/Linker/Extend data from `DerivedCoreProperties.txt`. No code transliterated from any third-party implementation.
+  - **Components under `src/NetPdf.Text/Segmentation/`**:
+    - `GraphemeClusterBreakProperty` enum — 14 values (Other, CR, LF, Control, Extend, ZWJ, Regional_Indicator, Prepend, SpacingMark, L, V, T, LV, LVT).
+    - `GraphemeClusterBreakUcdRanges` — sorted, non-overlapping range table from UCD; binary-search lookup; default Other for unlisted codepoints.
+    - `SegmentationAuxiliaryData` — Extended_Pictographic ranges (for GB11 emoji-ZWJ sequence detection) + InCB Consonant/Linker/Extend ranges (for GB9c Indic conjunct rule).
+    - `GraphemeClusterBreaker.FindBoundaries` — public entry point. UTF-16 → per-codepoint decode → walk applying GB3-GB13 + GB999 default; output is sorted boundary positions including 0 (GB1 sot) and text length (GB2 eot).
+  - **Rule coverage**: GB1 sot ÷, GB2 eot ÷, GB3 CR × LF, GB4 (Control|CR|LF) ÷, GB5 ÷ (Control|CR|LF), GB6 L × (L|V|LV|LVT), GB7 (LV|V) × (V|T), GB8 (LVT|T) × T, GB9 × (Extend|ZWJ), GB9a × SpacingMark, GB9b Prepend ×, GB9c Indic conjunct (InCB lookback), GB11 emoji ZWJ sequences (Extended_Pictographic Extend* ZWJ × Extended_Pictographic), GB12/GB13 RI parity (odd-RI-count × even-RI-count split for flag-emoji pairs), GB999 default ÷.
+  - **UCD test integration**: `GraphemeBreakTest.txt.gz` (10 KB compressed) committed as embedded resource. `GraphemeBreakUcdConformanceTests` parses ×/÷ symbols between codepoint hex tokens and asserts exact pass-count pin (1,093) — gates against silent regressions.
+  - **Granular tests** — `GraphemeClusterBreakerTests` (19 tests) covers API shape (empty input, GB1/GB2 boundaries), GB3 CRLF, GB4/GB5 Control/CR/LF, GB6 Hangul L+V composition, GB8 Hangul LV+T, GB9 combining mark, GB9a SpacingMark, GB9b Prepend, GB11 emoji ZWJ sequence, GB12 RI flag pair at sot, GB13 multiple flag pairs, GB9c Indic conjunct, supplementary-plane single-grapheme-spanning-two-code-units, determinism.
+  - **Stages 14.2 (word boundaries) and 14.3 (sentence boundaries) deferred to post-Phase-1** — cursor movement and shaping only need grapheme clusters; word/sentence segmentation is needed for selection and navigation but those wait for Phase 3.
+  - 20 new tests (19 granular + 1 conformance harness).
+  - Total tests: **1071 unit / 1082 solution-wide passing**.
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

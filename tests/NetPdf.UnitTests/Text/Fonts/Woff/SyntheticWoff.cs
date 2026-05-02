@@ -87,6 +87,46 @@ internal static class SyntheticWoff
         return ReorderPayloadDescendingOffset(standard);
     }
 
+    /// <summary>
+    /// Builds a WOFF byte stream with both a metadata block and a private-data block,
+    /// with an arbitrary 0–3 byte alignment-padding gap between them — exercising the
+    /// case W3C WOFF 1.0 §3 PrivateData allows ("with up to three bytes of zero padding
+    /// to align it on a 4-byte boundary"). Both blocks are zero-filled placeholders;
+    /// they don't need to be "real" XML/binary content for layout-validation tests.
+    /// </summary>
+    public static byte[] BuildWithMetadataAndPrivate(int metaCompLength, int padBetween, int privLength)
+    {
+        if (padBetween is < 0 or > 3)
+        {
+            throw new ArgumentOutOfRangeException(nameof(padBetween), padBetween, "Pad must be 0..3.");
+        }
+        var standard = Build();
+        var numTables = BinaryPrimitives.ReadUInt16BigEndian(standard.AsSpan(12, 2));
+
+        // Standard ends at the last on-disk table (4-byte aligned by construction since
+        // each table is padded between but not after the last). Place metadata aligned
+        // to 4 from the standard's end, then private after metadata + padBetween.
+        var endOfTables = standard.Length;
+        var metaOffset = AlignTo4(endOfTables);
+        var metaEnd = metaOffset + metaCompLength;
+        var privOffset = AlignTo4(metaEnd + padBetween);
+        var privEnd = privOffset + privLength;
+
+        var output = new byte[privEnd];
+        standard.CopyTo(output, 0);
+        // Patch header.length to the new size.
+        BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(8, 4), (uint)output.Length);
+        // Set metaOffset/metaLength/metaOrigLength.
+        BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(24, 4), (uint)metaOffset);
+        BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(28, 4), (uint)metaCompLength);
+        BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(32, 4), (uint)metaCompLength); // origLength = compLength for simplicity
+        // Set privOffset/privLength.
+        BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(36, 4), (uint)privOffset);
+        BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(40, 4), (uint)privLength);
+        // The metadata + private + alignment padding bytes are already zero from `new byte[]`.
+        return output;
+    }
+
     private static byte[] ReorderPayloadDescendingOffset(byte[] standard)
     {
         var numTables = BinaryPrimitives.ReadUInt16BigEndian(standard.AsSpan(12, 2));

@@ -6,10 +6,10 @@ using NetPdf.Text.Bidi.Rules;
 namespace NetPdf.Text.Bidi;
 
 /// <summary>
-/// Internal orchestrator that runs the UAX #9 rule passes in order. Currently lights up
-/// Stage 12.3a (X-rules + run/sequence segmentation); subsequent stages add W/N/I/L
-/// rules as they land. <see cref="BidiAlgorithm.ResolveLevels"/> stays gated behind the
-/// full algorithm but tests exercise the foundation through this class directly.
+/// Internal orchestrator that runs the UAX #9 rule passes in order on a single
+/// paragraph. <see cref="BidiAlgorithm.ResolveLevels"/> handles paragraph splitting
+/// at the public-API boundary and calls <see cref="ResolveLevelsForUtf16"/> once per
+/// paragraph.
 /// </summary>
 /// <remarks>
 /// <para>

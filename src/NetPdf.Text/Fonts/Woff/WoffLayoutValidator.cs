@@ -126,25 +126,19 @@ internal static class WoffLayoutValidator
             expectedNext = (long)header.MetaOffset + header.MetaLength;
         }
 
-        // (5) Private block (if present) MUST be the last block. §3 "The private data block,
-        //     if present, MUST be the last block in the file." When metadata is present,
-        //     no padding is required between metadata and private (gap = 0). When metadata
-        //     is absent, the private block is aligned-to-4 from the table data (gap = 0..3).
+        // (5) Private block (if present) MUST be the last block per §3 PrivateData:
+        //     "with up to three bytes of zero padding to align it on a 4-byte boundary."
+        //     The private block's privOffset must always be 4-byte aligned (§4 conformance);
+        //     the padding allowance handles cases where the preceding block (metadata or
+        //     table data) ended mid-boundary.
         if (header.PrivOffset != 0)
         {
-            if (header.MetaOffset != 0)
+            if ((header.PrivOffset & 3u) != 0)
             {
-                if ((long)header.PrivOffset != expectedNext)
-                {
-                    throw new InvalidDataException(
-                        $"WOFF: privOffset {header.PrivOffset} does not immediately follow metadata block " +
-                        $"(expected {expectedNext}); spec disallows padding between metadata and private.");
-                }
+                throw new InvalidDataException(
+                    $"WOFF: privOffset {header.PrivOffset} is not 4-byte aligned (spec requires alignment).");
             }
-            else
-            {
-                EnsureNoOverlapAndPadIsZero(woffBytes, expectedNext, header.PrivOffset, "private block");
-            }
+            EnsureNoOverlapAndPadIsZero(woffBytes, expectedNext, header.PrivOffset, "private block");
             expectedNext = (long)header.PrivOffset + header.PrivLength;
         }
 

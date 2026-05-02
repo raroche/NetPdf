@@ -219,4 +219,21 @@ public sealed class BidiAlgorithmEndToEndTests
         var levels = BidiAlgorithm.ResolveLevels("   ");
         Assert.All(levels, b => Assert.Equal(0, b));
     }
+
+    // ───── X-rule fixes verified through the public API ───────────────────────
+
+    [Fact]
+    public void Public_API_RLE_retained_at_enclosing_level_not_post_push()
+    {
+        // Verifies the §5.2 retained-formatting fix is honored when callers go through
+        // ResolveLevels (not only when calling BidiX10Resolver directly).
+        // U+202B = RLE, U+202C = PDF, U+05D0 = HEBREW LETTER ALEF (class R).
+        var input = "A\u202B\u05D0\u202CB";
+        var levels = BidiAlgorithm.ResolveLevels(input);
+        Assert.Equal(0, levels[0]); // 'A' at paragraph level
+        Assert.Equal(0, levels[1]); // RLE retained at enclosing 0
+        Assert.Equal(1, levels[2]); // Hebrew at level 1 from RLE push (R does not bump on odd seq)
+        Assert.Equal(0, levels[3]); // PDF retained at enclosing 0
+        Assert.Equal(0, levels[4]); // 'B' at paragraph level
+    }
 }

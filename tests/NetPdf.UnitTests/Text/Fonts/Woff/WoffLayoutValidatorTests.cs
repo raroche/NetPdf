@@ -185,6 +185,51 @@ public sealed class WoffLayoutValidatorTests
         WoffLayoutValidator.Validate(header, entries, woffBytes);
     }
 
+    // ───── Metadata + private padding (W3C WOFF 1.0 §3 PrivateData) ─────────────
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    public void Validate_accepts_zero_to_three_padding_bytes_between_metadata_and_private(int pad)
+    {
+        // §3 PrivateData: "with up to three bytes of zero padding to align it on a 4-byte
+        // boundary". The validator must accept any pad in [0, 3].
+        // Use metaCompLength values that combine with `pad` to land privOffset on a 4-byte
+        // boundary — metaCompLength=5 leaves 3 bytes of natural padding; we add `pad` more
+        // to test the various alignment scenarios.
+        var woffBytes = SyntheticWoff.BuildWithMetadataAndPrivate(metaCompLength: 5, padBetween: pad, privLength: 16);
+        var header = WoffHeader.Parse(woffBytes);
+        var entries = WoffTableEntry.ParseDirectory(woffBytes, header);
+        WoffLayoutValidator.Validate(header, entries, woffBytes);
+    }
+
+    [Fact]
+    public void Validate_rejects_more_than_three_padding_bytes_between_metadata_and_private()
+    {
+        // Build metadata + private with the standard (≤3) padding, then mutate the
+        // private offset to push it 4 more bytes ahead — that's 4-7 bytes of padding,
+        // which exceeds the spec's 3-byte cap.
+        var woffBytes = SyntheticWoff.BuildWithMetadataAndPrivate(metaCompLength: 5, padBetween: 0, privLength: 16);
+        var origPrivOffset = BinaryPrimitives.ReadUInt32BigEndian(woffBytes.AsSpan(36, 4));
+        // Move privOffset 8 bytes ahead (still 4-byte aligned, but creates 8-byte gap).
+        var newPrivOffset = origPrivOffset + 8;
+        var origPrivLength = BinaryPrimitives.ReadUInt32BigEndian(woffBytes.AsSpan(40, 4));
+        // Need to grow the file by 8 to accommodate the shifted private block.
+        var grown = new byte[woffBytes.Length + 8];
+        woffBytes.AsSpan(0, (int)origPrivOffset).CopyTo(grown);
+        // Leave the 8 extra bytes as zero (would be the "extra padding").
+        woffBytes.AsSpan((int)origPrivOffset, (int)origPrivLength).CopyTo(grown.AsSpan((int)newPrivOffset));
+        BinaryPrimitives.WriteUInt32BigEndian(grown.AsSpan(8, 4), (uint)grown.Length);
+        BinaryPrimitives.WriteUInt32BigEndian(grown.AsSpan(36, 4), newPrivOffset);
+
+        var header = WoffHeader.Parse(grown);
+        var entries = WoffTableEntry.ParseDirectory(grown, header);
+        var ex = Assert.Throws<InvalidDataException>(() => WoffLayoutValidator.Validate(header, entries, grown));
+        Assert.Contains("extraneous", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
     [Fact]
     public void Decode_round_trips_through_reversed_payload_order_layout()
     {

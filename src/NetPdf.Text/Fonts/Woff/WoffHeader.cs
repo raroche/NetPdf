@@ -143,11 +143,19 @@ internal sealed class WoffHeader
 
         // Cross-field consistency: when the metadata or private blocks are absent, both
         // the offset and length must be zero. A non-zero offset with zero length (or
-        // vice versa) is malformed.
+        // vice versa) is malformed. The metadata block also has a third field
+        // (metaOrigLength) — when metadata is absent, that field MUST be zero too,
+        // otherwise the encoder produced inconsistent state and we reject.
         if ((metaOffset == 0) != (metaLength == 0))
         {
             throw new InvalidDataException(
                 $"WOFF: metadata offset/length inconsistency (metaOffset={metaOffset}, metaLength={metaLength}).");
+        }
+        if (metaOffset == 0 && metaOrigLength != 0)
+        {
+            throw new InvalidDataException(
+                $"WOFF: metadata block is absent (metaOffset = 0, metaLength = 0) but metaOrigLength is " +
+                $"{metaOrigLength}; the spec requires all three fields to be zero when metadata is absent.");
         }
         if ((privOffset == 0) != (privLength == 0))
         {

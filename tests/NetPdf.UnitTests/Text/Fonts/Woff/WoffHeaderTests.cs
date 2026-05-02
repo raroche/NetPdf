@@ -132,4 +132,17 @@ public sealed class WoffHeaderTests
         var ex = Assert.Throws<InvalidDataException>(() => WoffHeader.Parse(woffBytes));
         Assert.Contains("private", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
+
+    [Fact]
+    public void Parse_rejects_absent_metadata_with_nonzero_metaOrigLength()
+    {
+        // Spec: when metadata is absent, metaOffset = metaLength = metaOrigLength = 0.
+        // A non-zero metaOrigLength with metaOffset/Length zero is malformed.
+        var woffBytes = SyntheticWoff.Build();
+        BinaryPrimitives.WriteUInt32BigEndian(woffBytes.AsSpan()[24..28], 0);   // metaOffset
+        BinaryPrimitives.WriteUInt32BigEndian(woffBytes.AsSpan()[28..32], 0);   // metaLength
+        BinaryPrimitives.WriteUInt32BigEndian(woffBytes.AsSpan()[32..36], 100); // metaOrigLength
+        var ex = Assert.Throws<InvalidDataException>(() => WoffHeader.Parse(woffBytes));
+        Assert.Contains("metaOrigLength", ex.Message);
+    }
 }

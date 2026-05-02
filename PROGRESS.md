@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-01 (Stage 12.3b/c UAX #9 W/N/I/L rules ✅ — full algorithm; ResolveLevels public API live)
+**Last updated:** 2026-05-01 (Post-Stage-12.3b/c hardening ✅ — multi-paragraph split + WOFF metadata-padding + per-rule unit tests)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -366,6 +366,18 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
   - **Performance optimizations** (review-flagged): `BidiIsolatingRunSequence.FlatIndices` pre-computed by the segmenter (was per-rule `IEnumerable` yield).
   - **Phase 1 scope clarifications**: `BidiBrackets` is hand-curated from UCD 16.0 (full canonical set; replacement by source generator deferred to Stage 12.4 alongside the bidi-class generator).
   - Total tests: **957 unit / 968 solution-wide passing**.
+
+- **Post-Stage-12.3b/c hardening pass** ✅ (2026-05-01) — sixteenth review-driven round, cross-referenced against UAX #9 §3.3.1 P1 + W3C WOFF 1.0 §3 PrivateData.
+  - **Multi-paragraph contract (P1, UAX #9 §3.3.1 P1)**: `BidiAlgorithm.ResolveLevels` now splits the input on UCD class-B characters (LF, CR, NEL, PARAGRAPH SEPARATOR, FILE/GROUP/RECORD SEPARATOR, etc.) and runs the algorithm independently per paragraph with its own P2/P3-resolved paragraph level. Each paragraph keeps its trailing B per the spec ("a paragraph separator is kept with the previous paragraph"). Without this fix, multi-paragraph input would inherit the first paragraph's base level + any explicit-state residue — wrong for any real-world multi-line text.
+  - **WOFF metadata-private padding (P1)**: `WoffLayoutValidator` previously required exactly 0 bytes of gap between the metadata and private blocks. W3C WOFF 1.0 §3 PrivateData actually says "with up to three bytes of zero padding to align it on a 4-byte boundary" — the spec allows 0-3 zero padding bytes. Validator now applies the same `EnsureNoOverlapAndPadIsZero` helper used between table data and metadata, plus an explicit `privOffset & 3 == 0` 4-byte alignment check. Real conformance bug.
+  - **WOFF absent-metadata cross-field consistency (P2)**: `WoffHeader.Parse` previously checked `(metaOffset == 0) != (metaLength == 0)` but ignored `metaOrigLength`. A header with `metaOffset = 0`, `metaLength = 0`, and `metaOrigLength = 100` previously parsed; now rejects per the spec invariant that all three metadata fields must be zero when the metadata block is absent.
+  - **Doc-comment refresh**: `BidiAlgorithm` and `BidiPipeline` summaries described Stage 12.3a as "current" and `ResolveLevels` as "gated behind Stages 12.3b–d". Updated to reflect the actual shipped state plus the multi-paragraph split semantics.
+  - **Granular per-rule bidi tests (P2)**: new `BidiRulePassUnitTests` (24 unit tests) exercises each W/N/I/L rule pass in isolation against synthetic single-run sequences — W1 NSM at sos / after isolate initiator / after PDI / after letter; W2 EN-after-AL → AN; W2 EN with no strong predecessor uses sos; W7 EN-after-L → L; W7 EN-after-R stays EN; N1 matching-borders (LL, RR, EN/AN-as-R), sos/eos boundaries; N2 mismatched-borders falls back to embedding; I1 even-level R+1 / EN+2 / AN+2 / L unchanged; I2 odd-level L+1 / AN+1 / EN+1 / R unchanged; L1 S, B, trailing WS at end-of-text, WS run preceding B, strong chars not reset; N0 paired brackets for inner-strong-matching, opposing-with-context fallback, no-strong-inside, unpaired bracket. Makes future Stage 12.4 UCD test failures localizable to specific rules.
+  - **Multi-paragraph tests (P1)**: new `BidiMultiParagraphTests` (8 tests) — RTL-then-LTR independent resolution, LTR-then-RTL, explicit RLE in first paragraph does not leak into second, three paragraphs each resolve independently, multiple consecutive paragraph separators, explicit `ParagraphDirection.RightToLeft` applies to every paragraph, output length equals input length, multi-paragraph determinism.
+  - **WOFF tests (P2)**: `Validate_accepts_zero_to_three_padding_bytes_between_metadata_and_private` (theory with 0/1/2/3 cases) plus `Validate_rejects_more_than_three_padding_bytes_between_metadata_and_private` plus `Parse_rejects_absent_metadata_with_nonzero_metaOrigLength`. New `SyntheticWoff.BuildWithMetadataAndPrivate(metaCompLength, padBetween, privLength)` test helper.
+  - **X-rule public-API verification (P2)**: end-to-end test `Public_API_RLE_retained_at_enclosing_level_not_post_push` verifies the §5.2 retained-formatting fix is honored when callers go through `ResolveLevels` (not only the `BidiX10Resolver.Apply` direct path the existing hardening tests cover).
+  - 41 new tests across `BidiMultiParagraphTests` (8), `BidiRulePassUnitTests` (24), `WoffHeaderTests` (1), `WoffLayoutValidatorTests` (5 — 4-case theory + a rejection test), `BidiAlgorithmEndToEndTests` (1 X-rule verification + 2 EN-handling refinements), `BidiPipelineIntegrationTests` (already updated to live API).
+  - Total tests: **998 unit / 1009 solution-wide passing**.
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

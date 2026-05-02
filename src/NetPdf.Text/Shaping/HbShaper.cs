@@ -1,6 +1,7 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System.Runtime.InteropServices;
 using HarfBuzzSharp;
 using HbBuffer = HarfBuzzSharp.Buffer;
 using HbDirection = HarfBuzzSharp.Direction;
@@ -15,23 +16,39 @@ namespace NetPdf.Text.Shaping;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Lifecycle.</b> The shaper owns three native handles (Blob/Face/Font); callers must
-/// dispose it. Per-shape <see cref="HarfBuzzSharp.Buffer"/>s are constructed and disposed
-/// inside <see cref="Shape"/>, so concurrent shape calls against one shaper are safe —
-/// HarfBuzz documents Face / Font as thread-safe for read-only use.
+/// <b>Lifecycle.</b> The shaper owns three native handles (Blob/Face/Font) and one
+/// pinned <see cref="GCHandle"/>. Constructor uses a partial-construction cleanup
+/// pattern so a malformed font that fails after the byte array is pinned does not leak
+/// the handle or any native resources. Callers must dispose the shaper. Per-shape
+/// <see cref="HarfBuzzSharp.Buffer"/>s are constructed and disposed inside
+/// <see cref="Shape"/>, so concurrent shape calls against one shaper are safe — HarfBuzz
+/// documents Face / Font as thread-safe for read-only use.
+/// </para>
+/// <para>
+/// <b>Cluster semantics.</b> The buffer is configured with
+/// <c>ClusterLevel.MonotoneCharacters</c> (HarfBuzz level 1) — the recommended setting
+/// for new code per the official HarfBuzz "Working with HarfBuzz clusters" guide.
+/// Cluster values in <see cref="ShapedGlyph"/> are UTF-16 code-unit indices into the
+/// input text (HarfBuzz's native semantics for <c>hb_buffer_add_utf16</c>); see
+/// <see cref="ShapedGlyph"/> remarks for the full contract.
 /// </para>
 /// <para>
 /// <b>Scaling.</b> Output positions are returned in pixels at the requested font size.
 /// Internally we set HarfBuzz's scale to <c>(unitsPerEm, unitsPerEm)</c> so HarfBuzz
 /// returns positions in font units, then convert to pixels with
 /// <c>units × fontSizePx / unitsPerEm</c>. This matches CSS px scaling and keeps the
-/// HarfBuzz-side math integer-only.
+/// HarfBuzz-side math integer-only. Optical sizing — <c>ppem</c>/<c>ptem</c> — comes in
+/// Phase 4 when size-sensitive features land.
 /// </para>
 /// <para>
-/// <b>Phase 1 scope.</b> Default OpenType features only (the script-default set HarfBuzz
-/// applies when no feature list is supplied). Custom features (small-caps, fractions,
-/// etc.) land alongside CSS <c>font-feature-settings</c> in Phase 2.
+/// <b>Phase 1 scope</b> covers a single isolated text span with default OpenType
+/// features. Three things are explicitly out of scope:
 /// </para>
+/// <list type="bullet">
+///   <item>Custom features (small-caps, fractions, contextual alternates) — wait for Phase 2 CSS <c>font-feature-settings</c>.</item>
+///   <item>Context-aware shaping (<c>item_offset</c> / <c>item_length</c> within a larger buffer) — required for Arabic joining and combining-mark behavior across run boundaries; Phase 3 itemizer adds the API.</item>
+///   <item>Script itemization, bidi run segmentation, and fallback-font shaping — all Tasks 12+.</item>
+/// </list>
 /// </remarks>
 internal sealed class HbShaper : IDisposable
 {
@@ -58,39 +75,112 @@ internal sealed class HbShaper : IDisposable
         _fontSizePx = fontSizePx;
 
         // Materialize a managed byte[] so HarfBuzz can hold a stable pointer through the
-        // Blob's release callback. The cost is one extra allocation per shaper instance,
+        // Blob's release callback. Cost: one extra allocation per shaper instance,
         // typically amortized over many Shape calls.
         var bytes = fontBytes.ToArray();
-        var handle = System.Runtime.InteropServices.GCHandle.Alloc(bytes, System.Runtime.InteropServices.GCHandleType.Pinned);
-        _blob = new Blob(
-            handle.AddrOfPinnedObject(),
-            bytes.Length,
-            MemoryMode.ReadOnly,
-            () => handle.Free());
+        var handle = GCHandle.Alloc(bytes, GCHandleType.Pinned);
 
-        _face = new Face(_blob, 0);
-        _unitsPerEm = (ushort)_face.UnitsPerEm;
-        _font = new Font(_face);
+        Blob? blob = null;
+        Face? face = null;
+        Font? font = null;
+        try
+        {
+            blob = new Blob(
+                handle.AddrOfPinnedObject(),
+                bytes.Length,
+                MemoryMode.ReadOnly,
+                () => handle.Free());
 
-        // Tell HarfBuzz to return positions in font units. The conversion to pixels
-        // happens on the way out of Shape().
-        _font.SetScale(_unitsPerEm, _unitsPerEm);
-        _font.SetFunctionsOpenType();
+            face = new Face(blob, 0);
+            var unitsPerEm = face.UnitsPerEm;
+            if (unitsPerEm <= 0)
+            {
+                throw new InvalidDataException(
+                    $"HbShaper: font face reports unitsPerEm = {unitsPerEm}; cannot shape against a degenerate em-square.");
+            }
+            _unitsPerEm = (ushort)unitsPerEm;
+
+            font = new Font(face);
+            font.SetScale(_unitsPerEm, _unitsPerEm);
+            font.SetFunctionsOpenType();
+
+            // Commit references — past this point the cleanup catch will not run.
+            _blob = blob;
+            _face = face;
+            _font = font;
+        }
+        catch
+        {
+            // Reverse-order cleanup. Disposing Blob runs the release callback that frees
+            // the pinned handle, but that only happens when the Blob exists; otherwise we
+            // free the handle ourselves.
+            font?.Dispose();
+            face?.Dispose();
+            if (blob is not null)
+            {
+                blob.Dispose();
+            }
+            else if (handle.IsAllocated)
+            {
+                handle.Free();
+            }
+            throw;
+        }
     }
 
+    /// <summary>
+    /// Shape <paramref name="utf16Text"/> against the loaded font and return one
+    /// <see cref="ShapedGlyph"/> per emitted glyph.
+    /// </summary>
+    /// <param name="utf16Text">The input text, as UTF-16 code units. Empty input returns an empty array.</param>
+    /// <param name="direction">Writing direction of the run.</param>
+    /// <param name="scriptIso15924">
+    /// 4-letter ISO 15924 script tag (e.g. <c>"Latn"</c>, <c>"Arab"</c>, <c>"Hani"</c>).
+    /// Required — the wrapper deliberately does not auto-guess because silent
+    /// Latin-bias defaults break browser-fidelity shaping for non-Latin scripts.
+    /// </param>
+    /// <param name="language">
+    /// BCP 47 language tag (e.g. <c>"en"</c>, <c>"ar"</c>, <c>"ja"</c>). Required for
+    /// the same reason as <paramref name="scriptIso15924"/> — language-specific
+    /// shaping (Turkish dotted/dotless i, Marathi vs Hindi conjuncts, etc.) needs an
+    /// explicit declaration.
+    /// </param>
+    /// <remarks>
+    /// Malformed UTF-16 (e.g. lone surrogates) is handled by HarfBuzz's
+    /// replacement-character policy — invalid sequences shape as the font's
+    /// <c>.notdef</c> glyph (or the glyph mapped from U+FFFD if cmap covers it).
+    /// </remarks>
     public ShapedGlyph[] Shape(
         ReadOnlySpan<char> utf16Text,
-        ShapingDirection direction = ShapingDirection.LeftToRight,
-        string scriptIso15924 = "Latn",
-        string language = "en")
+        ShapingDirection direction,
+        string scriptIso15924,
+        string language)
     {
         ThrowIfDisposed();
+        if (string.IsNullOrEmpty(scriptIso15924))
+        {
+            throw new ArgumentException(
+                "HbShaper: scriptIso15924 must be a non-empty 4-letter ISO 15924 tag (e.g. \"Latn\", \"Arab\").",
+                nameof(scriptIso15924));
+        }
+        if (string.IsNullOrEmpty(language))
+        {
+            throw new ArgumentException(
+                "HbShaper: language must be a non-empty BCP 47 tag (e.g. \"en\", \"ar\").",
+                nameof(language));
+        }
         if (utf16Text.IsEmpty)
         {
             return Array.Empty<ShapedGlyph>();
         }
 
-        using var buffer = new HbBuffer();
+        using var buffer = new HbBuffer
+        {
+            // HarfBuzz "Working with clusters" recommends MonotoneCharacters (level 1)
+            // for new code without legacy compatibility constraints. Level 0 is the
+            // historical Pango-compatible default.
+            ClusterLevel = ClusterLevel.MonotoneCharacters,
+        };
         buffer.AddUtf16(utf16Text);
         buffer.Direction = ConvertDirection(direction);
         buffer.Script = Script.Parse(scriptIso15924);

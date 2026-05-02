@@ -14,12 +14,15 @@ namespace NetPdf.UnitTests.Text.Shaping;
 /// </summary>
 public sealed class HbShaperIntegrationTests
 {
+    private const string Latin = "Latn";
+    private const string English = "en";
+
     [Fact]
     public void Shape_resolves_each_codepoint_to_its_cmap_glyph()
     {
         // SyntheticFont cmap: 'A' (U+0041) → glyph 1, 'B' (U+0042) → glyph 2.
         using var shaper = new HbShaper(SyntheticFont.Build(), fontSizePx: 12);
-        var result = shaper.Shape("AB");
+        var result = shaper.Shape("AB", ShapingDirection.LeftToRight, Latin, English);
 
         Assert.Equal(2, result.Length);
         Assert.Equal((ushort)1, result[0].GlyphId);
@@ -32,7 +35,7 @@ public sealed class HbShaperIntegrationTests
         // Synthetic font: unitsPerEm=1000, glyph 1 advance = 500 units.
         // At fontSizePx=12, expected advance = 500 * 12 / 1000 = 6.0 px.
         using var shaper = new HbShaper(SyntheticFont.Build(), fontSizePx: 12);
-        var result = shaper.Shape("A");
+        var result = shaper.Shape("A", ShapingDirection.LeftToRight, Latin, English);
 
         Assert.Single(result);
         Assert.Equal(6.0f, result[0].XAdvance, precision: 3);
@@ -41,9 +44,9 @@ public sealed class HbShaperIntegrationTests
     [Fact]
     public void Shape_preserves_cluster_index_per_input_codepoint()
     {
-        // Two ASCII chars → two clusters at indices 0 and 1.
+        // Two ASCII chars → two clusters at UTF-16 code-unit indices 0 and 1.
         using var shaper = new HbShaper(SyntheticFont.Build(), fontSizePx: 12);
-        var result = shaper.Shape("AB");
+        var result = shaper.Shape("AB", ShapingDirection.LeftToRight, Latin, English);
 
         Assert.Equal(0, result[0].Cluster);
         Assert.Equal(1, result[1].Cluster);
@@ -53,8 +56,8 @@ public sealed class HbShaperIntegrationTests
     public void Shape_is_deterministic_for_same_inputs()
     {
         using var shaper = new HbShaper(SyntheticFont.Build(), fontSizePx: 14);
-        var a = shaper.Shape("AB");
-        var b = shaper.Shape("AB");
+        var a = shaper.Shape("AB", ShapingDirection.LeftToRight, Latin, English);
+        var b = shaper.Shape("AB", ShapingDirection.LeftToRight, Latin, English);
 
         Assert.Equal(a.Length, b.Length);
         for (var i = 0; i < a.Length; i++)
@@ -69,8 +72,8 @@ public sealed class HbShaperIntegrationTests
         // Same glyph at 12 px vs 24 px should produce double the advance.
         using var smallShaper = new HbShaper(SyntheticFont.Build(), fontSizePx: 12);
         using var largeShaper = new HbShaper(SyntheticFont.Build(), fontSizePx: 24);
-        var small = smallShaper.Shape("A");
-        var large = largeShaper.Shape("A");
+        var small = smallShaper.Shape("A", ShapingDirection.LeftToRight, Latin, English);
+        var large = largeShaper.Shape("A", ShapingDirection.LeftToRight, Latin, English);
 
         Assert.Equal(small[0].XAdvance * 2, large[0].XAdvance, precision: 3);
     }
@@ -81,7 +84,7 @@ public sealed class HbShaperIntegrationTests
         // SyntheticFont cmap covers only 'A' and 'B'. 'Z' (U+005A) has no entry —
         // HarfBuzz emits glyph 0 (.notdef).
         using var shaper = new HbShaper(SyntheticFont.Build(), fontSizePx: 12);
-        var result = shaper.Shape("Z");
+        var result = shaper.Shape("Z", ShapingDirection.LeftToRight, Latin, English);
 
         Assert.Single(result);
         Assert.Equal((ushort)0, result[0].GlyphId);

@@ -14,6 +14,9 @@ namespace NetPdf.UnitTests.Text.Shaping;
 /// </summary>
 public sealed class HbShaperTests
 {
+    private const string Latin = "Latn";
+    private const string English = "en";
+
     [Fact]
     public void Constructor_throws_on_empty_font_bytes()
     {
@@ -34,7 +37,7 @@ public sealed class HbShaperTests
     public void Shape_empty_text_returns_empty_array()
     {
         using var shaper = new HbShaper(SyntheticFont.Build(), fontSizePx: 12);
-        var result = shaper.Shape(ReadOnlySpan<char>.Empty);
+        var result = shaper.Shape(ReadOnlySpan<char>.Empty, ShapingDirection.LeftToRight, Latin, English);
         Assert.Empty(result);
     }
 
@@ -43,7 +46,8 @@ public sealed class HbShaperTests
     {
         var shaper = new HbShaper(SyntheticFont.Build(), fontSizePx: 12);
         shaper.Dispose();
-        Assert.Throws<ObjectDisposedException>(() => shaper.Shape("A"));
+        Assert.Throws<ObjectDisposedException>(() =>
+            shaper.Shape("A", ShapingDirection.LeftToRight, Latin, English));
     }
 
     [Fact]

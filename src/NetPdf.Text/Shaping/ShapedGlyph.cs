@@ -15,11 +15,16 @@ namespace NetPdf.Text.Shaping;
 /// the next glyph's origin.
 /// </para>
 /// <para>
-/// <see cref="Cluster"/> is HarfBuzz's source-codepoint index. After GSUB substitutions
-/// (ligatures, contextual alternates) multiple glyphs can share a cluster, and one
-/// glyph can span multiple source codepoints. Phase 1 doesn't yet exploit this for
-/// ligature-aware ToUnicode — see the <c>FromShapedRuns</c> roadmap on
-/// <c>NetPdf.Pdf.Fonts.ToUnicodeCMap</c>.
+/// <b><see cref="Cluster"/> is a UTF-16 code-unit index into the input text.</b> This is
+/// HarfBuzz's native semantics for <c>hb_buffer_add_utf16</c>: the cluster value is the
+/// offset (in 16-bit code units) of the first code unit that contributed to this glyph.
+/// For BMP characters this matches a codepoint index, but for supplementary-plane
+/// characters (encoded as surrogate pairs) the cluster jumps by 2, not 1. Consumers
+/// that need a Unicode-scalar index must walk the source text and build a code-unit
+/// → scalar-index table themselves. After GSUB substitutions (ligatures, contextual
+/// alternates) multiple glyphs can share a cluster, and one glyph can span multiple
+/// source code units. Phase 1 doesn't yet exploit this for ligature-aware ToUnicode —
+/// see the <c>FromShapedRuns</c> roadmap on <c>NetPdf.Pdf.Fonts.ToUnicodeCMap</c>.
 /// </para>
 /// </remarks>
 internal readonly record struct ShapedGlyph(

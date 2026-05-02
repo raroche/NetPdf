@@ -213,12 +213,20 @@ public sealed class BidiClassTableTests
     }
 
     [Theory]
-    [InlineData(0x08A0)] // Arabic Extended-A start
-    [InlineData(0x08B6)] // ARABIC LETTER BEH WITH SMALL MEEM ABOVE
-    [InlineData(0x08FF)] // Arabic Extended-A end
-    public void Arabic_Extended_A_is_AL(int codepoint)
+    [InlineData(0x08A0)] // Arabic Extended-A start — AL
+    [InlineData(0x08B6)] // ARABIC LETTER BEH WITH SMALL MEEM ABOVE — AL
+    [InlineData(0x08C7)] // ARABIC LETTER LAM WITH SMALL ARABIC LETTER TAH ABOVE — AL
+    public void Arabic_Extended_A_letters_are_AL(int codepoint)
     {
         Assert.Equal(BidiClass.AL, BidiClassTable.GetClass(codepoint));
+    }
+
+    [Theory]
+    [InlineData(0x08CA)] // ARABIC SMALL HIGH FARSI YEH — NSM
+    [InlineData(0x08FF)] // ARABIC MARK SIDEWAYS NOON GHUNNA — NSM (later part of Extended-A is combining marks)
+    public void Arabic_Extended_A_combining_marks_are_NSM(int codepoint)
+    {
+        Assert.Equal(BidiClass.NSM, BidiClassTable.GetClass(codepoint));
     }
 
     [Theory]

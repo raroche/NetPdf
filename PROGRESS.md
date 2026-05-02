@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-01 (post-Stage-12.1 hardening ✅ — UCD-class fixes, paragraph-separator stop, re-staged plan)
+**Last updated:** 2026-05-01 (Task 12 Stage 12.2 ✅ — UCD-derived bidi class table with binary-search lookup)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -40,7 +40,7 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
 - **Doc:** [`docs/phases/phase-1-pdf-writer-and-text.md`](docs/phases/phase-1-pdf-writer-and-text.md)
 
 ### Active task
-**Task 12 Stage 12.2** — UCD source generator. Per the post-Stage-12.1 review, the source generator is pulled forward (was originally Stage 12.3) so the X/W/N/I/L rule machinery is built against correct class data, not a hand-built table. Stage 12.3 then implements the rules; Stage 12.4 wires `BidiTest.txt` + `BidiCharacterTest.txt` to 100% pass.
+**Task 12 Stage 12.3** — explicit / weak / neutral / implicit / reordering rules (X1–X10, W1–W7, N0–N2 with paired brackets, I1–I2, L1–L4). Built against the now-correct Stage 12.2 class data. Stage 12.4 wires `BidiTest.txt` + `BidiCharacterTest.txt` to 100% pass. (Stage 12.2.x — the actual Roslyn source generator that automates regeneration of `BidiClassUcdRanges.g.cs` from `DerivedBidiClass.txt` — is a separate follow-up; the current generated file is hand-curated against UCD knowledge and locked in by 161 tests.)
 
 ### Subtasks completed
 
@@ -277,6 +277,14 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
   - **Documentation tightened**: `BidiClassTable` XML doc now leads with "this table is provisional and intentionally incomplete," lists exact covered ranges, and explicitly names the L-default fallback as wrong-but-bounded for some specific blocks (NKo, Tibetan punctuation). Stage 12.2 fixes both the data and the documentation.
   - 32 new tests in `BidiClassTableTests` + `ParagraphLevelResolverTests`: every reviewer-recommended case (`U+0600` and `U+0605` → AN; `U+08A0` → AL; `U+FB1D` → R; `U+FE70` → AL; `U+1EE00` → AL; `ResolveParagraphLevel("😀אבג")` → 1; `ResolveParagraphLevel("؀A")` → 0) plus paragraph-separator-stop cases for `"  \nאבג"` and `"123\nאבג"`, plus presentation-form-at-paragraph-start cases for Hebrew (`U+FB1D`) and Arabic (`U+FE70`), plus Arabic Extended-A start cases.
   - Total tests: **729 unit / 740 solution-wide passing**.
+
+- **Task 12 Stage 12.2 — UCD-derived bidi class table** ✅ (2026-05-01)
+  - **`BidiClassUcdRanges.g.cs`** (`src/NetPdf.Text/Bidi/BidiClassUcdRanges.g.cs`) — sorted, non-overlapping range table covering the entire Unicode space: ASCII control + structural separators, ASCII printable, Latin-1 supplement, Latin Extended A/B + IPA + Spacing Modifier Letters, Combining Diacriticals (NSM), Greek + Coptic, Cyrillic + Supplement, Armenian, **Hebrew with full per-codepoint NSM/R distinction**, **Arabic with the full reviewer-fixed map** (AN for U+0600..U+0605 + U+066B..U+066C + U+06DD; ET for per-mille / per-myriad / percent; CS for comma; BN for ALM; NSM for U+0610..U+061A + U+064B..U+065F + U+06D6..U+06ED), Syriac + Arabic Supplement, Thaana, NKo, Samaritan, Mandaic, Arabic Extended-A/B with per-codepoint AL/NSM/AN distinction, Indic scripts (Devanagari through Sinhala), Thai/Lao/Tibetan/Myanmar/Georgian, Hangul Jamo through Mongolian, Latin Extended Additional + Greek Extended, **General Punctuation with full per-codepoint LRM/RLM/WS/BN/explicit-formatting distinction**, Currency Symbols (ET), Letterlike Symbols, Number Forms, Box Drawing through Misc Symbols (ON), CJK Symbols and Punctuation with full per-codepoint distinction, Hiragana + Katakana, CJK Unified Ideographs, Yi, Hangul Syllables, Private Use Area, **Alphabetic Presentation Forms** (Latin/Armenian L + Hebrew R with FB1E NSM and FB29 ES), **Arabic Presentation Forms-A and -B** (AL), CJK Compatibility, Variation Selectors (NSM), Halfwidth/Fullwidth Forms with per-codepoint EN/L/ON distinction, BOM (BN), supplementary planes (Linear B, RTL ancient scripts, **Arabic Mathematical Alphabetic Symbols** AL, emoji blocks ON, Han Extension B/C/D L), Tags (BN), Variation Selectors Supplement (NSM).
+  - **`BidiClassUcdRanges.Lookup(int codepoint)`** — binary search over the sorted-range table; codepoints with no explicit range default to L per UCD's "default L" rule for unassigned ranges.
+  - **`BidiClassTable.GetClass`** is now a thin wrapper that validates the codepoint range and delegates to `BidiClassUcdRanges.Lookup`. The hand-built per-script branches (`AsciiClass`, `Latin1Class`, `HebrewClass`, `HebrewPresentationFormClass`, `ArabicClass`) are gone — every class assignment now lives in one sorted-range source of truth.
+  - **Stage 12.2.x roadmap**: the actual Roslyn source generator that emits `BidiClassUcdRanges.g.cs` automatically from a checked-in `DerivedBidiClass.txt` is the next iteration. The generated file's header comments document the regeneration procedure. Until then, the hand-curated file is the source of truth, locked in by 161 tests across many scripts and codepoint classes.
+  - 61 new tests in `BidiClassUcdRangesTests` covering: Latin Extended A/B, IPA, Armenian, Thai, CJK Unified Ideographs, Hiragana, Katakana, Hangul; NKo / Syriac / Thaana / Mandaic letters; Fullwidth digits + letters; Currency Symbols (ET); General Punctuation spaces (WS); ZWSP / ZWNJ / ZWJ / BOM (BN); LRM (L) / RLM (R); Combining Diacriticals (NSM); Variation Selectors (NSM); Emoji blocks (ON); RTL ancient scripts (R); Arabic Mathematical Alphabetic Symbols (AL); Han supplementary planes (L); Tag characters (BN); Variation Selectors Supplement (NSM); Private Use Area default-L; U+0000 NULL (BN); fall-through behavior for unallocated codepoints.
+  - Total tests: **792 unit / 803 solution-wide passing**.
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

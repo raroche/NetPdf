@@ -39,6 +39,184 @@ internal static class SyntheticWoff
         return Build(SyntheticFont.Build());
     }
 
+    /// <summary>
+    /// Auxiliary table tag <c>"wxyz"</c> — sorts after every real OpenType tag so the
+    /// directory remains tag-ascending after insertion.
+    /// </summary>
+    public const uint AuxiliaryTableTag = 0x7778797Au;
+
+    /// <summary>
+    /// Builds a WOFF byte stream whose largest table is guaranteed to be zlib-compressed
+    /// (not stored), used by tests that need to exercise the decompressor / corruption
+    /// paths deterministically. Achieved by appending an auxiliary
+    /// <see cref="AuxiliaryTableTag"/>-tagged table of <paramref name="auxiliarySize"/>
+    /// zero bytes to the synthetic font — zlib shrinks all-zero input by ~99.5%, so
+    /// the table is always stored compressed.
+    /// </summary>
+    /// <remarks>
+    /// <c>OpenTypeFont.Parse</c> ignores unknown tags, so the SFNT produced by
+    /// <c>WoffDecoder.Decode</c> still round-trips through the OpenType parser when a
+    /// test wants the full pipeline.
+    /// </remarks>
+    public static byte[] BuildWithLargeCompressibleTable(int auxiliarySize = 4096)
+    {
+        if (auxiliarySize <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(auxiliarySize), auxiliarySize, "Auxiliary table size must be positive.");
+        }
+        var sfnt = AppendAuxiliaryTable(SyntheticFont.Build(), AuxiliaryTableTag, new byte[auxiliarySize]);
+        return Build(sfnt);
+    }
+
+    /// <summary>
+    /// Find the directory index of <paramref name="tag"/> in a WOFF byte stream. Returns
+    /// -1 if the tag is absent. Useful for tests that mutate a specific table's record
+    /// or payload after the synthetic builder runs.
+    /// </summary>
+    public static int FindDirectoryIndex(ReadOnlySpan<byte> woffBytes, uint tag)
+    {
+        var numTables = BinaryPrimitives.ReadUInt16BigEndian(woffBytes.Slice(12, 2));
+        for (var i = 0; i < numTables; i++)
+        {
+            var recordOffset = WoffHeaderSize + (i * WoffDirectoryRecordSize);
+            var entryTag = BinaryPrimitives.ReadUInt32BigEndian(woffBytes.Slice(recordOffset, 4));
+            if (entryTag == tag) return i;
+        }
+        return -1;
+    }
+
+    /// <summary>
+    /// Append a new table to an SFNT byte stream by extending the directory and
+    /// concatenating the payload in tag-sorted order. Recomputes
+    /// <c>head.checkSumAdjustment</c> so the resulting SFNT remains internally consistent.
+    /// </summary>
+    private static byte[] AppendAuxiliaryTable(byte[] sfntBytes, uint tag, byte[] payload)
+    {
+        const int sfntHeaderSize = 12;
+        const int recordSize = 16;
+        const uint checkSumAdjustmentMagic = 0xB1B0AFBAu;
+
+        var oldNumTables = BinaryPrimitives.ReadUInt16BigEndian(sfntBytes.AsSpan(4, 2));
+        var newNumTables = oldNumTables + 1;
+        var oldDirectorySize = oldNumTables * recordSize;
+        var newDirectorySize = newNumTables * recordSize;
+        var oldDirectory = sfntBytes.AsSpan(sfntHeaderSize, oldDirectorySize).ToArray();
+
+        var paddedPayloadLength = AlignTo4(payload.Length);
+        var insertIndex = (int)oldNumTables;
+        for (var i = 0; i < oldNumTables; i++)
+        {
+            var entryTag = BinaryPrimitives.ReadUInt32BigEndian(oldDirectory.AsSpan(i * recordSize, 4));
+            if (tag < entryTag)
+            {
+                insertIndex = i;
+                break;
+            }
+        }
+
+        long oldPayloadTotal = 0;
+        for (var i = 0; i < oldNumTables; i++)
+        {
+            var len = BinaryPrimitives.ReadUInt32BigEndian(oldDirectory.AsSpan((i * recordSize) + 12, 4));
+            oldPayloadTotal += AlignTo4((int)len);
+        }
+
+        var newSize = sfntHeaderSize + newDirectorySize + (int)oldPayloadTotal + paddedPayloadLength;
+        var output = new byte[newSize];
+        var span = output.AsSpan();
+
+        BinaryPrimitives.WriteUInt32BigEndian(span[..4], BinaryPrimitives.ReadUInt32BigEndian(sfntBytes.AsSpan(0, 4)));
+        BinaryPrimitives.WriteUInt16BigEndian(span[4..6], (ushort)newNumTables);
+        var (searchRange, entrySelector, rangeShift) = BinarySearchHeaderFields(newNumTables);
+        BinaryPrimitives.WriteUInt16BigEndian(span[6..8], searchRange);
+        BinaryPrimitives.WriteUInt16BigEndian(span[8..10], entrySelector);
+        BinaryPrimitives.WriteUInt16BigEndian(span[10..12], rangeShift);
+
+        var firstPayloadOffset = sfntHeaderSize + newDirectorySize;
+        var directoryPos = sfntHeaderSize;
+        var payloadCursor = firstPayloadOffset;
+
+        for (var i = 0; i < newNumTables; i++)
+        {
+            uint entryTag, oldChecksum, oldLength;
+            byte[] tablePayload;
+            int paddedLen;
+            if (i == insertIndex)
+            {
+                entryTag = tag;
+                oldChecksum = ComputeTableChecksum(payload);
+                oldLength = (uint)payload.Length;
+                tablePayload = payload;
+                paddedLen = paddedPayloadLength;
+            }
+            else
+            {
+                var oldRecordIdx = i < insertIndex ? i : i - 1;
+                entryTag = BinaryPrimitives.ReadUInt32BigEndian(oldDirectory.AsSpan(oldRecordIdx * recordSize, 4));
+                oldChecksum = BinaryPrimitives.ReadUInt32BigEndian(oldDirectory.AsSpan((oldRecordIdx * recordSize) + 4, 4));
+                var oldOffset = BinaryPrimitives.ReadUInt32BigEndian(oldDirectory.AsSpan((oldRecordIdx * recordSize) + 8, 4));
+                oldLength = BinaryPrimitives.ReadUInt32BigEndian(oldDirectory.AsSpan((oldRecordIdx * recordSize) + 12, 4));
+                tablePayload = sfntBytes.AsSpan((int)oldOffset, (int)oldLength).ToArray();
+                paddedLen = AlignTo4((int)oldLength);
+            }
+
+            BinaryPrimitives.WriteUInt32BigEndian(span.Slice(directoryPos, 4), entryTag);
+            BinaryPrimitives.WriteUInt32BigEndian(span.Slice(directoryPos + 4, 4), oldChecksum);
+            BinaryPrimitives.WriteUInt32BigEndian(span.Slice(directoryPos + 8, 4), (uint)payloadCursor);
+            BinaryPrimitives.WriteUInt32BigEndian(span.Slice(directoryPos + 12, 4), oldLength);
+            directoryPos += recordSize;
+
+            tablePayload.AsSpan().CopyTo(span[payloadCursor..]);
+            payloadCursor += paddedLen;
+        }
+
+        for (var i = 0; i < newNumTables; i++)
+        {
+            var entryTag = BinaryPrimitives.ReadUInt32BigEndian(span.Slice(sfntHeaderSize + (i * recordSize), 4));
+            if (entryTag == 0x68656164u)
+            {
+                var headOffset = BinaryPrimitives.ReadUInt32BigEndian(span.Slice(sfntHeaderSize + (i * recordSize) + 8, 4));
+                BinaryPrimitives.WriteUInt32BigEndian(span.Slice((int)headOffset + 8, 4), 0u);
+                var fileChecksum = ComputeTableChecksum(output);
+                BinaryPrimitives.WriteUInt32BigEndian(span.Slice((int)headOffset + 8, 4), checkSumAdjustmentMagic - fileChecksum);
+                break;
+            }
+        }
+        return output;
+    }
+
+    private static uint ComputeTableChecksum(byte[] tablePadded)
+    {
+        var sum = 0u;
+        var span = tablePadded.AsSpan();
+        for (var i = 0; i + 4 <= span.Length; i += 4)
+        {
+            sum += BinaryPrimitives.ReadUInt32BigEndian(span.Slice(i, 4));
+        }
+        var remainder = span.Length & 3;
+        if (remainder != 0)
+        {
+            Span<byte> tail = stackalloc byte[4];
+            span[(span.Length - remainder)..].CopyTo(tail);
+            sum += BinaryPrimitives.ReadUInt32BigEndian(tail);
+        }
+        return sum;
+    }
+
+    private static (ushort SearchRange, ushort EntrySelector, ushort RangeShift) BinarySearchHeaderFields(int numTables)
+    {
+        var pow2 = 1;
+        var entrySelector = 0;
+        while (pow2 * 2 <= numTables)
+        {
+            pow2 *= 2;
+            entrySelector++;
+        }
+        var searchRange = (ushort)(pow2 * 16);
+        var rangeShift = (ushort)((numTables * 16) - searchRange);
+        return (searchRange, (ushort)entrySelector, rangeShift);
+    }
+
     /// <summary>Wraps an arbitrary SFNT byte stream as a WOFF byte stream.</summary>
     public static byte[] Build(byte[] sfntBytes)
     {
@@ -80,8 +258,11 @@ internal static class SyntheticWoff
             };
         }
 
-        // Layout: 44-byte header + numTables × 20-byte directory + concatenated 4-byte-aligned
-        // compressed tables. Track per-table WOFF offsets while we lay out.
+        // Layout: 44-byte header + numTables × 20-byte directory + concatenated tables
+        // with up-to-3 byte zero-padding BETWEEN tables for 4-byte alignment of the next
+        // table. The spec forbids extraneous data after the last block, so the file ends
+        // exactly at lastTable.Offset + lastTable.CompLength when there is no metadata
+        // or private block (per WOFF 1.0 §3 and the strict layout validator).
         var directorySize = numTables * WoffDirectoryRecordSize;
         var firstTableOffset = WoffHeaderSize + directorySize;
         var cursor = firstTableOffset;
@@ -89,7 +270,12 @@ internal static class SyntheticWoff
         for (var i = 0; i < numTables; i++)
         {
             woffOffsets[i] = (uint)cursor;
-            cursor += AlignTo4(sfntTables[i].CompressedBytes.Length);
+            cursor += sfntTables[i].CompressedBytes.Length;
+            // Pad-to-4 between tables only — never after the final table.
+            if (i < numTables - 1)
+            {
+                cursor = AlignTo4(cursor);
+            }
         }
         var woffLength = cursor;
 

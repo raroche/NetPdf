@@ -92,68 +92,47 @@ public sealed class WoffDecoderTests
     [Fact]
     public void Decode_rejects_truncated_compressed_payload()
     {
-        var woffBytes = SyntheticWoff.Build();
-        // Find a table that's actually compressed in the WOFF (compLength < origLength)
-        // and corrupt its payload by truncating it. Since synthetic font tables are small
-        // and may not all compress, find the first one where IsStored is false.
+        // Use BuildWithLargeCompressibleTable — the 'wxyz' auxiliary table of 4096 zero
+        // bytes is guaranteed to be zlib-compressed (zlib shrinks all-zeros by ~99.5%),
+        // so this test exercises the corruption path deterministically. Independent of
+        // whether the synthetic font's small structural tables happen to compress.
+        var woffBytes = SyntheticWoff.BuildWithLargeCompressibleTable();
         var header = WoffHeader.Parse(woffBytes);
         var entries = WoffTableEntry.ParseDirectory(woffBytes, header);
-        WoffTableEntry? compressedEntry = null;
-        foreach (var entry in entries)
-        {
-            if (!entry.IsStored)
-            {
-                compressedEntry = entry;
-                break;
-            }
-        }
-
-        if (compressedEntry is null)
-        {
-            // No compressed table in this synthetic font — corruption test isn't applicable.
-            // Build one ourselves by manually inflating a stored table.
-            return;
-        }
+        var auxIdx = SyntheticWoff.FindDirectoryIndex(woffBytes, SyntheticWoff.AuxiliaryTableTag);
+        Assert.True(auxIdx >= 0, "Auxiliary 'wxyz' table not found in compressible-table fixture.");
+        var auxEntry = entries[auxIdx];
+        Assert.False(auxEntry.IsStored, "Auxiliary table was stored uncompressed — fixture invariant violated.");
 
         // Wreck the zlib bytes by zeroing the first 2 (the zlib header CMF/FLG bytes).
-        woffBytes.AsSpan((int)compressedEntry.Value.Offset, 2).Clear();
-        Assert.ThrowsAny<Exception>(() => WoffDecoder.Decode(woffBytes));
+        woffBytes.AsSpan((int)auxEntry.Offset, 2).Clear();
+        Assert.Throws<InvalidDataException>(() => WoffDecoder.Decode(woffBytes));
     }
 
     [Fact]
     public void Decode_rejects_decompressed_length_mismatch()
     {
-        // Build a WOFF where the directory advertises origLength = X, but the actual
-        // compressed payload decompresses to a different length. We construct this by
-        // taking the synthetic WOFF, finding a compressed table, and rewriting its
-        // origLength to a value larger than the decompressed bytes.
-        var woffBytes = SyntheticWoff.Build();
-        var header = WoffHeader.Parse(woffBytes);
-        var entries = WoffTableEntry.ParseDirectory(woffBytes, header);
+        // Bump origLength so the decompressor produces fewer bytes than declared.
+        // We must also bump totalSfntSize in lock-step or the layout validator throws first
+        // (which would be a different rejection path). The deterministic compressible
+        // table fixture from BuildWithLargeCompressibleTable supplies a guaranteed-
+        // compressed entry.
+        var woffBytes = SyntheticWoff.BuildWithLargeCompressibleTable();
+        var auxIdx = SyntheticWoff.FindDirectoryIndex(woffBytes, SyntheticWoff.AuxiliaryTableTag);
+        Assert.True(auxIdx >= 0);
+        var recordOffset = WoffHeader.HeaderSize + (auxIdx * WoffTableEntry.RecordSize);
+        var origLengthBefore = BinaryPrimitives.ReadUInt32BigEndian(woffBytes.AsSpan(recordOffset + 12, 4));
+        const uint bump = 1024;
 
-        WoffTableEntry? compressedEntry = null;
-        var compressedIndex = -1;
-        for (var i = 0; i < entries.Length; i++)
-        {
-            if (!entries[i].IsStored)
-            {
-                compressedEntry = entries[i];
-                compressedIndex = i;
-                break;
-            }
-        }
-        if (compressedEntry is null)
-        {
-            return;
-        }
+        // Update origLength.
+        BinaryPrimitives.WriteUInt32BigEndian(woffBytes.AsSpan(recordOffset + 12, 4), origLengthBefore + bump);
 
-        // Bump origLength by 1000 so the decompressor produces fewer bytes than expected.
-        var recordOffset = WoffHeader.HeaderSize + (compressedIndex * WoffTableEntry.RecordSize);
-        BinaryPrimitives.WriteUInt32BigEndian(
-            woffBytes.AsSpan(recordOffset + 12, 4),
-            compressedEntry.Value.OrigLength + 1000);
+        // Update totalSfntSize to match (must stay multiple of 4 too — bump=1024 satisfies that).
+        var totalSfntSizeBefore = BinaryPrimitives.ReadUInt32BigEndian(woffBytes.AsSpan(16, 4));
+        BinaryPrimitives.WriteUInt32BigEndian(woffBytes.AsSpan(16, 4), totalSfntSizeBefore + bump);
 
-        Assert.Throws<InvalidDataException>(() => WoffDecoder.Decode(woffBytes));
+        var ex = Assert.Throws<InvalidDataException>(() => WoffDecoder.Decode(woffBytes));
+        Assert.Contains("decompression", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

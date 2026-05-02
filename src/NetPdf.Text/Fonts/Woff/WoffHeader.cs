@@ -98,10 +98,14 @@ internal sealed class WoffHeader
         }
 
         var length = reader.ReadUInt32();
-        if (length > (uint)woffBytes.Length)
+        // §3 / §4: header.length is the total file size — strict equality, not "≤".
+        // A buffer larger than length carries extraneous data; smaller is truncated. Both
+        // are non-conformant per §4 ("user agents MUST reject as invalid any input that
+        // does not conform").
+        if (length != (uint)woffBytes.Length)
         {
             throw new InvalidDataException(
-                $"WOFF: header declares length {length} but buffer has {woffBytes.Length} bytes.");
+                $"WOFF: header.length {length} does not equal actual buffer length {woffBytes.Length}.");
         }
 
         var numTables = reader.ReadUInt16();
@@ -118,8 +122,15 @@ internal sealed class WoffHeader
         }
 
         var totalSfntSize = reader.ReadUInt32();
-        // §3 "The totalSfntSize field [...] must be a multiple of 4." — relax to a warning-level
-        // check by tolerating non-multiples here; AssembleSfnt re-derives the real size.
+        // §3 "totalSfntSize: Total size needed for the uncompressed font data [...] including
+        // padding." All component sizes (12-byte SFNT header, 16-byte directory records,
+        // 4-byte-aligned table data) are multiples of 4, so the sum must be a multiple of 4.
+        // Cross-validation against the directory's origLengths happens in WoffLayoutValidator.
+        if ((totalSfntSize & 3u) != 0)
+        {
+            throw new InvalidDataException(
+                $"WOFF: totalSfntSize {totalSfntSize} is not a multiple of 4.");
+        }
 
         var majorVersion = reader.ReadUInt16();
         var minorVersion = reader.ReadUInt16();

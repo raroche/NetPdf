@@ -55,10 +55,18 @@ internal static class WoffDecoder
     /// Decode <paramref name="woffBytes"/> into a fresh SFNT byte stream. The output
     /// can be fed directly to <see cref="OpenTypeFont.Parse"/>.
     /// </summary>
+    /// <remarks>
+    /// Validation runs in three passes before any allocation that depends on declared
+    /// lengths: header parse → directory parse → full layout validation
+    /// (<see cref="WoffLayoutValidator.Validate"/>). Only after all three pass do we
+    /// allocate per-table decompression buffers, so a malicious WOFF cannot drive
+    /// unbounded memory use through fabricated lengths.
+    /// </remarks>
     public static byte[] Decode(ReadOnlySpan<byte> woffBytes)
     {
         var header = WoffHeader.Parse(woffBytes);
         var entries = WoffTableEntry.ParseDirectory(woffBytes, header);
+        WoffLayoutValidator.Validate(header, entries, woffBytes);
 
         // Decompress each table into its own buffer. Index-aligned with `entries` so the
         // sort below can carry decompressed bytes alongside the directory entry.
@@ -98,27 +106,30 @@ internal static class WoffDecoder
         }
 
         var output = new byte[entry.OrigLength];
+        // The MemoryStream wrapper is needed because ZLibStream consumes a Stream. The
+        // ToArray() copy is a known perf cost — switching to ReadOnlySpan-backed input
+        // requires either unsafe code or a public-API change to ReadOnlyMemory<byte>;
+        // deferred per the Task 17 review until the strict-validation path is benchmarked.
         using var input = new MemoryStream(compressedSlice.ToArray(), writable: false);
         using var zlib = new ZLibStream(input, CompressionMode.Decompress);
-        var totalRead = 0;
-        while (totalRead < output.Length)
+
+        try
         {
-            var n = zlib.Read(output, totalRead, output.Length - totalRead);
-            if (n == 0)
-            {
-                throw new InvalidDataException(
-                    $"WOFF: table '{OpenTypeTags.ToAsciiString(entry.Tag)}' decompression produced " +
-                    $"{totalRead} bytes — declared origLength is {entry.OrigLength}.");
-            }
-            totalRead += n;
+            zlib.ReadExactly(output);
         }
-        // Drain any tail to detect over-long decompression — Read returning 0 confirms EOF.
-        var trailing = zlib.ReadByte();
-        if (trailing != -1)
+        catch (EndOfStreamException ex)
+        {
+            throw new InvalidDataException(
+                $"WOFF: table '{OpenTypeTags.ToAsciiString(entry.Tag)}' decompression produced fewer " +
+                $"than the declared origLength {entry.OrigLength} bytes.", ex);
+        }
+
+        // Drain any trailing byte — origLength must exactly match the decompressed size.
+        if (zlib.ReadByte() != -1)
         {
             throw new InvalidDataException(
                 $"WOFF: table '{OpenTypeTags.ToAsciiString(entry.Tag)}' decompression produced more " +
-                $"than the declared origLength {entry.OrigLength} — extra byte 0x{trailing:X2}.");
+                $"than the declared origLength {entry.OrigLength} bytes.");
         }
         return output;
     }

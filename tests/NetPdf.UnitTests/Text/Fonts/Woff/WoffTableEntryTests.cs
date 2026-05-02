@@ -86,17 +86,34 @@ public sealed class WoffTableEntryTests
     }
 
     [Fact]
-    public void ParseDirectory_rejects_duplicate_tag()
+    public void ParseDirectory_rejects_duplicate_tag_via_strict_ascending_check()
     {
         var woffBytes = SyntheticWoff.Build();
         var header = WoffHeader.Parse(woffBytes);
         const int firstRecordOffset = 44;
         const int secondRecordOffset = firstRecordOffset + 20;
-        // Copy the first record's tag into the second record's tag field.
+        // Copy the first record's tag into the second — duplicate tags fail the strict-
+        // ascending check (which subsumes the previous duplicate-only check).
         var firstTag = BinaryPrimitives.ReadUInt32BigEndian(woffBytes.AsSpan(firstRecordOffset, 4));
         BinaryPrimitives.WriteUInt32BigEndian(woffBytes.AsSpan(secondRecordOffset, 4), firstTag);
         var ex = Assert.Throws<InvalidDataException>(() => WoffTableEntry.ParseDirectory(woffBytes, header));
-        Assert.Contains("duplicate", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("ascending", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ParseDirectory_rejects_descending_tag_order()
+    {
+        var woffBytes = SyntheticWoff.Build();
+        var header = WoffHeader.Parse(woffBytes);
+        const int firstRecordOffset = 44;
+        const int secondRecordOffset = firstRecordOffset + 20;
+        // Swap first and second tags so the directory is no longer ascending.
+        var firstTag = BinaryPrimitives.ReadUInt32BigEndian(woffBytes.AsSpan(firstRecordOffset, 4));
+        var secondTag = BinaryPrimitives.ReadUInt32BigEndian(woffBytes.AsSpan(secondRecordOffset, 4));
+        BinaryPrimitives.WriteUInt32BigEndian(woffBytes.AsSpan(firstRecordOffset, 4), secondTag);
+        BinaryPrimitives.WriteUInt32BigEndian(woffBytes.AsSpan(secondRecordOffset, 4), firstTag);
+        var ex = Assert.Throws<InvalidDataException>(() => WoffTableEntry.ParseDirectory(woffBytes, header));
+        Assert.Contains("ascending", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

@@ -42,18 +42,24 @@ internal readonly record struct WoffTableEntry(
     /// starting at the byte immediately after the 44-byte header.
     /// </summary>
     /// <remarks>
-    /// Validates each entry against file length and rejects:
+    /// <para>
+    /// Per-entry validation rejects:
+    /// </para>
     /// <list type="bullet">
-    ///   <item>compLength &gt; origLength (impossible — zlib never expands beyond the original).</item>
-    ///   <item>offset + compLength &gt; file length (out-of-bounds).</item>
-    ///   <item>offset &lt; first valid table-data offset (would alias the directory).</item>
-    ///   <item>duplicate tags within the directory.</item>
+    ///   <item><c>compLength &gt; origLength</c> — zlib cannot expand beyond the original.</item>
+    ///   <item><c>offset + compLength &gt; header.Length</c> — out-of-bounds payload.</item>
+    ///   <item><c>offset &lt; firstValidDataOffset</c> — payload would alias the header / directory.</item>
+    ///   <item>tags not in strict-ascending order — §3 mandates ascending tag order; this also subsumes the duplicate-tag check.</item>
     /// </list>
-    /// The directory order is preserved as-is (caller sorts by tag for SFNT output —
-    /// WOFF spec recommends but does not require tag-sorted directory ordering).
+    /// <para>
+    /// Cross-entry layout (table contiguity, alignment, overlap with metadata / private,
+    /// no extraneous trailing data, <c>totalSfntSize</c> consistency) is the responsibility
+    /// of <see cref="WoffLayoutValidator"/>, which runs after this parser.
+    /// </para>
     /// </remarks>
     public static WoffTableEntry[] ParseDirectory(ReadOnlySpan<byte> woffBytes, WoffHeader header)
     {
+        ArgumentNullException.ThrowIfNull(header);
         var directorySize = header.NumTables * RecordSize;
         var firstValidDataOffset = WoffHeader.HeaderSize + directorySize;
         if (woffBytes.Length < firstValidDataOffset)
@@ -65,7 +71,7 @@ internal readonly record struct WoffTableEntry(
 
         var entries = new WoffTableEntry[header.NumTables];
         var reader = new BigEndianReader(woffBytes.Slice(WoffHeader.HeaderSize, directorySize));
-        var seenTags = new HashSet<uint>(header.NumTables);
+        var prevTag = 0u;
 
         for (var i = 0; i < header.NumTables; i++)
         {
@@ -75,11 +81,18 @@ internal readonly record struct WoffTableEntry(
             var origLength = reader.ReadUInt32();
             var origChecksum = reader.ReadUInt32();
 
-            if (!seenTags.Add(tag))
+            // §3: "Tag values for the tables MUST be in ascending order." Strict ascending
+            // (not just non-decreasing) — duplicate tags are also non-conformant since two
+            // entries cannot describe the same table.
+            if (i > 0 && tag <= prevTag)
             {
+                var prevAscii = OpenTypeTags.ToAsciiString(prevTag);
+                var currAscii = OpenTypeTags.ToAsciiString(tag);
                 throw new InvalidDataException(
-                    $"WOFF: duplicate table tag '{OpenTypeTags.ToAsciiString(tag)}' in directory.");
+                    $"WOFF: table directory not in strict-ascending tag order — entry {i} tag " +
+                    $"'{currAscii}' (0x{tag:X8}) does not exceed prior tag '{prevAscii}' (0x{prevTag:X8}).");
             }
+            prevTag = tag;
 
             if (compLength > origLength)
             {

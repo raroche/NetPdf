@@ -90,6 +90,29 @@ public sealed class WoffHeaderTests
     }
 
     [Fact]
+    public void Parse_rejects_length_smaller_than_buffer()
+    {
+        // Strict equality: header.length must equal buffer.Length. A smaller declared
+        // length means the buffer carries extraneous trailing bytes — non-conformant per §4.
+        var woffBytes = SyntheticWoff.Build();
+        BinaryPrimitives.WriteUInt32BigEndian(woffBytes.AsSpan()[8..12], (uint)woffBytes.Length - 4);
+        var ex = Assert.Throws<InvalidDataException>(() => WoffHeader.Parse(woffBytes));
+        Assert.Contains("length", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Parse_rejects_totalSfntSize_not_multiple_of_4()
+    {
+        // §3 derives totalSfntSize as 12 + 16N + sum(AlignTo4(origLength)) — every term is
+        // a multiple of 4, so the sum must be too. Bump it by 2 to violate the invariant.
+        var woffBytes = SyntheticWoff.Build();
+        var current = BinaryPrimitives.ReadUInt32BigEndian(woffBytes.AsSpan()[16..20]);
+        BinaryPrimitives.WriteUInt32BigEndian(woffBytes.AsSpan()[16..20], current + 2);
+        var ex = Assert.Throws<InvalidDataException>(() => WoffHeader.Parse(woffBytes));
+        Assert.Contains("multiple of 4", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
     public void Parse_rejects_metadata_offset_without_length()
     {
         var woffBytes = SyntheticWoff.Build();

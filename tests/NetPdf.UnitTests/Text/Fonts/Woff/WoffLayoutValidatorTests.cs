@@ -230,6 +230,55 @@ public sealed class WoffLayoutValidatorTests
         Assert.Contains("extraneous", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
+    // ───── Metadata-present + private-absent layout ────────────────────────────
+
+    [Fact]
+    public void Validate_accepts_metadata_present_with_private_absent()
+    {
+        // metaCompLength = 5, no private. The metadata block ends at metaOffset + 5; per
+        // spec there must be no extraneous trailing bytes (file ends exactly there). The
+        // synthesizer with privLength=0 produces this layout.
+        var woffBytes = SyntheticWoff.BuildWithMetadataAndPrivate(metaCompLength: 5, padBetween: 0, privLength: 0);
+        var header = WoffHeader.Parse(woffBytes);
+        var entries = WoffTableEntry.ParseDirectory(woffBytes, header);
+        WoffLayoutValidator.Validate(header, entries, woffBytes);
+    }
+
+    [Fact]
+    public void Validate_rejects_extraneous_bytes_after_metadata_when_private_absent()
+    {
+        // Build metadata-only layout, then append 4 trailing bytes + bump header.length
+        // to match. The validator must reject — §3 forbids extraneous data after the
+        // last block.
+        var baseline = SyntheticWoff.BuildWithMetadataAndPrivate(metaCompLength: 8, padBetween: 0, privLength: 0);
+        var grown = new byte[baseline.Length + 4];
+        baseline.CopyTo(grown, 0);
+        BinaryPrimitives.WriteUInt32BigEndian(grown.AsSpan(8, 4), (uint)grown.Length);
+        var header = WoffHeader.Parse(grown);
+        var entries = WoffTableEntry.ParseDirectory(grown, header);
+        var ex = Assert.Throws<InvalidDataException>(() => WoffLayoutValidator.Validate(header, entries, grown));
+        Assert.Contains("trailing", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Validate_documents_metadata_present_origLength_zero_behavior()
+    {
+        // When metadata is present (metaOffset > 0, metaLength > 0), the spec strictly
+        // requires metaOrigLength to be the uncompressed metadata XML size. The current
+        // implementation does NOT verify that consistency — it accepts metaOrigLength = 0
+        // with non-zero metaLength. This test pins down that current behavior so a future
+        // strict-validation pass can find it (Stage 12.4 hardening or post-1.0).
+        var woffBytes = SyntheticWoff.BuildWithMetadataAndPrivate(metaCompLength: 8, padBetween: 0, privLength: 0);
+        // Patch metaOrigLength to 0 (intentionally inconsistent — non-zero metaLength,
+        // zero origLength). Position 32-35 is the metaOrigLength field.
+        BinaryPrimitives.WriteUInt32BigEndian(woffBytes.AsSpan(32, 4), 0);
+        // Currently accepts. If a future hardening pass tightens this, the test will fail
+        // and need updating with a documenting note about the new strict behavior.
+        var header = WoffHeader.Parse(woffBytes);
+        var entries = WoffTableEntry.ParseDirectory(woffBytes, header);
+        WoffLayoutValidator.Validate(header, entries, woffBytes);
+    }
+
     [Fact]
     public void Decode_round_trips_through_reversed_payload_order_layout()
     {

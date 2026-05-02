@@ -109,10 +109,20 @@ internal static class SyntheticWoff
         var endOfTables = standard.Length;
         var metaOffset = AlignTo4(endOfTables);
         var metaEnd = metaOffset + metaCompLength;
-        var privOffset = AlignTo4(metaEnd + padBetween);
-        var privEnd = privOffset + privLength;
+        int privOffset, fileEnd;
+        if (privLength > 0)
+        {
+            privOffset = AlignTo4(metaEnd + padBetween);
+            fileEnd = privOffset + privLength;
+        }
+        else
+        {
+            // Spec invariant: privOffset == 0 when privLength == 0.
+            privOffset = 0;
+            fileEnd = metaEnd;
+        }
 
-        var output = new byte[privEnd];
+        var output = new byte[fileEnd];
         standard.CopyTo(output, 0);
         // Patch header.length to the new size.
         BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(8, 4), (uint)output.Length);

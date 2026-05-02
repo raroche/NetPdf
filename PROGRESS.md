@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-01 (Post-Stage-12.3b/c hardening ✅ — multi-paragraph split + WOFF metadata-padding + per-rule unit tests)
+**Last updated:** 2026-05-02 (CRLF paragraph fix + WOFF private-absent tests ✅ — pre-Stage-12.4 hardening)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -378,6 +378,14 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
   - **X-rule public-API verification (P2)**: end-to-end test `Public_API_RLE_retained_at_enclosing_level_not_post_push` verifies the §5.2 retained-formatting fix is honored when callers go through `ResolveLevels` (not only the `BidiX10Resolver.Apply` direct path the existing hardening tests cover).
   - 41 new tests across `BidiMultiParagraphTests` (8), `BidiRulePassUnitTests` (24), `WoffHeaderTests` (1), `WoffLayoutValidatorTests` (5 — 4-case theory + a rejection test), `BidiAlgorithmEndToEndTests` (1 X-rule verification + 2 EN-handling refinements), `BidiPipelineIntegrationTests` (already updated to live API).
   - Total tests: **998 unit / 1009 solution-wide passing**.
+
+- **Pre-Stage-12.4 hardening pass** ✅ (2026-05-02) — seventeenth review-driven round, focused on CRLF paragraph segmentation + paragraph-boundary corpus expansion + WOFF metadata-private-absent layout coverage.
+  - **CRLF paragraph break (P1)**: `BidiAlgorithm.FindParagraphEnd` now treats the byte sequence U+000D U+000A as a single paragraph-break unit — both code units stay with the preceding paragraph at its base level. Without this fix, common Windows newline input produced a spurious empty LF-only paragraph between the CR and the following text. Unicode does not explicitly call out CRLF in UAX #9, but every reference implementation (ICU, WeasyPrint, Pango, Chromium's bidi processor) follows the de-facto convention. CR alone (no following LF) and LF alone remain single-character breaks.
+  - **Paragraph-boundary regression tests (P1, 12 new)**: `BidiMultiParagraphTests` now covers — CRLF RTL→LTR, CRLF LTR→RTL, explicit RLE before CRLF doesn't leak into next paragraph, lone CR is its own break, lone LF after non-CR is its own break, NEL (U+0085), PARAGRAPH SEPARATOR (U+2029), FILE/GROUP/RECORD SEPARATOR (U+001C/001D/001E theory), forced LeftToRight across CRLF, forced RightToLeft across CRLF.
+  - **WOFF metadata-present + private-absent layout tests (P2, 3 new)**: `WoffLayoutValidatorTests` — accepts metadata-present + private-absent ending exactly at metadata-end (no trailing bytes); rejects extraneous bytes appended after metadata when private is absent; documents current "metadata present with metaOrigLength = 0" behavior (currently accepts; pinned for future stricter-validation pass).
+  - **`SyntheticWoff.BuildWithMetadataAndPrivate` privLength=0 fix**: when called with `privLength = 0`, the helper now correctly emits `privOffset = 0` (and stops the file at metadata-end) per the spec invariant that privOffset must be zero when private is absent. Prior behavior set a non-zero privOffset that immediately failed `WoffHeader.Parse`'s offset/length consistency check.
+  - 15 new tests across `BidiMultiParagraphTests` (12) + `WoffLayoutValidatorTests` (3).
+  - Total tests: **1013 unit / 1024 solution-wide passing**.
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

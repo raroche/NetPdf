@@ -86,10 +86,20 @@ internal static class BidiAlgorithm
 
     /// <summary>
     /// Find the end (exclusive) of the paragraph starting at <paramref name="start"/> —
-    /// the position immediately after the first paragraph-separator (B) character, or the
-    /// end of the text if no separator is found. Per UAX #9 §3.3.1 P1, the separator
-    /// stays with the preceding paragraph.
+    /// the position immediately after the first paragraph-separator unit, or the end of
+    /// the text if no separator is found. Per UAX #9 §3.3.1 P1, the separator stays with
+    /// the preceding paragraph.
     /// </summary>
+    /// <remarks>
+    /// <b>CRLF handling.</b> The Unicode standard does not explicitly call out CRLF as a
+    /// single paragraph-break unit, but the de-facto convention across reference
+    /// implementations (ICU, WeasyPrint, Pango, Chromium's bidi processor) is to treat
+    /// the sequence U+000D U+000A as one paragraph break — both code units stay with the
+    /// preceding paragraph at its base level. Without this, common Windows newline input
+    /// would split into a spurious LF-only paragraph after the CR. Other multi-codepoint
+    /// paragraph-break sequences are not defined by Unicode; every other class-B character
+    /// is its own break.
+    /// </remarks>
     private static int FindParagraphEnd(ReadOnlySpan<char> text, int start)
     {
         for (var i = start; i < text.Length; /* advance inside */)
@@ -108,7 +118,14 @@ internal static class BidiAlgorithm
             }
             if (BidiClassTable.GetClass(codepoint) == BidiClass.B)
             {
-                return i + unitLen;
+                var endOfBreak = i + unitLen;
+                // CRLF: extend the paragraph break to include the LF when CR is followed
+                // by LF directly (single break unit, both code units stay with this paragraph).
+                if (codepoint == '\r' && endOfBreak < text.Length && text[endOfBreak] == '\n')
+                {
+                    endOfBreak++;
+                }
+                return endOfBreak;
             }
             i += unitLen;
         }

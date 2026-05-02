@@ -94,7 +94,7 @@ internal static class BidiX10Resolver
 
                 // X6a — PDI
                 case BidiClass.PDI:
-                    HandlePdi(stack, ref ch, ref overflowIsolateCount, ref validIsolateCount);
+                    HandlePdi(stack, ref ch, ref overflowIsolateCount, ref overflowEmbeddingCount, ref validIsolateCount);
                     break;
 
                 // X7 — PDF
@@ -102,10 +102,19 @@ internal static class BidiX10Resolver
                     HandlePdf(stack, ref ch, ref overflowIsolateCount, ref overflowEmbeddingCount);
                     break;
 
-                // X8 — B (paragraph separator)
+                // X8 — B (paragraph separator). Spec language: "the algorithm is restarted
+                // as for a new paragraph". Reset the directional status stack and overflow
+                // counters so post-B characters start fresh; reuse the input paragraphLevel
+                // (callers that expect different per-paragraph levels should split on B and
+                // call BidiX10Resolver per-paragraph).
                 case BidiClass.B:
                     ch.Level = paragraphLevel;
                     ch.ResolvedClass = ch.OriginalClass;
+                    stack.Clear();
+                    stack.Push(paragraphLevel, DirectionalOverride.Neutral, isIsolate: false);
+                    overflowIsolateCount = 0;
+                    overflowEmbeddingCount = 0;
+                    validIsolateCount = 0;
                     break;
 
                 // X6 — BN: assign top.level, mark for X9 removal, no override applied.
@@ -127,6 +136,15 @@ internal static class BidiX10Resolver
     /// X2/X3/X4/X5 — push an embedding entry on the stack, or bump the overflow counter
     /// when the BD2 cap or an enclosing isolate overflow blocks the push.
     /// </summary>
+    /// <remarks>
+    /// Per UAX #9 §5.2 ("Retaining Format Characters"), retained explicit formatting
+    /// characters take the level of their surrounding text — the enclosing level captured
+    /// <i>before</i> any push. Assigning the post-push level (the level inside the
+    /// embedding) would group the formatting character into the wrong level run; the
+    /// run-segmenter skips X9-removed characters anyway, but downstream consumers
+    /// inspecting <see cref="BidiCharInfo.Level"/> on a retained character expect the
+    /// enclosing level per the spec.
+    /// </remarks>
     private static void HandleEmbedding(
         DirectionalStatusStack stack,
         ref BidiCharInfo ch,
@@ -135,7 +153,10 @@ internal static class BidiX10Resolver
         ref int overflowEmbeddingCount,
         bool applyOverride)
     {
-        var newLevel = isRtl ? NextOddLevel(stack.Top.Level) : NextEvenLevel(stack.Top.Level);
+        // Capture the enclosing level BEFORE any push so the retained X9 character ends
+        // up at the surrounding-text level, not at the post-push (inside-embedding) level.
+        var enclosingLevel = stack.Top.Level;
+        var newLevel = isRtl ? NextOddLevel(enclosingLevel) : NextEvenLevel(enclosingLevel);
         if (newLevel <= MaxEmbeddingLevel && overflowIsolateCount == 0 && overflowEmbeddingCount == 0)
         {
             var @override = applyOverride
@@ -147,10 +168,7 @@ internal static class BidiX10Resolver
         {
             overflowEmbeddingCount++;
         }
-        // X9: the embedding/override character itself receives the prevailing top.level
-        // (post-push) and is marked removed. Class is preserved (used only for diagnostics
-        // — W/N/I rules skip removed chars).
-        ch.Level = stack.Top.Level;
+        ch.Level = enclosingLevel;
         ch.ResolvedClass = ch.OriginalClass;
         ch.IsRemovedByX9 = true;
     }
@@ -184,10 +202,17 @@ internal static class BidiX10Resolver
     }
 
     /// <summary>X6a — pop the directional status stack at a PDI (matched isolate close).</summary>
+    /// <remarks>
+    /// UAX #9 X6a step 3 explicitly requires "set the overflow embedding count to zero"
+    /// before popping back to the matching isolate. Any RLE/LRE that overflowed inside the
+    /// isolate region is no longer in scope once the isolate closes, so a subsequent
+    /// embedding push must not be blocked by a stale overflow count.
+    /// </remarks>
     private static void HandlePdi(
         DirectionalStatusStack stack,
         ref BidiCharInfo ch,
         ref int overflowIsolateCount,
+        ref int overflowEmbeddingCount,
         ref int validIsolateCount)
     {
         if (overflowIsolateCount > 0)
@@ -200,6 +225,9 @@ internal static class BidiX10Resolver
         }
         else
         {
+            // X6a step 3: clear overflow embedding count BEFORE popping back to the isolate.
+            // Any RLE/LRE that overflowed inside the isolate region is now out of scope.
+            overflowEmbeddingCount = 0;
             // Pop until the top entry is an isolate, then pop that isolate.
             while (!stack.Top.IsIsolate)
             {

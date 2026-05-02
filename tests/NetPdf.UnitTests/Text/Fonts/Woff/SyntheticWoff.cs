@@ -69,6 +69,100 @@ internal static class SyntheticWoff
     }
 
     /// <summary>
+    /// Build a conforming WOFF byte stream where the directory is in canonical
+    /// tag-ascending order but the on-disk payload is laid out in reverse offset order
+    /// — exercising the case W3C WOFF 1.0 §3 explicitly allows ("the order in which the
+    /// tables appear in the WOFF file is not specified") that the layout validator must
+    /// accept.
+    /// </summary>
+    /// <remarks>
+    /// Method: build a normal synthetic WOFF, then re-lay the payload tables in reverse
+    /// offset order while keeping the directory bytes themselves in tag-sorted order
+    /// (only the offset fields change to point at the new positions). Padding between
+    /// tables stays zeroed; total length is preserved (re-derived as a multiple of 4).
+    /// </remarks>
+    public static byte[] BuildWithReversedPayloadOrder()
+    {
+        var standard = Build();
+        return ReorderPayloadDescendingOffset(standard);
+    }
+
+    private static byte[] ReorderPayloadDescendingOffset(byte[] standard)
+    {
+        var numTables = BinaryPrimitives.ReadUInt16BigEndian(standard.AsSpan(12, 2));
+
+        // Read all entry fields (tag, offset, compLength, origLength, origChecksum).
+        var tag = new uint[numTables];
+        var origOffset = new uint[numTables];
+        var compLen = new uint[numTables];
+        var origLen = new uint[numTables];
+        var checksum = new uint[numTables];
+        for (var i = 0; i < numTables; i++)
+        {
+            var rec = WoffHeaderSize + (i * WoffDirectoryRecordSize);
+            tag[i] = BinaryPrimitives.ReadUInt32BigEndian(standard.AsSpan(rec, 4));
+            origOffset[i] = BinaryPrimitives.ReadUInt32BigEndian(standard.AsSpan(rec + 4, 4));
+            compLen[i] = BinaryPrimitives.ReadUInt32BigEndian(standard.AsSpan(rec + 8, 4));
+            origLen[i] = BinaryPrimitives.ReadUInt32BigEndian(standard.AsSpan(rec + 12, 4));
+            checksum[i] = BinaryPrimitives.ReadUInt32BigEndian(standard.AsSpan(rec + 16, 4));
+        }
+
+        // Snapshot table bytes from their current positions.
+        var bytes = new byte[numTables][];
+        for (var i = 0; i < numTables; i++)
+        {
+            bytes[i] = standard.AsSpan((int)origOffset[i], (int)compLen[i]).ToArray();
+        }
+
+        // New placement order: original-offset-descending. The first slot in physical
+        // layout receives the table that originally had the LARGEST offset.
+        var placementOrder = new int[numTables];
+        for (var i = 0; i < numTables; i++) placementOrder[i] = i;
+        Array.Sort(placementOrder, (a, b) => origOffset[b].CompareTo(origOffset[a]));
+
+        // Compute new offsets: contiguous after the directory with up-to-3-byte alignment
+        // padding between tables (no padding after the last on-disk table).
+        var directorySize = numTables * WoffDirectoryRecordSize;
+        var firstTableOffset = WoffHeaderSize + directorySize;
+        var newOffsetByEntry = new uint[numTables];
+        var cursor = firstTableOffset;
+        for (var slot = 0; slot < placementOrder.Length; slot++)
+        {
+            var entryIndex = placementOrder[slot];
+            newOffsetByEntry[entryIndex] = (uint)cursor;
+            cursor += bytes[entryIndex].Length;
+            if (slot < placementOrder.Length - 1)
+            {
+                cursor = AlignTo4(cursor);
+            }
+        }
+        var newLength = cursor;
+
+        var output = new byte[newLength];
+        // Copy header verbatim then patch length.
+        standard.AsSpan(0, WoffHeaderSize).CopyTo(output);
+        BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(8, 4), (uint)newLength);
+
+        // Directory in tag-sorted order (preserved) with new offsets.
+        for (var i = 0; i < numTables; i++)
+        {
+            var rec = WoffHeaderSize + (i * WoffDirectoryRecordSize);
+            BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(rec, 4), tag[i]);
+            BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(rec + 4, 4), newOffsetByEntry[i]);
+            BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(rec + 8, 4), compLen[i]);
+            BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(rec + 12, 4), origLen[i]);
+            BinaryPrimitives.WriteUInt32BigEndian(output.AsSpan(rec + 16, 4), checksum[i]);
+        }
+
+        // Copy each table's bytes to its new physical position.
+        for (var i = 0; i < numTables; i++)
+        {
+            bytes[i].CopyTo(output, (int)newOffsetByEntry[i]);
+        }
+        return output;
+    }
+
+    /// <summary>
     /// Find the directory index of <paramref name="tag"/> in a WOFF byte stream. Returns
     /// -1 if the tag is absent. Useful for tests that mutate a specific table's record
     /// or payload after the synthetic builder runs.

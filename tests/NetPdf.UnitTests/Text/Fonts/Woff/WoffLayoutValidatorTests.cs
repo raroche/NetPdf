@@ -164,4 +164,39 @@ public sealed class WoffLayoutValidatorTests
         // Cap is documented as 256 MiB. Lock in via a property-based assertion.
         Assert.Equal(256L * 1024 * 1024, WoffLayoutValidator.MaxSfntSize);
     }
+
+    // ───── Layout walks must respect physical (offset) order, not directory order ─
+
+    [Fact]
+    public void Validate_accepts_offset_order_different_from_directory_tag_order()
+    {
+        // W3C WOFF 1.0 §3 mandates tag-ascending DIRECTORY order but leaves on-disk table
+        // order unspecified — a conforming WOFF can lay tables out in any offset order.
+        // The layout validator must walk the offset-sorted view, not the directory order,
+        // so this test pins down the correct behavior.
+        var woffBytes = SyntheticWoff.BuildWithReversedPayloadOrder();
+        var header = WoffHeader.Parse(woffBytes);
+        var entries = WoffTableEntry.ParseDirectory(woffBytes, header);
+        // Directory remains tag-ascending (would have failed ParseDirectory otherwise).
+        // Offsets are reversed relative to the tag order — first directory entry has the
+        // LARGEST offset; last directory entry has the smallest.
+        Assert.True(entries[0].Offset > entries[^1].Offset);
+        // Layout validator must accept this conforming layout.
+        WoffLayoutValidator.Validate(header, entries, woffBytes);
+    }
+
+    [Fact]
+    public void Decode_round_trips_through_reversed_payload_order_layout()
+    {
+        // End-to-end: the WoffDecoder pipeline must accept the reversed-payload layout
+        // and produce a valid SFNT. Confirms the layout validator wiring + decompression
+        // path both honor offset order.
+        var woffBytes = SyntheticWoff.BuildWithReversedPayloadOrder();
+        var sfnt = WoffDecoder.Decode(woffBytes);
+        Assert.NotEmpty(sfnt);
+        // The decoded SFNT must be parseable by OpenTypeFont.Parse — basic structural check.
+        var font = NetPdf.Text.Fonts.OpenType.OpenTypeFont.Parse(sfnt);
+        Assert.NotNull(font);
+        Assert.True(font.HasTrueTypeOutlines);
+    }
 }

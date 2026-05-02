@@ -95,16 +95,19 @@ internal static class WoffLayoutValidator
             }
         }
 
-        // (3) Tables contiguous in tag-ascending order with up to 3 bytes of zero-padding for
-        //     alignment. Combined with the strict tag-ascending order from
-        //     WoffTableEntry.ParseDirectory and §3 "Tables MUST be stored in ascending order
-        //     of their tag values", offsets must be ascending too. Padding bytes between
-        //     tables MUST be zero.
+        // (3) Tables contiguous in offset order with up to 3 bytes of zero-padding for
+        //     alignment between consecutive blocks; padding bytes MUST be zero (§3).
+        //     Note: WOFF 1.0 §3 mandates tag-ascending DIRECTORY order (enforced in
+        //     WoffTableEntry.ParseDirectory), but the on-disk table-data order is
+        //     "not specified" by the spec — a conforming WOFF can lay tables out in any
+        //     offset order. Walk a sorted-by-offset view so the contiguity / overlap /
+        //     padding-zero checks operate on the actual physical layout instead of
+        //     incorrectly reusing directory order.
         var directoryEnd = WoffHeader.HeaderSize + (entries.Length * WoffTableEntry.RecordSize);
+        var byOffset = SortByOffset(entries);
         long expectedNext = directoryEnd;
-        for (var i = 0; i < entries.Length; i++)
+        foreach (var entry in byOffset)
         {
-            var entry = entries[i];
             EnsureNoOverlapAndPadIsZero(woffBytes, expectedNext, entry.Offset, $"table '{OpenTypeTags.ToAsciiString(entry.Tag)}'");
             expectedNext = (long)entry.Offset + entry.CompLength;
         }
@@ -194,4 +197,17 @@ internal static class WoffLayoutValidator
     }
 
     private static long AlignTo4(uint length) => (length + 3L) & ~3L;
+
+    /// <summary>
+    /// Return a view of <paramref name="entries"/> sorted by <see cref="WoffTableEntry.Offset"/>
+    /// ascending. Used by the layout walk (which must respect physical block order, not
+    /// directory order) without mutating the caller's array.
+    /// </summary>
+    private static WoffTableEntry[] SortByOffset(WoffTableEntry[] entries)
+    {
+        var sorted = new WoffTableEntry[entries.Length];
+        Array.Copy(entries, sorted, entries.Length);
+        Array.Sort(sorted, static (a, b) => a.Offset.CompareTo(b.Offset));
+        return sorted;
+    }
 }

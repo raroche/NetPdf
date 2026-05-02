@@ -18,6 +18,14 @@ namespace NetPdf.Text.Bidi;
 /// <b>P3.</b> If a character is found in P2 and it is of type AL or R, then set the
 /// paragraph embedding level to one; otherwise, set it to zero.
 /// </para>
+/// <para>
+/// <b>Paragraph segmentation contract.</b> UAX #9 operates one paragraph at a time;
+/// callers are expected to pre-segment multi-paragraph text. As a defensive
+/// fallback, the auto-detection scan also stops at the first paragraph separator
+/// (<see cref="BidiClass.B"/>) outside any isolate — so passing <c>"123\nאבג"</c>
+/// returns 0 (P3 default for the first paragraph "123" which has no strong char),
+/// not 1.
+/// </para>
 /// </remarks>
 internal static class ParagraphLevelResolver
 {
@@ -39,7 +47,10 @@ internal static class ParagraphLevelResolver
 
     private static byte AutoLevelFromFirstStrongChar(ReadOnlySpan<char> utf16Text)
     {
-        // P2: scan for first L / R / AL, skipping isolates (LRI/RLI/FSI..PDI).
+        // P2: scan for first L / R / AL, skipping isolates (LRI/RLI/FSI..PDI). Stop at
+        // the first paragraph separator (B) outside any isolate — UAX #9 algorithms run
+        // per-paragraph, and the first-strong scan must not bleed into a following
+        // paragraph that the caller forgot to segment.
         var isolateDepth = 0;
         var i = 0;
         while (i < utf16Text.Length)
@@ -57,6 +68,10 @@ internal static class ParagraphLevelResolver
                 case BidiClass.PDI when isolateDepth > 0:
                     isolateDepth--;
                     continue;
+                case BidiClass.B when isolateDepth == 0:
+                    // End of the first paragraph in the input span. P3 default — no
+                    // strong char found within this paragraph means level 0.
+                    return 0;
             }
 
             if (isolateDepth > 0)

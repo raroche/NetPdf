@@ -166,10 +166,92 @@ public sealed class BidiClassTableTests
     }
 
     [Fact]
-    public void Default_for_supplementary_plane_codepoint_is_L()
+    public void Emoji_supplementary_plane_codepoints_are_ON()
     {
-        // U+1F600 (😀 emoji) — not in our hand-built coverage; defaults to L.
-        // Real UCD has these as ON; Stage 12.3 will refine. Test pins current behavior.
-        Assert.Equal(BidiClass.L, BidiClassTable.GetClass(0x1F600));
+        // UCD assigns emoji and pictograph codepoints to ON. Covered range is
+        // U+1F300–U+1FAFF (Misc Symbols + Emoticons + Transport + Alchemical + …).
+        Assert.Equal(BidiClass.ON, BidiClassTable.GetClass(0x1F600)); // 😀
+        Assert.Equal(BidiClass.ON, BidiClassTable.GetClass(0x1F4A9)); // 💩
+        Assert.Equal(BidiClass.ON, BidiClassTable.GetClass(0x1F680)); // 🚀
+    }
+
+    // ───── Post-Stage-12.1 hardening: misclassification fixes per reviewer ────
+
+    [Theory]
+    [InlineData(0x0600)] // ARABIC NUMBER SIGN
+    [InlineData(0x0601)] // ARABIC SIGN SANAH
+    [InlineData(0x0602)] // ARABIC FOOTNOTE MARKER
+    [InlineData(0x0603)] // ARABIC SIGN SAFHA
+    [InlineData(0x0604)] // ARABIC SIGN SAMVAT
+    [InlineData(0x0605)] // ARABIC NUMBER MARK ABOVE
+    public void Arabic_number_prefix_marks_U0600_to_U0605_are_AN(int codepoint)
+    {
+        Assert.Equal(BidiClass.AN, BidiClassTable.GetClass(codepoint));
+    }
+
+    [Fact]
+    public void Arabic_letter_mark_U061C_is_BN()
+    {
+        Assert.Equal(BidiClass.BN, BidiClassTable.GetClass(0x061C));
+    }
+
+    [Fact]
+    public void Arabic_per_mille_signs_are_ET()
+    {
+        Assert.Equal(BidiClass.ET, BidiClassTable.GetClass(0x0609)); // ARABIC-INDIC PER MILLE SIGN
+        Assert.Equal(BidiClass.ET, BidiClassTable.GetClass(0x060A)); // ARABIC-INDIC PER TEN THOUSAND SIGN
+        Assert.Equal(BidiClass.ET, BidiClassTable.GetClass(0x066A)); // ARABIC PERCENT SIGN
+    }
+
+    [Theory]
+    [InlineData(0x066B)] // ARABIC DECIMAL SEPARATOR
+    [InlineData(0x066C)] // ARABIC THOUSANDS SEPARATOR
+    [InlineData(0x06DD)] // ARABIC END OF AYAH
+    public void Arabic_number_helpers_are_AN(int codepoint)
+    {
+        Assert.Equal(BidiClass.AN, BidiClassTable.GetClass(codepoint));
+    }
+
+    [Theory]
+    [InlineData(0x08A0)] // Arabic Extended-A start
+    [InlineData(0x08B6)] // ARABIC LETTER BEH WITH SMALL MEEM ABOVE
+    [InlineData(0x08FF)] // Arabic Extended-A end
+    public void Arabic_Extended_A_is_AL(int codepoint)
+    {
+        Assert.Equal(BidiClass.AL, BidiClassTable.GetClass(codepoint));
+    }
+
+    [Theory]
+    [InlineData(0xFB1D)] // HEBREW LETTER YOD WITH HIRIQ
+    [InlineData(0xFB2A)] // HEBREW LETTER SHIN WITH SHIN DOT
+    [InlineData(0xFB4F)] // HEBREW LIGATURE ALEF LAMED
+    public void Hebrew_Presentation_Forms_are_R(int codepoint)
+    {
+        Assert.Equal(BidiClass.R, BidiClassTable.GetClass(codepoint));
+    }
+
+    [Fact]
+    public void Hebrew_Presentation_Form_special_cases_match_UCD()
+    {
+        Assert.Equal(BidiClass.NSM, BidiClassTable.GetClass(0xFB1E)); // POINT JUDEO-SPANISH VARIKA
+        Assert.Equal(BidiClass.ES, BidiClassTable.GetClass(0xFB29));  // ALTERNATIVE PLUS SIGN
+    }
+
+    [Theory]
+    [InlineData(0xFB50)] // Arabic Presentation Forms-A start
+    [InlineData(0xFE70)] // Arabic Presentation Forms-B start
+    [InlineData(0xFEFC)] // ARABIC LIGATURE LAM WITH ALEF FINAL FORM (last AL in -B)
+    public void Arabic_Presentation_Forms_are_AL(int codepoint)
+    {
+        Assert.Equal(BidiClass.AL, BidiClassTable.GetClass(codepoint));
+    }
+
+    [Theory]
+    [InlineData(0x1EE00)] // Arabic Mathematical Alphabetic Symbols start
+    [InlineData(0x1EE6E)]
+    [InlineData(0x1EEBB)] // ARABIC MATHEMATICAL DOUBLE-STRUCK (last assigned)
+    public void Arabic_Mathematical_Alphabetic_Symbols_are_AL(int codepoint)
+    {
+        Assert.Equal(BidiClass.AL, BidiClassTable.GetClass(codepoint));
     }
 }

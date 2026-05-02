@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-01 (Task 12 Stage 12.1 ✅ — UAX #9 Bidi foundation + paragraph-level resolution)
+**Last updated:** 2026-05-01 (post-Stage-12.1 hardening ✅ — UCD-class fixes, paragraph-separator stop, re-staged plan)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -40,7 +40,7 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
 - **Doc:** [`docs/phases/phase-1-pdf-writer-and-text.md`](docs/phases/phase-1-pdf-writer-and-text.md)
 
 ### Active task
-**Task 12 Stage 12.2** — explicit / weak / neutral / implicit / reordering rules (X / W / N / I / L). After 12.2 lands, **Stage 12.3** wires UCD source-generator + `BidiTest.txt` + `BidiCharacterTest.txt` to 100% pass.
+**Task 12 Stage 12.2** — UCD source generator. Per the post-Stage-12.1 review, the source generator is pulled forward (was originally Stage 12.3) so the X/W/N/I/L rule machinery is built against correct class data, not a hand-built table. Stage 12.3 then implements the rules; Stage 12.4 wires `BidiTest.txt` + `BidiCharacterTest.txt` to 100% pass.
 
 ### Subtasks completed
 
@@ -262,6 +262,21 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
   - **`BidiAlgorithm`** (`src/NetPdf.Text/Bidi/BidiAlgorithm.cs`) — public entry point. `ResolveParagraphLevel(text, direction = Auto)` ships now and is the answer for "what's the base direction of this paragraph". `ResolveLevels(text, direction)` is the eventual full-algorithm output (per-character embedding levels) and currently throws `NotImplementedException` with a precise Stage 12.2 staging message so consumers know they're depending on incomplete work.
   - **Dual-layer tests** (66 total): `BidiClassTableTests` (28 unit) covers ASCII letter / digit / whitespace / separator / terminator classification, Hebrew letter / mark, Arabic letter / digit (AN vs EN), all 9 explicit-formatting characters, Greek / Cyrillic / Latin-1 letters, Latin-1 currency / no-break-space, the multiplication / division sign skip in the L range, paragraph separator, out-of-range rejection, and supplementary-plane fallback; `ParagraphLevelResolverTests` (10 unit) covers explicit-direction short-circuits, first-strong-L / -R / -AL detection, neutral-skipping, P3 default, balanced isolate pair skips strong chars inside, unmatched isolate initiator handling, supplementary-plane codepoint reading; `BidiAlgorithmIntegrationTests` (5 integration) drives the public API for pure-LTR / pure-RTL / mixed text, default-argument behavior, and verifies `ResolveLevels` throws `NotImplementedException` with the staging message.
   - Total tests: **697 unit / 708 solution-wide passing**.
+
+- **Post-Stage-12.1 hardening pass** ✅ (2026-05-01) — twelfth review-driven round, cross-referenced against UCD `DerivedBidiClass.txt`.
+  - **Re-staged the plan**: UCD source generator pulled forward to Stage 12.2 (was 12.3). Per the reviewer's planning note: running the X/W/N/I/L rule machinery against slightly-wrong class data makes regressions much harder to find. New ordering: 12.2 source generator → 12.3 X/W/N/I/L rules → 12.4 UCD test data integration.
+  - **Arabic block misclassifications fixed**: `U+0600..U+0605` (ARABIC NUMBER SIGN, SANAH, FOOTNOTE MARKER, SAFHA, SAMVAT, NUMBER MARK ABOVE) → AN (was AL). `U+0609..U+060A` (PER MILLE / PER TEN THOUSAND SIGN) → ET. `U+061C` (ARABIC LETTER MARK / ALM) → BN. `U+066A` (PERCENT SIGN) → ET. `U+066B..U+066C` (DECIMAL / THOUSANDS SEPARATOR) → AN. `U+06DD` (END OF AYAH) → AN. Plus `U+0606..U+0608`, `U+060B`, `U+060D..U+060F`, `U+061D`, `U+06DE`, `U+06E9` per UCD specifics.
+  - **High-risk RTL ranges added**:
+    - Arabic Extended-A `U+08A0..U+08FF` → AL.
+    - Hebrew Presentation Forms `U+FB1D..U+FB4F` → R, with `U+FB1E` NSM and `U+FB29` ES per UCD specifics.
+    - Arabic Presentation Forms-A `U+FB50..U+FDFF` → AL.
+    - Arabic Presentation Forms-B `U+FE70..U+FEFC` → AL.
+    - Arabic Mathematical Alphabetic Symbols `U+1EE00..U+1EEFF` → AL.
+  - **Emoji + supplementary-symbol blocks classified as ON**: `U+1F300..U+1FAFF` covering Miscellaneous Symbols and Pictographs, Emoticons, Ornamental Dingbats, Transport and Map Symbols, Alchemical Symbols, Geometric Shapes Extended, Supplemental Arrows-C, Supplemental Symbols and Pictographs, Chess Symbols, Symbols and Pictographs Extended-A. Was incorrectly L; UCD assigns ON. Real-world impact: emoji at the start of a Hebrew/Arabic paragraph no longer flips the auto-detected direction to LTR.
+  - **`ParagraphLevelResolver` stops at the first paragraph separator (B) outside isolates**: UAX #9 algorithms run per-paragraph and the first-strong scan must not bleed into the next paragraph. Pre-fix `"123\nאבג"` returned 1 (R from second paragraph); now returns 0 (P3 default for the first paragraph "123"). Documented as part of the API contract.
+  - **Documentation tightened**: `BidiClassTable` XML doc now leads with "this table is provisional and intentionally incomplete," lists exact covered ranges, and explicitly names the L-default fallback as wrong-but-bounded for some specific blocks (NKo, Tibetan punctuation). Stage 12.2 fixes both the data and the documentation.
+  - 32 new tests in `BidiClassTableTests` + `ParagraphLevelResolverTests`: every reviewer-recommended case (`U+0600` and `U+0605` → AN; `U+08A0` → AL; `U+FB1D` → R; `U+FE70` → AL; `U+1EE00` → AL; `ResolveParagraphLevel("😀אבג")` → 1; `ResolveParagraphLevel("؀A")` → 0) plus paragraph-separator-stop cases for `"  \nאבג"` and `"123\nאבג"`, plus presentation-form-at-paragraph-start cases for Hebrew (`U+FB1D`) and Arabic (`U+FE70`), plus Arabic Extended-A start cases.
+  - Total tests: **729 unit / 740 solution-wide passing**.
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

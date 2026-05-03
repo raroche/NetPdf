@@ -406,7 +406,7 @@ internal sealed class PdfDocument
 
     private static byte[] HashStream(PdfStream stream)
     {
-        // SHA-256 over (payload bytes ⨁ dictionary canonical bytes). The dictionary's
+        // SHA-256 over (payload bytes || dictionary canonical bytes). The dictionary's
         // own writer produces deterministic output (insertion order preserved by
         // OrderedDictionary), so two PdfStreams built from the same data + same Set()
         // sequence hash identically — that's the desired dedup grain.

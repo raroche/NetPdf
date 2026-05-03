@@ -96,7 +96,7 @@ internal static class RasterImageXObject
     private static byte[] ZlibCompress(byte[] raw)
     {
         using var output = new MemoryStream();
-        using (var zlib = new ZLibStream(output, CompressionLevel.Optimal, leaveOpen: true))
+        using (var zlib = new ZLibStream(output, PdfFormat.PdfDeflateCompressionLevel, leaveOpen: true))
         {
             zlib.Write(raw);
         }

@@ -54,7 +54,7 @@ internal static class ContentStreamBuilder
     private static byte[] Deflate(byte[] data)
     {
         using var output = new MemoryStream();
-        using (var zlib = new ZLibStream(output, CompressionLevel.Optimal, leaveOpen: true))
+        using (var zlib = new ZLibStream(output, PdfFormat.PdfDeflateCompressionLevel, leaveOpen: true))
         {
             zlib.Write(data, 0, data.Length);
         }

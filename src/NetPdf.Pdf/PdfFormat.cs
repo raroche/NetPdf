@@ -1,6 +1,8 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System.IO.Compression;
+
 namespace NetPdf.Pdf;
 
 /// <summary>
@@ -47,4 +49,18 @@ internal static class PdfFormat
     /// <summary>O(1) membership check for <see cref="SupportedVersions"/>.</summary>
     public static readonly IReadOnlySet<string> SupportedVersionSet =
         new HashSet<string>(SupportedVersions, StringComparer.Ordinal);
+
+    /// <summary>
+    /// Pinned <see cref="CompressionLevel"/> for every <c>FlateDecode</c> stream NetPdf
+    /// emits (image XObjects, content streams, future ToUnicode CMaps, etc). Centralizing
+    /// the choice here is part of NetPdf's byte-determinism guarantee — the level the
+    /// .NET <c>ZLibStream</c> uses determines the exact output bytes. Two builds that
+    /// disagree on the level produce different (still-valid) PDF bytes, which would
+    /// silently break any consumer that relies on byte-for-byte stability (signing,
+    /// content addressing, snapshot tests). <see cref="CompressionLevel.SmallestSize"/>
+    /// is documented as deflate's strongest setting and is the most stable across
+    /// runtime versions because the highest-quality slot is conventionally pinned at
+    /// deflate level 9.
+    /// </summary>
+    public const CompressionLevel PdfDeflateCompressionLevel = CompressionLevel.SmallestSize;
 }

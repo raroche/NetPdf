@@ -169,4 +169,28 @@ Every ❌ / 📥 / 🧪 entry above corresponds to a stable diagnostic code in `
 
 ---
 
-Last updated: 2026-04-30 (Phase 0).
+## PDF metadata strings
+
+| Feature | Status | Phase | Notes |
+|---|---|---|---|
+| ASCII `Title` / `Author` / `Subject` / `Keywords` / `Creator` | ✅ | 1 | Emitted as PDF literal strings with §7.3.4.2 octal escaping for `(`, `)`, `\`, and bytes < 0x20 / > 0x7E. |
+| Non-ASCII metadata (accented characters, CJK, emoji) | 🧪 | 1 → 2 | The Phase 1 facade exposes `string` setters that feed `PdfLiteralString`, which throws on `char > 0x7E`. Real-world metadata with non-ASCII characters needs the Phase 2 facade to route through UTF-16BE-encoded `PdfHexString`. The byte writer already supports both; the gap is purely at the public surface. |
+| Producer string | ✅ | 1 | Always emitted; defaults to `"NetPdf"`. |
+| `CreationDate` / `ModDate` | ✅ | 1 | ISO 32000-2 §7.9.4 `D:YYYYMMDDHHmmSS{Z\|+HH'mm'\|-HH'mm'}` format. Default to omitted when not set so output is reproducible. |
+
+---
+
+## Determinism
+
+| Feature | Status | Phase | Notes |
+|---|---|---|---|
+| Byte-equal output for byte-equal input | ✅ | 1 | Validated by the 75-test harness (`PdfDocumentDeterminismHarnessTests`): 18 document shapes × byte-equal-twice + byte-equal-thrice + structural sanity + per-platform SHA-256 pin. |
+| Image dedup by content hash + dictionary | ✅ | 1 | Same image content used N times → single XObject. |
+| Pinned `FlateDecode` compression level | ✅ | 1 | `PdfFormat.PdfDeflateCompressionLevel = SmallestSize` is shared by every stream emitter; pins the byte-stability premise of the deflate output. |
+| Cross-platform byte-equality | 🧪 | 1 → 5 | Pinned per `OS-arch` key (currently `osx-arm64`); other platforms log "no pin, snapshot skipped" until Phase 5 captures them in the containerized reference environment. |
+
+See [docs/design/determinism.md](design/determinism.md) for the full contract and re-pin protocol.
+
+---
+
+Last updated: 2026-05-03 (Task 23 follow-up review).

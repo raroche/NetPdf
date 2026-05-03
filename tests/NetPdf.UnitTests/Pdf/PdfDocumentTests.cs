@@ -356,6 +356,170 @@ public sealed class PdfDocumentTests
         Assert.True(bytes.Length > 100);
     }
 
+    [Fact]
+    public void RegisterImage_same_alpha_image_instance_dedupes_to_single_ref()
+    {
+        // Regression for the caller-mutation bug: registering the SAME ImageXObjectResult
+        // instance twice used to mutate the primary image's dictionary on the first call
+        // (setting /SMask to an indirect ref), so the second call computed a different
+        // dedup key (against the now-mutated dict) and allocated a duplicate XObject
+        // pair. Cloning the dict before wiring keeps the caller's instance pristine and
+        // the dedup key stable across calls.
+        var doc = new PdfDocument();
+        var png = PngImageXObject.Build(SyntheticPng.BuildRgba8(8, 8));
+        Assert.NotNull(png.SMask);
+
+        var ref1 = doc.RegisterImage(png);
+        var ref2 = doc.RegisterImage(png); // same instance
+
+        Assert.Equal(ref1.ObjectNumber, ref2.ObjectNumber);
+        Assert.Equal(1, doc.RegisteredImageCount);
+    }
+
+    [Fact]
+    public void RegisterImage_does_not_mutate_caller_owned_image_dictionary()
+    {
+        // Builder output must remain pristine: the caller may register the same result
+        // with a second PdfDocument or inspect/hash it after the first registration,
+        // and the dictionary should look exactly like what the builder emitted.
+        var png = PngImageXObject.Build(SyntheticPng.BuildRgba8(8, 8));
+        Assert.Null(png.Image.Dictionary.Get(PdfNames.SMask)); // builder pre-condition
+
+        var doc = new PdfDocument();
+        doc.RegisterImage(png);
+
+        // Caller's primary image dict still has no /SMask after registration.
+        Assert.Null(png.Image.Dictionary.Get(PdfNames.SMask));
+    }
+
+    [Fact]
+    public void RegisterImage_throws_on_zero_or_negative_dimensions()
+    {
+        var doc = new PdfDocument();
+        var dict = new PdfDictionary()
+            .Set(PdfNames.Type, PdfNames.XObject)
+            .Set(PdfNames.Subtype, PdfNames.Image)
+            .Set(PdfNames.Width, new PdfInteger(0)) // ← invalid
+            .Set(PdfNames.Height, new PdfInteger(8))
+            .Set(PdfNames.ColorSpace, PdfNames.DeviceGray)
+            .Set(PdfNames.BitsPerComponent, new PdfInteger(8));
+        var stream = new PdfStream([0x00], dict);
+        var ex = Assert.Throws<ArgumentException>(() => doc.RegisterImage(stream));
+        Assert.Contains("Width", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("> 0", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RegisterImage_throws_on_invalid_BitsPerComponent_value()
+    {
+        var doc = new PdfDocument();
+        // BPC = 5 is invalid per ISO 32000-2 §8.9.5 Table 89 (allowed: 1, 2, 4, 8, 16).
+        var dict = new PdfDictionary()
+            .Set(PdfNames.Subtype, PdfNames.Image)
+            .Set(PdfNames.Width, new PdfInteger(8))
+            .Set(PdfNames.Height, new PdfInteger(8))
+            .Set(PdfNames.ColorSpace, PdfNames.DeviceGray)
+            .Set(PdfNames.BitsPerComponent, new PdfInteger(5));
+        var stream = new PdfStream([0x00], dict);
+        var ex = Assert.Throws<ArgumentException>(() => doc.RegisterImage(stream));
+        Assert.Contains("BitsPerComponent", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RegisterImage_throws_when_SMask_uses_disallowed_BitsPerComponent()
+    {
+        // ISO 32000-2 §11.6: SMask BPC must be 8 or 16. A 4-bit SMask is invalid.
+        var imageDict = new PdfDictionary()
+            .Set(PdfNames.Subtype, PdfNames.Image)
+            .Set(PdfNames.Width, new PdfInteger(8))
+            .Set(PdfNames.Height, new PdfInteger(8))
+            .Set(PdfNames.ColorSpace, PdfNames.DeviceRGB)
+            .Set(PdfNames.BitsPerComponent, new PdfInteger(8));
+        var smaskDict = new PdfDictionary()
+            .Set(PdfNames.Subtype, PdfNames.Image)
+            .Set(PdfNames.Width, new PdfInteger(8))
+            .Set(PdfNames.Height, new PdfInteger(8))
+            .Set(PdfNames.ColorSpace, PdfNames.DeviceGray)
+            .Set(PdfNames.BitsPerComponent, new PdfInteger(4)); // ← invalid for SMask
+        var result = new ImageXObjectResult
+        {
+            Image = new PdfStream([0x00], imageDict),
+            SMask = new PdfStream([0x00], smaskDict),
+        };
+
+        var doc = new PdfDocument();
+        var ex = Assert.Throws<ArgumentException>(() => doc.RegisterImage(result));
+        Assert.Contains("SMask", ex.Message, StringComparison.Ordinal);
+        Assert.Contains("8 or 16", ex.Message, StringComparison.Ordinal);
+    }
+
+    // ───── Document-level orchestration: raster fallback formats ────────────
+
+    [Fact]
+    public void RegisterImage_transparent_GIF_through_PdfDocument_emits_indirect_SMask()
+    {
+        var doc = new PdfDocument();
+        var raster = RasterImageXObject.Build(SyntheticRasterImage.BuildTransparentGif());
+        Assert.NotNull(raster.SMask); // sanity — GIF89a with transparent index → alpha-split
+        var imageRef = doc.RegisterImage(raster);
+        doc.AddPage(MediaBoxSize.A4).PlaceImage(imageRef, 0, 0, 100, 100);
+        var bytes = doc.Save();
+        var content = Encoding.ASCII.GetString(bytes);
+
+        // /SMask is wired as an indirect ref — never an inline stream.
+        Assert.Matches(@"/SMask\s+\d+\s+0\s+R", content);
+    }
+
+    [Fact]
+    public void RegisterImage_opaque_WebP_through_PdfDocument_emits_no_SMask()
+    {
+        var doc = new PdfDocument();
+        var raster = RasterImageXObject.Build(SyntheticRasterImage.BuildOpaqueWebp(8, 8));
+        Assert.Null(raster.SMask); // sanity
+        var imageRef = doc.RegisterImage(raster);
+        doc.AddPage(MediaBoxSize.A4).PlaceImage(imageRef, 0, 0, 100, 100);
+        var bytes = doc.Save();
+        var content = Encoding.ASCII.GetString(bytes);
+
+        Assert.DoesNotContain("/SMask ", content, StringComparison.Ordinal);
+        // Image XObject is present.
+        Assert.Contains("/Subtype /Image", content, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RegisterImage_AVIF_fixture_through_PdfDocument_when_host_decodes()
+    {
+        // Pinned 1×1 white opaque AVIF from the libavif test corpus (BSD-2-Clause).
+        // AVIF decode is host-dependent (macOS SkiaSharp 3.119 lacks libavif decoder);
+        // skip cleanly on hosts that can't decode it.
+        using var stream = typeof(PdfDocumentTests).Assembly
+            .GetManifestResourceStream("NetPdf.UnitTests.Resources.Images.white_1x1.avif")
+            ?? throw new InvalidOperationException("Test resource white_1x1.avif missing.");
+        using var ms = new MemoryStream();
+        stream.CopyTo(ms);
+
+        ImageXObjectResult raster;
+        try
+        {
+            raster = RasterImageXObject.Build(ms.ToArray());
+        }
+        catch (InvalidDataException)
+        {
+            return; // AVIF not decodable on this host
+        }
+
+        var doc = new PdfDocument();
+        var imageRef = doc.RegisterImage(raster);
+        doc.AddPage(MediaBoxSize.A4).PlaceImage(imageRef, 0, 0, 100, 100);
+        var bytes = doc.Save();
+        var content = Encoding.ASCII.GetString(bytes);
+
+        // Opaque AVIF → no SMask.
+        Assert.DoesNotContain("/SMask ", content, StringComparison.Ordinal);
+        Assert.Contains("/Subtype /Image", content, StringComparison.Ordinal);
+        Assert.Contains("/ColorSpace /DeviceRGB", content, StringComparison.Ordinal);
+    }
+
     // ───── AppendContent contract ────────────────────────────────────────────
 
     [Fact]

@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-02 (Task 22 review-cycle hardening ✅ — transparent-image orchestration via `RegisterImage(ImageXObjectResult)`, dictionary-aware dedup keys, Image XObject shape validation, nested-stream preflight rejection, byte-safe `AppendContent` overload)
+**Last updated:** 2026-05-03 (Task 22 follow-up review ✅ — caller-owned mutation bug in `RegisterImage(ImageXObjectResult)` fixed via dictionary clone, dimension/BPC sanity validation, document-level orchestration tests for transparent GIF / opaque WebP / AVIF through Save)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -566,6 +566,18 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
     - `PngImageXObjectTests` (2 updated assertions): `RGBA_PNG_emits_Image_plus_SMask` and `Indexed_with_non_binary_tRNS_emits_SMask` now assert `imgDict.Get(PdfNames.SMask) == null` — the builder no longer sets inline SMask.
     - `RasterImageXObjectTests` (1 updated assertion): same pattern for `RGBA_WebP_emits_RGB_image_plus_DeviceGray_SMask`.
   - Total tests: **1455 unit / 1466 solution-wide passing** (+13 net new from this commit; 3 prior assertions migrated).
+
+- **Task 22 follow-up review — caller-owned mutation fix + dimension/BPC sanity + raster orchestration coverage** ✅ (2026-05-03) — second review cycle on Task 22. The reviewer caught a subtle correctness bug introduced by the previous round's clone-and-mutate approach: `RegisterImage(ImageXObjectResult)` mutated the caller's primary image dictionary (setting `/SMask` to a document-local indirect ref) AFTER computing the dedup key, which meant a second registration of the same instance hashed a now-mutated dict, missed the cache, and allocated duplicate slots — a silent dedup regression for alpha-bearing images.
+  - **Caller-mutation fix**: introduced `internal PdfStream.WithDictionary(PdfDictionary)` so `PdfDocument.RegisterImage` can clone the primary image's dictionary (shallow copy of entries, payload bytes shared by reference) before wiring `/SMask`. The caller's `ImageXObjectResult.Image.Dictionary` stays pristine across registrations — same-instance dedup works, cross-document reuse works, and external code that hashes or compares the builder output sees stable bytes.
+  - **Dimension + BPC validation**: `ValidateImageXObjectShape` now rejects `Width <= 0`, `Height <= 0`, and `BitsPerComponent ∉ {1, 2, 4, 8, 16}` per ISO 32000-2:2020 §8.9.5 Table 89. Soft masks get the narrower `BitsPerComponent ∈ {8, 16}` per §11.6 (sub-byte alpha is not permitted because alpha is a continuous value). New `isSMask` flag on the validator routes which rule applies. Each error message names the offending key and the spec section.
+  - **Public-docs alignment**: `PdfPage.PlaceImage` XML now points readers at both `RegisterImage(PdfStream)` (opaque) and `RegisterImage(ImageXObjectResult)` (alpha-bearing) and explains the malformed-PDF risk of routing alpha-bearing images through the simpler overload. Discovery friction reduced for consumers reading the public surface.
+  - **8 new tests** across:
+    - `PdfDocumentTests` (8 review tests):
+      - **Regression for the caller-mutation bug**: `RegisterImage_same_alpha_image_instance_dedupes_to_single_ref` registers the same RGBA `ImageXObjectResult` twice; assertions on equal `ObjectNumber` and `RegisteredImageCount == 1` fail without the clone.
+      - **Caller-immutable contract**: `RegisterImage_does_not_mutate_caller_owned_image_dictionary` re-checks `png.Image.Dictionary.Get(/SMask) == null` after registration.
+      - **Validation negative cases**: zero-Width rejected, BPC=5 rejected, SMask with BPC=4 rejected.
+      - **Document-level raster orchestration**: transparent GIF through `RasterImageXObject` → `PdfDocument` → `Save` produces an indirect `/SMask <n> 0 R` ref (not an inline stream); opaque WebP through `PdfDocument` → `Save` emits an Image XObject without `/SMask`; pinned 1×1 white opaque AVIF fixture (BSD-2-Clause, 305 bytes) through `PdfDocument` → `Save` on hosts that can decode AVIF — opaque output, `/ColorSpace /DeviceRGB`, no `/SMask`. AVIF test no-ops gracefully on macOS where SkiaSharp 3.119 lacks libavif.
+  - Total tests: **1463 unit / 1474 solution-wide passing** (+8 net new).
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

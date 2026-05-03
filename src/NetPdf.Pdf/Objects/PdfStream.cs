@@ -25,6 +25,25 @@ internal sealed class PdfStream : PdfObject
         Dictionary.Set(PdfNames.Length, new PdfInteger(_data.Length));
     }
 
+    /// <summary>
+    /// Return a new <see cref="PdfStream"/> that shares this stream's payload bytes
+    /// but uses <paramref name="dictionary"/> instead of this stream's. Lets document
+    /// orchestration paths add document-local entries (e.g. <c>/SMask</c> as an indirect
+    /// ref) without mutating the caller's dictionary instance — preserves "builder
+    /// output is immutable" semantics so the same <see cref="PdfStream"/> can be
+    /// registered with multiple <c>PdfDocument</c>s, or registered twice in one
+    /// document, without the second call observing the first call's wiring.
+    /// </summary>
+    /// <remarks>
+    /// The byte payload is shared by reference, not copied. Both streams are expected
+    /// to treat the payload as immutable (PdfStream itself never mutates it).
+    /// </remarks>
+    internal PdfStream WithDictionary(PdfDictionary dictionary)
+    {
+        ArgumentNullException.ThrowIfNull(dictionary);
+        return new PdfStream(_data, dictionary);
+    }
+
     public override void WriteTo(PdfWriter writer)
     {
         // Re-establish the /Length invariant. Stream length is intrinsic to the payload

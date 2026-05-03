@@ -105,7 +105,13 @@ internal sealed class PdfPage
     /// Place an Image XObject at the given page-space rectangle (PDF points; origin at
     /// bottom-left). Returns the resource name (e.g. <c>Im1</c>) used internally to
     /// reference the image. The image must already be registered with the parent
-    /// document via <see cref="PdfDocument.RegisterImage(PdfStream)"/>.
+    /// document — use <see cref="PdfDocument.RegisterImage(Objects.PdfStream)"/> for
+    /// opaque images (JPEG, opaque PNG / Raster) or
+    /// <see cref="PdfDocument.RegisterImage(Images.ImageXObjectResult)"/> for any
+    /// image carrying a soft mask (RGBA PNG, indexed PNG with non-binary tRNS, raster
+    /// formats with full alpha). The latter wires the SMask through an indirect ref;
+    /// passing a primary image whose dictionary already inlines a direct
+    /// <c>/SMask</c> stream into the simpler overload would emit malformed PDF.
     /// </summary>
     public string PlaceImage(PdfIndirectRef imageRef, double x, double y, double width, double height)
     {

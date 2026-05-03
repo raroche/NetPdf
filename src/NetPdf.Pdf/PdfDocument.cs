@@ -134,10 +134,10 @@ internal sealed class PdfDocument
     {
         ArgumentNullException.ThrowIfNull(result);
         ThrowIfSaved();
-        ValidateImageXObjectShape(result.Image, parameterName: nameof(result));
+        ValidateImageXObjectShape(result.Image, parameterName: nameof(result), isSMask: false);
         if (result.SMask is not null)
         {
-            ValidateImageXObjectShape(result.SMask, parameterName: nameof(result));
+            ValidateImageXObjectShape(result.SMask, parameterName: nameof(result), isSMask: true);
         }
 
         var key = ComputeContentKey(result);
@@ -149,16 +149,47 @@ internal sealed class PdfDocument
         // SMask must be allocated and assigned before we set the primary image's /SMask
         // pointer — otherwise the primary's dictionary holds a forward ref to an
         // unallocated slot, which preflight would reject.
+        //
+        // The primary image's dictionary is CLONED before wiring /SMask. Mutating
+        // the caller's instance would be a correctness bug:
+        //   * Same-instance dedup would break: the first call hashes a clean dict and
+        //     caches under key K1; a second call with the same instance would hash a
+        //     now-mutated dict (carrying /SMask), miss the cache under K2, and
+        //     allocate a duplicate XObject pair — silent emission bloat and broken
+        //     dedup.
+        //   * Cross-document reuse would carry document-A's indirect ref into
+        //     document B's dictionary (different store id; preflight would reject it
+        //     after a confusing chain of mutations).
+        // Cloning is shallow (PdfDictionary entries shared by reference, payload
+        // bytes shared via PdfStream.WithDictionary) — a few-ns allocation overhead
+        // per registration, negligible vs. the SHA-256 dedup-key hash.
         var imageRef = _writer.Objects.Allocate();
+        var imageToAssign = result.Image;
         if (result.SMask is not null)
         {
             var smaskRef = _writer.Objects.Allocate();
             _writer.Objects.Assign(smaskRef, result.SMask);
-            result.Image.Dictionary.Set(PdfNames.SMask, smaskRef);
+            imageToAssign = CloneWithSMaskWired(result.Image, smaskRef);
         }
-        _writer.Objects.Assign(imageRef, result.Image);
+        _writer.Objects.Assign(imageRef, imageToAssign);
         _imageCache[key] = imageRef;
         return imageRef;
+    }
+
+    private static PdfStream CloneWithSMaskWired(PdfStream source, PdfIndirectRef smaskRef)
+    {
+        // Shallow-copy the dictionary entries into a fresh one, then add /SMask.
+        // PdfStream's constructor will reset /Length on the new dict from the payload
+        // length, so we skip the source's /Length entry to avoid carrying a stale
+        // value.
+        var clonedDict = new PdfDictionary();
+        foreach (var entry in source.Dictionary)
+        {
+            if (entry.Key.Equals(PdfNames.Length)) continue;
+            clonedDict.Set(entry.Key, entry.Value);
+        }
+        clonedDict.Set(PdfNames.SMask, smaskRef);
+        return source.WithDictionary(clonedDict);
     }
 
     /// <summary>
@@ -170,15 +201,17 @@ internal sealed class PdfDocument
     /// </summary>
     public int RegisteredImageCount => _imageCache.Count;
 
-    private static void ValidateImageXObjectShape(PdfStream stream, string parameterName)
+    private static void ValidateImageXObjectShape(PdfStream stream, string parameterName, bool isSMask)
     {
         var dict = stream.Dictionary;
+        var role = isSMask ? "SMask Image XObject" : "Image XObject";
+
         // Subtype is the canonical "this is an Image XObject" marker — required.
         var subtype = dict.Get(PdfNames.Subtype);
         if (subtype is not PdfName subtypeName || !subtypeName.Equals(PdfNames.Image))
         {
             throw new ArgumentException(
-                "PdfStream is not a valid Image XObject: /Subtype must be /Image " +
+                $"{role} validation failed: /Subtype must be /Image " +
                 $"(got {subtype?.GetType().Name ?? "null"}). Use the appropriate XObject " +
                 "builder (JpegImageXObject, PngImageXObject, RasterImageXObject) to construct " +
                 "Image XObjects with the required dictionary keys.",
@@ -189,32 +222,76 @@ internal sealed class PdfDocument
         if (typeValue is PdfName typeName && !typeName.Equals(PdfNames.XObject))
         {
             throw new ArgumentException(
-                $"Image XObject /Type is /{typeName.Value}; expected /XObject (or omitted).",
+                $"{role} /Type is /{typeName.Value}; expected /XObject (or omitted).",
                 parameterName);
         }
-        if (dict.Get(PdfNames.Width) is not PdfInteger)
+
+        // Width / Height are required and must be strictly positive — per ISO
+        // 32000-2:2020 §8.9.5 Table 87, Width and Height "shall be the width [or
+        // height], in samples, of the image". Zero or negative samples don't
+        // describe a paintable image, and PDF readers silently misrender or crash on
+        // them.
+        if (dict.Get(PdfNames.Width) is not PdfInteger widthInt)
         {
             throw new ArgumentException(
-                "Image XObject is missing required /Width (PdfInteger).",
+                $"{role} is missing required /Width (PdfInteger).",
                 parameterName);
         }
-        if (dict.Get(PdfNames.Height) is not PdfInteger)
+        if (widthInt.Value <= 0)
         {
             throw new ArgumentException(
-                "Image XObject is missing required /Height (PdfInteger).",
+                $"{role} /Width must be > 0 (got {widthInt.Value}).",
                 parameterName);
         }
+        if (dict.Get(PdfNames.Height) is not PdfInteger heightInt)
+        {
+            throw new ArgumentException(
+                $"{role} is missing required /Height (PdfInteger).",
+                parameterName);
+        }
+        if (heightInt.Value <= 0)
+        {
+            throw new ArgumentException(
+                $"{role} /Height must be > 0 (got {heightInt.Value}).",
+                parameterName);
+        }
+
         if (dict.Get(PdfNames.ColorSpace) is null)
         {
             throw new ArgumentException(
-                "Image XObject is missing required /ColorSpace.",
+                $"{role} is missing required /ColorSpace.",
                 parameterName);
         }
-        if (dict.Get(PdfNames.BitsPerComponent) is not PdfInteger)
+
+        // BitsPerComponent: the spec-allowed values for general Image XObjects are
+        // 1, 2, 4, 8, 16 (§8.9.5 Table 89). For soft masks, §11.6 narrows this to
+        // 8 or 16 — sub-byte alpha planes aren't permitted because alpha is a
+        // continuous value, not an indexed lookup.
+        if (dict.Get(PdfNames.BitsPerComponent) is not PdfInteger bpcInt)
         {
             throw new ArgumentException(
-                "Image XObject is missing required /BitsPerComponent (PdfInteger).",
+                $"{role} is missing required /BitsPerComponent (PdfInteger).",
                 parameterName);
+        }
+        if (isSMask)
+        {
+            if (bpcInt.Value != 8 && bpcInt.Value != 16)
+            {
+                throw new ArgumentException(
+                    $"SMask Image XObject /BitsPerComponent must be 8 or 16 per ISO 32000-2 §11.6 " +
+                    $"(got {bpcInt.Value}).",
+                    parameterName);
+            }
+        }
+        else
+        {
+            if (bpcInt.Value is not (1 or 2 or 4 or 8 or 16))
+            {
+                throw new ArgumentException(
+                    $"Image XObject /BitsPerComponent must be one of {{1, 2, 4, 8, 16}} per " +
+                    $"ISO 32000-2 §8.9.5 Table 89 (got {bpcInt.Value}).",
+                    parameterName);
+            }
         }
     }
 

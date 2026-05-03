@@ -4,18 +4,20 @@
 namespace NetPdf.Text.Fonts;
 
 /// <summary>
-/// Process-wide LRU cache mapping a font source identifier (file path or URI) to a
-/// parsed <see cref="FontFace"/>. Multiple <c>PdfDocument</c> renders that touch the
-/// same system font reuse the same parse instead of re-reading and re-parsing the file.
+/// Process-wide LRU cache mapping a font source identifier (file path or URI) to the
+/// font's <b>raw bytes</b> (<see cref="ReadOnlyMemory{Byte}"/>). Multiple
+/// <c>PdfDocument</c> renders that touch the same system font reuse the same disk read
+/// and OpenType parse instead of re-reading and re-parsing the file.
 /// </summary>
 /// <remarks>
 /// <para>
-/// Each cached face carries its own per-document subset state (the used-glyph bitmap
-/// lives on <see cref="FontFace"/>); reusing one <see cref="FontFace"/> across multiple
-/// documents would entangle their subsets. To keep that fence in place this cache stores
-/// <i>byte arrays</i>, not faces — callers wrap the bytes in a fresh <see cref="FontFace"/>
-/// per document via <see cref="FontFace.Load"/>. The expensive part is the byte read
-/// from disk plus the OpenType parse; both are amortized once per source.
+/// <b>Why bytes, not parsed <see cref="FontFace"/>.</b> Each <see cref="FontFace"/>
+/// carries per-document subset state (the used-glyph bitmap lives on the face);
+/// reusing one face across documents would entangle their subsets. To keep that fence
+/// in place this cache stores byte arrays only — callers wrap the bytes in a fresh
+/// <see cref="FontFace"/> per document via <see cref="FontFace.Load"/>. The expensive
+/// part is the byte read from disk plus the OpenType parse; both are amortized once
+/// per source.
 /// </para>
 /// <para>
 /// <b>Thread-safety.</b> Read / write paths are guarded by a single lock — fonts load

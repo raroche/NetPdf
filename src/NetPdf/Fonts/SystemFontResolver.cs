@@ -77,7 +77,14 @@ public sealed class SystemFontResolver : IFontResolver
             StretchCss = entry.Value.StretchCss,
             Style = entry.Value.IsItalic ? FontStyle.Italic : FontStyle.Normal,
             PostScriptName = entry.Value.PostScriptName,
-            Source = new Uri("file://" + entry.Value.FilePath),
+            // Use the .NET path-aware Uri ctor so the runtime normalizes the platform's
+            // path separator (Windows backslashes -> forward slashes) and percent-encodes
+            // characters that need escaping (spaces, parentheses, etc). String-concatenating
+            // "file://" + raw path produces malformed URIs on Windows ("file://C:\..." is
+            // not valid file-URI form) and leaves spaces unescaped on Unix. Per RFC 8089:
+            // file URIs derived from absolute paths must round-trip through the system's
+            // path normalization rules — `new Uri(path)` is what does that.
+            Source = new Uri(entry.Value.FilePath),
         };
         return ValueTask.FromResult<FontFaceData?>(data);
     }

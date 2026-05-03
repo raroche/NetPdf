@@ -37,4 +37,15 @@
     <EmbeddedResource Include="Resources/Ucd/GraphemeBreakTest.txt.gz" />
   </ItemGroup>
 
+  <!--
+    A real-world Google Fonts WOFF 2.0 fixture for end-to-end glyf-transform decoder
+    tests. Roboto is licensed under the Apache 2.0 / SIL Open Font License (the v32
+    subset shipped via fonts.gstatic.com is bundled under the same license terms).
+    Fetched once from https://fonts.gstatic.com/s/roboto/v32/KFOmCnqEu92Fr1Mu4mxKKTU1Kg.woff2
+    and committed for deterministic test runs.
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="Resources/Fonts/Roboto-Regular.woff2" />
+  </ItemGroup>
+
 </Project>

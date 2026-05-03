@@ -37,9 +37,19 @@ internal readonly record struct WoffTwoTableEntry
     /// </summary>
     public required uint TransformLength { get; init; }
 
-    /// <summary>True when the entry uses the null transform (verbatim copy in the compressed stream).</summary>
-    public bool IsNullTransform => TransformVersion == 3
-        || (Tag != WoffTwoTags.Glyf && Tag != WoffTwoTags.Loca && Tag != WoffTwoTags.Hmtx && TransformVersion == 0);
+    /// <summary>
+    /// True when the entry uses the null transform (verbatim copy in the compressed
+    /// stream). Per W3C WOFF 2.0 §5: <c>glyf</c> and <c>loca</c> use version 0 as the
+    /// actual transform (so version 3 is null for them); <c>hmtx</c> uses version 1 as
+    /// the actual transform (so versions 0 and 3 are null for hmtx); every other table
+    /// uses version 0 as the null transform.
+    /// </summary>
+    public bool IsNullTransform => TransformVersion switch
+    {
+        3 => true,                                                               // explicit null transform — always
+        0 => Tag != WoffTwoTags.Glyf && Tag != WoffTwoTags.Loca,                 // version 0 is null EXCEPT for glyf/loca
+        _ => false,                                                              // version 1 + 2 are non-null when defined
+    };
 
     /// <summary>
     /// Parse the variable-length directory beginning at <paramref name="cursor"/> in

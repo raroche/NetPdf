@@ -73,9 +73,15 @@ internal static class WoffTwoDecoder
         // protects against decompression-bomb inputs.
         var decompressed = BrotliDecompressBounded(compressed, expectedDecompressedSize);
 
-        // (4) Reverse transforms.
+        // (4) Reverse transforms. We do a two-pass walk: first slice every entry from the
+        // decompressed stream and route null-transform / hmtx; then handle glyf+loca as a
+        // pair (loca's transformLength is 0 — its bytes are reconstructed inside the
+        // glyf transform).
         var tableSegments = new TableSegment[entries.Length];
         var streamCursor = 0;
+        var glyfIdx = -1;
+        var locaIdx = -1;
+        ReadOnlySpan<byte> glyfTransformedBytes = ReadOnlySpan<byte>.Empty;
         for (var i = 0; i < entries.Length; i++)
         {
             var entry = entries[i];
@@ -88,7 +94,6 @@ internal static class WoffTwoDecoder
 
             if (entry.IsNullTransform)
             {
-                // Null transform: bytes are the table verbatim.
                 if (entry.TransformLength != entry.OrigLength)
                 {
                     throw new InvalidDataException(
@@ -98,16 +103,19 @@ internal static class WoffTwoDecoder
             }
             else if (entry.Tag == WoffTwoTags.Glyf && entry.TransformVersion == 0)
             {
-                // Phase B: glyf transform reversal. Not yet implemented.
-                throw new NotSupportedException(
-                    "WOFF2: glyf transform (version 0) reversal is implemented in a follow-up phase. " +
-                    "This decoder currently handles WOFF2 files whose tables all use the null transform.");
+                // Defer until after the loop — both glyf and loca must be resolved together.
+                glyfIdx = i;
+                glyfTransformedBytes = transformed;
             }
             else if (entry.Tag == WoffTwoTags.Loca && entry.TransformVersion == 0)
             {
-                // Loca with transform version 0 is reconstructed alongside glyf; same dependency.
-                throw new NotSupportedException(
-                    "WOFF2: loca transform (version 0) reconstruction is paired with glyf reversal — implemented in a follow-up phase.");
+                // Loca transform: transformLength must be 0; loca bytes come from the glyf reversal.
+                if (entry.TransformLength != 0)
+                {
+                    throw new InvalidDataException(
+                        $"WOFF2: transformed loca must have transformLength = 0; got {entry.TransformLength}.");
+                }
+                locaIdx = i;
             }
             else if (entry.Tag == WoffTwoTags.Hmtx && entry.TransformVersion == 1)
             {
@@ -121,6 +129,24 @@ internal static class WoffTwoDecoder
             }
 
             streamCursor += (int)entry.TransformLength;
+        }
+
+        // Resolve the glyf+loca pair. Both must be present together if either is present
+        // with the actual transform.
+        if (glyfIdx >= 0 || locaIdx >= 0)
+        {
+            if (glyfIdx < 0 || locaIdx < 0)
+            {
+                throw new InvalidDataException(
+                    "WOFF2: transformed glyf and transformed loca must appear together.");
+            }
+            var glyfTransformed = glyfTransformedBytes.ToArray();
+            var (glyfBytes, locaBytes, _) = WoffTwoGlyfTransform.Reverse(glyfTransformed);
+            // Per §5.1: origLength of the glyf table reflects the reconstructed size; we
+            // accept whatever the reversal produced (bounded by per-glyph correctness checks)
+            // and let any downstream parser detect inconsistency.
+            tableSegments[glyfIdx] = new TableSegment(WoffTwoTags.Glyf, glyfBytes);
+            tableSegments[locaIdx] = new TableSegment(WoffTwoTags.Loca, locaBytes);
         }
 
         if (streamCursor != decompressed.Length)

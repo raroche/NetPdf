@@ -75,4 +75,81 @@ public sealed class RasterImageDecoderTests
     {
         Assert.Throws<ArgumentNullException>(() => RasterImageDecoder.Decode(null!));
     }
+
+    // ───── Trust-boundary + fixture-coverage tests (review follow-up) ────────
+
+    [Fact]
+    public void Decode_decodes_a_real_AVIF_when_the_platform_codec_is_available()
+    {
+        var bytes = SyntheticRasterImage.TryBuildOpaqueAvif(width: 16, height: 16);
+        if (bytes is null)
+        {
+            // Skia's bundled libavif may lack the encoder on this platform — the
+            // decode contract is what matters, not whether we could produce one.
+            // The other AVIF assertions in CI (running platforms with full libavif)
+            // pin the contract.
+            return;
+        }
+        var info = RasterImageDecoder.Decode(bytes);
+        Assert.Equal(16, info.Width);
+        Assert.Equal(16, info.Height);
+    }
+
+    [Fact]
+    public void Decode_recognizes_a_transparent_GIF()
+    {
+        var bytes = SyntheticRasterImage.BuildTransparentGif();
+        var info = RasterImageDecoder.Decode(bytes);
+        Assert.Equal(1, info.Width);
+        Assert.Equal(1, info.Height);
+        // Transparent palette index 0 was used; HasAlpha must be true.
+        Assert.True(info.HasAlpha);
+    }
+
+    [Fact]
+    public void Decode_collapses_an_animated_GIF_to_its_first_frame()
+    {
+        // The animated GIF has 2 frames (white, then black). Decoder must yield the
+        // first frame's pixels — for our 1×1 fixture, the white frame.
+        var bytes = SyntheticRasterImage.BuildAnimatedGif();
+        var info = RasterImageDecoder.Decode(bytes);
+        Assert.Equal(1, info.Width);
+        Assert.Equal(1, info.Height);
+        // Pixel 0 of the first frame: white.
+        Assert.Equal(0xFF, info.PixelBytes[0]); // R
+        Assert.Equal(0xFF, info.PixelBytes[1]); // G
+        Assert.Equal(0xFF, info.PixelBytes[2]); // B
+    }
+
+    [Fact]
+    public void Decode_rejects_truncated_WebP_with_partial_decode()
+    {
+        // A valid WebP truncated mid-stream produces a partial decode (Skia would
+        // return IncompleteInput). Our hardened decoder must reject this rather than
+        // silently embed corrupted pixels.
+        var full = SyntheticRasterImage.BuildOpaqueWebp(width: 32, height: 32);
+        var truncated = SyntheticRasterImage.Truncate(full, full.Length / 2);
+        Assert.Throws<InvalidDataException>(() => RasterImageDecoder.Decode(truncated));
+    }
+
+    [Fact]
+    public void Decode_rejects_dimensions_exceeding_the_pixel_cap()
+    {
+        // We can't easily fabricate a real WebP claiming 100M+ pixels through Skia's
+        // encoder, but the bounds-check logic is exposed via ValidateDecodedDimensions
+        // and runs identically on any input. Drive it directly here.
+        Assert.Throws<InvalidDataException>(() =>
+            RasterImageDecoder.ValidateDecodedDimensions(20_000, 20_000)); // 400 megapixels
+    }
+
+    [Fact]
+    public void Decode_rejects_negative_or_zero_dimensions()
+    {
+        Assert.Throws<InvalidDataException>(() =>
+            RasterImageDecoder.ValidateDecodedDimensions(0, 100));
+        Assert.Throws<InvalidDataException>(() =>
+            RasterImageDecoder.ValidateDecodedDimensions(100, 0));
+        Assert.Throws<InvalidDataException>(() =>
+            RasterImageDecoder.ValidateDecodedDimensions(-1, 100));
+    }
 }

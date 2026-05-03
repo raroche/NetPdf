@@ -25,7 +25,17 @@ internal static class RasterImageXObject
     public static ImageXObjectResult Build(RasterImageInfo info)
     {
         ArgumentNullException.ThrowIfNull(info);
-        var totalPixels = info.Width * info.Height;
+        // Apply the same dimension/cap rules the streaming decode entry point enforces,
+        // so callers that hand-construct a RasterImageInfo through this overload can't
+        // produce malformed buffers that fail with late array-bounds exceptions.
+        RasterImageDecoder.ValidateDecodedDimensions(info.Width, info.Height);
+        var totalPixels = checked(info.Width * info.Height);
+        var expectedPixelByteCount = checked(totalPixels * 4);
+        if (info.PixelBytes.Length != expectedPixelByteCount)
+        {
+            throw new InvalidDataException(
+                $"Raster: PixelBytes length {info.PixelBytes.Length} does not match width × height × 4 ({expectedPixelByteCount}).");
+        }
         var rgb = new byte[totalPixels * 3];
         byte[]? alpha = info.HasAlpha ? new byte[totalPixels] : null;
 

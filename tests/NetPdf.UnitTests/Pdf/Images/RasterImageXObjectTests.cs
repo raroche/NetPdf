@@ -78,4 +78,48 @@ public sealed class RasterImageXObjectTests
         Assert.Throws<ArgumentNullException>(() => RasterImageXObject.Build((byte[])null!));
         Assert.Throws<ArgumentNullException>(() => RasterImageXObject.Build((RasterImageInfo)null!));
     }
+
+    // ───── Build(RasterImageInfo) contract validation (review follow-up #3) ──
+
+    [Fact]
+    public void Build_rejects_RasterImageInfo_with_invalid_dimensions()
+    {
+        var info = new RasterImageInfo
+        {
+            Width = 0,
+            Height = 16,
+            HasAlpha = false,
+            PixelBytes = new byte[0],
+        };
+        Assert.Throws<InvalidDataException>(() => RasterImageXObject.Build(info));
+    }
+
+    [Fact]
+    public void Build_rejects_RasterImageInfo_with_dimension_pixel_byte_mismatch()
+    {
+        // Width × height × 4 = 16 × 16 × 4 = 1024 bytes; pass a buffer half that size.
+        var info = new RasterImageInfo
+        {
+            Width = 16,
+            Height = 16,
+            HasAlpha = false,
+            PixelBytes = new byte[512],
+        };
+        var ex = Assert.Throws<InvalidDataException>(() => RasterImageXObject.Build(info));
+        Assert.Contains("does not match", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Build_rejects_RasterImageInfo_exceeding_pixel_cap()
+    {
+        // 20,000 × 20,000 = 400 megapixels — over the 100 megapixel cap.
+        var info = new RasterImageInfo
+        {
+            Width = 20_000,
+            Height = 20_000,
+            HasAlpha = false,
+            PixelBytes = new byte[1], // any length; the dimension check fires first
+        };
+        Assert.Throws<InvalidDataException>(() => RasterImageXObject.Build(info));
+    }
 }

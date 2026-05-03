@@ -7,14 +7,17 @@
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
-  <ItemGroup>
-    <ProjectReference Include="..\NetPdf.Layout\NetPdf.Layout.csproj" />
-    <ProjectReference Include="..\NetPdf.Text\NetPdf.Text.csproj" />
-  </ItemGroup>
+  <!--
+    Phase 1 Task 5 ships the display-list IR scaffolding only (DisplayCommand, DisplayList,
+    side-table types). It has no dependencies. The future references it WILL pick up:
 
-  <ItemGroup>
-    <PackageReference Include="SkiaSharp" />
-  </ItemGroup>
+    - NetPdf.Layout: Phase 3, when the painter walks the Layout box tree → DisplayCommand IR.
+    - NetPdf.Text:   Phase 1 Tasks 7+, when TextRun.FontId resolves through the Text font registry.
+    - SkiaSharp:     Phase 4, for the subtree raster fallback (filters, conic gradients, blurred shadows).
+
+    Until each of those is actually used, we keep the .csproj lean — the same hardening
+    rule that dropped Paint/Text/SkiaSharp from NetPdf.Pdf.csproj after Task 1.
+  -->
 
   <ItemGroup>
     <InternalsVisibleTo Include="NetPdf" />

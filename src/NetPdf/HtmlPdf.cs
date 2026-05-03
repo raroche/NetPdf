@@ -1,6 +1,7 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System.Reflection;
 using System.Runtime.CompilerServices;
 
 namespace NetPdf;
@@ -10,9 +11,21 @@ namespace NetPdf;
 /// </summary>
 /// <remarks>
 /// <para>
-/// All overloads share the same pipeline: parse → style → box gen → layout → paginate
-/// → paint → emit. JavaScript in the input is ignored with a <c>HTML-SCRIPT-IGNORED-001</c>
-/// diagnostic; this is a deliberate design choice — see <c>docs/compatibility-matrix.md</c>.
+/// <b>Phase 1 alpha (`0.1.0-alpha`) status — call sites still throw.</b> All
+/// <see cref="Convert(string, HtmlPdfOptions?)"/> /
+/// <see cref="ConvertAsync(string, HtmlPdfOptions?, CancellationToken)"/> /
+/// <see cref="ConvertDetailed(string, HtmlPdfOptions?)"/> overloads currently throw
+/// <see cref="NotImplementedException"/>. The internal byte-writer pipeline (deterministic
+/// PDF emission, OpenType subsetting, WOFF/WOFF2, image embedding, full UAX #9/#14/#29 text
+/// shaping) is complete and exercised by 1546 unit tests, an enforced JIT/AOT byte-parity
+/// gate, and a +25%-tolerance performance regression gate — but the HTML parsing → CSS
+/// cascade → layout → paint glue that this facade depends on lands in Phase 2.
+/// </para>
+/// <para>
+/// <b>Future pipeline (Phase 2+):</b> parse (AngleSharp) → style (AngleSharp.Css + custom
+/// cascade) → box gen → fragmentainer-aware layout → paint → emit. JavaScript in the input
+/// will be ignored with a <c>HTML-SCRIPT-IGNORED-001</c> diagnostic; see
+/// <c>docs/compatibility-matrix.md</c>.
 /// </para>
 /// <para>
 /// For typical synchronous use, call <see cref="Convert(string, HtmlPdfOptions?)"/>. For ASP.NET
@@ -59,8 +72,11 @@ public static class HtmlPdf
         ArgumentNullException.ThrowIfNull(html);
         ct.ThrowIfCancellationRequested();
         throw new NotImplementedException(
-            "NetPdf is in Phase 0 (architecture lock). The pipeline lands across Phases 1-5; " +
-            "see CHANGELOG.md and the README's roadmap.");
+            "NetPdf 0.1.0-alpha — the public HtmlPdf.Convert facade is not yet wired. " +
+            "Phase 1 shipped the deterministic PDF byte writer, font subsetter, image " +
+            "embedders, and UAX #9/#14/#29 text shaping (all internal); Phase 2 wires HTML " +
+            "parsing + CSS cascade + box-tree generation through to that writer. " +
+            "Track progress in CHANGELOG.md and PROGRESS.md.");
     }
 
     /// <summary>
@@ -76,8 +92,11 @@ public static class HtmlPdf
         ArgumentNullException.ThrowIfNull(output);
         ct.ThrowIfCancellationRequested();
         throw new NotImplementedException(
-            "NetPdf is in Phase 0 (architecture lock). The pipeline lands across Phases 1-5; " +
-            "see CHANGELOG.md and the README's roadmap.");
+            "NetPdf 0.1.0-alpha — the public HtmlPdf.Convert facade is not yet wired. " +
+            "Phase 1 shipped the deterministic PDF byte writer, font subsetter, image " +
+            "embedders, and UAX #9/#14/#29 text shaping (all internal); Phase 2 wires HTML " +
+            "parsing + CSS cascade + box-tree generation through to that writer. " +
+            "Track progress in CHANGELOG.md and PROGRESS.md.");
     }
 
     /// <summary>
@@ -87,16 +106,32 @@ public static class HtmlPdf
     {
         ArgumentNullException.ThrowIfNull(html);
         throw new NotImplementedException(
-            "NetPdf is in Phase 0 (architecture lock). The pipeline lands across Phases 1-5; " +
-            "see CHANGELOG.md and the README's roadmap.");
+            "NetPdf 0.1.0-alpha — the public HtmlPdf.Convert facade is not yet wired. " +
+            "Phase 1 shipped the deterministic PDF byte writer, font subsetter, image " +
+            "embedders, and UAX #9/#14/#29 text shaping (all internal); Phase 2 wires HTML " +
+            "parsing + CSS cascade + box-tree generation through to that writer. " +
+            "Track progress in CHANGELOG.md and PROGRESS.md.");
     }
 
     /// <summary>
-    /// The version of NetPdf currently running. Sourced from assembly informational metadata.
+    /// The package's informational version (e.g., <c>0.1.0-alpha</c>, optionally suffixed with
+    /// <c>+&lt;commit-sha&gt;</c> when built with Source Link / CI metadata). Sourced from
+    /// <see cref="AssemblyInformationalVersionAttribute"/>, which MSBuild auto-populates from
+    /// the package's <c>VersionPrefix</c> + <c>VersionSuffix</c>. The Semver-2.0 build-metadata
+    /// suffix (<c>+sha</c>) is preserved for traceability; consumers that want only
+    /// <c>MAJOR.MINOR.PATCH-prerelease</c> can split on <c>'+'</c>.
     /// </summary>
+    /// <remarks>
+    /// Note: <see cref="AssemblyName.Version"/> reports the four-part assembly version
+    /// (<c>0.1.0.0</c>), which loses the prerelease tag. The informational version is the
+    /// correct field for human-facing display and prerelease awareness.
+    /// </remarks>
     public static string Version
     {
         [MethodImpl(MethodImplOptions.NoInlining)]
-        get => typeof(HtmlPdf).Assembly.GetName().Version?.ToString() ?? "0.0.0";
+        get => typeof(HtmlPdf).Assembly
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()
+            ?.InformationalVersion
+            ?? "unknown";
     }
 }

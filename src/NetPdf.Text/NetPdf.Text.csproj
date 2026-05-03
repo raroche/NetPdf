@@ -3,15 +3,33 @@
   <PropertyGroup>
     <RootNamespace>NetPdf.Text</RootNamespace>
     <AssemblyName>NetPdf.Text</AssemblyName>
-    <Description>NetPdf internal: HarfBuzz text shaping, bidi (UAX #9), line breaking (UAX #14), segmentation (UAX #29), Liang hyphenation, font registry, cross-platform system font enumeration.</Description>
+    <Description>NetPdf internal: HarfBuzz text shaping, bidi (UAX #9), line breaking (UAX #14), segmentation (UAX #29), Liang hyphenation, font registry, cross-platform system font enumeration, OpenType / TrueType parser.</Description>
     <IsPackable>false</IsPackable>
   </PropertyGroup>
+
+  <!--
+    Phase 1 Task 11 brings HarfBuzzSharp in for text shaping. Native asset packages
+    are pulled in for all three platforms so cross-platform tests + Native AOT
+    publish work everywhere. System.IO.Compression.Brotli (BCL) joins in Task 18
+    for the WOFF2 decoder.
+  -->
 
   <ItemGroup>
     <PackageReference Include="HarfBuzzSharp" />
     <PackageReference Include="HarfBuzzSharp.NativeAssets.Linux" />
     <PackageReference Include="HarfBuzzSharp.NativeAssets.macOS" />
     <PackageReference Include="HarfBuzzSharp.NativeAssets.Win32" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!--
+      Liang hyphenation: bundled American-English pattern set + exception dictionary.
+      Patterns gzipped (~16 KB compressed; ~33 KB raw, 4952 entries). Originates from
+      hyph-en-us.tex (Gerard D.C. Kuiken, 1990-2005, derived from Knuth's hyphen.tex);
+      redistributable under the file's permissive notice — see THIRD-PARTY-NOTICES.md.
+    -->
+    <EmbeddedResource Include="Hyphenation\Resources\en-us-patterns.txt.gz" />
+    <EmbeddedResource Include="Hyphenation\Resources\en-us-exceptions.txt" />
   </ItemGroup>
 
   <ItemGroup>
@@ -22,6 +40,7 @@
     <InternalsVisibleTo Include="NetPdf.Pdf" />
     <InternalsVisibleTo Include="NetPdf.Svg" />
     <InternalsVisibleTo Include="NetPdf.UnitTests" />
+    <InternalsVisibleTo Include="NetPdf.RealDocuments" />
     <InternalsVisibleTo Include="NetPdf.TestKit" />
   </ItemGroup>
 

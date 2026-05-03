@@ -7,13 +7,23 @@
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
+  <!--
+    Phase 1 Task 8 brings in NetPdf.Text — the OpenType / TrueType parser is the input
+    to the font subsetter. NetPdf.Paint reference returns when the high-level PdfDocument
+    builder (Task 22) wires emission to the display-list IR. SkiaSharp arrives here in
+    Task 21 to decode image formats (WebP / AVIF / GIF) we don't natively parse —
+    JPEG (Task 19) and PNG (Task 20) embed via passthrough without Skia.
+  -->
+
   <ItemGroup>
-    <ProjectReference Include="..\NetPdf.Paint\NetPdf.Paint.csproj" />
     <ProjectReference Include="..\NetPdf.Text\NetPdf.Text.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="SkiaSharp" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux" />
+    <PackageReference Include="SkiaSharp.NativeAssets.macOS" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Win32" />
   </ItemGroup>
 
   <ItemGroup>
@@ -22,6 +32,14 @@
     <InternalsVisibleTo Include="NetPdf.PdfValidation" />
     <InternalsVisibleTo Include="NetPdf.RenderingCorpus" />
     <InternalsVisibleTo Include="NetPdf.TestKit" />
+    <!--
+      AOT smoke + benchmarks need reach into PdfDocument / MediaBoxSize / PdfStream —
+      Phase 1's public surface (HtmlPdf.Convert) doesn't ship until Phase 2 wires HTML
+      parsing, so both projects exercise the byte-writer path directly. Removed once
+      the public facade can drive a representative document end-to-end.
+    -->
+    <InternalsVisibleTo Include="NetPdf.AotSmoke" />
+    <InternalsVisibleTo Include="NetPdf.Benchmarks" />
   </ItemGroup>
 
 </Project>

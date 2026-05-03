@@ -16,6 +16,12 @@
     <ProjectReference Include="..\..\src\NetPdf.Pdf\NetPdf.Pdf.csproj" />
     <ProjectReference Include="..\..\src\NetPdf.Text\NetPdf.Text.csproj" />
     <ProjectReference Include="..\..\src\NetPdf.Svg\NetPdf.Svg.csproj" />
+    <!--
+      AotSmoke is referenced so the JIT/AOT parity test can call SmokeDocumentFactory
+      without duplicating the smoke build code. Plain .dll reference; AotSmoke's
+      IsAotCompatible only affects ITS OWN publish, not consumers.
+    -->
+    <ProjectReference Include="..\NetPdf.AotSmoke\NetPdf.AotSmoke.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -23,6 +29,40 @@
     <PackageReference Include="xunit" />
     <PackageReference Include="xunit.runner.visualstudio" />
     <PackageReference Include="coverlet.collector" />
+  </ItemGroup>
+
+  <!--
+    UCD bidi conformance test data (Stage 12.4). Files come from the canonical UCD at
+    https://www.unicode.org/Public/16.0.0/ucd/ . Stored gzipped (~1.7 MB combined vs.
+    ~15 MB raw) and decompressed at test time via System.IO.Compression.GZipStream.
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="Resources/Ucd/BidiTest.txt.gz" />
+    <EmbeddedResource Include="Resources/Ucd/BidiCharacterTest.txt.gz" />
+    <EmbeddedResource Include="Resources/Ucd/LineBreakTest.txt.gz" />
+    <EmbeddedResource Include="Resources/Ucd/GraphemeBreakTest.txt.gz" />
+  </ItemGroup>
+
+  <!--
+    A real-world Google Fonts WOFF 2.0 fixture for end-to-end glyf-transform decoder
+    tests. Roboto is licensed under the Apache 2.0 / SIL Open Font License (the v32
+    subset shipped via fonts.gstatic.com is bundled under the same license terms).
+    Fetched once from https://fonts.gstatic.com/s/roboto/v32/KFOmCnqEu92Fr1Mu4mxKKTU1Kg.woff2
+    and committed for deterministic test runs.
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="Resources/Fonts/Roboto-Regular.woff2" />
+  </ItemGroup>
+
+  <!--
+    A 1×1 white opaque AVIF (305 bytes) from the libavif test corpus
+    (https://github.com/AOMediaCodec/libavif/blob/main/tests/data/white_1x1.avif),
+    BSD-2-Clause licensed. Drives the end-to-end AVIF decode test independent of
+    whether the host SkiaSharp build includes the libavif encoder. See
+    THIRD-PARTY-NOTICES.md.
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="Resources/Images/white_1x1.avif" />
   </ItemGroup>
 
 </Project>

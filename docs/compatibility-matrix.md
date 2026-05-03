@@ -72,7 +72,7 @@ Phase column shows the milestone in which the feature first ships.
 | OpenType ligatures, kerning | ✅ | 1 | Via HarfBuzz. |
 | Bidi (RTL/LTR mixed text) | ✅ | 1 | UAX #9. |
 | Complex scripts (Indic, Arabic, Hebrew, CJK, Thai) | ✅ | 1 | Via HarfBuzz; quality varies by script — known limitations documented. |
-| Hyphenation (`hyphens: auto`) | ✅ | 1 | Liang patterns; ~15 languages bundled. |
+| Hyphenation (`hyphens: auto`) | 🧪 | 1 | Liang patterns. **At `0.1.0-alpha`: en-US only is bundled** (4,938 patterns + 14 exceptions). Other languages ship as optional `NetPdf.Languages.*` NuGet packs at v1.0+ (Cjk, Indic, European, Arabic, plus an `All` meta-package). See `docs/phases/phase-5-packaging-and-release.md`. |
 | `text-align`, `text-decoration`, `text-transform`, `letter-spacing`, `word-spacing` | ✅ | 2 | |
 | `writing-mode` (vertical) | 🧪 | 4 | `vertical-rl`/`vertical-lr` supported; sideways modes not. |
 
@@ -169,4 +169,28 @@ Every ❌ / 📥 / 🧪 entry above corresponds to a stable diagnostic code in `
 
 ---
 
-Last updated: 2026-04-30 (Phase 0).
+## PDF metadata strings
+
+| Feature | Status | Phase | Notes |
+|---|---|---|---|
+| ASCII `Title` / `Author` / `Subject` / `Keywords` / `Creator` | ✅ | 1 | Emitted as PDF literal strings with §7.3.4.2 octal escaping for `(`, `)`, `\`, and bytes < 0x20 / > 0x7E. |
+| Non-ASCII metadata (accented characters, CJK, emoji) | 🧪 | 1 → 2 | The Phase 1 facade exposes `string` setters that feed `PdfLiteralString`, which throws on `char > 0x7E`. Real-world metadata with non-ASCII characters needs the Phase 2 facade to route through UTF-16BE-encoded `PdfHexString`. The byte writer already supports both; the gap is purely at the public surface. |
+| Producer string | ✅ | 1 | Always emitted; defaults to `"NetPdf"`. |
+| `CreationDate` / `ModDate` | ✅ | 1 | ISO 32000-2 §7.9.4 `D:YYYYMMDDHHmmSS{Z\|+HH'mm'\|-HH'mm'}` format. Default to omitted when not set so output is reproducible. |
+
+---
+
+## Determinism
+
+| Feature | Status | Phase | Notes |
+|---|---|---|---|
+| Byte-equal output for byte-equal input | ✅ | 1 | Validated by the 75-test harness (`PdfDocumentDeterminismHarnessTests`): 18 document shapes × byte-equal-twice + byte-equal-thrice + structural sanity + per-platform SHA-256 pin. |
+| Image dedup by content hash + dictionary | ✅ | 1 | Same image content used N times → single XObject. |
+| Pinned `FlateDecode` compression level | ✅ | 1 | `PdfFormat.PdfDeflateCompressionLevel = SmallestSize` is shared by every stream emitter; pins the byte-stability premise of the deflate output. |
+| Cross-platform byte-equality | 🧪 | 1 → 5 | Pinned per `OS-arch` key (currently `osx-arm64`); other platforms log "no pin, snapshot skipped" until Phase 5 captures them in the containerized reference environment. |
+
+See [docs/design/determinism.md](design/determinism.md) for the full contract and re-pin protocol.
+
+---
+
+Last updated: 2026-05-03 (Task 23 follow-up review).

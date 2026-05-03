@@ -1,11 +1,20 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <!--
+    Console-app fuzz harness (SharpFuzz). Not a unit-test project, so does not set
+    IsTestProject (which would make `dotnet test` try to run it via testhost).
+  -->
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFrameworks>net10.0</TargetFrameworks>
-    <IsTestProject>true</IsTestProject>
     <RootNamespace>NetPdf.Fuzz</RootNamespace>
     <AssemblyName>NetPdf.Fuzz</AssemblyName>
+    <IsAotCompatible>false</IsAotCompatible>
+    <IsTrimmable>false</IsTrimmable>
+    <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+    <IsPackable>false</IsPackable>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <IncludeSymbols>false</IncludeSymbols>
   </PropertyGroup>
 
   <ItemGroup>

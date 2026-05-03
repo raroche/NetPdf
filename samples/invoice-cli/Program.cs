@@ -45,7 +45,13 @@ internal static class Program
         }
         catch (NotImplementedException ex)
         {
-            Console.Error.WriteLine($"NetPdf is in Phase 0 — conversion not yet implemented.");
+            // NetPdf 0.1.0-alpha shipped the internal byte writer, font subsetter, image
+            // embedders, and text shaping — but the public HtmlPdf.Convert facade still
+            // throws because the HTML+CSS pipeline glue lands in Phase 2 (`0.3.0-alpha`).
+            // This catch goes away once Phase 2 ships; until then the error is expected
+            // and the exit code (3) is stable for CI scripts that wrap this CLI.
+            Console.Error.WriteLine(
+                $"NetPdf {HtmlPdf.Version} — HtmlPdf.Convert wires up in Phase 2.");
             Console.Error.WriteLine($"  {ex.Message}");
             return 3;
         }

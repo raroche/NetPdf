@@ -7,7 +7,8 @@ var builder = WebApplication.CreateBuilder(args);
 var app = builder.Build();
 
 app.MapGet("/", () => Results.Text(
-    $"NetPdf {HtmlPdf.Version} — try GET /report?title=Q1",
+    $"NetPdf {HtmlPdf.Version} (Phase 1 alpha — public HtmlPdf.Convert wires up in Phase 2). " +
+    $"Try GET /report?title=Q1 to see the current Phase-2-pending response.",
     "text/plain"));
 
 app.MapGet("/report", (string? title) =>
@@ -38,10 +39,15 @@ app.MapGet("/report", (string? title) =>
     }
     catch (NotImplementedException ex)
     {
-        return Results.Problem(
-            title: "NetPdf phase 0",
+        // NetPdf 0.1.0-alpha shipped the internal byte writer + text shaping; the public
+        // HtmlPdf.Convert facade wires up in Phase 2 (`0.3.0-alpha`). 501 (Not Implemented)
+        // is the correct status until then; consumers can detect via the 'NetPdf-Phase'
+        // response header and treat it as a temporary upstream-not-ready signal.
+        var problem = Results.Problem(
+            title: "NetPdf 0.1.0-alpha — HtmlPdf.Convert wires up in Phase 2",
             detail: ex.Message,
             statusCode: 501);
+        return problem;
     }
 });
 

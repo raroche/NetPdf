@@ -1,11 +1,21 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+  <!--
+    Library shared by other test projects (corpus runner, Chromium harness, PDF
+    validation helpers). Not a unit-test project itself, so does not set
+    IsTestProject (which would make `dotnet test` try to run it via testhost).
+  -->
   <PropertyGroup>
     <TargetFrameworks>net10.0</TargetFrameworks>
-    <IsTestProject>true</IsTestProject>
     <RootNamespace>NetPdf.TestKit</RootNamespace>
     <AssemblyName>NetPdf.TestKit</AssemblyName>
     <Description>Test infrastructure: corpus runner, Chromium reference harness, PDF validation helpers. Shared across test projects.</Description>
+    <IsAotCompatible>false</IsAotCompatible>
+    <IsTrimmable>false</IsTrimmable>
+    <EnableTrimAnalyzer>false</EnableTrimAnalyzer>
+    <IsPackable>false</IsPackable>
+    <GenerateDocumentationFile>false</GenerateDocumentationFile>
+    <IncludeSymbols>false</IncludeSymbols>
   </PropertyGroup>
 
   <ItemGroup>
@@ -14,6 +24,16 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Playwright" />
+    <!--
+      SkiaSharp + native assets are needed for MinimalImageFixtures.EncodeOpaqueWebp
+      and future raster-fixture helpers. TestKit is a test-only library, so the Skia
+      native bundle is only ever loaded inside test/benchmark hosts — never shipped
+      in the NetPdf NuGet package.
+    -->
+    <PackageReference Include="SkiaSharp" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux" />
+    <PackageReference Include="SkiaSharp.NativeAssets.macOS" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Win32" />
   </ItemGroup>
 
 </Project>

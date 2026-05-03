@@ -10,9 +10,8 @@ The hard problem isn't the PDF byte format — it's the HTML/CSS layout engine (
 
 ## Where we are right now
 
-- **Status:** End of Phase 0 (architecture lock). Public API frozen, scaffolding in place, 12/12 tests passing.
-- **Tagged release:** `0.0.1-phase0` (private GitHub release; nuget.org placeholder pushed and unlisted).
-- **Next phase:** Phase 1 — PDF writer + text foundation. Target tag `0.1.0-alpha`.
+The single source of truth for current status is [`PROGRESS.md`](PROGRESS.md). Read it first.
+
 - **Repository:** `https://github.com/raroche/NetPdf` (currently **PRIVATE**; flips public at `1.0.0` launch).
 - **Open-source strategy:** Develop privately through Phases 1–5. At v1.0 launch, push a clean orphan-branch initial commit to a fresh public repo + publish NuGet package. See [docs/phases/phase-5-packaging-and-release.md](docs/phases/phase-5-packaging-and-release.md).
 
@@ -26,12 +25,12 @@ That skill (under `.claude/skills/phase-status.md`) reports the active phase, bu
 
 ## Cross-cutting rules — apply to every change
 
-These are non-negotiable. Every PR/commit must honor them.
+These are non-negotiable. Every PR/commit must honor them. Detailed coding standards (SOLID, DRY-with-rule-of-three, YAGNI, naming, testing patterns, code review checklist) live in [`docs/coding-standards.md`](docs/coding-standards.md).
 
 1. **Clean-room development.** Algorithms come from W3C / ISO / UAX specs, not from reading other implementations' source code. If you read another engine (Servo, Taffy, WeasyPrint, Chromium) for understanding, leave a one-line comment in the file noting it. Full policy in [docs/clean-room-policy.md](docs/clean-room-policy.md).
 2. **Banned dependencies.** No `System.Drawing`, no browser engines, no AGPL/copyleft, no revenue-capped libraries. The `NetPdf.BannedAnalyzer` Roslyn analyzer enforces this at compile time. Approved deps: AngleSharp, AngleSharp.Css, HarfBuzzSharp, SkiaSharp (raster fallback only). Adding a new dep requires an entry in [docs/legal/dependency-dossier.md](docs/legal/dependency-dossier.md) reviewed and merged before the PackageVersion lands.
-3. **AOT-clean.** No reflection in core paths. No `Activator.CreateInstance`, `Type.GetType(string)`, runtime codegen. Source generators where dynamic registration would otherwise be needed. The AOT smoke test gates CI; if it fails, the change doesn't ship.
-4. **Determinism.** Same input → same PDF bytes. No PRNG, no `DateTime.Now` in shipped code, deterministic compression, optional frozen `/CreationDate` via `FeatureFlags.DeterministicTimestamps`.
+3. **AOT-clean.** No reflection in core paths. No `Activator.CreateInstance`, `Type.GetType(string)`, runtime codegen. Source generators where dynamic registration would otherwise be needed. The AOT smoke test gates CI; if it fails, the change doesn't ship. Run protocol: [docs/design/aot-smoke.md](docs/design/aot-smoke.md).
+4. **Determinism.** Same input → same PDF bytes. No PRNG, no `DateTime.Now` in shipped code, deterministic compression, optional frozen `/CreationDate` via `FeatureFlags.DeterministicTimestamps`. Public contract + re-pin protocol: [docs/design/determinism.md](docs/design/determinism.md).
 5. **C# 14 / .NET 10 idioms.** Use `Span<T>`, `ReadOnlySpan<T>`, `IBufferWriter<byte>`, `ArrayPool<T>`, `FrozenDictionary`, `SearchValues<char>`, `[InlineArray]`, `required`, `init`, primary constructors, file-scoped namespaces, `ref struct` enumerators. **No LINQ in hot paths** (Roslyn analyzer enforced).
 6. **Apache-2.0 file headers.** Every source file starts with:
    ```
@@ -49,6 +48,7 @@ These are non-negotiable. Every PR/commit must honor them.
 
 | If you need to... | Read |
 |---|---|
+| Know what phase / task we're on right now | [PROGRESS.md](PROGRESS.md) — single source of truth, updated as each task/phase ships. |
 | Know what to build next | [docs/phases/](docs/phases/) — pick the active phase doc; follow the work breakdown. |
 | Know what CSS features are in/out of scope | [docs/compatibility-matrix.md](docs/compatibility-matrix.md) |
 | Know the legal contract | [docs/clean-room-policy.md](docs/clean-room-policy.md) |
@@ -56,6 +56,7 @@ These are non-negotiable. Every PR/commit must honor them.
 | Emit a new diagnostic | [docs/diagnostics-codes.md](docs/diagnostics-codes.md) — and run `/add-diagnostic-code`. |
 | Look up a PDF spec interpretation | [docs/pdf-spec-notes.md](docs/pdf-spec-notes.md) |
 | Manage secrets / API keys | [docs/secrets-and-credentials.md](docs/secrets-and-credentials.md) |
+| Know how we write code (SOLID, DRY, naming, testing) | [docs/coding-standards.md](docs/coding-standards.md) |
 | Run a recurring task | [.claude/skills/](.claude/skills/) — `phase-status`, `add-diagnostic-code`, `add-corpus-sample`, `add-css-property`, `render-corpus`, `bench`, `aot-check`, `uax-test`. |
 
 ## Build, test, run

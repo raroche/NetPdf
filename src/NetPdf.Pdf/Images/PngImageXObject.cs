@@ -36,22 +36,16 @@ namespace NetPdf.Pdf.Images;
 /// Clean-room.
 /// </para>
 /// </remarks>
-internal sealed class PngImageXObjectResult
-{
-    public required PdfStream Image { get; init; }
-    public PdfStream? SMask { get; init; }
-}
-
 internal static class PngImageXObject
 {
-    public static PngImageXObjectResult Build(byte[] pngBytes)
+    public static ImageXObjectResult Build(byte[] pngBytes)
     {
         ArgumentNullException.ThrowIfNull(pngBytes);
         var info = PngHeaderParser.Parse(pngBytes);
         return Build(info);
     }
 
-    public static PngImageXObjectResult Build(PngImageInfo info)
+    public static ImageXObjectResult Build(PngImageInfo info)
     {
         ArgumentNullException.ThrowIfNull(info);
         if (info.IsInterlaced)
@@ -78,12 +72,12 @@ internal static class PngImageXObject
 
     // ───── Path 1: opaque passthrough ────────────────────────────────────────
 
-    private static PngImageXObjectResult BuildOpaquePassthrough(PngImageInfo info)
+    private static ImageXObjectResult BuildOpaquePassthrough(PngImageInfo info)
         => new() { Image = BuildOpaqueImageStream(info, mask: null) };
 
     // ───── Path 2: opaque passthrough + color-key /Mask ──────────────────────
 
-    private static PngImageXObjectResult BuildOpaquePassthroughWithMask(PngImageInfo info)
+    private static ImageXObjectResult BuildOpaquePassthroughWithMask(PngImageInfo info)
     {
         var mask = BuildColorKeyMask(info);
         return new() { Image = BuildOpaqueImageStream(info, mask) };
@@ -192,7 +186,7 @@ internal static class PngImageXObject
 
     // ───── Path 3: alpha split into Image + SMask ────────────────────────────
 
-    private static PngImageXObjectResult BuildAlphaSplit(PngImageInfo info)
+    private static ImageXObjectResult BuildAlphaSplit(PngImageInfo info)
     {
         if (info.BitDepth != 8)
         {
@@ -226,7 +220,7 @@ internal static class PngImageXObject
 
     // ───── Path 4: indexed + non-binary tRNS → SMask ────────────────────────
 
-    private static PngImageXObjectResult BuildIndexedTrnsSMaskSplit(PngImageInfo info)
+    private static ImageXObjectResult BuildIndexedTrnsSMaskSplit(PngImageInfo info)
     {
         // Indexed images with a tRNS that contains intermediate alpha values (1..254)
         // can't be expressed as a color-key /Mask. We must materialize a per-pixel alpha

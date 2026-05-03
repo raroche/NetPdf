@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-02 (Task 20 ✅ — PNG/Flate image embedder with passthrough for opaque + alpha-split SMask for RGBA/GA)
+**Last updated:** 2026-05-02 (Task 20 review cycle ✅ — tRNS transparency, CRC validation, structural hardening, bounded zlib, direct filter tests)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 

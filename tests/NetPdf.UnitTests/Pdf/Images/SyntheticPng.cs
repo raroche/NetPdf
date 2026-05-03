@@ -87,6 +87,47 @@ internal static class SyntheticPng
         return BuildPng(width, height, bitDepth: 8, colorType: 4, palette: null, decompressedScanlines: raw);
     }
 
+    public static byte[] BuildOpaqueGrayscale8WithTrns(int width, int height, byte transparentGray)
+    {
+        var raw = new byte[height * (1 + width)];
+        for (var y = 0; y < height; y++) raw[y * (1 + width)] = 0;
+        var trns = new byte[2];
+        trns[0] = 0;
+        trns[1] = transparentGray;
+        return BuildPng(width, height, 8, 0, palette: null, decompressedScanlines: raw, transparency: trns);
+    }
+
+    public static byte[] BuildOpaqueRgb8WithTrns(int width, int height, byte tr, byte tg, byte tb)
+    {
+        var raw = new byte[height * (1 + width * 3)];
+        for (var y = 0; y < height; y++) raw[y * (1 + width * 3)] = 0;
+        var trns = new byte[6];
+        trns[0] = 0; trns[1] = tr;
+        trns[2] = 0; trns[3] = tg;
+        trns[4] = 0; trns[5] = tb;
+        return BuildPng(width, height, 8, 2, palette: null, decompressedScanlines: raw, transparency: trns);
+    }
+
+    public static byte[] BuildIndexed8WithTrns(int width, int height, byte[] palette, byte[] trns, byte fillIndex = 0)
+    {
+        var raw = new byte[height * (1 + width)];
+        for (var y = 0; y < height; y++)
+        {
+            raw[y * (1 + width)] = 0;
+            for (var x = 0; x < width; x++) raw[y * (1 + width) + 1 + x] = fillIndex;
+        }
+        return BuildPng(width, height, 8, 3, palette, raw, transparency: trns);
+    }
+
+    public static byte[] BuildIndexedCustomBitDepth(int width, int height, int bitDepth, byte[] palette)
+    {
+        // Bytes-per-scanline depends on bitDepth × width / 8 (rounded up).
+        var bytesPerScanline = (width * bitDepth + 7) / 8;
+        var raw = new byte[height * (1 + bytesPerScanline)];
+        for (var y = 0; y < height; y++) raw[y * (1 + bytesPerScanline)] = 0;
+        return BuildPng(width, height, bitDepth, 3, palette, raw);
+    }
+
     public static byte[] BuildInterlaced(int width, int height)
     {
         // Build an opaque RGB PNG with the IHDR interlace flag set to 1 (Adam7). The IDAT
@@ -96,7 +137,7 @@ internal static class SyntheticPng
         return BuildPng(width, height, bitDepth: 8, colorType: 2, palette: null, decompressedScanlines: raw, interlace: 1);
     }
 
-    private static byte[] BuildPng(int width, int height, int bitDepth, int colorType, byte[]? palette, byte[] decompressedScanlines, int interlace = 0)
+    private static byte[] BuildPng(int width, int height, int bitDepth, int colorType, byte[]? palette, byte[] decompressedScanlines, int interlace = 0, byte[]? transparency = null)
     {
         using var ms = new MemoryStream();
         // Signature.
@@ -116,6 +157,12 @@ internal static class SyntheticPng
         if (palette is not null)
         {
             WriteChunk(ms, "PLTE", palette);
+        }
+
+        // tRNS (if requested).
+        if (transparency is not null)
+        {
+            WriteChunk(ms, "tRNS", transparency);
         }
 
         // IDAT — zlib-compressed scanlines.

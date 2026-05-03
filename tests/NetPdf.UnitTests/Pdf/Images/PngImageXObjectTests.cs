@@ -144,4 +144,74 @@ public sealed class PngImageXObjectTests
         Assert.Throws<ArgumentNullException>(() => PngImageXObject.Build((byte[])null!));
         Assert.Throws<ArgumentNullException>(() => PngImageXObject.Build((PngImageInfo)null!));
     }
+
+    // ───── tRNS color-key /Mask paths ────────────────────────────────────────
+
+    [Fact]
+    public void Grayscale_with_tRNS_emits_color_key_Mask_array()
+    {
+        var bytes = SyntheticPng.BuildOpaqueGrayscale8WithTrns(16, 8, transparentGray: 0x80);
+        var result = PngImageXObject.Build(bytes);
+        Assert.Null(result.SMask);
+        var d = result.Image.Dictionary;
+        // Color is still passthrough — DeviceGray + Predictor 15.
+        Assert.Equal("DeviceGray", GetName(d, PdfNames.ColorSpace)!.Value);
+        // /Mask [v v] for the transparent gray value.
+        var mask = (PdfArray)d.Get(PdfNames.Mask)!;
+        Assert.Equal(2, mask.Count);
+        Assert.Equal(0x80, ((PdfInteger)mask[0]).Value);
+        Assert.Equal(0x80, ((PdfInteger)mask[1]).Value);
+    }
+
+    [Fact]
+    public void RGB_with_tRNS_emits_color_key_Mask_array_with_six_entries()
+    {
+        var bytes = SyntheticPng.BuildOpaqueRgb8WithTrns(16, 8, tr: 0xFF, tg: 0x00, tb: 0x80);
+        var result = PngImageXObject.Build(bytes);
+        Assert.Null(result.SMask);
+        var d = result.Image.Dictionary;
+        Assert.Equal("DeviceRGB", GetName(d, PdfNames.ColorSpace)!.Value);
+        var mask = (PdfArray)d.Get(PdfNames.Mask)!;
+        Assert.Equal(6, mask.Count);
+        // [r r g g b b]
+        Assert.Equal(0xFF, ((PdfInteger)mask[0]).Value);
+        Assert.Equal(0xFF, ((PdfInteger)mask[1]).Value);
+        Assert.Equal(0x00, ((PdfInteger)mask[2]).Value);
+        Assert.Equal(0x00, ((PdfInteger)mask[3]).Value);
+        Assert.Equal(0x80, ((PdfInteger)mask[4]).Value);
+        Assert.Equal(0x80, ((PdfInteger)mask[5]).Value);
+    }
+
+    [Fact]
+    public void Indexed_with_binary_tRNS_emits_color_key_Mask_for_transparent_indices()
+    {
+        // Palette has 4 entries; tRNS marks index 0 transparent (0) + others opaque (255).
+        var palette = new byte[] { 0xFF, 0, 0, 0, 0xFF, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF };
+        var trns = new byte[] { 0x00, 0xFF, 0xFF, 0xFF };
+        var bytes = SyntheticPng.BuildIndexed8WithTrns(8, 8, palette, trns);
+        var result = PngImageXObject.Build(bytes);
+        Assert.Null(result.SMask); // binary alpha → /Mask path, not SMask
+        var d = result.Image.Dictionary;
+        var mask = (PdfArray)d.Get(PdfNames.Mask)!;
+        Assert.Equal(2, mask.Count); // only index 0 is transparent
+        Assert.Equal(0, ((PdfInteger)mask[0]).Value);
+        Assert.Equal(0, ((PdfInteger)mask[1]).Value);
+    }
+
+    [Fact]
+    public void Indexed_with_non_binary_tRNS_emits_SMask()
+    {
+        var palette = new byte[] { 0xFF, 0, 0, 0, 0xFF, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF };
+        var trns = new byte[] { 0x00, 0x80, 0xFF, 0xFF }; // index 1 has intermediate alpha (128)
+        var bytes = SyntheticPng.BuildIndexed8WithTrns(8, 8, palette, trns);
+        var result = PngImageXObject.Build(bytes);
+        Assert.NotNull(result.SMask);
+        // Image still uses indexed passthrough; SMask provides per-pixel alpha.
+        var d = result.Image.Dictionary;
+        Assert.IsType<PdfArray>(d.Get(PdfNames.ColorSpace)); // /Indexed array
+        Assert.Same(result.SMask, d.Get(PdfNames.SMask));
+        var sm = result.SMask!.Dictionary;
+        Assert.Equal("DeviceGray", GetName(sm, PdfNames.ColorSpace)!.Value);
+        Assert.Equal(8, GetInt(sm, PdfNames.BitsPerComponent));
+    }
 }

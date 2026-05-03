@@ -31,6 +31,27 @@ internal sealed record PngImageInfo
     public byte[]? Palette { get; init; }
 
     /// <summary>
+    /// Raw tRNS chunk bytes when the file declares transparency.
+    /// </summary>
+    /// <list type="bullet">
+    ///   <item><b>Grayscale</b> (color type 0): 2 bytes — a single 16-bit big-endian
+    ///         transparent gray value. Pixels exactly equal to this value render
+    ///         transparent in PDF output via a color-key <c>/Mask</c>.</item>
+    ///   <item><b>RGB</b> (color type 2): 6 bytes — three 16-bit big-endian transparent
+    ///         channel values. Pixels exactly equal to (R, G, B) render transparent via
+    ///         <c>/Mask [r r g g b b]</c>.</item>
+    ///   <item><b>Indexed</b> (color type 3): 1 byte per palette entry, in palette order.
+    ///         Each byte is the alpha for the corresponding palette index. PNG allows the
+    ///         tRNS to carry fewer alpha bytes than there are palette entries — entries
+    ///         past the array are assumed fully opaque (255).</item>
+    /// </list>
+    /// <para>
+    /// Color types 4 (GA) and 6 (RGBA) carry alpha in the image data and must NOT have a
+    /// tRNS chunk (the parser rejects this combination).
+    /// </para>
+    public byte[]? TransparencyChunk { get; init; }
+
+    /// <summary>
     /// Concatenated raw IDAT bytes — already zlib-compressed (deflate stream wrapped in
     /// 2-byte zlib header + 4-byte Adler-32 trailer). For PDF passthrough, these can be
     /// emitted directly under <c>/Filter /FlateDecode</c>.

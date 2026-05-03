@@ -1,35 +1,39 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System.Buffers.Binary;
 using System.IO.Compression;
 using NetPdf.Pdf.Objects;
 
 namespace NetPdf.Pdf.Images;
 
 /// <summary>
-/// Builds PDF Image XObject(s) from a PNG. Two paths are taken:
+/// Builds PDF Image XObject(s) from a PNG. Three paths are taken:
 /// </summary>
 /// <list type="bullet">
-///   <item><b>Opaque PNG (color types 0, 2, 3):</b> the IDAT bytes are zlib-compressed
-///         already and PDF's <c>FlateDecode</c> filter accepts zlib input directly.
-///         The wrapper emits <c>/Filter /FlateDecode</c> with
+///   <item><b>Opaque PNG (no tRNS) for color types 0 / 2 / 3:</b> the IDAT bytes are
+///         zlib-compressed already and PDF's <c>FlateDecode</c> filter accepts zlib input
+///         directly. Emits <c>/Filter /FlateDecode</c> with
 ///         <c>/DecodeParms &lt;&lt; /Predictor 15 /Columns W /Colors C
-///         /BitsPerComponent BPC &gt;&gt;</c> so the PDF reader runs the same
-///         per-scanline filter reversal a PNG decoder would. <b>True passthrough.</b></item>
-///   <item><b>PNG with alpha (color types 4 = GA, 6 = RGBA):</b> PDF cannot mix color
-///         and alpha in the same XObject (DeviceRGB has no alpha channel). We must
-///         decompress the IDAT, reverse the per-scanline PNG filters (via
-///         <see cref="PngFilterReverser"/>), split the raw pixel buffer into a color
-///         plane and an alpha plane, re-zlib-compress each, and emit two XObjects: the
-///         primary Image XObject (color) and an SMask XObject (alpha) referenced via
-///         <c>/SMask</c>. Phase 1 supports 8-bit alpha types only — 16-bit alpha PNGs
-///         are rejected.</item>
+///         /BitsPerComponent BPC &gt;&gt;</c> so the PDF reader runs the same per-scanline
+///         filter reversal a PNG decoder would. <b>True passthrough.</b></item>
+///   <item><b>tRNS-flagged PNG (color types 0 / 2 with tRNS, color types 3 with binary
+///         tRNS):</b> opaque-passthrough with an additional <c>/Mask</c> color-key array.
+///         Color-key masking renders pixels exactly equal to the transparent value(s) as
+///         transparent without requiring an SMask plane.</item>
+///   <item><b>PNG with full alpha (color types 4 / 6, or color type 3 with non-binary
+///         tRNS):</b> the IDAT must be decompressed, per-scanline filters reversed, the
+///         pixels split into a color plane and an alpha plane, and each re-zlib-compressed
+///         independently. Emits a primary Image XObject (color) plus an SMask XObject
+///         referenced via <c>/SMask</c>. Phase 1 supports 8-bit alpha types only —
+///         16-bit alpha PNGs are rejected.</item>
 /// </list>
 /// <remarks>
 /// <para>
-/// Spec basis: ISO 32000-2:2020 §8.9.5 (Image XObjects), §11.6 (Soft masks for
-/// transparency), §7.4.4 + Table 8 (FlateDecode predictors). PNG side: W3C PNG (Third
-/// Edition) §9 (Filtering) + §11 (Chunk specifications). Clean-room.
+/// Spec basis: ISO 32000-2:2020 §8.9.5 (Image XObjects), §8.9.6.4 (Color key masks),
+/// §11.6 (Soft masks for transparency), §7.4.4 + Table 8 (FlateDecode predictors).
+/// PNG side: W3C PNG (Third Edition) §9 (Filtering) + §11 (Chunk specifications).
+/// Clean-room.
 /// </para>
 /// </remarks>
 internal sealed class PngImageXObjectResult
@@ -40,9 +44,6 @@ internal sealed class PngImageXObjectResult
 
 internal static class PngImageXObject
 {
-    /// <summary>
-    /// Build a PDF Image XObject (and optional SMask) from raw PNG bytes.
-    /// </summary>
     public static PngImageXObjectResult Build(byte[] pngBytes)
     {
         ArgumentNullException.ThrowIfNull(pngBytes);
@@ -59,12 +60,36 @@ internal static class PngImageXObject
                 "PNG: Adam7 interlaced PNGs are not supported in Phase 1. Re-save the image without interlacing.");
         }
 
-        return info.HasAlpha ? BuildAlphaSplit(info) : BuildOpaquePassthrough(info);
+        if (info.HasAlpha)
+        {
+            return BuildAlphaSplit(info);
+        }
+        if (info.TransparencyChunk is not null)
+        {
+            // Indexed + non-binary tRNS requires the SMask path; gray/RGB + tRNS use /Mask.
+            if (info.IsIndexed && !IsBinaryAlphaPalette(info.TransparencyChunk))
+            {
+                return BuildIndexedTrnsSMaskSplit(info);
+            }
+            return BuildOpaquePassthroughWithMask(info);
+        }
+        return BuildOpaquePassthrough(info);
     }
 
     // ───── Path 1: opaque passthrough ────────────────────────────────────────
 
     private static PngImageXObjectResult BuildOpaquePassthrough(PngImageInfo info)
+        => new() { Image = BuildOpaqueImageStream(info, mask: null) };
+
+    // ───── Path 2: opaque passthrough + color-key /Mask ──────────────────────
+
+    private static PngImageXObjectResult BuildOpaquePassthroughWithMask(PngImageInfo info)
+    {
+        var mask = BuildColorKeyMask(info);
+        return new() { Image = BuildOpaqueImageStream(info, mask) };
+    }
+
+    private static PdfStream BuildOpaqueImageStream(PngImageInfo info, PdfArray? mask)
     {
         var dict = new PdfDictionary();
         dict.Set(PdfNames.Type, PdfNames.XObject);
@@ -74,12 +99,8 @@ internal static class PngImageXObject
         dict.Set(PdfNames.BitsPerComponent, new PdfInteger(info.BitDepth));
         dict.Set(PdfNames.Filter, PdfNames.FlateDecode);
 
-        // ColorSpace.
         if (info.IsIndexed)
         {
-            // [/Indexed /DeviceRGB N <palette-bytes>]
-            //   N = number of palette entries - 1 ("hival")
-            //   palette bytes = R G B R G B ... (3 × number of entries)
             var indexed = new PdfArray();
             indexed.Add(PdfNames.Indexed);
             indexed.Add(PdfNames.DeviceRGB);
@@ -95,9 +116,6 @@ internal static class PngImageXObject
                 : PdfNames.DeviceRGB);
         }
 
-        // PNG predictor (FlateDecode parameter): predictor 15 = "PNG optimum", which
-        // tells the reader the stream is per-scanline-filtered with one filter prefix
-        // byte per scanline (the actual reverse-filter algorithm runs reader-side).
         var decodeParms = new PdfDictionary();
         decodeParms.Set(PdfNames.Predictor, new PdfInteger(15));
         decodeParms.Set(PdfNames.Columns, new PdfInteger(info.Width));
@@ -105,64 +123,147 @@ internal static class PngImageXObject
         decodeParms.Set(PdfNames.BitsPerComponent, new PdfInteger(info.BitDepth));
         dict.Set(PdfNames.DecodeParms, decodeParms);
 
-        var idatArray = info.CompressedIdatBytes.ToArray();
-        var image = new PdfStream(idatArray, dict);
-        return new PngImageXObjectResult { Image = image };
+        if (mask is not null)
+        {
+            dict.Set(PdfNames.Mask, mask);
+        }
+
+        return new PdfStream(info.CompressedIdatBytes.ToArray(), dict);
     }
 
-    // ───── Path 2: alpha split into Image + SMask ────────────────────────────
+    private static PdfArray BuildColorKeyMask(PngImageInfo info)
+    {
+        // PDF color-key /Mask array layout: [min1 max1 min2 max2 ...] where each pair
+        // specifies one component's transparent range. PNG tRNS gives a single transparent
+        // value per channel, so min == max for every component.
+        var mask = new PdfArray();
+        switch (info.ColorType)
+        {
+            case PngColorType.Grayscale:
+                {
+                    // 2 bytes BE — single 16-bit value. For 8-bit images the reader uses the
+                    // low byte; we emit the value at the bit-depth's natural width.
+                    var v = BinaryPrimitives.ReadUInt16BigEndian(info.TransparencyChunk!);
+                    mask.Add(new PdfInteger(v));
+                    mask.Add(new PdfInteger(v));
+                    break;
+                }
+            case PngColorType.Rgb:
+                {
+                    // 6 bytes — three 16-bit BE values for R, G, B.
+                    var r = BinaryPrimitives.ReadUInt16BigEndian(info.TransparencyChunk.AsSpan(0, 2));
+                    var g = BinaryPrimitives.ReadUInt16BigEndian(info.TransparencyChunk.AsSpan(2, 2));
+                    var b = BinaryPrimitives.ReadUInt16BigEndian(info.TransparencyChunk.AsSpan(4, 2));
+                    mask.Add(new PdfInteger(r)); mask.Add(new PdfInteger(r));
+                    mask.Add(new PdfInteger(g)); mask.Add(new PdfInteger(g));
+                    mask.Add(new PdfInteger(b)); mask.Add(new PdfInteger(b));
+                    break;
+                }
+            case PngColorType.Indexed:
+                {
+                    // Binary tRNS for indexed: emit a /Mask array covering each fully-
+                    // transparent palette index. Indexed color-key /Mask uses 1 component
+                    // (the palette index) so each min/max pair corresponds to a single
+                    // transparent index. PDF readers AND-combine the ranges, but with a
+                    // single component it's effectively a list of forbidden indices.
+                    for (var i = 0; i < info.TransparencyChunk!.Length; i++)
+                    {
+                        if (info.TransparencyChunk[i] == 0) // fully transparent index
+                        {
+                            mask.Add(new PdfInteger(i));
+                            mask.Add(new PdfInteger(i));
+                        }
+                    }
+                    break;
+                }
+        }
+        return mask;
+    }
+
+    private static bool IsBinaryAlphaPalette(byte[] trns)
+    {
+        // True when every entry is either 0 (transparent) or 255 (opaque).
+        foreach (var a in trns)
+        {
+            if (a != 0 && a != 255) return false;
+        }
+        return true;
+    }
+
+    // ───── Path 3: alpha split into Image + SMask ────────────────────────────
 
     private static PngImageXObjectResult BuildAlphaSplit(PngImageInfo info)
     {
-        // Phase 1 limitation: 8-bit alpha types only.
         if (info.BitDepth != 8)
         {
             throw new NotSupportedException(
                 $"PNG: {info.BitDepth}-bit alpha (color type {info.ColorType}) is not supported in Phase 1; only 8-bit RGBA / Gray+Alpha are handled.");
         }
 
-        // Decompress the IDAT zlib stream.
-        var rawFiltered = ZlibDecompress(info.CompressedIdatBytes.Span);
-
-        // Reverse per-scanline filters → raw pixel data.
+        var expectedFilteredSize = checked((long)info.Height * (1L + info.ScanlineByteWidth));
+        if (expectedFilteredSize > int.MaxValue)
+        {
+            throw new InvalidDataException(
+                $"PNG: declared image is too large for in-memory decode ({expectedFilteredSize} bytes).");
+        }
+        var rawFiltered = ZlibDecompressBounded(info.CompressedIdatBytes.Span, (int)expectedFilteredSize);
         var rawPixels = PngFilterReverser.Reverse(
-            rawFiltered,
-            info.Height,
-            info.ScanlineByteWidth,
-            info.BytesPerPixelForFilter);
+            rawFiltered, info.Height, info.ScanlineByteWidth, info.BytesPerPixelForFilter);
 
-        // Split into color + alpha planes.
         var (colorPlane, alphaPlane) = SplitColorAndAlpha(rawPixels, info);
-
-        // Re-compress each plane with zlib (PDF FlateDecode = zlib).
         var colorCompressed = ZlibCompress(colorPlane);
         var alphaCompressed = ZlibCompress(alphaPlane);
 
-        // Build the SMask first so we can reference its in-process Pdf object from /SMask.
         var smask = BuildSimpleImageStream(
-            width: info.Width,
-            height: info.Height,
-            bitsPerComponent: 8,
-            colorSpace: PdfNames.DeviceGray,
-            compressedBytes: alphaCompressed);
-
+            info.Width, info.Height, 8, PdfNames.DeviceGray, alphaCompressed);
         var image = BuildSimpleImageStream(
-            width: info.Width,
-            height: info.Height,
-            bitsPerComponent: 8,
-            colorSpace: info.ColorType == PngColorType.GrayscaleAlpha
-                ? PdfNames.DeviceGray
-                : PdfNames.DeviceRGB,
-            compressedBytes: colorCompressed);
-
-        // Wire /SMask reference via direct dictionary embedding. The serializer recursively
-        // emits the SMask stream as a child indirect object when the Image XObject is
-        // written; for now we embed it directly so the decoder result is structurally
-        // complete. The high-level builder chooses indirect vs inline based on document
-        // policy.
+            info.Width, info.Height, 8,
+            info.ColorType == PngColorType.GrayscaleAlpha ? PdfNames.DeviceGray : PdfNames.DeviceRGB,
+            colorCompressed);
         image.Dictionary.Set(PdfNames.SMask, smask);
+        return new() { Image = image, SMask = smask };
+    }
 
-        return new PngImageXObjectResult { Image = image, SMask = smask };
+    // ───── Path 4: indexed + non-binary tRNS → SMask ────────────────────────
+
+    private static PngImageXObjectResult BuildIndexedTrnsSMaskSplit(PngImageInfo info)
+    {
+        // Indexed images with a tRNS that contains intermediate alpha values (1..254)
+        // can't be expressed as a color-key /Mask. We must materialize a per-pixel alpha
+        // plane by mapping each pixel index through the tRNS array.
+        if (info.BitDepth != 8)
+        {
+            // Sub-byte indexed pixels need bit-level demuxing for the index → alpha
+            // lookup. Phase 1 covers 8-bit indexed only.
+            throw new NotSupportedException(
+                $"PNG: {info.BitDepth}-bit indexed PNG with non-binary tRNS is not supported in Phase 1; re-save at 8-bit indexed or convert to RGBA.");
+        }
+
+        var expectedFilteredSize = checked((long)info.Height * (1L + info.ScanlineByteWidth));
+        if (expectedFilteredSize > int.MaxValue)
+        {
+            throw new InvalidDataException(
+                $"PNG: declared image is too large for in-memory decode ({expectedFilteredSize} bytes).");
+        }
+        var rawFiltered = ZlibDecompressBounded(info.CompressedIdatBytes.Span, (int)expectedFilteredSize);
+        var rawPixels = PngFilterReverser.Reverse(
+            rawFiltered, info.Height, info.ScanlineByteWidth, info.BytesPerPixelForFilter);
+
+        var totalPixels = info.Width * info.Height;
+        var alpha = new byte[totalPixels];
+        var trns = info.TransparencyChunk!;
+        for (var i = 0; i < totalPixels; i++)
+        {
+            var idx = rawPixels[i];
+            alpha[i] = idx < trns.Length ? trns[idx] : (byte)255;
+        }
+        var alphaCompressed = ZlibCompress(alpha);
+        var smask = BuildSimpleImageStream(info.Width, info.Height, 8, PdfNames.DeviceGray, alphaCompressed);
+
+        // Color image stays as opaque-passthrough indexed.
+        var image = BuildOpaqueImageStream(info, mask: null);
+        image.Dictionary.Set(PdfNames.SMask, smask);
+        return new() { Image = image, SMask = smask };
     }
 
     private static PdfStream BuildSimpleImageStream(int width, int height, int bitsPerComponent, PdfName colorSpace, byte[] compressedBytes)
@@ -180,13 +281,10 @@ internal static class PngImageXObject
 
     private static (byte[] Color, byte[] Alpha) SplitColorAndAlpha(byte[] rawPixels, PngImageInfo info)
     {
-        // For 8-bit alpha types: GA = (G, A) per pixel; RGBA = (R, G, B, A) per pixel.
         var totalPixels = info.Width * info.Height;
-        var colorChannels = info.ColorComponents; // 1 for GA, 3 for RGBA
+        var colorChannels = info.ColorComponents;
         var color = new byte[totalPixels * colorChannels];
         var alpha = new byte[totalPixels];
-
-        // Source layout: rawPixels has stride = width × channels (color + alpha) per row.
         var srcStride = info.Width * info.Channels;
         var dstColorStride = info.Width * colorChannels;
 
@@ -195,12 +293,10 @@ internal static class PngImageXObject
             var srcRow = rawPixels.AsSpan(y * srcStride, srcStride);
             var dstColorRow = color.AsSpan(y * dstColorStride, dstColorStride);
             var dstAlphaRow = alpha.AsSpan(y * info.Width, info.Width);
-
             for (var x = 0; x < info.Width; x++)
             {
                 var srcPix = srcRow.Slice(x * info.Channels, info.Channels);
                 var dstColorPix = dstColorRow.Slice(x * colorChannels, colorChannels);
-                // First N bytes are color, last byte is alpha.
                 srcPix[..colorChannels].CopyTo(dstColorPix);
                 dstAlphaRow[x] = srcPix[colorChannels];
             }
@@ -208,13 +304,46 @@ internal static class PngImageXObject
         return (color, alpha);
     }
 
-    private static byte[] ZlibDecompress(ReadOnlySpan<byte> compressed)
+    private static byte[] ZlibDecompressBounded(ReadOnlySpan<byte> compressed, int expectedSize)
     {
-        using var input = new MemoryStream(compressed.ToArray(), writable: false);
-        using var zlib = new ZLibStream(input, CompressionMode.Decompress);
-        using var output = new MemoryStream();
-        zlib.CopyTo(output);
-        return output.ToArray();
+        // Bounded decompression — protects against zlib-bomb inputs by capping the
+        // output buffer at expectedSize and probing for one extra byte. Any
+        // decompressor exception is wrapped as InvalidDataException so the failure
+        // contract matches the rest of the parser.
+        try
+        {
+            using var input = new MemoryStream(compressed.ToArray(), writable: false);
+            using var zlib = new ZLibStream(input, CompressionMode.Decompress, leaveOpen: false);
+            var buffer = new byte[expectedSize];
+            var read = 0;
+            while (read < expectedSize)
+            {
+                var n = zlib.Read(buffer, read, expectedSize - read);
+                if (n == 0) break;
+                read += n;
+            }
+            Span<byte> overflowProbe = stackalloc byte[1];
+            if (zlib.Read(overflowProbe) != 0)
+            {
+                throw new InvalidDataException(
+                    $"PNG: decompressed image data exceeds expected size ({expectedSize} bytes) — possible decompression-bomb input.");
+            }
+            if (read != expectedSize)
+            {
+                throw new InvalidDataException(
+                    $"PNG: decompressed image data is short — got {read} bytes, expected {expectedSize}.");
+            }
+            return buffer;
+        }
+        catch (InvalidDataException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            throw new InvalidDataException(
+                $"PNG: zlib decompression of IDAT failed: {ex.Message}", ex);
+        }
     }
 
     private static byte[] ZlibCompress(byte[] raw)

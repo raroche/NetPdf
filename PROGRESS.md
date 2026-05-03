@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-02 (Task 15 review cycle ✅ — span-based hot-path lookups, validation, TeX inline comments, malformed-token normalization)
+**Last updated:** 2026-05-02 (Task 16 follow-up review ✅ — spec-accurate tiered matcher + concurrency-safe dispose + public-surface refinements)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -40,7 +40,7 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
 - **Doc:** [`docs/phases/phase-1-pdf-writer-and-text.md`](docs/phases/phase-1-pdf-writer-and-text.md)
 
 ### Active task
-**Task 16 — Font registry + cross-platform system font enumeration** (next). Tasks 12 / 13 / 14.1 / 15 are complete; UAX #9, #14, and #29 (grapheme stage) all pass at 100% / 99.952% / 100% UCD conformance respectively, and Liang hyphenation now ships with the canonical en-us pattern set bundled as an embedded resource. Stage 14.2 (word boundaries) and 14.3 (sentence boundaries) remain post-Phase-1.
+**Task 17 — WOFF decoder** (next). Tasks 12 / 13 / 14.1 / 15 / 16 are complete: UAX #9 / #14 / #29 (grapheme stage) at 100% / 99.952% / 100% UCD conformance, Liang en-us hyphenation bundled, font registry + per-platform system font enumeration in place with public `SystemFontResolver` implementing `IFontResolver`. Stage 14.2 (word boundaries) and 14.3 (sentence boundaries) remain post-Phase-1.
 
 ### Subtasks completed
 
@@ -496,6 +496,62 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
   - **Deferred (review #7)**: dedicated benchmark fixture for long-words / many-words layout load. Lands when the BenchmarkDotNet baseline task (Phase 1, Task 25) is wired up; the data-flow shape is now allocation-free so the benchmark will measure pure algorithm cost.
   - 15 new tests.
   - Total tests: **1145 unit / 1156 solution-wide passing**.
+
+- **Task 16 — Font registry + cross-platform system font enumeration** ✅ (2026-05-02)
+  - **`FontMetadata` + `FontFace`** under `src/NetPdf.Text/Fonts/` — `FontMetadata.Extract` reads the `name` table (preferring OpenType nameID 16 / 17 "Typographic Family / Subfamily" with fallback to nameID 1 / 2), the `OS/2.usWeightClass` (1..1000 CSS weight, with auto-rescale of legacy 1..9 values), `OS/2.usWidthClass` (1..9 stretch, clamped), and the italic/oblique/bold flags from `OS/2.fsSelection` (bits 0/9/5) with `head.macStyle` fallback. `FontFace` is a thread-safe wrapper around `OpenTypeFont` + `FontMetadata` + a per-face used-glyph `BitArray` for subsetting (.notdef glyph implicitly marked at construction).
+  - **`FontCache`** — process-wide LRU keyed by source path → font bytes. The cache stores byte arrays not `FontFace` instances so each document gets its own subset-state (mutating one document's used-glyph bitmap can never leak into another). Coarse lock; loader runs outside the lock so a slow disk read does not block other callers; recheck-after-load handles concurrent miss races. Default capacity 64.
+  - **`FontRegistry`** — per-document map from (family + weight + italic) to `FontFace`. Case-insensitive on family per CSS rules. Re-register replaces; the displaced face is not disposed. `Faces` returns a snapshot safe to iterate concurrently with subsequent registrations. Implements `IDisposable`.
+  - **`SystemFontEnumerator` + per-platform subclasses** under `src/NetPdf.Text/Fonts/SystemFonts/` —
+    - `MacOsSystemFontEnumerator`: `/System/Library/Fonts`, `/Library/Fonts`, `~/Library/Fonts` (recursive — recent macOS uses `Supplemental` and `Disabled` subfolders).
+    - `WindowsSystemFontEnumerator`: `%WINDIR%\Fonts` + per-user `%LOCALAPPDATA%\Microsoft\Windows\Fonts` (Windows 10 1809+).
+    - `LinuxSystemFontEnumerator`: `/usr/share/fonts`, `/usr/local/share/fonts`, `~/.fonts`, `~/.local/share/fonts`, plus `XDG_DATA_HOME` override. Alpine / musl handled by the same enumerator.
+    - Base `SystemFontEnumerator.Enumerate()` walks each directory recursively, parses every `.ttf` / `.otf` it can open, and yields a `SystemFontEntry` per successfully-extracted face. Files that fail (permissions, malformed, unsupported `.ttc` / `.otc` collections) are skipped silently — a single corrupt font does not break enumeration of every other font. `CreateForCurrentPlatform` returns the right subclass via `RuntimeInformation.IsOSPlatform`.
+  - **`SystemFontIndex`** — searchable in-memory index keyed case-insensitively by family. `FindBest(family, weightCss, italic)` follows CSS Fonts Level 4 §5.2 in spirit: italic mismatch is the dominant penalty (10,000) so an italic-correct candidate wins over an italic-mismatched one regardless of weight delta; weight is scored by absolute distance with a small asymmetric tilt (when request < 400 prefer lighter on ties, when ≥ 400 prefer heavier). Lazy-initialized `Lazy<T>` so tests / programs that never resolve a font pay nothing.
+  - **Public `SystemFontResolver : IFontResolver`** in `src/NetPdf/Fonts/` — the bridge to the consumer-facing API. Direct family lookups are O(1); CSS-generic family names (`serif`, `sans-serif`, `monospace`, `cursive`, `fantasy`, `system-ui`) walk a per-platform fallback chain (`Times New Roman` → `Liberation Serif` → `DejaVu Serif` → `Noto Serif`, etc.). Returns `FontFaceData` with `Bytes` from the `FontCache` to avoid re-reading the same TTF for multiple documents.
+  - **Granular tests** — 47 new tests:
+    - `FontCacheTests` (7): capacity validation, miss-loader / hit-cache, LRU eviction, Remove, Clear, null-arg.
+    - `FontFaceTests` (8): real-font round-trip, .notdef pinned, MarkGlyphUsed/IsGlyphUsed, out-of-range marks ignored, GetUsedGlyphIds sorted snapshot, null-arg, Dispose idempotent.
+    - `FontRegistryTests` (9): empty state, register-then-lookup, case-insensitivity, distinct (weight, italic) keys, replace-on-register, Faces snapshot, Dispose blocks further registers, null-arg.
+    - `SystemFontIndexTests` (9): Build groups by family case-insensitively, exact-match wins, italic dominance, asymmetric weight tilt below/above 400, unknown family null, empty-family entries skipped, null-arg.
+    - `SystemFontResolverTests` (11): direct hit, CSS-generic chain (serif/sans-serif/monospace), chain picks first present, italic propagation, oblique-as-italic, unknown family null, empty index null, ResolveAsync null safety, cancellation propagation.
+    - `SystemFontEnumeratorTests` (3): factory non-null, smoke enumeration produces well-formed entries on a host with any fonts.
+  - **Test discipline**: real-byte tests use `RealFontFinder` to discover any usable host TTF and early-return on hosts with none — keeps CI green across Linux/macOS/Windows builders without bundling a license-encumbered fixture font. Pure-logic tests (`FontCache`, `SystemFontIndex`, `SystemFontResolver`) use synthetic `SystemFontEntry` records and exercise full coverage independent of the host.
+  - 47 new tests.
+  - Total tests: **1191 unit / 1202 solution-wide passing**.
+
+- **Post-Task-16 review cycle — CSS Fonts 4 §5.2 stretch axis end-to-end + trust-boundary hardening** ✅ (2026-05-02) — twenty-first review-driven round, focused on closing the end-to-end behavioral gap on `font-stretch` (publicly exposed but ignored by the matcher and dropped by the registry) and tightening four other contract footguns the reviewer surfaced.
+  - **Stretch axis wired through every layer (P1 + P2)**: per CSS Fonts Module Level 4 §5.2 the matching algorithm is `font-stretch → font-style → font-weight` — stretch is the dominant axis, not unused.
+    - `SystemFontIndex.FindBest` now takes `stretchCss` and applies a true lexicographic penalty (stretch × 100,000 → style × 10,000 → weight × 2 + tilt). Includes the spec's directional tilt: requests ≤ 5 prefer narrower on stretch ties; requests > 5 prefer wider.
+    - `FontRegistry` adds `StretchCss` to its (family, weight, italic) composite key — same family + weight + italic but different stretch are now separate registrations.
+    - `SystemFontResolver.ResolveEntry` propagates `FontQuery.StretchCss` through to the matcher with a default of 5 (CSS normal width) when the query omits it.
+  - **Malformed weight clamping (P6)**: `FontMetadata.Extract` now normalizes `OS/2.usWeightClass` values 0 or > 1000 to 400 (CSS normal). Legacy 1..9 values continue to scale to 100..900. Documented as a trust-boundary cleanup — malformed-font weights cannot leak into the matcher.
+  - **`FontFace.Dispose` contract hardened (P5)**: `Dispose` is now real, not advisory. Mutating / enumerating methods (`MarkGlyphUsed`, `IsGlyphUsed`, `GetUsedGlyphIds`) throw `ObjectDisposedException` post-disposal. Pure metadata properties (`Font`, `Metadata`, `Source`, `GlyphCount`) remain readable so logging / diagnostic paths still describe the face after release. Disposal stays idempotent.
+  - **Italic-vs-oblique policy documented (P4)**: `FontMetadata` keeps `IsItalic` and `IsOblique` separate (preserves OpenType-level distinction), but `SystemFontEntry.IsItalic` deliberately collapses both into a single boolean for system-font matching. CSS Fonts 4 §5.2 explicitly permits this: "User agents may treat italic and oblique as synonyms when matching." Both XML doc-comments now spell out the policy.
+  - **Deferred (P7)**: cancellation-aware async file loading in `SystemFontResolver.ResolveAsync`. Reviewer notes this is fine for now; a refinement target if system-font resolution lands on a latency-sensitive path.
+  - **29 new tests** across:
+    - `SystemFontIndexTests` (6 review tests): exact stretch wins over weight-nearer wrong stretch, stretch dominates italic, narrow tilt for request ≤ 5, wide tilt for request > 5, same-stretch falls through to style/weight axes, default `stretchCss=5`.
+    - `SystemFontResolverTests` (3 review tests): direct family propagates stretch, CSS-generic chain propagates stretch, omitted `FontQuery.StretchCss` defaults to 5.
+    - `FontRegistryTests` (3 review tests): different stretches at same family+weight+italic are separate keys, default stretch is 5, stretch mismatch returns false.
+    - `FontFaceTests` (4 review tests): `MarkGlyphUsed` / `IsGlyphUsed` / `GetUsedGlyphIds` throw `ObjectDisposedException` post-dispose; metadata reads remain accessible.
+    - `FontMetadataWeightClampTests` (13 review tests, NEW class): synthesizes a TTF via `SyntheticFont` and rewrites `OS/2.usWeightClass` to test 0 → 400, > 1000 → 400, legacy 1..9 → 100..900 scaling, in-range pass-through, contract pin "always 1..1000".
+  - 29 new tests.
+  - Total tests: **1220 unit / 1231 solution-wide passing**.
+
+- **Post-Task-16 follow-up review — spec-accurate tiered matcher + concurrency-safe dispose + public-surface refinements** ✅ (2026-05-02) — twenty-second review-driven round. The first review cycle wired stretch through the API but the matcher itself was still a distance function; CSS Fonts 4 §5.2 actually defines an ordered direction-first search. This round closes that and four other public-surface gaps the reviewer flagged.
+  - **Spec-accurate matcher (P1 + P2)**: `SystemFontIndex.FindBest` is now a true tiered ordered search per CSS Fonts 4 §5.2.3 (stretch) and §5.2.4 (weight), not a distance function with directional tilt.
+    - Stretch: request ≤ 5 → tier 1 narrower-or-equal (descending), tier 2 wider (ascending). Request > 5 → tier 1 wider-or-equal (ascending), tier 2 narrower (descending). A same-direction candidate at distance 8 beats an opposite-direction candidate at distance 1.
+    - Weight: three regimes per spec — light (request < 400), normal (400-500), heavy (> 500), each with its own 2- or 3-tier ordering. Concrete cases the reviewer flagged that previous distance scoring got wrong: request 401 with candidates 399/500 → 500 wins (tier 1 in [401,500] ascending); request 700 with candidates 500/800 → 800 wins (tier 1 ≥ 700 ascending).
+    - Implementation: ordinal lexicographic ordering via penalty stacking with non-overlapping tier bands. Score = `stretch × 6002 + style × 3001 + weight` so a one-tier increment on a higher axis always dominates any combination of lower-axis values. Stretch ∈ [0, 200], style ∈ {0, 1}, weight ∈ [0, 3000].
+  - **`StretchCss` surfaced on public `FontFaceData` (P3)**: previously the resolver matched on stretch internally but the resolved value was not surfaced to consumers. New `int? StretchCss` property carries the chosen face's width (1..9, null = unspecified per CSS Fonts 4 §5.2.3 default) so callers using a custom `IFontResolver` see the same axis they queried with.
+  - **Concurrency-safe `FontFace.Dispose` (P4)**: the previous round's contract (post-dispose calls throw `ObjectDisposedException`) was correct for single-threaded use but had a race window — a thread could pass the disposed check OUTSIDE the lock, then a concurrent `Dispose` lands, then the first thread mutates state of an already-disposed face. Fixed by acquiring the glyph lock inside `Dispose` and re-checking `_disposed` INSIDE the lock in every public mutator. Result: every concurrent `MarkGlyphUsed` either completes cleanly OR throws `ObjectDisposedException`; no silent post-disposal mutation can occur.
+  - **Public API doc corrections (P5)**: `FontQuery.WeightCss` doc updated from "100..900" to "1..1000" (matches the matcher's actual contract). `FontQuery` class-level XML docs now spell out the italic-vs-oblique synonym-collapse policy of the default `SystemFontResolver` (CSS Fonts 4 §5.2 explicitly permits this) so consumers of the public API don't have to read internal metadata comments to discover it.
+  - **`StretchCss` clamping at resolver boundary (P6)**: `SystemFontResolver.ResolveEntry` now clamps explicit out-of-range `FontQuery.StretchCss` values to `[1, 9]` via `Math.Clamp`. Null still defaults to 5. Documented in both `FontQuery.StretchCss` and `SystemFontResolver.ResolveEntry` XML.
+  - **13 new tests** across:
+    - `SystemFontIndexTests` (7 review-follow-up tests): the four reviewer-flagged non-tie cases (stretch 4 / 1+5 → 1, stretch 7 / 6+9 → 9, weight 401 / 399+500 → 500, weight 350 / 300+600 → 300), plus weight 450 normal-regime tier-2 selection, plus stretch tier-2 fall-through both directions. Existing distance-tilt tests rewritten to spec-language (light/heavy regime tier 1).
+    - `SystemFontResolverTests` (5 review-follow-up tests, 1 `[Theory]` × 4 cases): `FontFaceData.StretchCss` surfacing through `ResolveAsync`, and `Math.Clamp(StretchCss, 1, 9)` for invalid -1 / 0 / 10 / 100 inputs.
+    - `FontFaceTests` (1 review-follow-up test): concurrent `MarkGlyphUsed` + `Dispose` over 50 trials with 4 worker threads; every call must either succeed or throw `ObjectDisposedException` — no `InvalidOperationException`, `NullReferenceException`, or other unexpected exception.
+  - 13 new tests.
+  - Total tests: **1233 unit / 1244 solution-wide passing**.
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

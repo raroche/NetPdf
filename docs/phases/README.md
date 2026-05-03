@@ -16,8 +16,8 @@ When starting a phase:
 | # | Doc | Status | Tagged release |
 |---|---|---|---|
 | **Phase 0** | [phase-0-architecture-lock.md](phase-0-architecture-lock.md) | ✅ done | `0.0.1-phase0` |
-| **Phase 1** | [phase-1-pdf-writer-and-text.md](phase-1-pdf-writer-and-text.md) | ⏳ next | `0.1.0-alpha` |
-| **Phase 2** | [phase-2-css-engine.md](phase-2-css-engine.md) | ⏳ pending | `0.3.0-alpha` |
+| **Phase 1** | [phase-1-pdf-writer-and-text.md](phase-1-pdf-writer-and-text.md) | ✅ done | `0.1.0-alpha` (2026-05-03) |
+| **Phase 2** | [phase-2-css-engine.md](phase-2-css-engine.md) | ⏳ next | `0.3.0-alpha` |
 | **Phase 3** | [phase-3-layout-and-pagination.md](phase-3-layout-and-pagination.md) | ⏳ pending | `0.7.0-beta` |
 | **Phase 4** | [phase-4-visual-parity.md](phase-4-visual-parity.md) | ⏳ pending | `0.9.0-rc1` |
 | **Phase 5** | [phase-5-packaging-and-release.md](phase-5-packaging-and-release.md) | ⏳ pending | `1.0.0` |

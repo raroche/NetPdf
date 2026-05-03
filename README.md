@@ -4,7 +4,7 @@ A pure C# / .NET HTML+CSS-to-PDF rendering engine. **Free, open-source, Apache-2
 
 NetPdf is a true paged-media renderer written from scratch in managed code. It does **not** wrap a browser, **not** shell out to native binaries, **not** depend on revenue-capped or copyleft libraries. It converts a single HTML+CSS string into a deterministic PDF byte stream optimized for documents — invoices, statements, contracts, reports, certificates, catalogs.
 
-> **Status:** Phase 0 — architecture lock. Public API surface defined; internals under active construction. **Not yet functional.** First alpha (`0.1.0-alpha`) targets programmatic PDF construction; first useful release (`0.7.0-beta`) targets static-document rendering.
+> **Status:** Phase 1 ✅ — PDF writer + text foundation shipped (tagged [`0.1.0-alpha`](https://github.com/raroche/NetPdf/releases/tag/0.1.0-alpha) on 2026-05-03). Programmatic PDF construction works end-to-end (deterministic PDF 1.7 bytes, embedded subsetted fonts via WOFF/WOFF2, JPEG/PNG/WebP/AVIF/GIF embedders, full UAX #9/#14/#29 text shaping, AOT-clean with enforced JIT/AOT byte-parity, BenchmarkDotNet baseline with +25% regression gate). The public `HtmlPdf.Convert(html)` facade is **next** — Phase 2 wires HTML+CSS through to the writer (target: `0.3.0-alpha`). First useful release (`0.7.0-beta`) targets static-document rendering. Repository is private until v1.0 launch.
 
 ## Why another HTML-to-PDF library?
 

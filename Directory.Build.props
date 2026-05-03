@@ -49,9 +49,17 @@
     <!-- README + tags. -->
     <PackageReadmeFile>README.md</PackageReadmeFile>
 
-    <!-- Versioning sourced from build/version.json. -->
-    <VersionPrefix>0.0.1</VersionPrefix>
-    <VersionSuffix>phase0</VersionSuffix>
+    <!--
+      Versioning. Directory.Build.props is the MSBuild source-of-truth — every
+      `dotnet pack` reads VersionPrefix/VersionSuffix from here. build/version.json
+      is a parallel informational copy (kept in sync manually) for tooling that
+      doesn't parse XML; if they ever disagree, this file wins for what NuGet
+      actually packs. Bump protocol: update BOTH files, commit, then `git tag`.
+      Phase 5 will introduce a small MSBuild task that reads version.json so
+      both surfaces have a single source.
+    -->
+    <VersionPrefix>0.1.0</VersionPrefix>
+    <VersionSuffix>alpha</VersionSuffix>
 
     <!-- Symbols & Source Link: enable source-stepping for downstream consumers. -->
     <IncludeSymbols>true</IncludeSymbols>

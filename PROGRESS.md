@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-02 (Task 21 follow-up review ✅ — pixel cap → 25 MP for whole-pipeline memory, HasAlpha contract, real AVIF fixture, end-to-end embed tests)
+**Last updated:** 2026-05-02 (Task 22 ✅ — `PdfDocument` high-level builder with page list, image dedup, metadata, deterministic output)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -40,7 +40,7 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
 - **Doc:** [`docs/phases/phase-1-pdf-writer-and-text.md`](docs/phases/phase-1-pdf-writer-and-text.md)
 
 ### Active task
-**Task 22 — `PdfDocument` high-level builder** (next). Tasks 12–21 complete: UAX #9/#14/#29 (grapheme stage) at 100%/99.952%/100% UCD conformance, Liang en-us hyphenation bundled, font registry + per-platform system font enumeration with public `SystemFontResolver` implementing `IFontResolver`, WOFF 1.0 + WOFF 2.0 (with glyf transform reversal) round-trip end-to-end, JPEG passthrough via DCTDecode, PNG (opaque passthrough + alpha-split SMask) via FlateDecode, WebP / AVIF / GIF via SkiaSharp decode + alpha-split SMask. Stage 14.2 (word boundaries) and 14.3 (sentence boundaries) remain post-Phase-1.
+**Task 23 — Determinism: byte-hash test harness** (next). Tasks 12–22 complete: UAX #9/#14/#29 (grapheme stage) at 100%/99.952%/100% UCD conformance, Liang en-us hyphenation, font registry + cross-platform system font enumeration, WOFF 1.0 + WOFF 2.0 round-trip end-to-end, JPEG/PNG/WebP/AVIF/GIF embedders, and the `PdfDocument` high-level builder that wires it all into a single Save() call. Stage 14.2 (word boundaries) and 14.3 (sentence boundaries) remain post-Phase-1.
 
 ### Subtasks completed
 

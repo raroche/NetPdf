@@ -101,6 +101,11 @@ internal static class PdfNames
     public static readonly PdfName Decode = new("Decode");
     public static readonly PdfName Intent = new("Intent");
 
+    // FlateDecode parameters (PDF 32000-2:2020 §7.4.4 Table 8).
+    public static readonly PdfName Predictor = new("Predictor");
+    public static readonly PdfName Columns = new("Columns");
+    public static readonly PdfName Colors = new("Colors");
+
     // Document metadata
     public static readonly PdfName Title = new("Title");
     public static readonly PdfName Author = new("Author");

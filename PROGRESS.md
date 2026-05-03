@@ -1,9 +1,9 @@
 # NetPdf — Progress Status
 
-**Current phase:** Phase 1 — PDF writer + text foundation
-**Tagged release:** `0.0.1-phase0` (Phase 0 complete)
-**Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-03 (Task 25 follow-up review ✅ — benchmark suite split per concern, +25%-tolerance regression gate (scripts/benchmark-gate.sh) with negative-path verified, PNG+WebP coverage added, dedup split into first-register/cache-hits/cache-miss, MaxXrefByteOffset overflow unit-tested, Workstation GC pinned, MinimalImageFixtures DRY'd into TestKit, R1 honesty rescope of "tiny synthetic fixtures" wording in docs)
+**Current phase:** Phase 2 — CSS engine + DOM pipeline (next)
+**Tagged release:** `0.1.0-alpha` (Phase 1 complete ✅)
+**Target next tag:** `0.3.0-alpha` (Phase 2 complete)
+**Last updated:** 2026-05-03 (Task 26 ✅ — Phase 1 closed: CHANGELOG written, `0.1.0-alpha` tagged, all 9 exit criteria green or explicitly deferred to Phase 5 with rationale)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -32,15 +32,44 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
 
 ---
 
-## Phase 1 — PDF writer + text foundation ⏳ In progress
+## Phase 1 — PDF writer + text foundation ✅ Complete
 
-- **Target tag:** `0.1.0-alpha`
-- **Started:** 2026-05-01
-- **Time estimate:** 4–6 weeks calendar (Claude Opus 4.7 high)
+- **Tagged:** `0.1.0-alpha`
+- **Completed:** 2026-05-03
+- **Time:** ~3 days calendar (Claude Opus 4.7 high; estimate was 4–6 weeks for solo dev — actual ~10× faster with daily Claude collaboration)
 - **Doc:** [`docs/phases/phase-1-pdf-writer-and-text.md`](docs/phases/phase-1-pdf-writer-and-text.md)
+- **CHANGELOG entry:** [CHANGELOG.md#010-alpha--2026-05-03](CHANGELOG.md)
 
-### Active task
-**Task 26 — Tag `0.1.0-alpha` + update CHANGELOG** (next, final Phase 1 task). Tasks 12–25 complete: UAX #9/#14/#29 (grapheme stage) at 100%/99.952%/100% UCD conformance, Liang en-us hyphenation, font registry + cross-platform system font enumeration, WOFF 1.0 + WOFF 2.0 round-trip end-to-end, JPEG/PNG/WebP/AVIF/GIF embedders, the `PdfDocument` high-level builder, a determinism harness covering 18 document shapes with per-platform pinned hashes, an AOT-published native smoke binary with an enforced JIT/AOT parity gate, and a BenchmarkDotNet baseline that puts every Phase 1 target at ≥1,870× headroom with linear memory scaling. Stage 14.2 (word boundaries) and 14.3 (sentence boundaries) remain post-Phase-1.
+### What was done
+Programmatic PDF generation works end-to-end. NetPdf can produce well-formed, byte-deterministic PDF 1.7 bytes from internal `PdfDocument` calls — the byte writer, OpenType font subsetting + ToUnicode CMap, WOFF 1.0 / 2.0 decoders, JPEG / PNG / WebP / AVIF / GIF image embedders with content-hash dedup and indirect `/SMask` wiring, full Bidi (UAX #9) / Line break (UAX #14) / grapheme cluster (UAX #29) text shaping, the determinism harness with per-platform pin map, the AOT-clean native smoke binary with enforced JIT/AOT byte-parity gate, and the BenchmarkDotNet baseline with +25%-tolerance regression gate. Public `HtmlPdf.Convert(html)` still throws `NotImplementedException` — that wires up in Phase 2.
+
+### Phase 1 exit criteria
+1. ✅ All Phase 1 task tests pass — **1546 unit / 1557 solution-wide passing**.
+2. ✅ UCD reference tests pass: UAX #9 **100%**, UAX #14 **99.952%**, UAX #29 grapheme stage **100%**.
+3. ✅ Byte-determinism test passes — per-platform SHA-256 pin + 72 property tests.
+4. ✅ AOT smoke publishes and runs successfully on `osx-arm64` with enforced JIT/AOT byte-identity gate. Linux + Windows pinned in Phase 5 CI matrix.
+5. ✅ Programmatic `PdfDocument` construction produces valid PDF 1.7 bytes (verified via the AOT smoke output: 1791 bytes, opens in Acrobat / Firefox / Chrome / macOS Preview).
+6. ⏸️ qpdf `--check` deferred to Phase 5 CI (qpdf not yet a local dev dep; Phase 5 wires it into the cross-platform validation matrix).
+7. ✅ Roboto-Regular WOFF 2.0 loads, subsets, and embeds end-to-end.
+8. ✅ Performance baseline meets target — 100-page < 500 ms target = 264.7 µs actual ≈ **~1,890× headroom**; memory linear at 2.46 KB/page across 4 orders of magnitude.
+9. ✅ CHANGELOG updated, `0.1.0-alpha` tagged.
+
+### What's next
+Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).
+
+### How to verify the Phase 1 baseline
+```bash
+# Solution-wide tests pass (1546 unit / 1557 total).
+dotnet test NetPdf.slnx -c Release --nologo
+
+# AOT smoke publishes and runs; native binary produces byte-identical output to JIT.
+./scripts/aot-parity.sh
+
+# Performance regression gate: full benchmark suite + +25% tolerance check.
+./scripts/benchmark-gate.sh
+```
+
+### Subtasks completed
 
 ### Subtasks completed
 
@@ -701,11 +730,12 @@ dotnet test tests/NetPdf.UnitTests/NetPdf.UnitTests.csproj -c Release \
 
 ---
 
-## Phase 2 — CSS engine + DOM pipeline ⏸️ Not started
+## Phase 2 — CSS engine + DOM pipeline ⏳ Next
 
 - **Target tag:** `0.3.0-alpha`
-- **Time estimate:** 2–3 weeks
+- **Time estimate:** 2–3 weeks calendar (Claude Opus 4.7 high)
 - **Doc:** [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md)
+- **Entry condition:** Phase 1 complete with `0.1.0-alpha` tagged. Public `HtmlPdf.Convert(html)` currently throws `NotImplementedException` — Phase 2 wires AngleSharp HTML parsing + AngleSharp.Css cascade adapter + `ComputedStyle` + box-tree generation through to the existing Phase 1 byte writer.
 
 ## Phase 3 — Fragmentainer-aware layout + pagination ⏸️ Not started
 

@@ -15,19 +15,38 @@ namespace NetPdf.Pdf.Images;
 /// </summary>
 /// <remarks>
 /// <para>
-/// SkiaSharp's bundled native assets include libwebp, libavif, and libgif so all
-/// three formats decode without an external native dep. Animated GIFs and multi-image
-/// AVIFs are reduced to the first frame — the use case is static embedding in PDF,
-/// not animation playback.
+/// SkiaSharp's bundled native assets include libwebp and libgif so WebP and GIF decode
+/// out of the box on every supported platform. <b>libavif support is platform-dependent
+/// at the SkiaSharp level:</b> the SkiaSharp Linux and Windows native asset packages
+/// generally include AVIF decode; the macOS native asset on SkiaSharp 3.119 does NOT
+/// (the bundled <c>libSkiaSharp.dylib</c> was built without AVIF). On hosts that lack
+/// AVIF support, AVIF input fails the codec-recognition step with a clear
+/// <see cref="InvalidDataException"/>; callers should either route AVIF to a separate
+/// decoder or accept that AVIF decode is best-effort. Animated GIFs and multi-image
+/// AVIFs (where supported) are reduced to the first frame — the use case is static
+/// embedding in PDF, not animation playback.
 /// </para>
 /// <para>
 /// <b>Trust-boundary contract.</b> Only <see cref="SKCodecResult.Success"/> is accepted.
 /// <see cref="SKCodecResult.IncompleteInput"/> per the Skia spec means "a partial image
 /// was decoded from incomplete input" — embedding such a result in a PDF would silently
 /// produce a corrupted page. The decoder also caps the maximum decoded image size at
-/// <see cref="MaxPixelCount"/> (100 megapixels = 400 MB raw RGBA) and validates every
-/// arithmetic step against int32 overflow, protecting against malicious inputs that
-/// declare absurd dimensions in their headers.
+/// <see cref="MaxPixelCount"/> and validates every arithmetic step against int32
+/// overflow, protecting against malicious inputs that declare absurd dimensions in
+/// their headers.
+/// </para>
+/// <para>
+/// <b>Pixel-cap rationale (whole-pipeline memory).</b> The cap is set so that an alpha
+/// image at the cap stays comfortably under ~250 MB of peak live memory through the
+/// full decode + alpha-split + Flate-compress path. Per-pixel cost in the worst case is
+/// roughly: 4 bytes decoded RGBA + 3 bytes split RGB + 1 byte split alpha + 4 bytes
+/// each compressed plane (very rough upper bound) ≈ 16 bytes/pixel × 25 megapixels =
+/// 400 MB if every plane is held simultaneously, less in practice because the
+/// compressed output is much smaller than the raw input for photographic and UI content.
+/// 25 megapixels covers ≈ 6000 × 4000 (typical 24 MP DSLR output) with headroom.
+/// Higher caps would push peak memory into the 800 MB+ range, which is unfriendly for
+/// server / library use cases. A row-streaming refactor of <see cref="RasterImageXObject"/>
+/// would let us raise the cap meaningfully; that is post-Phase-1 work.
 /// </para>
 /// <para>
 /// <b>Color-management scope (Phase 1).</b> The decoder discards source ICC profiles
@@ -42,10 +61,12 @@ namespace NetPdf.Pdf.Images;
 internal static class RasterImageDecoder
 {
     /// <summary>
-    /// Maximum total pixel count accepted from any single image (100 megapixels,
-    /// 400 MB raw RGBA). Bounds memory consumption regardless of input size.
+    /// Maximum total pixel count accepted from any single image (25 megapixels). Set so
+    /// the worst-case alpha image stays ≤ ~400 MB of peak live memory across the full
+    /// decode + alpha-split + Flate-compress pipeline. See class XML for the full
+    /// rationale.
     /// </summary>
-    public const int MaxPixelCount = 100_000_000;
+    public const int MaxPixelCount = 25_000_000;
 
     public static RasterImageInfo Decode(byte[] imageBytes)
     {

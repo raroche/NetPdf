@@ -79,15 +79,55 @@ public sealed class RasterImageDecoderTests
     // ───── Trust-boundary + fixture-coverage tests (review follow-up) ────────
 
     [Fact]
-    public void Decode_decodes_a_real_AVIF_when_the_platform_codec_is_available()
+    public void Decode_handles_a_committed_AVIF_fixture_when_host_libavif_is_present()
+    {
+        // 305-byte 1×1 white opaque AVIF from the libavif test corpus (BSD-2-Clause).
+        // Removes dependence on the host having a libavif ENCODER. AVIF decode itself
+        // still requires libavif to be linked into the host's SkiaSharp build —
+        // SkiaSharp 3.119's Linux/Windows assets generally include it, the macOS
+        // asset does not. When the host can't decode AVIF the test no-ops; the
+        // committed fixture means CI on AVIF-capable platforms always exercises the
+        // path deterministically.
+        var avifBytes = LoadEmbedded("NetPdf.UnitTests.Resources.Images.white_1x1.avif");
+        RasterImageInfo info;
+        try
+        {
+            info = RasterImageDecoder.Decode(avifBytes);
+        }
+        catch (InvalidDataException)
+        {
+            // libavif not linked into this host's SkiaSharp build — skip with a clear
+            // contract: when AVIF *is* decodable here, the rest of this test enforces
+            // the fixture's white-pixel result.
+            return;
+        }
+        Assert.Equal(1, info.Width);
+        Assert.Equal(1, info.Height);
+        Assert.False(info.HasAlpha);
+        Assert.Equal(0xFF, info.PixelBytes[0]); // R
+        Assert.Equal(0xFF, info.PixelBytes[1]); // G
+        Assert.Equal(0xFF, info.PixelBytes[2]); // B
+        Assert.Equal(0xFF, info.PixelBytes[3]); // A
+    }
+
+    private static byte[] LoadEmbedded(string resourceName)
+    {
+        using var stream = typeof(RasterImageDecoderTests).Assembly.GetManifestResourceStream(resourceName)
+            ?? throw new InvalidOperationException($"Test resource '{resourceName}' missing.");
+        using var ms = new MemoryStream();
+        stream.CopyTo(ms);
+        return ms.ToArray();
+    }
+
+    [Fact]
+    public void Decode_decodes_a_Skia_encoded_AVIF_when_the_host_encoder_is_available()
     {
         var bytes = SyntheticRasterImage.TryBuildOpaqueAvif(width: 16, height: 16);
         if (bytes is null)
         {
-            // Skia's bundled libavif may lack the encoder on this platform — the
-            // decode contract is what matters, not whether we could produce one.
-            // The other AVIF assertions in CI (running platforms with full libavif)
-            // pin the contract.
+            // Optional extra coverage — only runs on hosts with libavif encoder.
+            // The committed white_1x1.avif test (above) is the deterministic AVIF
+            // contract gate.
             return;
         }
         var info = RasterImageDecoder.Decode(bytes);

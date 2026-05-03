@@ -48,4 +48,15 @@
     <EmbeddedResource Include="Resources/Fonts/Roboto-Regular.woff2" />
   </ItemGroup>
 
+  <!--
+    A 1×1 white opaque AVIF (305 bytes) from the libavif test corpus
+    (https://github.com/AOMediaCodec/libavif/blob/main/tests/data/white_1x1.avif),
+    BSD-2-Clause licensed. Drives the end-to-end AVIF decode test independent of
+    whether the host SkiaSharp build includes the libavif encoder. See
+    THIRD-PARTY-NOTICES.md.
+  -->
+  <ItemGroup>
+    <EmbeddedResource Include="Resources/Images/white_1x1.avif" />
+  </ItemGroup>
+
 </Project>

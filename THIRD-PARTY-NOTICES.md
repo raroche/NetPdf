@@ -89,4 +89,13 @@ These are listed for transparency. They are referenced only by test projects und
 - **qpdf** (Apache-2.0, invoked as external binary in CI) — independent PDF validator.
 - **veraPDF** (GPL-3.0, invoked as external binary in CI for PDF/A validation) — never linked into runtime; CI tool only.
 
+### Test fixtures
+
+- **`tests/NetPdf.UnitTests/Resources/Images/white_1x1.avif`** — a 305-byte 1×1 white opaque AVIF from the libavif test corpus
+  ([github.com/AOMediaCodec/libavif/blob/main/tests/data/white_1x1.avif](https://github.com/AOMediaCodec/libavif/blob/main/tests/data/white_1x1.avif)),
+  Copyright 2019 Joe Drago, BSD-2-Clause. Used to drive end-to-end AVIF decode
+  tests without relying on the host SkiaSharp build to include the libavif
+  encoder. Bundled in test assets only; never shipped in the NetPdf runtime
+  package. BSD-2-Clause is compatible with Apache-2.0 redistribution.
+
 The GPL-3.0 license of veraPDF applies only to its own redistribution. Invoking it as an external command-line validator in CI does not impose any license obligation on NetPdf, which remains Apache-2.0 throughout.

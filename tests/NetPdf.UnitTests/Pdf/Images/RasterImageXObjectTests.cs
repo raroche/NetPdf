@@ -112,7 +112,7 @@ public sealed class RasterImageXObjectTests
     [Fact]
     public void Build_rejects_RasterImageInfo_exceeding_pixel_cap()
     {
-        // 20,000 × 20,000 = 400 megapixels — over the 100 megapixel cap.
+        // 20,000 × 20,000 = 400 megapixels — well over the 25 megapixel cap.
         var info = new RasterImageInfo
         {
             Width = 20_000,
@@ -121,5 +121,94 @@ public sealed class RasterImageXObjectTests
             PixelBytes = new byte[1], // any length; the dimension check fires first
         };
         Assert.Throws<InvalidDataException>(() => RasterImageXObject.Build(info));
+    }
+
+    // ───── End-to-end embed tests (review follow-up #4) ──────────────────────
+
+    [Fact]
+    public void Transparent_GIF_emits_DeviceRGB_image_plus_DeviceGray_SMask()
+    {
+        var bytes = SyntheticRasterImage.BuildTransparentGif();
+        var result = RasterImageXObject.Build(bytes);
+        // The 1×1 GIF marks palette index 0 transparent; decoded RGBA8888 will have
+        // α < 255 so the alpha-split path emits an SMask.
+        Assert.NotNull(result.SMask);
+        Assert.Equal("DeviceRGB", GetName(result.Image.Dictionary, PdfNames.ColorSpace)!.Value);
+        Assert.Equal("DeviceGray", GetName(result.SMask!.Dictionary, PdfNames.ColorSpace)!.Value);
+    }
+
+    [Fact]
+    public void Opaque_AVIF_emits_DeviceRGB_image_without_SMask_when_host_libavif_is_present()
+    {
+        // Bundled libavif test fixture (white_1x1.avif, 305 bytes, BSD-2-Clause).
+        // AVIF decode is host-dependent — see RasterImageDecoder XML. Skip cleanly on
+        // hosts where libavif isn't linked into SkiaSharp.
+        using var stream = typeof(RasterImageXObjectTests).Assembly
+            .GetManifestResourceStream("NetPdf.UnitTests.Resources.Images.white_1x1.avif")
+            ?? throw new InvalidOperationException("Test resource white_1x1.avif missing.");
+        using var ms = new MemoryStream();
+        stream.CopyTo(ms);
+
+        ImageXObjectResult result;
+        try
+        {
+            result = RasterImageXObject.Build(ms.ToArray());
+        }
+        catch (InvalidDataException)
+        {
+            return; // AVIF not decodable on this host — see RasterImageDecoder XML.
+        }
+        Assert.Null(result.SMask);
+        Assert.Equal(1, GetInt(result.Image.Dictionary, PdfNames.Width));
+        Assert.Equal(1, GetInt(result.Image.Dictionary, PdfNames.Height));
+        Assert.Equal("DeviceRGB", GetName(result.Image.Dictionary, PdfNames.ColorSpace)!.Value);
+    }
+
+    // ───── HasAlpha contract validation (review follow-up #2) ────────────────
+
+    [Fact]
+    public void Build_rejects_RasterImageInfo_with_HasAlpha_false_but_translucent_bytes()
+    {
+        // 4×1 RGBA buffer — 1 fully-opaque pixel + 3 with α=128.
+        var pixels = new byte[16];
+        for (var i = 0; i < 4; i++)
+        {
+            pixels[i * 4 + 0] = 0xFF;
+            pixels[i * 4 + 1] = 0xFF;
+            pixels[i * 4 + 2] = 0xFF;
+            pixels[i * 4 + 3] = i == 0 ? (byte)0xFF : (byte)0x80; // first opaque, rest translucent
+        }
+        var info = new RasterImageInfo
+        {
+            Width = 4,
+            Height = 1,
+            HasAlpha = false, // wrong — bytes have translucent alpha
+            PixelBytes = pixels,
+        };
+        var ex = Assert.Throws<InvalidDataException>(() => RasterImageXObject.Build(info));
+        Assert.Contains("HasAlpha=false", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Build_accepts_RasterImageInfo_with_HasAlpha_false_and_all_opaque_bytes()
+    {
+        // Same shape, all alpha = 255 — must succeed.
+        var pixels = new byte[16];
+        for (var i = 0; i < 4; i++)
+        {
+            pixels[i * 4 + 0] = 0xFF;
+            pixels[i * 4 + 1] = 0xFF;
+            pixels[i * 4 + 2] = 0xFF;
+            pixels[i * 4 + 3] = 0xFF;
+        }
+        var info = new RasterImageInfo
+        {
+            Width = 4,
+            Height = 1,
+            HasAlpha = false,
+            PixelBytes = pixels,
+        };
+        var result = RasterImageXObject.Build(info);
+        Assert.Null(result.SMask);
     }
 }

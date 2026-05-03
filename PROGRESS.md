@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-02 (Task 21 review cycle ✅ — Success-only decode, pixel-cap bounds, RasterImageInfo contract, color-management scope docs, AVIF/transparent-GIF/animated/truncated tests)
+**Last updated:** 2026-05-02 (Task 21 follow-up review ✅ — pixel cap → 25 MP for whole-pipeline memory, HasAlpha contract, real AVIF fixture, end-to-end embed tests)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 

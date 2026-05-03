@@ -36,6 +36,21 @@ internal static class RasterImageXObject
             throw new InvalidDataException(
                 $"Raster: PixelBytes length {info.PixelBytes.Length} does not match width × height × 4 ({expectedPixelByteCount}).");
         }
+        // Verify HasAlpha contract: when the caller declares the image opaque, every
+        // alpha byte must actually be 0xFF. A hand-built input that says HasAlpha=false
+        // but carries translucent pixel data would silently lose transparency in the
+        // emitted PDF. Cheap check (one pass over alpha bytes) gives a clean reject.
+        if (!info.HasAlpha)
+        {
+            for (var i = 3; i < info.PixelBytes.Length; i += 4)
+            {
+                if (info.PixelBytes[i] != 0xFF)
+                {
+                    throw new InvalidDataException(
+                        $"Raster: RasterImageInfo has HasAlpha=false but pixel buffer contains alpha={info.PixelBytes[i]} at byte offset {i}. Set HasAlpha=true so the SMask plane is emitted, or zero-fill non-opaque pixels before passing the buffer.");
+                }
+            }
+        }
         var rgb = new byte[totalPixels * 3];
         byte[]? alpha = info.HasAlpha ? new byte[totalPixels] : null;
 

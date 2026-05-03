@@ -24,6 +24,16 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.Playwright" />
+    <!--
+      SkiaSharp + native assets are needed for MinimalImageFixtures.EncodeOpaqueWebp
+      and future raster-fixture helpers. TestKit is a test-only library, so the Skia
+      native bundle is only ever loaded inside test/benchmark hosts — never shipped
+      in the NetPdf NuGet package.
+    -->
+    <PackageReference Include="SkiaSharp" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux" />
+    <PackageReference Include="SkiaSharp.NativeAssets.macOS" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Win32" />
   </ItemGroup>
 
 </Project>

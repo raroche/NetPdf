@@ -173,7 +173,18 @@ internal sealed class PdfDocumentWriter
         }
     }
 
-    private static void EnsureXrefOffsetFits(long offset)
+    /// <summary>
+    /// Validates that <paramref name="offset"/> fits in the 10-digit byte-offset field of
+    /// a classic xref entry per ISO 32000-2:2020 §7.5.4 (limit
+    /// <see cref="PdfFormat.MaxXrefByteOffset"/>). Files that would exceed the limit
+    /// require xref streams (PDF 1.5+).
+    /// </summary>
+    /// <remarks>
+    /// Internal so unit tests can validate the boundary directly without driving the
+    /// writer with a 10 GB synthetic body. The check fires from the per-object loop and
+    /// from the xref-start position check; both call sites use this helper.
+    /// </remarks>
+    internal static void EnsureXrefOffsetFits(long offset)
     {
         if (offset > PdfFormat.MaxXrefByteOffset)
         {

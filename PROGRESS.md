@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-03 (Task 25 ✅ — BenchmarkDotNet baseline established for Phase 1 byte-writer surface: 7 benchmarks × 3 page counts = 21 runs, all targets crushed (1,870×–27,000× headroom), memory linearity confirmed at ~2.45 KB/page; numbers and run protocol pinned in docs/design/performance.md)
+**Last updated:** 2026-05-03 (Task 25 follow-up review ✅ — benchmark suite split per concern, +25%-tolerance regression gate (scripts/benchmark-gate.sh) with negative-path verified, PNG+WebP coverage added, dedup split into first-register/cache-hits/cache-miss, MaxXrefByteOffset overflow unit-tested, Workstation GC pinned, MinimalImageFixtures DRY'd into TestKit, R1 honesty rescope of "tiny synthetic fixtures" wording in docs)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -651,6 +651,35 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
   - **`docs/design/performance.md`** (new) — publishes the targets, the captured numbers, the targets-vs-actual headroom table, the run protocol (inner loop / full suite / CI gate), the re-baseline protocol (don't update silently — write down WHY), and a comparison with the wkhtmltopdf / Chromium-print / PDFsharp ecosystem so the numbers have context.
   - **No new unit tests** — benchmarks are themselves the regression net. BenchmarkDotNet's standard artifacts (Markdown / HTML / CSV) land in `BenchmarkDotNet.Artifacts/` per run; the README table is the human-facing pin.
   - Total tests unchanged: **1542 unit / 1553 solution-wide passing**.
+
+- **Task 25 follow-up review — benchmark suite split + regression gate enforced + PNG/WebP coverage + DRY fixtures + R1 rescoping** ✅ (2026-05-03) — the original Task 25 baseline was correctly captured but had several shortcomings caught in review: the class-level `[Params]` ran each non-parameterized benchmark 3× wasting ~60% of suite time; the dedup benchmark mixed "first register + Save" with "cache-hit" so the per-call claim was inferred; "well-formed PDF" structural sanity around xref byte-offset overflow was uncovered by tests; and the published numbers were not enforced as a contract. All addressed.
+  - **Benchmark suite split per SRP** into 6 classes:
+    - `PageScalingBenchmarks` ([Params(1, 10, 100, 1000)] PageCount; 4× the old span — confirms O(N) across 4 orders of magnitude).
+    - `SinglePageBenchmarks` (3 fixed-shape methods, BlankSinglePage marked as BDN Baseline).
+    - `ImageEmbeddingBenchmarks` (6 methods: JPEG, opaque PNG, indexed PNG with binary tRNS, RGBA PNG with SMask, opaque WebP via raster, transparent GIF via raster).
+    - `DedupBenchmarks` (3 methods: FirstRegistration_AndSave, CacheHits_Isolated via `[OperationsPerInvoke = 99]` + `[IterationSetup]`, CacheMisses_100UniqueImages — 100 distinct JPEGs registered).
+    - `StreamingBenchmarks` (Save vs SaveTo(IBufferWriter<byte>) — proves SaveTo is competitive in wall-clock).
+    - `MixedDocumentBenchmark` (renamed from "canonical" to be honest: JPEG + 3 PNG variants + WebP + transparent GIF on 2 pages — exercises every Image XObject branch in one pass).
+  - **Workstation GC pinned** in `NetPdf.Benchmarks.csproj` (`<ServerGarbageCollection>false</ServerGarbageCollection>`) — Server GC (CI default) would invalidate the per-platform pin via different allocation/timing profiles. Documented in performance.md.
+  - **`warmupCount=5 iterationCount=10`** (up from 3/5) — cuts noise margins from 28% (the old canonical's 1-page measurement was unusable) to <5% across the suite.
+  - **`tests/NetPdf.TestKit/MinimalImageFixtures.cs` + `MinimalPngFixtures.cs`** as DRY source for hand-crafted JPEG/GIF + Skia-encoded WebP/RGBA WebP + 3 hand-crafted PNG shapes (RGB8, RGBA8, indexed8 with binary tRNS — full IEEE 802.3 CRC-32 + ZLibStream IDAT). TestKit gains a SkiaSharp dep (test-only library, never shipped). NetPdf.Benchmarks consumes TestKit; AotSmoke keeps its inline fixtures (avoiding TestKit's Playwright transitive dep in the AOT image — explicit trade-off documented).
+  - **Regression gate** in `scripts/benchmark-gate.sh`: runs full suite → exports JSON → invokes the new `--compare BASELINE-DIR CURRENT-DIR [tolerance]` mode of `Program.cs` → asserts every benchmark's Mean is within +25% of baseline. Exit code 0/1/2. Negative-path verified: synthetically halved one baseline value, gate correctly reported `BlankSinglePage 2.8 us → 5.6 us 2.00× FAIL` and exited 1. The gate has teeth, not just procedure. Local re-baseline via `./scripts/benchmark-gate.sh capture`.
+  - **Per-platform pinned baseline JSONs** committed at `tests/NetPdf.Benchmarks/baselines/phase-1-osx-arm64/` (one per benchmark class, BDN's `*-report-full-compressed.json` format). When new platforms are pinned (Phase 5), each gets its own subdirectory keyed by `os-arch`. Script auto-detects the running platform via `uname`.
+  - **`MaxXrefByteOffset` overflow unit test** (`tests/NetPdf.UnitTests/Pdf/PdfXrefOffsetLimitTests.cs`, 4 tests): boundary check at 0, exact-limit, +1 (must throw), 50 GB synthetic overflow (diagnostic message correctness). `EnsureXrefOffsetFits` bumped from `private` to `internal` for direct test access; documented as test-seam.
+  - **R1 honesty rescope** in `docs/design/performance.md`: published numbers now explicitly described as "tiny-fixture writer floors, not representative real-world image-embedding costs" with a paragraph explaining why a 4K photo measures very differently. Image-throughput characterization deferred to Phase 4+ corpus benchmark.
+  - **Phase 1 baseline expanded to 23 benchmarks (osx-arm64, Workstation GC, .NET 10.0.7)**:
+    - 1000-page blank: **2.59 ms**, 2.6 MB, 2.46 KB/page (linearity confirmed across 4 orders of magnitude).
+    - WebP opaque via raster: 19.0 µs.
+    - PNG RGBA with SMask: 19.1 µs.
+    - PNG indexed binary tRNS: 12.2 µs.
+    - PNG opaque RGB8: 10.9 µs.
+    - Cache-hit-isolated per call: **2.9 µs** (true per-call cost, not amortized).
+    - Cache-miss 100 unique: 325.7 µs.
+    - SaveTo streaming: 8.9 µs (3% faster wall-clock vs Save → byte[]).
+    - Mixed-doc multi-page: 67.1 µs.
+  - **All Phase 1 targets remain crushed**: 100-page-with-content 264.7 µs vs 500 ms target = ~1,890× headroom. Memory linearity confirmed.
+  - **6 new files** (PageScaling/SinglePage/ImageEmbedding/Dedup/Streaming/MixedDocument benchmarks); **2 new TestKit files** (MinimalImageFixtures, MinimalPngFixtures); **1 new unit test file** (PdfXrefOffsetLimitTests, 4 tests); **1 new script** (benchmark-gate.sh); **1 new baseline directory** (6 BDN JSON files committed).
+  - Total tests: **1546 unit / 1557 solution-wide passing** (+4 net new from xref overflow tests; benchmarks are themselves the regression net for the perf surface).
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

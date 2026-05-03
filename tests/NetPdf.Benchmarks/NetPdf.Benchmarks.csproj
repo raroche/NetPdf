@@ -17,6 +17,15 @@
     <IsPackable>false</IsPackable>
     <GenerateDocumentationFile>false</GenerateDocumentationFile>
     <IncludeSymbols>false</IncludeSymbols>
+    <!--
+      Pin Workstation GC + concurrent collection. The Phase 1 baseline numbers in
+      docs/design/performance.md were captured under Workstation GC; Server GC
+      (the .NET default for headless / containerized hosts) produces measurably
+      different allocation and timing profiles, which would invalidate the
+      committed baselines. Documented in performance.md.
+    -->
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <ConcurrentGarbageCollection>true</ConcurrentGarbageCollection>
   </PropertyGroup>
 
   <ItemGroup>
@@ -28,6 +37,13 @@
       InternalsVisibleTo("NetPdf.Benchmarks") for this.
     -->
     <ProjectReference Include="..\..\src\NetPdf.Pdf\NetPdf.Pdf.csproj" />
+    <!--
+      TestKit owns the shared minimal image fixtures (MinimalImageFixtures,
+      MinimalPngFixtures). Single source of truth for hand-crafted JPEG / GIF /
+      PNG bytes plus the SkiaSharp WebP encoder used by the raster benchmarks.
+      Replaces inline fixture duplication in PdfWriteBenchmarks.cs.
+    -->
+    <ProjectReference Include="..\NetPdf.TestKit\NetPdf.TestKit.csproj" />
   </ItemGroup>
 
   <ItemGroup>

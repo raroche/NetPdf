@@ -106,8 +106,10 @@ public sealed class PngImageXObjectTests
         Assert.Equal("FlateDecode", GetName(imgDict, PdfNames.Filter)!.Value);
         Assert.Null(imgDict.Get(PdfNames.DecodeParms));
 
-        // SMask referenced from /SMask key.
-        Assert.Same(result.SMask, imgDict.Get(PdfNames.SMask));
+        // /SMask wiring is deferred to PdfDocument.RegisterImage(ImageXObjectResult);
+        // the builder no longer embeds the SMask as a direct stream in the image dict
+        // (ISO 32000-2 §11.6 requires /SMask to reference an indirect Image XObject).
+        Assert.Null(imgDict.Get(PdfNames.SMask));
 
         // SMask: DeviceGray, 8-bit, FlateDecode.
         var sm = result.SMask!.Dictionary;
@@ -209,7 +211,8 @@ public sealed class PngImageXObjectTests
         // Image still uses indexed passthrough; SMask provides per-pixel alpha.
         var d = result.Image.Dictionary;
         Assert.IsType<PdfArray>(d.Get(PdfNames.ColorSpace)); // /Indexed array
-        Assert.Same(result.SMask, d.Get(PdfNames.SMask));
+        // /SMask wiring deferred to PdfDocument.RegisterImage(ImageXObjectResult).
+        Assert.Null(d.Get(PdfNames.SMask));
         var sm = result.SMask!.Dictionary;
         Assert.Equal("DeviceGray", GetName(sm, PdfNames.ColorSpace)!.Value);
         Assert.Equal(8, GetInt(sm, PdfNames.BitsPerComponent));

@@ -73,7 +73,10 @@ internal static class RasterImageXObject
         }
         var alphaCompressed = ZlibCompress(alpha);
         var smask = BuildSimpleImageStream(info.Width, info.Height, 8, PdfNames.DeviceGray, alphaCompressed);
-        image.Dictionary.Set(PdfNames.SMask, smask);
+        // /SMask wiring is intentionally NOT set here: ISO 32000-2 §11.6 + §7.3.8 require
+        // the value of /SMask to reference an indirect Image XObject. The high-level
+        // PdfDocument.RegisterImage(ImageXObjectResult) path allocates indirect slots for
+        // both streams and writes /SMask as an indirect ref.
         return new() { Image = image, SMask = smask };
     }
 

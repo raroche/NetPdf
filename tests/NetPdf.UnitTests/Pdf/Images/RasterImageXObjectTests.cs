@@ -41,7 +41,8 @@ public sealed class RasterImageXObjectTests
         Assert.NotNull(result.SMask);
         var imgDict = result.Image.Dictionary;
         Assert.Equal("DeviceRGB", GetName(imgDict, PdfNames.ColorSpace)!.Value);
-        Assert.Same(result.SMask, imgDict.Get(PdfNames.SMask));
+        // /SMask wiring deferred to PdfDocument.RegisterImage(ImageXObjectResult).
+        Assert.Null(imgDict.Get(PdfNames.SMask));
 
         var sm = result.SMask!.Dictionary;
         Assert.Equal("DeviceGray", GetName(sm, PdfNames.ColorSpace)!.Value);

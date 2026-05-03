@@ -301,6 +301,56 @@ public sealed class PdfPreflightHardeningTests
         Assert.False(w.Trailer.ContainsKey(PdfNames.ID));
     }
 
+    // ------------------------------------------------------------- Nested direct stream rejection
+
+    [Fact]
+    public void Direct_stream_nested_inside_dictionary_is_rejected()
+    {
+        // ISO 32000-2 §7.3.8: streams shall be indirect objects. A PdfStream nested as a
+        // value inside another dict (rather than wrapped in IndirectObjectStore.Add) would
+        // produce malformed PDF bytes — preflight catches it.
+        var nestedStream = new PdfStream([0xDE, 0xAD]);
+        var w = new PdfDocumentWriter();
+        var catalog = new PdfDictionary()
+            .Set(PdfNames.Type, PdfNames.Catalog)
+            .Set(new PdfName("Metadata"), nestedStream); // /Metadata stream nested directly
+        w.Trailer.Set(PdfNames.Root, w.Objects.Add(catalog));
+
+        var ex = Assert.Throws<InvalidOperationException>(() => w.WriteTo(Buffer()));
+        Assert.Contains("nested", ex.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("indirect", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Direct_stream_nested_inside_array_is_rejected()
+    {
+        var nestedStream = new PdfStream([0xDE, 0xAD]);
+        var w = new PdfDocumentWriter();
+        var catalog = new PdfDictionary()
+            .Set(PdfNames.Type, PdfNames.Catalog)
+            .Set(PdfNames.Kids, new PdfArray().Add(nestedStream));
+        w.Trailer.Set(PdfNames.Root, w.Objects.Add(catalog));
+
+        Assert.Throws<InvalidOperationException>(() => w.WriteTo(Buffer()));
+    }
+
+    [Fact]
+    public void Stream_at_top_of_indirect_object_slot_is_allowed()
+    {
+        // The legitimate case: a PdfStream lives at the top level of an indirect-object
+        // slot. Other objects reference it via PdfIndirectRef. This must pass preflight.
+        var w = new PdfDocumentWriter();
+        var streamRef = w.Objects.Add(new PdfStream([1, 2, 3]));
+        var catalog = new PdfDictionary()
+            .Set(PdfNames.Type, PdfNames.Catalog)
+            .Set(new PdfName("Metadata"), streamRef);
+        w.Trailer.Set(PdfNames.Root, w.Objects.Add(catalog));
+
+        var buf = Buffer();
+        w.WriteTo(buf);
+        Assert.True(buf.WrittenCount > 0);
+    }
+
     // ------------------------------------------------------------------------------------
 
     private static PdfDocumentWriter MinimalWriter()

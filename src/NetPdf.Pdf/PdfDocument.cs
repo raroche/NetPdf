@@ -4,6 +4,7 @@
 using System.Buffers;
 using System.Globalization;
 using System.Security.Cryptography;
+using NetPdf.Pdf.Images;
 using NetPdf.Pdf.Objects;
 
 namespace NetPdf.Pdf;
@@ -28,9 +29,11 @@ namespace NetPdf.Pdf;
 /// <list type="bullet">
 ///   <item><see cref="PdfDocumentWriter"/> already pins object numbering by allocation
 ///         order and xref padding to a fixed format.</item>
-///   <item>The image cache deduplicates by SHA-256 of the stream payload — the same image
-///         used N times produces a single XObject regardless of how many pages reference
-///         it.</item>
+///   <item>The image cache deduplicates by SHA-256 of the stream payload <b>and</b> the
+///         stream dictionary's canonical bytes (and, for transparent images, the SMask
+///         bytes too) — the same image used N times produces a single XObject regardless
+///         of how many pages reference it; two identical-pixel buffers with different
+///         color spaces or filter params remain distinct.</item>
 ///   <item><see cref="CreationDate"/> / <see cref="ModDate"/> default to <c>null</c>;
 ///         when set, they are formatted via the ISO 32000 PDF date convention. Callers
 ///         that need bit-for-bit reproducibility leave them null.</item>
@@ -90,33 +93,130 @@ internal sealed class PdfDocument
     // ───── Image XObject registration with content-hash dedup ────────────────
 
     /// <summary>
-    /// Register an Image XObject stream with the document. Returns an indirect ref
-    /// usable in any page's <see cref="PdfPage.PlaceImage"/> call. If the same image
-    /// content has already been registered (byte-identical), the existing ref is
-    /// returned — N references to the same image produce a single XObject in the
-    /// emitted file.
+    /// Register an opaque Image XObject stream with the document. Returns an indirect ref
+    /// usable in any page's <see cref="PdfPage.PlaceImage"/> call. If a byte-identical
+    /// Image XObject (same payload <b>and</b> same dictionary) has already been
+    /// registered, the existing ref is returned — N references to the same image produce
+    /// a single XObject in the emitted file.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// For images that carry a soft mask (PNG with full alpha, raster RGBA), use the
+    /// <see cref="RegisterImage(ImageXObjectResult)"/> overload instead so the SMask
+    /// is allocated as its own indirect object and wired through the primary image's
+    /// <c>/SMask</c> entry. Passing a primary image with an inline SMask through this
+    /// overload would emit a malformed PDF (direct streams nested in dictionaries are
+    /// rejected by ISO 32000-2 §7.3.8).
+    /// </para>
+    /// </remarks>
     public PdfIndirectRef RegisterImage(PdfStream imageStream)
     {
         ArgumentNullException.ThrowIfNull(imageStream);
-        ThrowIfSaved();
+        return RegisterImage(new ImageXObjectResult { Image = imageStream });
+    }
 
-        var hashKey = ComputeContentKey(imageStream);
-        if (_imageCache.TryGetValue(hashKey, out var existing))
+    /// <summary>
+    /// Register an Image XObject (and its optional SMask) with the document. The primary
+    /// image and the SMask each get their own indirect-object slot; the primary image's
+    /// <c>/SMask</c> entry is rewritten to an indirect reference to the SMask slot.
+    /// Dedup keys cover the entire pair, so two registrations of the same
+    /// <c>(Image, SMask)</c> content collapse to a single XObject pair.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Builders (<see cref="PngImageXObject"/>, <see cref="RasterImageXObject"/>,
+    /// <see cref="JpegImageXObject"/>) construct an <see cref="ImageXObjectResult"/>
+    /// whose primary image dictionary does <b>not</b> have <c>/SMask</c> set —
+    /// registration is the place that allocates indirect refs and wires them in.
+    /// </para>
+    /// </remarks>
+    public PdfIndirectRef RegisterImage(ImageXObjectResult result)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        ThrowIfSaved();
+        ValidateImageXObjectShape(result.Image, parameterName: nameof(result));
+        if (result.SMask is not null)
+        {
+            ValidateImageXObjectShape(result.SMask, parameterName: nameof(result));
+        }
+
+        var key = ComputeContentKey(result);
+        if (_imageCache.TryGetValue(key, out var existing))
         {
             return existing;
         }
+
+        // SMask must be allocated and assigned before we set the primary image's /SMask
+        // pointer — otherwise the primary's dictionary holds a forward ref to an
+        // unallocated slot, which preflight would reject.
         var imageRef = _writer.Objects.Allocate();
-        _writer.Objects.Assign(imageRef, imageStream);
-        _imageCache[hashKey] = imageRef;
+        if (result.SMask is not null)
+        {
+            var smaskRef = _writer.Objects.Allocate();
+            _writer.Objects.Assign(smaskRef, result.SMask);
+            result.Image.Dictionary.Set(PdfNames.SMask, smaskRef);
+        }
+        _writer.Objects.Assign(imageRef, result.Image);
+        _imageCache[key] = imageRef;
         return imageRef;
     }
 
     /// <summary>
-    /// Number of unique Image XObjects registered with the document. Counts each
-    /// distinct content-hash entry once, regardless of how many pages reference it.
+    /// Number of unique image registrations cached in the document. Each distinct
+    /// <c>(Image, SMask?)</c> pair counts once, regardless of how many pages reference
+    /// it. (An opaque image and the same image registered as part of an
+    /// <see cref="ImageXObjectResult"/> with a non-null SMask are <b>distinct</b>
+    /// entries — their emitted XObject graphs differ.)
     /// </summary>
     public int RegisteredImageCount => _imageCache.Count;
+
+    private static void ValidateImageXObjectShape(PdfStream stream, string parameterName)
+    {
+        var dict = stream.Dictionary;
+        // Subtype is the canonical "this is an Image XObject" marker — required.
+        var subtype = dict.Get(PdfNames.Subtype);
+        if (subtype is not PdfName subtypeName || !subtypeName.Equals(PdfNames.Image))
+        {
+            throw new ArgumentException(
+                "PdfStream is not a valid Image XObject: /Subtype must be /Image " +
+                $"(got {subtype?.GetType().Name ?? "null"}). Use the appropriate XObject " +
+                "builder (JpegImageXObject, PngImageXObject, RasterImageXObject) to construct " +
+                "Image XObjects with the required dictionary keys.",
+                parameterName);
+        }
+        // Type is optional per §8.9.5 Table 87, but if present must be /XObject.
+        var typeValue = dict.Get(PdfNames.Type);
+        if (typeValue is PdfName typeName && !typeName.Equals(PdfNames.XObject))
+        {
+            throw new ArgumentException(
+                $"Image XObject /Type is /{typeName.Value}; expected /XObject (or omitted).",
+                parameterName);
+        }
+        if (dict.Get(PdfNames.Width) is not PdfInteger)
+        {
+            throw new ArgumentException(
+                "Image XObject is missing required /Width (PdfInteger).",
+                parameterName);
+        }
+        if (dict.Get(PdfNames.Height) is not PdfInteger)
+        {
+            throw new ArgumentException(
+                "Image XObject is missing required /Height (PdfInteger).",
+                parameterName);
+        }
+        if (dict.Get(PdfNames.ColorSpace) is null)
+        {
+            throw new ArgumentException(
+                "Image XObject is missing required /ColorSpace.",
+                parameterName);
+        }
+        if (dict.Get(PdfNames.BitsPerComponent) is not PdfInteger)
+        {
+            throw new ArgumentException(
+                "Image XObject is missing required /BitsPerComponent (PdfInteger).",
+                parameterName);
+        }
+    }
 
     // ───── Save ──────────────────────────────────────────────────────────────
 
@@ -208,15 +308,38 @@ internal sealed class PdfDocument
             $"D:{local:yyyyMMddHHmmss}{sign}{offsetHours:D2}'{offsetMinutes:D2}'");
     }
 
-    private static string ComputeContentKey(PdfStream stream)
+    private static string ComputeContentKey(ImageXObjectResult result)
     {
-        // SHA-256 of the stream payload — same payload always hashes to the same key,
-        // so dedup is content-identical, not reference-identical. The dictionary keys
-        // ride on the hash bytes formatted as hex; the cache is per-document so the
-        // hashing cost is paid once per unique image.
-        Span<byte> digest = stackalloc byte[32];
-        SHA256.HashData(stream.Data, digest);
-        return Convert.ToHexString(digest);
+        // Dedup key covers the entire image graph: primary stream payload + dictionary
+        // for the Image XObject, plus the same for the SMask when present. Hashing the
+        // dictionary (not just the payload) is required for correctness: two pixel
+        // buffers with identical bytes but different /ColorSpace, /BitsPerComponent,
+        // /Filter, /DecodeParms, /Decode, or /Mask render entirely differently. Without
+        // dictionary inclusion, two RGBA8888 pixel buffers that happen to coincide
+        // post-FlateDecode but have different color models would silently dedupe — a
+        // visual-corruption bug.
+        var imageDigest = HashStream(result.Image);
+        if (result.SMask is null)
+        {
+            return $"img1:{Convert.ToHexString(imageDigest)}";
+        }
+        var smaskDigest = HashStream(result.SMask);
+        return $"img2:{Convert.ToHexString(imageDigest)}|{Convert.ToHexString(smaskDigest)}";
+    }
+
+    private static byte[] HashStream(PdfStream stream)
+    {
+        // SHA-256 over (payload bytes ⨁ dictionary canonical bytes). The dictionary's
+        // own writer produces deterministic output (insertion order preserved by
+        // OrderedDictionary), so two PdfStreams built from the same data + same Set()
+        // sequence hash identically — that's the desired dedup grain.
+        using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        hasher.AppendData(stream.Data);
+        var dictBuffer = new ArrayBufferWriter<byte>();
+        var dictWriter = new PdfWriter(dictBuffer);
+        stream.Dictionary.WriteTo(dictWriter);
+        hasher.AppendData(dictBuffer.WrittenSpan);
+        return hasher.GetHashAndReset();
     }
 
     private void ThrowIfSaved()

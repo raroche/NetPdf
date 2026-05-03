@@ -214,7 +214,12 @@ internal static class PngImageXObject
             info.Width, info.Height, 8,
             info.ColorType == PngColorType.GrayscaleAlpha ? PdfNames.DeviceGray : PdfNames.DeviceRGB,
             colorCompressed);
-        image.Dictionary.Set(PdfNames.SMask, smask);
+        // /SMask wiring is intentionally NOT set here: ISO 32000-2 §11.6 + §7.3.8 require
+        // the value of /SMask to reference an indirect Image XObject. The high-level
+        // PdfDocument.RegisterImage(ImageXObjectResult) path allocates indirect slots for
+        // both streams and writes /SMask as an indirect ref. Setting it inline would
+        // either embed a duplicate direct stream (malformed PDF) or force every consumer
+        // to hand-allocate slots.
         return new() { Image = image, SMask = smask };
     }
 
@@ -254,9 +259,9 @@ internal static class PngImageXObject
         var alphaCompressed = ZlibCompress(alpha);
         var smask = BuildSimpleImageStream(info.Width, info.Height, 8, PdfNames.DeviceGray, alphaCompressed);
 
-        // Color image stays as opaque-passthrough indexed.
+        // Color image stays as opaque-passthrough indexed; /SMask wiring is deferred to
+        // PdfDocument.RegisterImage(ImageXObjectResult) (see BuildAlphaSplit notes).
         var image = BuildOpaqueImageStream(info, mask: null);
-        image.Dictionary.Set(PdfNames.SMask, smask);
         return new() { Image = image, SMask = smask };
     }
 

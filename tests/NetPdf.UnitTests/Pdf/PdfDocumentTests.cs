@@ -211,6 +211,188 @@ public sealed class PdfDocumentTests
         Assert.Same(p3, doc.Pages[2]);
     }
 
+    // ───── ImageXObjectResult / SMask orchestration ──────────────────────────
+
+    [Fact]
+    public void RegisterImage_opaque_PNG_round_trips_through_Save()
+    {
+        var doc = new PdfDocument();
+        var png = PngImageXObject.Build(SyntheticPng.BuildOpaqueRgb8(16, 16));
+        var imageRef = doc.RegisterImage(png);
+        var page = doc.AddPage(MediaBoxSize.A4);
+        page.PlaceImage(imageRef, 50, 50, 100, 100);
+        var bytes = doc.Save();
+        var content = Encoding.ASCII.GetString(bytes);
+
+        // Image XObject + page resource reference both present.
+        Assert.Contains("/Subtype /Image", content, StringComparison.Ordinal);
+        Assert.Contains("/Im1", content, StringComparison.Ordinal);
+        // Opaque PNG never gets an /SMask wired.
+        Assert.DoesNotContain("/SMask ", content, StringComparison.Ordinal);
+        Assert.Equal(1, doc.RegisteredImageCount);
+    }
+
+    [Fact]
+    public void RegisterImage_RGBA_PNG_emits_indirect_SMask_reference()
+    {
+        var doc = new PdfDocument();
+        var png = PngImageXObject.Build(SyntheticPng.BuildRgba8(8, 8));
+        Assert.NotNull(png.SMask); // sanity
+        var imageRef = doc.RegisterImage(png);
+        doc.AddPage(MediaBoxSize.A4).PlaceImage(imageRef, 0, 0, 100, 100);
+        var bytes = doc.Save();
+        var content = Encoding.ASCII.GetString(bytes);
+
+        // /SMask appears with an indirect reference suffix (e.g. "/SMask 7 0 R"),
+        // not as an inline `<<...>>` direct stream.
+        Assert.Matches(@"/SMask\s+\d+\s+0\s+R", content);
+        // Both the primary Image XObject and the SMask Image XObject are present.
+        var imageSubtypeCount = CountOccurrences(content, "/Subtype /Image");
+        Assert.True(imageSubtypeCount >= 2, $"Expected at least two /Subtype /Image entries (Image + SMask); found {imageSubtypeCount}.");
+    }
+
+    [Fact]
+    public void RegisterImage_indexed_PNG_with_binary_tRNS_emits_color_key_Mask_no_SMask()
+    {
+        // Binary tRNS (every alpha entry is 0 or 255) → /Mask color-key path, not SMask.
+        var palette = new byte[] { 0xFF, 0, 0, 0, 0xFF, 0, 0, 0, 0xFF };
+        var trns = new byte[] { 0x00, 0xFF, 0xFF }; // index 0 fully transparent, others opaque
+        var doc = new PdfDocument();
+        var png = PngImageXObject.Build(SyntheticPng.BuildIndexed8WithTrns(8, 8, palette, trns));
+        Assert.Null(png.SMask); // sanity — binary tRNS uses /Mask, not SMask
+        var imageRef = doc.RegisterImage(png);
+        doc.AddPage(MediaBoxSize.A4).PlaceImage(imageRef, 0, 0, 100, 100);
+        var bytes = doc.Save();
+        var content = Encoding.ASCII.GetString(bytes);
+
+        // /Mask array stays inline on the image dict (it's an array of integers, not a
+        // stream — perfectly legal in a direct context).
+        Assert.Contains("/Mask [", content, StringComparison.Ordinal);
+        Assert.DoesNotContain("/SMask ", content, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RegisterImage_dedupes_pair_when_Image_and_SMask_are_byte_identical()
+    {
+        var doc = new PdfDocument();
+        var png1 = PngImageXObject.Build(SyntheticPng.BuildRgba8(8, 8));
+        var png2 = PngImageXObject.Build(SyntheticPng.BuildRgba8(8, 8));
+
+        var ref1 = doc.RegisterImage(png1);
+        var ref2 = doc.RegisterImage(png2);
+
+        Assert.Equal(ref1.ObjectNumber, ref2.ObjectNumber);
+        Assert.Equal(1, doc.RegisteredImageCount);
+    }
+
+    [Fact]
+    public void RegisterImage_dedup_distinguishes_streams_with_different_dictionary_metadata()
+    {
+        // Two streams with byte-identical payload but different /ColorSpace must NOT
+        // dedupe — they render differently. This guards the "hash dictionary, not just
+        // payload" invariant.
+        var payload = new byte[256];
+        for (var i = 0; i < payload.Length; i++) payload[i] = (byte)i;
+
+        var dictA = new PdfDictionary()
+            .Set(PdfNames.Type, PdfNames.XObject)
+            .Set(PdfNames.Subtype, PdfNames.Image)
+            .Set(PdfNames.Width, new PdfInteger(16))
+            .Set(PdfNames.Height, new PdfInteger(16))
+            .Set(PdfNames.ColorSpace, PdfNames.DeviceGray)
+            .Set(PdfNames.BitsPerComponent, new PdfInteger(8));
+        var dictB = new PdfDictionary()
+            .Set(PdfNames.Type, PdfNames.XObject)
+            .Set(PdfNames.Subtype, PdfNames.Image)
+            .Set(PdfNames.Width, new PdfInteger(16))
+            .Set(PdfNames.Height, new PdfInteger(16))
+            .Set(PdfNames.ColorSpace, PdfNames.DeviceRGB) // different ColorSpace
+            .Set(PdfNames.BitsPerComponent, new PdfInteger(8));
+        var streamA = new PdfStream(payload, dictA);
+        var streamB = new PdfStream(payload, dictB);
+
+        var doc = new PdfDocument();
+        var refA = doc.RegisterImage(streamA);
+        var refB = doc.RegisterImage(streamB);
+
+        Assert.NotEqual(refA.ObjectNumber, refB.ObjectNumber);
+        Assert.Equal(2, doc.RegisteredImageCount);
+    }
+
+    [Fact]
+    public void RegisterImage_throws_when_input_is_not_an_Image_XObject()
+    {
+        var doc = new PdfDocument();
+        // Random PdfStream with no /Subtype /Image — rejected.
+        var notAnImage = new PdfStream([0xDE, 0xAD], new PdfDictionary());
+        var ex = Assert.Throws<ArgumentException>(() => doc.RegisterImage(notAnImage));
+        Assert.Contains("/Subtype must be /Image", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RegisterImage_throws_when_image_dict_is_missing_required_keys()
+    {
+        var doc = new PdfDocument();
+        // Has /Subtype /Image but missing /Width, /Height, /ColorSpace, /BitsPerComponent.
+        var dict = new PdfDictionary()
+            .Set(PdfNames.Subtype, PdfNames.Image);
+        var stub = new PdfStream([0x00], dict);
+        var ex = Assert.Throws<ArgumentException>(() => doc.RegisterImage(stub));
+        Assert.Contains("/Width", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void RegisterImage_RGBA_save_passes_preflight_no_nested_direct_stream()
+    {
+        // Smoke test: the alpha-split path used to embed /SMask as a direct PdfStream,
+        // which is malformed PDF. Now it's an indirect ref — Save() must succeed and
+        // pass preflight.
+        var doc = new PdfDocument();
+        var png = PngImageXObject.Build(SyntheticPng.BuildRgba8(8, 8));
+        var imageRef = doc.RegisterImage(png);
+        doc.AddPage(MediaBoxSize.A4).PlaceImage(imageRef, 0, 0, 100, 100);
+        // Should not throw.
+        var bytes = doc.Save();
+        Assert.True(bytes.Length > 100);
+    }
+
+    // ───── AppendContent contract ────────────────────────────────────────────
+
+    [Fact]
+    public void AppendContent_string_throws_on_non_ASCII_input()
+    {
+        var doc = new PdfDocument();
+        var page = doc.AddPage(MediaBoxSize.A4);
+        var ex = Assert.Throws<ArgumentException>(() => page.AppendContent("héllo"));
+        Assert.Contains("ASCII", ex.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void AppendContent_byte_overload_writes_raw_bytes_into_content_stream()
+    {
+        var doc = new PdfDocument();
+        var page = doc.AddPage(MediaBoxSize.A4);
+        // 0x89 is non-ASCII; the byte overload accepts it without complaint.
+        ReadOnlySpan<byte> raw = [(byte)'q', (byte)' ', 0x89, (byte)' ', (byte)'Q', (byte)'\n'];
+        page.AppendContent(raw);
+        var bytes = doc.Save();
+
+        // The 0x89 byte must survive verbatim into the emitted content stream.
+        Assert.Contains((byte)0x89, bytes);
+    }
+
+    private static int CountOccurrences(string source, string needle)
+    {
+        var count = 0;
+        var pos = 0;
+        while ((pos = source.IndexOf(needle, pos, StringComparison.Ordinal)) >= 0)
+        {
+            count++;
+            pos += needle.Length;
+        }
+        return count;
+    }
+
     private static byte[] BuildSampleDocument()
     {
         var doc = new PdfDocument

@@ -1,7 +1,9 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System.Buffers;
 using System.Globalization;
+using System.Text;
 using NetPdf.Pdf.Objects;
 
 namespace NetPdf.Pdf;
@@ -25,7 +27,12 @@ internal sealed class PdfPage
     private readonly PdfIndirectRef _parentRef;
     private readonly PdfDictionary _fontsResource = new();
     private readonly PdfDictionary _xobjectsResource = new();
-    private readonly System.Text.StringBuilder _contentStreamBuilder = new();
+    // Content-stream payload is built byte-oriented from the start: PDF content streams
+    // are byte sequences (operators are ASCII, but text-show operands and inline-image
+    // bytes can be arbitrary 8-bit data per ISO 32000-2 §7.8). A StringBuilder would
+    // force an ASCII transcode at every write boundary and silently corrupt non-ASCII
+    // bytes; ArrayBufferWriter<byte> stores the raw payload faithfully.
+    private readonly ArrayBufferWriter<byte> _contentBuffer = new();
     private bool _finalized;
 
     public PdfIndirectRef PageRef { get; }
@@ -44,15 +51,54 @@ internal sealed class PdfPage
     }
 
     /// <summary>
-    /// Append raw PDF content-stream bytes (operators like <c>q</c> / <c>Q</c>,
-    /// <c>cm</c>, <c>Do</c>, text-show ops). Spaces / newlines between operators are
-    /// the caller's responsibility; the page emits whatever is appended.
+    /// Append ASCII PDF content-stream text (operators like <c>q</c> / <c>Q</c>,
+    /// <c>cm</c>, <c>Do</c>, and ASCII text-show ops). Spaces / newlines between
+    /// operators are the caller's responsibility.
     /// </summary>
+    /// <remarks>
+    /// <para>
+    /// <b>ASCII-only.</b> Each char in the string must be in the range <c>U+0000</c>
+    /// to <c>U+007F</c>. A non-ASCII character throws <see cref="ArgumentException"/>
+    /// rather than silently transcoding (the safe default for content streams that
+    /// will have arbitrary 8-bit bytes appended via the
+    /// <see cref="AppendContent(ReadOnlySpan{byte})"/> overload alongside ASCII
+    /// operators). For binary or non-ASCII content (e.g., raw bytes inside a literal
+    /// string operand for a Type 3 font), use the byte overload.
+    /// </para>
+    /// </remarks>
     public void AppendContent(string contentStreamFragment)
     {
         ArgumentNullException.ThrowIfNull(contentStreamFragment);
         ThrowIfFinalized();
-        _contentStreamBuilder.Append(contentStreamFragment);
+        if (contentStreamFragment.Length == 0) return;
+
+        var span = _contentBuffer.GetSpan(contentStreamFragment.Length);
+        for (var i = 0; i < contentStreamFragment.Length; i++)
+        {
+            var c = contentStreamFragment[i];
+            if (c > 0x7F)
+            {
+                throw new ArgumentException(
+                    $"AppendContent(string) requires ASCII-only input (each char ≤ U+007F); " +
+                    $"got non-ASCII char U+{(int)c:X4} at index {i}. For binary or non-ASCII " +
+                    $"content use the AppendContent(ReadOnlySpan<byte>) overload instead.",
+                    nameof(contentStreamFragment));
+            }
+            span[i] = (byte)c;
+        }
+        _contentBuffer.Advance(contentStreamFragment.Length);
+    }
+
+    /// <summary>
+    /// Append raw PDF content-stream bytes — the binary-safe overload. The caller is
+    /// responsible for emitting only well-formed PDF content-stream syntax; this method
+    /// performs no validation or escaping.
+    /// </summary>
+    public void AppendContent(ReadOnlySpan<byte> contentStreamFragment)
+    {
+        ThrowIfFinalized();
+        if (contentStreamFragment.IsEmpty) return;
+        _contentBuffer.Write(contentStreamFragment);
     }
 
     /// <summary>
@@ -73,19 +119,22 @@ internal sealed class PdfPage
         // Emit content operators: q (push graphics state), cm (set CTM to scale + translate),
         // /ResourceName Do (invoke the XObject), Q (pop graphics state).
         // The cm matrix [w 0 0 h x y] scales the unit square (0..1) to (w × h) and
-        // translates to (x, y).
-        _contentStreamBuilder.Append("q ");
-        AppendNumber(width); _contentStreamBuilder.Append(' ');
-        _contentStreamBuilder.Append("0 0 ");
-        AppendNumber(height); _contentStreamBuilder.Append(' ');
-        AppendNumber(x); _contentStreamBuilder.Append(' ');
-        AppendNumber(y); _contentStreamBuilder.Append(" cm /");
-        _contentStreamBuilder.Append(resourceName);
-        _contentStreamBuilder.Append(" Do Q\n");
+        // translates to (x, y). Build the fragment in a small string then route through
+        // AppendContent so the ASCII-validation path runs on the operator text.
+        var sb = new StringBuilder(64);
+        sb.Append("q ");
+        AppendNumber(sb, width); sb.Append(' ');
+        sb.Append("0 0 ");
+        AppendNumber(sb, height); sb.Append(' ');
+        AppendNumber(sb, x); sb.Append(' ');
+        AppendNumber(sb, y); sb.Append(" cm /");
+        sb.Append(resourceName);
+        sb.Append(" Do Q\n");
+        AppendContent(sb.ToString());
         return resourceName;
     }
 
-    private void AppendNumber(double value)
+    private static void AppendNumber(StringBuilder sb, double value)
     {
         // PDF numbers are written without exponent notation, finite, with a maximum
         // of 5 fractional digits per ISO 32000-2:2020 §7.3.3.
@@ -94,7 +143,7 @@ internal sealed class PdfPage
             throw new ArgumentException(
                 $"PDF number must be finite; got {value}.", nameof(value));
         }
-        _contentStreamBuilder.Append(value.ToString("0.#####", CultureInfo.InvariantCulture));
+        sb.Append(value.ToString("0.#####", CultureInfo.InvariantCulture));
     }
 
     /// <summary>
@@ -123,8 +172,7 @@ internal sealed class PdfPage
             .Set(PdfNames.MediaBox, mediaBox)
             .Set(PdfNames.Contents, ContentsRef);
 
-        var contentBytes = System.Text.Encoding.ASCII.GetBytes(_contentStreamBuilder.ToString());
-        return (pageDict, contentBytes);
+        return (pageDict, _contentBuffer.WrittenSpan.ToArray());
     }
 
     private void ThrowIfFinalized()

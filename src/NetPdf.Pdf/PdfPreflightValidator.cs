@@ -23,6 +23,10 @@ namespace NetPdf.Pdf;
 ///     <c>StoreId == 0</c> (synthetic, opaque pointer) or matches the document's store id
 ///     (no foreign-store leakage).</item>
 ///   <item>The graph walk is cycle-safe (visited set, reference identity).</item>
+///   <item>No <see cref="PdfStream"/> appears as a child of another container (dictionary
+///     or array) anywhere in the graph — per ISO 32000-2 §7.3.8 streams shall be indirect
+///     objects, so any nested direct stream would emit malformed PDF bytes. The only
+///     legitimate position for a stream is at the top of an indirect-object slot.</item>
 /// </list>
 /// </summary>
 internal static class PdfPreflightValidator
@@ -138,17 +142,22 @@ internal static class PdfPreflightValidator
         // duplicates the bytes, which is wasteful but well-formed.
         var currentPath = new HashSet<PdfObject>(ReferenceEqualityComparer.Instance);
 
+        // Each store entry is the content of one indirect object slot. A PdfStream is only
+        // valid at this top level, so we pass isTopOfIndirectObject=true here and the
+        // recursive call flips it to false for every descendant.
         for (int i = 0; i < store.Count; i++)
         {
-            ValidateRecursive(store.AllEntries[i].Object!, store, currentPath);
+            ValidateRecursive(store.AllEntries[i].Object!, store, currentPath, isTopOfIndirectObject: true);
         }
 
         // Walk the trailer too — every entry (/Root, /Info, /Encrypt, future additions) is
-        // part of the structural graph and its refs / cycles must be checked.
-        ValidateRecursive(trailer, store, currentPath);
+        // part of the structural graph and its refs / cycles must be checked. The trailer
+        // dictionary itself is not an indirect-object slot, so its descendants cannot be
+        // direct streams (isTopOfIndirectObject=false from the start).
+        ValidateRecursive(trailer, store, currentPath, isTopOfIndirectObject: false);
     }
 
-    private static void ValidateRecursive(PdfObject obj, IndirectObjectStore store, HashSet<PdfObject> currentPath)
+    private static void ValidateRecursive(PdfObject obj, IndirectObjectStore store, HashSet<PdfObject> currentPath, bool isTopOfIndirectObject)
     {
         // Indirect references don't create cycles — they're pointers, not inline structure.
         // Validate the ref itself and stop (the target object is validated when the store
@@ -157,6 +166,22 @@ internal static class PdfPreflightValidator
         {
             ValidateReference(reference, store);
             return;
+        }
+
+        // ISO 32000-2 §7.3.8: "A stream object … shall be an indirect object". A
+        // PdfStream that surfaces as a child of another container would emit
+        // `<<...>>\nstream\n...endstream` inline — invalid PDF. The image-registration
+        // path now allocates indirect slots for SMasks; this preflight check catches any
+        // lingering or third-party caller that bypasses it.
+        if (obj is PdfStream && !isTopOfIndirectObject)
+        {
+            throw new InvalidOperationException(
+                "Direct PdfStream found nested inside another container (dict or array). " +
+                "Streams must be indirect objects per ISO 32000-2 §7.3.8 — wrap the stream " +
+                "with IndirectObjectStore.Add() and reference it via the resulting " +
+                "PdfIndirectRef. (For image XObjects with SMasks, register them through " +
+                "PdfDocument.RegisterImage(ImageXObjectResult) which performs this wiring " +
+                "automatically.)");
         }
 
         if (!currentPath.Add(obj))
@@ -171,7 +196,7 @@ internal static class PdfPreflightValidator
         {
             foreach (var child in obj.EnumerateChildren())
             {
-                ValidateRecursive(child, store, currentPath);
+                ValidateRecursive(child, store, currentPath, isTopOfIndirectObject: false);
             }
         }
         finally

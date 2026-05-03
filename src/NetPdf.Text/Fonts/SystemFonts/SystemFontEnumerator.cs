@@ -21,9 +21,13 @@ namespace NetPdf.Text.Fonts.SystemFonts;
 /// of system fonts installed.
 /// </para>
 /// <para>
-/// Phase 1 covers the four platforms NetPdf targets (macOS, Windows, Linux, Alpine). TTC /
-/// OTC collection files are recognized but only their first face is indexed; full
-/// multi-face collection support lands when the collection parser does.
+/// Phase 1 covers the four platforms NetPdf targets (macOS, Windows, Linux, Alpine).
+/// <b>TTC / OTC collection files are scanned but currently NOT indexed</b>: the
+/// <see cref="OpenTypeFont.Parse"/> entry point doesn't yet support collection
+/// containers, so <see cref="TryIndex"/> swallows the parse failure and skips the
+/// file. Full multi-face collection support — including indexing face 0 (and
+/// optionally subsequent faces) of every <c>.ttc</c> / <c>.otc</c> reachable on disk
+/// — lands when the collection parser does (post-Phase-1).
 /// </para>
 /// </remarks>
 internal abstract class SystemFontEnumerator

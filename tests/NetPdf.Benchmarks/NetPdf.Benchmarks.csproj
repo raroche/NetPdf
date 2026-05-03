@@ -21,6 +21,13 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\NetPdf\NetPdf.csproj" />
+    <!--
+      Direct reference to NetPdf.Pdf is required for Phase 1 because the benchmark
+      suite measures the byte-writer path that hasn't yet been wired through the
+      public HtmlPdf.Convert facade (Phase 2). NetPdf.Pdf already grants
+      InternalsVisibleTo("NetPdf.Benchmarks") for this.
+    -->
+    <ProjectReference Include="..\..\src\NetPdf.Pdf\NetPdf.Pdf.csproj" />
   </ItemGroup>
 
   <ItemGroup>

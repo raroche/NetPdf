@@ -33,12 +33,13 @@
     <InternalsVisibleTo Include="NetPdf.RenderingCorpus" />
     <InternalsVisibleTo Include="NetPdf.TestKit" />
     <!--
-      AOT smoke needs reach into PdfDocument / MediaBoxSize / PdfStream — Phase 1's
-      public surface (HtmlPdf.Convert) doesn't ship until Phase 2 wires HTML parsing,
-      so the AOT canary exercises the byte-writer path directly. Removed once the
-      public facade can drive a representative document end-to-end.
+      AOT smoke + benchmarks need reach into PdfDocument / MediaBoxSize / PdfStream —
+      Phase 1's public surface (HtmlPdf.Convert) doesn't ship until Phase 2 wires HTML
+      parsing, so both projects exercise the byte-writer path directly. Removed once
+      the public facade can drive a representative document end-to-end.
     -->
     <InternalsVisibleTo Include="NetPdf.AotSmoke" />
+    <InternalsVisibleTo Include="NetPdf.Benchmarks" />
   </ItemGroup>
 
 </Project>

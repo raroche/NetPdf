@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-03 (Task 24 follow-up review ✅ — JIT/AOT parity is now an enforced gate (not a manual hash compare): SmokeDocumentFactory shared between Program and parity tests, transparent-GIF SMask path added, startxref-offset structural verifier, scripts/aot-parity.sh as a single-command CI gate)
+**Last updated:** 2026-05-03 (Task 25 ✅ — BenchmarkDotNet baseline established for Phase 1 byte-writer surface: 7 benchmarks × 3 page counts = 21 runs, all targets crushed (1,870×–27,000× headroom), memory linearity confirmed at ~2.45 KB/page; numbers and run protocol pinned in docs/design/performance.md)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -40,7 +40,7 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
 - **Doc:** [`docs/phases/phase-1-pdf-writer-and-text.md`](docs/phases/phase-1-pdf-writer-and-text.md)
 
 ### Active task
-**Task 25 — Performance baseline: BenchmarkDotNet on PDF write** (next). Tasks 12–24 complete: UAX #9/#14/#29 (grapheme stage) at 100%/99.952%/100% UCD conformance, Liang en-us hyphenation, font registry + cross-platform system font enumeration, WOFF 1.0 + WOFF 2.0 round-trip end-to-end, JPEG/PNG/WebP/AVIF/GIF embedders, the `PdfDocument` high-level builder, a determinism harness covering 18 document shapes with per-platform pinned hashes, and an AOT-published native smoke binary that produces byte-identical PDF to the JIT path. Stage 14.2 (word boundaries) and 14.3 (sentence boundaries) remain post-Phase-1.
+**Task 26 — Tag `0.1.0-alpha` + update CHANGELOG** (next, final Phase 1 task). Tasks 12–25 complete: UAX #9/#14/#29 (grapheme stage) at 100%/99.952%/100% UCD conformance, Liang en-us hyphenation, font registry + cross-platform system font enumeration, WOFF 1.0 + WOFF 2.0 round-trip end-to-end, JPEG/PNG/WebP/AVIF/GIF embedders, the `PdfDocument` high-level builder, a determinism harness covering 18 document shapes with per-platform pinned hashes, an AOT-published native smoke binary with an enforced JIT/AOT parity gate, and a BenchmarkDotNet baseline that puts every Phase 1 target at ≥1,870× headroom with linear memory scaling. Stage 14.2 (word boundaries) and 14.3 (sentence boundaries) remain post-Phase-1.
 
 ### Subtasks completed
 
@@ -631,6 +631,26 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
     - JIT and AOT produce byte-identical output (1791 bytes, same SHA).
   - **Documentation**: `docs/design/aot-smoke.md` rewritten to advertise the parity gate as the merge requirement and document the step-by-step + single-command + CI flows.
   - Total tests: **1542 unit / 1553 solution-wide passing** (+4 net new; 1 skipped pin-capture utility).
+
+- **Task 25 — Performance baseline: BenchmarkDotNet on PDF write** ✅ (2026-05-03) — every Phase 1 task implicitly assumed the byte writer was fast enough; this task makes that assumption measurable, pinned, and gate-able for future regressions. 7 benchmarks × `[Params(1, 10, 100)]` page count = 21 runs covering blank, content-stream, JPEG passthrough, transparent-GIF raster (alpha-split SMask), 100×-image-dedup-cache-hit, and the canonical multi-page document.
+  - **`tests/NetPdf.Benchmarks/PdfWriteBenchmarks.cs`** (new) — `[MemoryDiagnoser]` tracks allocations alongside wall-clock so the Phase 1 "memory grows linearly with page count" invariant is enforced with numbers, not assertions.
+  - **Project wiring**: `NetPdf.Benchmarks` now references `NetPdf.Pdf` directly (same Phase 1 pattern as `NetPdf.AotSmoke`); `InternalsVisibleTo("NetPdf.Benchmarks")` added to `NetPdf.Pdf.csproj`. Removed when Phase 2's `HtmlPdf.Convert` gives the public surface a representative driving path.
+  - **Phase 1 baseline on Apple M4 Pro / .NET 10.0.7 / macOS arm64**:
+    - Single blank A4 page → bytes: **5.46 µs**, 7.45 KB.
+    - 100 blank pages → bytes: **253.5 µs**, 275.4 KB.
+    - 100 pages with content stream → bytes: **267.5 µs**, 317.4 KB.
+    - JPEG passthrough single page: **9.28 µs**, 11.25 KB.
+    - Transparent GIF via raster (SMask): **19.4 µs**, 19.38 KB.
+    - 100× same-image dedup cache hits: **74.7 µs** total (~750 ns/cache-hit).
+    - Canonical multi-page document: **30.0 µs**, 26.56 KB.
+  - **Targets vs. actual** (all Phase 1 targets crushed because the writer doesn't yet bear HTML/layout/text-shaping cost — Phase 2/3 budget):
+    - 100-page < 500 ms target → 267 µs actual = **~1,870× headroom**.
+    - 3-page invoice ≤ 200 ms target → ~16 µs actual = **~12,500× headroom**.
+    - 20-page report ≤ 1.5 s target → ~55 µs actual = **~27,000× headroom**.
+  - **Memory linearity confirmed**: 1 page → 7.45 KB, 10 pages → 32.35 KB (24.9 KB delta = 2.49 KB/page), 100 pages → 275.4 KB (243 KB delta = 2.45 KB/page). Per-page allocation is stable across the 1×→10× scale jump, proving O(N) scaling and ruling out accidental O(N²) regressions.
+  - **`docs/design/performance.md`** (new) — publishes the targets, the captured numbers, the targets-vs-actual headroom table, the run protocol (inner loop / full suite / CI gate), the re-baseline protocol (don't update silently — write down WHY), and a comparison with the wkhtmltopdf / Chromium-print / PDFsharp ecosystem so the numbers have context.
+  - **No new unit tests** — benchmarks are themselves the regression net. BenchmarkDotNet's standard artifacts (Markdown / HTML / CSV) land in `BenchmarkDotNet.Artifacts/` per run; the README table is the human-facing pin.
+  - Total tests unchanged: **1542 unit / 1553 solution-wide passing**.
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

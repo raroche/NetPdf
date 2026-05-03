@@ -40,7 +40,7 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
 - **Doc:** [`docs/phases/phase-1-pdf-writer-and-text.md`](docs/phases/phase-1-pdf-writer-and-text.md)
 
 ### Active task
-**Task 17 — WOFF decoder** (next). Tasks 12 / 13 / 14.1 / 15 / 16 are complete: UAX #9 / #14 / #29 (grapheme stage) at 100% / 99.952% / 100% UCD conformance, Liang en-us hyphenation bundled, font registry + per-platform system font enumeration in place with public `SystemFontResolver` implementing `IFontResolver`. Stage 14.2 (word boundaries) and 14.3 (sentence boundaries) remain post-Phase-1.
+**Task 18 — WOFF2 decoder (Brotli + glyf/loca transform reverse)** (next). Task 17 (WOFF 1.0) was completed ahead-of-order on 2026-05-01 to unblock web-font loading. Tasks 12 / 13 / 14.1 / 15 / 16 / 17 are complete: UAX #9 / #14 / #29 (grapheme stage) at 100% / 99.952% / 100% UCD conformance, Liang en-us hyphenation bundled, font registry + per-platform system font enumeration in place with public `SystemFontResolver` implementing `IFontResolver`, WOFF 1.0 round-trips end-to-end. Stage 14.2 (word boundaries) and 14.3 (sentence boundaries) remain post-Phase-1.
 
 ### Subtasks completed
 

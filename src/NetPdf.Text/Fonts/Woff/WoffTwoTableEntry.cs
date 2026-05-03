@@ -44,14 +44,21 @@ internal readonly record struct WoffTwoTableEntry
     /// <summary>
     /// Parse the variable-length directory beginning at <paramref name="cursor"/> in
     /// <paramref name="span"/>; advances <paramref name="cursor"/> past the directory.
-    /// Returns the parsed entries in directory order.
+    /// Returns the parsed entries in directory order. Rejects duplicate table tags —
+    /// every entry must reference a unique OpenType table.
     /// </summary>
     public static WoffTwoTableEntry[] ParseDirectory(ReadOnlySpan<byte> span, ref int cursor, int numTables)
     {
         var entries = new WoffTwoTableEntry[numTables];
+        var seenTags = new HashSet<uint>(numTables);
         for (var i = 0; i < numTables; i++)
         {
             entries[i] = ParseOne(span, ref cursor);
+            if (!seenTags.Add(entries[i].Tag))
+            {
+                throw new InvalidDataException(
+                    $"WOFF2: duplicate table tag 0x{entries[i].Tag:X8} at directory index {i}.");
+            }
         }
         return entries;
     }

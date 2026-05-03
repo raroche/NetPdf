@@ -17,9 +17,20 @@ namespace NetPdf.UnitTests.Text.Fonts.Woff;
 internal static class SyntheticWoffTwo
 {
     /// <summary>
-    /// Produce a WOFF 2.0 byte stream over the SyntheticFont with all-null transforms.
+    /// Produce a WOFF 2.0 byte stream over the SyntheticFont with all-null transforms
+    /// and glyf/loca placed adjacently in the directory.
     /// </summary>
-    public static byte[] BuildNullTransform()
+    public static byte[] BuildNullTransform() => Build(forceGlyfLocaAdjacent: true);
+
+    /// <summary>
+    /// Produce a WOFF 2.0 byte stream over the SyntheticFont with all-null transforms
+    /// and glyf/loca <i>NOT</i> adjacent in the directory (interleaved with head/hhea/etc.).
+    /// Per WOFF 2.0 §5.1 adjacency is required only for the transformed pair, so this
+    /// layout is conformant with version-3 (null) transforms — the decoder must accept it.
+    /// </summary>
+    public static byte[] BuildNullTransformNonAdjacentGlyfLoca() => Build(forceGlyfLocaAdjacent: false);
+
+    private static byte[] Build(bool forceGlyfLocaAdjacent)
     {
         var sfntBytes = SyntheticFont.Build();
         var sfntSpan = sfntBytes.AsSpan();
@@ -38,15 +49,18 @@ internal static class SyntheticWoffTwo
             tables[i] = (tag, sfntBytes[off..(off + len)]);
         }
 
-        // Sort tables by tag (SFNT directory is tag-ascending; this also matches what the
-        // decoder will produce on output, so round-trip comparisons are stable).
+        // Sort tables by tag for the WOFF 2.0 directory base ordering.
         Array.Sort(tables, static (a, b) => a.Tag.CompareTo(b.Tag));
 
-        // glyf and loca must be consecutive in the directory per WOFF2 §4.1; SyntheticFont
-        // ships both, so swap them into adjacent positions if SFNT-sort happens to break
-        // them up. (In practice 'glyf' (0x676C7966) sorts before 'loca' (0x6C6F6361) so
-        // they're already consecutive — but we re-pack defensively.)
-        ReorderForGlyfLocaPairing(tables);
+        // glyf (0x676C7966) and loca (0x6C6F6361) are NOT naturally adjacent after sort —
+        // head/hhea/hmtx/maxp interleave between them. With the actual transform (version 0)
+        // WOFF 2.0 §5.1 mandates adjacency; with null transforms (version 3) the directory
+        // may interleave other tables freely. Callers control the layout via
+        // <c>forceGlyfLocaAdjacent</c>.
+        if (forceGlyfLocaAdjacent)
+        {
+            ReorderForGlyfLocaPairing(tables);
+        }
 
         // Build directory + raw concatenated data simultaneously.
         using var dirStream = new MemoryStream();

@@ -66,11 +66,11 @@ internal sealed class WoffTwoHeader
             throw new InvalidDataException("WOFF2: numTables = 0 is invalid (file has no tables).");
         }
 
+        // Per W3C WOFF 2.0 §3 the encoder is required to set 'reserved' to 0, but the spec
+        // does NOT mandate decoder rejection on non-zero values. The Google reference
+        // decoder (woff2) and Postel's robustness principle both favor accepting non-zero
+        // reserved values rather than failing fonts that would otherwise round-trip.
         var reserved = BinaryPrimitives.ReadUInt16BigEndian(span[14..16]);
-        if (reserved != 0)
-        {
-            throw new InvalidDataException($"WOFF2: reserved field must be 0; got 0x{reserved:X4}.");
-        }
 
         var totalSfntSize = BinaryPrimitives.ReadUInt32BigEndian(span[16..20]);
         var totalCompressedSize = BinaryPrimitives.ReadUInt32BigEndian(span[20..24]);

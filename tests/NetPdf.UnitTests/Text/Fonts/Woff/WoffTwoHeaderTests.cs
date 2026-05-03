@@ -60,11 +60,17 @@ public sealed class WoffTwoHeaderTests
     }
 
     [Fact]
-    public void Parse_rejects_non_zero_reserved()
+    public void Parse_accepts_non_zero_reserved_per_decoder_robustness()
     {
+        // Per W3C WOFF 2.0 §3 the encoder is required to set reserved = 0, but the spec
+        // does not mandate decoder rejection on non-zero values. Real-world WOFF2 files
+        // emitted by older / nonstandard encoders sometimes carry non-zero reserved bytes;
+        // the Google reference decoder (woff2) does not reject them. This test pins the
+        // robustness contract — any future regression to strict-reject would fail here.
         var bytes = SyntheticWoffTwo.BuildNullTransform();
-        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(14, 2), 1);
-        Assert.Throws<InvalidDataException>(() => WoffTwoHeader.Parse(bytes));
+        BinaryPrimitives.WriteUInt16BigEndian(bytes.AsSpan(14, 2), 0xABCD);
+        var header = WoffTwoHeader.Parse(bytes);
+        Assert.Equal(0xABCD, header.Reserved);
     }
 
     [Fact]

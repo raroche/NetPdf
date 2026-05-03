@@ -44,34 +44,34 @@ internal static class WoffTwoDecoder
             throw new InvalidDataException(
                 "WOFF2: TrueType collection ('ttcf') decoding not supported in Phase 1.");
         }
-        if (woff2Bytes.Length < header.Length)
+        if ((long)header.Length != woff2Bytes.Length)
         {
             throw new InvalidDataException(
-                $"WOFF2: header.length ({header.Length}) exceeds buffer size ({woff2Bytes.Length}).");
+                $"WOFF2: header.length ({header.Length}) does not equal actual buffer size ({woff2Bytes.Length}).");
         }
 
         // (2) Table directory.
         var cursor = WoffTwoConstants.HeaderSize;
         var entries = WoffTwoTableEntry.ParseDirectory(woff2Bytes, ref cursor, header.NumTables);
 
-        // Spec invariant (§4.1): glyf and loca, if present, must appear consecutively in
-        // the directory with loca immediately after glyf.
-        ValidateGlyfLocaPairing(entries);
+        // Spec invariant (§5.1): when glyf and loca are both present AND at least one uses
+        // the actual transform (version 0), they MUST be located adjacently in the directory
+        // (loca immediately after glyf). With null transforms (version 3) on both, the
+        // directory follows no special adjacency rule.
+        ValidateGlyfLocaAdjacencyForTransform(entries);
 
-        // (3) Locate the compressed-data block. Spec layout (§3): header → directory →
-        // compressed-data → optional metadata → optional private-data, all 4-byte aligned.
+        // (3) Validate the wrapper layout (block ordering, alignment, no overlaps, no
+        // trailing bytes). Returns the start of the compressed-data block.
         var compressedStart = cursor;
+        var expectedDecompressedSize = ComputeExpectedDecompressedSize(entries);
+        WoffTwoLayoutValidator.Validate(header, woff2Bytes.Length, compressedStart);
+
         var compressedEnd = compressedStart + (int)header.TotalCompressedSize;
-        if (compressedEnd > woff2Bytes.Length)
-        {
-            throw new InvalidDataException(
-                $"WOFF2: compressed data block (offset={compressedStart}, length={header.TotalCompressedSize}) extends past file end ({woff2Bytes.Length}).");
-        }
         var compressed = woff2Bytes[compressedStart..compressedEnd];
 
-        // Brotli-decompress the entire stream once; downstream transforms slice from it
-        // by transformLength.
-        var decompressed = BrotliDecompress(compressed);
+        // (4) Brotli-decompress with a hard cap from the directory's declared sizes —
+        // protects against decompression-bomb inputs.
+        var decompressed = BrotliDecompressBounded(compressed, expectedDecompressedSize);
 
         // (4) Reverse transforms.
         var tableSegments = new TableSegment[entries.Length];
@@ -133,35 +133,101 @@ internal static class WoffTwoDecoder
         return AssembleSfnt(header.Flavor, tableSegments);
     }
 
-    private static void ValidateGlyfLocaPairing(WoffTwoTableEntry[] entries)
+    private static void ValidateGlyfLocaAdjacencyForTransform(WoffTwoTableEntry[] entries)
     {
         int glyfIndex = -1, locaIndex = -1;
+        bool glyfTransformed = false, locaTransformed = false;
         for (var i = 0; i < entries.Length; i++)
         {
-            if (entries[i].Tag == WoffTwoTags.Glyf) glyfIndex = i;
-            if (entries[i].Tag == WoffTwoTags.Loca) locaIndex = i;
+            if (entries[i].Tag == WoffTwoTags.Glyf)
+            {
+                glyfIndex = i;
+                glyfTransformed = entries[i].TransformVersion == 0;
+            }
+            else if (entries[i].Tag == WoffTwoTags.Loca)
+            {
+                locaIndex = i;
+                locaTransformed = entries[i].TransformVersion == 0;
+            }
         }
         if (glyfIndex == -1 && locaIndex == -1) return;
         if (glyfIndex == -1 || locaIndex == -1)
         {
             throw new InvalidDataException("WOFF2: 'glyf' and 'loca' must both be present or both absent.");
         }
-        if (locaIndex != glyfIndex + 1)
+        // Per §5.1: only the transformed pair must be located adjacently. With version 3
+        // (null) on both, the directory may interleave other tables between them.
+        var transformInPlay = glyfTransformed || locaTransformed;
+        if (transformInPlay && locaIndex != glyfIndex + 1)
         {
             throw new InvalidDataException(
-                $"WOFF2: 'loca' must immediately follow 'glyf' in the directory; got glyf@{glyfIndex} loca@{locaIndex}.");
+                $"WOFF2: transformed 'loca' must immediately follow transformed 'glyf' in the directory; got glyf@{glyfIndex} loca@{locaIndex}.");
         }
     }
 
-    private static byte[] BrotliDecompress(ReadOnlySpan<byte> compressed)
+    private static long ComputeExpectedDecompressedSize(WoffTwoTableEntry[] entries)
     {
-        // BrotliStream is a forward-only decoder over an underlying Stream; we wrap the
-        // span in a MemoryStream to avoid native allocation and keep the path AOT-clean.
-        using var input = new MemoryStream(compressed.ToArray(), writable: false);
-        using var brotli = new BrotliStream(input, CompressionMode.Decompress, leaveOpen: false);
-        using var output = new MemoryStream();
-        brotli.CopyTo(output);
-        return output.ToArray();
+        // The Brotli stream contains the concatenation of every table's transformLength.
+        // Compute once so the decompressor can fail fast on a Brotli bomb.
+        long sum = 0;
+        foreach (var e in entries)
+        {
+            sum += e.TransformLength;
+        }
+        return sum;
+    }
+
+    private static byte[] BrotliDecompressBounded(ReadOnlySpan<byte> compressed, long expectedSize)
+    {
+        if (expectedSize < 0 || expectedSize > int.MaxValue)
+        {
+            throw new InvalidDataException(
+                $"WOFF2: declared decompressed size ({expectedSize}) is out of range.");
+        }
+        try
+        {
+            // BrotliStream is a forward-only decoder over an underlying Stream; we wrap
+            // the span in a MemoryStream to avoid native allocation and keep AOT-clean.
+            using var input = new MemoryStream(compressed.ToArray(), writable: false);
+            using var brotli = new BrotliStream(input, CompressionMode.Decompress, leaveOpen: false);
+
+            // Bound the output by expectedSize and probe for overflow with one extra byte
+            // — protects against decompression-bomb inputs without materializing an
+            // unbounded stream.
+            var cap = (int)expectedSize;
+            var buffer = new byte[cap];
+            var read = 0;
+            while (read < cap)
+            {
+                var n = brotli.Read(buffer, read, cap - read);
+                if (n == 0) break;
+                read += n;
+            }
+            Span<byte> overflowProbe = stackalloc byte[1];
+            if (brotli.Read(overflowProbe) != 0)
+            {
+                throw new InvalidDataException(
+                    $"WOFF2: decompressed stream exceeds declared total ({expectedSize} bytes) — possible decompression-bomb input.");
+            }
+            if (read != cap)
+            {
+                throw new InvalidDataException(
+                    $"WOFF2: decompressed stream is short — got {read} bytes, expected {cap} (sum of transformLength).");
+            }
+            return buffer;
+        }
+        catch (InvalidDataException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Surface every decompression-side exception (BrotliStream may throw
+            // InvalidOperationException, IOException, etc. on malformed framing) as a
+            // single InvalidDataException so the decoder's failure contract is uniform.
+            throw new InvalidDataException(
+                $"WOFF2: Brotli decompression failed: {ex.Message}", ex);
+        }
     }
 
     private static byte[] AssembleSfnt(uint flavor, TableSegment[] tables)

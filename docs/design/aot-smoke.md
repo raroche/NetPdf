@@ -2,13 +2,16 @@
 
 NetPdf is **AOT-clean**: every code path used by `HtmlPdf.Convert` (and the underlying `PdfDocument` byte writer) compiles under .NET Native AOT without trim warnings, runs in the published native binary, and produces byte-identical PDF output to the equivalent JIT run.
 
-This is enforced by `tests/NetPdf.AotSmoke/` — a console application that:
+This is enforced — not just documented — by:
 
-1. Builds a small representative PDF document (multi-page, metadata, image with content-hash dedup, both `AppendContent` overloads, deterministic `CreationDate`).
-2. Validates the bytes are well-formed (header + `xref` + `startxref` + `%%EOF`).
-3. Prints the byte count and SHA-256 to stdout.
-4. Optionally writes the bytes to a file given as argv[0].
-5. Exits 0 on success; non-zero on any failure (which blocks CI).
+1. `tests/NetPdf.AotSmoke/` — a console application whose `SmokeDocumentFactory` builds a small representative PDF (mixed-size pages, metadata, JPEG with content-hash dedup, **transparent GIF through `RasterImageXObject` to exercise the alpha-split `/SMask` indirect-reference path**, both `AppendContent` overloads, deterministic `CreationDate`). The entry point validates the bytes structurally (`startxref` is parsed and the xref-keyword block at that offset is verified), prints `byteCount=<N> sha256=<HEX>` to stdout, and exits non-zero on any failure (1 = build/save threw, 2 = structural verification failed, 3 = output-path write failed).
+2. `tests/NetPdf.UnitTests/Pdf/AotJitParityTests.cs` — xUnit tests that:
+   - Assert `SmokeDocumentFactory.BuildSmokeDocument` is byte-equal across three calls in the same process.
+   - Locate the AOT-published binary at `artifacts/aot-smoke/NetPdf.AotSmoke[.exe]`. When present, run it via `Process.Start`, parse the `sha256=<HEX>` line, and **assert it equals the JIT factory's hash**. When the binary is missing, the test logs a clear "skip" message rather than passing silently.
+   - Also cover the file-output path: run the binary with an output-path argument, read the file, byte-compare to the JIT factory's bytes.
+3. `scripts/aot-parity.sh` — single-command parity gate that publishes the AOT binary, runs the parity tests, and propagates the test exit code. CI runs this script as one merge gate.
+
+Both `Program.cs` and `AotJitParityTests` call the **same** `SmokeDocumentFactory` so their reference document cannot drift apart. The negative case has been verified: perturbing the JIT factory while keeping the old AOT binary causes the parity test to fail with a diagnosable SHA mismatch in the test output.
 
 ## Why this exists
 
@@ -16,7 +19,17 @@ AOT-incompatibility is silent: the analyzer warnings only surface in the publish
 
 The smoke test publishes-and-runs every commit's worth of code. Any regression that breaks AOT shows up as a publish failure or a non-zero exit code on the produced native binary.
 
-## How to run it locally
+## How to run the parity gate
+
+The single-command flow is:
+
+```bash
+./scripts/aot-parity.sh
+```
+
+This publishes the AOT binary into `artifacts/aot-smoke/`, runs it as a sanity check, and then runs `dotnet test` filtered to `AotJitParityTests`. Any non-zero from publish, native run, or test propagates as the script's exit code. Output ends with `==> AOT/JIT parity verified.` on success.
+
+For step-by-step inner-loop work:
 
 ```bash
 # 1. Inner loop: build the project. The IsAotCompatible / EnableTrimAnalyzer
@@ -36,11 +49,14 @@ dotnet publish tests/NetPdf.AotSmoke/NetPdf.AotSmoke.csproj \
 # 4. Run the native binary. Optional second arg writes the PDF to disk.
 ./artifacts/aot-smoke/NetPdf.AotSmoke /tmp/aotsmoke.pdf
 
-# 5. Compare hashes (JIT vs. AOT must match).
-shasum -a 256 /tmp/aotsmoke.pdf
+# 5. Run the parity tests directly (skips the publish step). When the AOT binary
+#    is present at the expected path, the parity test runs it and asserts byte
+#    equality with the JIT path. When it's missing, the test logs and skips.
+dotnet test tests/NetPdf.UnitTests/NetPdf.UnitTests.csproj \
+  -c Release --filter "FullyQualifiedName~AotJitParityTests"
 ```
 
-Expected stdout (on a properly-configured environment):
+Expected stdout from the AOT binary (on a properly-configured environment):
 
 ```
 NetPdf.AotSmoke phase=1 ok byteCount=<N> sha256=<HEX>
@@ -69,18 +85,16 @@ The `NetPdf.AotSmoke` project sets:
 
 ## CI integration
 
-(Phase 5.) The intended CI step is:
+(Phase 5.) The intended CI step is one line:
 
 ```yaml
-- name: AOT publish + run
-  run: |
-    dotnet publish tests/NetPdf.AotSmoke/NetPdf.AotSmoke.csproj \
-      -c Release -f net10.0 -p:PublishAot=true -o artifacts/aot-smoke
-    ./artifacts/aot-smoke/NetPdf.AotSmoke /tmp/aotsmoke.pdf
-    test -s /tmp/aotsmoke.pdf  # non-empty
+- name: AOT/JIT parity gate
+  run: ./scripts/aot-parity.sh
 ```
 
-This runs on `linux-x64`, `osx-arm64`, and `win-x64` in the cross-platform matrix. Each platform also feeds its produced bytes into the determinism harness's per-platform pin map (see [determinism.md](determinism.md)) so any AOT/JIT byte divergence on any platform surfaces immediately.
+This runs on `linux-x64`, `osx-arm64`, and `win-x64` in the cross-platform matrix. The script publishes, runs, and parity-tests; any divergence — between the JIT execution of `SmokeDocumentFactory` and the published native binary's output — fails the step. The same script is what contributors run locally to verify a patch hasn't broken AOT or determinism.
+
+Each platform also feeds its produced bytes into the determinism harness's per-platform pin map (see [determinism.md](determinism.md)) so any AOT/JIT byte divergence on any platform surfaces immediately.
 
 ## Common AOT failure modes (and what to do)
 

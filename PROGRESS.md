@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-03 (Task 24 ✅ — AOT smoke wires up + passes: native binary publishes cleanly, runs, produces byte-identical PDF to JIT, structural sanity verified)
+**Last updated:** 2026-05-03 (Task 24 follow-up review ✅ — JIT/AOT parity is now an enforced gate (not a manual hash compare): SmokeDocumentFactory shared between Program and parity tests, transparent-GIF SMask path added, startxref-offset structural verifier, scripts/aot-parity.sh as a single-command CI gate)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -614,6 +614,23 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
     - `shasum -a 256 /tmp/aotsmoke.pdf` confirms the on-disk file matches the SHA the binary printed.
   - **Documentation**: new `docs/design/aot-smoke.md` covers the AOT-clean contract (banned patterns + analyzer flags), the local-run protocol (`build` → `run` JIT → `publish` AOT → native run), the planned Phase 5 CI matrix step, and the common AOT failure modes (IL2026 / IL3050 / startup segfaults / determinism divergence). `CLAUDE.md` now points at this doc + `determinism.md` from the cross-cutting rules section.
   - **No new unit tests** — the AOT smoke is itself the test. Adding xUnit tests would require running the published native binary from inside an xUnit harness, which isn't a Phase 1 concern (Phase 5 wires this into a CI matrix script).
+
+- **Task 24 follow-up review — JIT/AOT parity gate enforced + smoke document expanded + structural verifier strengthened** ✅ (2026-05-03) — review caught that Task 24 only documented JIT/AOT parity as a manual step; the smoke didn't exercise the alpha-bearing image path; and the "well-formed PDF" structural check was a keyword search, not real structural verification. All three are now closed.
+  - **`SmokeDocumentFactory` extracted** into a public class in `tests/NetPdf.AotSmoke/`. Both `Program.cs` and the new parity tests call the same factory — they cannot drift apart because there is only one definition of the smoke document.
+  - **Smoke document expanded with the `/SMask` indirect-ref path**: a hand-crafted minimal transparent GIF89a goes through `RasterImageDecoder` (SkiaSharp) → `RasterImageXObject` (alpha-split) → `PdfDocument.RegisterImage(ImageXObjectResult)` (clones primary dict, allocates SMask indirect slot, wires `/SMask` to that slot). This is the most subtle recent code path — exactly the kind of complexity an AOT canary should exercise. Document grows from 1279 to 1791 bytes.
+  - **`TryVerifyPdfStructure`** replaces the keyword-only check: parses `startxref`'s integer offset from the trailing 1024 bytes, validates the offset is in-range, then verifies the bytes at that offset are either the `xref` keyword (classic table) OR a `<n> <gen> obj` indirect-object header (xref stream form, accepted for forward-compat with `EmittedPdfVersion=V2_0`). Rejects with diagnostic snippet on any mismatch.
+  - **`AotJitParityTests`** in `NetPdf.UnitTests` (4 new tests):
+    - `SmokeDocumentFactory_produces_byte_equal_output_across_calls` (3-iteration property check).
+    - `SmokeDocumentFactory_emits_well_formed_PDF_bytes` (calls `TryVerifyPdfStructure`).
+    - `Native_AOT_binary_produces_byte_identical_output_to_JIT` — locates `artifacts/aot-smoke/NetPdf.AotSmoke[.exe]`, runs via `Process.Start`, parses `sha256=<HEX>`, asserts equal to the JIT factory's hash. Skips with informative log when the binary is missing (ran without prior publish), so CI failure surfaces drift, not absence.
+    - `Native_AOT_binary_writes_byte_identical_PDF_when_passed_an_output_path` — runs the binary with an output-path arg, byte-compares the written file to the JIT factory's bytes.
+  - **`scripts/aot-parity.sh`** — single-command parity gate. Steps: publish AOT → sanity-run native → run parity tests filtered. Exit code propagates. Phase 5 CI runs this script as one merge gate.
+  - **Negative-path verification** of the gate: temporarily perturbed the JIT factory's metadata while keeping the old AOT binary; the parity test correctly **failed** with a diagnosable SHA mismatch (`Expected: CA5A6B26...` vs `Actual: 2942DD1E...`), proving the gate has teeth. Reverted before commit.
+  - **Verification on `osx-arm64` (.NET 10)**:
+    - `./scripts/aot-parity.sh` — publish AOT (1.5 MB native binary), sanity-run prints `byteCount=1791 sha256=2942DD1EDCDA4C0B50408512CA28B1379126CF3F051D638C5ABBE539530C3DE7`, all 4 parity tests pass.
+    - JIT and AOT produce byte-identical output (1791 bytes, same SHA).
+  - **Documentation**: `docs/design/aot-smoke.md` rewritten to advertise the parity gate as the merge requirement and document the step-by-step + single-command + CI flows.
+  - Total tests: **1542 unit / 1553 solution-wide passing** (+4 net new; 1 skipped pin-capture utility).
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

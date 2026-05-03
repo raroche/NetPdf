@@ -16,6 +16,12 @@
     <ProjectReference Include="..\..\src\NetPdf.Pdf\NetPdf.Pdf.csproj" />
     <ProjectReference Include="..\..\src\NetPdf.Text\NetPdf.Text.csproj" />
     <ProjectReference Include="..\..\src\NetPdf.Svg\NetPdf.Svg.csproj" />
+    <!--
+      AotSmoke is referenced so the JIT/AOT parity test can call SmokeDocumentFactory
+      without duplicating the smoke build code. Plain .dll reference; AotSmoke's
+      IsAotCompatible only affects ITS OWN publish, not consumers.
+    -->
+    <ProjectReference Include="..\NetPdf.AotSmoke\NetPdf.AotSmoke.csproj" />
   </ItemGroup>
 
   <ItemGroup>

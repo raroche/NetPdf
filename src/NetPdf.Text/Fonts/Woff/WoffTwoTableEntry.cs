@@ -39,16 +39,26 @@ internal readonly record struct WoffTwoTableEntry
 
     /// <summary>
     /// True when the entry uses the null transform (verbatim copy in the compressed
-    /// stream). Per W3C WOFF 2.0 §5: <c>glyf</c> and <c>loca</c> use version 0 as the
-    /// actual transform (so version 3 is null for them); <c>hmtx</c> uses version 1 as
-    /// the actual transform (so versions 0 and 3 are null for hmtx); every other table
-    /// uses version 0 as the null transform.
+    /// stream). Per W3C WOFF 2.0 §5:
     /// </summary>
+    /// <list type="bullet">
+    ///   <item><c>glyf</c> / <c>loca</c>: version 0 = the actual transform; version 3 = null transform.</item>
+    ///   <item><c>hmtx</c>: version 0 = null transform; version 1 = the hmtx transform.</item>
+    ///   <item>Every other table: version 0 = null transform; versions 1, 2, 3 are not
+    ///         currently defined and must be rejected (spec §5: "Predefined non-zero
+    ///         transformation versions for tables other than glyf, loca, or hmtx are not
+    ///         currently defined").</item>
+    /// </list>
     public bool IsNullTransform => TransformVersion switch
     {
-        3 => true,                                                               // explicit null transform — always
-        0 => Tag != WoffTwoTags.Glyf && Tag != WoffTwoTags.Loca,                 // version 0 is null EXCEPT for glyf/loca
-        _ => false,                                                              // version 1 + 2 are non-null when defined
+        // Version 3 is the null sentinel for glyf/loca only.
+        3 when Tag == WoffTwoTags.Glyf || Tag == WoffTwoTags.Loca => true,
+        // Version 0 is the null transform for every table EXCEPT glyf/loca (where it is
+        // the actual transform).
+        0 => Tag != WoffTwoTags.Glyf && Tag != WoffTwoTags.Loca,
+        // Everything else is non-null. Version 1 on hmtx is the hmtx transform; all other
+        // (table, version) combinations are undefined per spec and rejected upstream.
+        _ => false,
     };
 
     /// <summary>

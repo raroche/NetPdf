@@ -17,11 +17,14 @@ internal static class WoffTwoLayoutValidator
     /// <summary>
     /// Validate the file-wide layout. Throws <see cref="InvalidDataException"/> on any
     /// violation. <paramref name="compressedDataStart"/> is the offset of the compressed-
-    /// data block (i.e., the position immediately after the table directory).
+    /// data block (i.e., the position immediately after the table directory). The full
+    /// <paramref name="file"/> bytes are needed so padding regions between blocks can be
+    /// verified to be all-zero per §3.
     /// </summary>
-    public static void Validate(WoffTwoHeader header, long fileLength, int compressedDataStart)
+    public static void Validate(WoffTwoHeader header, ReadOnlySpan<byte> file, int compressedDataStart)
     {
         ArgumentNullException.ThrowIfNull(header);
+        var fileLength = file.Length;
 
         // Compressed-data block must fit between the directory and the start of the
         // metadata block (or end of file if no optional blocks follow).
@@ -43,29 +46,28 @@ internal static class WoffTwoLayoutValidator
         }
 
         // Metadata block (if present): begins at MetaOffset, runs MetaLength bytes; must
-        // be 4-byte aligned per §3 (compressed-data block is followed by 0..3 zero
-        // padding bytes for 4-byte alignment when metadata follows). Must come AFTER
-        // compressed data and BEFORE private data.
+        // be 4-byte aligned per §3. Padding from compressedEnd to MetaOffset is at most
+        // 3 bytes and must be zero.
         long expectedNextBlockStart = compressedEnd;
         if (metaPresent)
         {
-            // §3: metaOffset must be ≥ compressedEnd, with 4-byte alignment after
-            // compressed-data padding.
             var metaEnd = (long)header.MetaOffset + header.MetaLength;
             if (header.MetaOffset < expectedNextBlockStart)
             {
                 throw new InvalidDataException(
                     $"WOFF2: metadata block (offset={header.MetaOffset}) overlaps the compressed-data block (which ends at {compressedEnd}).");
             }
-            if ((header.MetaOffset & 3) != 0)
-            {
-                throw new InvalidDataException(
-                    $"WOFF2: metadata block offset {header.MetaOffset} is not 4-byte aligned.");
-            }
             if (header.MetaOffset < WoffTwoConstants.HeaderSize)
             {
                 throw new InvalidDataException(
                     "WOFF2: metadata block starts inside the file header.");
+            }
+            // Padding gap must be ≤ 3 bytes and all-zero.
+            ValidatePaddingGap(file, expectedNextBlockStart, header.MetaOffset, "compressed-data → metadata");
+            if ((header.MetaOffset & 3) != 0)
+            {
+                throw new InvalidDataException(
+                    $"WOFF2: metadata block offset {header.MetaOffset} is not 4-byte aligned.");
             }
             if (metaEnd > fileLength)
             {
@@ -76,8 +78,8 @@ internal static class WoffTwoLayoutValidator
         }
 
         // Private-data block (if present): must come AFTER metadata (and compressed-data
-        // if no metadata), 4-byte aligned, must not overlap, must end at file end (no
-        // trailing bytes after the last declared block).
+        // if no metadata), 4-byte aligned, must not overlap, MUST end exactly at file end.
+        // Per §3 the private block, when present, terminates the file — no trailing bytes.
         if (privPresent)
         {
             var privEnd = (long)header.PrivOffset + header.PrivLength;
@@ -86,27 +88,56 @@ internal static class WoffTwoLayoutValidator
                 throw new InvalidDataException(
                     $"WOFF2: private-data block (offset={header.PrivOffset}) overlaps the previous block (which ends at {expectedNextBlockStart}).");
             }
+            ValidatePaddingGap(file, expectedNextBlockStart, header.PrivOffset, "previous-block → private-data");
             if ((header.PrivOffset & 3) != 0)
             {
                 throw new InvalidDataException(
                     $"WOFF2: private-data block offset {header.PrivOffset} is not 4-byte aligned.");
             }
-            if (privEnd > fileLength)
+            if (privEnd != fileLength)
             {
                 throw new InvalidDataException(
-                    $"WOFF2: private-data block (offset={header.PrivOffset}, length={header.PrivLength}) extends past file end ({fileLength}).");
+                    $"WOFF2: private-data block (offset={header.PrivOffset}, length={header.PrivLength}) must end exactly at file end ({fileLength}); got {privEnd}.");
             }
             expectedNextBlockStart = privEnd;
         }
 
-        // No extraneous trailing bytes after the last declared block. The expected end
-        // should be at the file length (modulo a final 0–3 byte 4-byte alignment pad,
-        // which §3 permits but counts toward header.length).
-        var slop = fileLength - expectedNextBlockStart;
-        if (slop < 0 || slop > 3)
+        // If neither metadata nor private exists, the file may end with up to 3 trailing
+        // alignment bytes after compressed-data (those bytes must also be zero).
+        if (!metaPresent && !privPresent)
+        {
+            ValidatePaddingGap(file, compressedEnd, fileLength, "compressed-data → EOF");
+        }
+        // If metadata exists but no private: §3 doesn't require metadata to align with
+        // EOF, so up to 3 trailing alignment bytes are allowed and must be zero.
+        else if (metaPresent && !privPresent)
+        {
+            ValidatePaddingGap(file, expectedNextBlockStart, fileLength, "metadata → EOF");
+        }
+        // If priv exists, the priv-end-equals-fileLength check above already eliminated
+        // any trailing slop.
+    }
+
+    private static void ValidatePaddingGap(ReadOnlySpan<byte> file, long fromOffset, long toOffset, string label)
+    {
+        var gap = toOffset - fromOffset;
+        if (gap < 0)
         {
             throw new InvalidDataException(
-                $"WOFF2: file has {slop} byte(s) after the last declared block (expected end at {expectedNextBlockStart}, file length {fileLength}). At most 3 trailing alignment bytes are permitted.");
+                $"WOFF2: {label} gap is negative ({gap}) — block ordering is wrong.");
+        }
+        if (gap > 3)
+        {
+            throw new InvalidDataException(
+                $"WOFF2: {label} has {gap} byte(s) of padding; at most 3 are permitted for 4-byte alignment.");
+        }
+        for (var k = 0; k < gap; k++)
+        {
+            if (file[(int)(fromOffset + k)] != 0)
+            {
+                throw new InvalidDataException(
+                    $"WOFF2: {label} padding byte at offset {fromOffset + k} is non-zero (0x{file[(int)(fromOffset + k)]:X2}); §3 requires zero-fill.");
+            }
         }
     }
 }

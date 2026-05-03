@@ -47,9 +47,23 @@ internal static class WoffTwoGlyfTransform
             throw new InvalidDataException($"WOFF2: transformed glyf reserved must be 0; got 0x{reserved:X4}.");
         }
         var optionFlags = BinaryPrimitives.ReadUInt16BigEndian(transformedGlyf[2..4]);
+        // Per §5.1: only bit 0 (overlapSimpleBitmap-present) is defined; bits 1..15 must be 0.
+        if ((optionFlags & 0xFFFE) != 0)
+        {
+            throw new InvalidDataException(
+                $"WOFF2: transformed glyf optionFlags has reserved bits set: 0x{optionFlags:X4}.");
+        }
         var hasOverlapSimpleBitmap = (optionFlags & 0x0001) != 0;
         var numGlyphs = BinaryPrimitives.ReadUInt16BigEndian(transformedGlyf[4..6]);
-        var indexFormat = BinaryPrimitives.ReadUInt16BigEndian(transformedGlyf[6..8]); // 0 = short, else long
+        var indexFormat = BinaryPrimitives.ReadUInt16BigEndian(transformedGlyf[6..8]);
+        // Per OpenType spec head.indexToLocFormat: only 0 (short loca) and 1 (long loca)
+        // are defined. WOFF 2.0 §5.1 inherits this constraint via the transformed-glyf
+        // header. Any other value is malformed.
+        if (indexFormat is not (0 or 1))
+        {
+            throw new InvalidDataException(
+                $"WOFF2: transformed glyf indexFormat must be 0 (short) or 1 (long); got {indexFormat}.");
+        }
 
         var nContourStreamSize = BinaryPrimitives.ReadUInt32BigEndian(transformedGlyf[8..12]);
         var nPointsStreamSize = BinaryPrimitives.ReadUInt32BigEndian(transformedGlyf[12..16]);
@@ -173,6 +187,45 @@ internal static class WoffTwoGlyfTransform
 
         locaOffsets[numGlyphs] = (uint)glyfOutput.Position;
 
+        // Per-substream cursor consumption checks. The whole-stream trailing-bytes check
+        // earlier rules out unconsumed regions overall, but a per-substream check pinpoints
+        // a malformed file where one substream over-claims at the expense of another.
+        if (nContourCursor != nContour.Length)
+        {
+            throw new InvalidDataException(
+                $"WOFF2: nContourStream has {nContour.Length - nContourCursor} unconsumed byte(s).");
+        }
+        if (nPointsCursor != nPoints.Length)
+        {
+            throw new InvalidDataException(
+                $"WOFF2: nPointsStream has {nPoints.Length - nPointsCursor} unconsumed byte(s).");
+        }
+        if (flagsCursor != flags.Length)
+        {
+            throw new InvalidDataException(
+                $"WOFF2: flagStream has {flags.Length - flagsCursor} unconsumed byte(s).");
+        }
+        if (glyphCursor != glyph.Length)
+        {
+            throw new InvalidDataException(
+                $"WOFF2: glyphStream has {glyph.Length - glyphCursor} unconsumed byte(s).");
+        }
+        if (compositeCursor != composite.Length)
+        {
+            throw new InvalidDataException(
+                $"WOFF2: compositeStream has {composite.Length - compositeCursor} unconsumed byte(s).");
+        }
+        if (bboxCursor != bboxValues.Length)
+        {
+            throw new InvalidDataException(
+                $"WOFF2: bboxStream has {bboxValues.Length - bboxCursor} unconsumed byte(s).");
+        }
+        if (instructionCursor != instructions.Length)
+        {
+            throw new InvalidDataException(
+                $"WOFF2: instructionStream has {instructions.Length - instructionCursor} unconsumed byte(s).");
+        }
+
         var glyfBytes = glyfOutput.ToArray();
         var locaBytes = BuildLocaTable(locaOffsets, indexFormat);
         return (glyfBytes, locaBytes, indexFormat);
@@ -215,6 +268,14 @@ internal static class WoffTwoGlyfTransform
         for (var c = 0; c < nContours; c++)
         {
             var v = WoffTwoVarInt.Read255UInt16(nPoints, ref nPointsCursor);
+            // A zero-point contour would emit endPtsOfContours[c] = (cumulative - 1) which
+            // underflows to 0xFFFF when cast to UInt16; the resulting glyph is malformed.
+            // Reject explicitly per WOFF 2.0 §5.1 (each contour must have at least 1 point).
+            if (v == 0)
+            {
+                throw new InvalidDataException(
+                    $"WOFF2: simple glyph #{glyphIndex} contour #{c} has 0 points.");
+            }
             nPointsPerContour[c] = v;
             totalPoints += v;
         }
@@ -261,6 +322,13 @@ internal static class WoffTwoGlyfTransform
         short xMin, yMin, xMax, yMax;
         if (bboxBitSet)
         {
+            // Explicit guard so a truncated bboxStream surfaces as InvalidDataException,
+            // not the ArgumentOutOfRangeException Span slicing would otherwise throw.
+            if (bboxCursor + 8 > bboxValues.Length)
+            {
+                throw new InvalidDataException(
+                    $"WOFF2: simple glyph #{glyphIndex} bbox truncated in bboxStream (need 8 bytes at cursor {bboxCursor}, have {bboxValues.Length - bboxCursor}).");
+            }
             xMin = BinaryPrimitives.ReadInt16BigEndian(bboxValues[bboxCursor..(bboxCursor + 2)]);
             yMin = BinaryPrimitives.ReadInt16BigEndian(bboxValues[(bboxCursor + 2)..(bboxCursor + 4)]);
             xMax = BinaryPrimitives.ReadInt16BigEndian(bboxValues[(bboxCursor + 4)..(bboxCursor + 6)]);
@@ -285,10 +353,12 @@ internal static class WoffTwoGlyfTransform
             {
                 minX = maxX = minY = maxY = 0;
             }
-            xMin = ClampToInt16(minX);
-            yMin = ClampToInt16(minY);
-            xMax = ClampToInt16(maxX);
-            yMax = ClampToInt16(maxY);
+            // Bbox values must fit in Int16 per OpenType. Overflow indicates a malformed
+            // glyph — reject so a corrupted glyph never lands in a downstream renderer.
+            xMin = ToInt16OrThrow(minX, "xMin", glyphIndex);
+            yMin = ToInt16OrThrow(minY, "yMin", glyphIndex);
+            xMax = ToInt16OrThrow(maxX, "xMax", glyphIndex);
+            yMax = ToInt16OrThrow(maxY, "yMax", glyphIndex);
         }
 
         // Determine OVERLAP_SIMPLE bit for the FIRST point per OpenType convention.
@@ -330,19 +400,32 @@ internal static class WoffTwoGlyfTransform
         }
 
         // Compute relative-to-previous deltas from absolute coords and write as Int16 BE.
+        // Per OpenType §"glyf", point deltas are signed 16-bit. A delta outside Int16
+        // range cannot be represented and indicates malformed input — reject rather than
+        // silently clamp, which would corrupt the glyph outline.
         var prevX = 0;
         for (var p = 0; p < totalPoints; p++)
         {
             var dx = xs[p] - prevX;
             prevX = xs[p];
-            WriteInt16BE(output, ClampToInt16(dx));
+            if (dx is < short.MinValue or > short.MaxValue)
+            {
+                throw new InvalidDataException(
+                    $"WOFF2: simple glyph #{glyphIndex} point #{p} X delta {dx} is out of Int16 range.");
+            }
+            WriteInt16BE(output, (short)dx);
         }
         var prevY = 0;
         for (var p = 0; p < totalPoints; p++)
         {
             var dy = ys[p] - prevY;
             prevY = ys[p];
-            WriteInt16BE(output, ClampToInt16(dy));
+            if (dy is < short.MinValue or > short.MaxValue)
+            {
+                throw new InvalidDataException(
+                    $"WOFF2: simple glyph #{glyphIndex} point #{p} Y delta {dy} is out of Int16 range.");
+            }
+            WriteInt16BE(output, (short)dy);
         }
     }
 
@@ -522,10 +605,13 @@ internal static class WoffTwoGlyfTransform
         s.WriteByte((byte)(v & 0xFF));
     }
 
-    private static short ClampToInt16(int v) => v switch
+    private static short ToInt16OrThrow(int v, string field, int glyphIndex)
     {
-        > short.MaxValue => short.MaxValue,
-        < short.MinValue => short.MinValue,
-        _ => (short)v,
-    };
+        if (v is < short.MinValue or > short.MaxValue)
+        {
+            throw new InvalidDataException(
+                $"WOFF2: simple glyph #{glyphIndex} {field} = {v} is out of Int16 range.");
+        }
+        return (short)v;
+    }
 }

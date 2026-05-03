@@ -54,17 +54,18 @@ internal static class WoffTwoDecoder
         var cursor = WoffTwoConstants.HeaderSize;
         var entries = WoffTwoTableEntry.ParseDirectory(woff2Bytes, ref cursor, header.NumTables);
 
-        // Spec invariant (§5.1): when glyf and loca are both present AND at least one uses
-        // the actual transform (version 0), they MUST be located adjacently in the directory
-        // (loca immediately after glyf). With null transforms (version 3) on both, the
-        // directory follows no special adjacency rule.
-        ValidateGlyfLocaAdjacencyForTransform(entries);
+        // Per WOFF 2.0 §5.1, immediate adjacency of glyf/loca is mandated only inside
+        // TrueType collection (TTC) files, to anchor pairs when multiple fonts share a
+        // single directory. Single-font WOFF 2.0 files may interleave other tables
+        // between glyf and loca freely. This decoder rejects TTC at the top of Decode(),
+        // so adjacency need not be checked here.
 
         // (3) Validate the wrapper layout (block ordering, alignment, no overlaps, no
-        // trailing bytes). Returns the start of the compressed-data block.
+        // trailing bytes, zero-padding between blocks). Returns the start of the
+        // compressed-data block.
         var compressedStart = cursor;
         var expectedDecompressedSize = ComputeExpectedDecompressedSize(entries);
-        WoffTwoLayoutValidator.Validate(header, woff2Bytes.Length, compressedStart);
+        WoffTwoLayoutValidator.Validate(header, woff2Bytes, compressedStart);
 
         var compressedEnd = compressedStart + (int)header.TotalCompressedSize;
         var compressed = woff2Bytes[compressedStart..compressedEnd];
@@ -142,9 +143,16 @@ internal static class WoffTwoDecoder
             }
             var glyfTransformed = glyfTransformedBytes.ToArray();
             var (glyfBytes, locaBytes, _) = WoffTwoGlyfTransform.Reverse(glyfTransformed);
-            // Per §5.1: origLength of the glyf table reflects the reconstructed size; we
-            // accept whatever the reversal produced (bounded by per-glyph correctness checks)
-            // and let any downstream parser detect inconsistency.
+            // Per §5.1: the transformed loca's origLength MUST equal the reconstructed
+            // loca size (i.e. (numGlyphs + 1) × {2 or 4} per indexFormat). Mismatch
+            // indicates a malformed file or a transform-reversal bug; reject early so
+            // downstream consumers never see inconsistent loca/maxp counts.
+            var expectedLocaSize = entries[locaIdx].OrigLength;
+            if (locaBytes.Length != expectedLocaSize)
+            {
+                throw new InvalidDataException(
+                    $"WOFF2: transformed loca origLength {expectedLocaSize} does not match reconstructed size {locaBytes.Length}.");
+            }
             tableSegments[glyfIdx] = new TableSegment(WoffTwoTags.Glyf, glyfBytes);
             tableSegments[locaIdx] = new TableSegment(WoffTwoTags.Loca, locaBytes);
         }
@@ -157,38 +165,6 @@ internal static class WoffTwoDecoder
 
         // (5) Re-assemble into SFNT.
         return AssembleSfnt(header.Flavor, tableSegments);
-    }
-
-    private static void ValidateGlyfLocaAdjacencyForTransform(WoffTwoTableEntry[] entries)
-    {
-        int glyfIndex = -1, locaIndex = -1;
-        bool glyfTransformed = false, locaTransformed = false;
-        for (var i = 0; i < entries.Length; i++)
-        {
-            if (entries[i].Tag == WoffTwoTags.Glyf)
-            {
-                glyfIndex = i;
-                glyfTransformed = entries[i].TransformVersion == 0;
-            }
-            else if (entries[i].Tag == WoffTwoTags.Loca)
-            {
-                locaIndex = i;
-                locaTransformed = entries[i].TransformVersion == 0;
-            }
-        }
-        if (glyfIndex == -1 && locaIndex == -1) return;
-        if (glyfIndex == -1 || locaIndex == -1)
-        {
-            throw new InvalidDataException("WOFF2: 'glyf' and 'loca' must both be present or both absent.");
-        }
-        // Per §5.1: only the transformed pair must be located adjacently. With version 3
-        // (null) on both, the directory may interleave other tables between them.
-        var transformInPlay = glyfTransformed || locaTransformed;
-        if (transformInPlay && locaIndex != glyfIndex + 1)
-        {
-            throw new InvalidDataException(
-                $"WOFF2: transformed 'loca' must immediately follow transformed 'glyf' in the directory; got glyf@{glyfIndex} loca@{locaIndex}.");
-        }
     }
 
     private static long ComputeExpectedDecompressedSize(WoffTwoTableEntry[] entries)

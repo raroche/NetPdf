@@ -68,9 +68,11 @@ internal static class SyntheticWoffTwo
 
         foreach (var (tag, bytes) in tables)
         {
-            byte transformVersion = (tag is WoffTwoTags.Glyf or WoffTwoTags.Loca or WoffTwoTags.Hmtx)
-                ? (byte)3   // explicit null transform for special tables
-                : (byte)0;  // version 0 = null transform for ordinary tables
+            // Per WOFF 2.0 §5: version 3 is the null sentinel only for glyf / loca;
+            // for hmtx and ordinary tables, version 0 is the null transform.
+            byte transformVersion = (tag is WoffTwoTags.Glyf or WoffTwoTags.Loca)
+                ? (byte)3   // explicit null transform for glyf / loca
+                : (byte)0;  // version 0 = null transform for hmtx + ordinary tables
 
             byte tagIndex = TagToKnownIndex(tag);
             byte flags = (byte)(((transformVersion & 0x03) << 6) | (tagIndex & 0x3F));

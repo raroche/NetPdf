@@ -89,6 +89,7 @@ Byte-determinism unlocks several uses that approximate-match outputs cannot:
 
 ## Known gaps
 
+- **AOT determinism is verified.** The `NetPdf.AotSmoke` project publishes a native binary via `dotnet publish -p:PublishAot=true` and runs it; it produces a byte-identical PDF to the JIT execution of the same code path on the same platform. Documented in [docs/design/aot-smoke.md](aot-smoke.md).
 - **Cross-platform pins** are currently captured for `osx-arm64` only. Phase 5 brings the containerized reference environment that will pin `linux-x64` and `linux-arm64` from a known Docker image; `win-x64` will follow.
 - **Non-ASCII metadata** (Title / Author / Subject / Keywords / Creator with chars > U+007F) is rejected at the public-API boundary by `PdfLiteralString`. The byte writer supports `PdfHexString` (UTF-16BE) but the public facade does not yet route through it. Tracked in [`docs/compatibility-matrix.md`](../compatibility-matrix.md).
 - **`FeatureFlags.DeterministicTimestamps`** is declared in `src/NetPdf/FeatureFlags.cs` but is not yet wired through the public `HtmlPdf.Convert(html, options)` path because that path itself ships in Phase 2. The internal `PdfDocument` already defaults `CreationDate` / `ModDate` to `null`, satisfying the flag's intent by default.

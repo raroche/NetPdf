@@ -24,6 +24,13 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\NetPdf\NetPdf.csproj" />
+    <!--
+      Direct reference to NetPdf.Pdf is required for Phase 1 because the smoke test
+      exercises PdfDocument / MediaBoxSize / image XObjects — internals not yet
+      reachable through the public NetPdf facade (which Phase 2 wires up). Drops
+      back to facade-only once HtmlPdf.Convert can drive a representative document.
+    -->
+    <ProjectReference Include="..\..\src\NetPdf.Pdf\NetPdf.Pdf.csproj" />
   </ItemGroup>
 
 </Project>

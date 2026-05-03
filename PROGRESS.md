@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-03 (Task 23 follow-up review ✅ — per-platform per-shape pin map, structural PDF sanity, byte-mismatch diagnostics, error-path determinism, /ID extraction, non-UTC date paths, long-metadata + many-AppendContent stress; PdfFormat.PdfDeflateCompressionLevel pins zlib level; docs/design/determinism.md publishes the contract)
+**Last updated:** 2026-05-03 (Task 24 ✅ — AOT smoke wires up + passes: native binary publishes cleanly, runs, produces byte-identical PDF to JIT, structural sanity verified)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -40,7 +40,7 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
 - **Doc:** [`docs/phases/phase-1-pdf-writer-and-text.md`](docs/phases/phase-1-pdf-writer-and-text.md)
 
 ### Active task
-**Task 24 — AOT smoke test wires up + passes** (next). Tasks 12–23 complete: UAX #9/#14/#29 (grapheme stage) at 100%/99.952%/100% UCD conformance, Liang en-us hyphenation, font registry + cross-platform system font enumeration, WOFF 1.0 + WOFF 2.0 round-trip end-to-end, JPEG/PNG/WebP/AVIF/GIF embedders, the `PdfDocument` high-level builder, and a determinism harness covering 13 representative document shapes plus a SHA-256-pinned canonical-document snapshot. Stage 14.2 (word boundaries) and 14.3 (sentence boundaries) remain post-Phase-1.
+**Task 25 — Performance baseline: BenchmarkDotNet on PDF write** (next). Tasks 12–24 complete: UAX #9/#14/#29 (grapheme stage) at 100%/99.952%/100% UCD conformance, Liang en-us hyphenation, font registry + cross-platform system font enumeration, WOFF 1.0 + WOFF 2.0 round-trip end-to-end, JPEG/PNG/WebP/AVIF/GIF embedders, the `PdfDocument` high-level builder, a determinism harness covering 18 document shapes with per-platform pinned hashes, and an AOT-published native smoke binary that produces byte-identical PDF to the JIT path. Stage 14.2 (word boundaries) and 14.3 (sentence boundaries) remain post-Phase-1.
 
 ### Subtasks completed
 
@@ -599,6 +599,21 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
   - **Documentation**: new `docs/design/determinism.md` publishes the public determinism contract (what counts as identical input, what is *not* part of the input, how it's enforced, the re-pin protocol, known gaps); `docs/compatibility-matrix.md` adds "PDF metadata strings" + "Determinism" sections, including the documented non-ASCII-metadata gap (M7) tracked for Phase 2.
   - **47 new tests** (4 test methods × 18 shapes − 17 prior duplicates = 55, plus 3 cross-cutting tests, minus 11 reorganized = 47 net new). Property tests x4 (twice / thrice / well-formed / pinned-snapshot) per shape × 18 shapes = 72; plus capture utility (skipped); plus `Canonical_document_has_deterministic_trailer_ID`, `RegisterImage_invalid_input_throws_identical_message_across_runs`, `Save_after_save_throws_identical_message_across_runs` = 75 harness tests.
   - Total tests: **1538 unit / 1549 solution-wide passing** (+47 net new; 1 skipped pin-capture utility).
+
+- **Task 24 — AOT smoke wires up + passes** ✅ (2026-05-03) — replaced the Phase-0 stub `NetPdf.AotSmoke` with a real `PdfDocument` exercise that publishes to a native binary via `dotnet publish -p:PublishAot=true`, runs end-to-end, and produces a byte-identical PDF to the JIT path on the same platform. Final proof that NetPdf is reflection-free / trim-friendly across the byte-writer, image XObject, and trailer derivation paths.
+  - **Real exercise of `PdfDocument`**: 2 mixed-size pages (A4 + Letter), explicit deterministic `CreationDate`, full Info-dict metadata, JPEG content-hash dedup (registers a hand-crafted minimal baseline JPEG twice and asserts the second call hits cache), `PlaceImage`, both `AppendContent(string)` and `AppendContent(ReadOnlySpan<byte>)` overloads, trailer `/ID` auto-derivation. Hand-crafted JPEG bytes (no test-fixture dependency) keep the AOT image dependency-light.
+  - **Structural sanity inline**: re-implements `IsWellFormedPdf` directly in the smoke (not via the test helper) so the published native image stays free of test-only code. Checks `%PDF-` head, `xref`/`startxref` keywords, trailing `%%EOF`.
+  - **Exit codes**: 0 = success; 1 = build/save threw; 2 = structural sanity failed; 3 = optional output-path write failed. Any non-zero blocks the CI step.
+  - **`InternalsVisibleTo` for `NetPdf.AotSmoke`** added to `NetPdf.Pdf.csproj` because Phase 1's public surface (`HtmlPdf.Convert`) doesn't yet drive a representative document — Phase 2 wires up HTML parsing. The AOT smoke can be flipped to facade-only at that point and the InternalsVisibleTo entry dropped.
+  - **`InvariantGlobalization=true`** on the smoke project drops globalization data from the published image AND forces any culture-sensitive code through `CultureInfo.InvariantCulture` (which is what NetPdf uses everywhere).
+  - **Verification on `osx-arm64` (.NET 10)**:
+    - `dotnet build` — 0 warnings, 0 errors (AOT analyzer + trim analyzer both on, IsAotCompatible=true).
+    - `dotnet run` (JIT) — exit 0, prints `byteCount=1279 sha256=C22392CC34955E79A3842EA2E5715132DCAD2FAC3E76DE2622B3DD7530757ED6`.
+    - `dotnet publish -c Release -f net10.0 -p:PublishAot=true` — 1.5 MB self-contained native binary in `artifacts/aot-smoke/NetPdf.AotSmoke`.
+    - Native binary run — exit 0, **byte-identical** SHA-256 to the JIT run (cross-runtime determinism guarantee proven).
+    - `shasum -a 256 /tmp/aotsmoke.pdf` confirms the on-disk file matches the SHA the binary printed.
+  - **Documentation**: new `docs/design/aot-smoke.md` covers the AOT-clean contract (banned patterns + analyzer flags), the local-run protocol (`build` → `run` JIT → `publish` AOT → native run), the planned Phase 5 CI matrix step, and the common AOT failure modes (IL2026 / IL3050 / startup segfaults / determinism divergence). `CLAUDE.md` now points at this doc + `determinism.md` from the cross-cutting rules section.
+  - **No new unit tests** — the AOT smoke is itself the test. Adding xUnit tests would require running the published native binary from inside an xUnit harness, which isn't a Phase 1 concern (Phase 5 wires this into a CI matrix script).
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

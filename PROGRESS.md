@@ -3,7 +3,7 @@
 **Current phase:** Phase 1 — PDF writer + text foundation
 **Tagged release:** `0.0.1-phase0` (Phase 0 complete)
 **Target next tag:** `0.1.0-alpha` (Phase 1 complete)
-**Last updated:** 2026-05-03 (Task 22 follow-up review ✅ — caller-owned mutation bug in `RegisterImage(ImageXObjectResult)` fixed via dictionary clone, dimension/BPC sanity validation, document-level orchestration tests for transparent GIF / opaque WebP / AVIF through Save)
+**Last updated:** 2026-05-03 (Task 23 ✅ — determinism harness pinned: 13 document shapes × byte-equal-twice + byte-equal-thrice property tests, plus a SHA-256-pinned snapshot of a canonical "everything-in" document for cross-process drift detection)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -40,7 +40,7 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
 - **Doc:** [`docs/phases/phase-1-pdf-writer-and-text.md`](docs/phases/phase-1-pdf-writer-and-text.md)
 
 ### Active task
-**Task 23 — Determinism: byte-hash test harness** (next). Tasks 12–22 complete: UAX #9/#14/#29 (grapheme stage) at 100%/99.952%/100% UCD conformance, Liang en-us hyphenation, font registry + cross-platform system font enumeration, WOFF 1.0 + WOFF 2.0 round-trip end-to-end, JPEG/PNG/WebP/AVIF/GIF embedders, and the `PdfDocument` high-level builder that wires it all into a single Save() call. Stage 14.2 (word boundaries) and 14.3 (sentence boundaries) remain post-Phase-1.
+**Task 24 — AOT smoke test wires up + passes** (next). Tasks 12–23 complete: UAX #9/#14/#29 (grapheme stage) at 100%/99.952%/100% UCD conformance, Liang en-us hyphenation, font registry + cross-platform system font enumeration, WOFF 1.0 + WOFF 2.0 round-trip end-to-end, JPEG/PNG/WebP/AVIF/GIF embedders, the `PdfDocument` high-level builder, and a determinism harness covering 13 representative document shapes plus a SHA-256-pinned canonical-document snapshot. Stage 14.2 (word boundaries) and 14.3 (sentence boundaries) remain post-Phase-1.
 
 ### Subtasks completed
 
@@ -578,6 +578,14 @@ dotnet run --project samples/invoice-cli/InvoiceCli.csproj -c Release -- \
       - **Validation negative cases**: zero-Width rejected, BPC=5 rejected, SMask with BPC=4 rejected.
       - **Document-level raster orchestration**: transparent GIF through `RasterImageXObject` → `PdfDocument` → `Save` produces an indirect `/SMask <n> 0 R` ref (not an inline stream); opaque WebP through `PdfDocument` → `Save` emits an Image XObject without `/SMask`; pinned 1×1 white opaque AVIF fixture (BSD-2-Clause, 305 bytes) through `PdfDocument` → `Save` on hosts that can decode AVIF — opaque output, `/ColorSpace /DeviceRGB`, no `/SMask`. AVIF test no-ops gracefully on macOS where SkiaSharp 3.119 lacks libavif.
   - Total tests: **1463 unit / 1474 solution-wide passing** (+8 net new).
+
+- **Task 23 — Determinism: byte-hash test harness** ✅ (2026-05-03) — every individual feature test in this codebase implicitly relies on the contract "identical input produces byte-identical output." The harness pulls those checks together at the orchestration layer and exercises the determinism property across many document shapes simultaneously, so a regression in any one of them — a silent `HashSet` iteration order leak, a thread-pool PRNG, an ambient `DateTime.Now` sneaking in — gets caught here even when the per-feature test still passes.
+  - **Two-layer harness** in `tests/NetPdf.UnitTests/Pdf/PdfDocumentDeterminismHarnessTests.cs`:
+    - **Byte-equal-twice / byte-equal-thrice property tests** over 13 parameterized document shapes: blank A4, blank Letter + metadata, multi-page mixed sizes, JPEG embed + place, opaque PNG embed, RGBA PNG with SMask, indexed PNG with binary tRNS (color-key /Mask), indexed PNG with non-binary tRNS (SMask split), transparent GIF through `RasterImageXObject`, image dedup with three references on the same page, mixed images (JPEG + opaque PNG + RGBA PNG), raw content-stream operators via both `AppendContent(string)` and `AppendContent(ReadOnlySpan<byte>)` overloads, and explicit UTC `CreationDate`/`ModDate`. Each shape is built in independent `PdfDocument` instances and the byte arrays must be equal across iterations.
+    - **Pinned-snapshot test** for a canonical "everything-in" document (multiple pages, mixed metadata, all hand-crafted image embed paths plus a deduped image reference, raw content-stream operators on each page): `BuildCanonicalEverythingDocument()` produces 3001 bytes whose SHA-256 is pinned at `75E83E423805B8881FD14A6CD62E0BCE82E8CB62F424D3413CD8CD8A9D8AEABC` (captured 2026-05-03 on .NET 10 macOS arm64). Updating the snapshot requires verifying the new bytes are still well-formed PDF (qpdf `--check`, PDFium open) — never blindly re-pin.
+  - **Image fixtures restricted to byte-stable hand-crafted generators** (`SyntheticJpeg.BuildBaseline`, `SyntheticPng`, `SyntheticRasterImage.BuildMinimalGif/BuildTransparentGif`). Skia-encoded WebP / AVIF outputs are not byte-stable across SkiaSharp builds, so they live in the byte-equal-twice property tests but are excluded from the pinned snapshot.
+  - **28 new tests** (13 shapes × 2 property tests + 2 canonical tests). The byte-equal-thrice variant catches any internal cache that warms up on first build but produces different output on subsequent builds (e.g. a `HashSet`'s iteration order changing after rehash) — would manifest at iteration 3 even if iterations 1 and 2 happened to coincide.
+  - Total tests: **1491 unit / 1502 solution-wide passing** (+28 net new).
 
 ### What's next when Phase 1 completes
 Phase 2 — CSS engine + DOM pipeline. See [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md).

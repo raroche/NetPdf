@@ -10,10 +10,15 @@ internal static class Program
     public static int Main(string[] args)
     {
         // The snippets below mirror the README. Each is wrapped in a try/catch because
-        // NetPdf throws NotImplementedException during Phase 0; once Phase 1+ ships,
-        // the catches are removed and the snippets become a CI-validated doc test.
+        // the public HtmlPdf.Convert facade still throws NotImplementedException at the
+        // 0.1.0-alpha milestone — the internal byte writer, font subsetter, image
+        // embedders, and text shaping shipped in Phase 1, but the HTML parsing + CSS
+        // cascade glue that this facade depends on lands in Phase 2 (`0.3.0-alpha`).
+        // Once Phase 2 ships, the catches are removed and the snippets become a
+        // CI-validated doc test.
 
         Console.WriteLine($"NetPdf version {HtmlPdf.Version}");
+        Console.WriteLine("(Phase 1 alpha — internal engine shipped; HtmlPdf.Convert wires up in Phase 2.)");
 
         TryRun("README example #1: one-liner", static () =>
         {
@@ -53,7 +58,7 @@ internal static class Program
         }
         catch (NotImplementedException)
         {
-            Console.WriteLine("   skipped (Phase 0)");
+            Console.WriteLine("   skipped (Phase 1 alpha — HtmlPdf.Convert wires up in Phase 2)");
         }
         catch (Exception ex)
         {

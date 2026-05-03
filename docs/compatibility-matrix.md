@@ -72,7 +72,7 @@ Phase column shows the milestone in which the feature first ships.
 | OpenType ligatures, kerning | ✅ | 1 | Via HarfBuzz. |
 | Bidi (RTL/LTR mixed text) | ✅ | 1 | UAX #9. |
 | Complex scripts (Indic, Arabic, Hebrew, CJK, Thai) | ✅ | 1 | Via HarfBuzz; quality varies by script — known limitations documented. |
-| Hyphenation (`hyphens: auto`) | ✅ | 1 | Liang patterns; ~15 languages bundled. |
+| Hyphenation (`hyphens: auto`) | 🧪 | 1 | Liang patterns. **At `0.1.0-alpha`: en-US only is bundled** (4,938 patterns + 14 exceptions). Other languages ship as optional `NetPdf.Languages.*` NuGet packs at v1.0+ (Cjk, Indic, European, Arabic, plus an `All` meta-package). See `docs/phases/phase-5-packaging-and-release.md`. |
 | `text-align`, `text-decoration`, `text-transform`, `letter-spacing`, `word-spacing` | ✅ | 2 | |
 | `writing-mode` (vertical) | 🧪 | 4 | `vertical-rl`/`vertical-lr` supported; sideways modes not. |
 

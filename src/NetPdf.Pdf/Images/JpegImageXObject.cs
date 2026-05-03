@@ -51,14 +51,9 @@ internal static class JpegImageXObject
         dict.Set(PdfNames.Subtype, PdfNames.Image);
         dict.Set(PdfNames.Width, new PdfInteger(info.Width));
         dict.Set(PdfNames.Height, new PdfInteger(info.Height));
-        dict.Set(PdfNames.ColorSpace, info.ComponentCount switch
-        {
-            1 => PdfNames.DeviceGray,
-            3 => PdfNames.DeviceRGB,
-            4 => PdfNames.DeviceCMYK,
-            _ => throw new InvalidDataException(
-                $"JPEG: unsupported component count {info.ComponentCount} for PDF embedding."),
-        });
+        // Reuse JpegImageInfo.ColorSpaceName so the component-count → name mapping has a
+        // single source of truth.
+        dict.Set(PdfNames.ColorSpace, new PdfName(info.ColorSpaceName));
         dict.Set(PdfNames.BitsPerComponent, new PdfInteger(info.BitsPerComponent));
         dict.Set(PdfNames.Filter, PdfNames.DCTDecode);
 

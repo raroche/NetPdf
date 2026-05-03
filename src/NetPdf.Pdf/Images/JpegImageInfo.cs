@@ -31,6 +31,14 @@ internal sealed record JpegImageInfo
     /// </summary>
     public required bool IsAdobeInvertedCmyk { get; init; }
 
+    /// <summary>
+    /// True when the JPEG carries an embedded ICC profile via one or more APP2 markers
+    /// tagged <c>"ICC_PROFILE\0"</c>. Phase 1 surfaces only presence; the device color
+    /// space is still emitted as <see cref="ColorSpaceName"/> until ICCBased emission
+    /// lands in a follow-up. Profiled images render with default rendering intent.
+    /// </summary>
+    public required bool HasIccProfile { get; init; }
+
     /// <summary>The PDF color-space name corresponding to <see cref="ComponentCount"/>.</summary>
     public string ColorSpaceName => ComponentCount switch
     {

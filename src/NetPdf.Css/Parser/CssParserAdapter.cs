@@ -114,10 +114,12 @@ internal static class CssParserAdapter
         ArgumentNullException.ThrowIfNull(sheet);
         ArgumentNullException.ThrowIfNull(preprocess);
 
-        var sheetLocation = preprocess.RuleSlots.IsEmpty
-            ? CssSourceLocation.Unknown
-            : preprocess.RuleSlots[0].Location;
-
+        // CssStylesheet.Location is the source position of the OWNING <style>/<link>
+        // element in the host HTML document — that's an HTML-level position, not a CSS
+        // one. The pre-pass only sees the CSS text, not the HTML around it, so we leave
+        // this as Unknown until the host plumbs the HTML position through (Phase 2 Task 12+
+        // wiring). The preprocess.RuleSlots[0].Location is the first rule's CSS-internal
+        // position — different concept entirely.
         return new CssStylesheet(
             Rules: AdaptTopLevelRules(sheet.Rules, preprocess),
             Href: href,
@@ -126,7 +128,7 @@ internal static class CssParserAdapter
             MediaQuery: mediaQuery,
             IsDisabled: isDisabled,
             Order: order,
-            Location: sheetLocation);
+            Location: CssSourceLocation.Unknown);
     }
 
     /// <summary>
@@ -202,9 +204,13 @@ internal static class CssParserAdapter
 
     /// <summary>
     /// Returns <see langword="true"/> if the AngleSharp rule's interface matches the slot's
-    /// expected kind. The match is permissive: any AngleSharp rule type is accepted for an
-    /// at-rule slot, except that we require the at-keyword names to match when both are
-    /// known so we don't pair (say) a slot for <c>@layer</c> with an AngleSharp <c>@media</c>.
+    /// expected kind AND (for at-rules) at-keyword. Mismatches return <see langword="false"/>
+    /// so the caller can demote the slot to opaque without advancing the AngleSharp cursor —
+    /// this is what prevents drift when AngleSharp drops a rule type the preprocessor
+    /// expected it to emit. Unknown-on-both-sides at-keywords pair only when neither side
+    /// recognizes the keyword (i.e., AngleSharp emitted a generic at-rule kind we didn't
+    /// special-case). That keeps novel at-rules pairable while still rejecting the case
+    /// where AngleSharp dropped the slot's rule and gave us something different instead.
     /// </summary>
     private static bool SlotMatchesAngleSharpRule(CssRuleSlot slot, ICssRule ang)
     {
@@ -213,28 +219,37 @@ internal static class CssParserAdapter
 
         if (ang is ICssStyleRule) return false; // slot expects at-rule but AngleSharp gave us a style rule
 
-        // Compare at-keyword to AngleSharp's rule type name when we can.
         var expectedKind = slot.AtKeyword;
         if (string.IsNullOrEmpty(expectedKind)) return true;
-        return AngleSharpAtKeywordMatches(ang, expectedKind);
+
+        // Strict at-keyword match: derive AngleSharp's rule keyword and compare.
+        var actualKind = AngleSharpAtKeyword(ang);
+        if (string.IsNullOrEmpty(actualKind))
+            // Both sides consider this rule a generic at-rule — pair them. Novel AngleSharp
+            // at-rule support (e.g., a future @scope) flows through this path.
+            return true;
+        return string.Equals(expectedKind, actualKind, StringComparison.OrdinalIgnoreCase);
     }
 
-    private static bool AngleSharpAtKeywordMatches(ICssRule rule, string expectedKeyword) =>
-        expectedKeyword switch
-        {
-            "media" => rule is ICssMediaRule,
-            "supports" => rule is ICssSupportsRule,
-            "keyframes" or "-webkit-keyframes" => rule is ICssKeyframesRule,
-            "font-face" => rule is ICssFontFaceRule,
-            "page" => rule is ICssPageRule,
-            "import" => rule is ICssImportRule,
-            "charset" => rule is ICssCharsetRule,
-            "namespace" => rule is ICssNamespaceRule,
-            // Anything else: accept any at-rule. Lets AngleSharp pair with novel at-rules
-            // that survive parsing (e.g., when AngleSharp adds support for an at-rule the
-            // preprocessor doesn't yet recognize).
-            _ => rule is not ICssStyleRule,
-        };
+    /// <summary>
+    /// Maps an AngleSharp <see cref="ICssRule"/> to its at-keyword (without leading <c>@</c>),
+    /// or <see cref="string.Empty"/> if it's a generic at-rule the dispatch doesn't recognize.
+    /// </summary>
+    private static string AngleSharpAtKeyword(ICssRule rule) => rule switch
+    {
+        ICssMediaRule => "media",
+        ICssSupportsRule => "supports",
+        ICssKeyframesRule => "keyframes",
+        ICssKeyframeRule => string.Empty, // not a top-level at-rule — only appears inside @keyframes
+        ICssFontFaceRule => "font-face",
+        ICssPageRule => "page",
+        ICssMarginRule => string.Empty, // not a top-level at-rule
+        ICssImportRule => "import",
+        ICssCharsetRule => "charset",
+        ICssNamespaceRule => "namespace",
+        ICssStyleRule => string.Empty,
+        _ => string.Empty,
+    };
 
     private static CssRule EmitOpaqueFromSlot(CssRuleSlot slot)
     {
@@ -713,7 +728,13 @@ internal static class CssParserAdapter
             var (valueText, isImportant) = ImportantParser.Strip(valueSpan.ToString());
 
             output.Add(new CssDeclaration(
-                Property: name.ToString(),
+                // Normalize property name to lowercase to match the rest of the AST:
+                // AngleSharp emits property names lowercased, and CssDeclarationRecovery
+                // also normalizes via ToLowerInvariant. Preserving authored casing here
+                // would cause `@top-center { Color: red }` to emit `Property = "Color"`
+                // while a normal style rule's `Color: red` becomes `"color"` — breaking
+                // case-insensitive lookup in the cascade.
+                Property: name.ToString().ToLowerInvariant(),
                 Value: new CssValue(valueText),
                 IsImportant: isImportant,
                 Location: parentLocation));

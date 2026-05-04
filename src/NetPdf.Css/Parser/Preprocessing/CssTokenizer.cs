@@ -207,8 +207,11 @@ internal ref struct CssTokenizer
 
     /// <summary>
     /// Reads raw text up to (but not including) any of the given delimiter characters,
-    /// respecting strings, comments, parens, and curly blocks. The delimiter character is
-    /// not consumed. Useful for reading at-rule preludes that end at <c>;</c> or <c>{</c>.
+    /// respecting strings, comments, and parens. <c>{</c> / <c>}</c> are NOT skipped — every
+    /// caller in the current preprocessor uses curly braces as the terminating delimiter
+    /// itself (e.g., <c>";{"</c> when reading a prelude that ends at either the body's
+    /// opening brace or a statement-form terminator). The delimiter character is not
+    /// consumed. Useful for reading at-rule preludes that end at <c>;</c> or <c>{</c>.
     /// </summary>
     public ReadOnlySpan<char> ReadUntilAnyTopLevel(ReadOnlySpan<char> delimiters)
     {

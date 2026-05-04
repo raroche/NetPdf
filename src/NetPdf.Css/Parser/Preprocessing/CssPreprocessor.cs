@@ -316,9 +316,14 @@ internal static class CssPreprocessor
     }
 
     /// <summary>
-    /// Parses an <c>@import</c> rule's prelude. Authored shape (CSS Cascade L4 + L5):
+    /// Parses an <c>@import</c> rule's prelude per the CSS Cascade L5 §2.4 grammar:
     /// <c>@import &lt;url&gt; [layer | layer(name)] [supports(condition)] [media-query];</c>.
-    /// Clauses can appear in any order.
+    /// Clauses appear in this fixed order — <c>layer</c> first, then <c>supports</c>, then
+    /// the (optional) media query, which always comes last and absorbs the remainder of the
+    /// prelude. The parser accepts <c>layer</c> and <c>supports</c> in either order before
+    /// the media query (per L5 they're commutative pre-media), but anything that isn't a
+    /// recognized layer/supports keyword starts the media query and ends layer/supports
+    /// recognition.
     /// </summary>
     private static CssImportRuleRecovery ParseImportRule(ref CssTokenizer tok, int ordinal, CssSourceLocation location)
     {

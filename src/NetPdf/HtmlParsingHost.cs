@@ -46,7 +46,11 @@ namespace NetPdf;
 /// <c>&lt;img src&gt;</c>, <c>&lt;link rel="stylesheet"&gt;</c>, <c>&lt;script src&gt;</c>, or
 /// <c>@import</c>. Resources flow through <see cref="HtmlPdfOptions.ResourceLoader"/> in later
 /// Phase 2/3 tasks. The <c>HtmlParsingHostTests.ParseAsync_no_network_traffic_when_resource_loading_disabled</c>
-/// regression test installs a counting <c>IRequester</c> and asserts zero outbound calls.
+/// regression test verifies the boundary by parsing a doc that references a deliberately-bad
+/// host (<c>nope.invalid</c>) and asserting (a) the parse completes within a tight time
+/// budget — a real DNS failure would take seconds — and (b) <c>link.Sheet</c> stays
+/// <see langword="null"/>. If AngleSharp ever started honoring resource loading despite
+/// the configuration, the parse would either hang on DNS or throw, and the test fails.
 /// </para>
 /// <para>
 /// <b>CSS ownership.</b> The host enables <c>WithCss()</c> so AngleSharp.Css populates
@@ -166,8 +170,12 @@ internal sealed class HtmlParsingHost
             element.RemoveAttribute("href");
         }
 
-        // SVG <a> elements use xlink:href (or, in modern SVG 2, plain href). Walk the document
-        // and remove any element's xlink:href whose value is a javascript: URL.
+        // SVG <a> elements use xlink:href (or, in modern SVG 2, plain href), but the xlink:href
+        // attribute can technically appear on any element. Walk the entire document and strip
+        // every javascript: xlink:href value, not just SVG anchors — defense in depth: any
+        // future emission consumer that interprets xlink:href as a navigation target would
+        // otherwise be the next leak vector. The attribute is removed; the element + its
+        // children remain so visible text still renders.
         foreach (var element in document.All.ToArray())
         {
             string? xlinkHref = null;

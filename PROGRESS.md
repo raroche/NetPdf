@@ -1,9 +1,9 @@
 # NetPdf — Progress Status
 
-**Current phase:** Phase 2 — CSS engine + DOM pipeline (next)
+**Current phase:** Phase 2 — CSS engine + DOM pipeline ⏳ In progress
 **Tagged release:** `0.1.0-alpha` (Phase 1 complete ✅)
 **Target next tag:** `0.3.0-alpha` (Phase 2 complete)
-**Last updated:** 2026-05-03 (Task 26 ✅ — Phase 1 closed: CHANGELOG written, `0.1.0-alpha` tagged, all 9 exit criteria green or explicitly deferred to Phase 5 with rationale)
+**Last updated:** 2026-05-04 (Phase 2 kickoff — Phase 1 retrospective PRs #2 and #3 merged into the review-artifact branches; Copilot's 6 valid findings + 1 false-positive addressed on `main` at commit `42365cd`. Phase 2 active-task pointer set to **Task 1 — HTML parsing host (AngleSharp wireup, no scripting)**.)
 
 This file is the at-a-glance "where are we?" tracker. It is updated whenever a phase task ships. For execution detail per phase, see [`docs/phases/`](docs/phases/). For session bootstrap, see [`CLAUDE.md`](CLAUDE.md).
 
@@ -730,12 +730,44 @@ dotnet test tests/NetPdf.UnitTests/NetPdf.UnitTests.csproj -c Release \
 
 ---
 
-## Phase 2 — CSS engine + DOM pipeline ⏳ Next
+## Phase 2 — CSS engine + DOM pipeline ⏳ In progress
 
 - **Target tag:** `0.3.0-alpha`
+- **Started:** 2026-05-04
 - **Time estimate:** 2–3 weeks calendar (Claude Opus 4.7 high)
 - **Doc:** [`docs/phases/phase-2-css-engine.md`](docs/phases/phase-2-css-engine.md)
-- **Entry condition:** Phase 1 complete with `0.1.0-alpha` tagged. Public `HtmlPdf.Convert(html)` currently throws `NotImplementedException` — Phase 2 wires AngleSharp HTML parsing + AngleSharp.Css cascade adapter + `ComputedStyle` + box-tree generation through to the existing Phase 1 byte writer.
+- **Entry condition met:** Phase 1 complete, `0.1.0-alpha` tagged, all gates green on `main` (1552 unit / 1563 solution-wide passing; AOT parity holds; benchmark gate within +25% baseline). Public `HtmlPdf.Convert(html)` currently throws — Phase 2 wires AngleSharp HTML parsing + AngleSharp.Css cascade adapter + `ComputedStyle` + box-tree generation through to the existing Phase 1 byte writer.
+
+### Active task
+**Task 1 — HTML parsing host (AngleSharp wireup, no scripting)**. The first stage of the Phase 2 pipeline: the public `HtmlPdf.Convert(html)` entry point parses the HTML string via AngleSharp configured **without** `IScripting` (no JavaScript ever runs), respects `HtmlPdfOptions.BaseUri` for relative-URI resolution, and surfaces every `<script>` element it sees as a `HTML-SCRIPT-IGNORED-001` diagnostic with source location. Output: an internal DOM that downstream stages (Tasks 2–18) can walk.
+
+Concrete deliverable: `src/NetPdf/HtmlParsingHost.cs` (the facade calls into this from `HtmlPdf.ConvertAsync`). AngleSharp DOM types are **never** re-exported through the public API surface — they stay strictly behind `internal sealed` adapters.
+
+### Tasks (19, ordered)
+| # | Task | Mini-est. | Depends on |
+|---|---|---|---|
+| 1 | HTML parsing host (AngleSharp wireup, no scripting) | 1 d | — |
+| 2 | CSS parser adapter (AngleSharp.Css → internal AST) | 2 d | 1 |
+| 3 | Pre-pass tokenizer extension (modern color/calc/at-rules) | 2 d | 2 |
+| 4 | Source-generated property tables from `properties.json` | 3 d | — |
+| 5 | `ComputedStyle` flat struct + `[InlineArray]` backing | 1 d | 4 |
+| 6 | Selector compiler + bytecode + matcher | 4 d | 2 |
+| 7 | Cascade resolver (origin/importance/layers/specificity/order) | 3 d | 6 |
+| 8 | `var()` substitution with circular-ref detection | 2 d | 5, 7 |
+| 9 | `calc`/`min`/`max`/`clamp`/`abs`/`sign` resolver | 2 d | 8 |
+| 10 | Per-property resolvers (length, color, font-family, gradients, transforms) | 4 d | 9 |
+| 11 | `Box` hierarchy + `BoxKind` enum | 1 d | — |
+| 12 | `BoxBuilder` DOM walk + anonymous box insertion | 2 d | 5, 11 |
+| 13 | Table fixup in `BoxBuilder` | 2 d | 12 |
+| 14 | Pseudo-element materialization (`::before`/`::after`/`::marker`/`::first-line`/`::first-letter`) | 3 d | 12 |
+| 15 | `SemanticTreeBuilder` parallel pass | 2 d | 12 |
+| 16 | Diagnostics emission for unsupported CSS features | 2 d | 7, 10 |
+| 17 | Integration test: HTML+CSS → BoxTree end-to-end | 2 d | 12–16 |
+| 18 | Layout snapshot test infrastructure (`tests/NetPdf.LayoutSnapshots`) | 1 d | 17 |
+| 19 | Tag `0.3.0-alpha` + CHANGELOG | 0.5 d | all |
+
+### Subtasks completed
+_(none yet — Phase 2 just kicked off)_
 
 ## Phase 3 — Fragmentainer-aware layout + pagination ⏸️ Not started
 

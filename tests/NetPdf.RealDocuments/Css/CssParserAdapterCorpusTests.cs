@@ -115,6 +115,53 @@ public sealed class CssParserAdapterCorpusTests
     }
 
     [Fact]
+    public async Task Corpus_anvil_running_elements_recovers_page_margin_boxes_through_preprocess()
+    {
+        // The Anvil invoice carries @page { @bottom-right { ... } @bottom-left { ... } }.
+        // Without Task 3's preprocess, AngleSharp drops the margin-boxes silently. With
+        // preprocess merged in, the @page rule gains those margin-boxes as ChildRules.
+        var html = LoadCorpusFile("Corpus/Invoices/04-anvil-running-elements.html");
+        var host = new HtmlParsingHost();
+        var document = await host.ParseAsync(html, new HtmlPdfOptions());
+
+        var styleElements = document.QuerySelectorAll("style").OfType<AngleSharp.Html.Dom.IHtmlStyleElement>().ToList();
+        Assert.True(styleElements.Count >= 1);
+
+        // Find the <style> block carrying the @page rule (any of them — aggregate margin-box
+        // recovery across all sheets for resilience to corpus reorganization).
+        var allChildRules = new List<NetPdf.Css.Parser.CssRule>();
+        for (var i = 0; i < styleElements.Count; i++)
+        {
+            var styleElement = styleElements[i];
+            var rawCss = styleElement.TextContent;
+            var preprocess = NetPdf.Css.Parser.Preprocessing.CssPreprocessor.Process(rawCss);
+            var sheet = (AngleSharp.Css.Dom.ICssStyleSheet)styleElement.Sheet!;
+            var stylesheet = NetPdf.Css.Parser.CssParserAdapter.Adapt(
+                sheet, preprocess,
+                href: null,
+                origin: NetPdf.Css.Parser.CssStylesheetOrigin.Author,
+                ownerKind: NetPdf.Css.Parser.CssStylesheetOwnerKind.StyleElement,
+                mediaQuery: string.IsNullOrEmpty(styleElement.Media) ? null : styleElement.Media,
+                isDisabled: false,
+                order: i);
+
+            foreach (var rule in stylesheet.Rules)
+            {
+                if (rule is NetPdf.Css.Parser.CssAtRule a && a.Name == "page")
+                {
+                    allChildRules.AddRange(a.ChildRules);
+                }
+            }
+        }
+
+        // Anvil has at least one @bottom-right and one @bottom-left margin-box.
+        Assert.Contains(allChildRules,
+            r => r is NetPdf.Css.Parser.CssAtRule a && a.Name == "bottom-right");
+        Assert.Contains(allChildRules,
+            r => r is NetPdf.Css.Parser.CssAtRule a && a.Name == "bottom-left");
+    }
+
+    [Fact]
     public async Task Corpus_anvil_inline_style_attributes_adapt_through_AdaptInlineStyle()
     {
         // Pins inline-style adaptation against real corpus content. The Anvil invoice has

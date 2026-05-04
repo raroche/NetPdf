@@ -4,6 +4,7 @@
 using System.Collections.Immutable;
 using AngleSharp.Css.Dom;
 using AngleSharp.Dom;
+using NetPdf.Css.Parser.Preprocessing;
 
 namespace NetPdf.Css.Parser;
 
@@ -89,17 +90,43 @@ internal static class CssParserAdapter
         string? mediaQuery,
         bool isDisabled,
         int order)
+        => Adapt(sheet, CssPreprocessResult.Empty, href, origin, ownerKind, mediaQuery, isDisabled, order);
+
+    /// <summary>
+    /// Adapts a parsed AngleSharp.Css stylesheet with Phase 2 Task 3 pre-pass recoveries
+    /// merged in: <c>@page</c> selectors and margin-boxes that AngleSharp drops, modern
+    /// <c>@import</c> clauses (<c>layer</c> / <c>supports</c>), and rule source positions.
+    /// Caller obtains <paramref name="preprocess"/> by running
+    /// <see cref="Preprocessing.CssPreprocessor.Process"/> over the raw CSS text BEFORE
+    /// AngleSharp parses it (e.g., from <c>&lt;style&gt;.TextContent</c>); the AngleSharp
+    /// pass and the pre-pass run independently and are aligned by ordinal index here.
+    /// </summary>
+    public static CssStylesheet Adapt(
+        ICssStyleSheet sheet,
+        CssPreprocessResult preprocess,
+        string? href,
+        CssStylesheetOrigin origin,
+        CssStylesheetOwnerKind ownerKind,
+        string? mediaQuery,
+        bool isDisabled,
+        int order)
     {
         ArgumentNullException.ThrowIfNull(sheet);
+        ArgumentNullException.ThrowIfNull(preprocess);
+
+        var sheetLocation = preprocess.RulePositions.IsEmpty
+            ? CssSourceLocation.Unknown
+            : preprocess.RulePositions[0].Location;
+
         return new CssStylesheet(
-            Rules: AdaptRules(sheet.Rules),
+            Rules: AdaptRules(sheet.Rules, preprocess),
             Href: href,
             Origin: origin,
             OwnerKind: ownerKind,
             MediaQuery: mediaQuery,
             IsDisabled: isDisabled,
             Order: order,
-            Location: CssSourceLocation.Unknown);
+            Location: sheetLocation);
     }
 
     /// <summary>
@@ -116,14 +143,18 @@ internal static class CssParserAdapter
         return AdaptProperties(style);
     }
 
-    private static ImmutableArray<CssRule> AdaptRules(ICssRuleList rules)
+    private static ImmutableArray<CssRule> AdaptRules(ICssRuleList rules, CssPreprocessResult preprocess)
     {
         if (rules.Length == 0) return ImmutableArray<CssRule>.Empty;
         var output = ImmutableArray.CreateBuilder<CssRule>(rules.Length);
+        var pageOrdinal = 0;
+        var importOrdinal = 0;
+        var ruleOrdinal = 0;
         foreach (var rule in rules)
         {
             if (rule is null) continue;
-            output.Add(AdaptRule(rule));
+            var location = LookupRulePosition(preprocess, ruleOrdinal++);
+            output.Add(AdaptRule(rule, preprocess, ref pageOrdinal, ref importOrdinal, location));
         }
         return output.ToImmutable();
     }
@@ -133,60 +164,81 @@ internal static class CssParserAdapter
     /// (e.g., <see cref="ICssMediaRule"/>) come before their bases
     /// (<see cref="ICssGroupingRule"/>) so the right adaptation runs.
     /// </summary>
-    private static CssRule AdaptRule(ICssRule rule) => rule switch
-    {
-        ICssStyleRule s => AdaptStyleRule(s),
-        ICssMediaRule m => AdaptMediaRule(m),
-        ICssSupportsRule s => AdaptSupportsRule(s),
-        ICssKeyframesRule k => AdaptKeyframesRule(k),
-        ICssKeyframeRule kf => AdaptKeyframeRule(kf),
-        ICssFontFaceRule f => AdaptFontFaceRule(f),
-        ICssPageRule p => AdaptPageRule(p),
-        ICssMarginRule mr => AdaptMarginRule(mr),
-        ICssImportRule i => AdaptImportRule(i),
-        ICssCharsetRule c => AdaptCharsetRule(c),
-        ICssNamespaceRule n => AdaptNamespaceRule(n),
-        ICssGroupingRule g => AdaptUnknownGroupingRule(g),
-        _ => AdaptUnknownRule(rule),
-    };
+    private static CssRule AdaptRule(
+        ICssRule rule,
+        CssPreprocessResult preprocess,
+        ref int pageOrdinal,
+        ref int importOrdinal,
+        CssSourceLocation location)
+        => rule switch
+        {
+            ICssStyleRule s => AdaptStyleRule(s, location),
+            ICssMediaRule m => AdaptMediaRule(m, preprocess, location),
+            ICssSupportsRule s => AdaptSupportsRule(s, preprocess, location),
+            ICssKeyframesRule k => AdaptKeyframesRule(k, preprocess, location),
+            ICssKeyframeRule kf => AdaptKeyframeRule(kf, location),
+            ICssFontFaceRule f => AdaptFontFaceRule(f, location),
+            ICssPageRule p => AdaptPageRule(p, LookupPageRecovery(preprocess, pageOrdinal++), location),
+            ICssMarginRule mr => AdaptMarginRule(mr, location),
+            ICssImportRule i => AdaptImportRule(i, LookupImportRecovery(preprocess, importOrdinal++), location),
+            ICssCharsetRule c => AdaptCharsetRule(c, location),
+            ICssNamespaceRule n => AdaptNamespaceRule(n, location),
+            ICssGroupingRule g => AdaptUnknownGroupingRule(g, preprocess, location),
+            _ => AdaptUnknownRule(rule, location),
+        };
 
-    private static CssStyleRule AdaptStyleRule(ICssStyleRule rule) => new(
+    private static CssSourceLocation LookupRulePosition(CssPreprocessResult preprocess, int ordinal)
+    {
+        if (ordinal < 0 || ordinal >= preprocess.RulePositions.Length)
+            return CssSourceLocation.Unknown;
+        return preprocess.RulePositions[ordinal].Location;
+    }
+
+    private static CssPageRuleRecovery? LookupPageRecovery(CssPreprocessResult preprocess, int ordinal)
+    {
+        if (ordinal < 0 || ordinal >= preprocess.PageRecoveries.Length) return null;
+        return preprocess.PageRecoveries[ordinal];
+    }
+
+    private static CssImportRuleRecovery? LookupImportRecovery(CssPreprocessResult preprocess, int ordinal)
+    {
+        if (ordinal < 0 || ordinal >= preprocess.ImportRecoveries.Length) return null;
+        return preprocess.ImportRecoveries[ordinal];
+    }
+
+    private static CssStyleRule AdaptStyleRule(ICssStyleRule rule, CssSourceLocation location) => new(
         new CssSelector(rule.SelectorText ?? string.Empty),
         AdaptDeclarations(rule.Style),
-        CssSourceLocation.Unknown);
+        location);
 
-    private static CssAtRule AdaptMediaRule(ICssMediaRule rule) => new(
+    private static CssAtRule AdaptMediaRule(ICssMediaRule rule, CssPreprocessResult preprocess, CssSourceLocation location) => new(
         Name: "media",
         Prelude: rule.Media?.MediaText ?? string.Empty,
         Declarations: ImmutableArray<CssDeclaration>.Empty,
-        ChildRules: AdaptRules(rule.Rules),
-        Location: CssSourceLocation.Unknown);
+        ChildRules: AdaptRules(rule.Rules, preprocess),
+        Location: location);
 
-    private static CssAtRule AdaptSupportsRule(ICssSupportsRule rule) => new(
+    private static CssAtRule AdaptSupportsRule(ICssSupportsRule rule, CssPreprocessResult preprocess, CssSourceLocation location) => new(
         Name: "supports",
         Prelude: ExtractPrelude(rule.CssText, "@supports"),
         Declarations: ImmutableArray<CssDeclaration>.Empty,
-        ChildRules: AdaptRules(rule.Rules),
-        Location: CssSourceLocation.Unknown);
+        ChildRules: AdaptRules(rule.Rules, preprocess),
+        Location: location);
 
-    private static CssAtRule AdaptKeyframesRule(ICssKeyframesRule rule) => new(
+    private static CssAtRule AdaptKeyframesRule(ICssKeyframesRule rule, CssPreprocessResult preprocess, CssSourceLocation location) => new(
         Name: "keyframes",
         Prelude: rule.Name ?? string.Empty,
         Declarations: ImmutableArray<CssDeclaration>.Empty,
-        ChildRules: AdaptRules(rule.Rules),
-        Location: CssSourceLocation.Unknown);
+        ChildRules: AdaptRules(rule.Rules, preprocess),
+        Location: location);
 
-    private static CssStyleRule AdaptKeyframeRule(ICssKeyframeRule rule) => new(
-        // A keyframe entry (e.g. "0%" or "from") behaves structurally like a style rule:
-        // a "selector" (the key text) plus a declaration block.
+    private static CssStyleRule AdaptKeyframeRule(ICssKeyframeRule rule, CssSourceLocation location) => new(
         new CssSelector(rule.KeyText ?? string.Empty),
         AdaptDeclarations(rule.Style),
-        CssSourceLocation.Unknown);
+        location);
 
-    private static CssAtRule AdaptFontFaceRule(ICssFontFaceRule rule)
+    private static CssAtRule AdaptFontFaceRule(ICssFontFaceRule rule, CssSourceLocation location)
     {
-        // ICssFontFaceRule implements IEnumerable<ICssProperty> directly (not through
-        // ICssStyleDeclaration). Iterate to recover every authored descriptor.
         var declarations = rule is IEnumerable<ICssProperty> descriptors
             ? AdaptProperties(descriptors)
             : ImmutableArray<CssDeclaration>.Empty;
@@ -195,50 +247,70 @@ internal static class CssParserAdapter
             Prelude: string.Empty,
             Declarations: declarations,
             ChildRules: ImmutableArray<CssRule>.Empty,
-            Location: CssSourceLocation.Unknown);
+            Location: location);
     }
 
-    private static CssAtRule AdaptPageRule(ICssPageRule rule) => new(
-        // Note: AngleSharp.Css 1.0.0-beta.144 silently drops the @page selector
-        // (`:first`/`:left`/`:right`/named pages all surface with empty SelectorText) and
-        // every margin-box at-rule inside @page. Task 3's pre-pass tokenizer recovers both.
-        Name: "page",
-        Prelude: rule.SelectorText ?? string.Empty,
-        Declarations: AdaptDeclarations(rule.Style),
-        ChildRules: ImmutableArray<CssRule>.Empty,
-        Location: CssSourceLocation.Unknown);
+    private static CssAtRule AdaptPageRule(ICssPageRule rule, CssPageRuleRecovery? recovery, CssSourceLocation location)
+    {
+        // The pre-pass recovers what AngleSharp drops: the page selector and any margin-box
+        // at-rules. When recovery is null, fall back to AngleSharp's (lossy) data.
+        var prelude = !string.IsNullOrEmpty(recovery?.SelectorText)
+            ? recovery!.SelectorText
+            : (rule.SelectorText ?? string.Empty);
 
-    private static CssAtRule AdaptMarginRule(ICssMarginRule rule) => new(
-        // Currently dead in the dispatch — the AngleSharp.Css parser does not emit
-        // ICssMarginRule instances (margin-boxes are dropped before the CSSOM). Kept for
-        // forward compatibility: when the upstream parser starts emitting them or when
-        // Task 3's pre-pass synthesizes them, this case is what catches them.
+        var marginBoxes = recovery is null || recovery.MarginBoxes.IsEmpty
+            ? ImmutableArray<CssRule>.Empty
+            : BuildMarginBoxRules(recovery.MarginBoxes);
+
+        var ruleLocation = recovery?.Location ?? location;
+        return new CssAtRule(
+            Name: "page",
+            Prelude: prelude,
+            Declarations: AdaptDeclarations(rule.Style),
+            ChildRules: marginBoxes,
+            Location: ruleLocation);
+    }
+
+    private static CssAtRule AdaptMarginRule(ICssMarginRule rule, CssSourceLocation location) => new(
+        // Forward-compat case — AngleSharp.Css doesn't emit ICssMarginRule today. The
+        // pre-pass synthesizes margin-boxes via BuildMarginBoxRules below, not here.
         Name: rule.Name ?? string.Empty,
         Prelude: string.Empty,
         Declarations: AdaptDeclarations(rule.Style),
         ChildRules: ImmutableArray<CssRule>.Empty,
-        Location: CssSourceLocation.Unknown);
+        Location: location);
 
-    private static CssImportRule AdaptImportRule(ICssImportRule rule) => new(
-        Url: rule.Href ?? string.Empty,
-        // Caveat: AngleSharp.Css folds `layer(name)` and `supports(...)` clauses into the
-        // media field as a malformed "not all" query. Until Task 3's pre-pass recovers
-        // them, MediaQuery may carry "not all" for an import that originally had a layer
-        // or supports clause. LayerName + SupportsCondition stay null until Task 3.
-        MediaQuery: rule.Media?.MediaText ?? string.Empty,
-        LayerName: null,
-        SupportsCondition: null,
-        ImportedRules: ImmutableArray<CssRule>.Empty,
-        Location: CssSourceLocation.Unknown);
+    private static CssImportRule AdaptImportRule(
+        ICssImportRule rule,
+        CssImportRuleRecovery? recovery,
+        CssSourceLocation location)
+    {
+        // Recovery wins for layer + supports + media (AngleSharp would have mangled these
+        // when modern syntax is present). Fall back to AngleSharp data when no recovery —
+        // either the input was simple or pre-pass ran on stale text.
+        var url = recovery is not null ? recovery.Url : (rule.Href ?? string.Empty);
+        var media = recovery is not null
+            ? recovery.MediaQuery
+            : (rule.Media?.MediaText ?? string.Empty);
+        var ruleLocation = recovery?.Location ?? location;
 
-    private static CssAtRule AdaptCharsetRule(ICssCharsetRule rule) => new(
+        return new CssImportRule(
+            Url: url,
+            MediaQuery: media,
+            LayerName: recovery?.LayerName,
+            SupportsCondition: recovery?.SupportsCondition,
+            ImportedRules: ImmutableArray<CssRule>.Empty,
+            Location: ruleLocation);
+    }
+
+    private static CssAtRule AdaptCharsetRule(ICssCharsetRule rule, CssSourceLocation location) => new(
         Name: "charset",
         Prelude: $"\"{rule.CharacterSet}\"",
         Declarations: ImmutableArray<CssDeclaration>.Empty,
         ChildRules: ImmutableArray<CssRule>.Empty,
-        Location: CssSourceLocation.Unknown);
+        Location: location);
 
-    private static CssAtRule AdaptNamespaceRule(ICssNamespaceRule rule)
+    private static CssAtRule AdaptNamespaceRule(ICssNamespaceRule rule, CssSourceLocation location)
     {
         var prelude = string.IsNullOrEmpty(rule.Prefix)
             ? $"url(\"{rule.NamespaceUri}\")"
@@ -248,22 +320,102 @@ internal static class CssParserAdapter
             Prelude: prelude,
             Declarations: ImmutableArray<CssDeclaration>.Empty,
             ChildRules: ImmutableArray<CssRule>.Empty,
-            Location: CssSourceLocation.Unknown);
+            Location: location);
     }
 
-    private static CssAtRule AdaptUnknownGroupingRule(ICssGroupingRule rule) => new(
+    private static CssAtRule AdaptUnknownGroupingRule(ICssGroupingRule rule, CssPreprocessResult preprocess, CssSourceLocation location) => new(
         Name: NameFromType(rule),
         Prelude: ExtractPrelude(rule.CssText, "@" + NameFromType(rule)),
         Declarations: ImmutableArray<CssDeclaration>.Empty,
-        ChildRules: AdaptRules(rule.Rules),
-        Location: CssSourceLocation.Unknown);
+        ChildRules: AdaptRules(rule.Rules, preprocess),
+        Location: location);
 
-    private static CssAtRule AdaptUnknownRule(ICssRule rule) => new(
+    private static CssAtRule AdaptUnknownRule(ICssRule rule, CssSourceLocation location) => new(
         Name: NameFromType(rule),
         Prelude: rule.CssText ?? string.Empty,
         Declarations: ImmutableArray<CssDeclaration>.Empty,
         ChildRules: ImmutableArray<CssRule>.Empty,
-        Location: CssSourceLocation.Unknown);
+        Location: location);
+
+    /// <summary>
+    /// Constructs <see cref="CssAtRule"/> entries for the recovered margin-boxes inside an
+    /// <c>@page</c> body. Each margin-box becomes an at-rule with its name, no prelude, and
+    /// declarations parsed from the recovered raw text via a minimal <c>property: value</c>
+    /// splitter (the cascade resolver in Task 7 will be the canonical declaration parser
+    /// once typed values land in Task 9–10).
+    /// </summary>
+    private static ImmutableArray<CssRule> BuildMarginBoxRules(ImmutableArray<CssMarginBoxRecovery> boxes)
+    {
+        var output = ImmutableArray.CreateBuilder<CssRule>(boxes.Length);
+        foreach (var box in boxes)
+        {
+            output.Add(new CssAtRule(
+                Name: box.Name,
+                Prelude: string.Empty,
+                Declarations: ParseRawDeclarations(box.DeclarationsRawText, box.Location),
+                ChildRules: ImmutableArray<CssRule>.Empty,
+                Location: box.Location));
+        }
+        return output.ToImmutable();
+    }
+
+    /// <summary>
+    /// Splits raw text inside a margin-box's <c>{ }</c> body into <see cref="CssDeclaration"/>
+    /// entries. Handles the simple <c>property: value</c> shape with optional
+    /// <c>!important</c>; respects strings and parens for value tokenization.
+    /// </summary>
+    private static ImmutableArray<CssDeclaration> ParseRawDeclarations(string body, CssSourceLocation parentLocation)
+    {
+        if (string.IsNullOrWhiteSpace(body)) return ImmutableArray<CssDeclaration>.Empty;
+
+        var output = ImmutableArray.CreateBuilder<CssDeclaration>();
+        var tok = new Preprocessing.CssTokenizer(body.AsSpan(), parentLocation.Source);
+        tok.SkipWhitespaceAndComments();
+
+        while (!tok.IsEnd)
+        {
+            var name = tok.ReadIdentifier();
+            if (name.IsEmpty)
+            {
+                // Skip stray characters defensively.
+                tok.ReadChar();
+                continue;
+            }
+
+            tok.SkipWhitespaceAndComments();
+            if (tok.PeekChar() != ':')
+            {
+                // Malformed; advance to next ';' and continue.
+                tok.ReadUntilAnyTopLevel(";");
+                if (tok.PeekChar() == ';') tok.ReadChar();
+                tok.SkipWhitespaceAndComments();
+                continue;
+            }
+            tok.ReadChar(); // consume ':'
+            tok.SkipWhitespaceAndComments();
+
+            var valueSpan = tok.ReadUntilAnyTopLevel(";");
+            var valueText = valueSpan.ToString().Trim();
+            var isImportant = false;
+            const string importantMarker = "!important";
+            if (valueText.EndsWith(importantMarker, StringComparison.OrdinalIgnoreCase))
+            {
+                isImportant = true;
+                valueText = valueText[..^importantMarker.Length].TrimEnd();
+            }
+
+            output.Add(new CssDeclaration(
+                Property: name.ToString(),
+                Value: new CssValue(valueText),
+                IsImportant: isImportant,
+                Location: parentLocation));
+
+            if (tok.PeekChar() == ';') tok.ReadChar();
+            tok.SkipWhitespaceAndComments();
+        }
+
+        return output.Count == 0 ? ImmutableArray<CssDeclaration>.Empty : output.ToImmutable();
+    }
 
     private static ImmutableArray<CssDeclaration> AdaptDeclarations(ICssStyleDeclaration style) =>
         AdaptProperties(style);

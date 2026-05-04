@@ -2,7 +2,14 @@
 
 A pure C# / .NET HTML+CSS-to-PDF rendering engine. **Free, open-source, Apache-2.0.**
 
-NetPdf is a true paged-media renderer written from scratch in managed code. It does **not** wrap a browser, **not** shell out to native binaries, **not** depend on revenue-capped or copyleft libraries. It converts a single HTML+CSS string into a deterministic PDF byte stream optimized for documents — invoices, statements, contracts, reports, certificates, catalogs.
+NetPdf is a true paged-media renderer written from scratch in managed code. It does **not** wrap a browser engine, **not** spawn a subprocess at render time, **not** depend on revenue-capped or copyleft libraries. It converts a single HTML+CSS string into a deterministic PDF byte stream optimized for documents — invoices, statements, contracts, reports, certificates, catalogs.
+
+**Native dependencies, honestly listed.** NetPdf is "pure managed code" at the engine layer but ships with two permissive-licensed native bundles that Phase 1's tests prove are AOT-clean and reflection-free:
+
+- **HarfBuzzSharp** (MIT) wraps **HarfBuzz** (Old MIT-style). Drives OpenType shaping (kerning, ligatures, RTL, CJK).
+- **SkiaSharp** (MIT) wraps **Skia** (BSD-3). Used **only** for image decode (WebP / AVIF / GIF) and the post-Phase-3 raster fallback for filters / blurred shadows / conic gradients. Not a primary graphics path.
+
+Both are loaded as in-process libraries via the official `*.NativeAssets.{Linux,macOS,Win32}` packages — no `Process.Start`, no executable spawning, no IPC. AOT publish + execution is verified on every commit via `scripts/aot-parity.sh`, which asserts the published native binary produces byte-identical PDF output to the JIT path.
 
 > **Status:** Phase 1 ✅ — PDF writer + text foundation shipped (tagged [`0.1.0-alpha`](https://github.com/raroche/NetPdf/releases/tag/0.1.0-alpha) on 2026-05-03). Programmatic PDF construction works end-to-end (deterministic PDF 1.7 bytes, embedded subsetted fonts via WOFF/WOFF2, JPEG/PNG/WebP/AVIF/GIF embedders, full UAX #9/#14/#29 text shaping, AOT-clean with enforced JIT/AOT byte-parity, BenchmarkDotNet baseline with +25% regression gate). The public `HtmlPdf.Convert(html)` facade is **next** — Phase 2 wires HTML+CSS through to the writer (target: `0.3.0-alpha`). First useful release (`0.7.0-beta`) targets static-document rendering. Repository is private until v1.0 launch.
 
@@ -68,7 +75,7 @@ These three columns are the honest answer to "what does NetPdf do today?"
 | Capability | Implemented internally now | Reachable through public `HtmlPdf` API now | Wired in |
 |---|:---:|:---:|---|
 | Deterministic PDF 1.7 byte writer (objects, xref, trailer auto-derived `/ID`, preflight cycle + nested-stream rejection) | ✅ | ❌ | Phase 1 internal; public via Phase 2 |
-| Font pipeline (TTF/OTF/CFF parse → glyph subset → ToUnicode CMap → Type 0/CIDFontType2 wrapper, deterministic 6-letter prefix) | ✅ | ❌ | Phase 1 internal; public via Phase 2 |
+| Font pipeline: parsing for TTF/OTF/CFF; **embedding for TTF only** (glyph subset → ToUnicode CMap → Type 0/CIDFontType2 wrapper, deterministic 6-letter prefix). CFF subsetting + `FontFile3`/`CIDFontType0C` embedding deferred to a Phase 1.x follow-up. | 🧪 | ❌ | Phase 1 internal; public via Phase 2 |
 | WOFF 1.0 (zlib) + WOFF 2.0 (Brotli + glyf/loca transform reverse) | ✅ | ❌ | Phase 1 internal; public via Phase 2 |
 | OpenType shaping via HarfBuzzSharp (kerning, ligatures, RTL, CJK) | ✅ | ❌ | Phase 1 internal; public via Phase 2 |
 | UAX #9 Bidi (100% UCD), UAX #14 Line Break (99.952% UCD), UAX #29 grapheme clusters (100% UCD) | ✅ | ❌ | Phase 1 internal; public via Phase 2 |

@@ -83,18 +83,20 @@ The `NetPdf.AotSmoke` project sets:
 - `IsTrimmable = true` + `EnableTrimAnalyzer = true` — surfaces trim warnings (which often co-occur with AOT failures).
 - `InvariantGlobalization = true` — drops globalization data from the published image and ensures any culture-sensitive code is forced through `CultureInfo.InvariantCulture` (which is what NetPdf uses everywhere).
 
-## CI integration
+## Status: local gate, enforced manually until Phase 5
 
-(Phase 5.) The intended CI step is one line:
+`scripts/aot-parity.sh` is a **local gate** at `0.1.0-alpha`. Contributors run it before pushing perf-relevant or font/image-pipeline changes; the repository does **not yet have a checked-in CI workflow** that runs it automatically. Phase 5's packaging-and-release work introduces the cross-platform CI matrix (Linux + macOS + Windows × x64 + arm64) that wires this script in as a merge gate.
+
+**Where Phase 5 will land it (target shape):**
 
 ```yaml
 - name: AOT/JIT parity gate
   run: ./scripts/aot-parity.sh
 ```
 
-This runs on `linux-x64`, `osx-arm64`, and `win-x64` in the cross-platform matrix. The script publishes, runs, and parity-tests; any divergence — between the JIT execution of `SmokeDocumentFactory` and the published native binary's output — fails the step. The same script is what contributors run locally to verify a patch hasn't broken AOT or determinism.
+This will run on `linux-x64`, `osx-arm64`, and `win-x64` in the cross-platform matrix. The script publishes, runs, and parity-tests; any divergence — between the JIT execution of `SmokeDocumentFactory` and the published native binary's output — fails the step. Each platform also feeds its produced bytes into the determinism harness's per-platform pin map (see [determinism.md](determinism.md)) so any AOT/JIT byte divergence on any platform surfaces immediately.
 
-Each platform also feeds its produced bytes into the determinism harness's per-platform pin map (see [determinism.md](determinism.md)) so any AOT/JIT byte divergence on any platform surfaces immediately.
+**Until that lands**, the contract is "run `./scripts/aot-parity.sh` locally before opening a PR that touches `NetPdf.Pdf.*`, `NetPdf.Text.Fonts.*`, image embedders, or anything that changes the byte-writer surface." Phase 5 makes it automatic; Phase 1's posture is private repo + manual contributor discipline (consistent with the "private through Phase 5, public NuGet at v1.0" release strategy in `CLAUDE.md`).
 
 ## Common AOT failure modes (and what to do)
 

@@ -3,25 +3,90 @@
   <PropertyGroup>
     <RootNamespace>NetPdf</RootNamespace>
     <AssemblyName>NetPdf</AssemblyName>
-    <Description>Pure C# HTML/CSS-to-PDF rendering engine. Apache-2.0. No browser, no native binaries beyond optional raster fallback. The public-facing facade project.</Description>
+    <Description>Pure C# / .NET 10 HTML+CSS-to-PDF rendering engine. Apache-2.0. No browser engine, no subprocess at render time, AOT-tested. Native deps (HarfBuzzSharp, SkiaSharp) are permissive-licensed and bundled via the official native-asset NuGets. The public-facing facade project.</Description>
     <PackageId>NetPdf</PackageId>
     <PackageTags>pdf;html;css;rendering;paged-media;document;invoice;report</PackageTags>
     <IsPackable>true</IsPackable>
   </PropertyGroup>
 
+  <!--
+    Single-package strategy (per the architectural plan in CLAUDE.md): the
+    shipped `NetPdf` NuGet bundles every internal `NetPdf.*` project's compiled
+    DLL into its own `lib/<tfm>/` folder. Consumers see ONE package and ONE
+    public surface; the internal layering exists for our development
+    discipline only.
+    Two MSBuild knobs make this work:
+      * <PrivateAssets>all</PrivateAssets> on every internal ProjectReference
+        suppresses the otherwise-emitted <dependency> entries in the .nuspec —
+        without this, `dotnet pack` produces a NetPdf package that depends on
+        seven non-existent NetPdf.* packages on nuget.org.
+      * <TargetsForTfmSpecificBuildOutput> hooks the GenerateNuspec target to
+        copy each internal-project DLL into the package's lib/<tfm>/ folder so
+        the runtime actually resolves the types at consumer-side load time.
+    Phase 5 will harden this with `dotnet pack` validation tests; for now the
+    single-package shape is correct and verified via `unzip -p NetPdf.*.nupkg`.
+  -->
   <ItemGroup>
-    <ProjectReference Include="..\NetPdf.Css\NetPdf.Css.csproj" />
-    <ProjectReference Include="..\NetPdf.Layout\NetPdf.Layout.csproj" />
-    <ProjectReference Include="..\NetPdf.Paginate\NetPdf.Paginate.csproj" />
-    <ProjectReference Include="..\NetPdf.Paint\NetPdf.Paint.csproj" />
-    <ProjectReference Include="..\NetPdf.Pdf\NetPdf.Pdf.csproj" />
-    <ProjectReference Include="..\NetPdf.Text\NetPdf.Text.csproj" />
-    <ProjectReference Include="..\NetPdf.Svg\NetPdf.Svg.csproj" />
+    <ProjectReference Include="..\NetPdf.Css\NetPdf.Css.csproj" PrivateAssets="all" />
+    <ProjectReference Include="..\NetPdf.Layout\NetPdf.Layout.csproj" PrivateAssets="all" />
+    <ProjectReference Include="..\NetPdf.Paginate\NetPdf.Paginate.csproj" PrivateAssets="all" />
+    <ProjectReference Include="..\NetPdf.Paint\NetPdf.Paint.csproj" PrivateAssets="all" />
+    <ProjectReference Include="..\NetPdf.Pdf\NetPdf.Pdf.csproj" PrivateAssets="all" />
+    <ProjectReference Include="..\NetPdf.Text\NetPdf.Text.csproj" PrivateAssets="all" />
+    <ProjectReference Include="..\NetPdf.Svg\NetPdf.Svg.csproj" PrivateAssets="all" />
   </ItemGroup>
 
+  <!--
+    External package dependencies. When the internal NetPdf.* ProjectReferences
+    above use PrivateAssets="all", their transitive PackageReference graph is
+    ALSO suppressed — so we must re-declare every real external dependency
+    here so consumers see the right `<dependency>` set in the .nuspec. If a
+    new internal project adds an external PackageReference, mirror it here.
+  -->
   <ItemGroup>
+    <!-- HTML + CSS parsing (consumed via NetPdf.Css). -->
     <PackageReference Include="AngleSharp" />
+    <PackageReference Include="AngleSharp.Css" />
+    <!-- Text shaping native bundle (consumed via NetPdf.Text). -->
+    <PackageReference Include="HarfBuzzSharp" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.Linux" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.macOS" />
+    <PackageReference Include="HarfBuzzSharp.NativeAssets.Win32" />
+    <!-- Image decode + raster fallback (consumed via NetPdf.Pdf). -->
+    <PackageReference Include="SkiaSharp" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Linux" />
+    <PackageReference Include="SkiaSharp.NativeAssets.macOS" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Win32" />
   </ItemGroup>
+
+  <PropertyGroup>
+    <TargetsForTfmSpecificBuildOutput>$(TargetsForTfmSpecificBuildOutput);BundleInternalProjectAssemblies</TargetsForTfmSpecificBuildOutput>
+  </PropertyGroup>
+
+  <Target Name="BundleInternalProjectAssemblies">
+    <!--
+      Bundle each internal NetPdf.* project's DLL + xmldoc into the package's
+      lib/<tfm>/ folder. The list mirrors the ProjectReference set above; if
+      a new internal project is added, append it here. PDB and snupkg are
+      handled by IncludeSymbols=true in Directory.Build.props.
+    -->
+    <ItemGroup>
+      <BuildOutputInPackage Include="$(MSBuildThisFileDirectory)..\NetPdf.Css\bin\$(Configuration)\$(TargetFramework)\NetPdf.Css.dll" />
+      <BuildOutputInPackage Include="$(MSBuildThisFileDirectory)..\NetPdf.Css\bin\$(Configuration)\$(TargetFramework)\NetPdf.Css.xml" Condition="Exists('$(MSBuildThisFileDirectory)..\NetPdf.Css\bin\$(Configuration)\$(TargetFramework)\NetPdf.Css.xml')" />
+      <BuildOutputInPackage Include="$(MSBuildThisFileDirectory)..\NetPdf.Layout\bin\$(Configuration)\$(TargetFramework)\NetPdf.Layout.dll" />
+      <BuildOutputInPackage Include="$(MSBuildThisFileDirectory)..\NetPdf.Layout\bin\$(Configuration)\$(TargetFramework)\NetPdf.Layout.xml" Condition="Exists('$(MSBuildThisFileDirectory)..\NetPdf.Layout\bin\$(Configuration)\$(TargetFramework)\NetPdf.Layout.xml')" />
+      <BuildOutputInPackage Include="$(MSBuildThisFileDirectory)..\NetPdf.Paginate\bin\$(Configuration)\$(TargetFramework)\NetPdf.Paginate.dll" />
+      <BuildOutputInPackage Include="$(MSBuildThisFileDirectory)..\NetPdf.Paginate\bin\$(Configuration)\$(TargetFramework)\NetPdf.Paginate.xml" Condition="Exists('$(MSBuildThisFileDirectory)..\NetPdf.Paginate\bin\$(Configuration)\$(TargetFramework)\NetPdf.Paginate.xml')" />
+      <BuildOutputInPackage Include="$(MSBuildThisFileDirectory)..\NetPdf.Paint\bin\$(Configuration)\$(TargetFramework)\NetPdf.Paint.dll" />
+      <BuildOutputInPackage Include="$(MSBuildThisFileDirectory)..\NetPdf.Paint\bin\$(Configuration)\$(TargetFramework)\NetPdf.Paint.xml" Condition="Exists('$(MSBuildThisFileDirectory)..\NetPdf.Paint\bin\$(Configuration)\$(TargetFramework)\NetPdf.Paint.xml')" />
+      <BuildOutputInPackage Include="$(MSBuildThisFileDirectory)..\NetPdf.Pdf\bin\$(Configuration)\$(TargetFramework)\NetPdf.Pdf.dll" />
+      <BuildOutputInPackage Include="$(MSBuildThisFileDirectory)..\NetPdf.Pdf\bin\$(Configuration)\$(TargetFramework)\NetPdf.Pdf.xml" Condition="Exists('$(MSBuildThisFileDirectory)..\NetPdf.Pdf\bin\$(Configuration)\$(TargetFramework)\NetPdf.Pdf.xml')" />
+      <BuildOutputInPackage Include="$(MSBuildThisFileDirectory)..\NetPdf.Text\bin\$(Configuration)\$(TargetFramework)\NetPdf.Text.dll" />
+      <BuildOutputInPackage Include="$(MSBuildThisFileDirectory)..\NetPdf.Text\bin\$(Configuration)\$(TargetFramework)\NetPdf.Text.xml" Condition="Exists('$(MSBuildThisFileDirectory)..\NetPdf.Text\bin\$(Configuration)\$(TargetFramework)\NetPdf.Text.xml')" />
+      <BuildOutputInPackage Include="$(MSBuildThisFileDirectory)..\NetPdf.Svg\bin\$(Configuration)\$(TargetFramework)\NetPdf.Svg.dll" />
+      <BuildOutputInPackage Include="$(MSBuildThisFileDirectory)..\NetPdf.Svg\bin\$(Configuration)\$(TargetFramework)\NetPdf.Svg.xml" Condition="Exists('$(MSBuildThisFileDirectory)..\NetPdf.Svg\bin\$(Configuration)\$(TargetFramework)\NetPdf.Svg.xml')" />
+    </ItemGroup>
+  </Target>
 
   <ItemGroup>
     <InternalsVisibleTo Include="NetPdf.UnitTests" />

@@ -24,11 +24,9 @@ Phase 1 — PDF writer + text foundation. NetPdf can now produce well-formed, by
 - `DisplayCommand` 64-byte tagged-union IR + `DisplayList` buffer (Phase 2/3 paint output).
 
 #### Font subsetter & embedding
-- `OpenTypeFont` parser covering `head` / `hhea` / `maxp` / `cmap` / `loca` / `glyf` / `name` / `OS/2` / `post` / `hmtx` (TTF) and `CFF` / `CFF2` (OTF). Read-only span-based; AOT-clean.
-- TTF glyph subsetter with composite-glyph closure traversal and `glyf` / `loca` re-numbering. New `cmap` formats 4 + 12 emitted to cover BMP + supplementary planes.
-- ToUnicode CMap generator with deterministic per-glyph mapping; preserves searchable / copyable text without requiring tagged PDF.
-- Type 0 / CIDFontType2 wrapper for embedded fonts; full `/FontFile2` + `/FontDescriptor` + `/DescendantFonts` graph.
-- 6-letter deterministic prefix on `BaseFont` name (SHA-256 of name + glyph bitmap → first 6 hex digits → base-26).
+- `OpenTypeFont` parser covering `head` / `hhea` / `maxp` / `cmap` / `loca` / `glyf` / `name` / `OS/2` / `post` / `hmtx` (TTF) **and** `CFF` / `CFF2` headers (OTF). Read-only span-based; AOT-clean. **Parsing scope only** — see embedding scope immediately below.
+- **TTF embedding pipeline (shipped):** glyph subsetter with composite-glyph closure traversal + `glyf`/`loca` re-numbering; new `cmap` formats 4 + 12 (BMP + supplementary planes); `ToUnicode` CMap generator with deterministic per-glyph mapping (preserves searchable/copyable text without requiring tagged PDF); Type 0 / CIDFontType2 wrapper with full `/FontFile2` + `/FontDescriptor` + `/DescendantFonts` graph; 6-letter deterministic `BaseFont` prefix (SHA-256 of name + glyph bitmap → first 6 hex digits → base-26).
+- **OTF / CFF embedding — deferred to Phase 1.x.** `0.1.0-alpha` does NOT ship CFF subsetting or the `FontFile3` / `CIDFontType0C` emit path. `EmbeddedTtfFont.Build` throws `InvalidOperationException` with a clear "OTF/CFF embedding deferred" message when called on a CFF-flavored `OpenTypeFont` — consumers get a precise signal rather than a malformed PDF. CFF2 (variable-fonts) is post-v1.0 work.
 
 #### Text shaping (`NetPdf.Text`)
 - HarfBuzzSharp wrapper (`HbShaper.Shape`) producing glyph runs with kerning + ligature + script-aware shaping.

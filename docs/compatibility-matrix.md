@@ -66,7 +66,7 @@ Phase column shows the milestone in which the feature first ships.
 | Feature | Status | Phase | Notes |
 |---|---|---|---|
 | `font-family`, `font-size`, `font-weight`, `font-style`, `font-stretch` | ✅ | 2 | |
-| `@font-face` with TTF, OTF, WOFF, **WOFF2** | ✅ | 1 | WOFF2 decompressed via `System.IO.Compression.BrotliStream` (built into .NET, no extra dep). |
+| `@font-face` with TTF, OTF, WOFF, **WOFF2** | 🧪 | 1 | All four formats **parsed** in Phase 1; WOFF2 decompressed via `System.IO.Compression.BrotliStream` (built into .NET, no extra dep). **Embedding scope:** TTF only at `0.1.0-alpha`. OTF/CFF embedding (`FontFile3` / `CIDFontType0C`) deferred to Phase 1.x — `EmbeddedTtfFont.Build` throws explicitly on CFF-flavored fonts rather than producing malformed PDF. |
 | Web font fetching via `IResourceLoader` | ✅ | 1 | |
 | Font fallback chain | ✅ | 1 | |
 | OpenType ligatures, kerning | ✅ | 1 | Via HarfBuzz. |

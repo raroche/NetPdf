@@ -104,7 +104,11 @@ The headroom is the budget for Phase 2 (CSS cascade + computed values), Phase 3 
 
 ## Regression gate
 
-The baseline is enforced — not just documented — by `scripts/benchmark-gate.sh`:
+### Status: local gate, enforced manually until Phase 5
+
+`scripts/benchmark-gate.sh` is a **local gate** at `0.1.0-alpha`. The script and its `--compare` tooling are checked-in and verified end-to-end (positive case + synthetic-regression negative case), but the repository does **not yet have a CI workflow** that runs it automatically on every PR. Phase 5's cross-platform CI matrix (Linux + macOS + Windows × x64 + arm64) is the milestone where this becomes an automatic merge gate.
+
+**Until then**, the contract is: run `./scripts/benchmark-gate.sh` locally before opening a PR that touches `NetPdf.Pdf.*`, image embedders, font subsetter / ToUnicode / SFNT envelope, or anything in the byte-writer hot path. The numbers below in this document are the regression target; this script is what tells you whether you've drifted past them.
 
 ```bash
 ./scripts/benchmark-gate.sh
@@ -116,7 +120,7 @@ The script:
 2. Calls the comparison program (`Program.cs --compare BASELINE-DIR CURRENT-DIR [tolerance]`) which loads both directories' `*-report-full-compressed.json`, extracts each benchmark's `Statistics.Mean`, computes the ratio current/baseline, and exits 1 if any benchmark exceeds the tolerance (default **+25%**, override via `BENCHMARK_GATE_TOLERANCE` env var).
 3. Propagates the comparison exit code: 0 = no regression past tolerance, 1 = regression detected, 2 = environmental error.
 
-**Negative-path verified**: I synthetically halved one baseline value and re-ran the comparison — the gate correctly reported `BlankSinglePage 2.8 us → 5.6 us 2.00× FAIL` and exited 1. The gate has teeth, not just procedure.
+**Negative-path verified** (Task 25 follow-up review): synthetically halved one baseline value and re-ran the comparison — the gate correctly reported `BlankSinglePage 2.8 us → 5.6 us 2.00× FAIL` and exited 1. The gate has teeth when it runs; today it just runs on contributor laptops, not in cloud CI.
 
 The baseline is committed under `tests/NetPdf.Benchmarks/baselines/phase-1-osx-arm64/` (one JSON per benchmark class). When new platforms are pinned (Phase 5), each gets its own subdirectory keyed by `os-arch`. The gate script auto-detects the running platform from `uname` and selects the right baseline.
 

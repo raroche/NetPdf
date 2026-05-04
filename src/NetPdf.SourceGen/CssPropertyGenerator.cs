@@ -78,13 +78,23 @@ public sealed class CssPropertyGenerator : IIncrementalGenerator
 
     private sealed class PropertyEntry
     {
+        // Per-field "supplied" flag tracks JSON key presence so the validator can emit a
+        // precise diagnostic for each missing required field instead of silently falling
+        // back to default values.
         public string Name = string.Empty;
+        public bool NameSupplied;
         public string Id = string.Empty;
+        public bool IdSupplied;
         public string Type = string.Empty;
+        public bool TypeSupplied;
         public string Default = string.Empty;
+        public bool DefaultSupplied;
         public bool Inherits;
+        public bool InheritSupplied;
         public string AppliesTo = string.Empty;
+        public bool AppliesToSupplied;
         public string Computed = string.Empty;
+        public bool ComputedSupplied;
     }
 
     private static bool TryParse(
@@ -122,23 +132,49 @@ public sealed class CssPropertyGenerator : IIncrementalGenerator
         var seenIds = new HashSet<string>(StringComparer.Ordinal);
         var seenNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-        foreach (var p in properties)
+        for (var index = 0; index < properties.Length; index++)
         {
-            if (string.IsNullOrEmpty(p.Name) || string.IsNullOrEmpty(p.Id))
+            var p = properties[index];
+            // Build a stable diagnostic tag pointing at the offending entry even when name
+            // itself is missing — falls back to id, then to the source-order index.
+            var tag = !string.IsNullOrEmpty(p.Name)
+                ? "name='" + p.Name + "'"
+                : !string.IsNullOrEmpty(p.Id) ? "id='" + p.Id + "'" : "[index " + index + "]";
+
+            // NPDFGEN0005 — every field is required. The "Supplied" flag distinguishes
+            // a missing key from a key with an empty value; both fail.
+            if (!p.NameSupplied)      { Report(context, "NPDFGEN0005", "Missing 'name'",       "Property " + tag + " is missing the required 'name' field."); ok = false; }
+            if (!p.IdSupplied)        { Report(context, "NPDFGEN0005", "Missing 'id'",         "Property " + tag + " is missing the required 'id' field."); ok = false; }
+            if (!p.TypeSupplied)      { Report(context, "NPDFGEN0005", "Missing 'type'",       "Property " + tag + " is missing the required 'type' field."); ok = false; }
+            if (!p.DefaultSupplied)   { Report(context, "NPDFGEN0005", "Missing 'default'",    "Property " + tag + " is missing the required 'default' field."); ok = false; }
+            if (!p.InheritSupplied)   { Report(context, "NPDFGEN0005", "Missing 'inherit'",    "Property " + tag + " is missing the required 'inherit' field."); ok = false; }
+            if (!p.AppliesToSupplied) { Report(context, "NPDFGEN0005", "Missing 'applies_to'", "Property " + tag + " is missing the required 'applies_to' field."); ok = false; }
+            if (!p.ComputedSupplied)  { Report(context, "NPDFGEN0005", "Missing 'computed'",   "Property " + tag + " is missing the required 'computed' field."); ok = false; }
+
+            if (p.NameSupplied && string.IsNullOrEmpty(p.Name))
             {
-                Report(context, "NPDFGEN0004", "Property missing required fields",
-                    "Every entry in properties.json needs at least 'name' and 'id'. Got name='" +
-                    p.Name + "', id='" + p.Id + "'.");
+                Report(context, "NPDFGEN0005", "Empty 'name'", "Property " + tag + " has an empty 'name'.");
                 ok = false;
-                continue;
             }
-            if (!seenIds.Add(p.Id))
+            if (p.IdSupplied && string.IsNullOrEmpty(p.Id))
+            {
+                Report(context, "NPDFGEN0005", "Empty 'id'", "Property " + tag + " has an empty 'id'.");
+                ok = false;
+            }
+            if (p.IdSupplied && !string.IsNullOrEmpty(p.Id) && !IsValidCSharpIdentifier(p.Id))
+            {
+                Report(context, "NPDFGEN0005", "Invalid C# identifier in 'id'",
+                    "Property " + tag + " has 'id'='" + p.Id + "' which is not a valid C# identifier.");
+                ok = false;
+            }
+
+            if (!string.IsNullOrEmpty(p.Id) && !seenIds.Add(p.Id))
             {
                 Report(context, "NPDFGEN0004", "Duplicate property id",
                     "Property id '" + p.Id + "' appears more than once in properties.json.");
                 ok = false;
             }
-            if (!seenNames.Add(p.Name))
+            if (!string.IsNullOrEmpty(p.Name) && !seenNames.Add(p.Name))
             {
                 Report(context, "NPDFGEN0004", "Duplicate property name",
                     "Property name '" + p.Name + "' appears more than once in properties.json (case-insensitive).");
@@ -146,6 +182,15 @@ public sealed class CssPropertyGenerator : IIncrementalGenerator
             }
         }
         return ok;
+    }
+
+    private static bool IsValidCSharpIdentifier(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return false;
+        if (!(char.IsLetter(value[0]) || value[0] == '_')) return false;
+        for (var i = 1; i < value.Length; i++)
+            if (!(char.IsLetterOrDigit(value[i]) || value[i] == '_')) return false;
+        return true;
     }
 
     private static string EmitSource(ImmutableArray<PropertyEntry> properties)
@@ -162,6 +207,7 @@ public sealed class CssPropertyGenerator : IIncrementalGenerator
         sb.AppendLine();
         sb.AppendLine("using System.Collections.Frozen;");
         sb.AppendLine("using System.Collections.Generic;");
+        sb.AppendLine("using System.Collections.Immutable;");
         sb.AppendLine();
         sb.AppendLine("namespace NetPdf.Css.Properties;");
         sb.AppendLine();
@@ -194,11 +240,17 @@ public sealed class CssPropertyGenerator : IIncrementalGenerator
         sb.Append(properties.Length);
         sb.AppendLine(";");
         sb.AppendLine();
-        sb.AppendLine("    /// <summary>Per-property metadata, indexed by <see cref=\"PropertyId\"/>.</summary>");
-        sb.AppendLine("    public static readonly PropertyMeta[] Table =");
-        sb.AppendLine("    {");
-        foreach (var p in properties)
+        sb.AppendLine("    /// <summary>");
+        sb.AppendLine("    /// Per-property metadata, indexed by <see cref=\"PropertyId\"/>. Returned as an");
+        sb.AppendLine("    /// <see cref=\"ImmutableArray{T}\"/> so consumers cannot mutate entries (a plain");
+        sb.AppendLine("    /// <c>readonly PropertyMeta[]</c> would still allow <c>Table[i] = ...</c>).");
+        sb.AppendLine("    /// </summary>");
+        sb.AppendLine("    public static ImmutableArray<PropertyMeta> Table => _table;");
+        sb.AppendLine();
+        sb.AppendLine("    private static readonly ImmutableArray<PropertyMeta> _table = ImmutableArray.Create<PropertyMeta>(");
+        for (var i = 0; i < properties.Length; i++)
         {
+            var p = properties[i];
             sb.Append("        new PropertyMeta(PropertyId.");
             sb.Append(p.Id);
             sb.Append(", ");
@@ -213,9 +265,10 @@ public sealed class CssPropertyGenerator : IIncrementalGenerator
             sb.Append(string.IsNullOrEmpty(p.AppliesTo) ? "Unknown" : p.AppliesTo);
             sb.Append(", ComputedValueKind.");
             sb.Append(string.IsNullOrEmpty(p.Computed) ? "Specified" : p.Computed);
-            sb.AppendLine("),");
+            sb.Append(")");
+            sb.AppendLine(i == properties.Length - 1 ? "" : ",");
         }
-        sb.AppendLine("    };");
+        sb.AppendLine("    );");
         sb.AppendLine();
         sb.AppendLine("    /// <summary>Case-insensitive name → id lookup. Built once at type init.</summary>");
         sb.AppendLine("    public static readonly FrozenDictionary<string, PropertyId> NameToId = BuildNameToId();");
@@ -225,7 +278,7 @@ public sealed class CssPropertyGenerator : IIncrementalGenerator
         sb.AppendLine("        var dict = new Dictionary<string, PropertyId>(Count, System.StringComparer.OrdinalIgnoreCase);");
         sb.AppendLine("        for (var i = 0; i < Count; i++)");
         sb.AppendLine("        {");
-        sb.AppendLine("            var meta = Table[i];");
+        sb.AppendLine("            var meta = _table[i];");
         sb.AppendLine("            dict[meta.Name] = meta.Id;");
         sb.AppendLine("        }");
         sb.AppendLine("        return dict.ToFrozenDictionary(System.StringComparer.OrdinalIgnoreCase);");
@@ -345,13 +398,13 @@ public sealed class CssPropertyGenerator : IIncrementalGenerator
 
                 switch (key)
                 {
-                    case "name":       entry.Name      = ReadString(text, ref pos); break;
-                    case "id":         entry.Id        = ReadString(text, ref pos); break;
-                    case "type":       entry.Type      = ReadString(text, ref pos); break;
-                    case "default":    entry.Default   = ReadString(text, ref pos); break;
-                    case "inherit":    entry.Inherits  = ReadBool(text, ref pos); break;
-                    case "applies_to": entry.AppliesTo = ReadString(text, ref pos); break;
-                    case "computed":   entry.Computed  = ReadString(text, ref pos); break;
+                    case "name":       entry.Name      = ReadString(text, ref pos); entry.NameSupplied      = true; break;
+                    case "id":         entry.Id        = ReadString(text, ref pos); entry.IdSupplied        = true; break;
+                    case "type":       entry.Type      = ReadString(text, ref pos); entry.TypeSupplied      = true; break;
+                    case "default":    entry.Default   = ReadString(text, ref pos); entry.DefaultSupplied   = true; break;
+                    case "inherit":    entry.Inherits  = ReadBool(text, ref pos);   entry.InheritSupplied   = true; break;
+                    case "applies_to": entry.AppliesTo = ReadString(text, ref pos); entry.AppliesToSupplied = true; break;
+                    case "computed":   entry.Computed  = ReadString(text, ref pos); entry.ComputedSupplied  = true; break;
                     default:           SkipValue(text, ref pos); break;
                 }
 

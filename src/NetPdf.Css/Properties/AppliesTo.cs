@@ -4,14 +4,25 @@
 namespace NetPdf.Css.Properties;
 
 /// <summary>
-/// The element class a CSS property applies to. The cascade resolver consults this when
-/// evaluating whether a declaration affects a given element — properties that don't apply
-/// to the element are skipped before specificity comparison.
+/// The element class a CSS property applies to per its CSS spec — for example
+/// <c>background-color</c> applies to "all elements" while <c>top</c>/<c>right</c>/
+/// <c>bottom</c>/<c>left</c> apply only to positioned elements.
 /// </summary>
 /// <remarks>
-/// Values match the "Applies to" column in the CSS specs (e.g., CSS Backgrounds 3 §3.1
-/// lists <c>background-color</c> as applying to "all elements"). The set is pragmatic —
-/// new categories get added as new properties land.
+/// <para>
+/// <b>Important:</b> this metadata is for VALIDATION + USED-VALUE / LAYOUT decisions, NOT
+/// for filtering during cascade resolution. The CSS Cascade L4 §6 algorithm computes the
+/// specified value of every property for every element regardless of whether the property
+/// applies; the "applies to" gate kicks in at used-value / layout time when the cascade's
+/// output is consumed. Filtering during cascade would silently drop declarations that
+/// downstream stages (e.g., custom-property fallback chains, computed-value resolvers)
+/// might still need to inspect, and would break inheritance through elements that the
+/// property doesn't apply to.
+/// </para>
+/// <para>
+/// Pragmatic enum set — new categories get added as new properties land. Values match the
+/// "Applies to" column in the CSS specs (e.g., CSS Backgrounds 3 §3.1).
+/// </para>
 /// </remarks>
 internal enum AppliesTo : byte
 {

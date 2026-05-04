@@ -29,6 +29,19 @@
     <PackageReference Include="xunit" />
     <PackageReference Include="xunit.runner.visualstudio" />
     <PackageReference Include="coverlet.collector" />
+    <!--
+      Roslyn host for source-generator diagnostic tests. The generator targets
+      netstandard2.0, but tests run on net10.0 — the package supports both.
+    -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Reference the source-generator project as a regular DLL (NOT as Analyzer) so the
+         test code can host it via CSharpGeneratorDriver. -->
+    <ProjectReference Include="..\..\src\NetPdf.SourceGen\NetPdf.SourceGen.csproj"
+                      ReferenceOutputAssembly="true"
+                      OutputItemType="" />
   </ItemGroup>
 
   <!--

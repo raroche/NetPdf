@@ -43,6 +43,18 @@ internal enum PropertyType : byte
     FontFamilyList = 14,
     /// <summary>A font-weight (normal, bold, bolder, lighter, 100..900).</summary>
     FontWeight = 15,
+    /// <summary>A line-width per CSS Backgrounds &amp; Borders 3 §3.1: <c>&lt;length&gt; | thin | medium | thick</c>.</summary>
+    LineWidth = 16,
+    /// <summary>A font-size per CSS Fonts 4 §3.4: <c>&lt;absolute-size&gt; | &lt;relative-size&gt; | &lt;length-percentage&gt; | math</c>.</summary>
+    FontSize = 17,
+    /// <summary>A line-height per CSS Inline 3 §2.4.4: <c>normal | &lt;number&gt; | &lt;length-percentage&gt;</c>.</summary>
+    LineHeight = 18,
+    /// <summary>The CSS <c>content</c> value: <c>normal | none | &lt;content-list&gt; | image | string | counter() | …</c></summary>
+    Content = 19,
+    /// <summary>A vertical-align value: <c>baseline | sub | super | top | … | &lt;length-percentage&gt;</c>.</summary>
+    VerticalAlign = 20,
+    /// <summary>A flex-basis value: <c>content | &lt;length-percentage&gt; | auto</c>.</summary>
+    FlexBasis = 21,
     /// <summary>A custom property type — value is opaque to the parser dispatch table.</summary>
     Custom = 255,
 }

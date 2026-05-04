@@ -44,9 +44,10 @@ Wire AngleSharp + AngleSharp.Css to parse arbitrary modern HTML+CSS into a DOM a
   - Each property is 8 bytes; total ~140 properties × 8 = ~1.1 KB per element. Pooled via `ArrayPool<byte>`.
   - Custom properties (`--*`) live in a sparse side dictionary keyed per element.
 - **Property tables via source generator** (`src/NetPdf.SourceGen/CssPropertyGenerator.cs`):
-  - Reads `properties.json` (the single source of truth for all CSS properties: name, types, default, inheritance behavior, parser hook, computed-value hook).
-  - Emits a generated `PropertyId` enum, `PropertyMeta` table (`FrozenDictionary<string, PropertyId>`), and per-property parser/resolver stubs.
-  - Single command to add a new property: append to `properties.json`, rebuild.
+  - Reads `properties.json` at `src/NetPdf.Css/properties.json` — the single source of truth for every CSS property the cascade knows about. Schema fields (all REQUIRED, validated by the generator with `NPDFGEN0005`): `name` (CSS property name), `id` (PascalCase enum identifier), `type` (`PropertyType` value name), `default` (initial value text per spec), `inherit` (per spec), `applies_to` (`AppliesTo` value name), `computed` (`ComputedValueKind` value name).
+  - Emits a generated `PropertyId : ushort` enum (one value per property, doubles as `Table` index), `PropertyMetadata.Table` (`ImmutableArray<PropertyMeta>` so consumers cannot mutate entries), `PropertyMetadata.Count`, and `PropertyMetadata.NameToId` (`FrozenDictionary<string, PropertyId>` with case-insensitive lookup, lazily built).
+  - **Task 4 scope** is the `PropertyId` enum + `PropertyMetadata` table + `NameToId` lookup. **Per-property typed accessors** (e.g., `style.Color`, `style.MarginTop`) are part of **Task 5**, where they live as instance methods on the `[InlineArray]`-backed `ComputedStyle` struct and call into per-property parser hooks. Parser/computed-value hooks themselves are introduced incrementally in Tasks 9–10 alongside the typed value tree.
+  - Single command to add a new property: append to `properties.json`, rebuild. The generator emits `NPDFGEN0001`–`NPDFGEN0005` diagnostics on empty/malformed JSON, missing required fields, duplicate names/ids, and invalid C# identifiers — build breaks rather than silently emitting wrong code.
 
 ### `NetPdf.Layout.Boxes` — box generation
 

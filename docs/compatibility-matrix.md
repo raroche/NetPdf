@@ -82,8 +82,11 @@ Phase column shows the milestone in which the feature first ships.
 
 | Feature | Status | Phase | Notes |
 |---|---|---|---|
-| `color` (named, hex, rgb, hsl, hwb, lab, lch, oklab, oklch) | ✅ | 2 | All modern color functions. |
-| `color-mix()` | ✅ | 2 | |
+| `color` (named, hex, rgb, hsl) | ✅ | 2 | AngleSharp.Css normalizes all to `rgba(r,g,b,a)`. |
+| `color` (lab, lch, hwb) | 🧪 | 2 | AngleSharp.Css parses these natively. Validate per-property at Task 9–10 typed-value time. |
+| `color` (oklab, oklch) | 🧪 | 2 | AngleSharp.Css 1.0.0-beta.144 SILENTLY CORRUPTS `oklch(...)` to bogus rgba. Task 3's pre-pass preserves the authored text in `CssDeclaration.Value.RawText`; Tasks 9–10 typed-value resolution converts the raw text. |
+| `color-mix()` | 🧪 | 2 | AngleSharp.Css 1.0.0-beta.144 drops the declaration entirely (empty rule body). Task 3's pre-pass restores the authored value as raw text; Tasks 9–10 will compute the mixed color. |
+| `light-dark()` | 🧪 | 2 | Same AngleSharp drop as `color-mix()`. Raw text preserved; Task 9–10 evaluates against `PreferredColorScheme`. |
 | `background-color` | ✅ | 3 | |
 | `background-image: url(...)` | ✅ | 4 | |
 | `background-image: linear-gradient()` | ✅ | 4 | PDF native shading pattern. |
@@ -117,11 +120,12 @@ Phase column shows the milestone in which the feature first ships.
 | Custom properties (`--*`, `var()`) | ✅ | 2 | |
 | `calc()` / `min()` / `max()` / `clamp()` / `abs()` / `sign()` | ✅ | 2 | |
 | CSS Nesting (`& { ... }`) | ✅ | 2 | |
-| `@layer` cascade layers | ✅ | 2 | |
+| `@layer` cascade layers — block-form parsing | 🧪 | 2 | AngleSharp.Css drops `@layer name { ... }` entirely. Task 3's pre-pass captures it as a `CssAtRule { Name = "layer", RawBody = "..." }` so the cascade in Task 7 can re-parse the body and apply layer ordering. |
+| `@layer` statement-form (`@layer one, two;`) | 🧪 | 2 | Same as block-form; Task 3 captures the prelude. Layer ordering applied in Task 7. |
 | `:has()` selector — parsing | ✅ | 2 | Selector compiles. |
 | `:has()` selector — rendering | 📥 | post-v1 | Currently treated as no-match; emits `CSS-HAS-RENDERING-NOT-IMPLEMENTED-001`. Roadmap v1.4. |
 | `:is()`, `:where()`, `:not()` | ✅ | 2 | |
-| Container queries (`@container`) — parsing | ✅ | 2 | |
+| Container queries (`@container`) — parsing | 🧪 | 2 | AngleSharp.Css drops `@container ... { ... }` entirely. Task 3's pre-pass captures it as a `CssAtRule { Name = "container", RawBody = "..." }`. |
 | Container queries — rendering | 📥 | post-v1 | Emits `CSS-CONTAINER-QUERY-UNSUPPORTED-001`. Roadmap v1.4. |
 | Anchor positioning | 📥 | post-v1 | Parsed; emits `CSS-ANCHOR-POSITIONING-UNSUPPORTED-001`. |
 | `@media print` | ✅ | 2 | Default media in NetPdf. |
@@ -193,4 +197,4 @@ See [docs/design/determinism.md](design/determinism.md) for the full contract an
 
 ---
 
-Last updated: 2026-05-03 (Task 23 follow-up review).
+Last updated: 2026-05-04 (Phase 2 Task 3 review cycle 2 — modern color functions / `@layer` / `@container` reclassified to 🧪 reflecting AngleSharp.Css 1.0.0-beta.144 limitations and Task 3's raw-text preservation).

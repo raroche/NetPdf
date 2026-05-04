@@ -291,11 +291,11 @@ public sealed class CssParserAdapterPreprocessTests
     // ------------------------------------------------------------
 
     [Fact]
-    public async Task Adapt_nested_rule_locations_are_unknown_not_misaligned()
+    public async Task Adapt_nested_rule_locations_are_populated_via_grouping_recursion()
     {
-        // Pre-fix bug: nested rules inside @media reused the top-level slot list, so child
-        // rule locations pointed at random top-level rules. Now we pass empty preprocess to
-        // recursive AdaptRules and child locations are Unknown — correct rather than wrong.
+        // Review-cycle 2 improvement: the preprocessor now recurses into @media/@supports/
+        // @keyframes bodies and emits nested CssRuleSlot lists. The adapter consumes those
+        // nested slots so child rules get their real source positions instead of Unknown.
         var (sheet, preprocess) = await ParseAndPreprocess("""
             .a { color: red }
             @media print { .child { color: blue } }
@@ -307,11 +307,13 @@ public sealed class CssParserAdapterPreprocessTests
         Assert.Equal(1, ((CssStyleRule)stylesheet.Rules[0]).Location.Line);
 
         var media = Assert.IsType<CssAtRule>(stylesheet.Rules[1]);
-        Assert.Equal(2, media.Location.Line); // Top-level @media gets correct line.
+        Assert.Equal(2, media.Location.Line);
 
-        // Child rule's location must be Unknown — preprocessor doesn't track nested positions.
+        // Nested child rule's location now reflects its real source line (line 2 — the
+        // child sits on the same line as the @media in the test input).
         var child = Assert.IsType<CssStyleRule>(Assert.Single(media.ChildRules));
-        Assert.Equal(CssSourceLocation.Unknown, child.Location);
+        Assert.Equal(2, child.Location.Line);
+        Assert.True(child.Location.Column > 0);
     }
 
     [Fact]
@@ -342,6 +344,249 @@ public sealed class CssParserAdapterPreprocessTests
         Assert.Equal(":first", page.Prelude);
         Assert.Single(page.ChildRules);
         Assert.Equal("top-left", Assert.IsType<CssAtRule>(page.ChildRules[0]).Name);
+    }
+
+    // ------------------------------------------------------------
+    // Raw-value capture for modern functions (Rec 1)
+    // ------------------------------------------------------------
+
+    [Fact]
+    public async Task Adapt_oklch_value_is_replaced_with_authored_text_not_anglesharp_corruption()
+    {
+        var (sheet, preprocess) = await ParseAndPreprocess(".a { color: oklch(0.5 0.2 30) }");
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet, preprocess, null, CssStylesheetOrigin.Author, CssStylesheetOwnerKind.StyleElement, null, false, 0);
+
+        var rule = Assert.IsType<CssStyleRule>(Assert.Single(stylesheet.Rules));
+        var color = Assert.Single(rule.Declarations);
+        Assert.Equal("color", color.Property);
+        // AngleSharp's bogus rgba(9, 0, 0, 1) is replaced by the authored oklch(...) text.
+        Assert.Contains("oklch", color.Value.RawText);
+        Assert.DoesNotContain("rgba", color.Value.RawText);
+    }
+
+    [Fact]
+    public async Task Adapt_color_mix_dropped_by_anglesharp_is_restored_from_recovery()
+    {
+        // AngleSharp drops the entire declaration when it can't parse `color-mix(...)`.
+        // The recovery adds it back — without recovery the rule body would be empty.
+        var (sheet, preprocess) = await ParseAndPreprocess(".a { color: color-mix(in oklch, red, blue) }");
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet, preprocess, null, CssStylesheetOrigin.Author, CssStylesheetOwnerKind.StyleElement, null, false, 0);
+
+        var rule = Assert.IsType<CssStyleRule>(Assert.Single(stylesheet.Rules));
+        var color = Assert.Single(rule.Declarations);
+        Assert.Equal("color", color.Property);
+        Assert.Contains("color-mix", color.Value.RawText);
+    }
+
+    [Fact]
+    public async Task Adapt_light_dark_dropped_by_anglesharp_is_restored_from_recovery()
+    {
+        var (sheet, preprocess) = await ParseAndPreprocess(".a { color: light-dark(white, black) }");
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet, preprocess, null, CssStylesheetOrigin.Author, CssStylesheetOwnerKind.StyleElement, null, false, 0);
+
+        var rule = Assert.IsType<CssStyleRule>(Assert.Single(stylesheet.Rules));
+        var color = Assert.Single(rule.Declarations);
+        Assert.Contains("light-dark", color.Value.RawText);
+    }
+
+    [Fact]
+    public async Task Adapt_oklch_with_important_preserves_important_flag()
+    {
+        var (sheet, preprocess) = await ParseAndPreprocess(".a { color: oklch(0.5 0.2 30) !important }");
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet, preprocess, null, CssStylesheetOrigin.Author, CssStylesheetOwnerKind.StyleElement, null, false, 0);
+
+        var rule = Assert.IsType<CssStyleRule>(Assert.Single(stylesheet.Rules));
+        var color = Assert.Single(rule.Declarations);
+        Assert.True(color.IsImportant);
+        Assert.Contains("oklch", color.Value.RawText);
+        Assert.DoesNotContain("!important", color.Value.RawText);
+    }
+
+    [Fact]
+    public async Task Adapt_normal_color_unaffected_by_recovery_path()
+    {
+        var (sheet, preprocess) = await ParseAndPreprocess(".a { color: red }");
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet, preprocess, null, CssStylesheetOrigin.Author, CssStylesheetOwnerKind.StyleElement, null, false, 0);
+
+        var rule = Assert.IsType<CssStyleRule>(Assert.Single(stylesheet.Rules));
+        var color = Assert.Single(rule.Declarations);
+        // No modern function present → AngleSharp's normalized rgba flows through.
+        Assert.Equal("rgba(255, 0, 0, 1)", color.Value.RawText);
+    }
+
+    [Fact]
+    public async Task Adapt_modern_value_recovery_in_nested_at_rule_works()
+    {
+        // The recovery should also apply to declarations inside @media-nested rules.
+        var (sheet, preprocess) = await ParseAndPreprocess("""
+            @media print {
+                .a { color: oklch(0.5 0.2 30) }
+            }
+            """);
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet, preprocess, null, CssStylesheetOrigin.Author, CssStylesheetOwnerKind.StyleElement, null, false, 0);
+
+        var media = Assert.IsType<CssAtRule>(Assert.Single(stylesheet.Rules));
+        var inner = Assert.IsType<CssStyleRule>(Assert.Single(media.ChildRules));
+        var color = Assert.Single(inner.Declarations);
+        Assert.Contains("oklch", color.Value.RawText);
+    }
+
+    // ------------------------------------------------------------
+    // RawBody preservation on opaque modern at-rules (Rec 2)
+    // ------------------------------------------------------------
+
+    [Fact]
+    public async Task Adapt_opaque_container_carries_raw_body_for_downstream()
+    {
+        var (sheet, preprocess) = await ParseAndPreprocess(
+            "@container (min-width: 800px) { .a { color: red } .b { color: blue } }");
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet, preprocess, null, CssStylesheetOrigin.Author, CssStylesheetOwnerKind.StyleElement, null, false, 0);
+
+        var container = Assert.IsType<CssAtRule>(Assert.Single(stylesheet.Rules));
+        Assert.Equal("container", container.Name);
+        Assert.NotEmpty(container.RawBody);
+        Assert.Contains(".a", container.RawBody);
+        Assert.Contains(".b", container.RawBody);
+    }
+
+    [Fact]
+    public async Task Adapt_opaque_layer_block_carries_raw_body_for_downstream()
+    {
+        var (sheet, preprocess) = await ParseAndPreprocess(
+            "@layer framework { .x { color: red } }");
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet, preprocess, null, CssStylesheetOrigin.Author, CssStylesheetOwnerKind.StyleElement, null, false, 0);
+
+        var layer = Assert.IsType<CssAtRule>(Assert.Single(stylesheet.Rules));
+        Assert.Equal("layer", layer.Name);
+        Assert.NotEmpty(layer.RawBody);
+        Assert.Contains(".x", layer.RawBody);
+    }
+
+    [Fact]
+    public async Task Adapt_layer_statement_form_has_empty_raw_body()
+    {
+        var (sheet, preprocess) = await ParseAndPreprocess("@layer one, two, three;");
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet, preprocess, null, CssStylesheetOrigin.Author, CssStylesheetOwnerKind.StyleElement, null, false, 0);
+
+        var layer = Assert.IsType<CssAtRule>(Assert.Single(stylesheet.Rules));
+        Assert.Equal("layer", layer.Name);
+        Assert.Empty(layer.RawBody); // Statement-form has no body to preserve.
+    }
+
+    // ------------------------------------------------------------
+    // Nested modern at-rule recovery (Rec 3)
+    // ------------------------------------------------------------
+
+    [Fact]
+    public async Task Adapt_nested_container_in_media_appears_in_child_rules_via_opaque_slot()
+    {
+        // AngleSharp drops the @container nested inside @media. The preprocessor's nested
+        // slot list lets the adapter splice an opaque CssAtRule for it under the @media's
+        // ChildRules. Combined with surrounding style rules, ordering is preserved.
+        var (sheet, preprocess) = await ParseAndPreprocess("""
+            @media print {
+                .a { color: red }
+                @container (min-width: 800px) { .x { color: red } }
+                .z { color: green }
+            }
+            """);
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet, preprocess, null, CssStylesheetOrigin.Author, CssStylesheetOwnerKind.StyleElement, null, false, 0);
+
+        var media = Assert.IsType<CssAtRule>(Assert.Single(stylesheet.Rules));
+        Assert.Equal(3, media.ChildRules.Length);
+        Assert.IsType<CssStyleRule>(media.ChildRules[0]);
+        var nestedContainer = Assert.IsType<CssAtRule>(media.ChildRules[1]);
+        Assert.Equal("container", nestedContainer.Name);
+        Assert.NotEmpty(nestedContainer.RawBody);
+        Assert.IsType<CssStyleRule>(media.ChildRules[2]);
+    }
+
+    // ------------------------------------------------------------
+    // Comment-aware !important (Rec 6)
+    // ------------------------------------------------------------
+
+    [Fact]
+    public async Task Adapt_margin_box_value_with_comment_before_important_is_recognized()
+    {
+        var (sheet, preprocess) = await ParseAndPreprocess("""
+            @page { @top-center { content: "Header" /* note */ !important } }
+            """);
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet, preprocess, null, CssStylesheetOrigin.Author, CssStylesheetOwnerKind.StyleElement, null, false, 0);
+
+        var page = Assert.IsType<CssAtRule>(Assert.Single(stylesheet.Rules));
+        var marginBox = Assert.IsType<CssAtRule>(Assert.Single(page.ChildRules));
+        var declaration = Assert.Single(marginBox.Declarations);
+        Assert.True(declaration.IsImportant);
+    }
+
+    [Fact]
+    public async Task Adapt_margin_box_value_with_comment_after_important_is_recognized()
+    {
+        var (sheet, preprocess) = await ParseAndPreprocess("""
+            @page { @top-center { content: "Header" !important /* trailing */ } }
+            """);
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet, preprocess, null, CssStylesheetOrigin.Author, CssStylesheetOwnerKind.StyleElement, null, false, 0);
+
+        var page = Assert.IsType<CssAtRule>(Assert.Single(stylesheet.Rules));
+        var marginBox = Assert.IsType<CssAtRule>(Assert.Single(page.ChildRules));
+        var declaration = Assert.Single(marginBox.Declarations);
+        Assert.True(declaration.IsImportant);
+    }
+
+    [Fact]
+    public async Task Adapt_margin_box_value_with_comment_inside_bang_marker_is_recognized()
+    {
+        var (sheet, preprocess) = await ParseAndPreprocess("""
+            @page { @top-center { content: "Header" ! /* split */ important } }
+            """);
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet, preprocess, null, CssStylesheetOrigin.Author, CssStylesheetOwnerKind.StyleElement, null, false, 0);
+
+        var page = Assert.IsType<CssAtRule>(Assert.Single(stylesheet.Rules));
+        var marginBox = Assert.IsType<CssAtRule>(Assert.Single(page.ChildRules));
+        var declaration = Assert.Single(marginBox.Declarations);
+        Assert.True(declaration.IsImportant);
+    }
+
+    // ------------------------------------------------------------
+    // Robust slot mismatch (Rec 4)
+    // ------------------------------------------------------------
+
+    [Fact]
+    public async Task Adapt_when_anglesharp_drops_unknown_at_rule_slot_demotes_to_opaque()
+    {
+        // The robust merge: even if AngleSharp drops a rule type the preprocessor doesn't
+        // explicitly recognize as "modern", the slot's metadata still lets the adapter
+        // emit an opaque CssAtRule rather than letting subsequent rules drift.
+        // Note: AngleSharp 1.0.0-beta.144 actually DOES emit @scope as an unknown rule,
+        // so this test exercises the "AngleSharp surprises us by dropping a normal-looking
+        // at-rule" defensive code path. We use a synthetic mismatch instead.
+        var (sheet, preprocess) = await ParseAndPreprocess("""
+            @container (min-width: 800px) { .a { color: red } }
+            .later { color: blue }
+            """);
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet, preprocess, null, CssStylesheetOrigin.Author, CssStylesheetOwnerKind.StyleElement, null, false, 0);
+
+        Assert.Equal(2, stylesheet.Rules.Length);
+        var container = Assert.IsType<CssAtRule>(stylesheet.Rules[0]);
+        Assert.Equal("container", container.Name);
+        var later = Assert.IsType<CssStyleRule>(stylesheet.Rules[1]);
+        Assert.Equal(".later", later.Selector.RawText);
+        // Crucially, `.later` got line 2, not @container's line 1.
+        Assert.Equal(2, later.Location.Line);
     }
 
     // ------------------------------------------------------------

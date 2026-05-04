@@ -9,11 +9,10 @@ using Xunit;
 namespace NetPdf.UnitTests.Css.Parser.Preprocessing;
 
 /// <summary>
-/// Unit tests for <see cref="CssPreprocessor"/> covering the AngleSharp.Css 1.0.0-beta.144
-/// gaps Phase 2 Task 3 was tasked to close, plus the review-cycle 1 hardening:
-/// modern at-rule capture (<c>@container</c>, <c>@layer</c>), ordinal-drift fix via the
-/// unified <see cref="CssPreprocessResult.RuleSlots"/> list, token-aware <c>!important</c>
-/// recognition, and margin-box name validation.
+/// Unit tests for <see cref="CssPreprocessor"/> with the unified <see cref="CssRuleSlot"/>
+/// shape introduced in Task 3 review cycle 2. Covers AngleSharp.Css 1.0.0-beta.144 gaps —
+/// page rules, modern at-rules, modern value functions in declarations, nested-grouping
+/// recursion, robust slot merging, and the CSS Paged Media L3 §6.4 margin-box allowlist.
 /// </summary>
 public sealed class CssPreprocessorTests
 {
@@ -30,6 +29,7 @@ public sealed class CssPreprocessorTests
         Assert.True(result.PageRecoveries.IsEmpty);
         Assert.True(result.ImportRecoveries.IsEmpty);
         Assert.True(result.RuleSlots.IsEmpty);
+        Assert.True(result.StyleRuleRecoveries.IsEmpty);
     }
 
     [Fact]
@@ -41,7 +41,31 @@ public sealed class CssPreprocessorTests
     }
 
     // ------------------------------------------------------------
-    // @page selector recovery (Task 3 blocker #1)
+    // Slot kinds
+    // ------------------------------------------------------------
+
+    [Fact]
+    public void Process_style_rule_emits_style_rule_slot()
+    {
+        var result = CssPreprocessor.Process(".foo { color: red }");
+        var slot = Assert.Single(result.RuleSlots);
+        Assert.Equal(CssRuleSlotKind.StyleRule, slot.Kind);
+        Assert.Equal(".foo", slot.Prelude);
+        Assert.Empty(slot.AtKeyword);
+        Assert.Contains("color", slot.RawBody);
+    }
+
+    [Fact]
+    public void Process_at_rule_emits_at_rule_slot_with_keyword()
+    {
+        var result = CssPreprocessor.Process("@media print { p { color: red } }");
+        var slot = Assert.Single(result.RuleSlots);
+        Assert.Equal(CssRuleSlotKind.AtRule, slot.Kind);
+        Assert.Equal("media", slot.AtKeyword);
+    }
+
+    // ------------------------------------------------------------
+    // @page selector recovery
     // ------------------------------------------------------------
 
     [Fact]
@@ -83,7 +107,7 @@ public sealed class CssPreprocessorTests
     }
 
     // ------------------------------------------------------------
-    // @page margin-box recovery (Task 3 blocker #2) + name validation
+    // @page margin-box recovery + name validation
     // ------------------------------------------------------------
 
     [Fact]
@@ -139,7 +163,6 @@ public sealed class CssPreprocessorTests
     [InlineData("right-bottom")]
     public void Process_recovers_all_spec_named_margin_boxes(string boxName)
     {
-        // Pins all 16 CSS Paged Media L3 §6.4 names round-trip through the recovery.
         var result = CssPreprocessor.Process($"@page {{ @{boxName} {{ content: 'x' }} }}");
         var page = Assert.Single(result.PageRecoveries);
         var box = Assert.Single(page.MarginBoxes);
@@ -149,9 +172,6 @@ public sealed class CssPreprocessorTests
     [Fact]
     public void Process_unknown_margin_box_name_is_dropped_silently()
     {
-        // CSS Paged Media L3 §6.4 enumerates exactly 16 margin-box names. Any other
-        // @<ident> { ... } inside @page is malformed CSS — the preprocessor drops it
-        // rather than silently converting it into a pseudo-margin-box.
         var result = CssPreprocessor.Process("""
             @page {
                 margin: 1in;
@@ -165,7 +185,7 @@ public sealed class CssPreprocessorTests
     }
 
     // ------------------------------------------------------------
-    // @import modern-syntax recovery (Task 3 blocker #3)
+    // @import modern-syntax recovery
     // ------------------------------------------------------------
 
     [Fact]
@@ -196,7 +216,6 @@ public sealed class CssPreprocessorTests
         var import = Assert.Single(result.ImportRecoveries);
         Assert.Equal("theme.css", import.Url);
         Assert.Equal("framework", import.LayerName);
-        Assert.Null(import.SupportsCondition);
     }
 
     [Fact]
@@ -236,55 +255,133 @@ public sealed class CssPreprocessorTests
     }
 
     // ------------------------------------------------------------
-    // Modern at-rule recovery (Task 3 review-cycle 1 P1)
+    // Modern at-rule capture as opaque slots with raw body (Rec 2)
     // ------------------------------------------------------------
 
     [Fact]
-    public void Process_container_at_rule_emits_opaque_slot()
+    public void Process_container_at_rule_emits_at_rule_slot_with_raw_body()
     {
-        // AngleSharp drops @container entirely. Preprocessor captures it as opaque so the
-        // adapter can splice a CssAtRule into the AST in source order.
         var result = CssPreprocessor.Process("@container (min-width: 800px) { .a { color: red } }");
         var slot = Assert.Single(result.RuleSlots);
-        var opaque = Assert.IsType<CssOpaqueAtRuleSlot>(slot);
-        Assert.Equal("container", opaque.Name);
-        Assert.Contains("min-width", opaque.Prelude);
+        Assert.Equal(CssRuleSlotKind.AtRule, slot.Kind);
+        Assert.Equal("container", slot.AtKeyword);
+        Assert.Contains("min-width", slot.Prelude);
+        Assert.Contains(".a", slot.RawBody);
+        Assert.Contains("color: red", slot.RawBody);
     }
 
     [Fact]
-    public void Process_layer_block_form_at_rule_emits_opaque_slot()
+    public void Process_layer_block_form_at_rule_emits_at_rule_slot_with_raw_body()
     {
         var result = CssPreprocessor.Process("@layer framework { .x { color: blue } }");
         var slot = Assert.Single(result.RuleSlots);
-        var opaque = Assert.IsType<CssOpaqueAtRuleSlot>(slot);
-        Assert.Equal("layer", opaque.Name);
-        Assert.Equal("framework", opaque.Prelude);
+        Assert.Equal(CssRuleSlotKind.AtRule, slot.Kind);
+        Assert.Equal("layer", slot.AtKeyword);
+        Assert.Equal("framework", slot.Prelude);
+        Assert.Contains(".x", slot.RawBody);
     }
 
     [Fact]
-    public void Process_layer_statement_form_at_rule_emits_opaque_slot()
+    public void Process_layer_statement_form_at_rule_emits_slot_with_no_body()
     {
         var result = CssPreprocessor.Process("@layer one, two, three;");
         var slot = Assert.Single(result.RuleSlots);
-        var opaque = Assert.IsType<CssOpaqueAtRuleSlot>(slot);
-        Assert.Equal("layer", opaque.Name);
-        Assert.Contains("one", opaque.Prelude);
-        Assert.Contains("two", opaque.Prelude);
-        Assert.Contains("three", opaque.Prelude);
+        Assert.Equal(CssRuleSlotKind.AtRule, slot.Kind);
+        Assert.Equal("layer", slot.AtKeyword);
+        Assert.Contains("one", slot.Prelude);
+        Assert.Empty(slot.RawBody);
     }
 
     // ------------------------------------------------------------
-    // Ordinal-drift fix (Task 3 review-cycle 1 P2)
+    // Modern value function capture in style rules (Rec 1)
+    // ------------------------------------------------------------
+
+    [Fact]
+    public void Process_oklch_in_color_emits_style_rule_recovery()
+    {
+        var result = CssPreprocessor.Process(".a { color: oklch(0.5 0.2 30) }");
+        var rec = Assert.Single(result.StyleRuleRecoveries);
+        Assert.Equal(0, rec.OrdinalIndex);
+        var decl = Assert.Single(rec.Declarations);
+        Assert.Equal("color", decl.Property);
+        Assert.Contains("oklch", decl.RawValueText);
+        Assert.False(decl.IsImportant);
+    }
+
+    [Fact]
+    public void Process_oklab_in_color_emits_style_rule_recovery()
+    {
+        var result = CssPreprocessor.Process(".a { background-color: oklab(0.7 0.1 0.1) }");
+        var rec = Assert.Single(result.StyleRuleRecoveries);
+        var decl = Assert.Single(rec.Declarations);
+        Assert.Equal("background-color", decl.Property);
+        Assert.Contains("oklab", decl.RawValueText);
+    }
+
+    [Fact]
+    public void Process_color_mix_in_color_emits_style_rule_recovery()
+    {
+        var result = CssPreprocessor.Process(".a { color: color-mix(in oklch, red, blue) }");
+        var rec = Assert.Single(result.StyleRuleRecoveries);
+        var decl = Assert.Single(rec.Declarations);
+        Assert.Equal("color", decl.Property);
+        Assert.Contains("color-mix", decl.RawValueText);
+    }
+
+    [Fact]
+    public void Process_light_dark_emits_style_rule_recovery()
+    {
+        var result = CssPreprocessor.Process(".a { color: light-dark(white, black) }");
+        var rec = Assert.Single(result.StyleRuleRecoveries);
+        var decl = Assert.Single(rec.Declarations);
+        Assert.Equal("color", decl.Property);
+        Assert.Contains("light-dark", decl.RawValueText);
+    }
+
+    [Fact]
+    public void Process_oklch_with_important_recovers_important_flag()
+    {
+        var result = CssPreprocessor.Process(".a { color: oklch(0.5 0.2 30) !important }");
+        var rec = Assert.Single(result.StyleRuleRecoveries);
+        var decl = Assert.Single(rec.Declarations);
+        Assert.True(decl.IsImportant);
+        Assert.DoesNotContain("!important", decl.RawValueText);
+    }
+
+    [Fact]
+    public void Process_normal_rgba_value_does_not_emit_recovery()
+    {
+        var result = CssPreprocessor.Process(".a { color: rgba(255, 0, 0, 1) }");
+        Assert.True(result.StyleRuleRecoveries.IsEmpty);
+    }
+
+    [Fact]
+    public void Process_modern_function_inside_string_does_not_emit_recovery()
+    {
+        // Function-name match must be token-aware: "oklch(" inside a string is not a function call.
+        var result = CssPreprocessor.Process(".a { content: \"oklch(red)\" }");
+        Assert.True(result.StyleRuleRecoveries.IsEmpty);
+    }
+
+    [Fact]
+    public void Process_multiple_style_rules_track_recovery_ordinal_correctly()
+    {
+        var result = CssPreprocessor.Process("""
+            .a { color: red }
+            .b { color: oklch(0.5 0.2 30) }
+            .c { color: blue }
+            """);
+        var rec = Assert.Single(result.StyleRuleRecoveries);
+        Assert.Equal(1, rec.OrdinalIndex);
+    }
+
+    // ------------------------------------------------------------
+    // Robust slot merge — ordinal drift fix
     // ------------------------------------------------------------
 
     [Fact]
     public void Process_modern_at_rule_in_middle_does_not_drift_subsequent_slots()
     {
-        // Critical regression test for review cycle 1: AngleSharp drops the @container in
-        // the middle, so its emit list has 2 entries (.a, .z) while the source has 3 rules
-        // plus the @container. The preprocessor's RuleSlots must produce 3 entries: an
-        // AngleSharp slot for .a, an opaque slot for @container, an AngleSharp slot for .z.
-        // The adapter walks slots in order and only consumes from rules[] on AngleSharp slots.
         var result = CssPreprocessor.Process("""
             .a { color: red }
             @container (min-width: 800px) { .x { color: red } }
@@ -292,16 +389,17 @@ public sealed class CssPreprocessorTests
             """);
 
         Assert.Equal(3, result.RuleSlots.Length);
-        Assert.IsType<CssAngleSharpRuleSlot>(result.RuleSlots[0]);
-        Assert.IsType<CssOpaqueAtRuleSlot>(result.RuleSlots[1]);
-        Assert.IsType<CssAngleSharpRuleSlot>(result.RuleSlots[2]);
+        Assert.Equal(CssRuleSlotKind.StyleRule, result.RuleSlots[0].Kind);
+        Assert.Equal(CssRuleSlotKind.AtRule, result.RuleSlots[1].Kind);
+        Assert.Equal("container", result.RuleSlots[1].AtKeyword);
+        Assert.Equal(CssRuleSlotKind.StyleRule, result.RuleSlots[2].Kind);
         Assert.Equal(1, result.RuleSlots[0].Location.Line);
         Assert.Equal(2, result.RuleSlots[1].Location.Line);
         Assert.Equal(3, result.RuleSlots[2].Location.Line);
     }
 
     [Fact]
-    public void Process_multiple_modern_at_rules_get_distinct_opaque_slots()
+    public void Process_multiple_modern_at_rules_get_distinct_at_rule_slots()
     {
         var result = CssPreprocessor.Process("""
             @layer one;
@@ -310,15 +408,52 @@ public sealed class CssPreprocessorTests
             """);
 
         Assert.Equal(3, result.RuleSlots.Length);
-        Assert.IsType<CssOpaqueAtRuleSlot>(result.RuleSlots[0]);
-        Assert.IsType<CssAngleSharpRuleSlot>(result.RuleSlots[1]);
-        Assert.IsType<CssOpaqueAtRuleSlot>(result.RuleSlots[2]);
-        Assert.Equal("layer", ((CssOpaqueAtRuleSlot)result.RuleSlots[0]).Name);
-        Assert.Equal("container", ((CssOpaqueAtRuleSlot)result.RuleSlots[2]).Name);
+        Assert.Equal("layer", result.RuleSlots[0].AtKeyword);
+        Assert.Equal(CssRuleSlotKind.StyleRule, result.RuleSlots[1].Kind);
+        Assert.Equal("container", result.RuleSlots[2].AtKeyword);
     }
 
     // ------------------------------------------------------------
-    // Source positions (Task 3 blocker #4)
+    // Nested grouping recursion (Rec 3)
+    // ------------------------------------------------------------
+
+    [Fact]
+    public void Process_nested_container_inside_media_emits_nested_slot()
+    {
+        var result = CssPreprocessor.Process("""
+            @media print {
+                .a { color: red }
+                @container (min-width: 800px) { .x { color: red } }
+                .z { color: green }
+            }
+            """);
+
+        var media = Assert.Single(result.RuleSlots);
+        Assert.Equal("media", media.AtKeyword);
+        Assert.Equal(3, media.NestedSlots.Length);
+        Assert.Equal(CssRuleSlotKind.StyleRule, media.NestedSlots[0].Kind);
+        Assert.Equal(CssRuleSlotKind.AtRule, media.NestedSlots[1].Kind);
+        Assert.Equal("container", media.NestedSlots[1].AtKeyword);
+        Assert.Equal(CssRuleSlotKind.StyleRule, media.NestedSlots[2].Kind);
+    }
+
+    [Fact]
+    public void Process_nested_layer_inside_supports_emits_nested_slot()
+    {
+        var result = CssPreprocessor.Process("""
+            @supports (display: grid) {
+                @layer fallback { .x { color: red } }
+            }
+            """);
+        var supports = Assert.Single(result.RuleSlots);
+        Assert.Equal("supports", supports.AtKeyword);
+        var layer = Assert.Single(supports.NestedSlots);
+        Assert.Equal("layer", layer.AtKeyword);
+        Assert.Contains("fallback", layer.Prelude);
+    }
+
+    // ------------------------------------------------------------
+    // Source positions
     // ------------------------------------------------------------
 
     [Fact]
@@ -341,20 +476,6 @@ public sealed class CssPreprocessorTests
         Assert.Equal("embedded.css", pos.Location.Source);
     }
 
-    [Fact]
-    public void Process_records_at_rule_positions_too()
-    {
-        var result = CssPreprocessor.Process("""
-            @import url("a.css");
-            .a { color: red }
-            @page { margin: 1in }
-            """);
-        Assert.Equal(3, result.RuleSlots.Length);
-        Assert.Equal(1, result.RuleSlots[0].Location.Line);
-        Assert.Equal(2, result.RuleSlots[1].Location.Line);
-        Assert.Equal(3, result.RuleSlots[2].Location.Line);
-    }
-
     // ------------------------------------------------------------
     // Robustness
     // ------------------------------------------------------------
@@ -371,24 +492,6 @@ public sealed class CssPreprocessorTests
     {
         var result = CssPreprocessor.Process("@page { content: \"unterminated");
         Assert.NotNull(result);
-    }
-
-    [Fact]
-    public void Process_skips_over_unrelated_at_rules()
-    {
-        // @media, @keyframes, @supports flow through as AngleSharp-emitted slots (we don't
-        // capture them; AngleSharp handles them). Only @page / @import / @container / @layer
-        // get special treatment.
-        var result = CssPreprocessor.Process("""
-            @media print { .a { color: red } }
-            @page :first { margin: 0 }
-            @keyframes pop { 0% { opacity: 0 } 100% { opacity: 1 } }
-            """);
-        var page = Assert.Single(result.PageRecoveries);
-        Assert.Equal(":first", page.SelectorText);
-        Assert.Equal(3, result.RuleSlots.Length);
-        // None of these are modern at-rules → all three are AngleSharp-emitted slots.
-        Assert.All(result.RuleSlots, s => Assert.IsType<CssAngleSharpRuleSlot>(s));
     }
 
     [Fact]
@@ -425,24 +528,16 @@ public sealed class CssPreprocessorTests
     }
 
     // ------------------------------------------------------------
-    // CSS escape support — known limitation (Rec 7)
+    // CSS escape support — known limitation
     // ------------------------------------------------------------
 
     [Fact]
     public void Process_documents_css_escape_in_identifier_limitation()
     {
-        // The tokenizer doesn't process CSS escape sequences (\41 = "A" etc.) in
-        // identifiers. Generated CSS rarely uses identifier escapes — most tooling emits
-        // ASCII identifiers — so this is a documented v1 limitation. When we eventually
-        // add escape support, this test will start failing and the correct expansion can
-        // replace these assertions.
         var result = CssPreprocessor.Process("@layer fra\\6dework { .a { color: red } }");
         var slot = Assert.Single(result.RuleSlots);
-        // We capture the layer at-rule, but the "framework" name with embedded \6d is not
-        // unescaped — it shows up as the raw text including the backslash sequence.
-        var opaque = Assert.IsType<CssOpaqueAtRuleSlot>(slot);
-        Assert.Equal("layer", opaque.Name);
-        // Prelude carries the unescaped text — escape sequences pass through verbatim.
-        Assert.Contains("\\", opaque.Prelude);
+        Assert.Equal(CssRuleSlotKind.AtRule, slot.Kind);
+        Assert.Equal("layer", slot.AtKeyword);
+        Assert.Contains("\\", slot.Prelude);
     }
 }

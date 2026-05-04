@@ -145,107 +145,274 @@ internal static class CssParserAdapter
 
     /// <summary>
     /// Walks the top-level rules. The slot list from the preprocessor is the source of
-    /// truth for source order: each <see cref="CssAngleSharpRuleSlot"/> tells the adapter
-    /// "the next AngleSharp rule lands here" (with this source position), and each
-    /// <see cref="CssOpaqueAtRuleSlot"/> tells it to splice an opaque modern at-rule into
-    /// the output at this position. This fixes the ordinal-drift bug that occurs when
-    /// AngleSharp drops modern at-rules in the middle of a stylesheet.
+    /// truth for source order. The merge strategy is robust against drift: each slot is
+    /// tentatively paired with the next AngleSharp rule, but if the rule kinds don't match
+    /// (because AngleSharp dropped that rule type), the slot is demoted to opaque and the
+    /// AngleSharp cursor doesn't advance. This means future AngleSharp regressions that
+    /// drop new rule types won't reintroduce ordinal drift.
     /// </summary>
     private static ImmutableArray<CssRule> AdaptTopLevelRules(ICssRuleList rules, CssPreprocessResult preprocess)
     {
-        // No preprocess data → fall back to AngleSharp-only walk with Unknown positions.
-        if (preprocess.RuleSlots.IsEmpty) return AdaptNestedRules(rules);
+        if (preprocess.RuleSlots.IsEmpty) return AdaptRulesWithoutPreprocess(rules);
 
         var output = ImmutableArray.CreateBuilder<CssRule>(Math.Max(rules.Length, preprocess.RuleSlots.Length));
-        var pageOrdinal = 0;
-        var importOrdinal = 0;
-        var angleIdx = 0;
+        var ctx = new MergeContext { AngleIdx = 0 };
 
         foreach (var slot in preprocess.RuleSlots)
         {
-            switch (slot)
-            {
-                case CssOpaqueAtRuleSlot opaque:
-                    // AngleSharp dropped this rule. Emit our own opaque CssAtRule so the
-                    // AST preserves source structure even though the body isn't decomposed.
-                    output.Add(new CssAtRule(
-                        Name: opaque.Name,
-                        Prelude: opaque.Prelude,
-                        Declarations: ImmutableArray<CssDeclaration>.Empty,
-                        ChildRules: ImmutableArray<CssRule>.Empty,
-                        Location: opaque.Location));
-                    break;
-
-                case CssAngleSharpRuleSlot ang:
-                    if (angleIdx >= rules.Length) continue; // preprocess predicted more than AngleSharp emitted; ignore extra slots
-                    var rule = rules[angleIdx++];
-                    if (rule is null) continue;
-                    output.Add(AdaptAngleSharpRule(rule, preprocess, ref pageOrdinal, ref importOrdinal, ang.Location));
-                    break;
-            }
+            output.Add(AdaptSlot(slot, rules, preprocess, ref ctx));
         }
 
-        // Defensive: if AngleSharp emitted MORE rules than the slot list predicted (the
-        // preprocessor missed something the parser preserved), append the extras with
-        // Unknown locations rather than dropping them.
-        while (angleIdx < rules.Length)
+        // Defensive: AngleSharp emitted more rules than the slot list predicted. Append
+        // them with Unknown positions rather than dropping them.
+        while (ctx.AngleIdx < rules.Length)
         {
-            var rule = rules[angleIdx++];
+            var rule = rules[ctx.AngleIdx++];
             if (rule is null) continue;
-            output.Add(AdaptAngleSharpRule(rule, preprocess, ref pageOrdinal, ref importOrdinal, CssSourceLocation.Unknown));
+            output.Add(AdaptAngleSharpRule(rule, preprocess, ref ctx, CssSourceLocation.Unknown));
         }
 
         return output.ToImmutable();
     }
 
     /// <summary>
-    /// Adapts nested rules (children of <c>@media</c>, <c>@supports</c>, <c>@keyframes</c>).
-    /// Source positions are intentionally <see cref="CssSourceLocation.Unknown"/> for every
-    /// nested rule — the preprocessor only tracks top-level rule positions, so threading
-    /// the top-level slot list down would attach wrong positions. Recovering nested
-    /// positions is a future Task 3 follow-up.
+    /// Pairs a single slot with AngleSharp's next rule when the kinds align; otherwise
+    /// emits an opaque <see cref="CssAtRule"/> using the slot's metadata. For grouping
+    /// at-rules whose slot has nested slots, recurses into the body using the same merge
+    /// strategy on the AngleSharp grouping rule's children.
     /// </summary>
-    private static ImmutableArray<CssRule> AdaptNestedRules(ICssRuleList rules)
+    private static CssRule AdaptSlot(
+        CssRuleSlot slot,
+        ICssRuleList rules,
+        CssPreprocessResult preprocess,
+        ref MergeContext ctx)
+    {
+        if (ctx.AngleIdx < rules.Length)
+        {
+            var ang = rules[ctx.AngleIdx];
+            if (ang is not null && SlotMatchesAngleSharpRule(slot, ang))
+            {
+                ctx.AngleIdx++;
+                return AdaptAngleSharpRuleWithSlot(ang, slot, preprocess, ref ctx);
+            }
+        }
+        // Mismatch (or no AngleSharp rule left): emit opaque from the slot's metadata.
+        return EmitOpaqueFromSlot(slot);
+    }
+
+    /// <summary>
+    /// Returns <see langword="true"/> if the AngleSharp rule's interface matches the slot's
+    /// expected kind. The match is permissive: any AngleSharp rule type is accepted for an
+    /// at-rule slot, except that we require the at-keyword names to match when both are
+    /// known so we don't pair (say) a slot for <c>@layer</c> with an AngleSharp <c>@media</c>.
+    /// </summary>
+    private static bool SlotMatchesAngleSharpRule(CssRuleSlot slot, ICssRule ang)
+    {
+        if (slot.Kind == CssRuleSlotKind.StyleRule)
+            return ang is ICssStyleRule;
+
+        if (ang is ICssStyleRule) return false; // slot expects at-rule but AngleSharp gave us a style rule
+
+        // Compare at-keyword to AngleSharp's rule type name when we can.
+        var expectedKind = slot.AtKeyword;
+        if (string.IsNullOrEmpty(expectedKind)) return true;
+        return AngleSharpAtKeywordMatches(ang, expectedKind);
+    }
+
+    private static bool AngleSharpAtKeywordMatches(ICssRule rule, string expectedKeyword) =>
+        expectedKeyword switch
+        {
+            "media" => rule is ICssMediaRule,
+            "supports" => rule is ICssSupportsRule,
+            "keyframes" or "-webkit-keyframes" => rule is ICssKeyframesRule,
+            "font-face" => rule is ICssFontFaceRule,
+            "page" => rule is ICssPageRule,
+            "import" => rule is ICssImportRule,
+            "charset" => rule is ICssCharsetRule,
+            "namespace" => rule is ICssNamespaceRule,
+            // Anything else: accept any at-rule. Lets AngleSharp pair with novel at-rules
+            // that survive parsing (e.g., when AngleSharp adds support for an at-rule the
+            // preprocessor doesn't yet recognize).
+            _ => rule is not ICssStyleRule,
+        };
+
+    private static CssRule EmitOpaqueFromSlot(CssRuleSlot slot)
+    {
+        if (slot.Kind == CssRuleSlotKind.StyleRule)
+        {
+            // Defensive: AngleSharp dropped a style rule. Emit it with raw selector and an
+            // empty declaration set; downstream consumers see the structural placeholder.
+            return new CssStyleRule(
+                Selector: new CssSelector(slot.Prelude),
+                Declarations: ImmutableArray<CssDeclaration>.Empty,
+                Location: slot.Location);
+        }
+        return new CssAtRule(
+            Name: slot.AtKeyword,
+            Prelude: slot.Prelude,
+            Declarations: ImmutableArray<CssDeclaration>.Empty,
+            ChildRules: ImmutableArray<CssRule>.Empty,
+            Location: slot.Location,
+            RawBody: slot.RawBody);
+    }
+
+    /// <summary>
+    /// Adapts nested rules without preprocess data — used for the empty-preprocess fall-back
+    /// path and for grouping rules whose slot has no nested slots (typically because the
+    /// caller passed a pre-existing <see cref="ICssStyleSheet"/> without preprocessing it).
+    /// All locations are <see cref="CssSourceLocation.Unknown"/>.
+    /// </summary>
+    private static ImmutableArray<CssRule> AdaptRulesWithoutPreprocess(ICssRuleList rules)
     {
         if (rules.Length == 0) return ImmutableArray<CssRule>.Empty;
         var output = ImmutableArray.CreateBuilder<CssRule>(rules.Length);
-        var pageOrdinal = 0;
-        var importOrdinal = 0;
+        var ctx = new MergeContext();
         foreach (var rule in rules)
         {
             if (rule is null) continue;
-            output.Add(AdaptAngleSharpRule(rule, CssPreprocessResult.Empty, ref pageOrdinal, ref importOrdinal, CssSourceLocation.Unknown));
+            output.Add(AdaptAngleSharpRule(rule, CssPreprocessResult.Empty, ref ctx, CssSourceLocation.Unknown));
         }
         return output.ToImmutable();
     }
 
     /// <summary>
-    /// Dispatches by AngleSharp rule type. Order matters: more-specific interfaces
-    /// (e.g., <see cref="ICssMediaRule"/>) come before their bases
-    /// (<see cref="ICssGroupingRule"/>) so the right adaptation runs.
+    /// Adapts grouping rule children using a nested slot list when the slot supplied one.
+    /// Threads the parent walk's <paramref name="parentCtx"/> through so the global
+    /// style-rule / page / import ordinals stay aligned with the preprocessor's globally-
+    /// numbered recoveries. Only the local <c>AngleIdx</c> resets — that's the cursor
+    /// over <i>this</i> grouping's child <see cref="ICssRuleList"/>, which is independent
+    /// of any outer grouping's children.
     /// </summary>
+    private static ImmutableArray<CssRule> AdaptChildRules(
+        ICssRuleList rules,
+        ImmutableArray<CssRuleSlot> nestedSlots,
+        CssPreprocessResult preprocess,
+        ref MergeContext parentCtx)
+    {
+        if (nestedSlots.IsEmpty) return AdaptRulesWithoutPreprocess(rules);
+
+        var output = ImmutableArray.CreateBuilder<CssRule>(Math.Max(rules.Length, nestedSlots.Length));
+        // Save + restore the parent's AngleIdx so nested AngleIdx counting doesn't leak.
+        var savedAngleIdx = parentCtx.AngleIdx;
+        parentCtx.AngleIdx = 0;
+
+        foreach (var slot in nestedSlots)
+        {
+            output.Add(AdaptSlot(slot, rules, preprocess, ref parentCtx));
+        }
+        while (parentCtx.AngleIdx < rules.Length)
+        {
+            var rule = rules[parentCtx.AngleIdx++];
+            if (rule is null) continue;
+            output.Add(AdaptAngleSharpRule(rule, preprocess, ref parentCtx, CssSourceLocation.Unknown));
+        }
+
+        parentCtx.AngleIdx = savedAngleIdx;
+        return output.ToImmutable();
+    }
+
+    /// <summary>
+    /// Mutable context carrying the cursors used while walking AngleSharp's emitted rules
+    /// and the per-kind recovery counters. Passed by <c>ref</c> through the dispatch so
+    /// each branch can advance the appropriate counter without indirection.
+    /// </summary>
+    private struct MergeContext
+    {
+        public int AngleIdx;
+        public int PageOrdinal;
+        public int ImportOrdinal;
+        public int StyleRuleOrdinal;
+    }
+
+    private static CssRule AdaptAngleSharpRuleWithSlot(
+        ICssRule rule,
+        CssRuleSlot slot,
+        CssPreprocessResult preprocess,
+        ref MergeContext ctx)
+    {
+        switch (rule)
+        {
+            case ICssStyleRule s:
+                return AdaptStyleRule(s, preprocess, slot.Location, ref ctx);
+            case ICssMediaRule m:
+                return AdaptGroupingRule(m, "media", m.Media?.MediaText ?? string.Empty, m.Rules, slot.NestedSlots, preprocess, ref ctx, slot.Location);
+            case ICssSupportsRule s:
+                return AdaptGroupingRule(s, "supports", ExtractPrelude(s.CssText, "@supports"), s.Rules, slot.NestedSlots, preprocess, ref ctx, slot.Location);
+            case ICssKeyframesRule k:
+                return AdaptGroupingRule(k, "keyframes", k.Name ?? string.Empty, k.Rules, slot.NestedSlots, preprocess, ref ctx, slot.Location);
+            case ICssKeyframeRule kf:
+                return AdaptKeyframeRule(kf, slot.Location);
+            case ICssFontFaceRule f:
+                return AdaptFontFaceRule(f, slot.Location);
+            case ICssPageRule p:
+                return AdaptPageRule(p, LookupPageRecovery(preprocess, ctx.PageOrdinal++), slot.Location);
+            case ICssMarginRule mr:
+                return AdaptMarginRule(mr, slot.Location);
+            case ICssImportRule i:
+                return AdaptImportRule(i, LookupImportRecovery(preprocess, ctx.ImportOrdinal++), slot.Location);
+            case ICssCharsetRule c:
+                return AdaptCharsetRule(c, slot.Location);
+            case ICssNamespaceRule n:
+                return AdaptNamespaceRule(n, slot.Location);
+            case ICssGroupingRule g:
+                return AdaptGroupingRule(g, NameFromType(g), ExtractPrelude(g.CssText, "@" + NameFromType(g)), g.Rules, slot.NestedSlots, preprocess, ref ctx, slot.Location);
+            default:
+                return AdaptUnknownRule(rule, slot.Location);
+        }
+    }
+
     private static CssRule AdaptAngleSharpRule(
         ICssRule rule,
         CssPreprocessResult preprocess,
-        ref int pageOrdinal,
-        ref int importOrdinal,
+        ref MergeContext ctx,
         CssSourceLocation location)
-        => rule switch
+    {
+        switch (rule)
         {
-            ICssStyleRule s => AdaptStyleRule(s, location),
-            ICssMediaRule m => AdaptMediaRule(m, location),
-            ICssSupportsRule s => AdaptSupportsRule(s, location),
-            ICssKeyframesRule k => AdaptKeyframesRule(k, location),
-            ICssKeyframeRule kf => AdaptKeyframeRule(kf, location),
-            ICssFontFaceRule f => AdaptFontFaceRule(f, location),
-            ICssPageRule p => AdaptPageRule(p, LookupPageRecovery(preprocess, pageOrdinal++), location),
-            ICssMarginRule mr => AdaptMarginRule(mr, location),
-            ICssImportRule i => AdaptImportRule(i, LookupImportRecovery(preprocess, importOrdinal++), location),
-            ICssCharsetRule c => AdaptCharsetRule(c, location),
-            ICssNamespaceRule n => AdaptNamespaceRule(n, location),
-            ICssGroupingRule g => AdaptUnknownGroupingRule(g, location),
-            _ => AdaptUnknownRule(rule, location),
-        };
+            case ICssStyleRule s:
+                return AdaptStyleRule(s, preprocess, location, ref ctx);
+            case ICssMediaRule m:
+                return AdaptMediaRule(m, location);
+            case ICssSupportsRule s:
+                return AdaptSupportsRule(s, location);
+            case ICssKeyframesRule k:
+                return AdaptKeyframesRule(k, location);
+            case ICssKeyframeRule kf:
+                return AdaptKeyframeRule(kf, location);
+            case ICssFontFaceRule f:
+                return AdaptFontFaceRule(f, location);
+            case ICssPageRule p:
+                return AdaptPageRule(p, LookupPageRecovery(preprocess, ctx.PageOrdinal++), location);
+            case ICssMarginRule mr:
+                return AdaptMarginRule(mr, location);
+            case ICssImportRule i:
+                return AdaptImportRule(i, LookupImportRecovery(preprocess, ctx.ImportOrdinal++), location);
+            case ICssCharsetRule c:
+                return AdaptCharsetRule(c, location);
+            case ICssNamespaceRule n:
+                return AdaptNamespaceRule(n, location);
+            case ICssGroupingRule g:
+                return AdaptUnknownGroupingRule(g, location);
+            default:
+                return AdaptUnknownRule(rule, location);
+        }
+    }
+
+    private static CssAtRule AdaptGroupingRule(
+        ICssRule _rule,
+        string name,
+        string prelude,
+        ICssRuleList children,
+        ImmutableArray<CssRuleSlot> nestedSlots,
+        CssPreprocessResult preprocess,
+        ref MergeContext ctx,
+        CssSourceLocation location)
+        => new(
+            Name: name,
+            Prelude: prelude,
+            Declarations: ImmutableArray<CssDeclaration>.Empty,
+            ChildRules: AdaptChildRules(children, nestedSlots, preprocess, ref ctx),
+            Location: location);
 
     private static CssPageRuleRecovery? LookupPageRecovery(CssPreprocessResult preprocess, int ordinal)
     {
@@ -259,30 +426,118 @@ internal static class CssParserAdapter
         return preprocess.ImportRecoveries[ordinal];
     }
 
-    private static CssStyleRule AdaptStyleRule(ICssStyleRule rule, CssSourceLocation location) => new(
-        new CssSelector(rule.SelectorText ?? string.Empty),
-        AdaptDeclarations(rule.Style),
-        location);
+    private static CssStyleRule AdaptStyleRule(ICssStyleRule rule, CssSourceLocation location)
+    {
+        // Called from no-preprocess path: ordinal -1 means "no recovery to look up".
+        return new CssStyleRule(
+            new CssSelector(rule.SelectorText ?? string.Empty),
+            AdaptDeclarationsWithRecovery(rule.Style, recovery: null, location),
+            location);
+    }
+
+    private static CssStyleRule AdaptStyleRule(ICssStyleRule rule, CssPreprocessResult preprocess, CssSourceLocation location, ref MergeContext ctx)
+    {
+        var ordinal = ctx.StyleRuleOrdinal++;
+        var recovery = LookupStyleRuleRecovery(preprocess, ordinal);
+        return new CssStyleRule(
+            new CssSelector(rule.SelectorText ?? string.Empty),
+            AdaptDeclarationsWithRecovery(rule.Style, recovery, location),
+            location);
+    }
+
+    private static CssStyleRuleRecovery? LookupStyleRuleRecovery(CssPreprocessResult preprocess, int ordinal)
+    {
+        if (ordinal < 0 || preprocess.StyleRuleRecoveries.IsEmpty) return null;
+        // Recoveries are sparse — linear scan is fine for typical document sizes.
+        foreach (var rec in preprocess.StyleRuleRecoveries)
+        {
+            if (rec.OrdinalIndex == ordinal) return rec;
+            if (rec.OrdinalIndex > ordinal) break;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// Builds the declaration list for a style rule, merging the AngleSharp output with
+    /// any recovered declarations whose authored values use modern CSS functions.
+    /// Recovery overrides AngleSharp on duplicate property names; recovery-only properties
+    /// (the case where AngleSharp dropped the declaration entirely because of
+    /// <c>color-mix</c> / <c>light-dark</c>) are appended.
+    /// </summary>
+    private static ImmutableArray<CssDeclaration> AdaptDeclarationsWithRecovery(
+        ICssStyleDeclaration style,
+        CssStyleRuleRecovery? recovery,
+        CssSourceLocation location)
+    {
+        var fromAngleSharp = AdaptProperties(style);
+        if (recovery is null || recovery.Declarations.IsEmpty) return fromAngleSharp;
+
+        var output = ImmutableArray.CreateBuilder<CssDeclaration>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        // First pass: emit AngleSharp's declarations, overriding values for any property
+        // that has a recovery entry.
+        foreach (var decl in fromAngleSharp)
+        {
+            seen.Add(decl.Property);
+            var match = FindRecovery(recovery.Declarations, decl.Property);
+            if (match is not null)
+            {
+                output.Add(new CssDeclaration(
+                    Property: decl.Property,
+                    Value: new CssValue(match.RawValueText),
+                    IsImportant: match.IsImportant,
+                    Location: location));
+            }
+            else
+            {
+                output.Add(decl);
+            }
+        }
+
+        // Second pass: append recovery declarations whose property AngleSharp dropped.
+        foreach (var rec in recovery.Declarations)
+        {
+            if (seen.Contains(rec.Property)) continue;
+            output.Add(new CssDeclaration(
+                Property: rec.Property,
+                Value: new CssValue(rec.RawValueText),
+                IsImportant: rec.IsImportant,
+                Location: location));
+        }
+
+        return output.ToImmutable();
+    }
+
+    private static CssDeclarationRecovery? FindRecovery(ImmutableArray<CssDeclarationRecovery> list, string property)
+    {
+        foreach (var item in list)
+        {
+            if (string.Equals(item.Property, property, StringComparison.OrdinalIgnoreCase))
+                return item;
+        }
+        return null;
+    }
 
     private static CssAtRule AdaptMediaRule(ICssMediaRule rule, CssSourceLocation location) => new(
         Name: "media",
         Prelude: rule.Media?.MediaText ?? string.Empty,
         Declarations: ImmutableArray<CssDeclaration>.Empty,
-        ChildRules: AdaptNestedRules(rule.Rules),
+        ChildRules: AdaptRulesWithoutPreprocess(rule.Rules),
         Location: location);
 
     private static CssAtRule AdaptSupportsRule(ICssSupportsRule rule, CssSourceLocation location) => new(
         Name: "supports",
         Prelude: ExtractPrelude(rule.CssText, "@supports"),
         Declarations: ImmutableArray<CssDeclaration>.Empty,
-        ChildRules: AdaptNestedRules(rule.Rules),
+        ChildRules: AdaptRulesWithoutPreprocess(rule.Rules),
         Location: location);
 
     private static CssAtRule AdaptKeyframesRule(ICssKeyframesRule rule, CssSourceLocation location) => new(
         Name: "keyframes",
         Prelude: rule.Name ?? string.Empty,
         Declarations: ImmutableArray<CssDeclaration>.Empty,
-        ChildRules: AdaptNestedRules(rule.Rules),
+        ChildRules: AdaptRulesWithoutPreprocess(rule.Rules),
         Location: location);
 
     private static CssStyleRule AdaptKeyframeRule(ICssKeyframeRule rule, CssSourceLocation location) => new(
@@ -380,7 +635,7 @@ internal static class CssParserAdapter
         Name: NameFromType(rule),
         Prelude: ExtractPrelude(rule.CssText, "@" + NameFromType(rule)),
         Declarations: ImmutableArray<CssDeclaration>.Empty,
-        ChildRules: AdaptNestedRules(rule.Rules),
+        ChildRules: AdaptRulesWithoutPreprocess(rule.Rules),
         Location: location);
 
     private static CssAtRule AdaptUnknownRule(ICssRule rule, CssSourceLocation location) => new(
@@ -455,7 +710,7 @@ internal static class CssParserAdapter
             tok.SkipWhitespaceAndComments();
 
             var valueSpan = tok.ReadUntilAnyTopLevel(";");
-            var (valueText, isImportant) = StripTrailingImportant(valueSpan.ToString());
+            var (valueText, isImportant) = ImportantParser.Strip(valueSpan.ToString());
 
             output.Add(new CssDeclaration(
                 Property: name.ToString(),
@@ -470,73 +725,6 @@ internal static class CssParserAdapter
         return output.Count == 0 ? ImmutableArray<CssDeclaration>.Empty : output.ToImmutable();
     }
 
-    /// <summary>
-    /// Strips a trailing <c>!important</c> annotation from a declaration value, ignoring
-    /// matches that occur inside strings, comments, or parenthesized function arguments.
-    /// Returns the cleaned value text and whether <c>!important</c> was present.
-    /// </summary>
-    private static (string value, bool isImportant) StripTrailingImportant(string raw)
-    {
-        if (string.IsNullOrEmpty(raw)) return (raw, false);
-
-        var span = raw.AsSpan();
-        var tok = new Preprocessing.CssTokenizer(span, null);
-        var lastBangAt = -1;
-        var lastBangFollowedByImportant = false;
-
-        while (!tok.IsEnd)
-        {
-            var c = tok.PeekChar();
-            if (c == '\'' || c == '"')
-            {
-                tok.SkipString();
-                continue;
-            }
-            if (c == '/' && tok.PeekCharAt(1) == '*')
-            {
-                tok.SkipWhitespaceAndComments();
-                continue;
-            }
-            if (c == '(')
-            {
-                tok.ReadParenthesizedBlock();
-                continue;
-            }
-            if (c == '!')
-            {
-                var bangPos = tok.Position;
-                tok.ReadChar();
-                tok.SkipWhitespaceAndComments();
-                var ident = tok.ReadIdentifier();
-                if (ident.Equals("important", StringComparison.OrdinalIgnoreCase))
-                {
-                    lastBangAt = bangPos;
-                    lastBangFollowedByImportant = true;
-                    // Continue scanning to ensure nothing meaningful follows.
-                }
-                continue;
-            }
-            tok.ReadChar();
-        }
-
-        if (lastBangFollowedByImportant && lastBangAt >= 0)
-        {
-            // Verify nothing follows except whitespace/comments.
-            var trail = raw.AsSpan(lastBangAt + 1).TrimStart();
-            // Strip "important" prefix from the trail.
-            if (trail.StartsWith("important", StringComparison.OrdinalIgnoreCase))
-            {
-                var afterImportant = trail.Slice("important".Length).TrimStart();
-                if (afterImportant.IsEmpty)
-                {
-                    var cleaned = raw[..lastBangAt].TrimEnd();
-                    return (cleaned, true);
-                }
-            }
-        }
-
-        return (raw.Trim(), false);
-    }
 
     private static ImmutableArray<CssDeclaration> AdaptDeclarations(ICssStyleDeclaration style) =>
         AdaptProperties(style);

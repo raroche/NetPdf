@@ -16,6 +16,7 @@ Severity levels:
 | `HTML-SCRIPT-IGNORED-001` | Warning | A `<script>` element was encountered. NetPdf does not execute JavaScript in v1. The element was removed from the rendering tree. |
 | `HTML-MEDIA-UNSUPPORTED-001` | Warning | A `<video>` or `<audio>` element was encountered. Replaced with empty space. |
 | `HTML-IFRAME-UNSUPPORTED-001` | Warning | An `<iframe>` element was encountered. Replaced with empty space. |
+| `HTML-JAVASCRIPT-URL-IGNORED-001` | Warning | An `href`/`xlink:href` attribute carried a `javascript:` URL. The attribute was removed so the link will not appear in the emitted PDF; the surrounding element and its text content remain. |
 | `HTML-CANVAS-IGNORED-001` | Warning | A `<canvas>` element was encountered. NetPdf does not execute the scripted drawing API. Replaced with empty space. |
 | `HTML-OBJECT-EMBED-UNSUPPORTED-001` | Warning | `<object>` or `<embed>` encountered; not supported. |
 
@@ -120,4 +121,4 @@ Or streamed live via `HtmlPdfOptions.Diagnostics: IDiagnosticsSink`.
 
 ---
 
-Last updated: 2026-04-30 (Phase 0).
+Last updated: 2026-05-04 (Phase 2 Task 1 review cycle: added `HTML-JAVASCRIPT-URL-IGNORED-001`).

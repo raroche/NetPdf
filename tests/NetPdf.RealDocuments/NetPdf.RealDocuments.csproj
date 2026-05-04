@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\NetPdf\NetPdf.csproj" />
+    <ProjectReference Include="..\..\src\NetPdf.Css\NetPdf.Css.csproj" />
     <ProjectReference Include="..\NetPdf.TestKit\NetPdf.TestKit.csproj" />
   </ItemGroup>
 

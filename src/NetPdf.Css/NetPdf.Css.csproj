@@ -26,6 +26,7 @@
     <InternalsVisibleTo Include="NetPdf.UnitTests" />
     <InternalsVisibleTo Include="NetPdf.LayoutSnapshots" />
     <InternalsVisibleTo Include="NetPdf.W3cConformance" />
+    <InternalsVisibleTo Include="NetPdf.RealDocuments" />
     <InternalsVisibleTo Include="NetPdf.TestKit" />
   </ItemGroup>
 

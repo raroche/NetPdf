@@ -1,0 +1,551 @@
+// Copyright 2026 Roland Aroche and NetPdf contributors.
+// Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
+
+using System.Collections.Frozen;
+using System.Collections.Immutable;
+
+namespace NetPdf.Css.Parser.Preprocessing;
+
+/// <summary>
+/// Phase 2 Task 3 pre-pass: tokenizes raw CSS text and recovers information that
+/// AngleSharp.Css 1.0.0-beta.144 will discard or mangle. Output is a side-channel
+/// (<see cref="CssPreprocessResult"/>) that the <see cref="CssParserAdapter"/> merges
+/// with the AngleSharp-derived CSSOM to produce a complete AST.
+/// </summary>
+/// <remarks>
+/// Closes (or scaffolds for) the following AngleSharp gaps:
+/// <list type="bullet">
+///   <item><description>Drops <c>@page</c> selectors and margin-boxes — recovered via
+///   <see cref="CssPreprocessResult.PageRecoveries"/>.</description></item>
+///   <item><description>Mangles <c>@import</c> with <c>layer(...)</c> / <c>supports(...)</c>
+///   into a malformed <c>"not all"</c> media query — recovered via
+///   <see cref="CssPreprocessResult.ImportRecoveries"/>.</description></item>
+///   <item><description>Silently drops <c>@container</c> / <c>@layer</c> — captured as
+///   slots with kind <see cref="CssRuleSlotKind.AtRule"/> and a non-empty
+///   <see cref="CssRuleSlot.RawBody"/> for adapter splicing.</description></item>
+///   <item><description>Silently corrupts <c>oklch()</c> to bogus rgba and drops
+///   <c>color-mix()</c> / <c>light-dark()</c> declarations — raw values captured via
+///   <see cref="CssPreprocessResult.StyleRuleRecoveries"/>.</description></item>
+///   <item><description>No source positions on rules — every slot carries its line/column.</description></item>
+/// </list>
+/// <para>
+/// <b>Robust slot merge:</b> every top-level rule produces exactly one
+/// <see cref="CssRuleSlot"/>, regardless of whether AngleSharp will preserve or drop it.
+/// The adapter pairs slots with AngleSharp's emitted rules sequentially, demoting any slot
+/// to opaque when the AngleSharp rule kind doesn't match. This means a future AngleSharp
+/// regression that drops a previously-supported at-rule won't reintroduce ordinal drift —
+/// the adapter just emits an opaque <see cref="CssAtRule"/> for it.
+/// </para>
+/// <para>
+/// <b>Robustness:</b> never throws on malformed CSS. Whatever it can't parse it skips,
+/// advancing past the next <c>;</c> or balanced <c>{...}</c>. AngleSharp remains the
+/// canonical parser; the pre-pass only fills gaps.
+/// </para>
+/// </remarks>
+internal static class CssPreprocessor
+{
+    /// <summary>
+    /// CSS Paged Media L3 §6.4 margin-box names. Other <c>@&lt;ident&gt; { ... }</c> blocks
+    /// inside <c>@page</c> are silently skipped (treated as malformed CSS).
+    /// </summary>
+    private static readonly FrozenSet<string> KnownMarginBoxNames = new[]
+    {
+        "top-left-corner", "top-left", "top-center", "top-right", "top-right-corner",
+        "bottom-left-corner", "bottom-left", "bottom-center", "bottom-right", "bottom-right-corner",
+        "left-top", "left-middle", "left-bottom",
+        "right-top", "right-middle", "right-bottom",
+    }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Modern CSS value functions whose authored text the preprocessor preserves verbatim
+    /// because AngleSharp.Css mishandles them (<c>oklch</c> → bogus rgba; <c>color-mix</c>
+    /// / <c>light-dark</c> → empty rule body; <c>oklab</c> → similar to <c>oklch</c>).
+    /// </summary>
+    private static readonly FrozenSet<string> ModernValueFunctions = new[]
+    {
+        "oklch", "oklab", "color-mix", "light-dark",
+    }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Grouping at-rules that AngleSharp emits with a <c>Rules</c> child list. The
+    /// preprocessor recurses into their bodies to find nested modern at-rules.
+    /// </summary>
+    private static readonly FrozenSet<string> GroupingAtRules = new[]
+    {
+        "media", "supports", "keyframes", "-webkit-keyframes",
+    }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Walks <paramref name="css"/> in source order and produces recovery side-data for the
+    /// adapter. <paramref name="source"/> identifies the input (a stylesheet URL or the
+    /// literal <c>"&lt;style&gt;"</c>) for source-location reporting.
+    /// </summary>
+    public static CssPreprocessResult Process(string css, string? source = null)
+    {
+        ArgumentNullException.ThrowIfNull(css);
+
+        var pageRecoveries = ImmutableArray.CreateBuilder<CssPageRuleRecovery>();
+        var importRecoveries = ImmutableArray.CreateBuilder<CssImportRuleRecovery>();
+        var styleRuleRecoveries = ImmutableArray.CreateBuilder<CssStyleRuleRecovery>();
+        var styleRuleOrdinal = 0;
+        var pageOrdinal = 0;
+        var importOrdinal = 0;
+
+        var tok = new CssTokenizer(css.AsSpan(), source);
+        var slots = WalkRules(ref tok, pageRecoveries, importRecoveries, styleRuleRecoveries,
+            ref styleRuleOrdinal, ref pageOrdinal, ref importOrdinal);
+
+        return new CssPreprocessResult(
+            pageRecoveries.Count == 0 ? ImmutableArray<CssPageRuleRecovery>.Empty : pageRecoveries.ToImmutable(),
+            importRecoveries.Count == 0 ? ImmutableArray<CssImportRuleRecovery>.Empty : importRecoveries.ToImmutable(),
+            styleRuleRecoveries.Count == 0 ? ImmutableArray<CssStyleRuleRecovery>.Empty : styleRuleRecoveries.ToImmutable(),
+            slots);
+    }
+
+    /// <summary>
+    /// Walks rules at the current tokenizer position until end-of-input or a closing
+    /// <c>}</c>. Used both for the top-level walk and for recursing into grouping rule
+    /// bodies. Returns the collected slot list.
+    /// </summary>
+    private static ImmutableArray<CssRuleSlot> WalkRules(
+        ref CssTokenizer tok,
+        ImmutableArray<CssPageRuleRecovery>.Builder pageRecoveries,
+        ImmutableArray<CssImportRuleRecovery>.Builder importRecoveries,
+        ImmutableArray<CssStyleRuleRecovery>.Builder styleRuleRecoveries,
+        ref int styleRuleOrdinal,
+        ref int pageOrdinal,
+        ref int importOrdinal)
+    {
+        var slots = ImmutableArray.CreateBuilder<CssRuleSlot>();
+        tok.SkipWhitespaceAndComments();
+        while (!tok.IsEnd && tok.PeekChar() != '}')
+        {
+            var ruleStart = tok.CurrentLocation;
+            if (tok.PeekChar() == '@')
+            {
+                slots.Add(WalkAtRule(ref tok, ruleStart,
+                    pageRecoveries, importRecoveries, styleRuleRecoveries,
+                    ref styleRuleOrdinal, ref pageOrdinal, ref importOrdinal));
+            }
+            else
+            {
+                slots.Add(WalkStyleRule(ref tok, ruleStart, styleRuleRecoveries, ref styleRuleOrdinal));
+            }
+            tok.SkipWhitespaceAndComments();
+        }
+        return slots.Count == 0 ? ImmutableArray<CssRuleSlot>.Empty : slots.ToImmutable();
+    }
+
+    private static CssRuleSlot WalkStyleRule(
+        ref CssTokenizer tok,
+        CssSourceLocation start,
+        ImmutableArray<CssStyleRuleRecovery>.Builder styleRuleRecoveries,
+        ref int styleRuleOrdinal)
+    {
+        var ordinal = styleRuleOrdinal++;
+        var preludeSpan = tok.ReadUntilAnyTopLevel("{;");
+        var prelude = preludeSpan.ToString().Trim();
+        var rawBody = string.Empty;
+
+        if (tok.PeekChar() == '{')
+        {
+            var bodyWithBraces = tok.ReadCurlyBlock();
+            rawBody = bodyWithBraces.Length >= 2 ? bodyWithBraces[1..^1].ToString() : string.Empty;
+
+            // Walk the body for modern function declarations.
+            var modernDecls = ScanForModernDeclarations(rawBody);
+            if (!modernDecls.IsEmpty)
+            {
+                styleRuleRecoveries.Add(new CssStyleRuleRecovery(ordinal, modernDecls));
+            }
+        }
+        else if (tok.PeekChar() == ';')
+        {
+            tok.ReadChar();
+        }
+
+        return new CssRuleSlot(
+            Kind: CssRuleSlotKind.StyleRule,
+            AtKeyword: string.Empty,
+            Prelude: prelude,
+            RawBody: rawBody,
+            NestedSlots: ImmutableArray<CssRuleSlot>.Empty,
+            Location: start);
+    }
+
+    private static CssRuleSlot WalkAtRule(
+        ref CssTokenizer tok,
+        CssSourceLocation start,
+        ImmutableArray<CssPageRuleRecovery>.Builder pageRecoveries,
+        ImmutableArray<CssImportRuleRecovery>.Builder importRecoveries,
+        ImmutableArray<CssStyleRuleRecovery>.Builder styleRuleRecoveries,
+        ref int styleRuleOrdinal,
+        ref int pageOrdinal,
+        ref int importOrdinal)
+    {
+        var atKeyword = tok.ReadAtKeyword().ToString();
+        var keywordLower = atKeyword.ToLowerInvariant();
+
+        // Per-keyword routing below — but every path produces a CssRuleSlot in the end so
+        // the slot list stays exactly aligned with source order.
+        if (keywordLower.Equals("page", StringComparison.Ordinal))
+        {
+            var rec = ParsePageRule(ref tok, pageOrdinal++, start);
+            pageRecoveries.Add(rec);
+            return new CssRuleSlot(
+                Kind: CssRuleSlotKind.AtRule,
+                AtKeyword: keywordLower,
+                Prelude: rec.SelectorText,
+                RawBody: string.Empty,
+                NestedSlots: ImmutableArray<CssRuleSlot>.Empty,
+                Location: start);
+        }
+
+        if (keywordLower.Equals("import", StringComparison.Ordinal))
+        {
+            var rec = ParseImportRule(ref tok, importOrdinal++, start);
+            importRecoveries.Add(rec);
+            return new CssRuleSlot(
+                Kind: CssRuleSlotKind.AtRule,
+                AtKeyword: keywordLower,
+                Prelude: rec.Url,
+                RawBody: string.Empty,
+                NestedSlots: ImmutableArray<CssRuleSlot>.Empty,
+                Location: start);
+        }
+
+        // Generic at-rule: read prelude, then either a balanced curly body or a ';' terminator.
+        tok.SkipWhitespaceAndComments();
+        var preludeSpan = tok.ReadUntilAnyTopLevel("{;");
+        var prelude = preludeSpan.ToString().Trim();
+
+        var rawBody = string.Empty;
+        var nestedSlots = ImmutableArray<CssRuleSlot>.Empty;
+
+        if (tok.PeekChar() == '{')
+        {
+            // For grouping at-rules (@media/@supports/@keyframes), recurse into the body to
+            // catch nested modern at-rules. For everything else (@font-face, @container,
+            // @layer, unknown), capture the body as opaque raw text.
+            if (GroupingAtRules.Contains(keywordLower))
+            {
+                tok.ReadChar(); // consume '{'
+                nestedSlots = WalkRules(ref tok,
+                    pageRecoveries, importRecoveries, styleRuleRecoveries,
+                    ref styleRuleOrdinal, ref pageOrdinal, ref importOrdinal);
+                if (tok.PeekChar() == '}') tok.ReadChar();
+            }
+            else
+            {
+                var bodyWithBraces = tok.ReadCurlyBlock();
+                rawBody = bodyWithBraces.Length >= 2 ? bodyWithBraces[1..^1].ToString() : string.Empty;
+            }
+        }
+        else if (tok.PeekChar() == ';')
+        {
+            tok.ReadChar();
+        }
+
+        return new CssRuleSlot(
+            Kind: CssRuleSlotKind.AtRule,
+            AtKeyword: keywordLower,
+            Prelude: prelude,
+            RawBody: rawBody,
+            NestedSlots: nestedSlots,
+            Location: start);
+    }
+
+    /// <summary>
+    /// Parses an <c>@page</c> rule's prelude (selector) and body (declarations + margin-box
+    /// at-rules). Position is on the character right after the <c>page</c> at-keyword.
+    /// </summary>
+    private static CssPageRuleRecovery ParsePageRule(ref CssTokenizer tok, int ordinal, CssSourceLocation location)
+    {
+        tok.SkipWhitespaceAndComments();
+        var selectorSpan = tok.ReadUntilAnyTopLevel("{;");
+        var selectorText = selectorSpan.ToString().Trim();
+
+        var marginBoxes = ImmutableArray.CreateBuilder<CssMarginBoxRecovery>();
+        if (tok.PeekChar() == '{')
+        {
+            tok.ReadChar();
+            tok.SkipWhitespaceAndComments();
+            while (!tok.IsEnd && tok.PeekChar() != '}')
+            {
+                if (tok.PeekChar() == '@')
+                {
+                    var boxStart = tok.CurrentLocation;
+                    var boxKeyword = tok.ReadAtKeyword().ToString();
+                    tok.SkipWhitespaceAndComments();
+                    if (tok.PeekChar() == '{')
+                    {
+                        var bodySpan = tok.ReadCurlyBlock();
+                        if (KnownMarginBoxNames.Contains(boxKeyword))
+                        {
+                            var body = bodySpan.Length >= 2
+                                ? bodySpan[1..^1].ToString().Trim()
+                                : string.Empty;
+                            marginBoxes.Add(new CssMarginBoxRecovery(boxKeyword, body, boxStart));
+                        }
+                    }
+                    else
+                    {
+                        tok.ReadUntilAnyTopLevel(";}");
+                        if (tok.PeekChar() == ';') tok.ReadChar();
+                    }
+                }
+                else
+                {
+                    tok.ReadUntilAnyTopLevel(";}");
+                    if (tok.PeekChar() == ';') tok.ReadChar();
+                }
+                tok.SkipWhitespaceAndComments();
+            }
+            if (tok.PeekChar() == '}') tok.ReadChar();
+        }
+        else if (tok.PeekChar() == ';')
+        {
+            tok.ReadChar();
+        }
+
+        return new CssPageRuleRecovery(
+            ordinal,
+            selectorText,
+            marginBoxes.Count == 0 ? ImmutableArray<CssMarginBoxRecovery>.Empty : marginBoxes.ToImmutable(),
+            location);
+    }
+
+    /// <summary>
+    /// Parses an <c>@import</c> rule's prelude per the CSS Cascade L5 §2.4 grammar:
+    /// <c>@import &lt;url&gt; [layer | layer(name)] [supports(condition)] [media-query];</c>.
+    /// Clauses appear in this fixed order — <c>layer</c> first, then <c>supports</c>, then
+    /// the (optional) media query, which always comes last and absorbs the remainder of the
+    /// prelude. The parser accepts <c>layer</c> and <c>supports</c> in either order before
+    /// the media query (per L5 they're commutative pre-media), but anything that isn't a
+    /// recognized layer/supports keyword starts the media query and ends layer/supports
+    /// recognition.
+    /// </summary>
+    private static CssImportRuleRecovery ParseImportRule(ref CssTokenizer tok, int ordinal, CssSourceLocation location)
+    {
+        tok.SkipWhitespaceAndComments();
+
+        var url = ReadImportUrl(ref tok);
+        tok.SkipWhitespaceAndComments();
+
+        string? layerName = null;
+        string? supportsCondition = null;
+        var media = string.Empty;
+
+        while (!tok.IsEnd)
+        {
+            var c = tok.PeekChar();
+            if (c == ';' || c == '\0') break;
+
+            if (TryConsumeKeyword(ref tok, "layer"))
+            {
+                if (tok.PeekChar() == '(')
+                {
+                    var paren = tok.ReadParenthesizedBlock();
+                    layerName = TrimSurroundingParens(paren).Trim().ToString();
+                }
+                else
+                {
+                    layerName = string.Empty;
+                }
+                tok.SkipWhitespaceAndComments();
+                continue;
+            }
+
+            if (TryConsumeKeyword(ref tok, "supports"))
+            {
+                if (tok.PeekChar() == '(')
+                {
+                    var paren = tok.ReadParenthesizedBlock();
+                    supportsCondition = TrimSurroundingParens(paren).Trim().ToString();
+                }
+                tok.SkipWhitespaceAndComments();
+                continue;
+            }
+
+            var rest = tok.ReadUntilAnyTopLevel(";").ToString().Trim();
+            media = rest;
+            break;
+        }
+
+        if (tok.PeekChar() == ';') tok.ReadChar();
+
+        return new CssImportRuleRecovery(
+            ordinal,
+            url,
+            media,
+            layerName,
+            supportsCondition,
+            location);
+    }
+
+    /// <summary>
+    /// Walks a style-rule body looking for declarations whose value contains a modern
+    /// CSS function (<c>oklch</c>, <c>oklab</c>, <c>color-mix</c>, <c>light-dark</c>).
+    /// Returns recovered raw declarations to merge over AngleSharp's mishandled output.
+    /// </summary>
+    private static ImmutableArray<CssDeclarationRecovery> ScanForModernDeclarations(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body)) return ImmutableArray<CssDeclarationRecovery>.Empty;
+
+        var output = ImmutableArray.CreateBuilder<CssDeclarationRecovery>();
+        var tok = new CssTokenizer(body.AsSpan(), null);
+        tok.SkipWhitespaceAndComments();
+
+        while (!tok.IsEnd)
+        {
+            var name = tok.ReadIdentifier();
+            if (name.IsEmpty)
+            {
+                // Defensive: advance past stray characters.
+                tok.ReadChar();
+                continue;
+            }
+            var propertyName = name.ToString();
+
+            tok.SkipWhitespaceAndComments();
+            if (tok.PeekChar() != ':')
+            {
+                tok.ReadUntilAnyTopLevel(";");
+                if (tok.PeekChar() == ';') tok.ReadChar();
+                tok.SkipWhitespaceAndComments();
+                continue;
+            }
+            tok.ReadChar(); // consume ':'
+            tok.SkipWhitespaceAndComments();
+
+            var valueSpan = tok.ReadUntilAnyTopLevel(";");
+            var rawValue = valueSpan.ToString().Trim();
+
+            if (ContainsModernValueFunction(rawValue))
+            {
+                var (cleanValue, isImportant) = ImportantParser.Strip(rawValue);
+                output.Add(new CssDeclarationRecovery(
+                    propertyName.ToLowerInvariant(),
+                    cleanValue,
+                    isImportant));
+            }
+
+            if (tok.PeekChar() == ';') tok.ReadChar();
+            tok.SkipWhitespaceAndComments();
+        }
+
+        return output.Count == 0 ? ImmutableArray<CssDeclarationRecovery>.Empty : output.ToImmutable();
+    }
+
+    /// <summary>
+    /// Returns <see langword="true"/> if <paramref name="value"/> contains a call to one of
+    /// the modern CSS value functions (case-insensitive, outside strings/comments).
+    /// </summary>
+    private static bool ContainsModernValueFunction(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return false;
+        var tok = new CssTokenizer(value.AsSpan(), null);
+        while (!tok.IsEnd)
+        {
+            var c = tok.PeekChar();
+            if (c == '\'' || c == '"') { tok.SkipString(); continue; }
+            if (c == '/' && tok.PeekCharAt(1) == '*') { tok.SkipWhitespaceAndComments(); continue; }
+            if (IsIdentifierStart(c))
+            {
+                var ident = tok.ReadIdentifier();
+                if (tok.PeekChar() == '(')
+                {
+                    if (ModernValueFunctions.Contains(ident.ToString())) return true;
+                    // Skip the function args; ReadParenthesizedBlock handles balance.
+                    tok.ReadParenthesizedBlock();
+                }
+                continue;
+            }
+            tok.ReadChar();
+        }
+        return false;
+    }
+
+    private static string ReadImportUrl(ref CssTokenizer tok)
+    {
+        var c = tok.PeekChar();
+        if (c == '\'' || c == '"')
+        {
+            return ReadQuotedString(ref tok);
+        }
+
+        if (PeekKeyword(ref tok, "url") && tok.PeekCharAt(3) == '(')
+        {
+            tok.ReadChar(); tok.ReadChar(); tok.ReadChar();
+            var paren = tok.ReadParenthesizedBlock();
+            var inner = TrimSurroundingParens(paren).Trim();
+            if (inner.Length >= 2 && (inner[0] == '"' || inner[0] == '\'') && inner[^1] == inner[0])
+                inner = inner[1..^1];
+            return inner.ToString();
+        }
+
+        var fallback = tok.ReadUntilAnyTopLevel(" \t\r\n;").ToString().Trim();
+        return fallback;
+    }
+
+    private static string ReadQuotedString(ref CssTokenizer tok)
+    {
+        var quote = tok.PeekChar();
+        if (quote != '\'' && quote != '"') return string.Empty;
+        tok.ReadChar();
+        var contentStart = tok.Position;
+        while (!tok.IsEnd)
+        {
+            var c = tok.PeekChar();
+            if (c == '\\')
+            {
+                tok.ReadChar();
+                if (!tok.IsEnd) tok.ReadChar();
+                continue;
+            }
+            if (c == quote)
+            {
+                var content = tok.GetSubstring(contentStart, tok.Position - contentStart);
+                tok.ReadChar();
+                return content;
+            }
+            if (c == '\n')
+            {
+                return tok.GetSubstring(contentStart, tok.Position - contentStart);
+            }
+            tok.ReadChar();
+        }
+        return tok.GetSubstring(contentStart, tok.Position - contentStart);
+    }
+
+    private static bool TryConsumeKeyword(ref CssTokenizer tok, string keyword)
+    {
+        if (!PeekKeyword(ref tok, keyword)) return false;
+        for (var i = 0; i < keyword.Length; i++) tok.ReadChar();
+        return true;
+    }
+
+    private static bool PeekKeyword(ref CssTokenizer tok, string keyword)
+    {
+        for (var i = 0; i < keyword.Length; i++)
+        {
+            var c = tok.PeekCharAt(i);
+            if (char.ToLowerInvariant(c) != char.ToLowerInvariant(keyword[i])) return false;
+        }
+        var nextChar = tok.PeekCharAt(keyword.Length);
+        return !IsIdentifierContinue(nextChar);
+    }
+
+    private static ReadOnlySpan<char> TrimSurroundingParens(ReadOnlySpan<char> input)
+    {
+        if (input.Length >= 2 && input[0] == '(' && input[^1] == ')')
+            return input[1..^1];
+        return input;
+    }
+
+    private static bool IsIdentifierStart(char c) =>
+        (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_' || c == '-';
+
+    private static bool IsIdentifierContinue(char c) =>
+        IsIdentifierStart(c) || (c >= '0' && c <= '9');
+}

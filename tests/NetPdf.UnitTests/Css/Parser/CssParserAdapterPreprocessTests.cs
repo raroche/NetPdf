@@ -166,6 +166,154 @@ public sealed class CssParserAdapterPreprocessTests
         Assert.NotEmpty(stylesheet.Rules);
     }
 
+    // ------------------------------------------------------------
+    // Modern at-rule recovery via opaque slots (Rec 1 + Rec 2)
+    // ------------------------------------------------------------
+
+    [Fact]
+    public async Task Adapt_with_preprocess_emits_opaque_at_rule_for_dropped_container()
+    {
+        var (sheet, preprocess) = await ParseAndPreprocess(
+            "@container (min-width: 800px) { .a { color: red } }");
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet, preprocess, null, CssStylesheetOrigin.Author, CssStylesheetOwnerKind.StyleElement, null, false, 0);
+
+        var opaque = Assert.IsType<CssAtRule>(Assert.Single(stylesheet.Rules));
+        Assert.Equal("container", opaque.Name);
+        Assert.Contains("min-width", opaque.Prelude);
+        // Body isn't decomposed in v1 — the at-rule is opaque from the cascade's perspective.
+        Assert.Empty(opaque.ChildRules);
+        Assert.Empty(opaque.Declarations);
+    }
+
+    [Fact]
+    public async Task Adapt_with_preprocess_emits_opaque_at_rule_for_dropped_layer_block()
+    {
+        var (sheet, preprocess) = await ParseAndPreprocess(
+            "@layer framework { .a { color: red } }");
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet, preprocess, null, CssStylesheetOrigin.Author, CssStylesheetOwnerKind.StyleElement, null, false, 0);
+
+        var opaque = Assert.IsType<CssAtRule>(Assert.Single(stylesheet.Rules));
+        Assert.Equal("layer", opaque.Name);
+        Assert.Equal("framework", opaque.Prelude);
+    }
+
+    [Fact]
+    public async Task Adapt_with_preprocess_modern_at_rule_in_middle_does_not_drift_locations()
+    {
+        // The critical regression fix: AngleSharp drops the @container, leaving 2 emitted
+        // rules (.a, .z) for 3 source rules. With slots-based merge, .z still gets line 3
+        // (its real position), not line 2 (which was @container).
+        var (sheet, preprocess) = await ParseAndPreprocess("""
+            .a { color: red }
+            @container (min-width: 800px) { .x { color: red } }
+            .z { color: blue }
+            """);
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet, preprocess, null, CssStylesheetOrigin.Author, CssStylesheetOwnerKind.StyleElement, null, false, 0);
+
+        Assert.Equal(3, stylesheet.Rules.Length);
+        var first = Assert.IsType<CssStyleRule>(stylesheet.Rules[0]);
+        var middle = Assert.IsType<CssAtRule>(stylesheet.Rules[1]);
+        var last = Assert.IsType<CssStyleRule>(stylesheet.Rules[2]);
+
+        Assert.Equal(1, first.Location.Line);
+        Assert.Equal("container", middle.Name);
+        Assert.Equal(2, middle.Location.Line);
+        Assert.Equal(3, last.Location.Line);  // <-- the bug-fix lock-in: NOT 2.
+        Assert.Equal(".z", last.Selector.RawText);
+    }
+
+    // ------------------------------------------------------------
+    // Token-aware !important parsing (Rec 5)
+    // ------------------------------------------------------------
+
+    [Fact]
+    public async Task Adapt_margin_box_value_with_quoted_important_string_is_not_stripped()
+    {
+        // Without token-aware parsing, the trailing chars `"` ahead of the value's literal
+        // !important match a naive EndsWith check and corrupt the value. Pin the fix.
+        var (sheet, preprocess) = await ParseAndPreprocess("""
+            @page { @top-center { content: "!important" } }
+            """);
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet, preprocess, null, CssStylesheetOrigin.Author, CssStylesheetOwnerKind.StyleElement, null, false, 0);
+
+        var page = Assert.IsType<CssAtRule>(Assert.Single(stylesheet.Rules));
+        var marginBox = Assert.IsType<CssAtRule>(Assert.Single(page.ChildRules));
+        var declaration = Assert.Single(marginBox.Declarations);
+        Assert.Equal("content", declaration.Property);
+        Assert.Equal("\"!important\"", declaration.Value.RawText);
+        Assert.False(declaration.IsImportant);
+    }
+
+    [Fact]
+    public async Task Adapt_margin_box_value_with_real_important_marker_is_recognized()
+    {
+        var (sheet, preprocess) = await ParseAndPreprocess("""
+            @page { @top-center { content: "Header" !important } }
+            """);
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet, preprocess, null, CssStylesheetOrigin.Author, CssStylesheetOwnerKind.StyleElement, null, false, 0);
+
+        var page = Assert.IsType<CssAtRule>(Assert.Single(stylesheet.Rules));
+        var marginBox = Assert.IsType<CssAtRule>(Assert.Single(page.ChildRules));
+        var declaration = Assert.Single(marginBox.Declarations);
+        Assert.Equal("\"Header\"", declaration.Value.RawText);
+        Assert.True(declaration.IsImportant);
+    }
+
+    // ------------------------------------------------------------
+    // Margin-box name validation (Rec 6)
+    // ------------------------------------------------------------
+
+    [Fact]
+    public async Task Adapt_unknown_margin_box_name_does_not_appear_in_child_rules()
+    {
+        var (sheet, preprocess) = await ParseAndPreprocess("""
+            @page {
+                margin: 1in;
+                @top-bogus { content: "ignored" }
+                @top-center { content: "kept" }
+            }
+            """);
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet, preprocess, null, CssStylesheetOrigin.Author, CssStylesheetOwnerKind.StyleElement, null, false, 0);
+
+        var page = Assert.IsType<CssAtRule>(Assert.Single(stylesheet.Rules));
+        var marginBox = Assert.IsType<CssAtRule>(Assert.Single(page.ChildRules));
+        Assert.Equal("top-center", marginBox.Name);
+    }
+
+    // ------------------------------------------------------------
+    // Nested rule locations are Unknown (Rec 3)
+    // ------------------------------------------------------------
+
+    [Fact]
+    public async Task Adapt_nested_rule_locations_are_unknown_not_misaligned()
+    {
+        // Pre-fix bug: nested rules inside @media reused the top-level slot list, so child
+        // rule locations pointed at random top-level rules. Now we pass empty preprocess to
+        // recursive AdaptRules and child locations are Unknown — correct rather than wrong.
+        var (sheet, preprocess) = await ParseAndPreprocess("""
+            .a { color: red }
+            @media print { .child { color: blue } }
+            """);
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet, preprocess, null, CssStylesheetOrigin.Author, CssStylesheetOwnerKind.StyleElement, null, false, 0);
+
+        Assert.Equal(2, stylesheet.Rules.Length);
+        Assert.Equal(1, ((CssStyleRule)stylesheet.Rules[0]).Location.Line);
+
+        var media = Assert.IsType<CssAtRule>(stylesheet.Rules[1]);
+        Assert.Equal(2, media.Location.Line); // Top-level @media gets correct line.
+
+        // Child rule's location must be Unknown — preprocessor doesn't track nested positions.
+        var child = Assert.IsType<CssStyleRule>(Assert.Single(media.ChildRules));
+        Assert.Equal(CssSourceLocation.Unknown, child.Location);
+    }
+
     [Fact]
     public async Task Adapt_with_preprocess_handles_mixed_rule_set_correctly()
     {

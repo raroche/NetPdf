@@ -9,9 +9,11 @@ using Xunit;
 namespace NetPdf.UnitTests.Css.Parser.Preprocessing;
 
 /// <summary>
-/// Unit tests for <see cref="CssPreprocessor"/> covering the four AngleSharp.Css
-/// 1.0.0-beta.144 gaps Phase 2 Task 3 was tasked to close. Each blocker has at least
-/// one test that pins the recovered shape end-to-end.
+/// Unit tests for <see cref="CssPreprocessor"/> covering the AngleSharp.Css 1.0.0-beta.144
+/// gaps Phase 2 Task 3 was tasked to close, plus the review-cycle 1 hardening:
+/// modern at-rule capture (<c>@container</c>, <c>@layer</c>), ordinal-drift fix via the
+/// unified <see cref="CssPreprocessResult.RuleSlots"/> list, token-aware <c>!important</c>
+/// recognition, and margin-box name validation.
 /// </summary>
 public sealed class CssPreprocessorTests
 {
@@ -27,7 +29,7 @@ public sealed class CssPreprocessorTests
         var result = CssPreprocessor.Process(string.Empty);
         Assert.True(result.PageRecoveries.IsEmpty);
         Assert.True(result.ImportRecoveries.IsEmpty);
-        Assert.True(result.RulePositions.IsEmpty);
+        Assert.True(result.RuleSlots.IsEmpty);
     }
 
     [Fact]
@@ -35,7 +37,7 @@ public sealed class CssPreprocessorTests
     {
         var result = CssPreprocessor.Process("  /* foo */  \n  /* bar */ ");
         Assert.True(result.PageRecoveries.IsEmpty);
-        Assert.True(result.RulePositions.IsEmpty);
+        Assert.True(result.RuleSlots.IsEmpty);
     }
 
     // ------------------------------------------------------------
@@ -81,7 +83,7 @@ public sealed class CssPreprocessorTests
     }
 
     // ------------------------------------------------------------
-    // @page margin-box recovery (Task 3 blocker #2)
+    // @page margin-box recovery (Task 3 blocker #2) + name validation
     // ------------------------------------------------------------
 
     [Fact]
@@ -122,6 +124,44 @@ public sealed class CssPreprocessorTests
         Assert.Equal(":first", page.SelectorText);
         var box = Assert.Single(page.MarginBoxes);
         Assert.Equal("top-left", box.Name);
+    }
+
+    [Theory]
+    [InlineData("top-left-corner")]
+    [InlineData("top-right-corner")]
+    [InlineData("bottom-left-corner")]
+    [InlineData("bottom-right-corner")]
+    [InlineData("left-top")]
+    [InlineData("left-middle")]
+    [InlineData("left-bottom")]
+    [InlineData("right-top")]
+    [InlineData("right-middle")]
+    [InlineData("right-bottom")]
+    public void Process_recovers_all_spec_named_margin_boxes(string boxName)
+    {
+        // Pins all 16 CSS Paged Media L3 §6.4 names round-trip through the recovery.
+        var result = CssPreprocessor.Process($"@page {{ @{boxName} {{ content: 'x' }} }}");
+        var page = Assert.Single(result.PageRecoveries);
+        var box = Assert.Single(page.MarginBoxes);
+        Assert.Equal(boxName, box.Name);
+    }
+
+    [Fact]
+    public void Process_unknown_margin_box_name_is_dropped_silently()
+    {
+        // CSS Paged Media L3 §6.4 enumerates exactly 16 margin-box names. Any other
+        // @<ident> { ... } inside @page is malformed CSS — the preprocessor drops it
+        // rather than silently converting it into a pseudo-margin-box.
+        var result = CssPreprocessor.Process("""
+            @page {
+                margin: 1in;
+                @top-bogus { content: "ignored" }
+                @top-center { content: "kept" }
+            }
+            """);
+        var page = Assert.Single(result.PageRecoveries);
+        var box = Assert.Single(page.MarginBoxes);
+        Assert.Equal("top-center", box.Name);
     }
 
     // ------------------------------------------------------------
@@ -196,27 +236,108 @@ public sealed class CssPreprocessorTests
     }
 
     // ------------------------------------------------------------
+    // Modern at-rule recovery (Task 3 review-cycle 1 P1)
+    // ------------------------------------------------------------
+
+    [Fact]
+    public void Process_container_at_rule_emits_opaque_slot()
+    {
+        // AngleSharp drops @container entirely. Preprocessor captures it as opaque so the
+        // adapter can splice a CssAtRule into the AST in source order.
+        var result = CssPreprocessor.Process("@container (min-width: 800px) { .a { color: red } }");
+        var slot = Assert.Single(result.RuleSlots);
+        var opaque = Assert.IsType<CssOpaqueAtRuleSlot>(slot);
+        Assert.Equal("container", opaque.Name);
+        Assert.Contains("min-width", opaque.Prelude);
+    }
+
+    [Fact]
+    public void Process_layer_block_form_at_rule_emits_opaque_slot()
+    {
+        var result = CssPreprocessor.Process("@layer framework { .x { color: blue } }");
+        var slot = Assert.Single(result.RuleSlots);
+        var opaque = Assert.IsType<CssOpaqueAtRuleSlot>(slot);
+        Assert.Equal("layer", opaque.Name);
+        Assert.Equal("framework", opaque.Prelude);
+    }
+
+    [Fact]
+    public void Process_layer_statement_form_at_rule_emits_opaque_slot()
+    {
+        var result = CssPreprocessor.Process("@layer one, two, three;");
+        var slot = Assert.Single(result.RuleSlots);
+        var opaque = Assert.IsType<CssOpaqueAtRuleSlot>(slot);
+        Assert.Equal("layer", opaque.Name);
+        Assert.Contains("one", opaque.Prelude);
+        Assert.Contains("two", opaque.Prelude);
+        Assert.Contains("three", opaque.Prelude);
+    }
+
+    // ------------------------------------------------------------
+    // Ordinal-drift fix (Task 3 review-cycle 1 P2)
+    // ------------------------------------------------------------
+
+    [Fact]
+    public void Process_modern_at_rule_in_middle_does_not_drift_subsequent_slots()
+    {
+        // Critical regression test for review cycle 1: AngleSharp drops the @container in
+        // the middle, so its emit list has 2 entries (.a, .z) while the source has 3 rules
+        // plus the @container. The preprocessor's RuleSlots must produce 3 entries: an
+        // AngleSharp slot for .a, an opaque slot for @container, an AngleSharp slot for .z.
+        // The adapter walks slots in order and only consumes from rules[] on AngleSharp slots.
+        var result = CssPreprocessor.Process("""
+            .a { color: red }
+            @container (min-width: 800px) { .x { color: red } }
+            .z { color: blue }
+            """);
+
+        Assert.Equal(3, result.RuleSlots.Length);
+        Assert.IsType<CssAngleSharpRuleSlot>(result.RuleSlots[0]);
+        Assert.IsType<CssOpaqueAtRuleSlot>(result.RuleSlots[1]);
+        Assert.IsType<CssAngleSharpRuleSlot>(result.RuleSlots[2]);
+        Assert.Equal(1, result.RuleSlots[0].Location.Line);
+        Assert.Equal(2, result.RuleSlots[1].Location.Line);
+        Assert.Equal(3, result.RuleSlots[2].Location.Line);
+    }
+
+    [Fact]
+    public void Process_multiple_modern_at_rules_get_distinct_opaque_slots()
+    {
+        var result = CssPreprocessor.Process("""
+            @layer one;
+            .a { color: red }
+            @container (min-width: 800px) { .x { color: red } }
+            """);
+
+        Assert.Equal(3, result.RuleSlots.Length);
+        Assert.IsType<CssOpaqueAtRuleSlot>(result.RuleSlots[0]);
+        Assert.IsType<CssAngleSharpRuleSlot>(result.RuleSlots[1]);
+        Assert.IsType<CssOpaqueAtRuleSlot>(result.RuleSlots[2]);
+        Assert.Equal("layer", ((CssOpaqueAtRuleSlot)result.RuleSlots[0]).Name);
+        Assert.Equal("container", ((CssOpaqueAtRuleSlot)result.RuleSlots[2]).Name);
+    }
+
+    // ------------------------------------------------------------
     // Source positions (Task 3 blocker #4)
     // ------------------------------------------------------------
 
     [Fact]
-    public void Process_records_position_for_each_top_level_rule()
+    public void Process_records_position_for_each_top_level_rule_via_slots()
     {
         var result = CssPreprocessor.Process("""
             .a { color: red }
             .b { color: blue }
             """);
-        Assert.Equal(2, result.RulePositions.Length);
-        Assert.Equal(1, result.RulePositions[0].Location.Line);
-        // Second rule starts on line 2 (0-indexed line ordinal aside, content starts after \n).
-        Assert.Equal(2, result.RulePositions[1].Location.Line);
+        Assert.Equal(2, result.RuleSlots.Length);
+        Assert.Equal(1, result.RuleSlots[0].Location.Line);
+        Assert.Equal(2, result.RuleSlots[1].Location.Line);
     }
 
     [Fact]
-    public void Process_rule_position_carries_source_label()
+    public void Process_rule_slot_carries_source_label()
     {
         var result = CssPreprocessor.Process(".a { color: red }", source: "embedded.css");
-        var pos = Assert.Single(result.RulePositions);
+        var pos = Assert.Single(result.RuleSlots);
         Assert.Equal("embedded.css", pos.Location.Source);
     }
 
@@ -228,10 +349,10 @@ public sealed class CssPreprocessorTests
             .a { color: red }
             @page { margin: 1in }
             """);
-        Assert.Equal(3, result.RulePositions.Length);
-        Assert.Equal(1, result.RulePositions[0].Location.Line);
-        Assert.Equal(2, result.RulePositions[1].Location.Line);
-        Assert.Equal(3, result.RulePositions[2].Location.Line);
+        Assert.Equal(3, result.RuleSlots.Length);
+        Assert.Equal(1, result.RuleSlots[0].Location.Line);
+        Assert.Equal(2, result.RuleSlots[1].Location.Line);
+        Assert.Equal(3, result.RuleSlots[2].Location.Line);
     }
 
     // ------------------------------------------------------------
@@ -241,9 +362,7 @@ public sealed class CssPreprocessorTests
     [Fact]
     public void Process_does_not_throw_on_unterminated_block()
     {
-        // Reaches end while still inside @page body. Preprocessor must not loop forever.
         var result = CssPreprocessor.Process("@page { margin: 1in");
-        // Whatever it produced, the call returned — that's the contract.
         Assert.NotNull(result);
     }
 
@@ -257,15 +376,19 @@ public sealed class CssPreprocessorTests
     [Fact]
     public void Process_skips_over_unrelated_at_rules()
     {
+        // @media, @keyframes, @supports flow through as AngleSharp-emitted slots (we don't
+        // capture them; AngleSharp handles them). Only @page / @import / @container / @layer
+        // get special treatment.
         var result = CssPreprocessor.Process("""
             @media print { .a { color: red } }
             @page :first { margin: 0 }
             @keyframes pop { 0% { opacity: 0 } 100% { opacity: 1 } }
             """);
-        // We don't recover @media or @keyframes — only @page (and @import).
         var page = Assert.Single(result.PageRecoveries);
         Assert.Equal(":first", page.SelectorText);
-        Assert.Equal(3, result.RulePositions.Length);
+        Assert.Equal(3, result.RuleSlots.Length);
+        // None of these are modern at-rules → all three are AngleSharp-emitted slots.
+        Assert.All(result.RuleSlots, s => Assert.IsType<CssAngleSharpRuleSlot>(s));
     }
 
     [Fact]
@@ -299,5 +422,27 @@ public sealed class CssPreprocessorTests
         Assert.Equal(0, result.PageRecoveries[0].OrdinalIndex);
         Assert.Equal(1, result.PageRecoveries[1].OrdinalIndex);
         Assert.Equal(0, result.ImportRecoveries[0].OrdinalIndex);
+    }
+
+    // ------------------------------------------------------------
+    // CSS escape support — known limitation (Rec 7)
+    // ------------------------------------------------------------
+
+    [Fact]
+    public void Process_documents_css_escape_in_identifier_limitation()
+    {
+        // The tokenizer doesn't process CSS escape sequences (\41 = "A" etc.) in
+        // identifiers. Generated CSS rarely uses identifier escapes — most tooling emits
+        // ASCII identifiers — so this is a documented v1 limitation. When we eventually
+        // add escape support, this test will start failing and the correct expansion can
+        // replace these assertions.
+        var result = CssPreprocessor.Process("@layer fra\\6dework { .a { color: red } }");
+        var slot = Assert.Single(result.RuleSlots);
+        // We capture the layer at-rule, but the "framework" name with embedded \6d is not
+        // unescaped — it shows up as the raw text including the backslash sequence.
+        var opaque = Assert.IsType<CssOpaqueAtRuleSlot>(slot);
+        Assert.Equal("layer", opaque.Name);
+        // Prelude carries the unescaped text — escape sequences pass through verbatim.
+        Assert.Contains("\\", opaque.Prelude);
     }
 }

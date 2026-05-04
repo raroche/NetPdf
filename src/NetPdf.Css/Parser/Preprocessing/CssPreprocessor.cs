@@ -1,6 +1,7 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System.Collections.Frozen;
 using System.Collections.Immutable;
 
 namespace NetPdf.Css.Parser.Preprocessing;
@@ -19,18 +20,38 @@ namespace NetPdf.Css.Parser.Preprocessing;
 ///   <item><description><c>@page</c> selector text (<c>:first</c>, <c>:left</c>,
 ///   <c>:right</c>, named pages — anything AngleSharp drops to empty <c>SelectorText</c>).</description></item>
 ///   <item><description><c>@page</c> margin-box at-rules (<c>@top-center</c>, etc. — silently
-///   dropped by AngleSharp).</description></item>
+///   dropped by AngleSharp). Validated against the 16-name CSS Paged Media L3 §6.4 list:
+///   only spec-recognized names become <see cref="CssMarginBoxRecovery"/> entries.</description></item>
 ///   <item><description><c>@import</c> <c>layer(...)</c> and <c>supports(...)</c> clauses
 ///   — folded by AngleSharp into a malformed <c>"not all"</c> media query.</description></item>
-///   <item><description>Source positions for every top-level rule.</description></item>
+///   <item><description>Modern at-rules <c>@container</c> and <c>@layer</c> (block + statement
+///   forms) AngleSharp drops entirely. Captured as <see cref="CssOpaqueAtRuleSlot"/>
+///   entries in <see cref="CssPreprocessResult.RuleSlots"/> so the adapter splices them into
+///   the AST in source order.</description></item>
+///   <item><description>Source positions for every top-level rule, recorded in
+///   <see cref="CssPreprocessResult.RuleSlots"/>. The slot list is the single source of
+///   truth for source order — the adapter pairs <see cref="CssAngleSharpRuleSlot"/> entries
+///   with AngleSharp's emitted rules sequentially, fixing the ordinal-drift bug that occurs
+///   when AngleSharp drops modern at-rules in the middle of a stylesheet.</description></item>
 /// </list>
 /// <para>
-/// <b>Out of scope for this v1:</b> modern value functions (<c>oklch()</c>, <c>oklab()</c>,
-/// <c>color-mix()</c>, <c>light-dark()</c>) and modern at-rules <c>@container</c> /
-/// <c>@layer</c> block-form. The Phase 2 doc lists these for Task 3, but their consumers
-/// (typed values, layer cascade) live in Tasks 9–10 and Task 7 — adding token capture
-/// without a downstream consumer would be premature. Tracked as a Task 3 follow-up cycle.
+/// <b>Out of scope for this pass:</b>
 /// </para>
+/// <list type="bullet">
+///   <item><description>Modern value functions (<c>oklch()</c>, <c>oklab()</c>,
+///   <c>color-mix()</c>, <c>light-dark()</c>). AngleSharp parses some of them and silently
+///   produces wrong colors (<c>oklch</c> → bogus rgba) or empty rule bodies (<c>color-mix</c>,
+///   <c>light-dark</c>). Recovering these requires per-declaration value-text re-parsing,
+///   which is plumbed into typed values in Tasks 9–10 of the Phase 2 plan. Tracked as a Task
+///   3 follow-up cycle in <c>PROGRESS.md</c>; rendering for these is post-v1 anyway.</description></item>
+///   <item><description>CSS escape sequences in identifiers (<c>\41 </c> = "A", etc.). The
+///   <see cref="CssTokenizer"/> stops identifier reading at a backslash. Generated CSS
+///   rarely uses identifier escapes — the limitation is pinned via tests.</description></item>
+///   <item><description>Property-level source positions for top-level style rule
+///   declarations: AngleSharp does not expose them, so <see cref="CssDeclaration.Location"/>
+///   stays <see cref="CssSourceLocation.Unknown"/> for those. Margin-box declarations get
+///   the parent margin-box's location.</description></item>
+/// </list>
 /// <para>
 /// <b>Robustness:</b> the preprocessor never throws on malformed CSS. Whatever it can't
 /// parse it skips, advancing past the next <c>;</c> or balanced <c>{...}</c>. AngleSharp
@@ -39,6 +60,41 @@ namespace NetPdf.Css.Parser.Preprocessing;
 /// </remarks>
 internal static class CssPreprocessor
 {
+    /// <summary>
+    /// CSS Paged Media L3 §6.4 margin-box names. Anything else inside <c>@page</c> with the
+    /// shape <c>@&lt;ident&gt; { ... }</c> is silently skipped (treated as malformed CSS).
+    /// </summary>
+    private static readonly FrozenSet<string> KnownMarginBoxNames = new[]
+    {
+        "top-left-corner",
+        "top-left",
+        "top-center",
+        "top-right",
+        "top-right-corner",
+        "bottom-left-corner",
+        "bottom-left",
+        "bottom-center",
+        "bottom-right",
+        "bottom-right-corner",
+        "left-top",
+        "left-middle",
+        "left-bottom",
+        "right-top",
+        "right-middle",
+        "right-bottom",
+    }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// At-keywords that AngleSharp.Css 1.0.0-beta.144 silently drops. The preprocessor
+    /// captures these as <see cref="CssOpaqueAtRuleSlot"/> entries so the adapter can splice
+    /// opaque <see cref="CssAtRule"/> nodes into the AST in source order.
+    /// </summary>
+    private static readonly FrozenSet<string> AngleSharpDroppedAtRules = new[]
+    {
+        "container",
+        "layer",
+    }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+
     /// <summary>
     /// Walks <paramref name="css"/> in source order and produces recovery side-data for the
     /// adapter. <paramref name="source"/> identifies the input (a stylesheet URL or the
@@ -54,10 +110,9 @@ internal static class CssPreprocessor
     {
         var pageRecoveries = ImmutableArray.CreateBuilder<CssPageRuleRecovery>();
         var importRecoveries = ImmutableArray.CreateBuilder<CssImportRuleRecovery>();
-        var rulePositions = ImmutableArray.CreateBuilder<CssRuleSourcePosition>();
+        var slots = ImmutableArray.CreateBuilder<CssPreprocessRuleSlot>();
         var pageOrdinal = 0;
         var importOrdinal = 0;
-        var ruleOrdinal = 0;
 
         var tok = new CssTokenizer(css, source);
         tok.SkipWhitespaceAndComments();
@@ -68,38 +123,74 @@ internal static class CssPreprocessor
 
             if (tok.PeekChar() == '@')
             {
-                // Snapshot the at-keyword for routing then dispatch.
-                var atKeyword = tok.ReadAtKeyword();
+                var atKeyword = tok.ReadAtKeyword().ToString();
                 if (atKeyword.Equals("page", StringComparison.OrdinalIgnoreCase))
                 {
                     var rec = ParsePageRule(ref tok, pageOrdinal++, ruleStart);
                     pageRecoveries.Add(rec);
+                    slots.Add(new CssAngleSharpRuleSlot(ruleStart));
                 }
                 else if (atKeyword.Equals("import", StringComparison.OrdinalIgnoreCase))
                 {
                     var rec = ParseImportRule(ref tok, importOrdinal++, ruleStart);
                     importRecoveries.Add(rec);
+                    slots.Add(new CssAngleSharpRuleSlot(ruleStart));
+                }
+                else if (AngleSharpDroppedAtRules.Contains(atKeyword))
+                {
+                    var prelude = ReadAtRulePrelude(ref tok);
+                    SkipAtRuleBodyOrTerminator(ref tok);
+                    slots.Add(new CssOpaqueAtRuleSlot(atKeyword.ToLowerInvariant(), prelude, ruleStart));
                 }
                 else
                 {
-                    // Unknown at-rule (or one we don't recover from): skip its body.
+                    // Other at-rules — AngleSharp emits these. Skip the body without recovery.
                     tok.SkipRule();
+                    slots.Add(new CssAngleSharpRuleSlot(ruleStart));
                 }
             }
             else
             {
-                // Style rule: skip its prelude + body.
+                // Style rule — skip its prelude + body. AngleSharp emits these.
                 tok.SkipRule();
+                slots.Add(new CssAngleSharpRuleSlot(ruleStart));
             }
 
-            rulePositions.Add(new CssRuleSourcePosition(ruleOrdinal++, ruleStart));
             tok.SkipWhitespaceAndComments();
         }
 
         return new CssPreprocessResult(
             pageRecoveries.Count == 0 ? ImmutableArray<CssPageRuleRecovery>.Empty : pageRecoveries.ToImmutable(),
             importRecoveries.Count == 0 ? ImmutableArray<CssImportRuleRecovery>.Empty : importRecoveries.ToImmutable(),
-            rulePositions.Count == 0 ? ImmutableArray<CssRuleSourcePosition>.Empty : rulePositions.ToImmutable());
+            slots.Count == 0 ? ImmutableArray<CssPreprocessRuleSlot>.Empty : slots.ToImmutable());
+    }
+
+    /// <summary>
+    /// Reads the prelude text of an at-rule (everything between the at-keyword and the next
+    /// top-level <c>{</c> or <c>;</c>). The terminator is not consumed.
+    /// </summary>
+    private static string ReadAtRulePrelude(ref CssTokenizer tok)
+    {
+        tok.SkipWhitespaceAndComments();
+        var span = tok.ReadUntilAnyTopLevel("{;");
+        return span.ToString().Trim();
+    }
+
+    /// <summary>
+    /// Consumes the body of an at-rule: either a balanced <c>{...}</c> block or, if the
+    /// rule terminates with <c>;</c>, the semicolon.
+    /// </summary>
+    private static void SkipAtRuleBodyOrTerminator(ref CssTokenizer tok)
+    {
+        var c = tok.PeekChar();
+        if (c == '{')
+        {
+            tok.ReadCurlyBlock();
+        }
+        else if (c == ';')
+        {
+            tok.ReadChar();
+        }
     }
 
     /// <summary>
@@ -109,16 +200,12 @@ internal static class CssPreprocessor
     private static CssPageRuleRecovery ParsePageRule(ref CssTokenizer tok, int ordinal, CssSourceLocation location)
     {
         tok.SkipWhitespaceAndComments();
-
-        // Selector runs from here to the opening '{'.
         var selectorSpan = tok.ReadUntilAnyTopLevel("{;");
         var selectorText = selectorSpan.ToString().Trim();
 
         var marginBoxes = ImmutableArray.CreateBuilder<CssMarginBoxRecovery>();
         if (tok.PeekChar() == '{')
         {
-            // Walk the body looking for nested @<margin-box> rules. Anything else is
-            // a declaration, which AngleSharp already captures correctly.
             tok.ReadChar(); // consume '{'
             tok.SkipWhitespaceAndComments();
             while (!tok.IsEnd && tok.PeekChar() != '}')
@@ -131,22 +218,25 @@ internal static class CssPreprocessor
                     if (tok.PeekChar() == '{')
                     {
                         var bodySpan = tok.ReadCurlyBlock();
-                        // Strip the surrounding '{' and '}' and trim.
-                        var body = bodySpan.Length >= 2
-                            ? bodySpan[1..^1].ToString().Trim()
-                            : string.Empty;
-                        marginBoxes.Add(new CssMarginBoxRecovery(boxKeyword, body, boxStart));
+                        if (KnownMarginBoxNames.Contains(boxKeyword))
+                        {
+                            var body = bodySpan.Length >= 2
+                                ? bodySpan[1..^1].ToString().Trim()
+                                : string.Empty;
+                            marginBoxes.Add(new CssMarginBoxRecovery(boxKeyword, body, boxStart));
+                        }
+                        // Unknown nested at-rule names inside @page — skip silently. Per CSS
+                        // Paged Media L3 §6.4 only the 16 known margin-boxes are valid here;
+                        // anything else is malformed CSS that the cascade ignores.
                     }
                     else
                     {
-                        // Statement-form at-rule inside @page (uncommon but defensive). Skip.
                         tok.ReadUntilAnyTopLevel(";}");
                         if (tok.PeekChar() == ';') tok.ReadChar();
                     }
                 }
                 else
                 {
-                    // Declaration line. Skip up to ';' or '}'.
                     tok.ReadUntilAnyTopLevel(";}");
                     if (tok.PeekChar() == ';') tok.ReadChar();
                 }
@@ -156,7 +246,6 @@ internal static class CssPreprocessor
         }
         else if (tok.PeekChar() == ';')
         {
-            // Statement-form @page is invalid CSS but tolerate it — just consume the ';'.
             tok.ReadChar();
         }
 
@@ -168,15 +257,14 @@ internal static class CssPreprocessor
     }
 
     /// <summary>
-    /// Parses an <c>@import</c> rule's prelude. Position is right after the <c>import</c>
-    /// at-keyword. Authored shape (per CSS Cascade L4 + Cascade L5):
-    /// <c>@import &lt;url&gt; [layer | layer(name)] [supports(condition)] [media-query];</c>
+    /// Parses an <c>@import</c> rule's prelude. Authored shape (CSS Cascade L4 + L5):
+    /// <c>@import &lt;url&gt; [layer | layer(name)] [supports(condition)] [media-query];</c>.
+    /// Clauses can appear in any order.
     /// </summary>
     private static CssImportRuleRecovery ParseImportRule(ref CssTokenizer tok, int ordinal, CssSourceLocation location)
     {
         tok.SkipWhitespaceAndComments();
 
-        // Read the URL — either url("..."), url('...'), url(...), "..." or '...'.
         var url = ReadImportUrl(ref tok);
         tok.SkipWhitespaceAndComments();
 
@@ -184,14 +272,11 @@ internal static class CssPreprocessor
         string? supportsCondition = null;
         var media = string.Empty;
 
-        // Optional clauses can appear in any order in CSS Cascade L5 §2.4, but the canonical
-        // order is layer → supports → media. We accept any order.
         while (!tok.IsEnd)
         {
             var c = tok.PeekChar();
             if (c == ';' || c == '\0') break;
 
-            // Detect 'layer' keyword vs 'layer(...)'
             if (TryConsumeKeyword(ref tok, "layer"))
             {
                 if (tok.PeekChar() == '(')
@@ -201,7 +286,7 @@ internal static class CssPreprocessor
                 }
                 else
                 {
-                    layerName = string.Empty; // anonymous layer
+                    layerName = string.Empty;
                 }
                 tok.SkipWhitespaceAndComments();
                 continue;
@@ -218,13 +303,11 @@ internal static class CssPreprocessor
                 continue;
             }
 
-            // Anything else is the media query — read to ';' or end.
             var rest = tok.ReadUntilAnyTopLevel(";").ToString().Trim();
             media = rest;
             break;
         }
 
-        // Consume terminating ';' if present.
         if (tok.PeekChar() == ';') tok.ReadChar();
 
         return new CssImportRuleRecovery(
@@ -244,20 +327,16 @@ internal static class CssPreprocessor
             return ReadQuotedString(ref tok);
         }
 
-        // Could be url(...) function or, defensively, an identifier-form URL we didn't expect.
-        // Try to peek for "url(" case-insensitively.
         if (PeekKeyword(ref tok, "url") && tok.PeekCharAt(3) == '(')
         {
-            tok.ReadChar(); tok.ReadChar(); tok.ReadChar(); // consume "url"
+            tok.ReadChar(); tok.ReadChar(); tok.ReadChar();
             var paren = tok.ReadParenthesizedBlock();
             var inner = TrimSurroundingParens(paren).Trim();
-            // Strip optional surrounding quotes.
             if (inner.Length >= 2 && (inner[0] == '"' || inner[0] == '\'') && inner[^1] == inner[0])
                 inner = inner[1..^1];
             return inner.ToString();
         }
 
-        // Fallback: read the next whitespace-delimited token.
         var fallback = tok.ReadUntilAnyTopLevel(" \t\r\n;").ToString().Trim();
         return fallback;
     }
@@ -266,8 +345,7 @@ internal static class CssPreprocessor
     {
         var quote = tok.PeekChar();
         if (quote != '\'' && quote != '"') return string.Empty;
-        var startLocation = tok.Position;
-        tok.ReadChar(); // opening quote
+        tok.ReadChar();
         var contentStart = tok.Position;
         while (!tok.IsEnd)
         {
@@ -281,12 +359,11 @@ internal static class CssPreprocessor
             if (c == quote)
             {
                 var content = tok.GetSubstring(contentStart, tok.Position - contentStart);
-                tok.ReadChar(); // closing quote
+                tok.ReadChar();
                 return content;
             }
             if (c == '\n')
             {
-                // Bad-string per CSS Syntax L3 — return what we have.
                 return tok.GetSubstring(contentStart, tok.Position - contentStart);
             }
             tok.ReadChar();
@@ -308,8 +385,6 @@ internal static class CssPreprocessor
             var c = tok.PeekCharAt(i);
             if (char.ToLowerInvariant(c) != char.ToLowerInvariant(keyword[i])) return false;
         }
-        // Boundary check: the next character after the keyword must NOT continue the
-        // identifier (no letters / digits / _ / -).
         var nextChar = tok.PeekCharAt(keyword.Length);
         return !IsIdentifierContinue(nextChar);
     }

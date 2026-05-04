@@ -114,12 +114,12 @@ internal static class CssParserAdapter
         ArgumentNullException.ThrowIfNull(sheet);
         ArgumentNullException.ThrowIfNull(preprocess);
 
-        var sheetLocation = preprocess.RulePositions.IsEmpty
+        var sheetLocation = preprocess.RuleSlots.IsEmpty
             ? CssSourceLocation.Unknown
-            : preprocess.RulePositions[0].Location;
+            : preprocess.RuleSlots[0].Location;
 
         return new CssStylesheet(
-            Rules: AdaptRules(sheet.Rules, preprocess),
+            Rules: AdaptTopLevelRules(sheet.Rules, preprocess),
             Href: href,
             Origin: origin,
             OwnerKind: ownerKind,
@@ -143,18 +143,78 @@ internal static class CssParserAdapter
         return AdaptProperties(style);
     }
 
-    private static ImmutableArray<CssRule> AdaptRules(ICssRuleList rules, CssPreprocessResult preprocess)
+    /// <summary>
+    /// Walks the top-level rules. The slot list from the preprocessor is the source of
+    /// truth for source order: each <see cref="CssAngleSharpRuleSlot"/> tells the adapter
+    /// "the next AngleSharp rule lands here" (with this source position), and each
+    /// <see cref="CssOpaqueAtRuleSlot"/> tells it to splice an opaque modern at-rule into
+    /// the output at this position. This fixes the ordinal-drift bug that occurs when
+    /// AngleSharp drops modern at-rules in the middle of a stylesheet.
+    /// </summary>
+    private static ImmutableArray<CssRule> AdaptTopLevelRules(ICssRuleList rules, CssPreprocessResult preprocess)
+    {
+        // No preprocess data → fall back to AngleSharp-only walk with Unknown positions.
+        if (preprocess.RuleSlots.IsEmpty) return AdaptNestedRules(rules);
+
+        var output = ImmutableArray.CreateBuilder<CssRule>(Math.Max(rules.Length, preprocess.RuleSlots.Length));
+        var pageOrdinal = 0;
+        var importOrdinal = 0;
+        var angleIdx = 0;
+
+        foreach (var slot in preprocess.RuleSlots)
+        {
+            switch (slot)
+            {
+                case CssOpaqueAtRuleSlot opaque:
+                    // AngleSharp dropped this rule. Emit our own opaque CssAtRule so the
+                    // AST preserves source structure even though the body isn't decomposed.
+                    output.Add(new CssAtRule(
+                        Name: opaque.Name,
+                        Prelude: opaque.Prelude,
+                        Declarations: ImmutableArray<CssDeclaration>.Empty,
+                        ChildRules: ImmutableArray<CssRule>.Empty,
+                        Location: opaque.Location));
+                    break;
+
+                case CssAngleSharpRuleSlot ang:
+                    if (angleIdx >= rules.Length) continue; // preprocess predicted more than AngleSharp emitted; ignore extra slots
+                    var rule = rules[angleIdx++];
+                    if (rule is null) continue;
+                    output.Add(AdaptAngleSharpRule(rule, preprocess, ref pageOrdinal, ref importOrdinal, ang.Location));
+                    break;
+            }
+        }
+
+        // Defensive: if AngleSharp emitted MORE rules than the slot list predicted (the
+        // preprocessor missed something the parser preserved), append the extras with
+        // Unknown locations rather than dropping them.
+        while (angleIdx < rules.Length)
+        {
+            var rule = rules[angleIdx++];
+            if (rule is null) continue;
+            output.Add(AdaptAngleSharpRule(rule, preprocess, ref pageOrdinal, ref importOrdinal, CssSourceLocation.Unknown));
+        }
+
+        return output.ToImmutable();
+    }
+
+    /// <summary>
+    /// Adapts nested rules (children of <c>@media</c>, <c>@supports</c>, <c>@keyframes</c>).
+    /// Source positions are intentionally <see cref="CssSourceLocation.Unknown"/> for every
+    /// nested rule — the preprocessor only tracks top-level rule positions, so threading
+    /// the top-level slot list down would attach wrong positions. Recovering nested
+    /// positions is a future Task 3 follow-up.
+    /// </summary>
+    private static ImmutableArray<CssRule> AdaptNestedRules(ICssRuleList rules)
     {
         if (rules.Length == 0) return ImmutableArray<CssRule>.Empty;
         var output = ImmutableArray.CreateBuilder<CssRule>(rules.Length);
         var pageOrdinal = 0;
         var importOrdinal = 0;
-        var ruleOrdinal = 0;
         foreach (var rule in rules)
         {
             if (rule is null) continue;
-            var location = LookupRulePosition(preprocess, ruleOrdinal++);
-            output.Add(AdaptRule(rule, preprocess, ref pageOrdinal, ref importOrdinal, location));
+            output.Add(AdaptAngleSharpRule(rule, CssPreprocessResult.Empty, ref pageOrdinal, ref importOrdinal, CssSourceLocation.Unknown));
         }
         return output.ToImmutable();
     }
@@ -164,7 +224,7 @@ internal static class CssParserAdapter
     /// (e.g., <see cref="ICssMediaRule"/>) come before their bases
     /// (<see cref="ICssGroupingRule"/>) so the right adaptation runs.
     /// </summary>
-    private static CssRule AdaptRule(
+    private static CssRule AdaptAngleSharpRule(
         ICssRule rule,
         CssPreprocessResult preprocess,
         ref int pageOrdinal,
@@ -173,9 +233,9 @@ internal static class CssParserAdapter
         => rule switch
         {
             ICssStyleRule s => AdaptStyleRule(s, location),
-            ICssMediaRule m => AdaptMediaRule(m, preprocess, location),
-            ICssSupportsRule s => AdaptSupportsRule(s, preprocess, location),
-            ICssKeyframesRule k => AdaptKeyframesRule(k, preprocess, location),
+            ICssMediaRule m => AdaptMediaRule(m, location),
+            ICssSupportsRule s => AdaptSupportsRule(s, location),
+            ICssKeyframesRule k => AdaptKeyframesRule(k, location),
             ICssKeyframeRule kf => AdaptKeyframeRule(kf, location),
             ICssFontFaceRule f => AdaptFontFaceRule(f, location),
             ICssPageRule p => AdaptPageRule(p, LookupPageRecovery(preprocess, pageOrdinal++), location),
@@ -183,16 +243,9 @@ internal static class CssParserAdapter
             ICssImportRule i => AdaptImportRule(i, LookupImportRecovery(preprocess, importOrdinal++), location),
             ICssCharsetRule c => AdaptCharsetRule(c, location),
             ICssNamespaceRule n => AdaptNamespaceRule(n, location),
-            ICssGroupingRule g => AdaptUnknownGroupingRule(g, preprocess, location),
+            ICssGroupingRule g => AdaptUnknownGroupingRule(g, location),
             _ => AdaptUnknownRule(rule, location),
         };
-
-    private static CssSourceLocation LookupRulePosition(CssPreprocessResult preprocess, int ordinal)
-    {
-        if (ordinal < 0 || ordinal >= preprocess.RulePositions.Length)
-            return CssSourceLocation.Unknown;
-        return preprocess.RulePositions[ordinal].Location;
-    }
 
     private static CssPageRuleRecovery? LookupPageRecovery(CssPreprocessResult preprocess, int ordinal)
     {
@@ -211,25 +264,25 @@ internal static class CssParserAdapter
         AdaptDeclarations(rule.Style),
         location);
 
-    private static CssAtRule AdaptMediaRule(ICssMediaRule rule, CssPreprocessResult preprocess, CssSourceLocation location) => new(
+    private static CssAtRule AdaptMediaRule(ICssMediaRule rule, CssSourceLocation location) => new(
         Name: "media",
         Prelude: rule.Media?.MediaText ?? string.Empty,
         Declarations: ImmutableArray<CssDeclaration>.Empty,
-        ChildRules: AdaptRules(rule.Rules, preprocess),
+        ChildRules: AdaptNestedRules(rule.Rules),
         Location: location);
 
-    private static CssAtRule AdaptSupportsRule(ICssSupportsRule rule, CssPreprocessResult preprocess, CssSourceLocation location) => new(
+    private static CssAtRule AdaptSupportsRule(ICssSupportsRule rule, CssSourceLocation location) => new(
         Name: "supports",
         Prelude: ExtractPrelude(rule.CssText, "@supports"),
         Declarations: ImmutableArray<CssDeclaration>.Empty,
-        ChildRules: AdaptRules(rule.Rules, preprocess),
+        ChildRules: AdaptNestedRules(rule.Rules),
         Location: location);
 
-    private static CssAtRule AdaptKeyframesRule(ICssKeyframesRule rule, CssPreprocessResult preprocess, CssSourceLocation location) => new(
+    private static CssAtRule AdaptKeyframesRule(ICssKeyframesRule rule, CssSourceLocation location) => new(
         Name: "keyframes",
         Prelude: rule.Name ?? string.Empty,
         Declarations: ImmutableArray<CssDeclaration>.Empty,
-        ChildRules: AdaptRules(rule.Rules, preprocess),
+        ChildRules: AdaptNestedRules(rule.Rules),
         Location: location);
 
     private static CssStyleRule AdaptKeyframeRule(ICssKeyframeRule rule, CssSourceLocation location) => new(
@@ -323,11 +376,11 @@ internal static class CssParserAdapter
             Location: location);
     }
 
-    private static CssAtRule AdaptUnknownGroupingRule(ICssGroupingRule rule, CssPreprocessResult preprocess, CssSourceLocation location) => new(
+    private static CssAtRule AdaptUnknownGroupingRule(ICssGroupingRule rule, CssSourceLocation location) => new(
         Name: NameFromType(rule),
         Prelude: ExtractPrelude(rule.CssText, "@" + NameFromType(rule)),
         Declarations: ImmutableArray<CssDeclaration>.Empty,
-        ChildRules: AdaptRules(rule.Rules, preprocess),
+        ChildRules: AdaptNestedRules(rule.Rules),
         Location: location);
 
     private static CssAtRule AdaptUnknownRule(ICssRule rule, CssSourceLocation location) => new(
@@ -362,8 +415,17 @@ internal static class CssParserAdapter
     /// <summary>
     /// Splits raw text inside a margin-box's <c>{ }</c> body into <see cref="CssDeclaration"/>
     /// entries. Handles the simple <c>property: value</c> shape with optional
-    /// <c>!important</c>; respects strings and parens for value tokenization.
+    /// <c>!important</c>. The <c>!important</c> recognizer is token-aware — it only matches
+    /// <c>!important</c> outside strings, comments, and parens, so values like
+    /// <c>content: "!important"</c> survive intact.
     /// </summary>
+    /// <remarks>
+    /// All emitted declarations share <paramref name="parentLocation"/> as their location.
+    /// Per-property positions inside the margin-box body are a Phase 2 Task 3 follow-up:
+    /// the tokenizer tracks line/column relative to the body start, but converting those
+    /// into absolute source positions requires the original body's offset within the source
+    /// stylesheet, which the recovery records don't carry today.
+    /// </remarks>
     private static ImmutableArray<CssDeclaration> ParseRawDeclarations(string body, CssSourceLocation parentLocation)
     {
         if (string.IsNullOrWhiteSpace(body)) return ImmutableArray<CssDeclaration>.Empty;
@@ -377,7 +439,6 @@ internal static class CssParserAdapter
             var name = tok.ReadIdentifier();
             if (name.IsEmpty)
             {
-                // Skip stray characters defensively.
                 tok.ReadChar();
                 continue;
             }
@@ -385,24 +446,16 @@ internal static class CssParserAdapter
             tok.SkipWhitespaceAndComments();
             if (tok.PeekChar() != ':')
             {
-                // Malformed; advance to next ';' and continue.
                 tok.ReadUntilAnyTopLevel(";");
                 if (tok.PeekChar() == ';') tok.ReadChar();
                 tok.SkipWhitespaceAndComments();
                 continue;
             }
-            tok.ReadChar(); // consume ':'
+            tok.ReadChar();
             tok.SkipWhitespaceAndComments();
 
             var valueSpan = tok.ReadUntilAnyTopLevel(";");
-            var valueText = valueSpan.ToString().Trim();
-            var isImportant = false;
-            const string importantMarker = "!important";
-            if (valueText.EndsWith(importantMarker, StringComparison.OrdinalIgnoreCase))
-            {
-                isImportant = true;
-                valueText = valueText[..^importantMarker.Length].TrimEnd();
-            }
+            var (valueText, isImportant) = StripTrailingImportant(valueSpan.ToString());
 
             output.Add(new CssDeclaration(
                 Property: name.ToString(),
@@ -415,6 +468,74 @@ internal static class CssParserAdapter
         }
 
         return output.Count == 0 ? ImmutableArray<CssDeclaration>.Empty : output.ToImmutable();
+    }
+
+    /// <summary>
+    /// Strips a trailing <c>!important</c> annotation from a declaration value, ignoring
+    /// matches that occur inside strings, comments, or parenthesized function arguments.
+    /// Returns the cleaned value text and whether <c>!important</c> was present.
+    /// </summary>
+    private static (string value, bool isImportant) StripTrailingImportant(string raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return (raw, false);
+
+        var span = raw.AsSpan();
+        var tok = new Preprocessing.CssTokenizer(span, null);
+        var lastBangAt = -1;
+        var lastBangFollowedByImportant = false;
+
+        while (!tok.IsEnd)
+        {
+            var c = tok.PeekChar();
+            if (c == '\'' || c == '"')
+            {
+                tok.SkipString();
+                continue;
+            }
+            if (c == '/' && tok.PeekCharAt(1) == '*')
+            {
+                tok.SkipWhitespaceAndComments();
+                continue;
+            }
+            if (c == '(')
+            {
+                tok.ReadParenthesizedBlock();
+                continue;
+            }
+            if (c == '!')
+            {
+                var bangPos = tok.Position;
+                tok.ReadChar();
+                tok.SkipWhitespaceAndComments();
+                var ident = tok.ReadIdentifier();
+                if (ident.Equals("important", StringComparison.OrdinalIgnoreCase))
+                {
+                    lastBangAt = bangPos;
+                    lastBangFollowedByImportant = true;
+                    // Continue scanning to ensure nothing meaningful follows.
+                }
+                continue;
+            }
+            tok.ReadChar();
+        }
+
+        if (lastBangFollowedByImportant && lastBangAt >= 0)
+        {
+            // Verify nothing follows except whitespace/comments.
+            var trail = raw.AsSpan(lastBangAt + 1).TrimStart();
+            // Strip "important" prefix from the trail.
+            if (trail.StartsWith("important", StringComparison.OrdinalIgnoreCase))
+            {
+                var afterImportant = trail.Slice("important".Length).TrimStart();
+                if (afterImportant.IsEmpty)
+                {
+                    var cleaned = raw[..lastBangAt].TrimEnd();
+                    return (cleaned, true);
+                }
+            }
+        }
+
+        return (raw.Trim(), false);
     }
 
     private static ImmutableArray<CssDeclaration> AdaptDeclarations(ICssStyleDeclaration style) =>

@@ -61,9 +61,16 @@ rm -rf "$ARTIFACTS_DIR"
 dotnet run --project "$BENCH_PROJ" -c Release -- --filter "*" --exporters JSON
 
 echo "==> Comparing against baseline at $BASELINE_DIR (tolerance ${TOLERANCE})"
-dotnet run --project "$BENCH_PROJ" -c Release --no-build -- \
-  --compare "$BASELINE_DIR" "$ARTIFACTS_DIR" "$TOLERANCE"
-COMPARE_EXIT=$?
+# `set -e` (top of script) would otherwise kill the script the instant `--compare`
+# returns non-zero on a regression — never reaching the friendly messaging or the
+# explicit `exit`. Wrap in `if`/`else` so we capture the exit code under shell
+# semantics that don't trigger errexit.
+if dotnet run --project "$BENCH_PROJ" -c Release --no-build -- \
+    --compare "$BASELINE_DIR" "$ARTIFACTS_DIR" "$TOLERANCE"; then
+  COMPARE_EXIT=0
+else
+  COMPARE_EXIT=$?
+fi
 
 if [ $COMPARE_EXIT -eq 0 ]; then
   echo "==> Performance gate passed."

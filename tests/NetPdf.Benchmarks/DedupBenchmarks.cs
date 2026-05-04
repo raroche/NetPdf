@@ -48,22 +48,31 @@ public class DedupBenchmarks
     {
         _jpegBytes = MinimalImageFixtures.MinimalBaselineJpeg();
 
-        // Pre-build 100 distinct JPEGs by varying the entropy-coded segment byte
-        // (offset 60 in our minimal fixture — see MinimalImageFixtures). Each gets
-        // a unique SHA-256 so RegisterImage can never dedupe them.
+        // Pre-build 100 distinct JPEGs by perturbing a byte in the entropy-coded
+        // segment that follows SOS. Each copy gets a unique SHA-256, so
+        // PdfDocument.RegisterImage cannot dedupe them — every call exercises the
+        // cache-miss path (hash + dict insert + indirect-slot allocation).
         _uniqueJpegBytes = new byte[100][];
         for (var i = 0; i < 100; i++)
         {
             var copy = (byte[])_jpegBytes.Clone();
-            // Locate the entropy-coded segment placeholder and perturb it. The
-            // exact offset depends on the fixture; we scan for a 0x00 between SOS
-            // (0xFF 0xDA) and EOI (0xFF 0xD9).
-            for (var j = 0; j < copy.Length - 1; j++)
+            // SOS structure per ITU-T T.81 §B.2.3:
+            //   0xFF 0xDA          SOS marker (2 bytes)
+            //   Ls (big-endian)    segment length, INCLUDING these 2 bytes
+            //                      for our 3-component fixture: Ls = 6 + 2*Ns = 12
+            //   payload            (Ls - 2) bytes of header info
+            //   <ECS>              entropy-coded segment starts at marker + 2 + Ls
+            //   ...
+            //   0xFF 0xD9          EOI
+            //
+            // Read Ls dynamically so the calculation survives any future change to
+            // MinimalBaselineJpeg (e.g., grayscale Ns=1 -> Ls=8 -> ECS at marker+10).
+            for (var j = 0; j < copy.Length - 3; j++)
             {
                 if (copy[j] == 0xFF && copy[j + 1] == 0xDA)
                 {
-                    // Skip the SOS marker + 14-byte header to land in entropy-coded data.
-                    var ecsOffset = j + 2 + 12; // SOS payload starts after the 12-byte header
+                    var sosLength = (copy[j + 2] << 8) | copy[j + 3]; // big-endian Ls
+                    var ecsOffset = j + 2 + sosLength;
                     if (ecsOffset < copy.Length - 2)
                     {
                         copy[ecsOffset] = (byte)(i & 0xFF);

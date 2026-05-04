@@ -210,7 +210,7 @@ Per the plan: **bidi → script → font fallback → style → shape → line b
 
 Phase 1 was tagged `0.1.0-alpha` on 2026-05-03 with the contract below. Items marked **deferred** were intentionally pushed to Phase 5 with a documented rationale rather than blocking the alpha cut.
 
-1. ✅ **All Phase 1 task tests pass** — 1546 unit / 1557 solution-wide.
+1. ✅ **All Phase 1 task tests pass** — `dotnet test NetPdf.slnx -c Release` exits 0 with 0 failures. (At the `0.1.0-alpha` cut: 1552 unit + 11 cross-project = 1563 total tests passing, 1 skipped pin-capture utility. The exact count is a historical snapshot at-tag and naturally drifts with subsequent commits; the contract is "0 failures on the tagged commit," not a frozen number.)
 2. ✅ **UCD reference tests pass:**
    - UAX #9 (Bidi): **100%** on `BidiTest.txt` + `BidiCharacterTest.txt`.
    - UAX #14 (Line Break): **99.952%** on `LineBreakTest.txt`. The remaining ~0.05% are dictionary-based East-Asian line-break edge cases that need extended segmentation tables; tracked as a Phase 2 polish item.

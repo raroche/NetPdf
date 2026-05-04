@@ -61,9 +61,10 @@ public sealed class CssParserAdapterCorpusTests
     {
         // The Anvil invoice carries TWO <style> blocks (one default, one with media="print").
         // Aggregate across all sheets so the assertion isn't sensitive to which block holds
-        // the @page rule. Margin-box at-rules (@bottom-center etc.) inside @page surface as
-        // separate top-level entries in AngleSharp.Css 1.0.0-beta.144's CSSOM, which the
-        // adapter passes through as CssAtRule entries.
+        // the @page rule. NOTE: AngleSharp.Css 1.0.0-beta.144 silently drops margin-box
+        // at-rules inside @page (e.g. @bottom-center) — Task 3's pre-pass tokenizer is the
+        // planned recovery path. The page rule itself adapts cleanly here, just without
+        // its margin-box children.
         var html = LoadCorpusFile("Corpus/Invoices/04-anvil-running-elements.html");
         var host = new HtmlParsingHost();
         var document = await host.ParseAsync(html, new HtmlPdfOptions());
@@ -73,6 +74,67 @@ public sealed class CssParserAdapterCorpusTests
 
         var allRules = sheets.SelectMany(s => CssParserAdapter.Adapt(s).Rules).ToList();
         Assert.Contains(allRules, r => r is CssAtRule a && a.Name == "page");
+    }
+
+    [Fact]
+    public async Task Corpus_anvil_print_stylesheet_can_carry_media_metadata_on_adapt()
+    {
+        // The second <style media="print"> block in the Anvil invoice is the canonical case
+        // for the metadata-bearing Adapt overload: a sheet that should only contribute to
+        // the cascade when MediaType=Print is selected. Pins that the metadata round-trips.
+        var html = LoadCorpusFile("Corpus/Invoices/04-anvil-running-elements.html");
+        var host = new HtmlParsingHost();
+        var document = await host.ParseAsync(html, new HtmlPdfOptions());
+
+        var sheets = document.StyleSheets.OfType<ICssStyleSheet>().ToList();
+
+        // Apply metadata in a way that mirrors how the cascade integration in Task 7 will
+        // wire each <style>/<link> to its origin/order/media — here we just test the plumbing.
+        for (var i = 0; i < sheets.Count; i++)
+        {
+            var sheet = sheets[i];
+            var mediaQuery = (sheet.OwnerNode as AngleSharp.Html.Dom.IHtmlStyleElement)?.Media;
+            var stylesheet = CssParserAdapter.Adapt(
+                sheet,
+                href: null,
+                origin: CssStylesheetOrigin.Author,
+                ownerKind: CssStylesheetOwnerKind.StyleElement,
+                mediaQuery: string.IsNullOrEmpty(mediaQuery) ? null : mediaQuery,
+                isDisabled: false,
+                order: i);
+
+            Assert.Equal(i, stylesheet.Order);
+            Assert.Equal(CssStylesheetOwnerKind.StyleElement, stylesheet.OwnerKind);
+        }
+
+        var byMedia = sheets
+            .Select(s => (sheet: s,
+                          media: (s.OwnerNode as AngleSharp.Html.Dom.IHtmlStyleElement)?.Media))
+            .ToList();
+        Assert.Contains(byMedia, m => string.Equals(m.media, "print", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public async Task Corpus_anvil_inline_style_attributes_adapt_through_AdaptInlineStyle()
+    {
+        // Pins inline-style adaptation against real corpus content. The Anvil invoice has
+        // many `style="..."` attributes; pick any element with one and round-trip it.
+        var html = LoadCorpusFile("Corpus/Invoices/04-anvil-running-elements.html");
+        var host = new HtmlParsingHost();
+        var document = await host.ParseAsync(html, new HtmlPdfOptions());
+
+        var styled = document.QuerySelectorAll("[style]").FirstOrDefault();
+        Assert.NotNull(styled);
+
+        var declarations = CssParserAdapter.AdaptInlineStyle(styled!.GetStyle()!);
+
+        Assert.False(declarations.IsEmpty);
+        // Every adapted declaration carries property + non-empty value text.
+        foreach (var d in declarations)
+        {
+            Assert.False(string.IsNullOrEmpty(d.Property));
+            Assert.NotNull(d.Value.RawText);
+        }
     }
 
     private static string LoadCorpusFile(string relativePath)

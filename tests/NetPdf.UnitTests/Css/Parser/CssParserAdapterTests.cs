@@ -1,6 +1,7 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System.Collections.Immutable;
 using System.Linq;
 using AngleSharp;
 using AngleSharp.Css;
@@ -14,8 +15,8 @@ using Xunit;
 namespace NetPdf.UnitTests.Css.Parser;
 
 /// <summary>
-/// Per-rule unit tests for the CSS adapter (Phase 2 Task 2). Each test fixes a single
-/// AngleSharp.Css CSSOM input and asserts the shape of the emitted NetPdf AST.
+/// Per-rule unit tests for the CSS adapter (Phase 2 Task 2 + review cycle 1). Each test
+/// fixes a single AngleSharp.Css CSSOM input and asserts the shape of the emitted NetPdf AST.
 /// </summary>
 public sealed class CssParserAdapterTests
 {
@@ -34,6 +35,105 @@ public sealed class CssParserAdapterTests
     }
 
     // ------------------------------------------------------------
+    // Stylesheet metadata (cascade-relevant)
+    // ------------------------------------------------------------
+
+    [Fact]
+    public async Task Adapt_default_overload_uses_author_origin_and_unknown_owner()
+    {
+        var sheet = await ParseSheet(".a { color: red }");
+        var stylesheet = CssParserAdapter.Adapt(sheet);
+
+        Assert.Null(stylesheet.Href);
+        Assert.Equal(CssStylesheetOrigin.Author, stylesheet.Origin);
+        Assert.Equal(CssStylesheetOwnerKind.Unknown, stylesheet.OwnerKind);
+        Assert.Null(stylesheet.MediaQuery);
+        Assert.False(stylesheet.IsDisabled);
+        Assert.Equal(0, stylesheet.Order);
+    }
+
+    [Fact]
+    public async Task Adapt_metadata_overload_carries_every_field()
+    {
+        // The cascade resolver depends on every metadata field; this test pins them all in
+        // one place so a future regression that drops a field on the way through is loud.
+        var sheet = await ParseSheet(".a { color: red }");
+        var stylesheet = CssParserAdapter.Adapt(
+            sheet,
+            href: "https://example.com/print.css",
+            origin: CssStylesheetOrigin.User,
+            ownerKind: CssStylesheetOwnerKind.LinkElement,
+            mediaQuery: "print",
+            isDisabled: true,
+            order: 7);
+
+        Assert.Equal("https://example.com/print.css", stylesheet.Href);
+        Assert.Equal(CssStylesheetOrigin.User, stylesheet.Origin);
+        Assert.Equal(CssStylesheetOwnerKind.LinkElement, stylesheet.OwnerKind);
+        Assert.Equal("print", stylesheet.MediaQuery);
+        Assert.True(stylesheet.IsDisabled);
+        Assert.Equal(7, stylesheet.Order);
+    }
+
+    // ------------------------------------------------------------
+    // Inline style adaptation (cascade input from style="...")
+    // ------------------------------------------------------------
+
+    [Fact]
+    public void AdaptInlineStyle_null_throws_argument_null()
+    {
+        Assert.Throws<ArgumentNullException>(() => CssParserAdapter.AdaptInlineStyle(null!));
+    }
+
+    [Fact]
+    public async Task AdaptInlineStyle_extracts_declarations_from_style_attribute()
+    {
+        var element = await ParseElementWithStyle("color: red; font-weight: bold");
+
+        var declarations = CssParserAdapter.AdaptInlineStyle(element.GetStyle()!);
+
+        var byProperty = declarations.ToDictionary(d => d.Property);
+        Assert.Equal("rgba(255, 0, 0, 1)", byProperty["color"].Value.RawText);
+        Assert.Equal("bold", byProperty["font-weight"].Value.RawText);
+        Assert.False(byProperty["color"].IsImportant);
+    }
+
+    [Fact]
+    public async Task AdaptInlineStyle_preserves_important_flag()
+    {
+        var element = await ParseElementWithStyle("color: red !important");
+
+        var declarations = CssParserAdapter.AdaptInlineStyle(element.GetStyle()!);
+
+        var declaration = Assert.Single(declarations);
+        Assert.True(declaration.IsImportant);
+    }
+
+    [Fact]
+    public async Task AdaptInlineStyle_returns_empty_array_for_empty_attribute()
+    {
+        var element = await ParseElementWithStyle(string.Empty);
+
+        var declarations = CssParserAdapter.AdaptInlineStyle(element.GetStyle()!);
+
+        Assert.True(declarations.IsEmpty);
+    }
+
+    [Fact]
+    public async Task AdaptInlineStyle_expands_shorthands_to_longhands_like_stylesheet()
+    {
+        // Same shorthand-expansion behavior the stylesheet adapter sees — the cascade then
+        // doesn't have to deal with both shorthand and longhand inputs.
+        var element = await ParseElementWithStyle("background: red");
+
+        var declarations = CssParserAdapter.AdaptInlineStyle(element.GetStyle()!);
+
+        var properties = declarations.Select(d => d.Property).ToHashSet();
+        Assert.Contains("background-color", properties);
+        Assert.DoesNotContain("background", properties);
+    }
+
+    // ------------------------------------------------------------
     // Style rule shape
     // ------------------------------------------------------------
 
@@ -47,9 +147,11 @@ public sealed class CssParserAdapterTests
         Assert.Equal(".foo", rule.Selector.RawText);
         var declaration = Assert.Single(rule.Declarations);
         Assert.Equal("color", declaration.Property);
-        // AngleSharp.Css normalizes named colors to rgba(...).
         Assert.Equal("rgba(255, 0, 0, 1)", declaration.Value.RawText);
         Assert.False(declaration.IsImportant);
+        // Source-location scaffolding stays at Unknown until Task 3 wires real positions.
+        Assert.Equal(CssSourceLocation.Unknown, rule.Location);
+        Assert.Equal(CssSourceLocation.Unknown, declaration.Location);
     }
 
     [Fact]
@@ -60,7 +162,6 @@ public sealed class CssParserAdapterTests
 
         var rule = Assert.IsType<CssStyleRule>(Assert.Single(stylesheet.Rules));
         // AngleSharp.Css canonicalizes whitespace around combinators (".a, .b > .c" → ".a, .b>.c").
-        // Assert what AngleSharp gave us, not the source text.
         Assert.Equal(".a, .b>.c", rule.Selector.RawText);
     }
 
@@ -78,10 +179,6 @@ public sealed class CssParserAdapterTests
     [Fact]
     public async Task Adapt_shorthand_is_expanded_to_longhands()
     {
-        // Documents (and locks down) AngleSharp.Css's shorthand-expansion behavior. The cascade
-        // resolver in Task 7 depends on it: longhands are what the cascade operates on. A
-        // future AngleSharp.Css change that disables shorthand expansion would fail this test
-        // and prompt us to recover the expansion ourselves.
         var sheet = await ParseSheet(".foo { background: url('x.png') no-repeat }");
         var stylesheet = CssParserAdapter.Adapt(sheet);
 
@@ -90,7 +187,6 @@ public sealed class CssParserAdapterTests
         Assert.Contains("background-image", properties);
         Assert.Contains("background-repeat-x", properties);
         Assert.Contains("background-repeat-y", properties);
-        // Original "background" shorthand is NOT in the AST — that's the documented fidelity loss.
         Assert.DoesNotContain("background", properties);
     }
 
@@ -152,7 +248,7 @@ public sealed class CssParserAdapterTests
         Assert.Equal("keyframes", atRule.Name);
         Assert.Equal("pop", atRule.Prelude);
         Assert.Empty(atRule.Declarations);
-        Assert.Equal(2, atRule.ChildRules.Count);
+        Assert.Equal(2, atRule.ChildRules.Length);
         var firstFrame = Assert.IsType<CssStyleRule>(atRule.ChildRules[0]);
         Assert.Equal("0%", firstFrame.Selector.RawText);
         Assert.Equal("opacity", Assert.Single(firstFrame.Declarations).Property);
@@ -179,7 +275,7 @@ public sealed class CssParserAdapterTests
     }
 
     // ------------------------------------------------------------
-    // @page (declarations) and @top-center (margin-box) at-rules
+    // @page (declarations + AngleSharp gaps)
     // ------------------------------------------------------------
 
     [Fact]
@@ -195,51 +291,106 @@ public sealed class CssParserAdapterTests
     }
 
     [Fact]
-    public async Task Adapt_named_page_rule_documents_anglesharp_selector_loss()
+    public async Task Adapt_page_rule_pseudo_selector_loss_is_a_known_task_3_blocker()
     {
-        // Documents an AngleSharp.Css 1.0.0-beta.144 limitation: the `:first` pseudo-class on
-        // an @page rule is dropped by the parser before reaching the CSSOM (SelectorText is
-        // empty, CssText is "@page { ... }"). The adapter cannot recover the selector from
-        // outside the CSSOM. When AngleSharp.Css fixes this — or when Phase 2 Task 3's pre-pass
-        // tokenizer extracts the selector before AngleSharp parses the rule — flip the
-        // assertion to require ":first" in the prelude.
+        // Tracks an AngleSharp.Css 1.0.0-beta.144 limitation: `:first` / `:left` / `:right`
+        // and named-page selectors are dropped before the CSSOM (SelectorText is empty,
+        // CssText is "@page { ... }"). Phase 2 Task 3's pre-pass tokenizer is the planned
+        // fix — it tokenizes the raw stylesheet text and re-attaches the page selector
+        // before AngleSharp sees the rule. This test pins the current loss so a future
+        // change that silently regresses Task 3's recovery surfaces here.
         var sheet = await ParseSheet("@page :first { margin-top: 0 }");
         var stylesheet = CssParserAdapter.Adapt(sheet);
 
         var atRule = Assert.IsType<CssAtRule>(Assert.Single(stylesheet.Rules));
         Assert.Equal("page", atRule.Name);
-        Assert.Empty(atRule.Prelude);
+        Assert.Empty(atRule.Prelude);          // Loss — Task 3 must recover ":first" here.
         Assert.NotEmpty(atRule.Declarations);
     }
 
+    [Fact]
+    public async Task Adapt_page_rule_margin_box_loss_is_a_known_task_3_blocker()
+    {
+        // Tracks a second AngleSharp.Css 1.0.0-beta.144 limitation: margin-box at-rules
+        // (@top-center, @bottom-right-corner, …) inside @page are silently dropped — they
+        // reach neither the parent ICssPageRule nor the top of the stylesheet. Phase 2
+        // Task 3's pre-pass tokenizer must recover them and re-parent them under their
+        // owning @page rule. The adapter's AdaptMarginRule case is currently dead in the
+        // dispatch but kept for forward compat.
+        var sheet = await ParseSheet(
+            "@page { margin: 1in; @top-center { content: \"Header\"; } @bottom-right { content: counter(page); } }");
+        var stylesheet = CssParserAdapter.Adapt(sheet);
+
+        var pageRule = Assert.IsType<CssAtRule>(Assert.Single(stylesheet.Rules));
+        Assert.Equal("page", pageRule.Name);
+        // Task 3 must populate ChildRules with two CssAtRule entries (top-center, bottom-right).
+        Assert.Empty(pageRule.ChildRules);
+        // Top-level rule list contains only @page — the margin-boxes vanished entirely.
+        Assert.Single(stylesheet.Rules);
+    }
+
     // ------------------------------------------------------------
-    // Statement-form at-rules: @import, @charset, @namespace
+    // @import — typed CssImportRule subtype
     // ------------------------------------------------------------
 
     [Fact]
-    public async Task Adapt_import_rule_carries_url_in_prelude()
+    public async Task Adapt_import_rule_emits_typed_subtype_with_url()
     {
         var sheet = await ParseSheet("@import url(\"foo.css\");");
         var stylesheet = CssParserAdapter.Adapt(sheet);
 
-        var atRule = Assert.IsType<CssAtRule>(Assert.Single(stylesheet.Rules));
-        Assert.Equal("import", atRule.Name);
-        Assert.Contains("foo.css", atRule.Prelude);
-        Assert.Empty(atRule.Declarations);
-        Assert.Empty(atRule.ChildRules);
+        var importRule = Assert.IsType<CssImportRule>(Assert.Single(stylesheet.Rules));
+        Assert.Equal("foo.css", importRule.Url);
+        Assert.Empty(importRule.MediaQuery);
+        Assert.Null(importRule.LayerName);
+        Assert.Null(importRule.SupportsCondition);
+        Assert.True(importRule.ImportedRules.IsEmpty);
     }
 
     [Fact]
-    public async Task Adapt_import_rule_with_media_includes_media_in_prelude()
+    public async Task Adapt_import_rule_with_media_carries_media_query()
     {
-        var sheet = await ParseSheet("@import url(\"print.css\") print;");
+        var sheet = await ParseSheet("@import url(\"print.css\") screen and (min-width: 800px);");
         var stylesheet = CssParserAdapter.Adapt(sheet);
 
-        var atRule = Assert.IsType<CssAtRule>(Assert.Single(stylesheet.Rules));
-        Assert.Equal("import", atRule.Name);
-        Assert.Contains("print.css", atRule.Prelude);
-        Assert.Contains("print", atRule.Prelude);
+        var importRule = Assert.IsType<CssImportRule>(Assert.Single(stylesheet.Rules));
+        Assert.Equal("print.css", importRule.Url);
+        Assert.Contains("min-width", importRule.MediaQuery);
+        Assert.Null(importRule.LayerName);
+        Assert.Null(importRule.SupportsCondition);
     }
+
+    [Fact]
+    public async Task Adapt_import_rule_layer_clause_is_lost_until_task_3()
+    {
+        // AngleSharp.Css 1.0.0-beta.144 mangles `@import url(...) layer(name)` into a
+        // malformed media query "not all", losing the layer name entirely. The adapter
+        // exposes the LayerName slot as null until Phase 2 Task 3's pre-pass tokenizer
+        // recovers the layer clause from the raw stylesheet text. This test pins the
+        // current loss + slot existence.
+        var sheet = await ParseSheet("@import url(\"theme.css\") layer(framework);");
+        var stylesheet = CssParserAdapter.Adapt(sheet);
+
+        var importRule = Assert.IsType<CssImportRule>(Assert.Single(stylesheet.Rules));
+        Assert.Equal("theme.css", importRule.Url);
+        Assert.Null(importRule.LayerName); // Task 3 must populate to "framework".
+        // Media query carries AngleSharp's "not all" garbage — also a Task 3 fix.
+        Assert.Equal("not all", importRule.MediaQuery);
+    }
+
+    [Fact]
+    public async Task Adapt_import_rule_supports_clause_is_lost_until_task_3()
+    {
+        var sheet = await ParseSheet("@import url(\"grid.css\") supports(display: grid);");
+        var stylesheet = CssParserAdapter.Adapt(sheet);
+
+        var importRule = Assert.IsType<CssImportRule>(Assert.Single(stylesheet.Rules));
+        Assert.Null(importRule.SupportsCondition); // Task 3 must populate.
+    }
+
+    // ------------------------------------------------------------
+    // Statement-form at-rules: @charset, @namespace
+    // ------------------------------------------------------------
 
     [Fact]
     public async Task Adapt_charset_rule_carries_quoted_charset_in_prelude()
@@ -277,21 +428,17 @@ public sealed class CssParserAdapterTests
     }
 
     // ------------------------------------------------------------
-    // Robustness
+    // Robustness: clean-room contract, source order, deep equality
     // ------------------------------------------------------------
 
     [Fact]
     public void Adapt_emitted_types_declare_no_anglesharp_property_types()
     {
-        // Compile-time contract: every property on the emitted AST records returns a NetPdf
-        // type (or a primitive). If a future change accidentally exposes an AngleSharp type
-        // through one of these records, the analyzer finds it here without recursive reflection.
-        // We hand-list the types because the contract is small and the list itself is
-        // documentation of "this is what downstream stages may depend on."
         AssertAllPropertyTypesAreNonAngleSharp(typeof(CssStylesheet));
         AssertAllPropertyTypesAreNonAngleSharp(typeof(CssRule));
         AssertAllPropertyTypesAreNonAngleSharp(typeof(CssStyleRule));
         AssertAllPropertyTypesAreNonAngleSharp(typeof(CssAtRule));
+        AssertAllPropertyTypesAreNonAngleSharp(typeof(CssImportRule));
         AssertAllPropertyTypesAreNonAngleSharp(typeof(CssDeclaration));
         AssertAllPropertyTypesAreNonAngleSharp(typeof(CssSelector));
         AssertAllPropertyTypesAreNonAngleSharp(typeof(CssValue));
@@ -300,15 +447,15 @@ public sealed class CssParserAdapterTests
     [Fact]
     public async Task Adapt_is_deterministic_across_repeated_calls()
     {
-        // Records' auto-generated Equals compares list properties by reference (List<T>
-        // doesn't override Equals), so two adapt calls produce non-equal records by default.
-        // Compare structurally via the AST helper instead.
+        // Note on equality: ImmutableArray<T>.Equals checks reference-equality of the
+        // underlying array, not contents — so the records' auto-generated Equals still
+        // returns false for two adapt calls. Compare structurally via SequenceEqual.
         var sheet = await ParseSheet(".a { color: red } @media print { p { color: black } } @page { margin: 1in }");
         var first = CssParserAdapter.Adapt(sheet);
         var second = CssParserAdapter.Adapt(sheet);
 
-        Assert.Equal(first.Rules.Count, second.Rules.Count);
-        for (var i = 0; i < first.Rules.Count; i++)
+        Assert.Equal(first.Rules.Length, second.Rules.Length);
+        for (var i = 0; i < first.Rules.Length; i++)
         {
             AssertRulesStructurallyEqual(first.Rules[i], second.Rules[i]);
         }
@@ -327,9 +474,15 @@ public sealed class CssParserAdapterTests
                 Assert.Equal(aa.Name, ab.Name);
                 Assert.Equal(aa.Prelude, ab.Prelude);
                 AssertDeclarationsEqual(aa.Declarations, ab.Declarations);
-                Assert.Equal(aa.ChildRules.Count, ab.ChildRules.Count);
-                for (var i = 0; i < aa.ChildRules.Count; i++)
+                Assert.Equal(aa.ChildRules.Length, ab.ChildRules.Length);
+                for (var i = 0; i < aa.ChildRules.Length; i++)
                     AssertRulesStructurallyEqual(aa.ChildRules[i], ab.ChildRules[i]);
+                break;
+            case CssImportRule ia when b is CssImportRule ib:
+                Assert.Equal(ia.Url, ib.Url);
+                Assert.Equal(ia.MediaQuery, ib.MediaQuery);
+                Assert.Equal(ia.LayerName, ib.LayerName);
+                Assert.Equal(ia.SupportsCondition, ib.SupportsCondition);
                 break;
             default:
                 Assert.Fail($"unrecognized rule pair: {a.GetType().Name} vs {b.GetType().Name}");
@@ -337,10 +490,10 @@ public sealed class CssParserAdapterTests
         }
     }
 
-    private static void AssertDeclarationsEqual(IReadOnlyList<CssDeclaration> a, IReadOnlyList<CssDeclaration> b)
+    private static void AssertDeclarationsEqual(ImmutableArray<CssDeclaration> a, ImmutableArray<CssDeclaration> b)
     {
-        Assert.Equal(a.Count, b.Count);
-        for (var i = 0; i < a.Count; i++)
+        Assert.Equal(a.Length, b.Length);
+        for (var i = 0; i < a.Length; i++)
         {
             Assert.Equal(a[i].Property, b[i].Property);
             Assert.Equal(a[i].Value.RawText, b[i].Value.RawText);
@@ -359,11 +512,31 @@ public sealed class CssParserAdapterTests
             """);
         var stylesheet = CssParserAdapter.Adapt(sheet);
 
-        Assert.Equal(4, stylesheet.Rules.Count);
-        Assert.Equal("import", Assert.IsType<CssAtRule>(stylesheet.Rules[0]).Name);
+        Assert.Equal(4, stylesheet.Rules.Length);
+        Assert.IsType<CssImportRule>(stylesheet.Rules[0]);
         Assert.IsType<CssStyleRule>(stylesheet.Rules[1]);
         Assert.Equal("media", Assert.IsType<CssAtRule>(stylesheet.Rules[2]).Name);
         Assert.Equal("page", Assert.IsType<CssAtRule>(stylesheet.Rules[3]).Name);
+    }
+
+    [Fact]
+    public async Task Adapt_emits_immutable_array_collections()
+    {
+        // Pin the immutability contract: the rule list and inner declaration / child-rule
+        // lists are ImmutableArray<T>, not mutable List<T> behind an IReadOnlyList<T>
+        // interface. This makes the cascade's per-element caching safe without defensive copies.
+        var sheet = await ParseSheet(".a { color: red } @media print { p { color: black } }");
+        var stylesheet = CssParserAdapter.Adapt(sheet);
+
+        // Top-level rules — typed as ImmutableArray<CssRule> on the record.
+        AssertIsImmutableArrayOf<CssRule>(stylesheet.Rules);
+
+        var styleRule = Assert.IsType<CssStyleRule>(stylesheet.Rules[0]);
+        AssertIsImmutableArrayOf<CssDeclaration>(styleRule.Declarations);
+
+        var mediaRule = Assert.IsType<CssAtRule>(stylesheet.Rules[1]);
+        AssertIsImmutableArrayOf<CssRule>(mediaRule.ChildRules);
+        AssertIsImmutableArrayOf<CssDeclaration>(mediaRule.Declarations);
     }
 
     // ------------------------------------------------------------
@@ -372,9 +545,6 @@ public sealed class CssParserAdapterTests
 
     private static async Task<ICssStyleSheet> ParseSheet(string css)
     {
-        // Mirror HtmlParsingHost's configuration so the adapter sees rules in exactly the
-        // shape a real document would deliver. The test embeds the CSS in a <style> element
-        // so document.StyleSheets[0] is the resulting parsed sheet.
         var parser = new HtmlParser(new HtmlParserOptions { IsScripting = false, IsKeepingSourceReferences = true });
         var config = Configuration.Default
             .WithCss()
@@ -387,6 +557,28 @@ public sealed class CssParserAdapterTests
         return document.StyleSheets.OfType<ICssStyleSheet>().Single();
     }
 
+    private static async Task<IElement> ParseElementWithStyle(string styleAttribute)
+    {
+        // Build a doc whose <p> carries the style attribute under test, then return the <p>.
+        var parser = new HtmlParser(new HtmlParserOptions { IsScripting = false, IsKeepingSourceReferences = true });
+        var config = Configuration.Default
+            .WithCss()
+            .WithDefaultLoader(new LoaderOptions { IsResourceLoadingEnabled = false })
+            .With(parser);
+        var ctx = BrowsingContext.New(config);
+
+        var html = $"<html><body><p id=\"target\" style=\"{styleAttribute}\">x</p></body></html>";
+        var document = await ctx.OpenAsync(req => req.Content(html).Address("about:blank"));
+        return document.QuerySelector("#target")!;
+    }
+
+    private static void AssertIsImmutableArrayOf<T>(ImmutableArray<T> _)
+    {
+        // The fact that the call site type-checked this method invocation with the property
+        // proves the property's declared type is ImmutableArray<T>. No runtime work needed.
+        Assert.True(true);
+    }
+
     private static void AssertAllPropertyTypesAreNonAngleSharp(
         [System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(
             System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.PublicProperties)]
@@ -394,7 +586,6 @@ public sealed class CssParserAdapterTests
     {
         foreach (var prop in type.GetProperties(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance))
         {
-            // Drill into generic args so IReadOnlyList<CssRule> is asserted against CssRule.
             foreach (var t in EnumerateUsedTypes(prop.PropertyType))
             {
                 var asm = t.Assembly.GetName().Name;

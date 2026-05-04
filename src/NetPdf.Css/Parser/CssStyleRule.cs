@@ -1,6 +1,8 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System.Collections.Immutable;
+
 namespace NetPdf.Css.Parser;
 
 /// <summary>
@@ -14,6 +16,9 @@ namespace NetPdf.Css.Parser;
 /// shorthand properties (e.g., <c>background</c>) into their longhand components during
 /// parsing — the cascade resolver in Task 7 expects longhands, so this fidelity loss is
 /// deliberate and beneficial downstream.</param>
+/// <param name="Location">Source position of the rule's selector start. Currently
+/// <see cref="CssSourceLocation.Unknown"/> until Task 3 wires real positions.</param>
 internal sealed record CssStyleRule(
     CssSelector Selector,
-    IReadOnlyList<CssDeclaration> Declarations) : CssRule;
+    ImmutableArray<CssDeclaration> Declarations,
+    CssSourceLocation Location) : CssRule(Location);

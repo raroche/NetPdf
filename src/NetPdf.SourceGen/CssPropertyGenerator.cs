@@ -36,16 +36,58 @@ namespace NetPdf.SourceGen;
 /// is small enough that the dependency-free path is simpler.
 /// </para>
 /// <para>
-/// Malformed JSON, missing fields, or duplicate ids raise diagnostics
-/// (<c>NPDFGEN0001</c>–<c>NPDFGEN0004</c>) so build breaks rather than silently emitting
-/// wrong code.
+/// Malformed JSON, missing fields, duplicate ids, or unrecognized enum tokens raise
+/// diagnostics so the build breaks rather than silently emitting wrong code:
 /// </para>
+/// <list type="bullet">
+///   <item><description><c>NPDFGEN0001</c> — empty <c>properties.json</c>.</description></item>
+///   <item><description><c>NPDFGEN0003</c> — malformed JSON (parse error).</description></item>
+///   <item><description><c>NPDFGEN0004</c> — duplicate <c>name</c> or <c>id</c>.</description></item>
+///   <item><description><c>NPDFGEN0005</c> — missing required field, empty <c>name</c>/<c>id</c>,
+///   or invalid C# identifier in <c>id</c>.</description></item>
+///   <item><description><c>NPDFGEN0006</c> — unknown enum token in <c>type</c>, <c>applies_to</c>,
+///   or <c>computed</c>. Catches mismatches between properties.json and the hand-written
+///   <c>PropertyType</c>/<c>AppliesTo</c>/<c>ComputedValueKind</c> enums before they cascade
+///   into a confusing CS0117 in the consumer's compile.</description></item>
+/// </list>
 /// </remarks>
 [Generator]
 public sealed class CssPropertyGenerator : IIncrementalGenerator
 {
     private const string ExpectedFileName = "properties.json";
     private const string EmittedFileName = "PropertyTables.g.cs";
+
+    /// <summary>
+    /// Allowed values for the <c>type</c> field. Must stay in lockstep with
+    /// <c>src/NetPdf.Css/Properties/PropertyType.cs</c>. The generator validates each entry's
+    /// <c>type</c> against this set and emits <c>NPDFGEN0006</c> for unrecognized tokens —
+    /// that's strictly cheaper and clearer than emitting <c>PropertyType.BogusToken</c> and
+    /// letting the downstream compile fail.
+    /// </summary>
+    private static readonly System.Collections.Generic.HashSet<string> ValidPropertyTypes = new(System.StringComparer.Ordinal)
+    {
+        "Unknown", "Color", "Length", "LengthPercentage", "LengthPercentageAuto",
+        "Number", "Integer", "Percentage", "Keyword", "String", "Url",
+        "Time", "Angle", "Resolution", "FontFamilyList", "FontWeight",
+        "LineWidth", "FontSize", "LineHeight", "Content", "VerticalAlign", "FlexBasis",
+        "TextSpacing", "MaxSize",
+        "Custom",
+    };
+
+    /// <summary>Allowed values for <c>applies_to</c>. Mirrors <c>AppliesTo.cs</c>.</summary>
+    private static readonly System.Collections.Generic.HashSet<string> ValidAppliesTo = new(System.StringComparer.Ordinal)
+    {
+        "Unknown", "All", "BlockOrInlineOrReplaced", "Positioned", "BlockOnly", "InlineOnly",
+        "ListItem", "TableElements", "ReplacedOnly",
+        "FlexItems", "FlexContainers",
+        "GridItems", "GridContainers",
+    };
+
+    /// <summary>Allowed values for <c>computed</c>. Mirrors <c>ComputedValueKind.cs</c>.</summary>
+    private static readonly System.Collections.Generic.HashSet<string> ValidComputedValueKinds = new(System.StringComparer.Ordinal)
+    {
+        "Specified", "AbsoluteColor", "AbsoluteLength", "ResolvedNumber", "ResolvedKeyword", "Custom",
+    };
 
     public void Initialize(IncrementalGeneratorInitializationContext context)
     {
@@ -165,6 +207,32 @@ public sealed class CssPropertyGenerator : IIncrementalGenerator
             {
                 Report(context, "NPDFGEN0005", "Invalid C# identifier in 'id'",
                     "Property " + tag + " has 'id'='" + p.Id + "' which is not a valid C# identifier.");
+                ok = false;
+            }
+
+            // NPDFGEN0006 — enum-token validation against the actual hand-written enums.
+            // Without this gate, an unrecognized token like `"type": "Bogus"` produces
+            // `PropertyType.Bogus` in the emitted source, which fails to compile downstream
+            // with a confusing CS0117 error. We catch it here with a targeted message.
+            if (p.TypeSupplied && !string.IsNullOrEmpty(p.Type) && !ValidPropertyTypes.Contains(p.Type))
+            {
+                Report(context, "NPDFGEN0006", "Unknown PropertyType value",
+                    "Property " + tag + " has 'type'='" + p.Type + "' which is not a defined PropertyType. " +
+                    "Add it to PropertyType.cs and the generator's ValidPropertyTypes allowlist if it's a new type.");
+                ok = false;
+            }
+            if (p.AppliesToSupplied && !string.IsNullOrEmpty(p.AppliesTo) && !ValidAppliesTo.Contains(p.AppliesTo))
+            {
+                Report(context, "NPDFGEN0006", "Unknown AppliesTo value",
+                    "Property " + tag + " has 'applies_to'='" + p.AppliesTo + "' which is not a defined AppliesTo. " +
+                    "Add it to AppliesTo.cs and the generator's ValidAppliesTo allowlist if it's a new category.");
+                ok = false;
+            }
+            if (p.ComputedSupplied && !string.IsNullOrEmpty(p.Computed) && !ValidComputedValueKinds.Contains(p.Computed))
+            {
+                Report(context, "NPDFGEN0006", "Unknown ComputedValueKind value",
+                    "Property " + tag + " has 'computed'='" + p.Computed + "' which is not a defined ComputedValueKind. " +
+                    "Add it to ComputedValueKind.cs and the generator's ValidComputedValueKinds allowlist if it's a new kind.");
                 ok = false;
             }
 

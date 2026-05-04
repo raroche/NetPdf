@@ -55,6 +55,12 @@ internal enum PropertyType : byte
     VerticalAlign = 20,
     /// <summary>A flex-basis value: <c>content | &lt;length-percentage&gt; | auto</c>.</summary>
     FlexBasis = 21,
+    /// <summary>Text-spacing per CSS Text 3 §10.1: <c>normal | &lt;length&gt;</c>. Used by
+    /// <c>letter-spacing</c> and <c>word-spacing</c>.</summary>
+    TextSpacing = 22,
+    /// <summary>A max-* dimension per CSS Sizing 3 §5.2: <c>none | &lt;length-percentage&gt; |
+    /// &lt;intrinsic-sizing&gt;</c>. Used by <c>max-width</c> and <c>max-height</c>.</summary>
+    MaxSize = 23,
     /// <summary>A custom property type — value is opaque to the parser dispatch table.</summary>
     Custom = 255,
 }

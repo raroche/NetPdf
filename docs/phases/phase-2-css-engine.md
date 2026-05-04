@@ -163,9 +163,11 @@ Keeps AngleSharp.Css unmodified; we extend at the edges.
 
 The source generator emits:
 - `enum PropertyId : ushort { ... }`
-- `static FrozenDictionary<string, PropertyId> PropertyNameToId` (built at startup, O(1) lookup).
-- `static PropertyMeta[] PropertyMetadata` indexed by `PropertyId`.
-- Per-property typed accessor methods on `ComputedStyle`.
+- `PropertyMetadata.NameToId` — `FrozenDictionary<string, PropertyId>` (built once at type-init, case-insensitive O(1) lookup).
+- `PropertyMetadata.Table` — `ImmutableArray<PropertyMeta>` indexed by `(int)PropertyId`. Returned as `ImmutableArray<T>` so consumers can't mutate entries.
+- `PropertyMetadata.Count` — total registered properties.
+
+Per-property typed accessor methods on `ComputedStyle` are introduced in **Task 5**, not here. Task 4 ships the registry; Task 5 wires the `[InlineArray]`-backed value type that exposes `style.Color`/`style.MarginTop`/etc. accessors. Per-property parser/computed-value hooks themselves come in Tasks 9–10 alongside the typed value tree.
 
 ### `ComputedStyle` access pattern
 ```csharp

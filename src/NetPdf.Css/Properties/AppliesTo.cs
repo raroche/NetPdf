@@ -48,4 +48,11 @@ internal enum AppliesTo : byte
     FlexItems = 9,
     /// <summary>Grid items (children of <c>display: grid</c>).</summary>
     GridItems = 10,
+    /// <summary>Flex containers (elements with <c>display: flex</c> / <c>inline-flex</c>).
+    /// Properties like <c>flex-direction</c>, <c>flex-wrap</c>, <c>align-items</c>, and
+    /// <c>justify-content</c> apply here, NOT to flex items.</summary>
+    FlexContainers = 11,
+    /// <summary>Grid containers (elements with <c>display: grid</c> / <c>inline-grid</c>).
+    /// Grid template properties apply here.</summary>
+    GridContainers = 12,
 }

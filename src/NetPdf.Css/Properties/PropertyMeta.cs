@@ -5,9 +5,10 @@ namespace NetPdf.Css.Properties;
 
 /// <summary>
 /// Per-property metadata indexed by <c>PropertyId</c>. The data table itself
-/// (<c>PropertyMetadata.Table</c>) and the lookup dictionary (<c>PropertyNameToId</c>)
-/// are emitted by <c>NetPdf.SourceGen.CssPropertyGenerator</c> from
-/// <c>properties.json</c>; this record is the typed shape downstream stages consume.
+/// (<c>PropertyMetadata.Table</c> as <c>ImmutableArray&lt;PropertyMeta&gt;</c>) and the
+/// case-insensitive lookup dictionary (<c>PropertyMetadata.NameToId</c>) are emitted by
+/// <c>NetPdf.SourceGen.CssPropertyGenerator</c> from <c>properties.json</c>; this record
+/// is the typed shape downstream stages consume.
 /// </summary>
 /// <param name="Id">Stable identifier for the property; doubles as an index into
 /// the metadata table.</param>

@@ -8,6 +8,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.Text;
 using RoslynDiagnostic = Microsoft.CodeAnalysis.Diagnostic;
+using RoslynSeverity = Microsoft.CodeAnalysis.DiagnosticSeverity;
 using NetPdf.SourceGen;
 using Xunit;
 
@@ -174,6 +175,175 @@ public sealed class CssPropertyGeneratorDiagnosticsTests
         Assert.Empty(diagnostics);
         Assert.Single(generatedSources);
         Assert.Contains("PropertyId.Color", generatedSources[0]);
+    }
+
+    // ------------------------------------------------------------
+    // Enum-token validation (NPDFGEN0006)
+    // ------------------------------------------------------------
+
+    [Fact]
+    public void Unknown_property_type_emits_NPDFGEN0006()
+    {
+        // Without the enum-token check, the generator would emit `PropertyType.Bogus`
+        // and the consumer's compile would fail with a confusing CS0117. NPDFGEN0006
+        // catches it at the generator stage with an actionable message.
+        var json = """
+            {
+              "properties": [
+                { "name": "color", "id": "Color", "type": "Bogus", "default": "black", "inherit": true, "applies_to": "All", "computed": "AbsoluteColor" }
+              ]
+            }
+            """;
+        var diagnostics = RunGenerator(json);
+        Assert.Contains(diagnostics, d => d.Id == "NPDFGEN0006" && d.GetMessage().Contains("'Bogus'"));
+    }
+
+    [Fact]
+    public void Unknown_applies_to_emits_NPDFGEN0006()
+    {
+        var json = """
+            {
+              "properties": [
+                { "name": "color", "id": "Color", "type": "Color", "default": "black", "inherit": true, "applies_to": "Everyone", "computed": "AbsoluteColor" }
+              ]
+            }
+            """;
+        var diagnostics = RunGenerator(json);
+        Assert.Contains(diagnostics, d => d.Id == "NPDFGEN0006" && d.GetMessage().Contains("'Everyone'"));
+    }
+
+    [Fact]
+    public void Unknown_computed_emits_NPDFGEN0006()
+    {
+        var json = """
+            {
+              "properties": [
+                { "name": "color", "id": "Color", "type": "Color", "default": "black", "inherit": true, "applies_to": "All", "computed": "Magic" }
+              ]
+            }
+            """;
+        var diagnostics = RunGenerator(json);
+        Assert.Contains(diagnostics, d => d.Id == "NPDFGEN0006" && d.GetMessage().Contains("'Magic'"));
+    }
+
+    // ------------------------------------------------------------
+    // Edge cases
+    // ------------------------------------------------------------
+
+    [Fact]
+    public void Empty_properties_array_still_emits_valid_compilable_source()
+    {
+        // An empty properties array is degenerate but valid — generator should produce a
+        // PropertyId enum with no values + a Count=0 metadata table. The output must still
+        // compile so projects can stage incremental property additions.
+        var json = "{ \"properties\": [] }";
+        var (diagnostics, sources) = RunGeneratorWithOutput(json);
+        Assert.Empty(diagnostics);
+        Assert.Single(sources);
+        Assert.Contains("PropertyId", sources[0]);
+        Assert.Contains("Count = 0", sources[0]);
+
+        AssertGeneratedSourceCompiles(sources[0]);
+    }
+
+    [Fact]
+    public void Generated_source_for_valid_input_compiles_against_supporting_types()
+    {
+        // The strongest test: the generator output must compile when paired with the
+        // hand-written supporting types (PropertyType, AppliesTo, ComputedValueKind,
+        // PropertyMeta). Catches mismatches between the generator's emitted symbols and
+        // the API surface of the hand-written types.
+        var json = """
+            {
+              "properties": [
+                { "name": "color", "id": "Color", "type": "Color", "default": "black", "inherit": true, "applies_to": "All", "computed": "AbsoluteColor" },
+                { "name": "font-size", "id": "FontSize", "type": "FontSize", "default": "medium", "inherit": true, "applies_to": "All", "computed": "AbsoluteLength" },
+                { "name": "letter-spacing", "id": "LetterSpacing", "type": "TextSpacing", "default": "normal", "inherit": true, "applies_to": "All", "computed": "AbsoluteLength" },
+                { "name": "max-width", "id": "MaxWidth", "type": "MaxSize", "default": "none", "inherit": false, "applies_to": "BlockOrInlineOrReplaced", "computed": "Specified" },
+                { "name": "align-items", "id": "AlignItems", "type": "Keyword", "default": "normal", "inherit": false, "applies_to": "FlexContainers", "computed": "Specified" }
+              ]
+            }
+            """;
+        var (diagnostics, sources) = RunGeneratorWithOutput(json);
+        Assert.Empty(diagnostics);
+        Assert.Single(sources);
+        AssertGeneratedSourceCompiles(sources[0]);
+    }
+
+    // ------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------
+
+    /// <summary>
+    /// Builds a compilation containing the generated source plus minimal stubs of the
+    /// supporting types (<c>PropertyType</c>, <c>AppliesTo</c>, <c>ComputedValueKind</c>,
+    /// <c>PropertyMeta</c>) and asserts the compilation has no errors. Catches generator
+    /// output that names symbols not present on the hand-written types.
+    /// </summary>
+    private static void AssertGeneratedSourceCompiles(string generatedSource)
+    {
+        const string supportingTypes = """
+            namespace NetPdf.Css.Properties;
+
+            internal enum PropertyType : byte
+            {
+                Unknown, Color, Length, LengthPercentage, LengthPercentageAuto,
+                Number, Integer, Percentage, Keyword, String, Url,
+                Time, Angle, Resolution, FontFamilyList, FontWeight,
+                LineWidth, FontSize, LineHeight, Content, VerticalAlign, FlexBasis,
+                TextSpacing, MaxSize, Custom,
+            }
+
+            internal enum AppliesTo : byte
+            {
+                Unknown, All, BlockOrInlineOrReplaced, Positioned, BlockOnly, InlineOnly,
+                ListItem, TableElements, ReplacedOnly, FlexItems, GridItems,
+                FlexContainers, GridContainers,
+            }
+
+            internal enum ComputedValueKind : byte
+            {
+                Specified, AbsoluteColor, AbsoluteLength, ResolvedNumber, ResolvedKeyword, Custom,
+            }
+
+            internal readonly record struct PropertyMeta(
+                PropertyId Id,
+                string Name,
+                PropertyType Type,
+                string DefaultValue,
+                bool Inherits,
+                AppliesTo AppliesTo,
+                ComputedValueKind Computed);
+            """;
+
+        // Reference every assembly currently loaded into the test process. That set
+        // includes the full netcoreapp framework (System.Runtime, System.Collections,
+        // System.Collections.Frozen, System.Collections.Immutable, etc.) so the
+        // compilation can resolve any framework type the generated source touches.
+        // The IL3000 single-file warning is irrelevant for the xunit host process.
+#pragma warning disable IL3000
+        var refs = System.AppDomain.CurrentDomain.GetAssemblies()
+            .Where(a => !a.IsDynamic && !string.IsNullOrEmpty(a.Location))
+            .Select(a => (MetadataReference)MetadataReference.CreateFromFile(a.Location))
+            .ToList();
+#pragma warning restore IL3000
+
+        var compilation = CSharpCompilation.Create(
+            assemblyName: "GeneratedCompileCheck",
+            syntaxTrees: new[]
+            {
+                CSharpSyntaxTree.ParseText(generatedSource),
+                CSharpSyntaxTree.ParseText(supportingTypes),
+            },
+            references: refs,
+            options: new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
+
+        var errors = compilation.GetDiagnostics()
+            .Where(d => d.Severity == RoslynSeverity.Error)
+            .ToList();
+        Assert.True(errors.Count == 0,
+            "Generated source failed to compile:\n" +
+            string.Join("\n", errors.Select(d => d.ToString())));
     }
 
     // ------------------------------------------------------------

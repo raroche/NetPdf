@@ -5,10 +5,32 @@
     <AssemblyName>NetPdf.Css</AssemblyName>
     <Description>NetPdf internal: CSS tokenizer, parser, AST, selector compiler, cascade, computed values, custom properties, calc().</Description>
     <IsPackable>false</IsPackable>
+    <!--
+      Write source-generator output to disk so PropertyTables.g.cs is reviewable + diffable.
+      Lands under obj/{Configuration}/{TargetFramework}/generated/NetPdf.SourceGen/.
+    -->
+    <EmitCompilerGeneratedFiles>true</EmitCompilerGeneratedFiles>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\NetPdf.Text\NetPdf.Text.csproj" />
+    <!--
+      Source generator: read at compile time only — never shipped as a runtime dependency
+      and not loaded into the consumer's assembly graph.
+        - OutputItemType="Analyzer": Roslyn loads the project's output as a generator/analyzer.
+        - ReferenceOutputAssembly="false": don't add a managed reference to the netstandard2.0 dll.
+      The generator emits PropertyId / PropertyMetadata.Table / PropertyMetadata.NameToId from
+      properties.json (registered as an AdditionalFile below).
+    -->
+    <ProjectReference Include="..\NetPdf.SourceGen\NetPdf.SourceGen.csproj"
+                      OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The CSS property registry (single source of truth). The source generator picks
+         this up via context.AdditionalTextsProvider and emits typed accessors. -->
+    <AdditionalFiles Include="properties.json" />
   </ItemGroup>
 
   <ItemGroup>

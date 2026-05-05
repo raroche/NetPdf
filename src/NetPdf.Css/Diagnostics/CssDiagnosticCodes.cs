@@ -18,4 +18,12 @@ internal static class CssDiagnosticCodes
     /// <summary>A <c>:has()</c> selector was encountered. NetPdf does not evaluate
     /// <c>:has()</c> in v1 — the rule has no effect. Severity: Warning.</summary>
     public const string CssHasRenderingNotImplemented001 = "CSS-HAS-RENDERING-NOT-IMPLEMENTED-001";
+
+    /// <summary>An unrecognized at-rule was preserved in the AST but had no rendering
+    /// effect. Severity: Info.</summary>
+    public const string CssAtRuleUnknown001 = "CSS-AT-RULE-UNKNOWN-001";
+
+    /// <summary>An <c>@container</c> rule was encountered. NetPdf does not evaluate
+    /// container queries in v1; nested rules are skipped. Severity: Warning.</summary>
+    public const string CssContainerQueryUnsupported001 = "CSS-CONTAINER-QUERY-UNSUPPORTED-001";
 }

@@ -7,6 +7,7 @@ using System.Collections.Immutable;
 using AngleSharp.Dom;
 using NetPdf.Css.Diagnostics;
 using NetPdf.Css.Parser;
+using NetPdf.Css.Properties;
 using NetPdf.Css.Selectors;
 
 namespace NetPdf.Css.Cascade;
@@ -16,8 +17,8 @@ namespace NetPdf.Css.Cascade;
 /// against each element, and produces a <see cref="CascadeResult"/> mapping each element
 /// (and each pseudo-element it touches) to the matched declarations. Tasks 8–10 then
 /// resolve <c>var()</c> / <c>calc()</c> / typed values per property; Task 12+ consume the
-/// final ComputedStyle. Implements CSS Cascade L4 §6.4 ordering: origin → importance →
-/// layer → specificity → source order, encoded as a single comparable
+/// final ComputedStyle. Implements CSS Cascade L4 §6.4 ordering: origin → context →
+/// inline → layer → specificity → source order, encoded as a single comparable
 /// <see cref="CascadeKey"/> per matched declaration.
 /// </summary>
 /// <remarks>
@@ -39,10 +40,17 @@ namespace NetPdf.Css.Cascade;
 ///   order from stylesheet/rule/declaration indices) and add a <see cref="MatchedDeclaration"/>
 ///   to either the host element's <see cref="MatchedRuleSet"/> or the pseudo-element's
 ///   set (when <see cref="SelectorBytecode.PseudoElement"/> is non-null).</description></item>
-///   <item><description>Add inline styles (<c>style="…"</c> attributes) as virtual
-///   stylesheet entries appended after every author stylesheet, with specificity per
-///   CSS Cascade L4 §6.4.4 ("the inline style attribute's specificity is treated as if
-///   it were a single id selector").</description></item>
+///   <item><description>Add inline styles (<c>style="…"</c> attributes) as a virtual
+///   stylesheet appended after every author stylesheet, with
+///   <see cref="CascadeKey.IsInlineStyle"/> set so they win over selector-driven rules
+///   regardless of selector specificity per CSS Cascade L4 §6.4.3.</description></item>
+///   <item><description>Conditional grouping at-rules — <c>@media</c>, <c>@supports</c>,
+///   <c>@container</c> — gate their children by prelude evaluation:
+///   <c>@media</c> against the <see cref="CssMediaContext"/>; <c>@supports</c> against the
+///   property registry (basic evaluator — recognized properties pass, unknown skip with
+///   <c>CSS-AT-RULE-UNKNOWN-001</c>); <c>@container</c> always emits
+///   <c>CSS-CONTAINER-QUERY-UNSUPPORTED-001</c> and skips children (real container queries
+///   are roadmap v1.4).</description></item>
 ///   <item><description>Emit <c>CSS-HAS-RENDERING-NOT-IMPLEMENTED-001</c> once per
 ///   stylesheet whose any rule's compiled selectors set <see cref="SelectorList.ContainsHas"/>.
 ///   The matcher already returns false for such selectors (Task 6 review cycle 1's
@@ -63,28 +71,28 @@ internal static class CascadeResolver
         ArgumentNullException.ThrowIfNull(media);
 
         var compiledRules = new List<CompiledRule>();
-        var hasContainingStylesheets = new HashSet<int>(); // stylesheet orders that touched :has()
-        for (var sheetIdx = 0; sheetIdx < stylesheets.Length; sheetIdx++)
+        var hasContainingStylesheets = new HashSet<int>();
+        var maxSheetOrder = 0;
+        for (var i = 0; i < stylesheets.Length; i++)
         {
-            var sheet = stylesheets[sheetIdx];
+            var sheet = stylesheets[i];
             if (sheet.IsDisabled) continue;
             if (!media.Matches(sheet.MediaQuery)) continue;
-            CollectRules(sheet, sheetIdx, compiledRules, hasContainingStylesheets, diagnostics);
+            if (sheet.Order > maxSheetOrder) maxSheetOrder = sheet.Order;
+            CollectRules(sheet, compiledRules, hasContainingStylesheets, media, diagnostics);
         }
 
-        // Emit :has() unsupported-rendering diagnostic once per stylesheet that uses it.
-        // The matcher returns false for ContainsHas selectors (Task 6 cycle 1) — the
-        // diagnostic is what tells the user why their `article:has(h1)` rule didn't apply.
         if (diagnostics is not null)
         {
             foreach (var sheetIdx in hasContainingStylesheets)
             {
-                var sheet = stylesheets[sheetIdx];
+                // sheetIdx is sheet.Order, not array index — find the sheet to pin location.
+                var sheet = FindSheetByOrder(stylesheets, sheetIdx);
                 diagnostics.Emit(new CssDiagnostic(
                     CssDiagnosticCodes.CssHasRenderingNotImplemented001,
                     "A `:has()` selector was encountered. NetPdf does not evaluate `:has()` in v1 — the rule has no effect.",
                     CssDiagnosticSeverity.Warning,
-                    sheet.Location));
+                    sheet?.Location ?? CssSourceLocation.Unknown));
             }
         }
 
@@ -93,30 +101,41 @@ internal static class CascadeResolver
 
         WalkElement(document.DocumentElement, compiledRules, result);
 
-        // Inline styles: appended after every selector-driven match so they win on equal
-        // specificity per CSS Cascade L4 §6.4.4. Stylesheet-order index is set above the
-        // last real stylesheet so the source-order tie-breaker pulls them above
-        // identically-specific declarations.
-        var inlineStylesheetOrder = stylesheets.Length;
+        // Inline styles enter as a virtual stylesheet with stylesheet-order pinned ABOVE
+        // the maximum real stylesheet order so the source-order tie-break (when two
+        // declarations share origin/importance/inline-tier/layer/specificity) places them
+        // last. The IsInlineStyle flag is what makes them beat selectors of any
+        // specificity per L4 §6.4.3 — independent of the source-order pinning.
+        var inlineStylesheetOrder = maxSheetOrder + 1;
         WalkInlineStyles(document.DocumentElement, result, inlineStylesheetOrder);
 
         return result;
     }
 
-    /// <summary>Compile all style rules in <paramref name="sheet"/> (recursing through
-    /// <c>@media</c>/<c>@supports</c>/etc. grouping rules) and accumulate them into
-    /// <paramref name="output"/>. Compilation errors emit <c>CSS-PARSE-WARNING-001</c> and
-    /// the rule contributes nothing.</summary>
+    private static CssStylesheet? FindSheetByOrder(ImmutableArray<CssStylesheet> sheets, int order)
+    {
+        foreach (var s in sheets)
+        {
+            if (s.Order == order) return s;
+        }
+        return null;
+    }
+
+    /// <summary>Compile every rule in <paramref name="sheet"/> (recursing through
+    /// <c>@media</c>/<c>@supports</c>/<c>@layer</c>/<c>@container</c> grouping rules and
+    /// <c>@import</c>'s imported rules) and accumulate them into the output list.
+    /// Compilation errors emit <c>CSS-PARSE-WARNING-001</c> and the rule contributes nothing.
+    /// </summary>
     private static void CollectRules(
         CssStylesheet sheet,
-        int sheetOrder,
         List<CompiledRule> output,
         HashSet<int> hasContainingSheets,
+        CssMediaContext media,
         ICssDiagnosticsSink? diagnostics)
     {
         var ruleOrder = 0;
-        CollectFromRules(sheet.Rules, sheet.Origin, sheetOrder, ref ruleOrder,
-            output, hasContainingSheets, diagnostics);
+        CollectFromRules(sheet.Rules, sheet.Origin, sheet.Order, ref ruleOrder,
+            output, hasContainingSheets, media, diagnostics);
     }
 
     private static void CollectFromRules(
@@ -126,6 +145,7 @@ internal static class CascadeResolver
         ref int ruleOrder,
         List<CompiledRule> output,
         HashSet<int> hasContainingSheets,
+        CssMediaContext media,
         ICssDiagnosticsSink? diagnostics)
     {
         foreach (var rule in rules)
@@ -133,32 +153,337 @@ internal static class CascadeResolver
             switch (rule)
             {
                 case CssStyleRule sr:
-                    var compiled = CompileSelector(sr.Selector.RawText, diagnostics, sr.Location);
-                    if (compiled is not null && compiled.ContainsHas)
-                        hasContainingSheets.Add(sheetOrder);
-                    output.Add(new CompiledRule(
-                        Selectors: compiled,
-                        Declarations: sr.Declarations,
-                        Origin: origin,
-                        StylesheetOrder: sheetOrder,
-                        RuleOrder: ruleOrder++));
-                    break;
-                case CssAtRule ar when IsGroupingAtRule(ar.Name):
-                    CollectFromRules(ar.ChildRules, origin, sheetOrder, ref ruleOrder,
+                    CollectStyleRule(sr, origin, sheetOrder, ref ruleOrder,
                         output, hasContainingSheets, diagnostics);
                     break;
-                // Other at-rules (page, font-face, keyframes, import, …) don't contribute
-                // declarations to the regular element cascade; they have separate consumers
-                // (page-box layout for @page, font loader for @font-face, etc.). They're
-                // intentionally ignored here.
+                case CssAtRule ar:
+                    CollectAtRule(ar, origin, sheetOrder, ref ruleOrder,
+                        output, hasContainingSheets, media, diagnostics);
+                    break;
+                case CssImportRule import:
+                    CollectImportRule(import, origin, sheetOrder, ref ruleOrder,
+                        output, hasContainingSheets, media, diagnostics);
+                    break;
+                // Other rule kinds (page, font-face, …) don't contribute declarations to
+                // the regular element cascade; they have separate consumers.
             }
         }
     }
 
-    /// <summary>At-rule names whose body contains nested style rules that participate in
-    /// the cascade for elements.</summary>
-    private static bool IsGroupingAtRule(string name) =>
-        name is "media" or "supports" or "layer" or "container";
+    private static void CollectStyleRule(
+        CssStyleRule sr,
+        CssStylesheetOrigin origin,
+        int sheetOrder,
+        ref int ruleOrder,
+        List<CompiledRule> output,
+        HashSet<int> hasContainingSheets,
+        ICssDiagnosticsSink? diagnostics)
+    {
+        var compiled = CompileSelector(sr.Selector.RawText, diagnostics, sr.Location);
+        if (compiled is not null && compiled.ContainsHas)
+            hasContainingSheets.Add(sheetOrder);
+        output.Add(new CompiledRule(
+            Selectors: compiled,
+            Declarations: sr.Declarations,
+            Origin: origin,
+            StylesheetOrder: sheetOrder,
+            RuleOrder: ruleOrder++));
+    }
+
+    private static void CollectAtRule(
+        CssAtRule ar,
+        CssStylesheetOrigin origin,
+        int sheetOrder,
+        ref int ruleOrder,
+        List<CompiledRule> output,
+        HashSet<int> hasContainingSheets,
+        CssMediaContext media,
+        ICssDiagnosticsSink? diagnostics)
+    {
+        switch (ar.Name)
+        {
+            case "media":
+                // Per CSS Conditional L3 §3.2: nested @media children apply only when the
+                // prelude matches the current media context. Without this guard, screen-only
+                // rules would apply during print rendering.
+                if (!media.Matches(ar.Prelude)) return;
+                CollectFromRules(ar.ChildRules, origin, sheetOrder, ref ruleOrder,
+                    output, hasContainingSheets, media, diagnostics);
+                break;
+            case "supports":
+                // Per CSS Conditional L3 §4: nested @supports children apply only when the
+                // condition resolves true. v1 evaluator: registered-property check only.
+                if (!SupportsConditionMatches(ar.Prelude, diagnostics, ar.Location)) return;
+                CollectFromRules(ar.ChildRules, origin, sheetOrder, ref ruleOrder,
+                    output, hasContainingSheets, media, diagnostics);
+                break;
+            case "container":
+                // Container queries are roadmap v1.4 — emit the diagnostic and skip the body
+                // so the contained rules don't apply unconditionally (which would silently
+                // miscascade since we have no container layout pipeline).
+                diagnostics?.Emit(new CssDiagnostic(
+                    CssDiagnosticCodes.CssContainerQueryUnsupported001,
+                    "An `@container` rule was encountered. NetPdf does not evaluate container queries in v1 — contained rules are skipped.",
+                    CssDiagnosticSeverity.Warning,
+                    ar.Location));
+                break;
+            case "layer":
+                // @layer block-form: collect the children. v1 doesn't track layer order
+                // (AngleSharp.Css's @layer parsing is opaque — we'd need Task 3's pre-pass
+                // to assign layer indices). Children are added at LayerOrder = 0 which
+                // matches the unlayered tier — good enough for documents that use @layer
+                // for organization without relying on layer-precedence semantics.
+                if (ar.ChildRules.IsEmpty && !string.IsNullOrEmpty(ar.RawBody))
+                {
+                    EmitOpaqueAtRuleDiagnostic(ar, diagnostics);
+                }
+                else
+                {
+                    CollectFromRules(ar.ChildRules, origin, sheetOrder, ref ruleOrder,
+                        output, hasContainingSheets, media, diagnostics);
+                }
+                break;
+            default:
+                // Other at-rules (page, font-face, keyframes, charset, namespace, …) don't
+                // contribute declarations to the element cascade. If they have an opaque
+                // RawBody (the parser preserved the body but couldn't decompose it), surface
+                // CSS-AT-RULE-UNKNOWN-001 so the user knows their rule was preserved-not-
+                // applied. Otherwise these are silently ignored — they have separate consumers.
+                if (ar.ChildRules.IsEmpty && ar.Declarations.IsEmpty
+                    && !string.IsNullOrEmpty(ar.RawBody)
+                    && !IsKnownDeclarationBearingAtRule(ar.Name))
+                {
+                    EmitOpaqueAtRuleDiagnostic(ar, diagnostics);
+                }
+                break;
+        }
+    }
+
+    /// <summary>Walk an <c>@import</c>'s already-resolved <see cref="CssImportRule.ImportedRules"/>
+    /// at the import's cascade position. The imported rules' media + supports + layer
+    /// metadata is honored: the imported sheet is collected only when its media query
+    /// matches the cascade media context (same evaluator as top-level stylesheets).
+    /// </summary>
+    /// <remarks>
+    /// In v1 <see cref="CssImportRule.ImportedRules"/> is always empty because
+    /// <c>HtmlPdfOptions.ResourceLoader</c> is disabled at the host level (Task 1) — no
+    /// imports are actually fetched. This branch becomes live once Phase 5 wires resource
+    /// loading. Architecturally correct now so the wireup doesn't have to revisit the cascade.
+    /// </remarks>
+    private static void CollectImportRule(
+        CssImportRule import,
+        CssStylesheetOrigin origin,
+        int sheetOrder,
+        ref int ruleOrder,
+        List<CompiledRule> output,
+        HashSet<int> hasContainingSheets,
+        CssMediaContext media,
+        ICssDiagnosticsSink? diagnostics)
+    {
+        if (import.ImportedRules.IsEmpty) return;
+        if (!media.Matches(import.MediaQuery)) return;
+        if (import.SupportsCondition is { } supports
+            && !SupportsConditionMatches(supports, diagnostics, import.Location))
+        {
+            return;
+        }
+        CollectFromRules(import.ImportedRules, origin, sheetOrder, ref ruleOrder,
+            output, hasContainingSheets, media, diagnostics);
+    }
+
+    /// <summary>
+    /// v1 <c>@supports</c> evaluator — checks the condition's <c>(property: value)</c> form
+    /// against the property registry. Registered properties resolve true (broad approximation
+    /// — we don't validate the value against the property's grammar). Unknown properties
+    /// resolve false. Boolean compound conditions (<c>not X</c>, <c>X and Y</c>, <c>X or Y</c>)
+    /// recurse. Anything more elaborate (e.g., <c>selector(...)</c>, <c>font-tech(...)</c>,
+    /// <c>font-format(...)</c>) is treated as unsupported (returns false) with a diagnostic.
+    /// </summary>
+    /// <remarks>
+    /// Per CSS Conditional L3 §4.1, <c>@supports</c> conditions are a recursive grammar
+    /// involving negation, conjunction, disjunction, and a leaf <c>(property: value)</c>
+    /// declaration check. This v1 implementation handles the common shapes; full
+    /// declaration-grammar evaluation is post-v1 work.
+    /// </remarks>
+    private static bool SupportsConditionMatches(string condition, ICssDiagnosticsSink? diagnostics, CssSourceLocation location)
+    {
+        var trimmed = (condition ?? string.Empty).Trim();
+        if (string.IsNullOrEmpty(trimmed))
+        {
+            // An empty supports condition is malformed; skip the block.
+            diagnostics?.Emit(new CssDiagnostic(
+                CssDiagnosticCodes.CssAtRuleUnknown001,
+                "@supports rule with empty condition — children skipped.",
+                CssDiagnosticSeverity.Info, location));
+            return false;
+        }
+
+        try
+        {
+            return EvaluateSupports(trimmed);
+        }
+        catch
+        {
+            // Conservative: any parse failure → unsupported, skip children.
+            diagnostics?.Emit(new CssDiagnostic(
+                CssDiagnosticCodes.CssAtRuleUnknown001,
+                $"@supports condition \"{trimmed}\" could not be evaluated — children skipped.",
+                CssDiagnosticSeverity.Info, location));
+            return false;
+        }
+    }
+
+    private static bool EvaluateSupports(string s)
+    {
+        var p = new SupportsParser(s);
+        var result = p.ParseExpression();
+        p.SkipWhitespace();
+        if (!p.IsEnd) throw new FormatException("trailing content after @supports condition");
+        return result;
+    }
+
+    /// <summary>Tiny recursive-descent evaluator over the @supports condition grammar.
+    /// Implements <c>not</c>, <c>and</c>, <c>or</c>, parens, and the leaf
+    /// <c>(property: value)</c> form. Other forms (<c>selector()</c>, <c>font-tech()</c>)
+    /// throw, which the caller treats as "unsupported".</summary>
+    private ref struct SupportsParser
+    {
+        private readonly string _text;
+        private int _pos;
+
+        public SupportsParser(string text) { _text = text; _pos = 0; }
+        public readonly bool IsEnd => _pos >= _text.Length;
+        public void SkipWhitespace()
+        {
+            while (_pos < _text.Length && char.IsWhiteSpace(_text[_pos])) _pos++;
+        }
+        private char Peek() => _text[_pos];
+
+        public bool ParseExpression()
+        {
+            var left = ParseUnary();
+            while (true)
+            {
+                SkipWhitespace();
+                if (TryReadKeyword("and"))
+                {
+                    SkipWhitespace();
+                    var right = ParseUnary();
+                    left = left && right;
+                }
+                else if (TryReadKeyword("or"))
+                {
+                    SkipWhitespace();
+                    var right = ParseUnary();
+                    left = left || right;
+                }
+                else break;
+            }
+            return left;
+        }
+
+        private bool ParseUnary()
+        {
+            SkipWhitespace();
+            if (TryReadKeyword("not"))
+            {
+                SkipWhitespace();
+                return !ParseUnary();
+            }
+            return ParsePrimary();
+        }
+
+        private bool ParsePrimary()
+        {
+            SkipWhitespace();
+            if (IsEnd || Peek() != '(') throw new FormatException("expected '('");
+            _pos++; // consume (
+            // The inner is either another expression or a `property: value` declaration.
+            // Try the declaration form first by scanning for ':' before the matching ')'.
+            var inner = ReadBalancedToCloseParen();
+            // If inner has the shape "<ident>:<value>", treat as a declaration check.
+            // Otherwise, recurse as a sub-expression (for grouping / boolean compound).
+            var colon = inner.IndexOf(':');
+            if (colon > 0 && IsIdentifierLike(inner.AsSpan(0, colon)))
+            {
+                var prop = inner[..colon].Trim();
+                // Value is checked by spec but our v1 simplification: presence of a
+                // registered property name is enough.
+                return PropertyMetadata.NameToId.ContainsKey(prop);
+            }
+            // Sub-expression — re-evaluate.
+            var sub = new SupportsParser(inner);
+            var r = sub.ParseExpression();
+            sub.SkipWhitespace();
+            if (!sub.IsEnd) throw new FormatException("trailing content in @supports sub-expression");
+            return r;
+        }
+
+        private string ReadBalancedToCloseParen()
+        {
+            var start = _pos;
+            int depth = 1;
+            while (_pos < _text.Length)
+            {
+                var c = _text[_pos];
+                if (c == '(') depth++;
+                else if (c == ')')
+                {
+                    depth--;
+                    if (depth == 0)
+                    {
+                        var inner = _text[start.._pos];
+                        _pos++; // consume )
+                        return inner;
+                    }
+                }
+                _pos++;
+            }
+            throw new FormatException("unterminated @supports parenthesis");
+        }
+
+        private bool TryReadKeyword(string keyword)
+        {
+            if (_pos + keyword.Length > _text.Length) return false;
+            for (var i = 0; i < keyword.Length; i++)
+            {
+                if (char.ToLowerInvariant(_text[_pos + i]) != keyword[i]) return false;
+            }
+            // Followed by whitespace, paren, or end.
+            var next = _pos + keyword.Length;
+            if (next < _text.Length)
+            {
+                var c = _text[next];
+                if (!char.IsWhiteSpace(c) && c != '(' && c != ')') return false;
+            }
+            _pos += keyword.Length;
+            return true;
+        }
+
+        private static bool IsIdentifierLike(ReadOnlySpan<char> s)
+        {
+            if (s.IsEmpty) return false;
+            foreach (var c in s)
+            {
+                if (char.IsWhiteSpace(c) || c == '(' || c == ')') return false;
+            }
+            return true;
+        }
+    }
+
+    private static void EmitOpaqueAtRuleDiagnostic(CssAtRule ar, ICssDiagnosticsSink? diagnostics)
+    {
+        diagnostics?.Emit(new CssDiagnostic(
+            CssDiagnosticCodes.CssAtRuleUnknown001,
+            $"@{ar.Name} rule body could not be decomposed; nested rules were not applied to the cascade.",
+            CssDiagnosticSeverity.Info,
+            ar.Location));
+    }
+
+    /// <summary>At-rule names whose body holds declarations (not nested style rules) — these
+    /// are intentionally skipped at the cascade level, not flagged as opaque.</summary>
+    private static bool IsKnownDeclarationBearingAtRule(string name) =>
+        name is "page" or "font-face" or "counter-style" or "property" or "color-profile";
 
     private static SelectorList? CompileSelector(string raw, ICssDiagnosticsSink? diagnostics, CssSourceLocation loc)
     {
@@ -189,15 +514,10 @@ internal static class CascadeResolver
 
     private static void ApplyRulesToElement(IElement element, List<CompiledRule> rules, CascadeResult result)
     {
-        // Build the per-element ancestor + self bloom. A typical selector chain has at most
-        // 4-5 compounds, so for an element at depth N this is N tokens × ~3 (tag + classes +
-        // id) = O(small constant). The bloom is reused across every selector pre-filter
-        // for this element.
         var bloom = BuildElementBloom(element);
-
         foreach (var rule in rules)
         {
-            if (rule.Selectors is null) continue; // failed-compile rule
+            if (rule.Selectors is null) continue;
             for (var altIdx = 0; altIdx < rule.Selectors.Alternatives.Length; altIdx++)
             {
                 var alt = rule.Selectors.Alternatives[altIdx];
@@ -211,8 +531,6 @@ internal static class CascadeResolver
     private static SelectorBloomFilter BuildElementBloom(IElement element)
     {
         var bloom = default(SelectorBloomFilter);
-        // The candidate itself + every ancestor contributes its tokens — the candidate is
-        // the key compound's anchor; ancestors satisfy descendant/child combinators.
         var cursor = element;
         while (cursor is not null)
         {
@@ -260,19 +578,20 @@ internal static class CascadeResolver
             var key = new CascadeKey(
                 origin: rule.Origin,
                 isImportant: decl.IsImportant,
-                layerOrder: 0, // v1: layers wired but unused; @layer parsing is opaque today
+                layerOrder: 0,
                 specificity: alt.Specificity,
                 stylesheetOrder: rule.StylesheetOrder,
                 ruleOrder: rule.RuleOrder,
-                declarationOrder: i);
+                declarationOrder: i,
+                isInlineStyle: false);
             target.Add(new MatchedDeclaration(decl, key));
         }
     }
 
-    /// <summary>Inline-style specificity per CSS Cascade L4 §6.4.4: treated as if the
-    /// element had a single id selector — <c>(1, 0, 0)</c>. Their stylesheet-order is
-    /// pinned just above all real stylesheets so the source-order tie-breaker resolves
-    /// them above identically-specific selector matches.</summary>
+    /// <summary>Per CSS Cascade L4 §6.4.4 — kept here for documentation; inline styles
+    /// no longer rely on a specificity sentinel because <see cref="CascadeKey.IsInlineStyle"/>
+    /// places them in their own cascade tier above all selector-driven rules in the same
+    /// origin/importance bucket per L4 §6.4.3.</summary>
     private static readonly Specificity InlineStyleSpecificity = new(1, 0, 0);
 
     private static void WalkInlineStyles(IElement element, CascadeResult result, int inlineStylesheetOrder)
@@ -285,9 +604,6 @@ internal static class CascadeResolver
         var styleAttr = element.GetAttribute("style");
         if (!string.IsNullOrEmpty(styleAttr))
         {
-            // Use AngleSharp.Css's ElementCssInlineStyleExtensions.GetStyle() — preserves
-            // the same shorthand expansion as <style> blocks. Available when WithCss() is
-            // wired into the BrowsingContext (which our HtmlParsingHost does).
             var anglesharpStyle = AngleSharp.Css.Dom.ElementCssInlineStyleExtensions.GetStyle(element);
             if (anglesharpStyle is not null)
             {
@@ -305,7 +621,8 @@ internal static class CascadeResolver
                             specificity: InlineStyleSpecificity,
                             stylesheetOrder: inlineStylesheetOrder,
                             ruleOrder: ruleOrder,
-                            declarationOrder: i);
+                            declarationOrder: i,
+                            isInlineStyle: true);
                         target.Add(new MatchedDeclaration(decl, key));
                     }
                     ruleOrder++;

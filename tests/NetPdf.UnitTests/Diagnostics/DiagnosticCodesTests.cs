@@ -115,6 +115,46 @@ public sealed class DiagnosticCodesTests
             NetPdf.Css.Diagnostics.CssDiagnosticCodes.CssParseWarning001);
         Assert.Equal(DiagnosticCodes.CssHasRenderingNotImplemented001,
             NetPdf.Css.Diagnostics.CssDiagnosticCodes.CssHasRenderingNotImplemented001);
+        Assert.Equal(DiagnosticCodes.CssAtRuleUnknown001,
+            NetPdf.Css.Diagnostics.CssDiagnosticCodes.CssAtRuleUnknown001);
+        Assert.Equal(DiagnosticCodes.CssContainerQueryUnsupported001,
+            NetPdf.Css.Diagnostics.CssDiagnosticCodes.CssContainerQueryUnsupported001);
+    }
+
+    [Fact]
+    public void Css_at_rule_unknown_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(
+            registry,
+            @"\|\s*`?(CSS-AT-RULE-UNKNOWN-001)`?\s*\|\s*(\w+)\s*\|");
+        Assert.True(match.Success, "CSS-AT-RULE-UNKNOWN-001 row not found in docs/diagnostics-codes.md");
+        Assert.Equal(DiagnosticCodes.CssAtRuleUnknown001, match.Groups[1].Value);
+        Assert.Equal("Info", match.Groups[2].Value);
+    }
+
+    [Fact]
+    public void Css_at_rule_unknown_001_constant_value_is_stable()
+    {
+        Assert.Equal("CSS-AT-RULE-UNKNOWN-001", DiagnosticCodes.CssAtRuleUnknown001);
+    }
+
+    [Fact]
+    public void Css_container_query_unsupported_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(
+            registry,
+            @"\|\s*`?(CSS-CONTAINER-QUERY-UNSUPPORTED-001)`?\s*\|\s*(\w+)\s*\|");
+        Assert.True(match.Success, "CSS-CONTAINER-QUERY-UNSUPPORTED-001 row not found in docs/diagnostics-codes.md");
+        Assert.Equal(DiagnosticCodes.CssContainerQueryUnsupported001, match.Groups[1].Value);
+        Assert.Equal("Warning", match.Groups[2].Value);
+    }
+
+    [Fact]
+    public void Css_container_query_unsupported_001_constant_value_is_stable()
+    {
+        Assert.Equal("CSS-CONTAINER-QUERY-UNSUPPORTED-001", DiagnosticCodes.CssContainerQueryUnsupported001);
     }
 
     private static string LoadRegistry()

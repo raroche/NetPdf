@@ -45,5 +45,19 @@ internal static class DiagnosticCodes
     /// </summary>
     public const string CssHasRenderingNotImplemented001 = "CSS-HAS-RENDERING-NOT-IMPLEMENTED-001";
 
+    /// <summary>
+    /// An unrecognized at-rule was preserved in the AST but had no rendering effect — the
+    /// cascade resolver couldn't decompose its body or its conditions weren't evaluable.
+    /// Severity: <see cref="DiagnosticSeverity.Info"/>.
+    /// </summary>
+    public const string CssAtRuleUnknown001 = "CSS-AT-RULE-UNKNOWN-001";
+
+    /// <summary>
+    /// An <c>@container</c> rule was encountered. NetPdf does not evaluate container queries
+    /// in v1 — the contained rules are skipped. Roadmap v1.4 will add container-query
+    /// evaluation. Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string CssContainerQueryUnsupported001 = "CSS-CONTAINER-QUERY-UNSUPPORTED-001";
+
     // endregion CSS-*
 }

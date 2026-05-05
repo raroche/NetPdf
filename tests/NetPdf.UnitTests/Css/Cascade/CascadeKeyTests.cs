@@ -95,12 +95,79 @@ public sealed class CascadeKeyTests
     }
 
     [Fact]
-    public void Layer_order_breaks_inside_same_origin_importance()
+    public void Layer_order_among_named_layers_for_normal_later_wins()
     {
-        // Layered rules: higher layer (later-declared @layer) wins for normal.
-        var lowLayer = Make(layer: 0);
-        var highLayer = Make(layer: 5);
-        Assert.True(highLayer > lowLayer);
+        // Per CSS Cascade L4 §6.4.4: among named layers for NORMAL declarations, the
+        // later-declared layer (higher LayerOrder) wins.
+        var earlier = Make(layer: 1);
+        var later = Make(layer: 5);
+        Assert.True(later > earlier);
+    }
+
+    [Fact]
+    public void Unlayered_normal_beats_any_named_layer_normal()
+    {
+        // Per L4 §6.4.4: unlayered NORMAL declarations sit in an implicit final layer that
+        // comes AFTER all named layers — so unlayered beats layered for normal.
+        var unlayered = Make(layer: 0);
+        var layered = Make(layer: 99);
+        Assert.True(unlayered > layered);
+    }
+
+    [Fact]
+    public void Layer_order_among_named_layers_for_important_earlier_wins()
+    {
+        // Per L4 §6.4.4: for IMPORTANT declarations, layer order is REVERSED — the
+        // earlier-declared layer wins.
+        var earlier = Make(important: true, layer: 1);
+        var later = Make(important: true, layer: 5);
+        Assert.True(earlier > later);
+    }
+
+    [Fact]
+    public void Unlayered_important_loses_to_any_named_layer_important()
+    {
+        // Per L4 §6.4.4: for IMPORTANT, unlayered sits BEFORE all named layers (lowest
+        // precedence among importants of the same origin) — so any named layer beats
+        // unlayered for important.
+        var unlayered = Make(important: true, layer: 0);
+        var layered = Make(important: true, layer: 99);
+        Assert.True(layered > unlayered);
+    }
+
+    [Fact]
+    public void Inline_style_beats_selector_of_any_specificity_within_same_tier()
+    {
+        // Per L4 §6.4.3: element-attached (inline) styles beat selector-driven rules
+        // within the same origin+importance tier — regardless of selector specificity.
+        var inline = new CascadeKey(CssStylesheetOrigin.Author, false, 0,
+            new Specificity(0, 0, 0), 0, 0, 0, isInlineStyle: true);
+        var highSpecSelector = new CascadeKey(CssStylesheetOrigin.Author, false, 0,
+            new Specificity(99, 99, 99), 999, 999, 999, isInlineStyle: false);
+        Assert.True(inline > highSpecSelector);
+    }
+
+    [Fact]
+    public void Author_important_beats_inline_style_normal()
+    {
+        // !important always beats normal — inline-style flag doesn't override that.
+        var inlineNormal = new CascadeKey(CssStylesheetOrigin.Author, false, 0,
+            new Specificity(0, 0, 0), 0, 0, 0, isInlineStyle: true);
+        var authorImp = new CascadeKey(CssStylesheetOrigin.Author, true, 0,
+            new Specificity(0, 0, 1), 0, 0, 0, isInlineStyle: false);
+        Assert.True(authorImp > inlineNormal);
+    }
+
+    [Fact]
+    public void Source_order_works_past_2M_components_no_packing_overflow()
+    {
+        // The earlier bit-packed source order silently corrupted past 2^21 = 2,097,152.
+        // Tuple comparison handles any int values cleanly.
+        var early = Make(c: 1, sheet: 0, rule: 5_000_000, decl: 5_000_000);
+        var late = Make(c: 1, sheet: 0, rule: 5_000_000, decl: 5_000_001);
+        Assert.True(late > early);
+        var biggerSheet = Make(c: 1, sheet: 1, rule: 0, decl: 0);
+        Assert.True(biggerSheet > late);
     }
 
     [Fact]

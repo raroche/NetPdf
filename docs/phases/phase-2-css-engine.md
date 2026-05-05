@@ -39,14 +39,17 @@ Wire AngleSharp + AngleSharp.Css to parse arbitrary modern HTML+CSS into a DOM a
   - Full `var()` substitution with circular-reference detection (emit `CSS-VAR-CIRCULAR-001`).
   - Full `calc()` / `min()` / `max()` / `clamp()` / `abs()` / `sign()` family with mixed-unit handling (px / em / rem / % / vw / vh).
   - Property-specific resolvers for: lengths, colors (incl. `oklch`/`color-mix` / `lab` / etc.), font-family lists, gradients, backgrounds, transforms.
-- **`ComputedStyle` flat struct** (`src/NetPdf.Css/ComputedStyle.cs`):
-  - `[InlineArray(N)]`-backed property table for cache-friendly access.
-  - Each property is 8 bytes; total ~140 properties × 8 = ~1.1 KB per element. Pooled via `ArrayPool<byte>`.
-  - Custom properties (`--*`) live in a sparse side dictionary keyed per element.
+- **`ComputedStyle` storage layer** (`src/NetPdf.Css/ComputedValues/ComputedStyle.cs`):
+  - **Sealed class** (not the readonly struct originally sketched) so the cascade can share instances and pass to layout passes without struct-copy worries. Per-instance ≈ 24-byte object header + 8 × `PropertyMetadata.Count` slot bytes + bitmap bytes (~530 bytes for the current 63-property registry).
+  - `[InlineArray(PropertyMetadata.Count)]` slot storage + `[InlineArray]` ulong "is-set" bitmap so `Get`/`Set`/`IsSet`/`Unset` are O(1) cache-friendly index operations.
+  - Companion `ComputedSlot` 8-byte readonly struct holds each value with a tag byte + payload (color / float32-length / int32 / keyword / fixed-point percentage / side-table-index / composite). Per-property typed accessors (e.g., `style.Color` returning a typed `RgbaColor`) live in Tasks 9–10 atop the typed value tree.
+  - Custom properties (`--*`) in a lazily-allocated `Dictionary<string, ComputedSlot>` with ordinal (case-sensitive) comparer per CSS Custom Properties L1 §2; names validated for `--` prefix + identifier body.
+  - **Pooled** via `Rent`/`Dispose` against a process-wide bounded `ConcurrentBag<ComputedStyle>` (capped at 256 instances). On `Rent` the instance is reset (slots, bitmap, custom-property dict cleared); `Dispose` queues it back. ArrayPool was the original sketch but a class-instance pool fits the reference semantics and lets `[InlineArray]` keep its inline-storage promise.
 - **Property tables via source generator** (`src/NetPdf.SourceGen/CssPropertyGenerator.cs`):
-  - Reads `properties.json` (the single source of truth for all CSS properties: name, types, default, inheritance behavior, parser hook, computed-value hook).
-  - Emits a generated `PropertyId` enum, `PropertyMeta` table (`FrozenDictionary<string, PropertyId>`), and per-property parser/resolver stubs.
-  - Single command to add a new property: append to `properties.json`, rebuild.
+  - Reads `properties.json` at `src/NetPdf.Css/properties.json` — the single source of truth for every CSS property the cascade knows about. Schema fields (all REQUIRED, validated by the generator with `NPDFGEN0005`): `name` (CSS property name), `id` (PascalCase enum identifier), `type` (`PropertyType` value name), `default` (initial value text per spec), `inherit` (per spec), `applies_to` (`AppliesTo` value name), `computed` (`ComputedValueKind` value name).
+  - Emits a generated `PropertyId : ushort` enum (one value per property, doubles as `Table` index), `PropertyMetadata.Table` (`ImmutableArray<PropertyMeta>` so consumers cannot mutate entries), `PropertyMetadata.Count`, and `PropertyMetadata.NameToId` (`FrozenDictionary<string, PropertyId>` with case-insensitive lookup, lazily built).
+  - **Task 4 scope** is the `PropertyId` enum + `PropertyMetadata` table + `NameToId` lookup. **Per-property typed accessors** (e.g., `style.Color`, `style.MarginTop`) are part of **Task 5**, where they live as instance methods on the `[InlineArray]`-backed `ComputedStyle` struct and call into per-property parser hooks. Parser/computed-value hooks themselves are introduced incrementally in Tasks 9–10 alongside the typed value tree.
+  - Single command to add a new property: append to `properties.json`, rebuild. The generator emits `NPDFGEN0001`–`NPDFGEN0005` diagnostics on empty/malformed JSON, missing required fields, duplicate names/ids, and invalid C# identifiers — build breaks rather than silently emitting wrong code.
 
 ### `NetPdf.Layout.Boxes` — box generation
 
@@ -162,9 +165,11 @@ Keeps AngleSharp.Css unmodified; we extend at the edges.
 
 The source generator emits:
 - `enum PropertyId : ushort { ... }`
-- `static FrozenDictionary<string, PropertyId> PropertyNameToId` (built at startup, O(1) lookup).
-- `static PropertyMeta[] PropertyMetadata` indexed by `PropertyId`.
-- Per-property typed accessor methods on `ComputedStyle`.
+- `PropertyMetadata.NameToId` — `FrozenDictionary<string, PropertyId>` (built once at type-init, case-insensitive O(1) lookup).
+- `PropertyMetadata.Table` — `ImmutableArray<PropertyMeta>` indexed by `(int)PropertyId`. Returned as `ImmutableArray<T>` so consumers can't mutate entries.
+- `PropertyMetadata.Count` — total registered properties.
+
+Per-property typed accessor methods on `ComputedStyle` are introduced in **Task 5**, not here. Task 4 ships the registry; Task 5 wires the `[InlineArray]`-backed value type that exposes `style.Color`/`style.MarginTop`/etc. accessors. Per-property parser/computed-value hooks themselves come in Tasks 9–10 alongside the typed value tree.
 
 ### `ComputedStyle` access pattern
 ```csharp

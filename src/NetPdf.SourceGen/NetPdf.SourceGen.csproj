@@ -18,6 +18,26 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <!--
+    Override the inherited PublishAot global property. When a parent project runs
+    `dotnet publish -p:PublishAot=true`, MSBuild propagates the flag through every
+    transitive ProjectReference — including this analyzer one. PublishAot+netstandard2.0
+    isn't a supported combination (NETSDK1207 fires at FrameworkReferenceResolution
+    targets line 120). A `<PropertyGroup>` override loses to the global property, so we
+    use an early `<Target>` that runs before the AOT-compatibility check to forcibly
+    clear the flag for this project only. The analyzer ships only as a compile-time DLL
+    (never in the runtime graph), so suppressing the AOT check is safe.
+  -->
+  <Target Name="_NetPdfSourceGenSuppressPublishAot"
+          BeforeTargets="ProcessFrameworkReferences;_CheckForUnsupportedAotFeatures">
+    <PropertyGroup>
+      <PublishAot>false</PublishAot>
+      <PublishTrimmed>false</PublishTrimmed>
+      <PublishReadyToRun>false</PublishReadyToRun>
+      <_IsPublishing>false</_IsPublishing>
+    </PropertyGroup>
+  </Target>
+
   <ItemGroup>
     <PackageReference Include="Microsoft.CodeAnalysis.CSharp" PrivateAssets="all" />
     <PackageReference Include="Microsoft.CodeAnalysis.Analyzers" PrivateAssets="all" />

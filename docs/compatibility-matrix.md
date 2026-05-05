@@ -117,7 +117,7 @@ Phase column shows the milestone in which the feature first ships.
 
 | Feature | Status | Phase | Notes |
 |---|---|---|---|
-| Custom properties (`--*`, `var()`) | ✅ | 2 | |
+| Custom properties (`--*`, `var()`) | ✅ | 2 | Substitution implements CSS Custom Properties L1 §3.5: lookup against the cascaded custom-property table (with parent-chain inheritance), recursive expansion, fallback (incl. empty fallback `var(--x,)` → empty string), Tarjan-SCC cycle invalidation (every cycle member is "invalid at computed value time" so external refs use the var()'s fallback), depth + output-length safety limits (32 frames / 1 MiB) emitting `CSS-VAR-CIRCULAR-001`. **v1 known gap:** `var()`-bearing shorthand declarations rely on AngleSharp.Css's parse-time longhand expansion, which works for the common case where each longhand gets a distinct portion of the shorthand value (e.g., `padding: var(--w) var(--w) var(--w) var(--c)` splits cleanly per longhand) but is incorrect for opaque-substitution cases like `border: var(--bundle)` where the var() resolves to multiple tokens that need re-parsing. CSS Custom Properties L1 §3 calls these "pending substitution values" and requires shorthand expansion to happen AFTER var() resolution. Tasks 9–10 typed-value parsers will close this gap when they re-expand shorthands. |
 | `calc()` / `min()` / `max()` / `clamp()` / `abs()` / `sign()` | ✅ | 2 | |
 | CSS Nesting (`& { ... }`) | ✅ | 2 | |
 | `@layer` cascade layers — block-form parsing | 🧪 | 2 | AngleSharp.Css drops `@layer name { ... }` entirely. Task 3's pre-pass captures it as a `CssAtRule { Name = "layer", RawBody = "..." }`. **v1 known gap:** the cascade does not yet re-parse `RawBody` into nested style rules, so block-form `@layer` bodies emit `CSS-AT-RULE-UNKNOWN-001` and don't apply. The cascade infrastructure for layer ordering IS wired (`LayerRegistry` + `CascadeKey.LayerOrder` honor §6.4.4 normal-vs-important reversal), so when the body is decomposed (synthetic AST today, future Task 3 enhancement for real CSS), layer precedence resolves correctly. |
@@ -197,4 +197,4 @@ See [docs/design/determinism.md](design/determinism.md) for the full contract an
 
 ---
 
-Last updated: 2026-05-05 (Phase 2 Task 7 review cycle 2 — clarified `@layer` block-form gap: cascade infrastructure (`LayerRegistry`, layer-aware `CascadeKey`) is in place + verified by tests, but block-form bodies need Task 3 re-parse to actually apply. Statement-form preludes work end-to-end today.).
+Last updated: 2026-05-05 (Phase 2 Task 8 review cycle 1 — `var()` substitution row expanded with implementation details + known gap on var()-bearing shorthands. Cycle invalidation, empty-fallback semantics, depth + output safety limits all wired and tested.).

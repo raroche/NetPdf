@@ -31,32 +31,66 @@ namespace NetPdf.Css.Cascade;
 /// </remarks>
 internal sealed class CustomPropertyTable
 {
-    public static CustomPropertyTable Empty { get; } = new(parent: null);
+    /// <summary>Sentinel root table — immutable so callers can use it as a no-op parent
+    /// without risk of accidentally polluting global state via <see cref="Set"/>. The
+    /// constructor below pins <see cref="_isImmutable"/> true ONLY for this instance.</summary>
+    public static CustomPropertyTable Empty { get; } = new(parent: null, isImmutable: true);
 
     private readonly CustomPropertyTable? _parent;
     private readonly Dictionary<string, string> _own = new(StringComparer.Ordinal);
+    private readonly HashSet<string> _invalid = new(StringComparer.Ordinal);
+    private readonly bool _isImmutable;
 
-    public CustomPropertyTable(CustomPropertyTable? parent)
+    public CustomPropertyTable(CustomPropertyTable? parent) : this(parent, isImmutable: false) { }
+
+    private CustomPropertyTable(CustomPropertyTable? parent, bool isImmutable)
     {
         _parent = parent;
+        _isImmutable = isImmutable;
     }
 
     /// <summary>Set a custom-property value on this layer. Overrides any inherited value
     /// for the same name. Names must start with <c>--</c>; this is enforced by the
     /// caller (cascade resolver) since it sources names from already-validated
     /// <see cref="Parser.CssDeclaration.Property"/> strings.</summary>
+    /// <exception cref="InvalidOperationException">When invoked on
+    /// <see cref="Empty"/> — the singleton is immutable so callers can use it as a no-op
+    /// parent without globally polluting future resolutions.</exception>
     public void Set(string name, string value)
     {
         ArgumentNullException.ThrowIfNull(name);
         ArgumentNullException.ThrowIfNull(value);
+        if (_isImmutable)
+            throw new InvalidOperationException(
+                "CustomPropertyTable.Empty is immutable. Construct a new table with Empty as parent if you need a fresh layer.");
         _own[name] = value;
+        _invalid.Remove(name);
+    }
+
+    /// <summary>Mark a name as "invalid at computed value time" per CSS Custom
+    /// Properties L1 §3.5 — used by the cycle-detection pass to flag every member of a
+    /// dependency cycle. Subsequent <see cref="TryGetValue"/> calls return
+    /// <see langword="false"/> for invalid names so the consuming
+    /// <see cref="VarSubstitution"/> falls back to the referencing var()'s fallback.</summary>
+    public void MarkInvalid(string name)
+    {
+        ArgumentNullException.ThrowIfNull(name);
+        if (_isImmutable)
+            throw new InvalidOperationException("CustomPropertyTable.Empty is immutable.");
+        _invalid.Add(name);
     }
 
     /// <summary>Look up a custom-property value, walking own writes then the parent
     /// chain. Returns <see langword="false"/> when the name isn't defined anywhere
-    /// on this element or its ancestors.</summary>
+    /// on this element or its ancestors, OR when the name has been marked invalid via
+    /// <see cref="MarkInvalid"/>.</summary>
     public bool TryGetValue(string name, out string value)
     {
+        if (_invalid.Contains(name))
+        {
+            value = string.Empty;
+            return false;
+        }
         if (_own.TryGetValue(name, out var v))
         {
             value = v;
@@ -75,4 +109,19 @@ internal sealed class CustomPropertyTable
     /// <summary>Names set on this layer only — useful for tests + the var-resolver's
     /// "resolve own-layer writes first" pass.</summary>
     public IEnumerable<string> OwnNames => _own.Keys;
+
+    /// <summary>Walks the chain (own + every ancestor) yielding each layer's
+    /// <see cref="OwnNames"/> in turn. Used by the cycle-detection pre-pass to build
+    /// a per-element dependency graph over every reachable custom property.</summary>
+    public IEnumerable<string> AllReachableNames()
+    {
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        for (var cursor = this; cursor is not null; cursor = cursor._parent)
+        {
+            foreach (var name in cursor._own.Keys)
+            {
+                if (seen.Add(name)) yield return name;
+            }
+        }
+    }
 }

@@ -71,30 +71,45 @@ internal static class VarResolver
         var matched = cascade.TryGetStylesFor(element);
         // Build this element's effective custom-property table on top of the parent's
         // chain. Even when the element has no matched declarations, we still need a
-        // per-element table so children inherit through us correctly — using a fresh
-        // layer keeps the chain shape uniform without carrying empty sentinels.
+        // per-element table so children inherit through us correctly.
         var ownTable = new CustomPropertyTable(parentCustomProperties);
+        var hadCustomDecls = false;
         if (matched is not null)
         {
-            CollectOwnCustomProperties(matched, ownTable);
+            hadCustomDecls = CollectOwnCustomProperties(matched, ownTable);
+            // Pre-detect cycles so cycle members become invalid BEFORE substitution.
+            // Per CSS Custom Properties L1 §3.5: every member of a dependency cycle
+            // is "invalid at computed value time"; the earlier substitution-time guard
+            // only invalidated the chain that hit the cycle first.
+            CustomPropertyCycleDetector.DetectAndMarkInvalid(ownTable, diagnostics);
             ResolveOwnCustomPropertyValues(ownTable, diagnostics);
             EmitNonCustomDeclarations(matched, ownTable, element, result, diagnostics, isPseudo: false);
-        }
-        else
-        {
-            // Register an empty resolved set so the lookup contract is consistent
-            // (StyledElements only enumerates elements with actual resolved styles).
-            // Skipped intentionally — keeping behavior symmetric with CascadeResult.
+            // Rec 6: ensure elements that have ONLY custom-property declarations still
+            // surface a ResolvedRuleSet so callers can read the resolved table via
+            // result.TryGetStylesFor(element).CustomProperties. Without this, an element
+            // like `<div style="--brand: red">` (no other styles) would inherit correctly
+            // through the walk but be invisible to the post-resolve query API.
+            if (hadCustomDecls && result.TryGetStylesFor(element) is null)
+            {
+                result.StylesFor(element, ownTable);
+            }
         }
 
-        // Pseudo-element resolution — each (element, pseudo) bucket reuses the host's
-        // custom-property table.
+        // Pseudo-element resolution. Per CSS L1 §2: pseudo-elements have their own
+        // styles and CAN declare their own custom properties — those should layer ON
+        // TOP of the host's effective table for substitution within the pseudo's
+        // declarations. So `p::before { --primary: blue; content: var(--primary) }`
+        // sees ::before's --primary, not the host's.
         foreach (var pair in cascade.StyledPseudoElements)
         {
             if (!ReferenceEquals(pair.Element, element)) continue;
             var pseudoMatched = cascade.TryGetStylesForPseudo(pair.Element, pair.Pseudo);
             if (pseudoMatched is null) continue;
-            EmitNonCustomDeclarations(pseudoMatched, ownTable, element, result, diagnostics,
+            var pseudoTable = new CustomPropertyTable(ownTable);
+            CollectOwnCustomProperties(pseudoMatched, pseudoTable);
+            CustomPropertyCycleDetector.DetectAndMarkInvalid(pseudoTable, diagnostics);
+            ResolveOwnCustomPropertyValues(pseudoTable, diagnostics);
+            EmitNonCustomDeclarations(pseudoMatched, pseudoTable, element, result, diagnostics,
                 isPseudo: true, pseudoName: pair.Pseudo);
         }
 
@@ -106,24 +121,32 @@ internal static class VarResolver
 
     /// <summary>Walk <paramref name="matched"/>, find every winning custom-property
     /// declaration (one per name) and write its raw value into <paramref name="ownTable"/>
-    /// at the OWN layer. Var() in the value isn't resolved here — that's
+    /// at the OWN layer. Returns <see langword="true"/> when at least one custom-property
+    /// declaration was written so callers can decide whether to register an exposed
+    /// <see cref="ResolvedRuleSet"/>. Var() in the value isn't resolved here — that's
     /// <see cref="ResolveOwnCustomPropertyValues"/>'s job, which runs after every name is
     /// known so cross-references resolve correctly.</summary>
-    private static void CollectOwnCustomProperties(MatchedRuleSet matched, CustomPropertyTable ownTable)
+    private static bool CollectOwnCustomProperties(MatchedRuleSet matched, CustomPropertyTable ownTable)
     {
+        var any = false;
         foreach (var name in matched.Properties)
         {
             if (!IsCustomPropertyName(name)) continue;
             var winner = matched.GetWinner(name);
             if (winner is null) continue;
             ownTable.Set(name, winner.Declaration.Value.RawText ?? string.Empty);
+            any = true;
         }
+        return any;
     }
 
     /// <summary>Now that every own-layer custom-property value is in place, resolve any
     /// <c>var()</c> references inside those values. The substitution sees the FULL
     /// effective table (own + inherited) — so <c>--child: var(--parent)</c> resolves
-    /// against the inherited <c>--parent</c>.</summary>
+    /// against the inherited <c>--parent</c>. Names already marked invalid by the
+    /// cycle pre-pass are SKIPPED so their invalid state survives this pass — the
+    /// downstream <c>EmitNonCustomDeclarations</c> needs to see them as still invalid
+    /// so external references use the var()'s fallback per CSS Custom Properties L1 §3.5.</summary>
     private static void ResolveOwnCustomPropertyValues(
         CustomPropertyTable ownTable,
         ICssDiagnosticsSink? diagnostics)
@@ -132,7 +155,10 @@ internal static class VarResolver
         var names = new List<string>(ownTable.OwnNames);
         foreach (var name in names)
         {
-            ownTable.TryGetValue(name, out var raw);
+            // Invalid names: skip — TryGetValue returns false for them so their stored
+            // value is unreachable anyway. Re-Setting would clear the invalid flag,
+            // re-promoting cycle members to "valid (with garbage value)".
+            if (!ownTable.TryGetValue(name, out var raw)) continue;
             var resolved = VarSubstitution.Substitute(raw, ownTable, diagnostics);
             ownTable.Set(name, resolved);
         }

@@ -44,6 +44,19 @@ internal static class VarSubstitution
     /// no fallback. Tasks 9–10 typed-value parsers handle the <c>unset</c> keyword.</summary>
     public const string UnsetSentinel = "unset";
 
+    /// <summary>Maximum recursion depth before the substitution bails per the
+    /// "invalid at computed value time" rule (CSS Custom Properties L1). Bounded so a
+    /// pathological long chain (`--a → --b → --c → ... → --z`) doesn't blow the stack
+    /// or run unboundedly. Browsers use similar limits — Chromium bounds at ~32 frames.
+    /// </summary>
+    public const int MaxRecursionDepth = 32;
+
+    /// <summary>Maximum total expansion size (in chars) before the substitution bails.
+    /// Catches the exponential case: <c>--a: var(--b) var(--b); --b: var(--c) var(--c); …</c>
+    /// can produce 2^N output. 1 MiB is generous for any sane CSS but small enough to
+    /// fail fast on adversarial input.</summary>
+    public const int MaxOutputLength = 1024 * 1024;
+
     /// <summary>Substitute every <c>var(--name, fallback)</c> in <paramref name="rawValue"/>.
     /// Returns the substituted string. Emits <see cref="CssDiagnosticCodes.CssVarCircular001"/>
     /// to <paramref name="diagnostics"/> when a circular reference is detected.</summary>
@@ -56,20 +69,50 @@ internal static class VarSubstitution
     /// callers pass <see langword="null"/> for the top-level entry; recursive calls
     /// carry it through to detect cycles. Always-non-null when consumed inside, but
     /// the parameter is nullable so callers don't need to allocate the empty case.</param>
+    /// <param name="depth">Recursion-depth counter; bounded by
+    /// <see cref="MaxRecursionDepth"/>. Top-level callers pass 0; each recursive call
+    /// (substitution into a custom-property value or fallback) carries the same value
+    /// through (depth tracks the var() recursion, not the per-character scan).</param>
     public static string Substitute(
         string rawValue,
         CustomPropertyTable customProperties,
         ICssDiagnosticsSink? diagnostics = null,
         CssSourceLocation location = default,
-        HashSet<string>? visited = null)
+        HashSet<string>? visited = null,
+        int depth = 0)
     {
         if (string.IsNullOrEmpty(rawValue)) return rawValue ?? string.Empty;
         if (rawValue.IndexOf("var(", StringComparison.Ordinal) < 0) return rawValue;
+
+        // Recursion-depth guard. Catches non-cyclic chains that the visited-set guard
+        // misses (e.g., a long --a→--b→--c→…→--z chain isn't a cycle but still bounds
+        // exposure to runaway substitution). Browsers use similar limits.
+        if (depth >= MaxRecursionDepth)
+        {
+            diagnostics?.Emit(new CssDiagnostic(
+                CssDiagnosticCodes.CssVarCircular001,
+                $"var() substitution exceeded the maximum depth of {MaxRecursionDepth}. Resolved to unset.",
+                CssDiagnosticSeverity.Warning,
+                location));
+            return UnsetSentinel;
+        }
 
         var output = new StringBuilder(rawValue.Length);
         var pos = 0;
         while (pos < rawValue.Length)
         {
+            // Output-length guard. Catches the exponential expansion case where
+            // `--a: var(--b) var(--b); --b: var(--c) var(--c); …` doubles per level.
+            // Treat as "invalid at computed value time" → unset + diagnostic.
+            if (output.Length > MaxOutputLength)
+            {
+                diagnostics?.Emit(new CssDiagnostic(
+                    CssDiagnosticCodes.CssVarCircular001,
+                    $"var() substitution exceeded the maximum output size of {MaxOutputLength} chars. Resolved to unset.",
+                    CssDiagnosticSeverity.Warning,
+                    location));
+                return UnsetSentinel;
+            }
             var c = rawValue[pos];
             // Skip quoted-string contents so `content: "var(--x)"` isn't misparsed.
             if (c == '"' || c == '\'')
@@ -95,7 +138,7 @@ internal static class VarSubstitution
                     return output.ToString();
                 }
                 var body = rawValue[bodyStart..bodyEnd];
-                var resolved = ResolveVar(body, customProperties, diagnostics, location, visited);
+                var resolved = ResolveVar(body, customProperties, diagnostics, location, visited, depth + 1);
                 output.Append(resolved);
                 pos = bodyEnd + 1; // skip past `)`
                 continue;
@@ -115,7 +158,8 @@ internal static class VarSubstitution
         CustomPropertyTable customProperties,
         ICssDiagnosticsSink? diagnostics,
         CssSourceLocation location,
-        HashSet<string>? visited)
+        HashSet<string>? visited,
+        int depth)
     {
         // Split on the first paren-balanced, string-aware comma into name + fallback.
         var (nameRaw, fallbackRaw) = SplitOnTopLevelComma(body);
@@ -123,7 +167,7 @@ internal static class VarSubstitution
         if (string.IsNullOrEmpty(name) || !name.StartsWith("--", StringComparison.Ordinal))
         {
             // Malformed var() — treat as unset/fallback.
-            return ResolveFallback(fallbackRaw, customProperties, diagnostics, location, visited);
+            return ResolveFallback(fallbackRaw, customProperties, diagnostics, location, visited, depth);
         }
 
         // Circular-reference guard — if the name is already being resolved on the stack,
@@ -136,13 +180,15 @@ internal static class VarSubstitution
                 $"Circular var() reference detected at '{name}'. Resolved to fallback or unset.",
                 CssDiagnosticSeverity.Warning,
                 location));
-            return ResolveFallback(fallbackRaw, customProperties, diagnostics, location, visited);
+            return ResolveFallback(fallbackRaw, customProperties, diagnostics, location, visited, depth);
         }
 
         if (!customProperties.TryGetValue(name, out var value))
         {
-            // Name not declared on this element — fall back per spec.
-            return ResolveFallback(fallbackRaw, customProperties, diagnostics, location, visited);
+            // Name not declared on this element — fall back per spec. Note: also covers
+            // names marked invalid by the cycle-detection pre-pass (CustomPropertyTable
+            // returns false for invalid names so var() falls through to fallback).
+            return ResolveFallback(fallbackRaw, customProperties, diagnostics, location, visited, depth);
         }
 
         // The custom-property value itself may contain var() references — recurse with
@@ -150,21 +196,31 @@ internal static class VarSubstitution
         visitedSet = visitedSet is null
             ? new HashSet<string>(StringComparer.Ordinal) { name }
             : new HashSet<string>(visitedSet, StringComparer.Ordinal) { name };
-        return Substitute(value, customProperties, diagnostics, location, visitedSet);
+        return Substitute(value, customProperties, diagnostics, location, visitedSet, depth);
     }
 
+    /// <summary>Resolve a fallback per CSS Custom Properties L1 §3.5. Distinguishes
+    /// MISSING fallback (no comma in the var() — <c>var(--x)</c>) from EMPTY fallback
+    /// (comma present but nothing after — <c>var(--x,)</c>): the first becomes
+    /// <see cref="UnsetSentinel"/>; the second becomes the empty string. The earlier
+    /// implementation treated both as unset, which silently substituted authored empty
+    /// fallbacks (legitimately used to "remove" a property's value) with the unset keyword.</summary>
     private static string ResolveFallback(
         string? fallbackRaw,
         CustomPropertyTable customProperties,
         ICssDiagnosticsSink? diagnostics,
         CssSourceLocation location,
-        HashSet<string>? visited)
+        HashSet<string>? visited,
+        int depth)
     {
-        if (fallbackRaw is null) return UnsetSentinel;
+        if (fallbackRaw is null) return UnsetSentinel; // no comma at all
+        // Empty / whitespace-only fallback after the comma is intentional per spec —
+        // resolve to empty string so the surrounding declaration sees no extra tokens.
         var trimmed = fallbackRaw.Trim();
-        if (string.IsNullOrEmpty(trimmed)) return UnsetSentinel;
-        // Fallback may itself contain var() — recurse.
-        return Substitute(trimmed, customProperties, diagnostics, location, visited);
+        if (string.IsNullOrEmpty(trimmed)) return string.Empty;
+        // Fallback may itself contain var() — recurse with the same depth + visited set
+        // (fallbacks don't extend the chain, they're alternatives).
+        return Substitute(trimmed, customProperties, diagnostics, location, visited, depth);
     }
 
     /// <summary>Find the index of the closing <c>)</c> that matches the implicit opening

@@ -22,9 +22,26 @@
       The generator emits PropertyId / PropertyMetadata.Table / PropertyMetadata.NameToId from
       properties.json (registered as an AdditionalFile below).
     -->
+    <!--
+      The analyzer reference uses UndefineProperties="TargetFramework" so the consuming
+      project's TargetFramework (net10.0) is not propagated to the SourceGen build (which
+      targets netstandard2.0 because Roslyn analyzers must). Without it, `dotnet publish
+      -p:PublishAot=true` walks the SourceGen project and fails with NETSDK1207
+      ("AOT not supported for the target framework"). UndefineProperties is the
+      Microsoft-blessed pattern for analyzer ProjectReferences — it lets the publish
+      process see only the analyzer DLL, not the project's framework metadata.
+    -->
     <ProjectReference Include="..\NetPdf.SourceGen\NetPdf.SourceGen.csproj"
                       OutputItemType="Analyzer"
-                      ReferenceOutputAssembly="false" />
+                      ReferenceOutputAssembly="false">
+      <!-- Pin the SourceGen TargetFramework so the analyzer build/restore is invoked
+           against netstandard2.0 (Roslyn requirement) rather than inheriting net10.0
+           from the consuming project. Without this, `dotnet publish -p:PublishAot=true`
+           fails NETSDK1207 at restore time because PublishAot+netstandard2.0 isn't a
+           supported combination. SetTargetFramework is the Microsoft-recommended pattern
+           for netstandard2.0 analyzer ProjectReferences. -->
+      <SetTargetFramework>TargetFramework=netstandard2.0</SetTargetFramework>
+    </ProjectReference>
   </ItemGroup>
 
   <ItemGroup>

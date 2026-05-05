@@ -43,7 +43,8 @@ internal sealed class SelectorBytecode
         FrozenSet<string> requiredClasses,
         FrozenSet<string> requiredIds,
         bool containsHas,
-        string sourceText)
+        string sourceText,
+        string? pseudoElement = null)
     {
         Code = code;
         Symbols = symbols;
@@ -54,6 +55,7 @@ internal sealed class SelectorBytecode
         RequiredIds = requiredIds;
         ContainsHas = containsHas;
         SourceText = sourceText;
+        PseudoElement = pseudoElement;
     }
 
     /// <summary>The opcode + operand byte stream. Walk it via <see cref="OpenReader"/>.</summary>
@@ -93,6 +95,13 @@ internal sealed class SelectorBytecode
 
     /// <summary>The original (canonicalized) selector text for diagnostics + debugging.</summary>
     public string SourceText { get; }
+
+    /// <summary>The pseudo-element this selector targets (e.g., <c>"before"</c>, <c>"marker"</c>),
+    /// or <see langword="null"/> when none. Stored at compile time so Task 14's pseudo-element
+    /// materializer can read it directly without re-parsing <see cref="SourceText"/>. Per CSS
+    /// Selectors L4 §3.5, at most one pseudo-element per selector and it must be the rightmost
+    /// component of the rightmost compound — the compiler validates this.</summary>
+    public string? PseudoElement { get; }
 
     /// <summary>Allocate a forward reader over <see cref="Code"/>. Each
     /// <see cref="SelectorMatcher"/> evaluation calls <see cref="OpenReader"/> once per
@@ -147,6 +156,10 @@ internal sealed class SelectorBytecode
             _pos += 4;
             return value;
         }
+
+        /// <summary>Read a single byte operand. Used for the case-insensitivity flag on
+        /// attribute-comparison opcodes (<c>0</c> = case-sensitive, <c>1</c> = case-insensitive).</summary>
+        public byte ReadByte() => _owner.Code[_pos++];
 
         private ushort ReadUInt16()
         {

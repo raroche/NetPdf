@@ -24,12 +24,32 @@ fi
 ARTIFACTS_DIR="$REPO_ROOT/artifacts/aot-smoke"
 SMOKE_PROJ="$REPO_ROOT/tests/NetPdf.AotSmoke/NetPdf.AotSmoke.csproj"
 
+# Detect the host RID so AOT publish doesn't need cross-compile setup.
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64) HOST_RID="osx-arm64" ;;
+  Darwin-x86_64) HOST_RID="osx-x64" ;;
+  Linux-x86_64) HOST_RID="linux-x64" ;;
+  Linux-aarch64) HOST_RID="linux-arm64" ;;
+  *) echo "error: unsupported host platform $(uname -s)-$(uname -m)" >&2; exit 4 ;;
+esac
+
+echo "==> Restoring for ${HOST_RID} without PublishAot"
+# The smoke project transitively references NetPdf.SourceGen via the analyzer
+# ProjectReference in NetPdf.Css.csproj. If we set `-p:PublishAot=true` on the publish
+# command, MSBuild propagates that as a global property to every project in the restore
+# graph — including the netstandard2.0 SourceGen analyzer, which can't AOT-publish and
+# fails NETSDK1207 at restore. Splitting restore (no PublishAot, RID-aware) from publish
+# (--no-restore + PublishAot) keeps the analyzer happy while still producing an AOT binary.
+dotnet restore "$SMOKE_PROJ" -r "$HOST_RID" --nologo
+
 echo "==> Publishing AOT smoke binary"
 dotnet publish "$SMOKE_PROJ" \
   -c Release \
   -f net10.0 \
+  -r "$HOST_RID" \
   -p:PublishAot=true \
   -o "$ARTIFACTS_DIR" \
+  --no-restore \
   --nologo
 
 if [ "$(uname -s)" = "Linux" ] || [ "$(uname -s)" = "Darwin" ]; then

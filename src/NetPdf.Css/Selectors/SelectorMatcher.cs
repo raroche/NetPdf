@@ -62,11 +62,25 @@ internal static class SelectorMatcher
     }
 
     /// <summary>Match a single compiled selector against an element.</summary>
+    /// <remarks>
+    /// <para>
+    /// <b>The <c>:has()</c> guard.</b> When <see cref="SelectorBytecode.ContainsHas"/> is
+    /// <see langword="true"/> at the top level, the matcher returns <see langword="false"/>
+    /// without evaluating the bytecode. The naïve alternative — running the matcher and letting
+    /// <see cref="SelectorOpcode.MatchHas"/> return <c>false</c> — silently miscascades any
+    /// selector that wraps <c>:has()</c> in negation context: <c>:not(:has(.foo))</c> would
+    /// invert the false result and match every element, applying CSS rules nowhere browsers
+    /// would. Until a real <c>:has()</c> implementation lands (roadmap v1.4), the safe v1
+    /// behavior is "rule has no effect" — surfaced via
+    /// <c>CSS-HAS-RENDERING-NOT-IMPLEMENTED-001</c> at the cascade boundary.
+    /// </para>
+    /// </remarks>
     public static bool Match(SelectorBytecode bytecode, IElement element)
     {
         ArgumentNullException.ThrowIfNull(bytecode);
         ArgumentNullException.ThrowIfNull(element);
         if (bytecode.Code.IsDefaultOrEmpty) return false;
+        if (bytecode.ContainsHas) return false;
         return Evaluate(bytecode, 0, element);
     }
 
@@ -127,9 +141,13 @@ internal static class SelectorMatcher
                     {
                         var name = bytecode.Symbols[ReadUInt16(code, ref pc)];
                         var value = bytecode.Symbols[ReadUInt16(code, ref pc)];
+                        var caseFlag = code[pc++];
                         var actual = cursor.GetAttribute(name);
                         if (actual is null) return false;
-                        if (!AttributeMatches(op, actual, value)) return false;
+                        var comparison = caseFlag == 1
+                            ? StringComparison.OrdinalIgnoreCase
+                            : StringComparison.Ordinal;
+                        if (!AttributeMatches(op, actual, value, comparison)) return false;
                         break;
                     }
 
@@ -268,23 +286,23 @@ internal static class SelectorMatcher
 
     // ----- attribute operator helpers -----
 
-    private static bool AttributeMatches(SelectorOpcode op, string actual, string expected) => op switch
+    private static bool AttributeMatches(SelectorOpcode op, string actual, string expected, StringComparison comparison) => op switch
     {
-        SelectorOpcode.MatchAttrEquals => string.Equals(actual, expected, StringComparison.Ordinal),
-        SelectorOpcode.MatchAttrIncludes => IncludesWord(actual, expected),
+        SelectorOpcode.MatchAttrEquals => string.Equals(actual, expected, comparison),
+        SelectorOpcode.MatchAttrIncludes => IncludesWord(actual, expected, comparison),
         SelectorOpcode.MatchAttrDashMatch =>
-            string.Equals(actual, expected, StringComparison.Ordinal)
-            || actual.StartsWith(expected + "-", StringComparison.Ordinal),
+            string.Equals(actual, expected, comparison)
+            || actual.StartsWith(expected + "-", comparison),
         SelectorOpcode.MatchAttrPrefix =>
-            expected.Length > 0 && actual.StartsWith(expected, StringComparison.Ordinal),
+            expected.Length > 0 && actual.StartsWith(expected, comparison),
         SelectorOpcode.MatchAttrSuffix =>
-            expected.Length > 0 && actual.EndsWith(expected, StringComparison.Ordinal),
+            expected.Length > 0 && actual.EndsWith(expected, comparison),
         SelectorOpcode.MatchAttrSubstring =>
-            expected.Length > 0 && actual.Contains(expected, StringComparison.Ordinal),
+            expected.Length > 0 && actual.Contains(expected, comparison),
         _ => false,
     };
 
-    private static bool IncludesWord(string actual, string expected)
+    private static bool IncludesWord(string actual, string expected, StringComparison comparison)
     {
         // [attr~=value] — value is a whitespace-separated word in actual. Empty / whitespace-
         // containing expected never matches per spec.
@@ -300,7 +318,7 @@ internal static class SelectorMatcher
             {
                 var len = i - start;
                 if (len == expected.Length
-                    && string.CompareOrdinal(actual, start, expected, 0, len) == 0)
+                    && actual.AsSpan(start, len).Equals(expected.AsSpan(), comparison))
                     return true;
                 start = i + 1;
             }

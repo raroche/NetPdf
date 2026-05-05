@@ -25,11 +25,35 @@ ARTIFACTS_DIR="$REPO_ROOT/artifacts/aot-smoke"
 SMOKE_PROJ="$REPO_ROOT/tests/NetPdf.AotSmoke/NetPdf.AotSmoke.csproj"
 
 # Detect the host RID so AOT publish doesn't need cross-compile setup.
+# On Linux, distinguish glibc from musl — `uname` reports `Linux-x86_64` for both, but
+# .NET ships separate runtimes (linux-x64 vs linux-musl-x64). A binary built for one
+# won't run on the other, so the parity gate on Alpine / musl-based CI must pick the
+# musl RID. Detection: `getconf GNU_LIBC_VERSION` succeeds on glibc; on musl the
+# canonical sentinel is the presence of `/lib/ld-musl-*.so.1`.
+detect_linux_libc() {
+  if [ -f /lib/ld-musl-x86_64.so.1 ] || [ -f /lib/ld-musl-aarch64.so.1 ] \
+     || [ -f /lib/ld-musl-armhf.so.1 ]; then
+    echo musl
+  elif command -v getconf >/dev/null 2>&1 && getconf GNU_LIBC_VERSION >/dev/null 2>&1; then
+    echo glibc
+  elif ldd --version 2>&1 | grep -qi musl; then
+    echo musl
+  else
+    echo glibc # default assumption — most Linux CI runners are glibc.
+  fi
+}
+
 case "$(uname -s)-$(uname -m)" in
   Darwin-arm64) HOST_RID="osx-arm64" ;;
   Darwin-x86_64) HOST_RID="osx-x64" ;;
-  Linux-x86_64) HOST_RID="linux-x64" ;;
-  Linux-aarch64) HOST_RID="linux-arm64" ;;
+  Linux-x86_64)
+    if [ "$(detect_linux_libc)" = "musl" ]; then HOST_RID="linux-musl-x64"
+    else HOST_RID="linux-x64"; fi
+    ;;
+  Linux-aarch64)
+    if [ "$(detect_linux_libc)" = "musl" ]; then HOST_RID="linux-musl-arm64"
+    else HOST_RID="linux-arm64"; fi
+    ;;
   *) echo "error: unsupported host platform $(uname -s)-$(uname -m)" >&2; exit 4 ;;
 esac
 

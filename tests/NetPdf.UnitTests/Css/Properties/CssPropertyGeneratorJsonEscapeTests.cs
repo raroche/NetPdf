@@ -22,16 +22,66 @@ namespace NetPdf.UnitTests.Css.Properties;
 /// </summary>
 public sealed class CssPropertyGeneratorJsonEscapeTests
 {
-    private static (Compilation output, ImmutableArray<Microsoft.CodeAnalysis.Diagnostic> diagnostics)
-        RunGenerator(string propertiesJsonContent)
+    /// <summary>Runs the source generator AND compiles its output, returning the union of
+    /// generator-driver diagnostics + post-generator consumer-compilation diagnostics.
+    /// Required for the JSON-escape regression suite: a generator can be silent about an
+    /// invalid escape but emit syntactically-broken C# (e.g., a stray backspace in a
+    /// string literal). Compiling the generator's output against the supporting-type
+    /// stubs surfaces those failures.</summary>
+    private static ImmutableArray<Microsoft.CodeAnalysis.Diagnostic> RunGenerator(string propertiesJsonContent)
     {
+        // Mirror the supporting-type stubs from CssPropertyGeneratorDiagnosticsTests so the
+        // generator's emitted source resolves PropertyMeta / PropertyType / AppliesTo /
+        // ComputedValueKind correctly. The real types live in NetPdf.Css and are internal;
+        // the synthetic compilation isn't InternalsVisibleTo'd, so we provide stubs.
+        const string supportingTypes = """
+            namespace NetPdf.Css.Properties;
+
+            internal enum PropertyType : byte
+            {
+                Unknown, Color, Length, LengthPercentage, LengthPercentageAuto,
+                Number, Integer, Percentage, Keyword, String, Url,
+                Time, Angle, Resolution, FontFamilyList, FontWeight,
+                LineWidth, FontSize, LineHeight, Content, VerticalAlign, FlexBasis,
+                TextSpacing, MaxSize, Custom,
+            }
+
+            internal enum AppliesTo : byte
+            {
+                Unknown, All, BlockOrInlineOrReplaced, Positioned, BlockOnly, InlineOnly,
+                ListItem, TableElements, ReplacedOnly, FlexItems, GridItems,
+                FlexContainers, GridContainers,
+            }
+
+            internal enum ComputedValueKind : byte
+            {
+                Specified, AbsoluteColor, AbsoluteLength, ResolvedNumber, ResolvedKeyword, Custom,
+            }
+
+            internal readonly record struct PropertyMeta(
+                PropertyId Id,
+                string Name,
+                PropertyType Type,
+                string DefaultValue,
+                bool Inherits,
+                AppliesTo AppliesTo,
+                ComputedValueKind Computed);
+            """;
+
 #pragma warning disable IL3000
-        var coreLibRef = MetadataReference.CreateFromFile(typeof(object).Assembly.Location);
+        // Reference every loaded assembly so framework types the generated source touches
+        // (System.Collections.Frozen, System.Collections.Immutable, etc.) resolve.
+        var refs = AppDomain.CurrentDomain.GetAssemblies()
+            .Where(a => !a.IsDynamic && !string.IsNullOrEmpty(a.Location))
+            .Select(a => (MetadataReference)MetadataReference.CreateFromFile(a.Location))
+            .ToList();
 #pragma warning restore IL3000
+
         var compilation = CSharpCompilation.Create(
             "NetPdf.Css.Test",
-            new[] { CSharpSyntaxTree.ParseText("namespace NetPdf.Css.Properties { }") },
-            new[] { coreLibRef });
+            new[] { CSharpSyntaxTree.ParseText(supportingTypes) },
+            refs,
+            new CSharpCompilationOptions(OutputKind.DynamicallyLinkedLibrary));
 
         var generator = new CssPropertyGenerator();
         var driver = CSharpGeneratorDriver
@@ -39,9 +89,13 @@ public sealed class CssPropertyGeneratorJsonEscapeTests
             .AddAdditionalTexts(ImmutableArray.Create<AdditionalText>(
                 new InMemoryAdditionalText("properties.json", propertiesJsonContent)));
 
-        var result = driver.RunGenerators(compilation);
-        var runResult = result.GetRunResult();
-        return (compilation, runResult.Diagnostics);
+        // Run + compile the post-generator output. RunGeneratorsAndUpdateCompilation
+        // returns the new compilation with the generated trees included; emit-diagnostics
+        // surface any syntactic / semantic errors the generator may have introduced.
+        driver = (Microsoft.CodeAnalysis.CSharp.CSharpGeneratorDriver)driver
+            .RunGeneratorsAndUpdateCompilation(compilation, out var outputCompilation, out var generatorDiagnostics);
+        var consumerDiagnostics = outputCompilation.GetDiagnostics();
+        return generatorDiagnostics.Concat(consumerDiagnostics).ToImmutableArray();
     }
 
     [Fact]
@@ -64,7 +118,7 @@ public sealed class CssPropertyGeneratorJsonEscapeTests
               ]
             }
             """;
-        var (_, diagnostics) = RunGenerator(json);
+        var diagnostics = RunGenerator(json);
         // Generator should produce no errors — é decodes to é cleanly.
         Assert.DoesNotContain(diagnostics, d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error);
     }
@@ -88,7 +142,7 @@ public sealed class CssPropertyGeneratorJsonEscapeTests
               ]
             }
             """;
-        var (_, diagnostics) = RunGenerator(json);
+        var diagnostics = RunGenerator(json);
         Assert.DoesNotContain(diagnostics, d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error);
     }
 
@@ -110,7 +164,7 @@ public sealed class CssPropertyGeneratorJsonEscapeTests
               ]
             }
             """;
-        var (_, diagnostics) = RunGenerator(json);
+        var diagnostics = RunGenerator(json);
         Assert.DoesNotContain(diagnostics, d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error);
     }
 
@@ -133,7 +187,7 @@ public sealed class CssPropertyGeneratorJsonEscapeTests
               ]
             }
             """;
-        var (_, diagnostics) = RunGenerator(json);
+        var diagnostics = RunGenerator(json);
         // Should surface as a generator diagnostic (NPDFGEN0003 malformed JSON).
         Assert.Contains(diagnostics, d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error);
     }
@@ -157,7 +211,7 @@ public sealed class CssPropertyGeneratorJsonEscapeTests
               ]
             }
             """;
-        var (_, diagnostics) = RunGenerator(json);
+        var diagnostics = RunGenerator(json);
         Assert.Contains(diagnostics, d => d.Severity == Microsoft.CodeAnalysis.DiagnosticSeverity.Error);
     }
 

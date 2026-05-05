@@ -19,11 +19,21 @@ namespace NetPdf.Css.Cascade;
 /// is "print", and vice versa. <c>all</c> matches both.
 /// </para>
 /// <para>
-/// <b>Media query evaluation in v1.</b> The cascade does keyword-only matching on the
-/// stylesheet's <c>media</c> attribute (HTML 4 grammar — comma-separated media types).
-/// Full Media Queries L4 (range syntax, feature queries like <c>(min-width: …)</c>) is
-/// post-v1 work. The viewport size hints below are wired here so the eventual evaluator
-/// has them ready.
+/// <b>Media query evaluation.</b> <see cref="Matches"/> delegates to
+/// <see cref="MediaQueryEvaluator"/> which implements the subset of CSS Media Queries L4
+/// real-world documents use: type matching, <c>not</c> / <c>only</c> prefixes,
+/// comma-separated alternative lists, <c>and</c>-combined feature queries, and the
+/// common features evaluated against this context — <c>min-width</c> / <c>max-width</c> /
+/// <c>min-height</c> / <c>max-height</c> against <see cref="ViewportWidthPx"/> /
+/// <see cref="ViewportHeightPx"/>, <c>orientation</c> (landscape if w &gt; h),
+/// <c>prefers-color-scheme</c> against <see cref="PreferredColorScheme"/>,
+/// <c>min-resolution</c> / <c>max-resolution</c> in <c>dppx</c> / <c>x</c> / <c>dpi</c> /
+/// <c>dpcm</c> against <see cref="DevicePixelRatio"/>, plus length parsing in <c>px</c> /
+/// <c>em</c> / <c>rem</c> / <c>cm</c> / <c>mm</c> / <c>in</c> / <c>pt</c> / <c>pc</c> /
+/// <c>vw</c> / <c>vh</c> / <c>vmin</c> / <c>vmax</c>. Unknown features evaluate to false
+/// (conservative — rules guarded by features we can't validate don't silently apply).
+/// Full Media Queries L4 (range syntax <c>(width &gt;= 800px)</c>, advanced media features)
+/// is a Phase 3 follow-up.
 /// </para>
 /// </remarks>
 internal sealed record CssMediaContext(

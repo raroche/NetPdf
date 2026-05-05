@@ -100,7 +100,8 @@ internal static class CascadeResolver
         var result = new CascadeResult();
         if (document.DocumentElement is null) return result;
 
-        WalkElement(document.DocumentElement, compiledRules, result);
+        var rootBloom = default(SelectorBloomFilter);
+        WalkElement(document.DocumentElement, compiledRules, in rootBloom, result);
 
         // Inline styles enter as a virtual stylesheet with stylesheet-order pinned ABOVE
         // the maximum real stylesheet order so the source-order tie-break (when two
@@ -234,18 +235,22 @@ internal static class CascadeResolver
                 break;
             default:
                 // Unknown at-rule. Three shapes to handle:
-                //   (a) Declaration-bearing (e.g., @page / @font-face / @counter-style /
-                //       @property / @color-profile) — has separate consumers; the cascade
-                //       is intentionally silent.
+                //   (a) Cascade-silent at-rules with separate consumers (declaration-bearing
+                //       like @page / @font-face / @counter-style / @property / @color-profile,
+                //       OR child-rule-bearing like @keyframes / @font-feature-values /
+                //       @font-palette-values / @scroll-timeline / @view-transition). The
+                //       cascade intentionally produces no diagnostic — these are well-known
+                //       at-rules that will be consumed by future Phase tasks (animations,
+                //       fonts, etc.).
                 //   (b) Empty + RawBody set — opaque body the parser couldn't decompose.
                 //       Emit CSS-AT-RULE-UNKNOWN-001 so users see preserved-not-applied.
                 //   (c) Non-empty ChildRules — an at-rule AngleSharp.Css adapted as a
                 //       generic ICssGroupingRule (e.g., a future @scope). v1 doesn't know
                 //       what condition (if any) gates these children, so the conservative
-                //       choice is to skip them + emit the same opaque diagnostic. Without
-                //       this, nested rules in unknown groupings would silently apply with
-                //       no signal to the user.
-                if (IsKnownDeclarationBearingAtRule(ar.Name)) break;
+                //       choice is to skip them + emit the opaque diagnostic. Without this,
+                //       nested rules in unknown groupings would silently apply with no
+                //       signal to the user.
+                if (IsKnownCascadeSilentAtRule(ar.Name)) break;
                 if (!ar.ChildRules.IsEmpty || !string.IsNullOrEmpty(ar.RawBody))
                 {
                     EmitOpaqueAtRuleDiagnostic(ar, diagnostics);
@@ -430,25 +435,33 @@ internal static class CascadeResolver
         }
         private char Peek() => _text[_pos];
 
+        /// <summary>Parse a chain of <c>and</c>-connected or <c>or</c>-connected sub-expressions.
+        /// Per CSS Conditional L3 §4.1.1: mixing <c>and</c> and <c>or</c> at the same
+        /// (unparenthesized) level is malformed — <c>(A) and (B) or (C)</c> must be
+        /// rejected; the author needs explicit grouping (<c>((A) and (B)) or (C)</c>).
+        /// Throws <see cref="FormatException"/> on mixed connectors so the caller drops
+        /// the @supports block with a diagnostic.</summary>
         public bool ParseExpression()
         {
             var left = ParseUnary();
+            // Track which connector we've seen at this level. Once locked in, the other
+            // connector is a parse error.
+            char seen = '\0';
             while (true)
             {
                 SkipWhitespace();
-                if (TryReadKeyword("and"))
-                {
-                    SkipWhitespace();
-                    var right = ParseUnary();
-                    left = left && right;
-                }
-                else if (TryReadKeyword("or"))
-                {
-                    SkipWhitespace();
-                    var right = ParseUnary();
-                    left = left || right;
-                }
-                else break;
+                bool isAnd = TryReadKeyword("and");
+                bool isOr = !isAnd && TryReadKeyword("or");
+                if (!isAnd && !isOr) break;
+
+                var connector = isAnd ? 'a' : 'o';
+                if (seen == '\0') seen = connector;
+                else if (seen != connector)
+                    throw new FormatException("@supports mixes 'and' and 'or' at the same level — explicit parens required");
+
+                SkipWhitespace();
+                var right = ParseUnary();
+                left = isAnd ? (left && right) : (left || right);
             }
             return left;
         }
@@ -580,10 +593,23 @@ internal static class CascadeResolver
             ar.Location));
     }
 
-    /// <summary>At-rule names whose body holds declarations (not nested style rules) — these
-    /// are intentionally skipped at the cascade level, not flagged as opaque.</summary>
-    private static bool IsKnownDeclarationBearingAtRule(string name) =>
-        name is "page" or "font-face" or "counter-style" or "property" or "color-profile";
+    /// <summary>At-rules with separate consumers that should NOT trigger
+    /// <c>CSS-AT-RULE-UNKNOWN-001</c> when the cascade encounters them. Includes:
+    /// declaration-bearing rules (<c>@page</c>, <c>@font-face</c>, <c>@counter-style</c>,
+    /// <c>@property</c>, <c>@color-profile</c>) and child-rule-bearing rules
+    /// (<c>@keyframes</c>, <c>@font-feature-values</c>, <c>@font-palette-values</c>,
+    /// <c>@scroll-timeline</c>, <c>@view-transition</c>) — all of which have their own
+    /// downstream consumers in later phases (page-box layout, font loader, animations,
+    /// transitions). Without this allowlist, every stylesheet using <c>@keyframes</c>
+    /// would surface noisy <c>CSS-AT-RULE-UNKNOWN-001</c> diagnostics for a known at-rule.
+    /// Statement-form rules (<c>@charset</c>, <c>@namespace</c>) don't show up here
+    /// because they have empty <c>ChildRules</c> + empty <c>RawBody</c> and naturally
+    /// fall through the diagnostic-emit branch.</summary>
+    private static bool IsKnownCascadeSilentAtRule(string name) =>
+        name is "page" or "font-face" or "counter-style" or "property" or "color-profile"
+             or "keyframes" or "font-feature-values" or "font-palette-values"
+             or "scroll-timeline" or "view-transition"
+             or "charset" or "namespace";
 
     private static SelectorList? CompileSelector(string raw, ICssDiagnosticsSink? diagnostics, CssSourceLocation loc)
     {
@@ -602,19 +628,37 @@ internal static class CascadeResolver
         }
     }
 
-    /// <summary>Recursive DOM walk in document order.</summary>
-    private static void WalkElement(IElement element, List<CompiledRule> rules, CascadeResult result)
+    /// <summary>Recursive DOM walk in document order. Carries the ancestor-self bloom as
+    /// a value-copied parameter — each frame copies parent's bloom, adds this element's
+    /// (tag, classes, id) tokens, and passes the new bloom to children. Avoids the prior
+    /// O(depth) per-element rebuild that re-hashed the same ancestor chain repeatedly.
+    /// The 512-byte struct copy per frame is cheap relative to the matcher work that
+    /// dominates the per-element cost.</summary>
+    private static void WalkElement(IElement element, List<CompiledRule> rules,
+        in SelectorBloomFilter ancestorBloom, CascadeResult result)
     {
-        ApplyRulesToElement(element, rules, result);
+        var bloom = ancestorBloom; // value copy — independent from caller's
+        AddElementTokens(element, ref bloom);
+        ApplyRulesToElement(element, rules, in bloom, result);
         foreach (var child in element.Children)
         {
-            WalkElement(child, rules, result);
+            WalkElement(child, rules, in bloom, result);
         }
     }
 
-    private static void ApplyRulesToElement(IElement element, List<CompiledRule> rules, CascadeResult result)
+    private static void AddElementTokens(IElement element, ref SelectorBloomFilter bloom)
     {
-        var bloom = BuildElementBloom(element);
+        bloom.Add(element.LocalName.ToLowerInvariant());
+        if (!string.IsNullOrEmpty(element.Id)) bloom.Add(element.Id);
+        if (element.ClassList is not null)
+        {
+            foreach (var c in element.ClassList) bloom.Add(c);
+        }
+    }
+
+    private static void ApplyRulesToElement(IElement element, List<CompiledRule> rules,
+        in SelectorBloomFilter bloom, CascadeResult result)
+    {
         foreach (var rule in rules)
         {
             if (rule.Selectors is null) continue;
@@ -676,23 +720,6 @@ internal static class CascadeResolver
         {
             AddMatched(rule, winning, element, result);
         }
-    }
-
-    private static SelectorBloomFilter BuildElementBloom(IElement element)
-    {
-        var bloom = default(SelectorBloomFilter);
-        var cursor = element;
-        while (cursor is not null)
-        {
-            bloom.Add(cursor.LocalName.ToLowerInvariant());
-            if (!string.IsNullOrEmpty(cursor.Id)) bloom.Add(cursor.Id);
-            if (cursor.ClassList is not null)
-            {
-                foreach (var c in cursor.ClassList) bloom.Add(c);
-            }
-            cursor = cursor.ParentElement;
-        }
-        return bloom;
     }
 
     private static bool BloomAllows(SelectorBytecode alt, in SelectorBloomFilter bloom)

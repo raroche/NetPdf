@@ -262,19 +262,26 @@ internal sealed class ComputedStyle : IDisposable
                 "have at least one body character (CSS Custom Properties L1 §2).",
                 nameof(name));
         }
+        // Per CSS Custom Properties L1 §2 + CSS Syntax L3 §4.3.11: custom-property names
+        // are <dashed-ident> — `--` followed by valid ident-continue chars. ident-continue
+        // includes ASCII letters / digits / '-' / '_' AND non-ASCII chars (>= U+0080).
+        // CSS escape sequences (`\41`, `\:`) are also valid in raw source but normalize to
+        // their decoded code points before reaching this validator (the parser decodes them);
+        // by the time names land here they're already in normalized form, so the validator
+        // only needs to accept the resolved character set.
         for (var i = 2; i < name.Length; i++)
         {
             var c = name[i];
             var ok = (c >= 'a' && c <= 'z') ||
                      (c >= 'A' && c <= 'Z') ||
                      (c >= '0' && c <= '9') ||
-                     c == '-' || c == '_';
+                     c == '-' || c == '_' ||
+                     c >= 0x80; // non-ASCII per CSS Syntax L3 §4.3.11
             if (!ok)
             {
                 throw new ArgumentException(
-                    $"Custom property name '{name}' contains invalid character '{c}' at position {i}. " +
-                    "Body must be an ASCII identifier (letters / digits / '-' / '_'). Full CSS " +
-                    "escape support is out of scope for v1.",
+                    $"Custom property name '{name}' contains invalid character '{c}' (U+{(int)c:X4}) at position {i}. " +
+                    "Body must be a CSS <ident-continue> per Syntax L3 §4.3.11 — letters, digits, '-', '_', or non-ASCII.",
                     nameof(name));
             }
         }

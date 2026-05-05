@@ -33,21 +33,21 @@ public sealed class VarSubstitutionTests
     [Fact]
     public void Value_without_var_passes_through_unchanged()
     {
-        var result = VarSubstitution.Substitute("16px solid red", Table());
+        var result = VarSubstitution.SubstituteToString("16px solid red", Table());
         Assert.Equal("16px solid red", result);
     }
 
     [Fact]
     public void Var_replaced_with_resolved_value()
     {
-        var result = VarSubstitution.Substitute("var(--color)", Table(("--color", "red")));
+        var result = VarSubstitution.SubstituteToString("var(--color)", Table(("--color", "red")));
         Assert.Equal("red", result);
     }
 
     [Fact]
     public void Var_with_surrounding_text_preserves_context()
     {
-        var result = VarSubstitution.Substitute("16px solid var(--color)",
+        var result = VarSubstitution.SubstituteToString("16px solid var(--color)",
             Table(("--color", "red")));
         Assert.Equal("16px solid red", result);
     }
@@ -55,7 +55,7 @@ public sealed class VarSubstitutionTests
     [Fact]
     public void Multiple_vars_in_one_value_all_resolve()
     {
-        var result = VarSubstitution.Substitute(
+        var result = VarSubstitution.SubstituteToString(
             "var(--width) solid var(--color)",
             Table(("--width", "2px"), ("--color", "red")));
         Assert.Equal("2px solid red", result);
@@ -64,21 +64,21 @@ public sealed class VarSubstitutionTests
     [Fact]
     public void Missing_name_with_fallback_uses_fallback()
     {
-        var result = VarSubstitution.Substitute("var(--missing, blue)", Table());
+        var result = VarSubstitution.SubstituteToString("var(--missing, blue)", Table());
         Assert.Equal("blue", result);
     }
 
     [Fact]
     public void Missing_name_no_fallback_uses_unset_sentinel()
     {
-        var result = VarSubstitution.Substitute("var(--missing)", Table());
+        var result = VarSubstitution.SubstituteToString("var(--missing)", Table());
         Assert.Equal(VarSubstitution.UnsetSentinel, result);
     }
 
     [Fact]
     public void Nested_var_in_fallback_resolves()
     {
-        var result = VarSubstitution.Substitute(
+        var result = VarSubstitution.SubstituteToString(
             "var(--missing, var(--secondary))",
             Table(("--secondary", "blue")));
         Assert.Equal("blue", result);
@@ -87,7 +87,7 @@ public sealed class VarSubstitutionTests
     [Fact]
     public void Nested_var_in_fallback_when_both_missing_uses_outer_unset()
     {
-        var result = VarSubstitution.Substitute(
+        var result = VarSubstitution.SubstituteToString(
             "var(--missing, var(--also-missing))",
             Table());
         Assert.Equal(VarSubstitution.UnsetSentinel, result);
@@ -97,7 +97,7 @@ public sealed class VarSubstitutionTests
     public void Var_text_inside_double_quoted_string_is_not_substituted()
     {
         // content: "var(--x)" — the "var(--x)" is a literal string value, NOT a real var().
-        var result = VarSubstitution.Substitute(
+        var result = VarSubstitution.SubstituteToString(
             "\"var(--x)\"",
             Table(("--x", "red")));
         Assert.Equal("\"var(--x)\"", result);
@@ -106,7 +106,7 @@ public sealed class VarSubstitutionTests
     [Fact]
     public void Var_text_inside_single_quoted_string_is_not_substituted()
     {
-        var result = VarSubstitution.Substitute(
+        var result = VarSubstitution.SubstituteToString(
             "'var(--x)'",
             Table(("--x", "red")));
         Assert.Equal("'var(--x)'", result);
@@ -116,7 +116,7 @@ public sealed class VarSubstitutionTests
     public void Custom_property_value_containing_var_resolves_recursively()
     {
         // --primary: var(--brand)  → primary should resolve to brand's value.
-        var result = VarSubstitution.Substitute(
+        var result = VarSubstitution.SubstituteToString(
             "var(--primary)",
             Table(("--primary", "var(--brand)"), ("--brand", "red")));
         Assert.Equal("red", result);
@@ -127,7 +127,7 @@ public sealed class VarSubstitutionTests
     {
         // --a: var(--a) — direct cycle.
         var sink = new CapturingSink();
-        var result = VarSubstitution.Substitute(
+        var result = VarSubstitution.SubstituteToString(
             "var(--a)",
             Table(("--a", "var(--a)")),
             sink);
@@ -141,7 +141,7 @@ public sealed class VarSubstitutionTests
     {
         // --a: var(--b); --b: var(--a) — indirect cycle.
         var sink = new CapturingSink();
-        var result = VarSubstitution.Substitute(
+        var result = VarSubstitution.SubstituteToString(
             "var(--a)",
             Table(("--a", "var(--b)"), ("--b", "var(--a)")),
             sink);
@@ -155,7 +155,7 @@ public sealed class VarSubstitutionTests
     {
         // --a: var(--b); --b: var(--c); --c: var(--a)
         var sink = new CapturingSink();
-        var result = VarSubstitution.Substitute(
+        var result = VarSubstitution.SubstituteToString(
             "var(--a)",
             Table(("--a", "var(--b)"), ("--b", "var(--c)"), ("--c", "var(--a)")),
             sink);
@@ -169,7 +169,7 @@ public sealed class VarSubstitutionTests
     {
         // --a: var(--a, blue) — cycle but with fallback. Fallback used.
         var sink = new CapturingSink();
-        var result = VarSubstitution.Substitute(
+        var result = VarSubstitution.SubstituteToString(
             "var(--a)",
             Table(("--a", "var(--a, blue)")),
             sink);
@@ -182,7 +182,7 @@ public sealed class VarSubstitutionTests
     public void Fallback_with_commas_uses_only_first_top_level_split()
     {
         // var(--missing, rgb(255, 0, 0)) — the commas inside rgb() are NOT separators.
-        var result = VarSubstitution.Substitute(
+        var result = VarSubstitution.SubstituteToString(
             "var(--missing, rgb(255, 0, 0))",
             Table());
         Assert.Equal("rgb(255, 0, 0)", result);
@@ -193,7 +193,7 @@ public sealed class VarSubstitutionTests
     {
         // No matching close paren — pass the rest of the value through verbatim. Browsers
         // tolerate this; we mirror the behavior to avoid eating unrelated CSS.
-        var result = VarSubstitution.Substitute("var(--x", Table());
+        var result = VarSubstitution.SubstituteToString("var(--x", Table());
         Assert.StartsWith("var(--x", result);
     }
 
@@ -201,7 +201,7 @@ public sealed class VarSubstitutionTests
     public void Var_with_invalid_name_uses_fallback()
     {
         // Name without -- prefix is invalid → fallback (or unset).
-        var result = VarSubstitution.Substitute(
+        var result = VarSubstitution.SubstituteToString(
             "var(notadash, red)",
             Table());
         Assert.Equal("red", result);
@@ -210,13 +210,13 @@ public sealed class VarSubstitutionTests
     [Fact]
     public void Empty_value_returns_empty()
     {
-        Assert.Equal("", VarSubstitution.Substitute("", Table()));
+        Assert.Equal("", VarSubstitution.SubstituteToString("", Table()));
     }
 
     [Fact]
     public void Whitespace_around_name_tolerated()
     {
-        var result = VarSubstitution.Substitute(
+        var result = VarSubstitution.SubstituteToString(
             "var( --color , blue)",
             Table(("--color", "red")));
         Assert.Equal("red", result);

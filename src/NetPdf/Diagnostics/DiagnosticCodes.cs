@@ -66,5 +66,15 @@ internal static class DiagnosticCodes
     /// </summary>
     public const string CssVarCircular001 = "CSS-VAR-CIRCULAR-001";
 
+    /// <summary>
+    /// A <c>var()</c> substitution exceeded the user-agent's depth or output-length
+    /// safety limit. Distinct from a circular reference — the chain is acyclic but
+    /// pathological (e.g., long non-cyclic chain past 32 frames, or an exponentially
+    /// expanding chain past 1 MiB output). The substitution is treated as "invalid at
+    /// computed value time" per CSS Custom Properties L1 §3.5; references resolve to
+    /// the fallback or <c>unset</c>. Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string CssVarExpansionLimit001 = "CSS-VAR-EXPANSION-LIMIT-001";
+
     // endregion CSS-*
 }

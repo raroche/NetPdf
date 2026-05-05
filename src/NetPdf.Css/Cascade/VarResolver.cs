@@ -144,9 +144,12 @@ internal static class VarResolver
     /// <c>var()</c> references inside those values. The substitution sees the FULL
     /// effective table (own + inherited) — so <c>--child: var(--parent)</c> resolves
     /// against the inherited <c>--parent</c>. Names already marked invalid by the
-    /// cycle pre-pass are SKIPPED so their invalid state survives this pass — the
-    /// downstream <c>EmitNonCustomDeclarations</c> needs to see them as still invalid
-    /// so external references use the var()'s fallback per CSS Custom Properties L1 §3.5.</summary>
+    /// cycle pre-pass are SKIPPED so their invalid state survives this pass.
+    /// Names whose substitution produces an "invalid at computed value time" result
+    /// (missing reference with no fallback, depth/output limit, etc.) are marked invalid
+    /// in the table per CSS Custom Properties L1 §3.5 — external <c>var(--name, fallback)</c>
+    /// references then fall through to their fallback rather than picking up the
+    /// <c>"unset"</c> sentinel string as if it were a valid value.</summary>
     private static void ResolveOwnCustomPropertyValues(
         CustomPropertyTable ownTable,
         ICssDiagnosticsSink? diagnostics)
@@ -160,7 +163,17 @@ internal static class VarResolver
             // re-promoting cycle members to "valid (with garbage value)".
             if (!ownTable.TryGetValue(name, out var raw)) continue;
             var resolved = VarSubstitution.Substitute(raw, ownTable, diagnostics);
-            ownTable.Set(name, resolved);
+            if (resolved.IsInvalid)
+            {
+                // Mark invalid instead of storing "unset" as a literal value. This is
+                // the structured-substitution-result fix: external var(--name, fallback)
+                // references will TryGetValue → false → use the var()'s fallback.
+                ownTable.MarkInvalid(name);
+            }
+            else
+            {
+                ownTable.Set(name, resolved.Value);
+            }
         }
     }
 
@@ -182,6 +195,11 @@ internal static class VarResolver
             var raw = winner.Declaration.Value.RawText ?? string.Empty;
             var resolved = VarSubstitution.Substitute(raw, customProperties, diagnostics,
                 location: winner.Declaration.Location);
+            // For non-custom declarations the structured "invalid" flag is informative
+            // only — the value field already holds the right sentinel ("unset") that
+            // Tasks 9–10 typed-value parsers will resolve to the property's initial
+            // value per CSS Custom Properties L1 §3.5 (invalid-at-computed-value-time
+            // semantics for non-custom properties).
             // Lazy-allocate the target set so elements with only custom-property
             // declarations (which are stored in CustomPropertyTable, not
             // ResolvedRuleSet) don't pollute StyledElements with an empty entry.
@@ -190,7 +208,7 @@ internal static class VarResolver
                 : result.StylesFor(element, customProperties);
             targetSet.Add(new ResolvedDeclaration(
                 Property: name,
-                ResolvedValue: resolved,
+                ResolvedValue: resolved.Value,
                 OriginalDeclaration: winner.Declaration,
                 Key: winner.Key));
         }

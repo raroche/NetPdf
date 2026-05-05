@@ -36,7 +36,7 @@ Wire AngleSharp + AngleSharp.Css to parse arbitrary modern HTML+CSS into a DOM a
   - Outputs `MatchedRuleSet` per element.
 - **Computed value resolver** (`src/NetPdf.Css/ComputedValues/`):
   - Resolves `inherit`, `initial`, `unset`, `revert`, `revert-layer`.
-  - Full `var()` substitution with circular-reference detection (emit `CSS-VAR-CIRCULAR-001`).
+  - Full `var()` substitution with circular-reference detection (emit `CSS-VAR-CIRCULAR-001`) + expansion-limit guard (emit `CSS-VAR-EXPANSION-LIMIT-001` for non-cyclic depth/output overruns). **Known v1 gap:** `var()`-bearing shorthand declarations (`border: var(--bundle)`, `background: var(--bg)`) rely on AngleSharp.Css's parse-time longhand expansion, which is incorrect for opaque substitution where the var() resolves to multiple tokens that need re-parsing. CSS Custom Properties L1 §3 calls these "pending substitution values" and requires shorthand expansion to happen AFTER var() resolution. Tasks 9–10 typed-value parsers will close the gap when they re-expand shorthands.
   - Full `calc()` / `min()` / `max()` / `clamp()` / `abs()` / `sign()` family with mixed-unit handling (px / em / rem / % / vw / vh).
   - Property-specific resolvers for: lengths, colors (incl. `oklch`/`color-mix` / `lab` / etc.), font-family lists, gradients, backgrounds, transforms.
 - **`ComputedStyle` storage layer** (`src/NetPdf.Css/ComputedValues/ComputedStyle.cs`):

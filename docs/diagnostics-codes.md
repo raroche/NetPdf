@@ -30,6 +30,7 @@ Severity levels:
 | `CSS-AT-RULE-UNKNOWN-001` | Info | An unrecognized at-rule was preserved in the AST but had no rendering effect. |
 | `CSS-PROPERTY-UNKNOWN-001` | Info | A vendor-prefixed or unknown CSS property was ignored. |
 | `CSS-VAR-CIRCULAR-001` | Warning | A `var()` chain produced a circular reference; resolved to fallback or `unset`. |
+| `CSS-VAR-EXPANSION-LIMIT-001` | Warning | A `var()` substitution exceeded the user-agent's depth or output-length safety limit (non-cyclic but pathological); resolved to fallback or `unset`. Distinct from circular references — see `CSS-VAR-CIRCULAR-001`. |
 | `CSS-CONTAINER-QUERY-UNSUPPORTED-001` | Warning | `@container` rule encountered; condition not evaluated, contained rules skipped. Roadmap v1.4. |
 | `CSS-HAS-RENDERING-NOT-IMPLEMENTED-001` | Warning | `:has()` selector parsed but treated as no-match in v1. Roadmap v1.4. |
 | `CSS-SUBGRID-UNSUPPORTED-001` | Warning | `subgrid` value used; treated as `none`. Roadmap v1.3. |

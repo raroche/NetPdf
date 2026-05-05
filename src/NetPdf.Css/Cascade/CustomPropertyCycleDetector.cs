@@ -185,7 +185,9 @@ internal static class CustomPropertyCycleDetector
     /// <paramref name="output"/>. Quote-aware so var()-looking text inside string
     /// literals is ignored. Recurses into fallback contents so dependencies through
     /// fallbacks are also tracked — if --a is in a cycle through --b's fallback, the
-    /// cycle still gets caught.</summary>
+    /// cycle still gets caught. Function-name detection is ASCII case-insensitive per
+    /// CSS Syntax L3 (so <c>VAR(--x)</c> / <c>Var(--x)</c> are recognized too); the
+    /// custom-property name INSIDE the parens stays case-sensitive.</summary>
     private static void ExtractVarReferences(string value, HashSet<string> output)
     {
         if (string.IsNullOrEmpty(value)) return;
@@ -198,21 +200,16 @@ internal static class CustomPropertyCycleDetector
                 pos = SkipString(value, pos);
                 continue;
             }
-            if (c == 'v' && pos + 4 <= value.Length
-                && value[pos + 1] == 'a' && value[pos + 2] == 'r' && value[pos + 3] == '(')
+            if (IsVarFunctionStart(value, pos))
             {
                 var bodyStart = pos + 4;
                 var bodyEnd = FindMatchingCloseParen(value, bodyStart);
                 if (bodyEnd < 0) return;
                 var body = value[bodyStart..bodyEnd];
-                // Read the name (everything before the first top-level comma).
                 var (name, _) = SplitOnTopLevelComma(body);
                 var trimmedName = name.Trim();
                 if (trimmedName.StartsWith("--", StringComparison.Ordinal))
                     output.Add(trimmedName);
-                // Continue scanning the body so nested var() in fallbacks are also
-                // captured as dependencies. The body already contains the full
-                // fallback text including nested var()s.
                 ExtractVarReferences(body, output);
                 pos = bodyEnd + 1;
                 continue;
@@ -220,6 +217,18 @@ internal static class CustomPropertyCycleDetector
             pos++;
         }
     }
+
+    private static bool IsVarFunctionStart(string text, int pos)
+    {
+        if (pos + 4 > text.Length) return false;
+        return AsciiToLower(text[pos]) == 'v'
+            && AsciiToLower(text[pos + 1]) == 'a'
+            && AsciiToLower(text[pos + 2]) == 'r'
+            && text[pos + 3] == '(';
+    }
+
+    private static char AsciiToLower(char c) =>
+        (c >= 'A' && c <= 'Z') ? (char)(c + ('a' - 'A')) : c;
 
     private static int FindMatchingCloseParen(string text, int start)
     {

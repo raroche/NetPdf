@@ -30,4 +30,8 @@ internal static class CssDiagnosticCodes
     /// <summary>A <c>var()</c> chain produced a circular reference; substitution
     /// resolved to the fallback or <c>unset</c>. Severity: Warning.</summary>
     public const string CssVarCircular001 = "CSS-VAR-CIRCULAR-001";
+
+    /// <summary>A <c>var()</c> substitution exceeded the user-agent's depth or output
+    /// safety limit (non-cyclic pathological chain). Severity: Warning.</summary>
+    public const string CssVarExpansionLimit001 = "CSS-VAR-EXPANSION-LIMIT-001";
 }

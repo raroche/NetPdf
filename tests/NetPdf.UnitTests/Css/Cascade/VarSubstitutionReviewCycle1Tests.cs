@@ -48,11 +48,11 @@ public sealed class VarSubstitutionReviewCycle1Tests
         var t = Table(entries.ToArray());
         var sink = new CapturingSink();
 
-        var result = VarSubstitution.Substitute("var(--n0)", t, sink);
-        // Either the depth limit OR the chain bottoms out at "base" — but a depth-bound
-        // diagnostic should be emitted when MaxRecursionDepth is hit.
+        var result = VarSubstitution.SubstituteToString("var(--n0)", t, sink);
+        // Depth-limit overruns now emit CSS-VAR-EXPANSION-LIMIT-001 (distinct from
+        // circular-reference per the diagnostic-codes registry).
         Assert.Contains(sink.Diagnostics,
-            d => d.Code == CssDiagnosticCodes.CssVarCircular001
+            d => d.Code == CssDiagnosticCodes.CssVarExpansionLimit001
               && d.Message.Contains("maximum depth"));
     }
 
@@ -77,10 +77,11 @@ public sealed class VarSubstitutionReviewCycle1Tests
         var t = Table(entries.ToArray());
         var sink = new CapturingSink();
 
-        var result = VarSubstitution.Substitute("var(--n0)", t, sink);
-        // Either depth or output-length guard should fire.
+        var result = VarSubstitution.SubstituteToString("var(--n0)", t, sink);
+        // Either depth or output-length guard fires — both emit
+        // CSS-VAR-EXPANSION-LIMIT-001 (not CSS-VAR-CIRCULAR-001 — these aren't cycles).
         Assert.Contains(sink.Diagnostics,
-            d => d.Code == CssDiagnosticCodes.CssVarCircular001);
+            d => d.Code == CssDiagnosticCodes.CssVarExpansionLimit001);
         // The exponentially-doubled chain bottoms out into a string of 'unset' tokens
         // (each deeply-nested var() that hit the limit returned the unset sentinel,
         // which the outer frames concatenated). The base-case literal 'x' is unreachable
@@ -103,10 +104,10 @@ public sealed class VarSubstitutionReviewCycle1Tests
         CustomPropertyCycleDetector.DetectAndMarkInvalid(t, sink);
 
         // External reference: var(--a, green) — --a is now invalid → fallback "green".
-        var result = VarSubstitution.Substitute("var(--a, green)", t, sink);
+        var result = VarSubstitution.SubstituteToString("var(--a, green)", t, sink);
         Assert.Equal("green", result);
         // Same for --b.
-        var result2 = VarSubstitution.Substitute("var(--b, yellow)", t, sink);
+        var result2 = VarSubstitution.SubstituteToString("var(--b, yellow)", t, sink);
         Assert.Equal("yellow", result2);
         // One cycle diagnostic emitted (at detection time), not many.
         var cycleDiags = sink.Diagnostics.FindAll(d => d.Code == CssDiagnosticCodes.CssVarCircular001);
@@ -125,7 +126,7 @@ public sealed class VarSubstitutionReviewCycle1Tests
         CustomPropertyCycleDetector.DetectAndMarkInvalid(t, sink);
         Assert.Single(sink.Diagnostics);
         // External reference: --a is invalid → fallback used.
-        var result = VarSubstitution.Substitute("var(--a, green)", t, sink);
+        var result = VarSubstitution.SubstituteToString("var(--a, green)", t, sink);
         Assert.Equal("green", result);
     }
 
@@ -139,11 +140,11 @@ public sealed class VarSubstitutionReviewCycle1Tests
 
         // Each name resolves to unset (no fallback in the externally-referencing var()).
         Assert.Equal(VarSubstitution.UnsetSentinel,
-            VarSubstitution.Substitute("var(--a)", t, sink));
+            VarSubstitution.SubstituteToString("var(--a)", t, sink));
         Assert.Equal(VarSubstitution.UnsetSentinel,
-            VarSubstitution.Substitute("var(--b)", t, sink));
+            VarSubstitution.SubstituteToString("var(--b)", t, sink));
         Assert.Equal(VarSubstitution.UnsetSentinel,
-            VarSubstitution.Substitute("var(--c)", t, sink));
+            VarSubstitution.SubstituteToString("var(--c)", t, sink));
     }
 
     [Fact]
@@ -154,7 +155,7 @@ public sealed class VarSubstitutionReviewCycle1Tests
         var sink = new CapturingSink();
         CustomPropertyCycleDetector.DetectAndMarkInvalid(t, sink);
         Assert.Empty(sink.Diagnostics);
-        var result = VarSubstitution.Substitute("var(--a)", t, sink);
+        var result = VarSubstitution.SubstituteToString("var(--a)", t, sink);
         Assert.Equal("red", result);
     }
 
@@ -166,7 +167,7 @@ public sealed class VarSubstitutionReviewCycle1Tests
     public void Rec4_Empty_fallback_substitutes_to_empty_string()
     {
         // var(--missing,) — comma present, fallback empty. Per spec: substitutes to "".
-        var result = VarSubstitution.Substitute("var(--missing,)", Table());
+        var result = VarSubstitution.SubstituteToString("var(--missing,)", Table());
         Assert.Equal("", result);
     }
 
@@ -174,7 +175,7 @@ public sealed class VarSubstitutionReviewCycle1Tests
     public void Rec4_Whitespace_only_fallback_also_empty()
     {
         // var(--missing,   ) — whitespace-only fallback. Spec treats as empty too.
-        var result = VarSubstitution.Substitute("var(--missing,   )", Table());
+        var result = VarSubstitution.SubstituteToString("var(--missing,   )", Table());
         Assert.Equal("", result);
     }
 
@@ -182,7 +183,7 @@ public sealed class VarSubstitutionReviewCycle1Tests
     public void Rec4_Missing_fallback_still_uses_unset()
     {
         // var(--missing) — no comma at all. Spec: invalid → unset.
-        var result = VarSubstitution.Substitute("var(--missing)", Table());
+        var result = VarSubstitution.SubstituteToString("var(--missing)", Table());
         Assert.Equal(VarSubstitution.UnsetSentinel, result);
     }
 
@@ -191,7 +192,7 @@ public sealed class VarSubstitutionReviewCycle1Tests
     {
         // padding: var(--missing,) 16px → "  16px" (the empty replacement leaves
         // the rest intact).
-        var result = VarSubstitution.Substitute("var(--missing,) 16px", Table());
+        var result = VarSubstitution.SubstituteToString("var(--missing,) 16px", Table());
         Assert.Equal(" 16px", result);
     }
 

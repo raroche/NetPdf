@@ -157,6 +157,31 @@ public sealed class DiagnosticCodesTests
         Assert.Equal("CSS-CONTAINER-QUERY-UNSUPPORTED-001", DiagnosticCodes.CssContainerQueryUnsupported001);
     }
 
+    [Fact]
+    public void Css_var_circular_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(
+            registry,
+            @"\|\s*`?(CSS-VAR-CIRCULAR-001)`?\s*\|\s*(\w+)\s*\|");
+        Assert.True(match.Success, "CSS-VAR-CIRCULAR-001 row not found in docs/diagnostics-codes.md");
+        Assert.Equal(DiagnosticCodes.CssVarCircular001, match.Groups[1].Value);
+        Assert.Equal("Warning", match.Groups[2].Value);
+    }
+
+    [Fact]
+    public void Css_var_circular_001_constant_value_is_stable()
+    {
+        Assert.Equal("CSS-VAR-CIRCULAR-001", DiagnosticCodes.CssVarCircular001);
+    }
+
+    [Fact]
+    public void Css_var_circular_001_facade_and_internal_constants_agree()
+    {
+        Assert.Equal(DiagnosticCodes.CssVarCircular001,
+            NetPdf.Css.Diagnostics.CssDiagnosticCodes.CssVarCircular001);
+    }
+
     private static string LoadRegistry()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

@@ -59,5 +59,12 @@ internal static class DiagnosticCodes
     /// </summary>
     public const string CssContainerQueryUnsupported001 = "CSS-CONTAINER-QUERY-UNSUPPORTED-001";
 
+    /// <summary>
+    /// A <c>var()</c> chain produced a circular reference (e.g.,
+    /// <c>--a: var(--b); --b: var(--a)</c>); the substitution stopped + resolved to the
+    /// fallback value or <c>unset</c>. Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string CssVarCircular001 = "CSS-VAR-CIRCULAR-001";
+
     // endregion CSS-*
 }

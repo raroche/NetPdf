@@ -26,4 +26,8 @@ internal static class CssDiagnosticCodes
     /// <summary>An <c>@container</c> rule was encountered. NetPdf does not evaluate
     /// container queries in v1; nested rules are skipped. Severity: Warning.</summary>
     public const string CssContainerQueryUnsupported001 = "CSS-CONTAINER-QUERY-UNSUPPORTED-001";
+
+    /// <summary>A <c>var()</c> chain produced a circular reference; substitution
+    /// resolved to the fallback or <c>unset</c>. Severity: Warning.</summary>
+    public const string CssVarCircular001 = "CSS-VAR-CIRCULAR-001";
 }

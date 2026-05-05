@@ -44,33 +44,11 @@ internal sealed record CssMediaContext(
 
     /// <summary>Returns <see langword="true"/> when a stylesheet with the given
     /// <paramref name="mediaQuery"/> attribute should contribute to the cascade. Empty /
-    /// <see langword="null"/> queries always match (no restriction). The <c>all</c>
-    /// keyword always matches. Comma-separated lists match if any token matches.
-    /// Anything more elaborate falls through as "matches" with a TODO — Media Queries L4
-    /// is a Phase 3 follow-up.</summary>
-    public bool Matches(string? mediaQuery)
-    {
-        if (string.IsNullOrWhiteSpace(mediaQuery)) return true;
-        // Strip comments + whitespace, then split on comma. Each comma-separated query is
-        // a media-type or media-feature; we only support media-type matching in v1.
-        foreach (var rawQuery in mediaQuery.Split(','))
-        {
-            var query = rawQuery.Trim().ToLowerInvariant();
-            if (query.Length == 0) continue;
-            if (query == "all") return true;
-            if (query == "not all") continue;
-            // Strip leading "only" (CSS3 media query prefix that's a no-op in v1).
-            if (query.StartsWith("only ", StringComparison.Ordinal))
-                query = query[5..].TrimStart();
-            // For tokens like "screen and (min-width: 800px)" we accept the leading type
-            // and ignore the rest (full evaluation is Phase 3 follow-up). If the type
-            // matches, the query matches.
-            var spaceIdx = query.IndexOf(' ');
-            var typeToken = spaceIdx < 0 ? query : query[..spaceIdx];
-            if (string.Equals(typeToken, MediaType, StringComparison.OrdinalIgnoreCase))
-                return true;
-            if (typeToken == "all") return true;
-        }
-        return false;
-    }
+    /// <see langword="null"/> queries always match (no restriction). Delegates to
+    /// <see cref="MediaQueryEvaluator.Evaluate"/> which handles the comma-separated query
+    /// list, <c>not</c> / <c>only</c> prefixes, type matching, <c>and</c>-combined feature
+    /// queries on common features (<c>min-width</c>, <c>max-width</c>, <c>orientation</c>,
+    /// <c>prefers-color-scheme</c>, <c>resolution</c>, …), and conservative false for
+    /// unrecognized features.</summary>
+    public bool Matches(string? mediaQuery) => MediaQueryEvaluator.Evaluate(mediaQuery, this);
 }

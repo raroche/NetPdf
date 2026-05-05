@@ -72,6 +72,7 @@ internal static class CascadeResolver
 
         var compiledRules = new List<CompiledRule>();
         var hasContainingStylesheets = new HashSet<int>();
+        var layers = new LayerRegistry();
         var maxSheetOrder = 0;
         for (var i = 0; i < stylesheets.Length; i++)
         {
@@ -79,7 +80,7 @@ internal static class CascadeResolver
             if (sheet.IsDisabled) continue;
             if (!media.Matches(sheet.MediaQuery)) continue;
             if (sheet.Order > maxSheetOrder) maxSheetOrder = sheet.Order;
-            CollectRules(sheet, compiledRules, hasContainingStylesheets, media, diagnostics);
+            CollectRules(sheet, compiledRules, hasContainingStylesheets, media, layers, diagnostics);
         }
 
         if (diagnostics is not null)
@@ -131,11 +132,13 @@ internal static class CascadeResolver
         List<CompiledRule> output,
         HashSet<int> hasContainingSheets,
         CssMediaContext media,
+        LayerRegistry layers,
         ICssDiagnosticsSink? diagnostics)
     {
         var ruleOrder = 0;
         CollectFromRules(sheet.Rules, sheet.Origin, sheet.Order, ref ruleOrder,
-            output, hasContainingSheets, media, diagnostics);
+            output, hasContainingSheets, media, layers,
+            currentLayer: LayerRegistry.UnlayeredIndex, diagnostics);
     }
 
     private static void CollectFromRules(
@@ -146,6 +149,8 @@ internal static class CascadeResolver
         List<CompiledRule> output,
         HashSet<int> hasContainingSheets,
         CssMediaContext media,
+        LayerRegistry layers,
+        int currentLayer,
         ICssDiagnosticsSink? diagnostics)
     {
         foreach (var rule in rules)
@@ -153,16 +158,16 @@ internal static class CascadeResolver
             switch (rule)
             {
                 case CssStyleRule sr:
-                    CollectStyleRule(sr, origin, sheetOrder, ref ruleOrder,
+                    CollectStyleRule(sr, origin, sheetOrder, ref ruleOrder, currentLayer,
                         output, hasContainingSheets, diagnostics);
                     break;
                 case CssAtRule ar:
                     CollectAtRule(ar, origin, sheetOrder, ref ruleOrder,
-                        output, hasContainingSheets, media, diagnostics);
+                        output, hasContainingSheets, media, layers, currentLayer, diagnostics);
                     break;
                 case CssImportRule import:
                     CollectImportRule(import, origin, sheetOrder, ref ruleOrder,
-                        output, hasContainingSheets, media, diagnostics);
+                        output, hasContainingSheets, media, layers, currentLayer, diagnostics);
                     break;
                 // Other rule kinds (page, font-face, …) don't contribute declarations to
                 // the regular element cascade; they have separate consumers.
@@ -175,6 +180,7 @@ internal static class CascadeResolver
         CssStylesheetOrigin origin,
         int sheetOrder,
         ref int ruleOrder,
+        int currentLayer,
         List<CompiledRule> output,
         HashSet<int> hasContainingSheets,
         ICssDiagnosticsSink? diagnostics)
@@ -187,7 +193,8 @@ internal static class CascadeResolver
             Declarations: sr.Declarations,
             Origin: origin,
             StylesheetOrder: sheetOrder,
-            RuleOrder: ruleOrder++));
+            RuleOrder: ruleOrder++,
+            LayerOrder: currentLayer));
     }
 
     private static void CollectAtRule(
@@ -198,29 +205,23 @@ internal static class CascadeResolver
         List<CompiledRule> output,
         HashSet<int> hasContainingSheets,
         CssMediaContext media,
+        LayerRegistry layers,
+        int currentLayer,
         ICssDiagnosticsSink? diagnostics)
     {
         switch (ar.Name)
         {
             case "media":
-                // Per CSS Conditional L3 §3.2: nested @media children apply only when the
-                // prelude matches the current media context. Without this guard, screen-only
-                // rules would apply during print rendering.
                 if (!media.Matches(ar.Prelude)) return;
                 CollectFromRules(ar.ChildRules, origin, sheetOrder, ref ruleOrder,
-                    output, hasContainingSheets, media, diagnostics);
+                    output, hasContainingSheets, media, layers, currentLayer, diagnostics);
                 break;
             case "supports":
-                // Per CSS Conditional L3 §4: nested @supports children apply only when the
-                // condition resolves true. v1 evaluator: registered-property check only.
                 if (!SupportsConditionMatches(ar.Prelude, diagnostics, ar.Location)) return;
                 CollectFromRules(ar.ChildRules, origin, sheetOrder, ref ruleOrder,
-                    output, hasContainingSheets, media, diagnostics);
+                    output, hasContainingSheets, media, layers, currentLayer, diagnostics);
                 break;
             case "container":
-                // Container queries are roadmap v1.4 — emit the diagnostic and skip the body
-                // so the contained rules don't apply unconditionally (which would silently
-                // miscascade since we have no container layout pipeline).
                 diagnostics?.Emit(new CssDiagnostic(
                     CssDiagnosticCodes.CssContainerQueryUnsupported001,
                     "An `@container` rule was encountered. NetPdf does not evaluate container queries in v1 — contained rules are skipped.",
@@ -228,27 +229,10 @@ internal static class CascadeResolver
                     ar.Location));
                 break;
             case "layer":
-                // @layer block-form: collect the children. v1 doesn't track layer order
-                // (AngleSharp.Css's @layer parsing is opaque — we'd need Task 3's pre-pass
-                // to assign layer indices). Children are added at LayerOrder = 0 which
-                // matches the unlayered tier — good enough for documents that use @layer
-                // for organization without relying on layer-precedence semantics.
-                if (ar.ChildRules.IsEmpty && !string.IsNullOrEmpty(ar.RawBody))
-                {
-                    EmitOpaqueAtRuleDiagnostic(ar, diagnostics);
-                }
-                else
-                {
-                    CollectFromRules(ar.ChildRules, origin, sheetOrder, ref ruleOrder,
-                        output, hasContainingSheets, media, diagnostics);
-                }
+                CollectLayerAtRule(ar, origin, sheetOrder, ref ruleOrder,
+                    output, hasContainingSheets, media, layers, diagnostics);
                 break;
             default:
-                // Other at-rules (page, font-face, keyframes, charset, namespace, …) don't
-                // contribute declarations to the element cascade. If they have an opaque
-                // RawBody (the parser preserved the body but couldn't decompose it), surface
-                // CSS-AT-RULE-UNKNOWN-001 so the user knows their rule was preserved-not-
-                // applied. Otherwise these are silently ignored — they have separate consumers.
                 if (ar.ChildRules.IsEmpty && ar.Declarations.IsEmpty
                     && !string.IsNullOrEmpty(ar.RawBody)
                     && !IsKnownDeclarationBearingAtRule(ar.Name))
@@ -259,11 +243,63 @@ internal static class CascadeResolver
         }
     }
 
+    /// <summary>Handle an <c>@layer</c> at-rule per CSS Cascade L4 §6.4.4.
+    /// Statement-form (<c>@layer foo, bar;</c> — comma-separated names, no body) registers
+    /// the layer names in declaration order so subsequent block-form rules can find them.
+    /// Block-form (<c>@layer foo { … }</c> — single name + body) registers the name if not
+    /// already known, then collects the body's rules with the layer's index threaded through
+    /// to <see cref="CompiledRule.LayerOrder"/>. Anonymous block-form (<c>@layer { … }</c>)
+    /// gets a synthetic unique layer name.</summary>
+    private static void CollectLayerAtRule(
+        CssAtRule ar,
+        CssStylesheetOrigin origin,
+        int sheetOrder,
+        ref int ruleOrder,
+        List<CompiledRule> output,
+        HashSet<int> hasContainingSheets,
+        CssMediaContext media,
+        LayerRegistry layers,
+        ICssDiagnosticsSink? diagnostics)
+    {
+        var names = LayerRegistry.ParsePrelude(ar.Prelude);
+        var hasBody = !ar.ChildRules.IsEmpty || !string.IsNullOrEmpty(ar.RawBody);
+
+        if (!hasBody)
+        {
+            // Statement-form @layer foo, bar, baz; — register all names in declaration
+            // order so future block-form rules find their assigned indices.
+            if (names.Length == 0)
+            {
+                // @layer ; or @layer with empty prelude — odd but tolerated.
+                return;
+            }
+            foreach (var n in names) layers.RegisterIfMissing(n);
+            return;
+        }
+
+        // Block-form: at most one name per spec (multi-name with body is invalid CSS;
+        // tolerated by treating the first as the layer for the body).
+        var primary = names.Length > 0 ? names[0] : null;  // null → anonymous
+        var layerIdx = layers.RegisterIfMissing(primary);
+
+        if (ar.ChildRules.IsEmpty && !string.IsNullOrEmpty(ar.RawBody))
+        {
+            // Body wasn't decomposed by AngleSharp.Css. v1 emits a diagnostic; future
+            // tasks can plumb a CssParserAdapter+CssPreprocessor reparse here so layered
+            // rules with opaque bodies still apply.
+            EmitOpaqueAtRuleDiagnostic(ar, diagnostics);
+            return;
+        }
+
+        CollectFromRules(ar.ChildRules, origin, sheetOrder, ref ruleOrder,
+            output, hasContainingSheets, media, layers, layerIdx, diagnostics);
+    }
+
     /// <summary>Walk an <c>@import</c>'s already-resolved <see cref="CssImportRule.ImportedRules"/>
     /// at the import's cascade position. The imported rules' media + supports + layer
     /// metadata is honored: the imported sheet is collected only when its media query
-    /// matches the cascade media context (same evaluator as top-level stylesheets).
-    /// </summary>
+    /// matches the cascade media context, the supports condition resolves true, and the
+    /// layer (if any) is registered + threaded through to imported declarations.</summary>
     /// <remarks>
     /// In v1 <see cref="CssImportRule.ImportedRules"/> is always empty because
     /// <c>HtmlPdfOptions.ResourceLoader</c> is disabled at the host level (Task 1) — no
@@ -278,17 +314,41 @@ internal static class CascadeResolver
         List<CompiledRule> output,
         HashSet<int> hasContainingSheets,
         CssMediaContext media,
+        LayerRegistry layers,
+        int currentLayer,
         ICssDiagnosticsSink? diagnostics)
     {
         if (import.ImportedRules.IsEmpty) return;
         if (!media.Matches(import.MediaQuery)) return;
         if (import.SupportsCondition is { } supports
-            && !SupportsConditionMatches(supports, diagnostics, import.Location))
+            && !SupportsConditionMatches(NormalizeSupportsCondition(supports), diagnostics, import.Location))
         {
             return;
         }
+
+        // @import url(x) layer(name) — imported rules join the named layer. Use the
+        // import's layer name if set; otherwise inherit currentLayer (typically the
+        // surrounding @layer block, if any).
+        int importLayer = currentLayer;
+        if (import.LayerName is not null)
+        {
+            importLayer = layers.RegisterIfMissing(import.LayerName);
+        }
+
         CollectFromRules(import.ImportedRules, origin, sheetOrder, ref ruleOrder,
-            output, hasContainingSheets, media, diagnostics);
+            output, hasContainingSheets, media, layers, importLayer, diagnostics);
+    }
+
+    /// <summary>Per Rec 2: <c>@import url(x) supports(display: grid)</c> arrives at the
+    /// cascade with the inner condition stripped of its surrounding parens (Task 3
+    /// preprocessor stores it as <c>"display: grid"</c>). The supports evaluator's
+    /// <see cref="SupportsParser"/> requires a leading <c>(</c>; wrap if missing.</summary>
+    private static string NormalizeSupportsCondition(string condition)
+    {
+        var trimmed = condition?.Trim() ?? string.Empty;
+        if (string.IsNullOrEmpty(trimmed)) return trimmed;
+        if (trimmed[0] == '(') return trimmed;
+        return "(" + trimmed + ")";
     }
 
     /// <summary>
@@ -578,7 +638,7 @@ internal static class CascadeResolver
             var key = new CascadeKey(
                 origin: rule.Origin,
                 isImportant: decl.IsImportant,
-                layerOrder: 0,
+                layerOrder: rule.LayerOrder,
                 specificity: alt.Specificity,
                 stylesheetOrder: rule.StylesheetOrder,
                 ruleOrder: rule.RuleOrder,

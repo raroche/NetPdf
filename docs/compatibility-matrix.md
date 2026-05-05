@@ -120,8 +120,8 @@ Phase column shows the milestone in which the feature first ships.
 | Custom properties (`--*`, `var()`) | ✅ | 2 | |
 | `calc()` / `min()` / `max()` / `clamp()` / `abs()` / `sign()` | ✅ | 2 | |
 | CSS Nesting (`& { ... }`) | ✅ | 2 | |
-| `@layer` cascade layers — block-form parsing | 🧪 | 2 | AngleSharp.Css drops `@layer name { ... }` entirely. Task 3's pre-pass captures it as a `CssAtRule { Name = "layer", RawBody = "..." }` so the cascade in Task 7 can re-parse the body and apply layer ordering. |
-| `@layer` statement-form (`@layer one, two;`) | 🧪 | 2 | Same as block-form; Task 3 captures the prelude. Layer ordering applied in Task 7. |
+| `@layer` cascade layers — block-form parsing | 🧪 | 2 | AngleSharp.Css drops `@layer name { ... }` entirely. Task 3's pre-pass captures it as a `CssAtRule { Name = "layer", RawBody = "..." }`. **v1 known gap:** the cascade does not yet re-parse `RawBody` into nested style rules, so block-form `@layer` bodies emit `CSS-AT-RULE-UNKNOWN-001` and don't apply. The cascade infrastructure for layer ordering IS wired (`LayerRegistry` + `CascadeKey.LayerOrder` honor §6.4.4 normal-vs-important reversal), so when the body is decomposed (synthetic AST today, future Task 3 enhancement for real CSS), layer precedence resolves correctly. |
+| `@layer` statement-form (`@layer one, two;`) | 🧪 | 2 | Same as block-form parsing path. Statement-form preludes ARE applied today: the cascade registers the layer names in declaration order so subsequent block-form rules pick up the assigned indices. Block-form bodies remain a known v1 gap (see above). |
 | `:has()` selector — parsing | ✅ | 2 | Selector compiles. |
 | `:has()` selector — rendering | 📥 | post-v1 | Currently treated as no-match; emits `CSS-HAS-RENDERING-NOT-IMPLEMENTED-001`. Roadmap v1.4. |
 | `:is()`, `:where()`, `:not()` | ✅ | 2 | |
@@ -197,4 +197,4 @@ See [docs/design/determinism.md](design/determinism.md) for the full contract an
 
 ---
 
-Last updated: 2026-05-04 (Phase 2 Task 3 review cycle 2 — modern color functions / `@layer` / `@container` reclassified to 🧪 reflecting AngleSharp.Css 1.0.0-beta.144 limitations and Task 3's raw-text preservation).
+Last updated: 2026-05-05 (Phase 2 Task 7 review cycle 2 — clarified `@layer` block-form gap: cascade infrastructure (`LayerRegistry`, layer-aware `CascadeKey`) is in place + verified by tests, but block-form bodies need Task 3 re-parse to actually apply. Statement-form preludes work end-to-end today.).

@@ -21,9 +21,13 @@ namespace NetPdf.Css.Cascade;
 /// <param name="Origin">Cascade origin from the owning stylesheet.</param>
 /// <param name="StylesheetOrder">Global source-order index across all stylesheets.</param>
 /// <param name="RuleOrder">Within-stylesheet rule index in source order.</param>
+/// <param name="LayerOrder">Effective <c>@layer</c> index this rule lives in (per
+/// <see cref="LayerRegistry"/>); <c>0</c> when unlayered. Applied to every matched
+/// declaration's <see cref="CascadeKey.LayerOrder"/>.</param>
 internal sealed record CompiledRule(
     SelectorList? Selectors,
     ImmutableArray<CssDeclaration> Declarations,
     CssStylesheetOrigin Origin,
     int StylesheetOrder,
-    int RuleOrder);
+    int RuleOrder,
+    int LayerOrder = 0);

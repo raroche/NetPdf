@@ -72,13 +72,31 @@ internal readonly struct ComputedSlot : IEquatable<ComputedSlot>
     /// <summary>Decode the RGBA color. Caller must verify <see cref="Tag"/> first.</summary>
     public uint AsColor() => _u32;
 
-    /// <summary>Encode an absolute length in pixels.</summary>
-    public static ComputedSlot FromLengthPx(double pixels) =>
-        FromLengthPx((float)pixels);
+    /// <summary>Encode an absolute length in pixels. Rejects NaN and ±Infinity — those
+    /// are programming errors, not legitimate computed values.</summary>
+    /// <exception cref="ArgumentException">When <paramref name="pixels"/> is NaN or
+    /// infinite.</exception>
+    public static ComputedSlot FromLengthPx(double pixels)
+    {
+        if (double.IsNaN(pixels) || double.IsInfinity(pixels))
+            throw new ArgumentException(
+                $"Length must be finite — got {pixels}. NaN/Infinity are programming errors at this layer.",
+                nameof(pixels));
+        return FromLengthPx((float)pixels);
+    }
 
-    /// <summary>Encode an absolute length in pixels (single-precision).</summary>
-    public static ComputedSlot FromLengthPx(float pixels) =>
-        new(PackTag(ComputedSlotTag.LengthPx) | BitConverter.SingleToUInt32Bits(pixels));
+    /// <summary>Encode an absolute length in pixels (single-precision). Rejects NaN
+    /// and ±Infinity.</summary>
+    /// <exception cref="ArgumentException">When <paramref name="pixels"/> is NaN or
+    /// infinite.</exception>
+    public static ComputedSlot FromLengthPx(float pixels)
+    {
+        if (float.IsNaN(pixels) || float.IsInfinity(pixels))
+            throw new ArgumentException(
+                $"Length must be finite — got {pixels}. NaN/Infinity are programming errors at this layer.",
+                nameof(pixels));
+        return new(PackTag(ComputedSlotTag.LengthPx) | BitConverter.SingleToUInt32Bits(pixels));
+    }
 
     /// <summary>Decode the length in pixels.</summary>
     public double AsLengthPx() => _f32;
@@ -102,10 +120,28 @@ internal readonly struct ComputedSlot : IEquatable<ComputedSlot>
     /// <summary>Decode the keyword id.</summary>
     public int AsKeyword() => _i32;
 
+    /// <summary>The fixed-point representation can store percentages from
+    /// <see cref="MinFixedPercentage"/> to <see cref="MaxFixedPercentage"/> inclusive.</summary>
+    public const double MaxFixedPercentage = int.MaxValue / 65536.0;
+
+    /// <inheritdoc cref="MaxFixedPercentage"/>
+    public const double MinFixedPercentage = int.MinValue / 65536.0;
+
     /// <summary>Encode a percentage stored as fixed-point with 16 fractional bits — covers
-    /// ±32,768% with 1/65,536% precision, more than CSS needs.</summary>
+    /// roughly ±32,768% with 1/65,536% precision, more than CSS needs. Rejects NaN/Infinity
+    /// and values outside the representable range.</summary>
+    /// <exception cref="ArgumentException">When <paramref name="percentage"/> is NaN/Infinity
+    /// or outside [<see cref="MinFixedPercentage"/>, <see cref="MaxFixedPercentage"/>].</exception>
     public static ComputedSlot FromPercentage(double percentage)
     {
+        if (double.IsNaN(percentage) || double.IsInfinity(percentage))
+            throw new ArgumentException(
+                $"Percentage must be finite — got {percentage}.",
+                nameof(percentage));
+        if (percentage < MinFixedPercentage || percentage > MaxFixedPercentage)
+            throw new ArgumentOutOfRangeException(nameof(percentage),
+                $"Percentage {percentage} is outside the fixed-point range " +
+                $"[{MinFixedPercentage}, {MaxFixedPercentage}].");
         var scaled = (int)Math.Round(percentage * 65536.0);
         return new(PackTag(ComputedSlotTag.Percentage) | unchecked((uint)scaled));
     }
@@ -116,9 +152,16 @@ internal readonly struct ComputedSlot : IEquatable<ComputedSlot>
     /// <summary>Encode a side-table index — used when the property's value is variable-
     /// length (font-family lists, gradient definitions, transform matrices) and must live
     /// outside the 8-byte slot. The index is interpreted by the property's specific
-    /// side table, set up in Tasks 9–10.</summary>
-    public static ComputedSlot FromSideTableIndex(int index) =>
-        new(PackTag(ComputedSlotTag.SideTableIndex) | unchecked((uint)index));
+    /// side table, set up in Tasks 9–10. Rejects negative indices.</summary>
+    /// <exception cref="ArgumentOutOfRangeException">When <paramref name="index"/> is negative.</exception>
+    public static ComputedSlot FromSideTableIndex(int index)
+    {
+        if (index < 0)
+            throw new ArgumentOutOfRangeException(nameof(index),
+                $"Side-table index must be non-negative — got {index}. Negative indices " +
+                "have no meaning in the side-table model.");
+        return new(PackTag(ComputedSlotTag.SideTableIndex) | unchecked((uint)index));
+    }
 
     /// <summary>Decode the side-table index.</summary>
     public int AsSideTableIndex() => _i32;
@@ -127,10 +170,25 @@ internal readonly struct ComputedSlot : IEquatable<ComputedSlot>
     /// Encode arbitrary 8-byte data (escape hatch for property-specific layouts like the
     /// length+unit-tag combos used by <c>line-height</c>'s union shape). Caller supplies
     /// the discriminator tag; the high byte is overwritten regardless of its current
-    /// value in <paramref name="bits"/>.
+    /// value in <paramref name="bits"/>. The tag must be a defined non-<see cref="ComputedSlotTag.Unset"/>
+    /// value — passing <see cref="ComputedSlotTag.Unset"/> would create an inconsistent
+    /// slot whose <see cref="IsUnset"/> reports false despite the unset tag.
     /// </summary>
-    public static ComputedSlot FromRawBits(long bits, ComputedSlotTag tag) =>
-        new((bits & 0x00FF_FFFF_FFFF_FFFFL) | PackTag(tag));
+    /// <exception cref="ArgumentException">When <paramref name="tag"/> is
+    /// <see cref="ComputedSlotTag.Unset"/> or outside the defined enum range.</exception>
+    public static ComputedSlot FromRawBits(long bits, ComputedSlotTag tag)
+    {
+        if (tag == ComputedSlotTag.Unset)
+            throw new ArgumentException(
+                "FromRawBits with Unset tag would create a tagged-but-unset slot. Use " +
+                $"{nameof(ComputedSlot)}.{nameof(Unset)} or a default-constructed slot instead.",
+                nameof(tag));
+        if (!System.Enum.IsDefined(tag))
+            throw new ArgumentException(
+                $"Tag {tag} is not a defined {nameof(ComputedSlotTag)} value.",
+                nameof(tag));
+        return new((bits & 0x00FF_FFFF_FFFF_FFFFL) | PackTag(tag));
+    }
 
     /// <summary>Raw 8-byte bits including the tag.</summary>
     public long AsRawBits() => _raw;

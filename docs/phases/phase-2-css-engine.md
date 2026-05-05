@@ -39,10 +39,12 @@ Wire AngleSharp + AngleSharp.Css to parse arbitrary modern HTML+CSS into a DOM a
   - Full `var()` substitution with circular-reference detection (emit `CSS-VAR-CIRCULAR-001`).
   - Full `calc()` / `min()` / `max()` / `clamp()` / `abs()` / `sign()` family with mixed-unit handling (px / em / rem / % / vw / vh).
   - Property-specific resolvers for: lengths, colors (incl. `oklch`/`color-mix` / `lab` / etc.), font-family lists, gradients, backgrounds, transforms.
-- **`ComputedStyle` flat struct** (`src/NetPdf.Css/ComputedStyle.cs`):
-  - `[InlineArray(N)]`-backed property table for cache-friendly access.
-  - Each property is 8 bytes; total ~140 properties × 8 = ~1.1 KB per element. Pooled via `ArrayPool<byte>`.
-  - Custom properties (`--*`) live in a sparse side dictionary keyed per element.
+- **`ComputedStyle` storage layer** (`src/NetPdf.Css/ComputedValues/ComputedStyle.cs`):
+  - **Sealed class** (not the readonly struct originally sketched) so the cascade can share instances and pass to layout passes without struct-copy worries. Per-instance ≈ 24-byte object header + 8 × `PropertyMetadata.Count` slot bytes + bitmap bytes (~530 bytes for the current 63-property registry).
+  - `[InlineArray(PropertyMetadata.Count)]` slot storage + `[InlineArray]` ulong "is-set" bitmap so `Get`/`Set`/`IsSet`/`Unset` are O(1) cache-friendly index operations.
+  - Companion `ComputedSlot` 8-byte readonly struct holds each value with a tag byte + payload (color / float32-length / int32 / keyword / fixed-point percentage / side-table-index / composite). Per-property typed accessors (e.g., `style.Color` returning a typed `RgbaColor`) live in Tasks 9–10 atop the typed value tree.
+  - Custom properties (`--*`) in a lazily-allocated `Dictionary<string, ComputedSlot>` with ordinal (case-sensitive) comparer per CSS Custom Properties L1 §2; names validated for `--` prefix + identifier body.
+  - **Pooled** via `Rent`/`Dispose` against a process-wide bounded `ConcurrentBag<ComputedStyle>` (capped at 256 instances). On `Rent` the instance is reset (slots, bitmap, custom-property dict cleared); `Dispose` queues it back. ArrayPool was the original sketch but a class-instance pool fits the reference semantics and lets `[InlineArray]` keep its inline-storage promise.
 - **Property tables via source generator** (`src/NetPdf.SourceGen/CssPropertyGenerator.cs`):
   - Reads `properties.json` at `src/NetPdf.Css/properties.json` — the single source of truth for every CSS property the cascade knows about. Schema fields (all REQUIRED, validated by the generator with `NPDFGEN0005`): `name` (CSS property name), `id` (PascalCase enum identifier), `type` (`PropertyType` value name), `default` (initial value text per spec), `inherit` (per spec), `applies_to` (`AppliesTo` value name), `computed` (`ComputedValueKind` value name).
   - Emits a generated `PropertyId : ushort` enum (one value per property, doubles as `Table` index), `PropertyMetadata.Table` (`ImmutableArray<PropertyMeta>` so consumers cannot mutate entries), `PropertyMetadata.Count`, and `PropertyMetadata.NameToId` (`FrozenDictionary<string, PropertyId>` with case-insensitive lookup, lazily built).

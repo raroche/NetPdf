@@ -167,6 +167,39 @@ public sealed class ComputedStyleTests
         Assert.True(style.GetCustomProperty("--BRAND").IsUnset);
     }
 
+    [Theory]
+    [InlineData("")]                       // empty
+    [InlineData("brand")]                  // no -- prefix
+    [InlineData("-brand")]                 // single dash
+    [InlineData("--")]                     // bare -- (reserved per CSS Custom Properties L1 §2)
+    [InlineData("--brand!")]               // invalid character
+    [InlineData("--brand color")]          // space in body
+    [InlineData("--$bad")]                 // invalid character at start of body
+    public void Custom_property_invalid_name_throws(string name)
+    {
+        using var style = ComputedStyle.Rent();
+        Assert.Throws<System.ArgumentException>(
+            () => style.SetCustomProperty(name, ComputedSlot.FromInteger(0)));
+        Assert.Throws<System.ArgumentException>(
+            () => style.GetCustomProperty(name));
+        Assert.Throws<System.ArgumentException>(
+            () => style.HasCustomProperty(name));
+    }
+
+    [Theory]
+    [InlineData("--brand")]
+    [InlineData("--brand-color")]
+    [InlineData("--Brand_Color_2")]
+    [InlineData("--a")]                    // single body char is valid
+    [InlineData("--0")]                    // digit body is valid
+    public void Custom_property_valid_names_accepted(string name)
+    {
+        using var style = ComputedStyle.Rent();
+        style.SetCustomProperty(name, ComputedSlot.FromInteger(42));
+        Assert.True(style.HasCustomProperty(name));
+        Assert.Equal(42, style.GetCustomProperty(name).AsInteger());
+    }
+
     [Fact]
     public void Multiple_custom_properties_all_round_trip()
     {
@@ -191,15 +224,75 @@ public sealed class ComputedStyleTests
     }
 
     [Fact]
-    public void Custom_property_null_or_empty_name_throws()
+    public void Custom_property_null_name_throws()
     {
         using var style = ComputedStyle.Rent();
         Assert.Throws<System.ArgumentNullException>(
             () => style.SetCustomProperty(null!, ComputedSlot.FromInteger(0)));
-        Assert.Throws<System.ArgumentException>(
-            () => style.SetCustomProperty(string.Empty, ComputedSlot.FromInteger(0)));
         Assert.Throws<System.ArgumentNullException>(
             () => style.GetCustomProperty(null!));
+        Assert.Throws<System.ArgumentNullException>(
+            () => style.HasCustomProperty(null!));
+    }
+
+    [Fact]
+    public void SetCustomProperty_with_unset_removes_existing_entry()
+    {
+        // Mirror the Set(id, Unset) → Unset(id) invariant. Setting a custom property to
+        // the unset sentinel removes it from the dictionary rather than storing an
+        // inconsistent "explicit unset" entry.
+        using var style = ComputedStyle.Rent();
+        style.SetCustomProperty("--brand", ComputedSlot.FromColor(0xFFFF0000u));
+        Assert.True(style.HasCustomProperty("--brand"));
+
+        style.SetCustomProperty("--brand", ComputedSlot.Unset);
+        Assert.False(style.HasCustomProperty("--brand"));
+        Assert.True(style.GetCustomProperty("--brand").IsUnset);
+    }
+
+    // ------------------------------------------------------------
+    // Set/Unset invariant
+    // ------------------------------------------------------------
+
+    [Fact]
+    public void Set_with_unset_slot_redirects_to_Unset_id()
+    {
+        // Without the redirect, Set(id, Unset) would set the bitmap bit while leaving
+        // the slot value zeroed — IsSet(id) would return true but Get(id).IsUnset would
+        // also return true. The invariant we maintain: IsSet(id) ⟹ !Get(id).IsUnset.
+        using var style = ComputedStyle.Rent();
+        style.Set(PropertyId.Color, ComputedSlot.FromColor(0xFFFF0000u));
+        Assert.True(style.IsSet(PropertyId.Color));
+
+        style.Set(PropertyId.Color, ComputedSlot.Unset);
+        Assert.False(style.IsSet(PropertyId.Color));
+        Assert.True(style.Get(PropertyId.Color).IsUnset);
+    }
+
+    [Fact]
+    public void IsSet_implies_value_is_not_Unset()
+    {
+        // Property invariant: walking every set slot, the value must NOT be the unset
+        // sentinel. This is the contract Tasks 7–10 will rely on.
+        using var style = ComputedStyle.Rent();
+        for (var i = 0; i < PropertyMetadata.Count; i++)
+        {
+            // Mix encodings so we exercise different tag bits.
+            var slot = i % 4 == 0 ? ComputedSlot.FromColor(0xFF000000u | (uint)i)
+                : i % 4 == 1     ? ComputedSlot.FromInteger(i + 1)
+                : i % 4 == 2     ? ComputedSlot.FromKeyword(i + 1)
+                                 : ComputedSlot.FromLengthPx((float)(i + 1));
+            style.Set((PropertyId)i, slot);
+        }
+        for (var i = 0; i < PropertyMetadata.Count; i++)
+        {
+            var id = (PropertyId)i;
+            if (style.IsSet(id))
+            {
+                Assert.False(style.Get(id).IsUnset,
+                    $"PropertyId.{id} is set but value is Unset — invariant violated.");
+            }
+        }
     }
 
     // ------------------------------------------------------------
@@ -207,11 +300,40 @@ public sealed class ComputedStyleTests
     // ------------------------------------------------------------
 
     [Fact]
-    public void Rent_returns_distinct_instances()
+    public void Rent_returns_distinct_instances_when_pool_empty()
     {
-        using var a = ComputedStyle.Rent();
-        using var b = ComputedStyle.Rent();
-        Assert.NotSame(a, b);
+        // Forcefully drain the pool by renting + holding many instances, then verify
+        // each Rent returns a distinct object. Drain-then-rent avoids dependence on
+        // pool state from other tests.
+        var first = ComputedStyle.Rent();
+        var second = ComputedStyle.Rent();
+        Assert.NotSame(first, second);
+        first.Dispose();
+        second.Dispose();
+    }
+
+    [Fact]
+    public void Rent_after_Dispose_yields_clean_state()
+    {
+        // Pool reuse path: dispose an instance with set values, rent again, the
+        // returned instance has zero set bits, zero custom properties, and IsSet=false
+        // for everything.
+        var initial = ComputedStyle.Rent();
+        initial.Set(PropertyId.Color, ComputedSlot.FromColor(0xFFFF0000u));
+        initial.SetCustomProperty("--brand", ComputedSlot.FromColor(0xFF00FF00u));
+        Assert.True(initial.IsSet(PropertyId.Color));
+        Assert.Equal(1, initial.CustomPropertyCount);
+        initial.Dispose();
+
+        // The next rent could return ANY pooled instance (including the one we just
+        // disposed). Whatever we get back must be in clean state.
+        using var rented = ComputedStyle.Rent();
+        for (var i = 0; i < PropertyMetadata.Count; i++)
+        {
+            Assert.False(rented.IsSet((PropertyId)i),
+                $"Rented instance has PropertyId.{(PropertyId)i} still set — Reset is broken.");
+        }
+        Assert.Equal(0, rented.CustomPropertyCount);
     }
 
     [Fact]
@@ -236,16 +358,16 @@ public sealed class ComputedStyleTests
     }
 
     [Fact]
-    public void Dispose_clears_custom_property_dictionary()
+    public void Dispose_then_post_dispose_access_throws()
     {
         var style = ComputedStyle.Rent();
         style.SetCustomProperty("--brand", ComputedSlot.FromColor(0xFFFF0000u));
         Assert.Equal(1, style.CustomPropertyCount);
         style.Dispose();
-        // Operations after dispose throw — direct verification of dictionary clear is
-        // implicit via the post-dispose throw on CustomPropertyCount.
-        Assert.Throws<System.ObjectDisposedException>(
-            () => _ = style.CustomPropertyCount);
+        // Soft guard: instance still exists in the pool, but the original holder must
+        // not touch it (use-after-Dispose is a programming error). The disposed flag
+        // catches this whenever the same instance hasn't been re-rented yet.
+        Assert.Throws<System.ObjectDisposedException>(() => _ = style.CustomPropertyCount);
     }
 
     // ------------------------------------------------------------

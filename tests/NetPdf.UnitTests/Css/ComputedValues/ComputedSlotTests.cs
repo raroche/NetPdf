@@ -129,6 +129,96 @@ public sealed class ComputedSlotTests
     }
 
     [Fact]
+    public void RawBits_rejects_unset_tag()
+    {
+        // FromRawBits with the Unset tag would create a slot whose tag is Unset but
+        // whose raw bits are non-zero — IsUnset would return false, breaking the
+        // invariant that "tagged Unset" matches "default value".
+        Assert.Throws<System.ArgumentException>(
+            () => ComputedSlot.FromRawBits(1234L, ComputedSlotTag.Unset));
+    }
+
+    [Fact]
+    public void RawBits_rejects_undefined_tag()
+    {
+        // Tag values past the defined enum range are rejected so the slot's encoding
+        // contract stays self-describing.
+        Assert.Throws<System.ArgumentException>(
+            () => ComputedSlot.FromRawBits(1234L, (ComputedSlotTag)200));
+    }
+
+    // ------------------------------------------------------------
+    // Factory hardening (NaN/Inf/range/negative checks)
+    // ------------------------------------------------------------
+
+    [Theory]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(double.NegativeInfinity)]
+    public void FromLengthPx_double_rejects_non_finite(double pixels)
+    {
+        Assert.Throws<System.ArgumentException>(() => ComputedSlot.FromLengthPx(pixels));
+    }
+
+    [Theory]
+    [InlineData(float.NaN)]
+    [InlineData(float.PositiveInfinity)]
+    [InlineData(float.NegativeInfinity)]
+    public void FromLengthPx_float_rejects_non_finite(float pixels)
+    {
+        Assert.Throws<System.ArgumentException>(() => ComputedSlot.FromLengthPx(pixels));
+    }
+
+    [Theory]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(double.NegativeInfinity)]
+    public void FromPercentage_rejects_non_finite(double percentage)
+    {
+        Assert.Throws<System.ArgumentException>(() => ComputedSlot.FromPercentage(percentage));
+    }
+
+    [Fact]
+    public void FromPercentage_rejects_value_above_max()
+    {
+        Assert.Throws<System.ArgumentOutOfRangeException>(
+            () => ComputedSlot.FromPercentage(ComputedSlot.MaxFixedPercentage * 2));
+    }
+
+    [Fact]
+    public void FromPercentage_rejects_value_below_min()
+    {
+        Assert.Throws<System.ArgumentOutOfRangeException>(
+            () => ComputedSlot.FromPercentage(ComputedSlot.MinFixedPercentage * 2));
+    }
+
+    [Fact]
+    public void FromPercentage_accepts_boundary_values()
+    {
+        // Endpoints round-trip cleanly. Catches off-by-one in the range check.
+        var max = ComputedSlot.FromPercentage(ComputedSlot.MaxFixedPercentage);
+        Assert.Equal(ComputedSlotTag.Percentage, max.Tag);
+        var min = ComputedSlot.FromPercentage(ComputedSlot.MinFixedPercentage);
+        Assert.Equal(ComputedSlotTag.Percentage, min.Tag);
+    }
+
+    [Fact]
+    public void FromSideTableIndex_rejects_negative()
+    {
+        Assert.Throws<System.ArgumentOutOfRangeException>(
+            () => ComputedSlot.FromSideTableIndex(-1));
+        Assert.Throws<System.ArgumentOutOfRangeException>(
+            () => ComputedSlot.FromSideTableIndex(int.MinValue));
+    }
+
+    [Fact]
+    public void FromSideTableIndex_accepts_zero_and_positive()
+    {
+        Assert.Equal(0, ComputedSlot.FromSideTableIndex(0).AsSideTableIndex());
+        Assert.Equal(int.MaxValue, ComputedSlot.FromSideTableIndex(int.MaxValue).AsSideTableIndex());
+    }
+
+    [Fact]
     public void Different_encodings_produce_distinct_slots()
     {
         var color = ComputedSlot.FromColor(0xFF0000FFu);

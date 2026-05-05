@@ -193,8 +193,16 @@ internal static class VarResolver
             var winner = matched.GetWinner(name);
             if (winner is null) continue;
             var raw = winner.Declaration.Value.RawText ?? string.Empty;
-            var resolved = VarSubstitution.Substitute(raw, customProperties, diagnostics,
+            var substituted = VarSubstitution.Substitute(raw, customProperties, diagnostics,
                 location: winner.Declaration.Location);
+            // After var() substitution, run the math-function resolver (Task 9) so
+            // calc() / min() / max() / clamp() / abs() / sign() expressions reduce to
+            // single concrete values when possible. Mixed-unit cases (50% + 16px) are
+            // preserved as text for layout to finalize. Diagnostic codes
+            // CSS-CALC-INVALID-001 / CSS-CALC-DIV-BY-ZERO-001 emitted by the resolver.
+            var calcReduced = CalcResolver.Resolve(substituted.Value, diagnostics,
+                winner.Declaration.Location);
+            var resolved = new SubstitutionResult(calcReduced, substituted.IsInvalid);
             // For non-custom declarations the structured "invalid" flag is informative
             // only — the value field already holds the right sentinel ("unset") that
             // Tasks 9–10 typed-value parsers will resolve to the property's initial

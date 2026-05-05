@@ -76,5 +76,19 @@ internal static class DiagnosticCodes
     /// </summary>
     public const string CssVarExpansionLimit001 = "CSS-VAR-EXPANSION-LIMIT-001";
 
+    /// <summary>
+    /// A <c>calc()</c> / <c>min()</c> / <c>max()</c> / <c>clamp()</c> / <c>abs()</c> /
+    /// <c>sign()</c> expression was syntactically invalid or had a type mismatch
+    /// (e.g., adding a number to a length). Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string CssCalcInvalid001 = "CSS-CALC-INVALID-001";
+
+    /// <summary>
+    /// A <c>calc()</c> expression divided by zero. Per CSS Values L4 §10.1, the result
+    /// is treated as "invalid at computed value time"; the property's initial value
+    /// applies. Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string CssCalcDivByZero001 = "CSS-CALC-DIV-BY-ZERO-001";
+
     // endregion CSS-*
 }

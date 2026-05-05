@@ -182,6 +182,45 @@ public sealed class DiagnosticCodesTests
             NetPdf.Css.Diagnostics.CssDiagnosticCodes.CssVarCircular001);
     }
 
+    [Fact]
+    public void Css_var_expansion_limit_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(registry,
+            @"\|\s*`?(CSS-VAR-EXPANSION-LIMIT-001)`?\s*\|\s*(\w+)\s*\|");
+        Assert.True(match.Success, "CSS-VAR-EXPANSION-LIMIT-001 row not found");
+        Assert.Equal(DiagnosticCodes.CssVarExpansionLimit001, match.Groups[1].Value);
+        Assert.Equal("Warning", match.Groups[2].Value);
+        Assert.Equal(DiagnosticCodes.CssVarExpansionLimit001,
+            NetPdf.Css.Diagnostics.CssDiagnosticCodes.CssVarExpansionLimit001);
+    }
+
+    [Fact]
+    public void Css_calc_invalid_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(registry,
+            @"\|\s*`?(CSS-CALC-INVALID-001)`?\s*\|\s*(\w+)\s*\|");
+        Assert.True(match.Success, "CSS-CALC-INVALID-001 row not found");
+        Assert.Equal(DiagnosticCodes.CssCalcInvalid001, match.Groups[1].Value);
+        Assert.Equal("Warning", match.Groups[2].Value);
+        Assert.Equal(DiagnosticCodes.CssCalcInvalid001,
+            NetPdf.Css.Diagnostics.CssDiagnosticCodes.CssCalcInvalid001);
+    }
+
+    [Fact]
+    public void Css_calc_div_by_zero_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(registry,
+            @"\|\s*`?(CSS-CALC-DIV-BY-ZERO-001)`?\s*\|\s*(\w+)\s*\|");
+        Assert.True(match.Success, "CSS-CALC-DIV-BY-ZERO-001 row not found");
+        Assert.Equal(DiagnosticCodes.CssCalcDivByZero001, match.Groups[1].Value);
+        Assert.Equal("Warning", match.Groups[2].Value);
+        Assert.Equal(DiagnosticCodes.CssCalcDivByZero001,
+            NetPdf.Css.Diagnostics.CssDiagnosticCodes.CssCalcDivByZero001);
+    }
+
     private static string LoadRegistry()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

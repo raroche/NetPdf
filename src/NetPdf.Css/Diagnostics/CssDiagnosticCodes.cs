@@ -34,4 +34,12 @@ internal static class CssDiagnosticCodes
     /// <summary>A <c>var()</c> substitution exceeded the user-agent's depth or output
     /// safety limit (non-cyclic pathological chain). Severity: Warning.</summary>
     public const string CssVarExpansionLimit001 = "CSS-VAR-EXPANSION-LIMIT-001";
+
+    /// <summary>A math-function expression (<c>calc()</c>/<c>min()</c>/<c>max()</c>/<c>clamp()</c>/
+    /// <c>abs()</c>/<c>sign()</c>) was syntactically invalid or had a type mismatch.
+    /// Severity: Warning.</summary>
+    public const string CssCalcInvalid001 = "CSS-CALC-INVALID-001";
+
+    /// <summary>A <c>calc()</c> expression divided by zero. Severity: Warning.</summary>
+    public const string CssCalcDivByZero001 = "CSS-CALC-DIV-BY-ZERO-001";
 }

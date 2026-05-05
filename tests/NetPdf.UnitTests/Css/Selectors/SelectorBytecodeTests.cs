@@ -44,14 +44,30 @@ public sealed class SelectorBytecodeTests
     }
 
     [Fact]
-    public void Reader_walks_attribute_with_two_symbols()
+    public void Reader_walks_attribute_with_two_symbols_and_case_flag()
     {
-        // [type="text"] → MatchAttrEquals, name=type, value=text, End
+        // [data-x="text"] → MatchAttrEquals, name=data-x, value=text, caseFlag=0, End.
+        // Use data-x (not on the HTML CI list) so the case flag is deterministically 0.
+        var alt = SelectorCompiler.Compile("[data-x=\"text\"]").Alternatives[0];
+        var reader = alt.OpenReader();
+        Assert.Equal(SelectorOpcode.MatchAttrEquals, reader.ReadOpcode());
+        Assert.Equal("data-x", reader.ReadSymbol());
+        Assert.Equal("text", reader.ReadSymbol());
+        Assert.Equal((byte)0, reader.ReadByte());
+        Assert.Equal(SelectorOpcode.End, reader.ReadOpcode());
+    }
+
+    [Fact]
+    public void Reader_walks_attribute_with_html_ci_default_flag()
+    {
+        // 'type' is on the HTML CI attribute list, so the compiler defaults to caseFlag=1
+        // even without an explicit `i` flag.
         var alt = SelectorCompiler.Compile("[type=\"text\"]").Alternatives[0];
         var reader = alt.OpenReader();
         Assert.Equal(SelectorOpcode.MatchAttrEquals, reader.ReadOpcode());
         Assert.Equal("type", reader.ReadSymbol());
         Assert.Equal("text", reader.ReadSymbol());
+        Assert.Equal((byte)1, reader.ReadByte());
         Assert.Equal(SelectorOpcode.End, reader.ReadOpcode());
     }
 

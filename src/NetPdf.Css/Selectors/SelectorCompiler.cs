@@ -52,6 +52,35 @@ namespace NetPdf.Css.Selectors;
 /// </remarks>
 internal static class SelectorCompiler
 {
+    /// <summary>HTML attributes that are matched ASCII case-insensitively by default per
+    /// CSS Selectors L4 §6.3.2 (citing the HTML 5 spec's set of "case-insensitive"
+    /// attributes). When a selector targets one of these AND no explicit case flag is
+    /// supplied, the matcher uses ASCII-case-insensitive comparison automatically.
+    /// The <c>s</c> flag overrides back to case-sensitive; <c>i</c> is a no-op redundancy.
+    /// Names compared case-insensitively because attribute names themselves are
+    /// case-insensitive in HTML.</summary>
+    private static readonly FrozenSet<string> HtmlCaseInsensitiveAttributes =
+        new[]
+        {
+            "accept", "accept-charset", "align", "alink", "axis", "bgcolor", "charset",
+            "checked", "clear", "codetype", "color", "compact", "declare", "defer",
+            "dir", "direction", "disabled", "enctype", "face", "frame", "frameborder",
+            "hreflang", "http-equiv", "lang", "language", "link", "media", "method",
+            "multiple", "nohref", "noresize", "noshade", "nowrap", "readonly", "rel",
+            "rev", "rules", "scope", "scrolling", "selected", "shape", "target", "text",
+            "type", "valign", "valuetype", "vlink",
+        }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>User-action pseudo-classes permitted to follow a pseudo-element per CSS
+    /// Selectors L4 §3.5. Other pseudo-classes (structural like <c>:first-child</c>,
+    /// <c>:nth-child</c>, etc.) are rejected at compile time so a typo in a selector
+    /// like <c>p::before:first-child</c> surfaces as <c>CSS-PARSE-WARNING-001</c>
+    /// instead of silently never matching. Functional pseudo-classes
+    /// <c>:not</c>/<c>:is</c>/<c>:where</c>/<c>:has</c> are also allowed.</summary>
+    private static readonly FrozenSet<string> PseudoElementTailAllowlist =
+        new[] { "hover", "focus", "active", "focus-visible", "focus-within" }
+        .ToFrozenSet(StringComparer.Ordinal);
+
     /// <summary>Parses <paramref name="selectorText"/> into a <see cref="SelectorList"/>.
     /// Throws <see cref="SelectorParseException"/> on malformed input — the cascade
     /// resolver catches this and emits <c>CSS-PARSE-WARNING-001</c>.</summary>
@@ -98,9 +127,22 @@ internal static class SelectorCompiler
             _pos = 0;
         }
 
-        /// <summary>Parse <c>SelectorList := ComplexSelector ("," ComplexSelector)*</c>.</summary>
-        public SelectorList ParseSelectorList(SelectorContext ctx)
+        /// <summary>Parse <c>SelectorList := ComplexSelector ("," ComplexSelector)*</c>.
+        /// Convenience overload that discards the "any alternative attempted" flag — used
+        /// at top-level where the distinction is irrelevant (top-level lists are not
+        /// forgiving).</summary>
+        public SelectorList ParseSelectorList(SelectorContext ctx) =>
+            ParseSelectorList(ctx, out _);
+
+        /// <summary>Parse a selector list and report whether at least one alternative was
+        /// attempted (regardless of whether it succeeded). Distinguishes "authored empty
+        /// parens" (forgiving wrapper rejects) from "all alternatives dropped via forgiving
+        /// mode" (forgiving wrapper accepts as a match-nothing pseudo-class per Selectors
+        /// L4 §3.7).</summary>
+
+        public SelectorList ParseSelectorList(SelectorContext ctx, out bool anyAlternativeAttempted)
         {
+            anyAlternativeAttempted = false;
             var alts = ImmutableArray.CreateBuilder<SelectorBytecode>();
             SkipWhitespace();
             if (IsEnd || (ctx != SelectorContext.TopLevel && Peek() == ')'))
@@ -108,6 +150,7 @@ internal static class SelectorCompiler
 
             while (true)
             {
+                anyAlternativeAttempted = true;
                 if (ctx == SelectorContext.ForgivingSubGroup)
                 {
                     // Forgiving mode: catch per-alternative parse errors and skip the
@@ -165,11 +208,16 @@ internal static class SelectorCompiler
                 SkipWhitespace();
             }
 
-            compounds.Add(ParseCompoundSelector());
+            var inSubGroup = ctx != SelectorContext.TopLevel;
+            compounds.Add(ParseCompoundSelector(inSubGroup));
 
             while (true)
             {
-                SkipWhitespace();
+                // Track whether actual whitespace was consumed: descendant combinator is
+                // implied by whitespace, NOT by simple adjacency. Without this guard,
+                // selectors like `div*` or `.foo*` would be wrongly interpreted as
+                // descendant selectors instead of failing at parse time.
+                var hadWhitespace = SkipWhitespaceReturningCount() > 0;
                 if (IsEnd) break;
                 var c = Peek();
                 if (c == ',' || c == ')') break;
@@ -181,16 +229,34 @@ internal static class SelectorCompiler
                 else
                 {
                     if (!IsCompoundStart(c)) break;
+                    if (!hadWhitespace)
+                        throw Error($"unexpected '{c}' — descendant combinator requires whitespace");
                     combinator = SelectorOpcode.Descendant;
                 }
 
                 SkipWhitespace();
                 if (IsEnd) throw Error("expected compound selector after combinator");
                 combinators.Add(combinator);
-                compounds.Add(ParseCompoundSelector());
+                compounds.Add(ParseCompoundSelector(inSubGroup));
             }
 
             return EmitBytecode(compounds, combinators, startPos);
+        }
+
+        /// <summary>Skip CSS whitespace; return the number of characters consumed so the
+        /// caller can distinguish "compound followed by whitespace then identifier"
+        /// (descendant combinator) from "compound directly adjacent to invalid char"
+        /// (parse error) — see CSS Selectors L4 §15.</summary>
+        private int SkipWhitespaceReturningCount()
+        {
+            var start = _pos;
+            while (!IsEnd)
+            {
+                var c = _text[_pos];
+                if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f') _pos++;
+                else break;
+            }
+            return _pos - start;
         }
 
         /// <summary>Skip ahead to the next "," or ")" at top level, paren-aware. Used by
@@ -261,24 +327,45 @@ internal static class SelectorCompiler
         }
 
         /// <summary>Parse one compound selector — a sequence of simple selectors with no
-        /// whitespace or combinator between them.</summary>
-        private CompoundSelector ParseCompoundSelector()
+        /// whitespace or combinator between them. The <paramref name="inSubGroup"/> flag
+        /// makes pseudo-elements (<c>::name</c> + legacy <c>:before</c>/<c>:after</c>/
+        /// <c>:first-line</c>/<c>:first-letter</c>) invalid per CSS Selectors L4 §3.5
+        /// (pseudo-elements are not elements, so they cannot appear inside <c>:is()</c>,
+        /// <c>:where()</c>, <c>:not()</c>, or <c>:has()</c>).</summary>
+        private CompoundSelector ParseCompoundSelector(bool inSubGroup)
         {
             var compound = new CompoundSelector();
             if (IsEnd) throw Error("expected compound selector");
             var c = Peek();
             if (c == '*') { compound.Add(SimpleSelector.Universal()); _pos++; }
-            else if (IsIdentStart(c) || c == '\\') { compound.Add(SimpleSelector.Type(ReadIdent())); }
+            else if (IsIdentStart(c) || c == '\\' || c == '-')
+            {
+                var ident = ReadIdent();
+                if (string.IsNullOrEmpty(ident)) throw Error("expected type selector");
+                compound.Add(SimpleSelector.Type(ident));
+            }
             else if (c != '.' && c != '#' && c != '[' && c != ':')
                 throw Error($"unexpected character '{c}'");
 
             while (!IsEnd)
             {
                 c = Peek();
-                if (c == '.') { _pos++; compound.Add(SimpleSelector.Class(ReadIdent())); }
-                else if (c == '#') { _pos++; compound.Add(SimpleSelector.Id(ReadIdent())); }
+                if (c == '.')
+                {
+                    _pos++;
+                    var name = ReadIdent();
+                    if (string.IsNullOrEmpty(name)) throw Error("expected class name after '.'");
+                    compound.Add(SimpleSelector.Class(name));
+                }
+                else if (c == '#')
+                {
+                    _pos++;
+                    var name = ReadIdent();
+                    if (string.IsNullOrEmpty(name)) throw Error("expected id after '#'");
+                    compound.Add(SimpleSelector.Id(name));
+                }
                 else if (c == '[') compound.Add(ParseAttributeSelector());
-                else if (c == ':') compound.Add(ParsePseudo());
+                else if (c == ':') compound.Add(ParsePseudo(inSubGroup));
                 else break;
             }
 
@@ -308,9 +395,13 @@ internal static class SelectorCompiler
                 throw Error("expected attribute value after operator");
             SkipWhitespace();
 
-            // Case sensitivity flag: 'i' (case-insensitive) or 's' (case-sensitive, the default).
-            // Per Selectors L4 §6.3.2.
-            byte caseFlag = 0;
+            // Case sensitivity flag per Selectors L4 §6.3.2:
+            //   - explicit `i` → caseFlag = 1 (ASCII case-insensitive)
+            //   - explicit `s` → caseFlag = 0 (case-sensitive)
+            //   - no flag, attribute is on the HTML CI list → caseFlag = 1 (default CI)
+            //   - no flag, otherwise → caseFlag = 0
+            // Computing at compile time keeps the matcher's hot path branch-free.
+            byte caseFlag;
             if (!IsEnd && (Peek() == 'i' || Peek() == 'I'))
             {
                 caseFlag = 1;
@@ -319,8 +410,13 @@ internal static class SelectorCompiler
             }
             else if (!IsEnd && (Peek() == 's' || Peek() == 'S'))
             {
+                caseFlag = 0;
                 _pos++;
                 SkipWhitespace();
+            }
+            else
+            {
+                caseFlag = HtmlCaseInsensitiveAttributes.Contains(name) ? (byte)1 : (byte)0;
             }
             Expect(']');
             return SimpleSelector.Attr(op, name, value, caseFlag);
@@ -345,7 +441,7 @@ internal static class SelectorCompiler
             return op;
         }
 
-        private SimpleSelector ParsePseudo()
+        private SimpleSelector ParsePseudo(bool inSubGroup)
         {
             Expect(':');
             if (!IsEnd && Peek() == ':')
@@ -355,7 +451,9 @@ internal static class SelectorCompiler
                 if (string.IsNullOrEmpty(pseudoElementName))
                     throw Error("expected pseudo-element name");
                 if (!IsEnd && Peek() == '(') SkipParens();
-                return SimpleSelector.PseudoElement(pseudoElementName);
+                if (inSubGroup)
+                    throw Error("pseudo-elements are not valid inside :is()/:where()/:not()/:has()");
+                return SimpleSelector.PseudoElement(pseudoElementName.ToLowerInvariant());
             }
 
             var name = ReadIdent();
@@ -364,7 +462,19 @@ internal static class SelectorCompiler
             if (!IsEnd && Peek() == '(')
                 return ParseFunctionalPseudo(name);
 
-            return name.ToLowerInvariant() switch
+            // Legacy CSS2 single-colon pseudo-elements still appear in the wild (older
+            // invoice templates, email-style CSS). Per CSS Pseudo-Elements L4 §6, the
+            // four named here MUST be accepted with single-colon syntax for backward
+            // compatibility — even though double-colon is preferred for new code.
+            var lower = name.ToLowerInvariant();
+            if (lower is "before" or "after" or "first-line" or "first-letter")
+            {
+                if (inSubGroup)
+                    throw Error("pseudo-elements are not valid inside :is()/:where()/:not()/:has()");
+                return SimpleSelector.PseudoElement(lower);
+            }
+
+            return lower switch
             {
                 "first-child" => SimpleSelector.Pseudo(SelectorOpcode.MatchFirstChild),
                 "last-child" => SimpleSelector.Pseudo(SelectorOpcode.MatchLastChild),
@@ -376,6 +486,8 @@ internal static class SelectorCompiler
                 "root" => SimpleSelector.Pseudo(SelectorOpcode.MatchRoot),
                 "hover" => SimpleSelector.Pseudo(SelectorOpcode.MatchHover),
                 "focus" => SimpleSelector.Pseudo(SelectorOpcode.MatchFocus),
+                "focus-visible" => SimpleSelector.Pseudo(SelectorOpcode.MatchFocus), // alias for static PDFs
+                "focus-within" => SimpleSelector.Pseudo(SelectorOpcode.MatchFocus),
                 "active" => SimpleSelector.Pseudo(SelectorOpcode.MatchActive),
                 "visited" => SimpleSelector.Pseudo(SelectorOpcode.MatchVisited),
                 "link" => SimpleSelector.Pseudo(SelectorOpcode.MatchLink),
@@ -407,19 +519,40 @@ internal static class SelectorCompiler
         {
             var (a, b) = ReadAnPlusB();
             SkipWhitespace();
+            // CSS Selectors L4 §6.6.5.2: `:nth-child(An+B of S)` and `:nth-last-child(An+B of S)`.
+            // `:nth-of-type` / `:nth-last-of-type` do NOT accept the `of` clause per spec.
+            if (TryReadKeyword("of"))
+            {
+                if (op == SelectorOpcode.MatchNthChild) op = SelectorOpcode.MatchNthChildOf;
+                else if (op == SelectorOpcode.MatchNthLastChild) op = SelectorOpcode.MatchNthLastChildOf;
+                else throw Error(":nth-of-type and :nth-last-of-type do not accept an 'of S' clause");
+                SkipWhitespace();
+                var filter = ParseSelectorList(SelectorContext.StrictSubGroup);
+                if (filter.Alternatives.IsDefaultOrEmpty)
+                    throw Error("expected selector list after 'of'");
+                SkipWhitespace();
+                Expect(')');
+                return SimpleSelector.Nth(op, a, b, filter);
+            }
             Expect(')');
             return SimpleSelector.Nth(op, a, b);
         }
 
         private SimpleSelector ParseSubGroup(SelectorOpcode op, SelectorContext ctx)
         {
-            var inner = ParseSelectorList(ctx);
+            var inner = ParseSelectorList(ctx, out var anyAttempted);
             SkipWhitespace();
             Expect(')');
-            // Empty argument list is invalid for all four functional pseudo-classes per
-            // Selectors L4. Without this, :not() / :is() / :where() / :has() would all
-            // become vacuous match-all (or always-false) — silent miscascade.
-            if (inner.Alternatives.IsDefaultOrEmpty)
+            // Empty argument list:
+            //   - authored empty `:not()` / `:is()` / etc. (no alternatives attempted) →
+            //     invalid per Selectors L4. Empty :not() would be vacuous match-all
+            //     (silent miscascade); empty :is() / :where() are also explicitly invalid.
+            //   - forgiving list where every alternative was dropped (anyAttempted = true,
+            //     alternatives empty) → valid match-nothing per L4 §3.7. The matcher's
+            //     iteration over zero alternatives in MatchIs / MatchWhere returns false
+            //     correctly. :not() / :has() are non-forgiving so they never reach this
+            //     branch (a parse error in any alternative aborts).
+            if (inner.Alternatives.IsDefaultOrEmpty && !anyAttempted)
                 throw Error($"functional pseudo-class requires at least one selector argument");
             return SimpleSelector.SubGroup(op, inner);
         }
@@ -495,28 +628,53 @@ internal static class SelectorCompiler
             return value;
         }
 
-        /// <summary>Read a CSS identifier with full escape decoding per CSS Syntax L3 §4.3.7.
-        /// Handles both literal-character escapes (<c>\:</c>, <c>\/</c>) and hex escapes
-        /// (<c>\E9</c>, <c>\41 6</c>) — critical for Tailwind's responsive utility classes
-        /// like <c>.sm\:block</c> and <c>.w-1\/2</c>.</summary>
+        /// <summary>Read a CSS identifier with full escape decoding per CSS Syntax L3 §4.3.7
+        /// + identifier-start grammar from §4.3.11. Handles both escape forms (literal
+        /// <c>\:</c>, hex <c>\41</c>) and the <c>--</c> "custom-property style" prefix
+        /// that's valid for class / id / attribute-value identifiers. Critical for
+        /// Tailwind responsive utilities (<c>.sm\:block</c>) and modern frameworks that
+        /// emit <c>.--my-class</c> / <c>#--my-id</c>.</summary>
         private string ReadIdent()
         {
             var start = _pos;
             var sb = new StringBuilder();
 
-            // Optional leading hyphen — CSS idents may start with - (custom names) or --
-            // (custom properties; we don't accept these in selectors). Single - is fine.
-            if (!IsEnd && Peek() == '-')
+            // Per CSS Syntax L3 §4.3.11: an identifier may start with a single hyphen
+            // followed by ident-start (letter/_/non-ASCII/escape/another hyphen), OR with
+            // double hyphen (custom-property syntax). After the leading hyphens, the next
+            // character must be a valid ident-start (or, for double-hyphen, the bare `--`
+            // is acceptable per spec but we still require at least one continuation char
+            // to avoid ambiguity with `--` operator artifacts the parser shouldn't see).
+            var hyphens = 0;
+            while (!IsEnd && Peek() == '-' && hyphens < 2)
             {
                 sb.Append('-');
                 _pos++;
+                hyphens++;
             }
-            // Identifier must start with letter/underscore/non-ASCII OR backslash escape.
-            if (IsEnd || (!IsIdentStart(Peek()) && Peek() != '\\'))
+
+            // After 0 or 1 leading hyphens, the next char must be a regular ident-start
+            // or escape. After 2 hyphens (`--` custom-property prefix), any ident-continue
+            // char qualifies (digits OK, more hyphens OK, escape OK).
+            if (hyphens < 2)
             {
-                _pos = start;
-                return string.Empty;
+                if (IsEnd || (!IsIdentStart(Peek()) && Peek() != '\\'))
+                {
+                    _pos = start;
+                    return string.Empty;
+                }
             }
+            else
+            {
+                // `--` prefix — require at least one continuation char OR no continuation
+                // at all is OK only when this `--` will be followed by something the
+                // surrounding parser handles. To stay conservative and avoid greedy
+                // misparses (e.g., `--`+nothing in a class slot), we accept the `--`
+                // alone but only return non-empty when the next char isn't a parser-
+                // significant boundary char. In practice the calling sites validate
+                // non-empty themselves, so emitting "--" here is fine.
+            }
+
             while (!IsEnd)
             {
                 var c = Peek();
@@ -674,8 +832,8 @@ internal static class SelectorCompiler
             new(SimpleSelectorKind.Attribute, op, name, value, 0, 0, null, caseFlag);
         public static SimpleSelector Pseudo(SelectorOpcode op) =>
             new(SimpleSelectorKind.Pseudo, op, null, null, 0, 0, null, 0);
-        public static SimpleSelector Nth(SelectorOpcode op, int a, int b) =>
-            new(SimpleSelectorKind.Nth, op, null, null, a, b, null, 0);
+        public static SimpleSelector Nth(SelectorOpcode op, int a, int b, SelectorList? filter = null) =>
+            new(SimpleSelectorKind.Nth, op, null, null, a, b, filter, 0);
         public static SimpleSelector SubGroup(SelectorOpcode op, SelectorList list) =>
             new(SimpleSelectorKind.SubGroup, op, null, null, 0, 0, list, 0);
         public static SimpleSelector PseudoElement(string name) =>
@@ -753,9 +911,17 @@ internal static class SelectorCompiler
         }
 
         /// <summary>Emit one compound's match opcodes. Returns the pseudo-element name when
-        /// the compound includes one (Task 14 reads it for materialization). Pseudo-element
-        /// validation: at most one per compound, must be the rightmost simple in the compound.
-        /// </summary>
+        /// the compound includes one (Task 14 reads it for materialization).</summary>
+        /// <remarks>
+        /// Per CSS Selectors L4 §3.5, pseudo-elements have strict placement rules:
+        /// (a) at most one pseudo-element per compound; (b) must be the last simple selector
+        /// in the compound (no class / id / attribute / structural pseudo-class after it);
+        /// (c) only specific user-action pseudo-classes (<c>:hover</c>, <c>:focus</c>,
+        /// <c>:active</c>, <c>:focus-visible</c>, <c>:focus-within</c>) and functional
+        /// pseudo-classes (<c>:not</c>/<c>:is</c>/<c>:where</c>/<c>:has</c>) may follow.
+        /// Selectors like <c>p::before:first-child</c> are rejected at parse time so a typo
+        /// surfaces as <c>CSS-PARSE-WARNING-001</c> instead of silently never matching.
+        /// </remarks>
         public string? EmitCompound(CompoundSelector compound, bool addToRequired)
         {
             string? pseudoElement = null;
@@ -771,19 +937,42 @@ internal static class SelectorCompiler
                     Specificity += new Specificity(0, 0, 1);
                     continue;
                 }
-                // Per Selectors L4 §3.5: only certain pseudo-classes are valid after a
-                // pseudo-element. v1 validation: no further simple selector after a
-                // pseudo-element except specific tail pseudo-classes (we accept all
-                // pseudo-classes as a relaxed check — strict spec compliance lands when
-                // the pseudo-element subset stabilizes).
-                if (pseudoElement is not null && part.Kind != SimpleSelectorKind.Pseudo)
-                    throw new SelectorParseException(
-                        string.Empty, 0,
-                        $"simple selector of kind {part.Kind} cannot follow a pseudo-element");
+                // Validate tail-after-pseudo-element placement.
+                if (pseudoElement is not null)
+                {
+                    if (!IsAllowedAfterPseudoElement(part))
+                        throw new SelectorParseException(
+                            string.Empty, 0,
+                            $"simple selector of kind {part.Kind} ('{part.Name ?? part.Opcode.ToString()}') cannot follow a pseudo-element");
+                }
 
                 EmitPart(part, addToRequired);
             }
             return pseudoElement;
+        }
+
+        /// <summary>Returns <see langword="true"/> when the simple selector is permitted to
+        /// follow a pseudo-element in the same compound (per the allowlist documented on
+        /// <see cref="EmitCompound"/>).</summary>
+        private static bool IsAllowedAfterPseudoElement(SimpleSelector part)
+        {
+            // Only :hover, :focus, :active, :focus-visible, :focus-within (mapped to
+            // MatchHover / MatchFocus / MatchActive in our opcode set) plus functional
+            // pseudo-classes (:not / :is / :where / :has).
+            if (part.Kind == SimpleSelectorKind.Pseudo)
+            {
+                return part.Opcode is SelectorOpcode.MatchHover
+                    or SelectorOpcode.MatchFocus
+                    or SelectorOpcode.MatchActive;
+            }
+            if (part.Kind == SimpleSelectorKind.SubGroup)
+            {
+                return part.Opcode is SelectorOpcode.MatchNot
+                    or SelectorOpcode.MatchIs
+                    or SelectorOpcode.MatchWhere
+                    or SelectorOpcode.MatchHas;
+            }
+            return false;
         }
 
         private void EmitPart(SimpleSelector part, bool addToRequired)
@@ -829,6 +1018,15 @@ internal static class SelectorCompiler
                     EmitOpcode(part.Opcode);
                     EmitInt32(part.IntA);
                     EmitInt32(part.IntB);
+                    // :nth-child(of S) / :nth-last-child(of S) attach a filter sub-group +
+                    // contribute the filter's max specificity per CSS Selectors L4 §17.
+                    if (part.SubList is not null)
+                    {
+                        var aggregate = BuildAggregate(part.SubList);
+                        EmitUInt16(AddSubGroup(aggregate));
+                        Specificity += part.SubList.MaxSpecificity;
+                        if (part.SubList.ContainsHas) ContainsHas = true;
+                    }
                     Specificity += new Specificity(0, 1, 0);
                     break;
                 case SimpleSelectorKind.SubGroup:
@@ -837,11 +1035,13 @@ internal static class SelectorCompiler
             }
         }
 
-        private void EmitSubGroup(SimpleSelector part)
-        {
-            var inner = part.SubList!;
-            var aggregate = new SelectorBytecode(
-                code: ImmutableArray<byte>.Empty,
+        /// <summary>Wrap a parsed <see cref="SelectorList"/> into a single aggregate
+        /// <see cref="SelectorBytecode"/> whose own <see cref="SelectorBytecode.SubGroups"/>
+        /// holds the alternatives. The matcher reads this aggregate via
+        /// <c>:not</c>/<c>:is</c>/<c>:where</c>/<c>:has</c>/<c>:nth-child(of)</c> opcodes
+        /// and iterates the alternatives directly.</summary>
+        public static SelectorBytecode BuildAggregate(SelectorList inner) =>
+            new(code: ImmutableArray<byte>.Empty,
                 symbols: ImmutableArray<string>.Empty,
                 subGroups: inner.Alternatives,
                 specificity: inner.MaxSpecificity,
@@ -850,6 +1050,11 @@ internal static class SelectorCompiler
                 requiredIds: FrozenSet<string>.Empty,
                 containsHas: inner.ContainsHas,
                 sourceText: inner.SourceText);
+
+        private void EmitSubGroup(SimpleSelector part)
+        {
+            var inner = part.SubList!;
+            var aggregate = BuildAggregate(inner);
 
             var idx = AddSubGroup(aggregate);
             EmitOpcode(part.Opcode);

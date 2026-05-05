@@ -144,10 +144,8 @@ internal static class SelectorMatcher
                         var caseFlag = code[pc++];
                         var actual = cursor.GetAttribute(name);
                         if (actual is null) return false;
-                        var comparison = caseFlag == 1
-                            ? StringComparison.OrdinalIgnoreCase
-                            : StringComparison.Ordinal;
-                        if (!AttributeMatches(op, actual, value, comparison)) return false;
+                        var caseInsensitive = caseFlag == 1;
+                        if (!AttributeMatches(op, actual, value, caseInsensitive)) return false;
                         break;
                     }
 
@@ -193,6 +191,17 @@ internal static class SelectorMatcher
                         var a = ReadInt32(code, ref pc);
                         var b = ReadInt32(code, ref pc);
                         if (!NthMatches(op, cursor, a, b)) return false;
+                        break;
+                    }
+
+                case SelectorOpcode.MatchNthChildOf:
+                case SelectorOpcode.MatchNthLastChildOf:
+                    {
+                        var a = ReadInt32(code, ref pc);
+                        var b = ReadInt32(code, ref pc);
+                        var filter = bytecode.SubGroups[ReadUInt16(code, ref pc)];
+                        var fromEnd = op == SelectorOpcode.MatchNthLastChildOf;
+                        if (!NthOfMatches(cursor, a, b, fromEnd, filter)) return false;
                         break;
                     }
 
@@ -286,45 +295,109 @@ internal static class SelectorMatcher
 
     // ----- attribute operator helpers -----
 
-    private static bool AttributeMatches(SelectorOpcode op, string actual, string expected, StringComparison comparison) => op switch
+    /// <summary>
+    /// Per CSS Selectors L4 §6.3.2, attribute case-insensitive matching is ASCII-only —
+    /// only U+0041..U+005A fold to U+0061..U+007A. <see cref="StringComparison.OrdinalIgnoreCase"/>
+    /// in .NET 10 uses Unicode-aware case folding (so <c>"é"</c> matches <c>"É"</c>),
+    /// which would over-match per spec. <see cref="AsciiCaseEquals"/> /
+    /// <see cref="AsciiStartsWith"/> / <see cref="AsciiEndsWith"/> /
+    /// <see cref="AsciiContains"/> implement the spec-correct ASCII-only fold.
+    /// </summary>
+    private static bool AttributeMatches(SelectorOpcode op, string actual, string expected, bool ci) => op switch
     {
-        SelectorOpcode.MatchAttrEquals => string.Equals(actual, expected, comparison),
-        SelectorOpcode.MatchAttrIncludes => IncludesWord(actual, expected, comparison),
+        SelectorOpcode.MatchAttrEquals => Eq(actual, expected, ci),
+        SelectorOpcode.MatchAttrIncludes => IncludesWord(actual, expected, ci),
         SelectorOpcode.MatchAttrDashMatch =>
-            string.Equals(actual, expected, comparison)
-            || actual.StartsWith(expected + "-", comparison),
+            Eq(actual, expected, ci)
+            || (actual.Length > expected.Length
+                && actual[expected.Length] == '-'
+                && AsciiStartsWith(actual, expected, ci)),
         SelectorOpcode.MatchAttrPrefix =>
-            expected.Length > 0 && actual.StartsWith(expected, comparison),
+            expected.Length > 0 && AsciiStartsWith(actual, expected, ci),
         SelectorOpcode.MatchAttrSuffix =>
-            expected.Length > 0 && actual.EndsWith(expected, comparison),
+            expected.Length > 0 && AsciiEndsWith(actual, expected, ci),
         SelectorOpcode.MatchAttrSubstring =>
-            expected.Length > 0 && actual.Contains(expected, comparison),
+            expected.Length > 0 && AsciiContains(actual, expected, ci),
         _ => false,
     };
 
-    private static bool IncludesWord(string actual, string expected, StringComparison comparison)
+    private static bool Eq(string a, string b, bool ci) => ci
+        ? AsciiCaseEquals(a.AsSpan(), b.AsSpan())
+        : string.Equals(a, b, StringComparison.Ordinal);
+
+    private static bool AsciiCaseEquals(ReadOnlySpan<char> a, ReadOnlySpan<char> b)
+    {
+        if (a.Length != b.Length) return false;
+        for (var i = 0; i < a.Length; i++)
+        {
+            if (AsciiToLower(a[i]) != AsciiToLower(b[i])) return false;
+        }
+        return true;
+    }
+
+    private static bool AsciiStartsWith(string s, string prefix, bool ci)
+    {
+        if (prefix.Length > s.Length) return false;
+        return ci
+            ? AsciiCaseEquals(s.AsSpan(0, prefix.Length), prefix.AsSpan())
+            : s.AsSpan(0, prefix.Length).SequenceEqual(prefix.AsSpan());
+    }
+
+    private static bool AsciiEndsWith(string s, string suffix, bool ci)
+    {
+        if (suffix.Length > s.Length) return false;
+        return ci
+            ? AsciiCaseEquals(s.AsSpan(s.Length - suffix.Length), suffix.AsSpan())
+            : s.AsSpan(s.Length - suffix.Length).SequenceEqual(suffix.AsSpan());
+    }
+
+    private static bool AsciiContains(string s, string needle, bool ci)
+    {
+        if (!ci) return s.Contains(needle, StringComparison.Ordinal);
+        if (needle.Length == 0) return true;
+        var max = s.Length - needle.Length;
+        for (var i = 0; i <= max; i++)
+        {
+            if (AsciiCaseEquals(s.AsSpan(i, needle.Length), needle.AsSpan())) return true;
+        }
+        return false;
+    }
+
+    private static char AsciiToLower(char c) =>
+        (c >= 'A' && c <= 'Z') ? (char)(c + ('a' - 'A')) : c;
+
+    private static bool IncludesWord(string actual, string expected, bool ci)
     {
         // [attr~=value] — value is a whitespace-separated word in actual. Empty / whitespace-
         // containing expected never matches per spec.
         if (string.IsNullOrEmpty(expected)) return false;
         foreach (var c in expected)
         {
-            if (char.IsWhiteSpace(c)) return false;
+            if (IsHtmlWhitespace(c)) return false;
         }
         var start = 0;
         for (var i = 0; i <= actual.Length; i++)
         {
-            if (i == actual.Length || char.IsWhiteSpace(actual[i]))
+            if (i == actual.Length || IsHtmlWhitespace(actual[i]))
             {
                 var len = i - start;
-                if (len == expected.Length
-                    && actual.AsSpan(start, len).Equals(expected.AsSpan(), comparison))
-                    return true;
+                if (len == expected.Length)
+                {
+                    var match = ci
+                        ? AsciiCaseEquals(actual.AsSpan(start, len), expected.AsSpan())
+                        : actual.AsSpan(start, len).SequenceEqual(expected.AsSpan());
+                    if (match) return true;
+                }
                 start = i + 1;
             }
         }
         return false;
     }
+
+    /// <summary>HTML "ASCII whitespace" per HTML §3.2.5: SPACE, TAB, LF, CR, FF.
+    /// Used both by the word-includes attribute matcher and by <see cref="IsEmpty"/>.</summary>
+    private static bool IsHtmlWhitespace(char c) =>
+        c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f';
 
     // ----- structural helpers -----
 
@@ -354,12 +427,12 @@ internal static class SelectorMatcher
 
     private static bool IsEmpty(IElement cursor)
     {
-        // CSS Selectors L4 §6.6.4: empty means no children, where children is text nodes
-        // (other than whitespace... actually no, ANY text node counts) and element nodes.
-        // Per spec: "no children at all (excluding... well, no — including text)."
-        // The L4 definition: matches when the element has no children. Comments, processing
-        // instructions, and whitespace-only text DO NOT disqualify. But any non-whitespace
-        // text node or any element child does.
+        // CSS Selectors L4 §6.6.4 — :empty matches an element with no element children
+        // and no text nodes containing characters other than HTML "ASCII whitespace"
+        // (SPACE / TAB / LF / CR / FF). Crucially, U+00A0 (non-breaking space) and other
+        // Unicode whitespace DO disqualify — `<p>&nbsp;</p>` is not :empty per HTML's
+        // whitespace definition. The earlier `string.IsNullOrWhiteSpace` over-matched by
+        // accepting Unicode whitespace categories.
         foreach (var node in cursor.ChildNodes)
         {
             switch (node.NodeType)
@@ -367,7 +440,10 @@ internal static class SelectorMatcher
                 case NodeType.Element:
                     return false;
                 case NodeType.Text:
-                    if (!string.IsNullOrWhiteSpace(node.TextContent)) return false;
+                    foreach (var c in node.TextContent)
+                    {
+                        if (!IsHtmlWhitespace(c)) return false;
+                    }
                     break;
             }
         }
@@ -395,16 +471,58 @@ internal static class SelectorMatcher
             SelectorOpcode.MatchNthLastOfType => IndexAmongSiblings(cursor, fromEnd: true, ofType: true),
             _ => 0,
         };
-        if (index <= 0) return false;
-        // An+B: matches when (index - b) / a is a non-negative integer. Spec language:
-        //   if a > 0: index - b >= 0 and (index - b) % a == 0
-        //   if a == 0: index == b
-        //   if a < 0: index - b <= 0 and (b - index) % (-a) == 0
+        return index > 0 && AnPlusBMatches(a, b, index);
+    }
+
+    /// <summary>An+B match algorithm per CSS Syntax L3 §5.4.3:
+    ///   - a == 0: matches iff index == b
+    ///   - a &gt; 0: matches iff (index - b) is a non-negative multiple of a
+    ///   - a &lt; 0: matches iff (index - b) is a non-positive multiple of |a|
+    /// </summary>
+    private static bool AnPlusBMatches(int a, int b, int index)
+    {
         if (a == 0) return index == b;
         var diff = index - b;
         if (a > 0) return diff >= 0 && diff % a == 0;
-        // a < 0
         return diff <= 0 && (-diff) % (-a) == 0;
+    }
+
+    /// <summary>Implements <c>:nth-child(An+B of S)</c> / <c>:nth-last-child(An+B of S)</c>
+    /// per CSS Selectors L4 §6.6.5.2. The cursor must itself match the filter, and the
+    /// index counted is among siblings (including the cursor) that also match the filter.</summary>
+    private static bool NthOfMatches(IElement cursor, int a, int b, bool fromEnd, SelectorBytecode filter)
+    {
+        if (!MatchesFilter(cursor, filter)) return false;
+        var index = IndexAmongFilteredSiblings(cursor, fromEnd, filter);
+        return index > 0 && AnPlusBMatches(a, b, index);
+    }
+
+    /// <summary>True iff <paramref name="element"/> matches at least one alternative in
+    /// <paramref name="filter"/>. <paramref name="filter"/> is the aggregate sub-group
+    /// shape used by <c>:not</c>/<c>:is</c>/<c>:where</c>/<c>:has</c>: empty
+    /// <see cref="SelectorBytecode.Code"/>, alternatives in
+    /// <see cref="SelectorBytecode.SubGroups"/>.</summary>
+    private static bool MatchesFilter(IElement element, SelectorBytecode filter)
+    {
+        foreach (var alt in filter.SubGroups)
+        {
+            if (Match(alt, element)) return true;
+        }
+        return false;
+    }
+
+    private static int IndexAmongFilteredSiblings(IElement cursor, bool fromEnd, SelectorBytecode filter)
+    {
+        var parent = cursor.ParentElement;
+        if (parent is null) return 1;
+        var index = 1;
+        var sibling = fromEnd ? cursor.NextElementSibling : cursor.PreviousElementSibling;
+        while (sibling is not null)
+        {
+            if (MatchesFilter(sibling, filter)) index++;
+            sibling = fromEnd ? sibling.NextElementSibling : sibling.PreviousElementSibling;
+        }
+        return index;
     }
 
     private static int IndexAmongSiblings(IElement cursor, bool fromEnd, bool ofType)

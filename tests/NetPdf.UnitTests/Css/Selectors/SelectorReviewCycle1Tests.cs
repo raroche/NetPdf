@@ -224,9 +224,12 @@ public sealed class SelectorReviewCycle1Tests
     [Fact]
     public async Task Rec5_Attribute_case_sensitive_default_rejects_uppercase()
     {
-        var doc = await ParseHtml("<input type=\"text\">");
-        var input = Q(doc, "input");
-        Assert.False(Matches("[type=\"TEXT\"]", input));
+        // Use data-x (not on the HTML CI default list per Selectors L4 §6.3.2) so the
+        // default IS case-sensitive. `type` would default to case-insensitive (HTML
+        // attribute defaults), tested separately under the cycle-2 HTML-CI tests.
+        var doc = await ParseHtml("<div data-x=\"text\">x</div>");
+        var div = Q(doc, "div");
+        Assert.False(Matches("[data-x=\"TEXT\"]", div));
     }
 
     [Fact]
@@ -310,11 +313,17 @@ public sealed class SelectorReviewCycle1Tests
     }
 
     [Fact]
-    public void Rec7_Forgiving_list_with_only_invalid_alternatives_throws()
+    public async Task Rec7_Forgiving_list_with_only_invalid_alternatives_is_valid_but_matches_nothing()
     {
-        // :is(:unknown1, :unknown2) — every alternative is dropped → empty list → invalid.
-        Assert.Throws<SelectorParseException>(
-            () => SelectorCompiler.Compile(":is(:unknown1, :unknown2)"));
+        // Cycle-2 spec correction: per Selectors L4 §3.7, :is() / :where() with all
+        // alternatives dropped is VALID but matches nothing. Previously we threw, which
+        // is wrong — the rule should still parse so other rules in the stylesheet are
+        // unaffected; the dropped pseudo-class is simply non-matching.
+        var doc = await ParseHtml("<p>x</p>");
+        var p = Q(doc, "p");
+        var list = SelectorCompiler.Compile(":is(:unknown1, :unknown2)");
+        Assert.Single(list.Alternatives);
+        Assert.False(Matches(":is(:unknown1, :unknown2)", p));
     }
 
     // ============================================================

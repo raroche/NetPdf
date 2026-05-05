@@ -108,6 +108,15 @@ internal enum SelectorOpcode : byte
     /// <summary><c>:nth-last-of-type(An+B)</c>. Operands: 4-byte a, 4-byte b.</summary>
     MatchNthLastOfType = 33,
 
+    /// <summary><c>:nth-child(An+B of S)</c> per CSS Selectors L4 §6.6.5.2. Operands:
+    /// 4-byte a, 4-byte b, 2-byte sub-group index for the filter <c>S</c>. The cursor
+    /// must match <c>S</c> AND be the nth among siblings that also match <c>S</c>.</summary>
+    MatchNthChildOf = 34,
+
+    /// <summary><c>:nth-last-child(An+B of S)</c>. Operands: 4-byte a, 4-byte b,
+    /// 2-byte sub-group index. Counts from the end of the filtered set.</summary>
+    MatchNthLastChildOf = 35,
+
     // --- functional pseudo-classes with sub-selectors (operand: 2-byte SubGroups index) ---
 
     /// <summary><c>:not(X)</c>. Operand: 2-byte sub-group index.</summary>

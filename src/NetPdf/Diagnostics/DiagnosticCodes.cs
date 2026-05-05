@@ -28,4 +28,22 @@ internal static class DiagnosticCodes
     public const string HtmlJavaScriptUrlIgnored001 = "HTML-JAVASCRIPT-URL-IGNORED-001";
 
     // endregion HTML-*
+
+    // region CSS-*
+
+    /// <summary>
+    /// A CSS rule was malformed and skipped. The cascade resolver emits this when a rule's
+    /// selector text fails to parse (e.g., unsupported pseudo-class, unterminated function).
+    /// The rest of the stylesheet still loads. Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string CssParseWarning001 = "CSS-PARSE-WARNING-001";
+
+    /// <summary>
+    /// A <c>:has()</c> selector was encountered. NetPdf's v1 contract is that <c>:has()</c>
+    /// parses but never matches — the rule has no rendering effect. Roadmap v1.4 will plug
+    /// in real <c>:has()</c> evaluation. Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string CssHasRenderingNotImplemented001 = "CSS-HAS-RENDERING-NOT-IMPLEMENTED-001";
+
+    // endregion CSS-*
 }

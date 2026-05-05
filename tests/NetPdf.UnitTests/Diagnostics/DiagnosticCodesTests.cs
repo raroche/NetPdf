@@ -68,6 +68,55 @@ public sealed class DiagnosticCodesTests
         Assert.Equal("HTML-JAVASCRIPT-URL-IGNORED-001", DiagnosticCodes.HtmlJavaScriptUrlIgnored001);
     }
 
+    [Fact]
+    public void Css_parse_warning_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(
+            registry,
+            @"\|\s*`?(CSS-PARSE-WARNING-001)`?\s*\|\s*(\w+)\s*\|");
+
+        Assert.True(match.Success, "CSS-PARSE-WARNING-001 row not found in docs/diagnostics-codes.md");
+        Assert.Equal(DiagnosticCodes.CssParseWarning001, match.Groups[1].Value);
+        Assert.Equal("Warning", match.Groups[2].Value);
+    }
+
+    [Fact]
+    public void Css_parse_warning_001_constant_value_is_stable()
+    {
+        Assert.Equal("CSS-PARSE-WARNING-001", DiagnosticCodes.CssParseWarning001);
+    }
+
+    [Fact]
+    public void Css_has_rendering_not_implemented_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(
+            registry,
+            @"\|\s*`?(CSS-HAS-RENDERING-NOT-IMPLEMENTED-001)`?\s*\|\s*(\w+)\s*\|");
+
+        Assert.True(match.Success, "CSS-HAS-RENDERING-NOT-IMPLEMENTED-001 row not found in docs/diagnostics-codes.md");
+        Assert.Equal(DiagnosticCodes.CssHasRenderingNotImplemented001, match.Groups[1].Value);
+        Assert.Equal("Warning", match.Groups[2].Value);
+    }
+
+    [Fact]
+    public void Css_has_rendering_not_implemented_001_constant_value_is_stable()
+    {
+        Assert.Equal("CSS-HAS-RENDERING-NOT-IMPLEMENTED-001", DiagnosticCodes.CssHasRenderingNotImplemented001);
+    }
+
+    [Fact]
+    public void NetPdf_Css_constants_match_facade_constants()
+    {
+        // The NetPdf.Css internal sub-pipeline (cascade resolver) ships its own constants
+        // because it can't reference the facade. Verify the strings agree exactly.
+        Assert.Equal(DiagnosticCodes.CssParseWarning001,
+            NetPdf.Css.Diagnostics.CssDiagnosticCodes.CssParseWarning001);
+        Assert.Equal(DiagnosticCodes.CssHasRenderingNotImplemented001,
+            NetPdf.Css.Diagnostics.CssDiagnosticCodes.CssHasRenderingNotImplemented001);
+    }
+
     private static string LoadRegistry()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

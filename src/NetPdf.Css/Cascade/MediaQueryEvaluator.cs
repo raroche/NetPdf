@@ -138,12 +138,12 @@ internal static class MediaQueryEvaluator
         value = value.Trim();
         return feature switch
         {
-            "min-width" => ParseLengthPx(value, out var px) && ctx.ViewportWidthPx >= px,
-            "max-width" => ParseLengthPx(value, out var px) && ctx.ViewportWidthPx <= px,
-            "width" => ParseLengthPx(value, out var px) && Math.Abs(ctx.ViewportWidthPx - px) < 0.5,
-            "min-height" => ParseLengthPx(value, out var px) && ctx.ViewportHeightPx >= px,
-            "max-height" => ParseLengthPx(value, out var px) && ctx.ViewportHeightPx <= px,
-            "height" => ParseLengthPx(value, out var px) && Math.Abs(ctx.ViewportHeightPx - px) < 0.5,
+            "min-width" => ParseLengthPx(value, ctx, out var px) && ctx.ViewportWidthPx >= px,
+            "max-width" => ParseLengthPx(value, ctx, out var px) && ctx.ViewportWidthPx <= px,
+            "width" => ParseLengthPx(value, ctx, out var px) && Math.Abs(ctx.ViewportWidthPx - px) < 0.5,
+            "min-height" => ParseLengthPx(value, ctx, out var px) && ctx.ViewportHeightPx >= px,
+            "max-height" => ParseLengthPx(value, ctx, out var px) && ctx.ViewportHeightPx <= px,
+            "height" => ParseLengthPx(value, ctx, out var px) && Math.Abs(ctx.ViewportHeightPx - px) < 0.5,
             "orientation" => string.Equals(value, GetOrientation(ctx), StringComparison.OrdinalIgnoreCase),
             "prefers-color-scheme" =>
                 string.Equals(value, ctx.PreferredColorScheme, StringComparison.OrdinalIgnoreCase),
@@ -171,11 +171,13 @@ internal static class MediaQueryEvaluator
     private static string GetOrientation(CssMediaContext ctx) =>
         ctx.ViewportWidthPx > ctx.ViewportHeightPx ? "landscape" : "portrait";
 
-    /// <summary>Parse a length value into CSS px. Supports plain numbers (interpreted as
-    /// px) and explicit <c>px</c> unit. Other units (em / rem / vw / vh / cm / mm / in /
-    /// pt / pc) accepted by converting against a 96 DPI ÷ 16 px-per-em assumption — good
-    /// enough for media-query gating; precise units land with the typed value tree.</summary>
-    private static bool ParseLengthPx(string s, out double px)
+    /// <summary>Parse a length value into CSS px against the supplied media context.
+    /// Viewport-relative units (<c>vw</c> / <c>vh</c> / <c>vmin</c> / <c>vmax</c>) resolve
+    /// against the context's actual viewport dimensions, not a hard-coded default. Other
+    /// units (px / em / rem / cm / mm / in / pt / pc) use the standard 96 DPI ÷ 16 px-per-em
+    /// conversions — good enough for media-query gating; precise resolution lands with the
+    /// typed value tree.</summary>
+    private static bool ParseLengthPx(string s, CssMediaContext ctx, out double px)
     {
         px = 0;
         if (string.IsNullOrEmpty(s)) return false;
@@ -203,8 +205,13 @@ internal static class MediaQueryEvaluator
             "mm" => n * 96 / 25.4,
             "pt" => n * 96 / 72,
             "pc" => n * 96 / 6,
-            // Viewport-relative — caller-side context; v1 uses default print viewport.
-            "vw" or "vh" or "vmin" or "vmax" => n * 8.16, // 1% of 816px default — rough
+            // Viewport-relative units resolve against the actual context viewport.
+            // Per CSS Values L4 §6.1.5: vw=1% of viewport width, vh=1% of viewport height,
+            // vmin=1% of the smaller axis, vmax=1% of the larger axis.
+            "vw" => n * ctx.ViewportWidthPx / 100.0,
+            "vh" => n * ctx.ViewportHeightPx / 100.0,
+            "vmin" => n * Math.Min(ctx.ViewportWidthPx, ctx.ViewportHeightPx) / 100.0,
+            "vmax" => n * Math.Max(ctx.ViewportWidthPx, ctx.ViewportHeightPx) / 100.0,
             _ => double.NaN,
         };
         return !double.IsNaN(px);

@@ -233,9 +233,20 @@ internal static class CascadeResolver
                     output, hasContainingSheets, media, layers, diagnostics);
                 break;
             default:
-                if (ar.ChildRules.IsEmpty && ar.Declarations.IsEmpty
-                    && !string.IsNullOrEmpty(ar.RawBody)
-                    && !IsKnownDeclarationBearingAtRule(ar.Name))
+                // Unknown at-rule. Three shapes to handle:
+                //   (a) Declaration-bearing (e.g., @page / @font-face / @counter-style /
+                //       @property / @color-profile) — has separate consumers; the cascade
+                //       is intentionally silent.
+                //   (b) Empty + RawBody set — opaque body the parser couldn't decompose.
+                //       Emit CSS-AT-RULE-UNKNOWN-001 so users see preserved-not-applied.
+                //   (c) Non-empty ChildRules — an at-rule AngleSharp.Css adapted as a
+                //       generic ICssGroupingRule (e.g., a future @scope). v1 doesn't know
+                //       what condition (if any) gates these children, so the conservative
+                //       choice is to skip them + emit the same opaque diagnostic. Without
+                //       this, nested rules in unknown groupings would silently apply with
+                //       no signal to the user.
+                if (IsKnownDeclarationBearingAtRule(ar.Name)) break;
+                if (!ar.ChildRules.IsEmpty || !string.IsNullOrEmpty(ar.RawBody))
                 {
                     EmitOpaqueAtRuleDiagnostic(ar, diagnostics);
                 }
@@ -479,6 +490,10 @@ internal static class CascadeResolver
             return r;
         }
 
+        /// <summary>Read up to the matching close-paren, tracking nested parens AND skipping
+        /// the contents of single- / double-quoted strings so values like
+        /// <c>(content: "(") </c> or <c>(font-family: "a)b")</c> aren't truncated at a
+        /// paren inside the string.</summary>
         private string ReadBalancedToCloseParen()
         {
             var start = _pos;
@@ -486,6 +501,11 @@ internal static class CascadeResolver
             while (_pos < _text.Length)
             {
                 var c = _text[_pos];
+                if (c == '"' || c == '\'')
+                {
+                    SkipString(c);
+                    continue;
+                }
                 if (c == '(') depth++;
                 else if (c == ')')
                 {
@@ -500,6 +520,26 @@ internal static class CascadeResolver
                 _pos++;
             }
             throw new FormatException("unterminated @supports parenthesis");
+        }
+
+        /// <summary>Advance past a string literal starting at the current quote char.
+        /// Handles backslash escapes (treats <c>\&lt;any&gt;</c> as a single escaped char so
+        /// <c>"a\"b"</c> doesn't terminate early). Stops at the closing quote — caller is
+        /// past it on return.</summary>
+        private void SkipString(char quote)
+        {
+            _pos++; // consume opening quote
+            while (_pos < _text.Length)
+            {
+                var c = _text[_pos];
+                if (c == '\\' && _pos + 1 < _text.Length)
+                {
+                    _pos += 2;
+                    continue;
+                }
+                _pos++;
+                if (c == quote) return;
+            }
         }
 
         private bool TryReadKeyword(string keyword)
@@ -578,13 +618,63 @@ internal static class CascadeResolver
         foreach (var rule in rules)
         {
             if (rule.Selectors is null) continue;
-            for (var altIdx = 0; altIdx < rule.Selectors.Alternatives.Length; altIdx++)
+            ApplyRuleToElement(rule, element, in bloom, result);
+        }
+    }
+
+    /// <summary>Apply one rule to one element, ensuring each (rule, element, pseudo-element)
+    /// triple contributes its declarations AT MOST ONCE to the cascade — picking the
+    /// max-specificity matching alternative within the rule's selector list, per CSS Cascade
+    /// L4 §6.4.5 ("the specificity is the most specific selector for which it matches").</summary>
+    /// <remarks>
+    /// <para>
+    /// The earlier "iterate alternatives + AddMatched per match" loop double-inserted the
+    /// same authored declaration when a selector list had multiple matching alternatives —
+    /// e.g., <c>p, .x { color: red }</c> on <c>&lt;p class="x"&gt;</c> added <c>color: red</c>
+    /// twice with specificities <c>(0,0,1)</c> and <c>(0,1,0)</c>, inflating
+    /// <see cref="MatchedRuleSet.Count"/> and breaking <c>revert</c>/<c>revert-layer</c>
+    /// semantics that expect one cascade entry per authored declaration.
+    /// </para>
+    /// <para>
+    /// Pseudo-element separation: alternatives that target different pseudo-elements
+    /// (<c>p::before, p::after { … }</c>) intentionally produce distinct entries in their
+    /// own <see cref="MatchedRuleSet"/>s — the deduplication is per (target,
+    /// pseudo-element) bucket.
+    /// </para>
+    /// </remarks>
+    /// <summary>Sentinel string used as the dictionary key for the host-element bucket
+    /// (since <see cref="Dictionary{TKey, TValue}"/> requires a non-null key). Pseudo-element
+    /// alternatives use their actual <see cref="SelectorBytecode.PseudoElement"/> name as
+    /// the key — pseudo-element names are lowercased CSS identifiers and never collide
+    /// with this sentinel.</summary>
+    private const string HostBucketKey = "\0host";
+
+    private static void ApplyRuleToElement(
+        CompiledRule rule,
+        IElement element,
+        in SelectorBloomFilter bloom,
+        CascadeResult result)
+    {
+        // Best matching alternative per pseudo-element bucket.
+        Dictionary<string, SelectorBytecode>? bestPerBucket = null;
+        var alts = rule.Selectors!.Alternatives;
+        for (var altIdx = 0; altIdx < alts.Length; altIdx++)
+        {
+            var alt = alts[altIdx];
+            if (!BloomAllows(alt, bloom)) continue;
+            if (!SelectorMatcher.Match(alt, element)) continue;
+            bestPerBucket ??= new Dictionary<string, SelectorBytecode>();
+            var bucketKey = alt.PseudoElement ?? HostBucketKey;
+            if (!bestPerBucket.TryGetValue(bucketKey, out var existing)
+                || alt.Specificity > existing.Specificity)
             {
-                var alt = rule.Selectors.Alternatives[altIdx];
-                if (!BloomAllows(alt, bloom)) continue;
-                if (!SelectorMatcher.Match(alt, element)) continue;
-                AddMatched(rule, alt, element, result);
+                bestPerBucket[bucketKey] = alt;
             }
+        }
+        if (bestPerBucket is null) return;
+        foreach (var winning in bestPerBucket.Values)
+        {
+            AddMatched(rule, winning, element, result);
         }
     }
 

@@ -450,7 +450,14 @@ internal static class SelectorCompiler
                 var pseudoElementName = ReadIdent();
                 if (string.IsNullOrEmpty(pseudoElementName))
                     throw Error("expected pseudo-element name");
-                if (!IsEnd && Peek() == '(') SkipParens();
+                // Functional pseudo-elements (`::part(name)`, `::slotted(...)`,
+                // `::cue(...)`, `::highlight(name)`, etc.) are not supported in v1 — none
+                // of them have a rendering pipeline before Phase 4+. Rejecting at parse
+                // time prevents silent miscascade from accepting the bare-pseudo branch
+                // for selectors like `::part(foo)` (would have matched every element of
+                // the named tag) and from accepting malformed input like `::before(`.
+                if (!IsEnd && Peek() == '(')
+                    throw Error($"functional pseudo-element ::{pseudoElementName}(...) not supported");
                 if (inSubGroup)
                     throw Error("pseudo-elements are not valid inside :is()/:where()/:not()/:has()");
                 return SimpleSelector.PseudoElement(pseudoElementName.ToLowerInvariant());

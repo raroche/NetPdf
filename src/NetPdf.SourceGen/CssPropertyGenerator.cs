@@ -483,6 +483,13 @@ public sealed class CssPropertyGenerator : IIncrementalGenerator
             }
         }
 
+        /// <summary>Read a JSON string literal per RFC 8259 §7. Supports the full standard
+        /// escape set: <c>\"</c>, <c>\\</c>, <c>\/</c>, <c>\b</c>, <c>\f</c>, <c>\n</c>,
+        /// <c>\r</c>, <c>\t</c>, and <c>\uXXXX</c> (4-hex-digit Unicode code points,
+        /// including surrogate pairs for supplementary planes). Earlier implementation
+        /// only handled a subset and silently appended the literal letter for unknown
+        /// escapes — a <c>\uXXXX</c> in <c>properties.json</c> would have produced
+        /// incorrect generated source.</summary>
         private static string ReadString(string text, ref int pos)
         {
             ExpectChar(text, ref pos, '"');
@@ -496,13 +503,26 @@ public sealed class CssPropertyGenerator : IIncrementalGenerator
                     var e = text[pos++];
                     switch (e)
                     {
+                        case '"': sb.Append('"'); break;
+                        case '\\': sb.Append('\\'); break;
+                        case '/': sb.Append('/'); break;
+                        case 'b': sb.Append('\b'); break;
+                        case 'f': sb.Append('\f'); break;
                         case 'n': sb.Append('\n'); break;
                         case 'r': sb.Append('\r'); break;
                         case 't': sb.Append('\t'); break;
-                        case '\\': sb.Append('\\'); break;
-                        case '"': sb.Append('"'); break;
-                        case '/': sb.Append('/'); break;
-                        default: sb.Append(e); break;
+                        case 'u':
+                            if (pos + 4 > text.Length)
+                                throw new FormatException("Truncated \\uXXXX escape at position " + pos);
+                            var hex = text.Substring(pos, 4);
+                            if (!ushort.TryParse(hex, System.Globalization.NumberStyles.HexNumber,
+                                System.Globalization.CultureInfo.InvariantCulture, out var code))
+                                throw new FormatException("Invalid \\uXXXX escape '\\u" + hex + "' at position " + pos);
+                            pos += 4;
+                            sb.Append((char)code);
+                            break;
+                        default:
+                            throw new FormatException("Invalid escape '\\" + e + "' at position " + (pos - 1));
                     }
                     continue;
                 }

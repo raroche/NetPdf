@@ -53,16 +53,20 @@ Wire AngleSharp + AngleSharp.Css to parse arbitrary modern HTML+CSS into a DOM a
 
 ### `NetPdf.Layout.Boxes` — box generation
 
-- **`Box` hierarchy** (`src/NetPdf.Layout/Boxes/`):
-  - `Box` abstract base + `BoxKind` byte enum.
-  - Concrete: `BlockBox`, `InlineBox`, `AnonymousBlockBox`, `AnonymousInlineBox`, `FlexContainerBox`, `FlexItemBox`, `GridContainerBox`, `GridItemBox`, `TableBox`, `TableRowGroupBox`, `TableRowBox`, `TableCellBox`, `TableColumnBox`, `TableColumnGroupBox`, `TableCaptionBox`, `MulticolBox`, `ReplacedAtomicBox`, `ReplacedBlockBox`, `BrBox`, `GeneratedContentBox`.
-  - `BoxList` struct wrapping `ArrayPool<Box>` for child collections.
-- **`BoxBuilder`** (`src/NetPdf.Layout/Boxes/BoxBuilder.cs`):
+- **`Box` model** ([`src/NetPdf.Layout/Boxes/`](../../src/NetPdf.Layout/Boxes/) — Task 11 + hardening review shipped):
+  - **Single concrete [`Box`](../../src/NetPdf.Layout/Boxes/Box.cs) sealed class** with a [`BoxKind`](../../src/NetPdf.Layout/Boxes/BoxKind.cs) byte-enum discriminator. Pragmatic alternative to a class hierarchy: matches the codebase's typed-value-dispatch pattern (e.g., `PropertyType`, `ResolutionState`), keeps allocation simple, dispatch is single-axis. The earlier draft listed ~20 concrete Box subclasses (`BlockBox`/`InlineBox`/`FlexContainerBox`/etc.) — replaced by `BoxKind` values.
+  - **BoxKind set** encodes the CSS Display L3 §2 outer × inner display cross product as explicit kinds — no axis conflation. Block-level: `Root`, `BlockContainer`, `ListItem`, `AnonymousBlock`, `Table`, `FlexContainer`, `GridContainer`, `BlockReplacedElement`. Inline-level: `InlineBox`, `InlineBlockContainer`, `InlineFlexContainer`, `InlineGridContainer`, `InlineTable`, `InlineReplacedElement`, `AnonymousInline`, `TextRun`. Lists: `Marker`. Table internals (per Tables L3 §2.1): `TableGrid` (anonymous inner, distinct from the wrapper), `TableRowGroup`, `TableHeaderGroup`, `TableFooterGroup`, `TableRow`, `TableCell`, `TableColumnGroup`, `TableColumn`, `TableCaption`. Layout-time: `LineBox`. **No `FlexItem` / `GridItem`** — flex/grid item-ness is context-derived (any in-flow child of a flex/grid container).
+  - **[`BoxPseudo`](../../src/NetPdf.Layout/Boxes/BoxPseudo.cs)** — orthogonal enum (`None`/`Before`/`After`/`Marker`). `::first-line` + `::first-letter` are deliberately excluded — they're layout-time fragment styling (the affected text depends on line breaking + container width), not box-generation pseudos.
+  - **Children storage**: backing `List<Box>` exposed as a `ReadOnlyCollection<Box>` so consumers cannot bypass the parent-pointer invariant by casting to `IList<T>` (mutation methods throw `NotSupportedException`). Sibling navigation via `Parent.Children[index ± 1]`; no explicit prev/next pointers.
+  - **Mutation invariants**: `AppendChild` / `InsertChild` / `RemoveChild` maintain the parent pointer + reject self-attach + double-attach + ancestor-cycle (catches the case where the would-be child is already an ancestor — a cycle that the simple parent-null check missed).
+  - **Factory invariants** in the constructor: `Root` / `LineBox` / `AnonymousBlock` / `AnonymousInline` / `TableGrid` are always anonymous; `Marker` pseudo pairs only with `Marker` kind; non-empty text only on `TextRun`.
+  - **ComputedStyle ownership**: the constructor calls `ComputedStyle.MarkAsBoxOwned` on the attached style. Box-owned styles refuse pool re-rental in `ComputedStyle.Dispose` so the cascade pool can't recycle a still-referenced instance and silently corrupt the box-tree's view. Cycle-2 / Phase 3 will add a tree-disposal sweep that releases ownership.
+- **`BoxBuilder`** (Task 12, in progress) (`src/NetPdf.Layout/Boxes/BoxBuilder.cs`):
   - Walks the styled DOM.
   - Emits one box per element + pseudo-elements per `display` value.
   - Handles **anonymous box insertion**: when a block has mixed inline+block children, wrap inline runs in anonymous block boxes.
-  - Handles **table fixup**: missing `<tbody>` / `<tr>` / `<td>` get auto-generated; `display: table-cell` without ancestor `display: table-row` synthesizes wrappers.
-  - Materializes `::before`, `::after`, `::marker`, `::first-line`, `::first-letter` pseudo-elements.
+  - Handles **table fixup**: missing `<tbody>` / `<tr>` / `<td>` get auto-generated; `display: table-cell` without ancestor `display: table-row` synthesizes wrappers; the table wrapper + grid split per Tables L3 §2.1 is materialized here.
+  - Materializes `::before`, `::after`, `::marker` pseudo-elements. (`::first-line` + `::first-letter` are NOT materialized here — they're applied during line layout per CSS Pseudo L4 §3.5–§3.6.)
 
 ### `NetPdf.Layout.Semantic` — semantic IR (built but not emitted)
 

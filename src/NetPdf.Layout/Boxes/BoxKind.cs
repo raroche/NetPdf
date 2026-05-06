@@ -5,85 +5,149 @@ namespace NetPdf.Layout.Boxes;
 
 /// <summary>
 /// Classification of a <see cref="Box"/>'s layout role per CSS Display L3 §2 (the
-/// outer / inner display dichotomy) plus the module-specific box types from
+/// outer × inner display dichotomy) plus the module-specific box types from
 /// CSS Inline L3, Lists L3, Tables L3, Flexbox 1, and Grid 2. The enum is the
 /// dispatch key for Phase 3 layout — block boxes lay out their children
-/// vertically per the BFC / IFC rules, inline boxes participate in line
+/// vertically per the BFC / IFC rules, inline-level boxes participate in line
 /// construction, table boxes follow the §4 table model, etc.
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Granularity choice.</b> A single concrete <see cref="Box"/> with a
-/// <see cref="BoxKind"/> discriminator (rather than a class hierarchy) keeps
-/// allocation simple, matches the codebase's pattern for typed-value
-/// dispatch (see <see cref="NetPdf.Css.Properties.PropertyType"/>), and avoids
-/// the "deep inheritance graph that nobody can navigate" problem that bigger
-/// engines suffer from.
+/// <b>Outer × inner display.</b> CSS Display L3 §2 splits a box's display into an
+/// outer type (<c>block</c> / <c>inline</c>) and an inner formatting context
+/// (<c>flow</c> / <c>flow-root</c> / <c>flex</c> / <c>grid</c> / <c>table</c> /
+/// <c>ruby</c>). We encode the cross product as explicit kinds — e.g.,
+/// <see cref="FlexContainer"/> is block-outer + flex-inner;
+/// <see cref="InlineFlexContainer"/> is inline-outer + flex-inner. Splitting the
+/// product loses no information (every kind names a single dispatch target) and
+/// keeps Phase 3 layout's switch statements single-axis.
 /// </para>
 /// <para>
-/// <b>Why no separate "ListItem" outer-display + "ListItem" inner-display.</b>
-/// Per Display L3 §2.4, <c>list-item</c> is a marker layout-mode hint on a
-/// block container — the principal box is still a block. We model it as a
-/// single <see cref="ListItem"/> kind because the marker box (a separate
-/// <see cref="Marker"/> kind) is the only structural difference, and
-/// representing the marker as its own box with the right
-/// <see cref="BoxPseudo.Marker"/> pseudo discriminator lets layout treat
-/// <c>::marker</c> placement uniformly without a discriminator on the parent.
+/// <b>Why explicit inline-* kinds (Task 11 hardening Rec 1).</b> An earlier
+/// design used a single <c>AtomicInline</c> kind to mean "any inline-level
+/// atomic box (inline-block / inline-flex / inline-grid / inline-table /
+/// inline replaced)". That conflation lost the inner formatting context — the
+/// flex algorithm and the grid algorithm are completely different, and layout
+/// dispatch needed to re-derive "what's inside" from the ComputedStyle. The
+/// explicit kinds (<see cref="InlineBlockContainer"/>,
+/// <see cref="InlineFlexContainer"/>, <see cref="InlineGridContainer"/>,
+/// <see cref="InlineTable"/>, <see cref="InlineReplacedElement"/>) carry the
+/// inner FC alongside the outer-display=inline information.
 /// </para>
 /// <para>
-/// <b>Anonymous boxes</b> per Display L3 §3 + Tables L3 §3 (table fixup):
-/// distinct values for <see cref="AnonymousBlock"/> + <see cref="AnonymousInline"/>
-/// because Phase 3 layout needs to distinguish "synthesized for block-in-inline
-/// containment" from "synthesized for inline-in-block containment". <see cref="LineBox"/>
-/// is its own value — it's the per-line container produced during inline layout,
-/// not an anonymous synthetic from box generation.
+/// <b>Table wrapper vs table grid (Task 11 hardening Rec 5).</b> Per CSS Tables
+/// L3 §2.1 a <c>display: table</c> element generates two boxes: the
+/// <b>table wrapper box</b> (handles the outer display, margins, captions,
+/// floating, positioning) and the <b>table grid box</b> (anonymous, handles
+/// the cells/rows/columns and runs the table layout algorithm). We model both
+/// — <see cref="Table"/> / <see cref="InlineTable"/> are wrappers,
+/// <see cref="TableGrid"/> is the inner grid. <see cref="TableGrid"/> is always
+/// anonymous (no source element); the wrapper carries the source.
 /// </para>
 /// <para>
-/// <b>Out of scope (Phase 3+):</b> ruby boxes, math boxes, multicol boxes,
-/// SVG boxes, and the various fragmentation-specific boxes (column box,
-/// page box, region box). Those land alongside the layout passes that
-/// produce them.
+/// <b>No explicit FlexItem / GridItem.</b> Per CSS Flexbox 1 §4 + Grid 2 §6, a
+/// "flex item" or "grid item" is just any in-flow child of a flex/grid container —
+/// the same box would have been a regular block-level box in a non-flex context.
+/// "Flex-item-ness" is a context-derived property, not an intrinsic kind. Layout
+/// dispatch reads the parent's kind to decide which algorithm applies.
+/// </para>
+/// <para>
+/// <b>Out of scope (Phase 3+):</b> ruby boxes (Ruby Layout 1), math boxes
+/// (MathML), multicol boxes, SVG boxes, and the various fragmentation-specific
+/// boxes (column box, page box, region box). Those land alongside the layout
+/// passes that produce them.
 /// </para>
 /// </remarks>
 internal enum BoxKind : byte
 {
     /// <summary>The single root of the box tree corresponding to the page /
     /// initial containing block. Generated by <c>BoxBuilder</c> as the parent
-    /// of the root element's principal box.</summary>
+    /// of the root element's principal box. Always anonymous (no source element).</summary>
     Root = 0,
 
     // ============================================================
-    // Block-level (CSS Display L3 §2.4)
+    // Block-level (outer-display: block — CSS Display L3 §2.4)
     // ============================================================
 
-    /// <summary>A block-level box that establishes a block formatting context
-    /// for its in-flow children — the default for <c>div</c>, <c>p</c>,
-    /// <c>section</c>, etc. Per CSS Display L3 §2.4 + §3, this is the
-    /// principal box for elements with <c>display: block</c> (and the inner
-    /// display fallback for many other types). Lays out children vertically.</summary>
+    /// <summary>A block-level box with inner formatting context = flow — the
+    /// default for <c>div</c>, <c>p</c>, <c>section</c>, etc. (<c>display: block</c>).</summary>
     BlockContainer,
 
+    /// <summary>An <c>li</c> element or anything with <c>display: list-item</c>
+    /// per Lists L3 §3. Behaves as a <see cref="BlockContainer"/> for layout
+    /// but is associated with a separate <see cref="Marker"/> child box.</summary>
+    ListItem,
+
+    /// <summary>An anonymous block-level box synthesized to maintain the
+    /// invariant that block + inline siblings cannot mix in the same
+    /// formatting context per Display L3 §3.1, OR to satisfy table fixup per
+    /// Tables L3 §3 (e.g., a stray block inside a table row gets wrapped).
+    /// Has no <see cref="Box.SourceElement"/>; inherits style from its parent.</summary>
+    AnonymousBlock,
+
+    /// <summary>The block-level <b>table wrapper box</b> for an element with
+    /// <c>display: table</c> per Tables L3 §2.1. Owns the outer display +
+    /// margins + captions + floating + positioning. Wraps a single anonymous
+    /// <see cref="TableGrid"/> child plus zero-or-more <see cref="TableCaption"/>
+    /// children.</summary>
+    Table,
+
+    /// <summary>A block-level flex container (<c>display: flex</c>) per Flexbox
+    /// 1 §3. Lays out its in-flow children per the flex algorithm in §9.</summary>
+    FlexContainer,
+
+    /// <summary>A block-level grid container (<c>display: grid</c>) per Grid 2
+    /// §3. Lays out its in-flow children per the grid placement + sizing
+    /// algorithms in §6 + §11.</summary>
+    GridContainer,
+
+    /// <summary>A replaced element (<c>img</c>, <c>video</c>, <c>canvas</c>,
+    /// <c>iframe</c>, <c>object</c>, <c>embed</c>) with a block-level outer
+    /// display (<c>display: block</c>). The intrinsic content is opaque to
+    /// layout — only the intrinsic dimensions matter for sizing per Sizing 3 §5.</summary>
+    BlockReplacedElement,
+
     // ============================================================
-    // Inline-level (CSS Display L3 §2.4 + Inline L3)
+    // Inline-level (outer-display: inline — CSS Display L3 §2.4 + Inline L3)
     // ============================================================
 
-    /// <summary>An inline-level non-replaced box — <c>span</c>, <c>em</c>,
-    /// <c>a</c>. Participates in the parent's inline formatting context by
-    /// contributing inline runs to line boxes. Per Inline L3 §2.</summary>
+    /// <summary>An inline-level non-replaced non-atomic box — <c>span</c>,
+    /// <c>em</c>, <c>a</c>. Participates in the parent's inline formatting
+    /// context by spawning nested inline runs into line boxes. Inner FC = flow.</summary>
     InlineBox,
 
-    /// <summary>An inline-level replaced box or block-level box flowing inline
-    /// (<c>display: inline-block</c>, <c>display: inline-table</c>,
-    /// <c>display: inline-flex</c>, <c>display: inline-grid</c>). Treated as a
-    /// single atomic unit by line layout — the inner formatting context lays
-    /// out independently of the surrounding inline context per Inline L3 §1.</summary>
-    AtomicInline,
+    /// <summary>An inline-level atomic box with inner FC = flow-root, i.e.,
+    /// <c>display: inline-block</c>. Treated as a single atomic unit by line
+    /// layout; the inner BFC lays out independently of the surrounding inline
+    /// context per Inline L3 §1.</summary>
+    InlineBlockContainer,
 
-    /// <summary>A line box — the per-line container of inline-level boxes
-    /// produced by inline-formatting-context layout per Inline L3 §3. One per
-    /// rendered line; distinct from <see cref="AnonymousInline"/> which is a
-    /// box-generation artifact.</summary>
-    LineBox,
+    /// <summary>An inline-level atomic box with inner FC = flex
+    /// (<c>display: inline-flex</c>). Inner content lays out per the flex
+    /// algorithm; the outer box is atomic to line layout.</summary>
+    InlineFlexContainer,
+
+    /// <summary>An inline-level atomic box with inner FC = grid
+    /// (<c>display: inline-grid</c>). Same atomic-to-line, grid-inside pattern.</summary>
+    InlineGridContainer,
+
+    /// <summary>An inline-level atomic <b>table wrapper box</b>
+    /// (<c>display: inline-table</c>) per Tables L3 §2.1. Like
+    /// <see cref="Table"/> but with inline outer display — wraps a
+    /// <see cref="TableGrid"/> + <see cref="TableCaption"/>(s).</summary>
+    InlineTable,
+
+    /// <summary>A replaced element with inline-level outer display — the
+    /// default for <c>img</c>, <c>video</c>, etc. (no explicit
+    /// <c>display: block</c>). Atomic to line layout.</summary>
+    InlineReplacedElement,
+
+    /// <summary>An anonymous inline-level box wrapping anonymous text content
+    /// per Display L3 §3.2 (e.g., a text node directly inside a flex container
+    /// becomes a wrapped flex-item-anon-inline). Distinct from
+    /// <see cref="LineBox"/>: this is a box-generation construct,
+    /// <see cref="LineBox"/> is a line-layout product.</summary>
+    AnonymousInline,
 
     /// <summary>A contiguous run of text characters within an inline parent.
     /// The smallest text unit Phase 3 segments, shapes, and breaks. Carries
@@ -91,31 +155,27 @@ internal enum BoxKind : byte
     TextRun,
 
     // ============================================================
-    // Lists (CSS Lists L3)
+    // Lists (CSS Lists L3 §3)
     // ============================================================
-
-    /// <summary>An <c>li</c> element or anything with <c>display: list-item</c>
-    /// per Lists L3 §3. Behaves as a <see cref="BlockContainer"/> for layout
-    /// but is associated with a separate <see cref="Marker"/> child box.</summary>
-    ListItem,
 
     /// <summary>The marker box for a <c>list-item</c> per Lists L3 §3.1, or
     /// the <c>::marker</c> pseudo-element box per CSS Pseudo L4 §3.4. Always
     /// has <see cref="BoxPseudo.Marker"/> when generated from a pseudo-element
-    /// rule.</summary>
+    /// rule. Outer display depends on <c>list-style-position</c> (inside →
+    /// inline-level child of the list-item, outside → outside-the-flow).</summary>
     Marker,
 
     // ============================================================
-    // Tables (CSS Tables L3 §2)
+    // Table internals (CSS Tables L3 §2 + §3)
     // ============================================================
 
-    /// <summary>The principal table-wrapper box for an element with
-    /// <c>display: table</c> or the implicit table generated by table fixup
-    /// per Tables L3 §3.</summary>
-    Table,
+    /// <summary>The anonymous <b>table grid box</b> per Tables L3 §2.1 — the
+    /// inner box that holds the row groups / rows / cells and runs the table
+    /// layout algorithm. Always a child of <see cref="Table"/> or
+    /// <see cref="InlineTable"/>; never has a source element.</summary>
+    TableGrid,
 
-    /// <summary>A row group: <c>tbody</c> or anything with
-    /// <c>display: table-row-group</c>.</summary>
+    /// <summary>A row group: <c>tbody</c> or <c>display: table-row-group</c>.</summary>
     TableRowGroup,
 
     /// <summary><c>thead</c> or <c>display: table-header-group</c>.</summary>
@@ -136,60 +196,17 @@ internal enum BoxKind : byte
     /// <summary><c>col</c> or <c>display: table-column</c>.</summary>
     TableColumn,
 
-    /// <summary><c>caption</c> or <c>display: table-caption</c>.</summary>
+    /// <summary><c>caption</c> or <c>display: table-caption</c>. A child of
+    /// the <see cref="Table"/> / <see cref="InlineTable"/> wrapper, NOT of the
+    /// <see cref="TableGrid"/>.</summary>
     TableCaption,
 
     // ============================================================
-    // Flexbox (CSS Flexbox 1 §3)
+    // Layout-time products (not box-generation outputs but live in the tree)
     // ============================================================
 
-    /// <summary>A flex container — <c>display: flex</c> or <c>display: inline-flex</c>.
-    /// Lays out its <see cref="FlexItem"/> children per the flex algorithm in §9.</summary>
-    FlexContainer,
-
-    /// <summary>A flex item — every in-flow child of a <see cref="FlexContainer"/>.
-    /// Anonymous text runs in a flex container are wrapped in synthetic flex
-    /// items per §4.</summary>
-    FlexItem,
-
-    // ============================================================
-    // Grid (CSS Grid 2 §3)
-    // ============================================================
-
-    /// <summary>A grid container — <c>display: grid</c> or <c>display: inline-grid</c>.
-    /// Establishes a grid formatting context for its <see cref="GridItem"/>
-    /// children per the grid placement + sizing algorithms in §6 + §11.</summary>
-    GridContainer,
-
-    /// <summary>A grid item — every in-flow child of a <see cref="GridContainer"/>.
-    /// Same anonymous-wrapping rules as flex items.</summary>
-    GridItem,
-
-    // ============================================================
-    // Replaced content (CSS Display L3 §2.4 + Replaced L4)
-    // ============================================================
-
-    /// <summary>A replaced element box — <c>img</c>, <c>video</c>, <c>canvas</c>,
-    /// <c>iframe</c>, <c>object</c>, <c>embed</c>. The intrinsic content
-    /// (image bytes, video frame, etc.) is opaque to the layout engine —
-    /// only the intrinsic dimensions matter for sizing per Sizing 3 §5.</summary>
-    ReplacedElement,
-
-    // ============================================================
-    // Anonymous boxes (CSS Display L3 §3 + Tables L3 §3 fixup)
-    // ============================================================
-
-    /// <summary>An anonymous block-level box synthesized to maintain the
-    /// invariant that block + inline siblings cannot mix in the same
-    /// formatting context per Display L3 §3.1, OR to satisfy table fixup per
-    /// Tables L3 §3 (e.g., a stray block inside a table row gets wrapped).
-    /// Has no <see cref="Box.SourceElement"/>; inherits style from its parent.</summary>
-    AnonymousBlock,
-
-    /// <summary>An anonymous inline-level box wrapping anonymous text content
-    /// per Display L3 §3.2 (e.g., a text node directly inside a flex
-    /// container becomes a wrapped flex-item-anon-inline). Distinct from
-    /// <see cref="LineBox"/>: this is a box-generation construct,
-    /// <see cref="LineBox"/> is a line-layout product.</summary>
-    AnonymousInline,
+    /// <summary>A line box — the per-line container of inline-level boxes
+    /// produced by inline-formatting-context layout per Inline L3 §3. One per
+    /// rendered line. Always anonymous.</summary>
+    LineBox,
 }

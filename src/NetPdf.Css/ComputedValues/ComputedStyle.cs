@@ -74,6 +74,14 @@ internal sealed class ComputedStyle : IDisposable
 
     private bool _disposed;
 
+    /// <summary>Set by <see cref="MarkAsBoxOwned"/> when a box-tree node attaches
+    /// this style. Once set, <see cref="Dispose"/> refuses to return the instance
+    /// to the pool — the box still references it, and pool re-rental would let
+    /// another caller clear/repopulate the slots and silently corrupt the box's
+    /// view. Cycle-2 / Phase 3 will add an explicit box-tree disposal sweep that
+    /// clears this flag once the tree is discarded.</summary>
+    private bool _isBoxOwned;
+
     /// <summary>Maximum instances retained in the pool. Capped to bound memory under
     /// high rent/dispose churn — beyond this, <see cref="Dispose"/> drops to GC.</summary>
     private const int MaxPoolSize = 256;
@@ -102,15 +110,41 @@ internal sealed class ComputedStyle : IDisposable
     /// happens lazily on the next <see cref="Rent"/> via <see cref="Reset"/>, not here,
     /// so disposing is cheap.
     /// </summary>
+    /// <remarks>
+    /// <b>Box-ownership safety (Task 11 hardening Rec 6).</b> If
+    /// <see cref="MarkAsBoxOwned"/> has been called (a <c>NetPdf.Layout.Boxes.Box</c>
+    /// holds a reference), <see cref="Dispose"/> is a no-op — the instance stays alive
+    /// for the box-tree lifetime. Cycle-2 / Phase 3 will add a tree-disposal sweep that
+    /// clears the box-owned flag and re-enables pool return.
+    /// </remarks>
     public void Dispose()
     {
         if (_disposed) return;
+        if (_isBoxOwned) return;
         _disposed = true;
         if (_pool.Count < MaxPoolSize)
         {
             _pool.Add(this);
         }
     }
+
+    /// <summary>
+    /// Marks this style as held by one or more <c>NetPdf.Layout.Boxes.Box</c>
+    /// instances. Idempotent: repeated calls are no-ops. Once marked, the pool
+    /// cannot recycle the instance until the flag is cleared (Phase 3 work) —
+    /// otherwise a re-rented instance would be cleared/reset while the box still
+    /// reads from it, silently corrupting the box's view per
+    /// Task 11 hardening Rec 6.
+    /// </summary>
+    public void MarkAsBoxOwned()
+    {
+        ThrowIfDisposed();
+        _isBoxOwned = true;
+    }
+
+    /// <summary><see langword="true"/> when at least one <c>NetPdf.Layout.Boxes.Box</c>
+    /// has marked this style as owned.</summary>
+    public bool IsBoxOwned => _isBoxOwned;
 
     /// <summary>
     /// Clears all slots, bitmap words, and the custom-property dictionary, and flips
@@ -130,6 +164,7 @@ internal sealed class ComputedStyle : IDisposable
         }
         _customProperties?.Clear();
         _deferredText?.Clear();
+        _isBoxOwned = false;
         _disposed = false;
     }
 

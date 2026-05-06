@@ -42,4 +42,10 @@ internal static class CssDiagnosticCodes
 
     /// <summary>A <c>calc()</c> expression divided by zero. Severity: Warning.</summary>
     public const string CssCalcDivByZero001 = "CSS-CALC-DIV-BY-ZERO-001";
+
+    /// <summary>A property's value text could not be parsed into the property's typed
+    /// value per its declared <see cref="NetPdf.Css.Properties.PropertyType"/>. The
+    /// cascade's "invalid at computed value time" rule applies — initial value (or
+    /// inherited for inherited properties) is used. Severity: Warning.</summary>
+    public const string CssPropertyValueInvalid001 = "CSS-PROPERTY-VALUE-INVALID-001";
 }

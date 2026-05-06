@@ -90,5 +90,14 @@ internal static class DiagnosticCodes
     /// </summary>
     public const string CssCalcDivByZero001 = "CSS-CALC-DIV-BY-ZERO-001";
 
+    /// <summary>
+    /// A property's value text could not be parsed into the property's typed value
+    /// per its declared <c>PropertyType</c> (e.g., <c>color: not-a-color</c>,
+    /// <c>width: nonsense</c>, <c>display: foo</c>). The cascade's "invalid at computed
+    /// value time" rule applies — the property's initial value (or the inherited value
+    /// for inherited properties) is used. Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string CssPropertyValueInvalid001 = "CSS-PROPERTY-VALUE-INVALID-001";
+
     // endregion CSS-*
 }

@@ -221,6 +221,25 @@ public sealed class DiagnosticCodesTests
             NetPdf.Css.Diagnostics.CssDiagnosticCodes.CssCalcDivByZero001);
     }
 
+    [Fact]
+    public void Css_property_value_invalid_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(registry,
+            @"\|\s*`?(CSS-PROPERTY-VALUE-INVALID-001)`?\s*\|\s*(\w+)\s*\|");
+        Assert.True(match.Success, "CSS-PROPERTY-VALUE-INVALID-001 row not found");
+        Assert.Equal(DiagnosticCodes.CssPropertyValueInvalid001, match.Groups[1].Value);
+        Assert.Equal("Warning", match.Groups[2].Value);
+        Assert.Equal(DiagnosticCodes.CssPropertyValueInvalid001,
+            NetPdf.Css.Diagnostics.CssDiagnosticCodes.CssPropertyValueInvalid001);
+    }
+
+    [Fact]
+    public void Css_property_value_invalid_001_constant_value_is_stable()
+    {
+        Assert.Equal("CSS-PROPERTY-VALUE-INVALID-001", DiagnosticCodes.CssPropertyValueInvalid001);
+    }
+
     private static string LoadRegistry()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

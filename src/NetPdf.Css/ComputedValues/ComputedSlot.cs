@@ -111,6 +111,37 @@ internal readonly struct ComputedSlot : IEquatable<ComputedSlot>
     /// <summary>Decode the integer payload.</summary>
     public int AsInteger() => _i32;
 
+    /// <summary>Encode a unitless number (e.g., <c>flex-grow: 0.5</c>, <c>opacity: 0.8</c>).
+    /// Stored as <see cref="float"/> in the same payload bytes as <see cref="FromLengthPx(float)"/>
+    /// but tagged distinctly so the decoder knows the value is dimensionless. Rejects
+    /// NaN and ±Infinity — those are programming errors at this layer.</summary>
+    /// <exception cref="ArgumentException">When <paramref name="number"/> is NaN or
+    /// infinite.</exception>
+    public static ComputedSlot FromNumber(double number)
+    {
+        if (double.IsNaN(number) || double.IsInfinity(number))
+            throw new ArgumentException(
+                $"Number must be finite — got {number}.",
+                nameof(number));
+        return FromNumber((float)number);
+    }
+
+    /// <inheritdoc cref="FromNumber(double)"/>
+    public static ComputedSlot FromNumber(float number)
+    {
+        if (float.IsNaN(number) || float.IsInfinity(number))
+            throw new ArgumentException(
+                $"Number must be finite — got {number}.",
+                nameof(number));
+        return new(PackTag(ComputedSlotTag.Number) | BitConverter.SingleToUInt32Bits(number));
+    }
+
+    /// <summary>Decode the unitless number payload.</summary>
+    public double AsNumber() => _f32;
+
+    /// <summary>Decode the unitless number as the underlying single-precision storage.</summary>
+    public float AsNumberFloat() => _f32;
+
     /// <summary>Encode a keyword id — typically a small int from a per-property keyword
     /// table built in Task 10. Distinct from <see cref="FromInteger"/> so the
     /// computed-value resolver knows the value's a keyword index, not a raw number.</summary>
@@ -226,4 +257,8 @@ internal enum ComputedSlotTag : byte
     /// <summary>Property-specific composite encoding — caller-supplied 8 bytes.
     /// Reserved for shapes like <c>line-height</c>'s <c>normal | number | length</c> union.</summary>
     Composite = 7,
+    /// <summary>Unitless number in the low 4 bytes (stored as <see cref="float"/>).
+    /// Distinct from <see cref="Integer"/> (which is signed int32) and
+    /// <see cref="LengthPx"/> (which carries dimensional intent).</summary>
+    Number = 8,
 }

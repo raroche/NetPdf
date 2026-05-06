@@ -36,9 +36,13 @@ namespace NetPdf.Css.Cascade;
 ///   <item><description>Recurse into child elements with the updated effective table.</description></item>
 /// </list>
 /// <para>
-/// Pseudo-element matched-rule-sets reuse the host element's custom-property table since
-/// pseudo-elements don't introduce their own scope — <c>::before</c> sees its host's
-/// <c>--*</c> values per L1 §2.
+/// Pseudo-element matched-rule-sets inherit from the host element's custom-property
+/// table per CSS Custom Properties L1 §2 (so <c>::before</c> sees its host's
+/// <c>--*</c> values), but a pseudo-element can also declare its own <c>--*</c>
+/// overrides (e.g. <c>p::before { --primary: blue }</c>). The resolver layers a
+/// per-pseudo <c>CustomPropertyTable</c> on top of the host's so the host's values
+/// flow in and pseudo-only declarations win for that pseudo's own <c>var()</c> lookups
+/// without leaking back to the host or to siblings.
 /// </para>
 /// </remarks>
 internal static class VarResolver

@@ -65,6 +65,20 @@ internal static class VarSubstitution
     /// fail fast on adversarial input.</summary>
     public const int MaxOutputLength = 1024 * 1024;
 
+    /// <summary>Convenience wrapper around <see cref="Substitute"/> that discards the
+    /// invalid flag and returns just the substituted text. Use the structured form
+    /// (<see cref="Substitute"/>) when the caller needs to react to "invalid at
+    /// computed value time" semantics — e.g., custom-property invalidation in
+    /// <see cref="VarResolver"/>.</summary>
+    public static string SubstituteToString(
+        string rawValue,
+        CustomPropertyTable customProperties,
+        ICssDiagnosticsSink? diagnostics = null,
+        CssSourceLocation location = default,
+        HashSet<string>? visited = null,
+        int depth = 0)
+        => Substitute(rawValue, customProperties, diagnostics, location, visited, depth).Value;
+
     /// <summary>Substitute every <c>var(--name, fallback)</c> in <paramref name="rawValue"/>.
     /// Returns a <see cref="SubstitutionResult"/> with the resolved text + an
     /// <see cref="SubstitutionResult.IsInvalid"/> flag. Emits
@@ -81,20 +95,6 @@ internal static class VarSubstitution
     /// carry it through to detect cycles.</param>
     /// <param name="depth">Recursion-depth counter; bounded by
     /// <see cref="MaxRecursionDepth"/>. Top-level callers pass 0.</param>
-    /// <summary>Convenience wrapper around <see cref="Substitute"/> that discards the
-    /// invalid flag and returns just the substituted text. Use the structured form
-    /// (<see cref="Substitute"/>) when the caller needs to react to "invalid at
-    /// computed value time" semantics — e.g., custom-property invalidation in
-    /// <see cref="VarResolver"/>.</summary>
-    public static string SubstituteToString(
-        string rawValue,
-        CustomPropertyTable customProperties,
-        ICssDiagnosticsSink? diagnostics = null,
-        CssSourceLocation location = default,
-        HashSet<string>? visited = null,
-        int depth = 0)
-        => Substitute(rawValue, customProperties, diagnostics, location, visited, depth).Value;
-
     public static SubstitutionResult Substitute(
         string rawValue,
         CustomPropertyTable customProperties,
@@ -215,8 +215,7 @@ internal static class VarSubstitution
             return ResolveFallback(fallbackRaw, customProperties, diagnostics, location, visited, depth);
         }
 
-        var visitedSet = visited;
-        if (visitedSet is not null && visitedSet.Contains(name))
+        if (visited is not null && visited.Contains(name))
         {
             diagnostics?.Emit(new CssDiagnostic(
                 CssDiagnosticCodes.CssVarCircular001,
@@ -233,10 +232,22 @@ internal static class VarSubstitution
             return ResolveFallback(fallbackRaw, customProperties, diagnostics, location, visited, depth);
         }
 
-        visitedSet = visitedSet is null
-            ? new HashSet<string>(StringComparer.Ordinal) { name }
-            : new HashSet<string>(visitedSet, StringComparer.Ordinal) { name };
-        return Substitute(value, customProperties, diagnostics, location, visitedSet, depth);
+        // Lazily allocate the visited set once per resolution and mutate in place across
+        // the recursion (add before descending, remove on return). Avoids the per-frame
+        // copy the previous implementation took on every nested var(). Cycle detection
+        // still works because Add happens BEFORE the recursive Substitute call; sibling
+        // refs to the same name (e.g. `var(--a) var(--a)` at the same level) aren't
+        // blocked because we Remove on the way back up.
+        var visitedSet = visited ?? new HashSet<string>(StringComparer.Ordinal);
+        visitedSet.Add(name);
+        try
+        {
+            return Substitute(value, customProperties, diagnostics, location, visitedSet, depth);
+        }
+        finally
+        {
+            visitedSet.Remove(name);
+        }
     }
 
     /// <summary>Resolve a fallback per CSS Custom Properties L1 §3.5. Distinguishes

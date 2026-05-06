@@ -20,9 +20,12 @@ internal enum CalcUnit : byte
     /// operands and never an addition operand for a dimensioned value (per L4 §10.1).</summary>
     Number = 0,
     /// <summary>Absolute length, normalized to CSS px (1in = 96px, 1cm = 96/2.54px,
-    /// 1pt = 96/72px, etc.). em/rem are folded into px against a 16px reference at
-    /// resolve time; Task 10's typed-value pipeline can carry them separately when
-    /// element font-size is known.</summary>
+    /// 1pt = 96/72px, etc.). Font-relative units (<c>em</c>, <c>rem</c>, <c>ch</c>,
+    /// <c>ex</c>, <c>lh</c>, <c>rlh</c>, <c>cap</c>, <c>ic</c>) are <b>not</b> folded
+    /// here — <see cref="CalcResolver"/> defers them by throwing internally so the
+    /// outer reducer preserves the source text verbatim. Task 10's typed-value pipeline
+    /// finalizes them once font metrics are known. Same goes for viewport- and
+    /// container-relative units.</summary>
     Px = 1,
     /// <summary>Percentage. Kept distinct from Px because percentages resolve against
     /// a property-specific reference at LAYOUT time (parent width for margins / padding

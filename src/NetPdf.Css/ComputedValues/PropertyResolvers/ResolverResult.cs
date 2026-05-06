@@ -53,19 +53,25 @@ internal enum ResolutionState : byte
 
 /// <summary>
 /// Structured return from <see cref="PropertyResolverDispatch"/> and the per-property
-/// leaf resolvers. The cycle-1 implementation collapsed these three outcomes into a
+/// leaf resolvers. The cycle-1 implementation collapsed multiple outcomes into a
 /// shared <see cref="ComputedSlot.Unset"/> sentinel, which made it impossible for the
 /// cascade to distinguish "valid but needs context" from "invalid input" — both look
 /// identical to the consumer. Without the distinction the cascade can't choose between
 /// (a) carrying the raw text forward for layout-time finalization vs (b) falling back
-/// to the property's initial / inherited value.
+/// to the property's initial / inherited value. The hardening review then split the
+/// "deferred" bucket again so cycle-2 PropertyTypes don't silently inherit "validated"
+/// semantics — see <see cref="ResolutionState"/> for the full 4-state contract.
 /// </summary>
 /// <param name="Slot">The typed value, valid only when <see cref="State"/> is
-/// <see cref="ResolutionState.Resolved"/>.</param>
+/// <see cref="ResolutionState.Resolved"/>. <see cref="ComputedSlot.Unset"/> for every
+/// other state.</param>
 /// <param name="State">The outcome category — see <see cref="ResolutionState"/>.</param>
-/// <param name="RawText">The original (pre-resolution) text, present only when
-/// <see cref="State"/> is <see cref="ResolutionState.Deferred"/> so a downstream
-/// re-resolver can pick it up.</param>
+/// <param name="RawText">The original (pre-resolution) text. Present (non-null) when
+/// <see cref="State"/> is either <see cref="ResolutionState.Deferred"/> (validated,
+/// needs downstream context) OR <see cref="ResolutionState.UnsupportedUnvalidated"/>
+/// (no resolver wired yet, raw text passed through unchecked) — both of which carry
+/// raw text downstream must preserve. Use <see cref="HasRawText"/> for the consolidated
+/// check. Null for <see cref="ResolutionState.Resolved"/> + <see cref="ResolutionState.Invalid"/>.</param>
 internal readonly record struct ResolverResult(
     ComputedSlot Slot,
     ResolutionState State,

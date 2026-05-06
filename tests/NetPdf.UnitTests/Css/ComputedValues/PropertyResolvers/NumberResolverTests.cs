@@ -89,7 +89,7 @@ public sealed class NumberResolverTests
     {
         // Use Top (negatives allowed — positioning offset). FlexGrow / FlexShrink
         // are in NonNegativeProperties so they'd reject negative integers.
-        var result = NumberResolver.ResolveInteger(input, PropertyId.Top, "z-index", null, default);
+        var result = NumberResolver.ResolveInteger(input, PropertyId.Top, "top", null, default);
         Assert.True(result.IsResolved);
         Assert.Equal(ComputedSlotTag.Integer, result.Slot.Tag);
         Assert.Equal(expected, result.Slot.AsInteger());
@@ -103,7 +103,7 @@ public sealed class NumberResolverTests
     public void Integer_with_decimal_or_unit_is_invalid(string input)
     {
         var sink = new CapturingSink();
-        var result = NumberResolver.ResolveInteger(input, PropertyId.Top, "z-index", sink, default);
+        var result = NumberResolver.ResolveInteger(input, PropertyId.Top, "top", sink, default);
         Assert.True(result.IsInvalid);
         Assert.Single(sink.Diagnostics);
     }

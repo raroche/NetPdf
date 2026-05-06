@@ -21,14 +21,19 @@ namespace NetPdf.Css.ComputedValues.PropertyResolvers;
 /// — see its docs for the three-way Resolved / Deferred / Invalid contract.
 /// </para>
 /// <para>
-/// <b>Cycle 2 deferred PropertyTypes.</b> Property types not yet wired return
-/// <see cref="ResolverResult.Deferred"/> (carrying the raw text for re-resolution),
-/// not <see cref="ResolverResult.Invalid"/>. The distinction matters: deferred
-/// values are valid CSS that simply need a downstream parser; invalid values
-/// trigger the cascade's "fall back to initial / inherited" rule. Cycle 2 will
-/// add: <c>FontFamilyList</c>, <c>FontWeight</c>, <c>FontSize</c>, <c>LineHeight</c>,
-/// <c>LineWidth</c>, <c>FlexBasis</c>, <c>VerticalAlign</c>, <c>Content</c>,
-/// <c>Url</c>, <c>String</c>, <c>Time</c>, <c>Angle</c>, <c>Resolution</c>.
+/// <b>Cycle 2 unsupported PropertyTypes.</b> Property types not yet wired return
+/// <see cref="ResolverResult.UnsupportedUnvalidated"/> (carrying the raw text for
+/// re-resolution), NOT <see cref="ResolverResult.Deferred"/> and NOT
+/// <see cref="ResolverResult.Invalid"/>. The 4-state distinction matters per the
+/// Task 10 hardening review: <see cref="ResolutionState.Deferred"/> means "the
+/// resolver validated the value against the property's grammar but cannot reduce
+/// without context"; <see cref="ResolutionState.UnsupportedUnvalidated"/> means
+/// "no resolver wired yet — raw text passed through unchecked, cycle-2 work
+/// surface". Treating them identically would silently let typos through for
+/// cycle-2 PropertyTypes. Cycle 2 wires: <c>FontFamilyList</c>, <c>FontWeight</c>,
+/// <c>FontSize</c>, <c>LineHeight</c>, <c>LineWidth</c>, <c>FlexBasis</c>,
+/// <c>VerticalAlign</c>, <c>Content</c>, <c>Url</c>, <c>String</c>, <c>Time</c>,
+/// <c>Angle</c>, <c>Resolution</c>.
 /// </para>
 /// </remarks>
 internal static class PropertyResolverDispatch

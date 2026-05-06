@@ -177,13 +177,9 @@ public sealed class BoxTests
     {
         // Direct constructor — LineBox must be anonymous.
         var style = FreshStyle();
+        var doc = SyncDoc();
         Assert.Throws<ArgumentException>(() =>
-        {
-            // Synthesize an element via a fresh DOM since we can't test without one.
-            var ctx = BrowsingContext.New(Configuration.Default);
-            var doc = ctx.OpenNewAsync().GetAwaiter().GetResult();
-            new Box(BoxKind.LineBox, style, doc.DocumentElement, BoxPseudo.None, string.Empty);
-        });
+            new Box(BoxKind.LineBox, style, doc.DocumentElement, BoxPseudo.None, string.Empty));
     }
 
     [Fact]

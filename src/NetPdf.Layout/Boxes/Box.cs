@@ -115,8 +115,10 @@ internal sealed class Box
     ///   <item><see cref="BoxKind.LineBox"/> / <see cref="BoxKind.AnonymousBlock"/>
     ///     / <see cref="BoxKind.AnonymousInline"/> / <see cref="BoxKind.TableGrid"/>
     ///     are always anonymous — no source element + no pseudo.</item>
-    ///   <item><see cref="BoxPseudo.Marker"/> requires <see cref="BoxKind.Marker"/>
-    ///     (the kinds and the pseudo are paired by spec).</item>
+    ///   <item><see cref="BoxPseudo.Marker"/> requires <see cref="BoxKind.Marker"/>.
+    ///     The reverse is NOT enforced — <see cref="BoxKind.Marker"/> also
+    ///     represents default list-item markers (Lists L3 §3.1) which carry
+    ///     <see cref="BoxPseudo.None"/>. Invariant is one-way: pseudo→kind.</item>
     ///   <item><see cref="BoxPseudo.Before"/> / <see cref="BoxPseudo.After"/>
     ///     pseudos require a source element + must NOT pair with kinds that
     ///     are inherently anonymous.</item>
@@ -162,7 +164,10 @@ internal sealed class Box
                 "Pseudo-element boxes must reference their originating SourceElement.",
                 nameof(sourceElement));
 
-        // Marker pseudo pairs only with Marker kind, and vice versa.
+        // Marker pseudo (`::marker`) must pair with Marker kind. The reverse
+        // does NOT hold — BoxKind.Marker is also used for default list-item
+        // markers (Lists L3 §3.1) which carry BoxPseudo.None, not Marker.
+        // The invariant is one-way: pseudo→kind only.
         if (pseudo == BoxPseudo.Marker && kind != BoxKind.Marker)
             throw new ArgumentException(
                 "Marker pseudo must pair with BoxKind.Marker.",

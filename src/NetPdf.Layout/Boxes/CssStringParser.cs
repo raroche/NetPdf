@@ -107,8 +107,8 @@ internal static class CssStringParser
                     if (codepoint == 0 || codepoint > 0x10FFFF
                         || (codepoint >= 0xD800 && codepoint <= 0xDFFF))
                     {
-                        // Per Syntax §4.3.7 a NULL or surrogate codepoint becomes
-                        // U+FFFD. Conservative: reject so cycle-2 parser handles it.
+                        // Per Syntax §4.3.7 a NULL, surrogate, or out-of-range
+                        // codepoint becomes U+FFFD.
                         sb.Append('�');
                     }
                     else

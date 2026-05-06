@@ -35,12 +35,12 @@ internal static class HtmlReplacedElements
     public static bool IsReplaced(string localName)
     {
         if (string.IsNullOrEmpty(localName)) return false;
-        return Set.Contains(localName.ToLowerInvariant());
+        return Set.Contains(localName);
     }
 
     private static readonly FrozenSet<string> Set =
-        new HashSet<string>(StringComparer.Ordinal)
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
             "img", "video", "audio", "canvas", "iframe", "object", "embed",
-        }.ToFrozenSet();
+        }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 }

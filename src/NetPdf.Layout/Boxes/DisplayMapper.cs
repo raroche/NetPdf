@@ -27,8 +27,7 @@ namespace NetPdf.Layout.Boxes;
 /// <see cref="DisplayMappingResult.Unsupported"/> so <see cref="BoxBuilder"/>
 /// can decide to skip / fall back / diagnose; <c>display: contents</c> emits
 /// <see cref="DisplayMappingResult.Contents"/> which BoxBuilder handles by
-/// promoting the children up one level (per Display L3 §3.1.1) — actually
-/// in cycle 1 BoxBuilder treats it as <c>block</c> with a TODO marker;
+/// promoting the children up one level (per Display L3 §3.1.1);
 /// <c>display: none</c> emits <see cref="DisplayMappingResult.None"/> which
 /// BoxBuilder honors by skipping the element entirely.
 /// </para>
@@ -47,7 +46,8 @@ internal static class DisplayMapper
         None = 1,
         /// <summary><c>display: contents</c> — per Display L3 §3.1.1 the box
         /// itself doesn't render but its children do, attached to the
-        /// grandparent. Cycle-1 caller handles this by treating as block.</summary>
+        /// grandparent. <see cref="BoxBuilder"/> handles this by promoting
+        /// the element's children up one level.</summary>
         Contents = 2,
         /// <summary>Display value is post-v1 (ruby family, math, etc.). Caller
         /// decides whether to skip + diagnose or fall back to a generic kind.</summary>

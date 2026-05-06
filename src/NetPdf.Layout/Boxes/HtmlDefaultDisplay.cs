@@ -20,8 +20,10 @@ namespace NetPdf.Layout.Boxes;
 /// <remarks>
 /// <para>
 /// <b>Lookup is ASCII case-insensitive</b> per HTML5 §13 (HTML element names
-/// are case-insensitive in the HTML namespace). The keys are stored
-/// lower-case; callers must lower-case the input before lookup.
+/// are case-insensitive in the HTML namespace). The backing
+/// <see cref="FrozenDictionary{TKey, TValue}"/> uses
+/// <see cref="StringComparer.OrdinalIgnoreCase"/>, so callers can pass any
+/// casing without an upstream allocation.
 /// </para>
 /// <para>
 /// <b>Coverage</b> is intentionally limited to the elements the corpus +
@@ -50,14 +52,14 @@ internal static class HtmlDefaultDisplay
     public static string GetDefault(string localName)
     {
         if (string.IsNullOrEmpty(localName)) return SpecDefault;
-        return Table.TryGetValue(localName.ToLowerInvariant(), out var d) ? d : SpecDefault;
+        return Table.TryGetValue(localName, out var d) ? d : SpecDefault;
     }
 
     private static readonly FrozenDictionary<string, string> Table = BuildTable();
 
     private static FrozenDictionary<string, string> BuildTable()
     {
-        var dict = new Dictionary<string, string>(StringComparer.Ordinal)
+        var dict = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             // Metadata-content elements per HTML "Rendering" §15.3.1 + §15.5.1
             // — never produce visible boxes. Without these defaults BoxBuilder
@@ -123,6 +125,6 @@ internal static class HtmlDefaultDisplay
             ["canvas"] = "inline", ["iframe"] = "inline",
             ["object"] = "inline", ["embed"] = "inline", ["picture"] = "inline",
         };
-        return dict.ToFrozenDictionary();
+        return dict.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
     }
 }

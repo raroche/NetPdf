@@ -81,6 +81,57 @@ public sealed class ComputedSlotTests
     }
 
     [Theory]
+    [InlineData(0.0)]
+    [InlineData(1.0)]
+    [InlineData(0.5)]
+    [InlineData(-2.5)]
+    [InlineData(0.001)]
+    [InlineData(123456.0)]
+    public void Number_round_trips_through_slot(double n)
+    {
+        // Number storage is float32 + Number tag — distinct from LengthPx tag so the
+        // decoder knows the value carries no dimension. Used by `flex-grow`,
+        // `flex-shrink`, `opacity`, `line-height: <number>`, and similar.
+        var slot = ComputedSlot.FromNumber(n);
+        Assert.Equal(ComputedSlotTag.Number, slot.Tag);
+        Assert.False(slot.IsUnset);
+        Assert.Equal(n, slot.AsNumber(), 5);
+    }
+
+    [Fact]
+    public void Number_rejects_NaN_and_infinity()
+    {
+        Assert.Throws<System.ArgumentException>(() => ComputedSlot.FromNumber(double.NaN));
+        Assert.Throws<System.ArgumentException>(() => ComputedSlot.FromNumber(double.PositiveInfinity));
+        Assert.Throws<System.ArgumentException>(() => ComputedSlot.FromNumber(double.NegativeInfinity));
+    }
+
+    [Fact]
+    public void CurrentColor_has_dedicated_tag_and_no_payload()
+    {
+        // Rec 3: dedicated tag — no packed-argb sentinel that could collide with a
+        // user-authored color like rgba(0, 0, 1, 0).
+        var slot = ComputedSlot.CurrentColor;
+        Assert.Equal(ComputedSlotTag.CurrentColor, slot.Tag);
+        Assert.True(slot.IsCurrentColor);
+        Assert.False(slot.IsUnset);
+    }
+
+    [Fact]
+    public void CurrentColor_distinct_from_FromColor_zero()
+    {
+        // The old sentinel was 0x00000001 packed as a Color slot. The new
+        // representation is tag-only, so there's no possible collision with any
+        // ComputedSlot.FromColor(...) value.
+        var cc = ComputedSlot.CurrentColor;
+        var transparent = ComputedSlot.FromColor(0x00000000u);
+        var nearMiss = ComputedSlot.FromColor(0x00000001u);
+        Assert.NotEqual(cc, transparent);
+        Assert.NotEqual(cc, nearMiss);
+        Assert.NotEqual(transparent, nearMiss);
+    }
+
+    [Theory]
     [InlineData(0)]
     [InlineData(7)]
     [InlineData(255)]

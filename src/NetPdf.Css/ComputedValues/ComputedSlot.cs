@@ -72,6 +72,15 @@ internal readonly struct ComputedSlot : IEquatable<ComputedSlot>
     /// <summary>Decode the RGBA color. Caller must verify <see cref="Tag"/> first.</summary>
     public uint AsColor() => _u32;
 
+    /// <summary>The <c>currentcolor</c> sentinel. The paint stage substitutes the
+    /// cascaded <c>color</c> value when it sees this slot. Distinct tag (not a packed
+    /// argb sentinel) so a user color like <c>rgba(0, 0, 1, 0)</c> can never collide
+    /// with the keyword.</summary>
+    public static ComputedSlot CurrentColor => new(PackTag(ComputedSlotTag.CurrentColor));
+
+    /// <summary><see langword="true"/> when the slot is the <c>currentcolor</c> sentinel.</summary>
+    public bool IsCurrentColor => Tag == ComputedSlotTag.CurrentColor;
+
     /// <summary>Encode an absolute length in pixels. Rejects NaN and ±Infinity — those
     /// are programming errors, not legitimate computed values.</summary>
     /// <exception cref="ArgumentException">When <paramref name="pixels"/> is NaN or
@@ -110,6 +119,37 @@ internal readonly struct ComputedSlot : IEquatable<ComputedSlot>
 
     /// <summary>Decode the integer payload.</summary>
     public int AsInteger() => _i32;
+
+    /// <summary>Encode a unitless number (e.g., <c>flex-grow: 0.5</c>, <c>opacity: 0.8</c>).
+    /// Stored as <see cref="float"/> in the same payload bytes as <see cref="FromLengthPx(float)"/>
+    /// but tagged distinctly so the decoder knows the value is dimensionless. Rejects
+    /// NaN and ±Infinity — those are programming errors at this layer.</summary>
+    /// <exception cref="ArgumentException">When <paramref name="number"/> is NaN or
+    /// infinite.</exception>
+    public static ComputedSlot FromNumber(double number)
+    {
+        if (double.IsNaN(number) || double.IsInfinity(number))
+            throw new ArgumentException(
+                $"Number must be finite — got {number}.",
+                nameof(number));
+        return FromNumber((float)number);
+    }
+
+    /// <inheritdoc cref="FromNumber(double)"/>
+    public static ComputedSlot FromNumber(float number)
+    {
+        if (float.IsNaN(number) || float.IsInfinity(number))
+            throw new ArgumentException(
+                $"Number must be finite — got {number}.",
+                nameof(number));
+        return new(PackTag(ComputedSlotTag.Number) | BitConverter.SingleToUInt32Bits(number));
+    }
+
+    /// <summary>Decode the unitless number payload.</summary>
+    public double AsNumber() => _f32;
+
+    /// <summary>Decode the unitless number as the underlying single-precision storage.</summary>
+    public float AsNumberFloat() => _f32;
 
     /// <summary>Encode a keyword id — typically a small int from a per-property keyword
     /// table built in Task 10. Distinct from <see cref="FromInteger"/> so the
@@ -226,4 +266,13 @@ internal enum ComputedSlotTag : byte
     /// <summary>Property-specific composite encoding — caller-supplied 8 bytes.
     /// Reserved for shapes like <c>line-height</c>'s <c>normal | number | length</c> union.</summary>
     Composite = 7,
+    /// <summary>Unitless number in the low 4 bytes (stored as <see cref="float"/>).
+    /// Distinct from <see cref="Integer"/> (which is signed int32) and
+    /// <see cref="LengthPx"/> (which carries dimensional intent).</summary>
+    Number = 8,
+    /// <summary>The <c>currentcolor</c> sentinel — payload bytes are unused. The
+    /// paint stage substitutes the cascaded <c>color</c> value when it sees this
+    /// tag. A dedicated tag (not a packed argb pattern) prevents collision with any
+    /// user-authored color value.</summary>
+    CurrentColor = 9,
 }

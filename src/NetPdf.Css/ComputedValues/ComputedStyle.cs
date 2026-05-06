@@ -74,6 +74,14 @@ internal sealed class ComputedStyle : IDisposable
 
     private bool _disposed;
 
+    /// <summary>Set by <see cref="MarkAsBoxOwned"/> when a box-tree node attaches
+    /// this style. Once set, <see cref="Dispose"/> refuses to return the instance
+    /// to the pool — the box still references it, and pool re-rental would let
+    /// another caller clear/repopulate the slots and silently corrupt the box's
+    /// view. Cycle-2 / Phase 3 will add an explicit box-tree disposal sweep that
+    /// clears this flag once the tree is discarded.</summary>
+    private bool _isBoxOwned;
+
     /// <summary>Maximum instances retained in the pool. Capped to bound memory under
     /// high rent/dispose churn — beyond this, <see cref="Dispose"/> drops to GC.</summary>
     private const int MaxPoolSize = 256;
@@ -102,15 +110,41 @@ internal sealed class ComputedStyle : IDisposable
     /// happens lazily on the next <see cref="Rent"/> via <see cref="Reset"/>, not here,
     /// so disposing is cheap.
     /// </summary>
+    /// <remarks>
+    /// <b>Box-ownership safety (Task 11 hardening Rec 6).</b> If
+    /// <see cref="MarkAsBoxOwned"/> has been called (a <c>NetPdf.Layout.Boxes.Box</c>
+    /// holds a reference), <see cref="Dispose"/> is a no-op — the instance stays alive
+    /// for the box-tree lifetime. Cycle-2 / Phase 3 will add a tree-disposal sweep that
+    /// clears the box-owned flag and re-enables pool return.
+    /// </remarks>
     public void Dispose()
     {
         if (_disposed) return;
+        if (_isBoxOwned) return;
         _disposed = true;
         if (_pool.Count < MaxPoolSize)
         {
             _pool.Add(this);
         }
     }
+
+    /// <summary>
+    /// Marks this style as held by one or more <c>NetPdf.Layout.Boxes.Box</c>
+    /// instances. Idempotent: repeated calls are no-ops. Once marked, the pool
+    /// cannot recycle the instance until the flag is cleared (Phase 3 work) —
+    /// otherwise a re-rented instance would be cleared/reset while the box still
+    /// reads from it, silently corrupting the box's view per
+    /// Task 11 hardening Rec 6.
+    /// </summary>
+    public void MarkAsBoxOwned()
+    {
+        ThrowIfDisposed();
+        _isBoxOwned = true;
+    }
+
+    /// <summary><see langword="true"/> when at least one <c>NetPdf.Layout.Boxes.Box</c>
+    /// has marked this style as owned.</summary>
+    public bool IsBoxOwned => _isBoxOwned;
 
     /// <summary>
     /// Clears all slots, bitmap words, and the custom-property dictionary, and flips
@@ -129,6 +163,8 @@ internal sealed class ComputedStyle : IDisposable
             _bitmap[i] = 0;
         }
         _customProperties?.Clear();
+        _deferredText?.Clear();
+        _isBoxOwned = false;
         _disposed = false;
     }
 
@@ -167,10 +203,13 @@ internal sealed class ComputedStyle : IDisposable
             // Redirect to Unset so the bitmap and slot agree.
             _slots[index] = ComputedSlot.Unset;
             ClearBit(index);
+            _deferredText?.Remove(id);
             return;
         }
         _slots[index] = value;
         SetBit(index);
+        // A typed value overrides any prior deferred text — keep them in sync.
+        _deferredText?.Remove(id);
     }
 
     /// <summary>
@@ -195,6 +234,68 @@ internal sealed class ComputedStyle : IDisposable
         if ((uint)index >= (uint)PropertyMetadata.Count) return;
         _slots[index] = ComputedSlot.Unset;
         ClearBit(index);
+        _deferredText?.Remove(id);
+    }
+
+    // ------------------------------------------------------------
+    // Deferred text (Rec 5 of Task 10 hardening review)
+    //
+    // Stores raw declaration text for properties whose resolver returned a
+    // Deferred or UnsupportedUnvalidated state. Layout time / cycle-2 resolvers
+    // re-resolve from this side store. Without it, callers materializing a
+    // Deferred ResolverResult into ComputedStyle would silently drop the raw
+    // text and the cascade would have no record that a value was ever supplied.
+    //
+    // Storage: a sparse Dictionary<PropertyId, string> — most elements have no
+    // deferred values, so we don't pay the per-property cost. Allocated lazily
+    // on first SetDeferred call. Reset() and Unset() clear/remove entries to
+    // keep the pool's contract intact.
+    // ------------------------------------------------------------
+
+    private Dictionary<PropertyId, string>? _deferredText;
+
+    /// <summary>Records raw declaration text for a property whose resolver could not
+    /// yet produce a typed value (Deferred or UnsupportedUnvalidated). Sets the
+    /// "is set" bit so the cascade still knows an explicit declaration applied,
+    /// even though <see cref="Get"/> returns <see cref="ComputedSlot.Unset"/>.
+    /// Layout time (or a future cycle-2 resolver) reads back via
+    /// <see cref="TryGetDeferred"/>.</summary>
+    /// <exception cref="ArgumentNullException">When <paramref name="rawText"/> is null.</exception>
+    public void SetDeferred(PropertyId id, string rawText)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(rawText);
+        var index = (int)id;
+        if ((uint)index >= (uint)PropertyMetadata.Count)
+            throw new ArgumentOutOfRangeException(nameof(id),
+                $"PropertyId {id} (index {index}) is outside the registry (Count = {PropertyMetadata.Count}).");
+        _slots[index] = ComputedSlot.Unset;
+        _deferredText ??= new Dictionary<PropertyId, string>();
+        _deferredText[id] = rawText;
+        SetBit(index);
+    }
+
+    /// <summary><see langword="true"/> when <see cref="SetDeferred"/> has been called
+    /// for <paramref name="id"/> (and not subsequently overwritten by <see cref="Set"/>
+    /// or cleared by <see cref="Unset(PropertyId)"/>).</summary>
+    public bool IsDeferred(PropertyId id)
+    {
+        ThrowIfDisposed();
+        return _deferredText is not null && _deferredText.ContainsKey(id);
+    }
+
+    /// <summary>Reads the deferred raw text for <paramref name="id"/>. Returns
+    /// <see langword="false"/> when the property has no deferred value (typed slot
+    /// may still be present via <see cref="Get"/>).</summary>
+    public bool TryGetDeferred(PropertyId id, out string? rawText)
+    {
+        ThrowIfDisposed();
+        if (_deferredText is null)
+        {
+            rawText = null;
+            return false;
+        }
+        return _deferredText.TryGetValue(id, out rawText);
     }
 
     // ------------------------------------------------------------

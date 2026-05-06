@@ -79,10 +79,14 @@ public sealed class CalcResolverTests
     }
 
     [Fact]
-    public void Calc_em_resolves_to_16px_per_em()
+    public void Calc_with_em_defers_to_typed_value_stage()
     {
-        // v1 simplification: em uses 16px root font as reference.
-        Assert.Equal("32px", CalcResolver.Resolve("calc(2em)"));
+        // Per CSS Values L4 §10.4: font-relative units (em/rem/ch/ex/lh/rlh/cap/ic)
+        // can't be resolved at compute time without a typed font context. The resolver
+        // defers — preserves the source text verbatim for the layout-time pipeline to
+        // re-reduce once font metrics are known. No diagnostic: deferral is normal.
+        Assert.Equal("calc(2em)", CalcResolver.Resolve("calc(2em)"));
+        Assert.Equal("calc(1rem + 16px)", CalcResolver.Resolve("calc(1rem + 16px)"));
     }
 
     [Fact]
@@ -217,10 +221,20 @@ public sealed class CalcResolverTests
     }
 
     [Fact]
-    public void Dividing_by_dimensioned_value_emits_diagnostic()
+    public void Calc_same_unit_dimension_division_returns_unitless_number()
     {
+        // Per CSS Values L4 §10.10: dividing two values of the same unit cancels the
+        // dimension and yields a Number. calc(16px / 2px) = 8, calc(50% / 25%) = 2.
+        Assert.Equal("8", CalcResolver.Resolve("calc(16px / 2px)"));
+        Assert.Equal("2", CalcResolver.Resolve("calc(50% / 25%)"));
+    }
+
+    [Fact]
+    public void Calc_dividing_by_dimensioned_value_of_different_class_emits_diagnostic()
+    {
+        // Cross-class division (e.g. length / angle) has no unit-algebra solution per L4.
         var sink = new CapturingSink();
-        const string input = "calc(16px / 2px)";
+        const string input = "calc(16px / 2deg)";
         var output = CalcResolver.Resolve(input, sink);
         Assert.Equal(input, output);
         Assert.Contains(sink.Diagnostics,

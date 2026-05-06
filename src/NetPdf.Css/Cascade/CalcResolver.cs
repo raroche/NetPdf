@@ -151,22 +151,14 @@ internal static class CalcResolver
 
     /// <summary>Try to reduce a math function to a single <see cref="CalcValue"/>.
     /// Returns null when the expression is deferred (mixed units / contains
-    /// percentage when context isn't known) or invalid.</summary>
+    /// percentage when context isn't known) or invalid. Catches the resolver's
+    /// internal exception types and emits diagnostics.</summary>
     private static CalcValue? TryReduceFunction(string fnName, string body,
         ICssDiagnosticsSink? diagnostics, CssSourceLocation location)
     {
         try
         {
-            return fnName switch
-            {
-                "calc" => ReduceSingleArg(body, diagnostics, location),
-                "abs" => ApplyUnary(body, Math.Abs, diagnostics, location),
-                "sign" => ApplySign(body, diagnostics, location),
-                "min" => ApplyMinMax(body, isMin: true, diagnostics, location),
-                "max" => ApplyMinMax(body, isMin: false, diagnostics, location),
-                "clamp" => ApplyClamp(body, diagnostics, location),
-                _ => null,
-            };
+            return ReduceFunctionInternal(fnName, body);
         }
         catch (CalcParseException ex)
         {
@@ -191,7 +183,25 @@ internal static class CalcResolver
         }
     }
 
-    private static CalcValue? ReduceSingleArg(string body, ICssDiagnosticsSink? sink, CssSourceLocation loc)
+    /// <summary>Inner reducer — does not catch exceptions. Used by the parser when a
+    /// nested math function appears inside an expression (e.g.,
+    /// <c>calc(min(16px, 4px) + 4px)</c>): the inner reduction needs to propagate
+    /// deferred / invalid exceptions up so the outer expression bails appropriately.</summary>
+    private static CalcValue? ReduceFunctionInternal(string fnName, string body)
+    {
+        return fnName switch
+        {
+            "calc" => ReduceSingleArgInternal(body),
+            "abs" => ApplyUnaryInternal(body, Math.Abs),
+            "sign" => ApplySignInternal(body),
+            "min" => ApplyMinMaxInternal(body, isMin: true),
+            "max" => ApplyMinMaxInternal(body, isMin: false),
+            "clamp" => ApplyClampInternal(body),
+            _ => null,
+        };
+    }
+
+    private static CalcValue? ReduceSingleArgInternal(string body)
     {
         var parser = new CalcParser(body);
         var value = parser.ParseExpression();
@@ -200,25 +210,22 @@ internal static class CalcResolver
         return value;
     }
 
-    private static CalcValue? ApplyUnary(string body, Func<double, double> op,
-        ICssDiagnosticsSink? sink, CssSourceLocation loc)
+    private static CalcValue? ApplyUnaryInternal(string body, Func<double, double> op)
     {
-        var v = ReduceSingleArg(body, sink, loc);
+        var v = ReduceSingleArgInternal(body);
         return v is null ? null : new CalcValue(op(v.Value.Magnitude), v.Value.Unit);
     }
 
-    private static CalcValue? ApplySign(string body, ICssDiagnosticsSink? sink, CssSourceLocation loc)
+    private static CalcValue? ApplySignInternal(string body)
     {
-        var v = ReduceSingleArg(body, sink, loc);
+        var v = ReduceSingleArgInternal(body);
         if (v is null) return null;
         var s = v.Value.Magnitude;
         var sign = s > 0 ? 1.0 : (s < 0 ? -1.0 : 0.0);
-        // Per L4 §10.5, sign() returns a unitless number.
         return new CalcValue(sign, CalcUnit.Number);
     }
 
-    private static CalcValue? ApplyMinMax(string body, bool isMin,
-        ICssDiagnosticsSink? sink, CssSourceLocation loc)
+    private static CalcValue? ApplyMinMaxInternal(string body, bool isMin)
     {
         var args = SplitTopLevelCommas(body);
         if (args.Count == 0) throw new CalcParseException("min/max requires at least one argument");
@@ -234,7 +241,7 @@ internal static class CalcResolver
         return best;
     }
 
-    private static CalcValue? ApplyClamp(string body, ICssDiagnosticsSink? sink, CssSourceLocation loc)
+    private static CalcValue? ApplyClampInternal(string body)
     {
         var args = SplitTopLevelCommas(body);
         if (args.Count != 3)
@@ -243,7 +250,6 @@ internal static class CalcResolver
         var val = ParseSingleExpression(args[1]);
         var hi = ParseSingleExpression(args[2]);
         if (lo.Unit != val.Unit || val.Unit != hi.Unit) throw new CalcDeferredException();
-        // clamp(min, val, max) = max(min, min(val, max)) per L4 §10.5.
         var clamped = Math.Max(lo.Magnitude, Math.Min(val.Magnitude, hi.Magnitude));
         return new CalcValue(clamped, val.Unit);
     }
@@ -351,18 +357,8 @@ internal static class CalcResolver
             if (_depth > MaxDepth) throw new CalcParseException("expression too deeply nested");
             SkipWhitespace();
             var left = ParseTerm();
-            while (true)
+            while (TryConsumeAdditiveOperator(out var op))
             {
-                SkipWhitespace();
-                if (_pos >= _text.Length) break;
-                var op = _text[_pos];
-                if (op != '+' && op != '-') break;
-                // Per CSS L4 §10.4: + and - REQUIRE whitespace around them (so `1px-2px`
-                // is a hyphenated identifier, not subtraction). Our tokenizer here trusts
-                // AngleSharp's normalization to have inserted the whitespace; require at
-                // least one space before the operator.
-                if (_pos == 0 || !IsWhitespace(_text[_pos - 1])) break;
-                _pos++;
                 SkipWhitespace();
                 var right = ParseTerm();
                 left = (op == '+') ? Add(left, right) : Subtract(left, right);
@@ -370,22 +366,58 @@ internal static class CalcResolver
             return left;
         }
 
+        /// <summary>Per CSS Values L4 §10.4 the additive operators MUST be surrounded by
+        /// whitespace on both sides (so <c>1px-2px</c> stays a hyphenated identifier and
+        /// <c>1px +2px</c> / <c>1px+ 2px</c> are syntax errors, not subtraction). Look
+        /// ahead without committing _pos until both sides verify; throw on missing
+        /// trailing whitespace.</summary>
+        private bool TryConsumeAdditiveOperator(out char op)
+        {
+            op = '\0';
+            var p = _pos;
+            int wsBefore = 0;
+            while (p < _text.Length && IsWhitespace(_text[p])) { p++; wsBefore++; }
+            if (p >= _text.Length) return false;
+            var c = _text[p];
+            if (c != '+' && c != '-') return false;
+            if (wsBefore == 0)
+                throw new CalcParseException(
+                    $"'{c}' operator requires whitespace on both sides per CSS Values L4 §10.4");
+            if (p + 1 >= _text.Length || !IsWhitespace(_text[p + 1]))
+                throw new CalcParseException(
+                    $"'{c}' operator requires whitespace on both sides per CSS Values L4 §10.4");
+            _pos = p + 1;
+            op = c;
+            return true;
+        }
+
         private CalcValue ParseTerm()
         {
-            SkipWhitespace();
             var left = ParseFactor();
-            while (true)
+            while (TryConsumeMultiplicativeOperator(out var op))
             {
-                SkipWhitespace();
-                if (_pos >= _text.Length) break;
-                var op = _text[_pos];
-                if (op != '*' && op != '/') break;
-                _pos++;
                 SkipWhitespace();
                 var right = ParseFactor();
                 left = (op == '*') ? Multiply(left, right) : Divide(left, right);
             }
             return left;
+        }
+
+        /// <summary>Per CSS Values L4 §10.4 the multiplicative operators do NOT require
+        /// surrounding whitespace (so <c>16px*2</c> is valid). Look ahead without
+        /// committing _pos so the additive-operator detector upstream still sees its
+        /// own leading whitespace.</summary>
+        private bool TryConsumeMultiplicativeOperator(out char op)
+        {
+            op = '\0';
+            var p = _pos;
+            while (p < _text.Length && IsWhitespace(_text[p])) p++;
+            if (p >= _text.Length) return false;
+            var c = _text[p];
+            if (c != '*' && c != '/') return false;
+            _pos = p + 1;
+            op = c;
+            return true;
         }
 
         private CalcValue ParseFactor()
@@ -406,9 +438,22 @@ internal static class CalcResolver
                 _pos++;
                 return inner;
             }
-            // calc() / nested math functions inside an expression — for v1 simplicity,
-            // treat them as already-resolved by the outer Resolve walk OR throw deferred
-            // if we encounter one here.
+            // Nested math function: peek for one of the function names. If matched,
+            // recursively reduce the inner expression and substitute the result as the
+            // factor's value. Supports `calc(min(...) + ...)`, `max(calc(...), ...)`, etc.
+            if (IsLetter(c) && TryReadFunctionStart(_text, _pos, out var fnName, out var bodyStart))
+            {
+                var bodyEnd = FindMatchingCloseParen(_text, bodyStart);
+                if (bodyEnd < 0)
+                    throw new CalcParseException($"unterminated {fnName}() inside expression");
+                var body = _text[bodyStart..bodyEnd];
+                _pos = bodyEnd + 1; // advance past the close paren
+                var nested = ReduceFunctionInternal(fnName, body);
+                if (nested is null) throw new CalcDeferredException();
+                return nested.Value;
+            }
+            // Bare ident that's not a recognized function — defer (could be a custom
+            // function like env() / attr() that v1 doesn't evaluate).
             if (IsLetter(c)) throw new CalcDeferredException();
             return ParseNumberOrDimension();
         }
@@ -462,10 +507,9 @@ internal static class CalcResolver
                 case "in": return new CalcValue(n * 96, CalcUnit.Px);
                 case "cm": return new CalcValue(n * 96 / 2.54, CalcUnit.Px);
                 case "mm": return new CalcValue(n * 96 / 25.4, CalcUnit.Px);
+                case "q": return new CalcValue(n * 96 / 25.4 / 4, CalcUnit.Px); // quarter-mm
                 case "pt": return new CalcValue(n * 96 / 72, CalcUnit.Px);
                 case "pc": return new CalcValue(n * 96 / 6, CalcUnit.Px);
-                case "em": return new CalcValue(n * 16, CalcUnit.Px); // assumes 16px root font
-                case "rem": return new CalcValue(n * 16, CalcUnit.Px);
                 case "deg": return new CalcValue(n, CalcUnit.Deg);
                 case "rad": return new CalcValue(n * 180 / Math.PI, CalcUnit.Deg);
                 case "grad": return new CalcValue(n * 0.9, CalcUnit.Deg);
@@ -477,9 +521,31 @@ internal static class CalcResolver
                 case "dppx": case "x": return new CalcValue(n, CalcUnit.Dppx);
                 case "dpi": return new CalcValue(n / 96, CalcUnit.Dppx);
                 case "dpcm": return new CalcValue(n / 96 * 2.54, CalcUnit.Dppx);
-                // Viewport-relative: defer to layout (Phase 3).
+                // Font-relative units (em, rem, ch, ex, ic, cap, lh, rlh): per CSS Values
+                // L4 §6.1 these resolve against the element's (or root's) font metrics.
+                // The cascade stage doesn't know font-size yet — that's Tasks 10+'s typed-
+                // value pipeline once font matching has run. Defer so the original
+                // function text is preserved for the resolver to revisit later.
+                case "em": case "rem":
+                case "ch": case "ex":
+                case "ic": case "cap":
+                case "lh": case "rlh":
+                    throw new CalcDeferredException();
+                // Viewport-relative units defer to layout (Phase 3) since the viewport
+                // size depends on the page-box context.
                 case "vw": case "vh": case "vmin": case "vmax":
-                case "svw": case "svh": case "lvw": case "lvh": case "dvw": case "dvh":
+                case "svw": case "svh": case "svmin": case "svmax":
+                case "lvw": case "lvh": case "lvmin": case "lvmax":
+                case "dvw": case "dvh": case "dvmin": case "dvmax":
+                case "vi": case "vb":
+                case "svi": case "svb":
+                case "lvi": case "lvb":
+                case "dvi": case "dvb":
+                    throw new CalcDeferredException();
+                // Container-relative units (cqw, cqh, cqi, cqb, cqmin, cqmax) are
+                // post-v1 (Roadmap v1.4) per the @container gap; defer.
+                case "cqw": case "cqh": case "cqi": case "cqb":
+                case "cqmin": case "cqmax":
                     throw new CalcDeferredException();
                 default: throw new CalcParseException($"unknown unit '{unit}'");
             }
@@ -519,11 +585,18 @@ internal static class CalcResolver
 
     private static CalcValue Divide(CalcValue a, CalcValue b)
     {
-        // Per L4 §10.4: division requires the right-hand operand to be a number.
-        if (b.Unit != CalcUnit.Number)
-            throw new CalcParseException("division requires a number on the right");
         if (b.Magnitude == 0) throw new CalcDivByZeroException();
-        return new CalcValue(a.Magnitude / b.Magnitude, a.Unit);
+        // Per CSS Values L4 §10.4: division either produces a number-on-the-right
+        // result (length / number = length, etc.) OR cancels matching dimension
+        // classes to produce a unitless number (length / length = number, etc.).
+        // v1 supports those two cases. Cross-class division (length / time, etc.)
+        // throws — that produces a "ratio" type the spec allows but our typed-value
+        // pipeline doesn't yet have a slot for.
+        if (b.Unit == CalcUnit.Number)
+            return new CalcValue(a.Magnitude / b.Magnitude, a.Unit);
+        if (a.Unit == b.Unit)
+            return new CalcValue(a.Magnitude / b.Magnitude, CalcUnit.Number);
+        throw new CalcParseException("cannot divide values of incompatible types");
     }
 
     /// <summary>Thrown when a math expression is syntactically invalid.</summary>

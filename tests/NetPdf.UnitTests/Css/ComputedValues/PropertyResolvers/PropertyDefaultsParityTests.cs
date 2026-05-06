@@ -140,10 +140,11 @@ public sealed class PropertyDefaultsParityTests
     }
 
     [Fact]
-    public void Cycle_2_property_types_defer_their_defaults_with_raw_text()
+    public void Cycle_2_property_types_return_UnsupportedUnvalidated_for_their_defaults()
     {
-        // Properties whose type is NOT wired in cycle 1 must defer (carry raw text)
-        // — never invalid, never resolved (since no resolver exists yet).
+        // Per the hardening review: cycle-2 PropertyTypes surface as
+        // UnsupportedUnvalidated — distinct from Deferred which means "validated".
+        // Catches drift if a resolver mis-classifies a cycle-2 property.
         var cycle1Types = new HashSet<PropertyType>
         {
             PropertyType.Color,
@@ -160,16 +161,16 @@ public sealed class PropertyDefaultsParityTests
             var meta = PropertyMetadata.Table[i];
             if (cycle1Types.Contains(meta.Type)) continue;
             var result = PropertyResolverDispatch.Resolve(meta.Id, meta.DefaultValue);
-            if (!result.IsDeferred || result.RawText is null)
+            if (!result.IsUnsupportedUnvalidated || result.RawText is null)
             {
                 failures.Add($"  {meta.Name} (type={meta.Type}, default=\"{meta.DefaultValue}\") → State={result.State}, RawText={result.RawText ?? "(null)"}");
             }
         }
         if (failures.Count > 0)
         {
-            _output.WriteLine("Cycle-2 property defaults that did not Defer:");
+            _output.WriteLine("Cycle-2 property defaults that are not UnsupportedUnvalidated:");
             foreach (var f in failures) _output.WriteLine(f);
-            Assert.Fail($"{failures.Count} cycle-2 property defaults failed to defer.");
+            Assert.Fail($"{failures.Count} cycle-2 property defaults misclassified.");
         }
     }
 

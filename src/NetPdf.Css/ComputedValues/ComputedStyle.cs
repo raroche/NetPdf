@@ -129,6 +129,7 @@ internal sealed class ComputedStyle : IDisposable
             _bitmap[i] = 0;
         }
         _customProperties?.Clear();
+        _deferredText?.Clear();
         _disposed = false;
     }
 
@@ -167,10 +168,13 @@ internal sealed class ComputedStyle : IDisposable
             // Redirect to Unset so the bitmap and slot agree.
             _slots[index] = ComputedSlot.Unset;
             ClearBit(index);
+            _deferredText?.Remove(id);
             return;
         }
         _slots[index] = value;
         SetBit(index);
+        // A typed value overrides any prior deferred text — keep them in sync.
+        _deferredText?.Remove(id);
     }
 
     /// <summary>
@@ -195,6 +199,68 @@ internal sealed class ComputedStyle : IDisposable
         if ((uint)index >= (uint)PropertyMetadata.Count) return;
         _slots[index] = ComputedSlot.Unset;
         ClearBit(index);
+        _deferredText?.Remove(id);
+    }
+
+    // ------------------------------------------------------------
+    // Deferred text (Rec 5 of Task 10 hardening review)
+    //
+    // Stores raw declaration text for properties whose resolver returned a
+    // Deferred or UnsupportedUnvalidated state. Layout time / cycle-2 resolvers
+    // re-resolve from this side store. Without it, callers materializing a
+    // Deferred ResolverResult into ComputedStyle would silently drop the raw
+    // text and the cascade would have no record that a value was ever supplied.
+    //
+    // Storage: a sparse Dictionary<PropertyId, string> — most elements have no
+    // deferred values, so we don't pay the per-property cost. Allocated lazily
+    // on first SetDeferred call. Reset() and Unset() clear/remove entries to
+    // keep the pool's contract intact.
+    // ------------------------------------------------------------
+
+    private Dictionary<PropertyId, string>? _deferredText;
+
+    /// <summary>Records raw declaration text for a property whose resolver could not
+    /// yet produce a typed value (Deferred or UnsupportedUnvalidated). Sets the
+    /// "is set" bit so the cascade still knows an explicit declaration applied,
+    /// even though <see cref="Get"/> returns <see cref="ComputedSlot.Unset"/>.
+    /// Layout time (or a future cycle-2 resolver) reads back via
+    /// <see cref="TryGetDeferred"/>.</summary>
+    /// <exception cref="ArgumentNullException">When <paramref name="rawText"/> is null.</exception>
+    public void SetDeferred(PropertyId id, string rawText)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(rawText);
+        var index = (int)id;
+        if ((uint)index >= (uint)PropertyMetadata.Count)
+            throw new ArgumentOutOfRangeException(nameof(id),
+                $"PropertyId {id} (index {index}) is outside the registry (Count = {PropertyMetadata.Count}).");
+        _slots[index] = ComputedSlot.Unset;
+        _deferredText ??= new Dictionary<PropertyId, string>();
+        _deferredText[id] = rawText;
+        SetBit(index);
+    }
+
+    /// <summary><see langword="true"/> when <see cref="SetDeferred"/> has been called
+    /// for <paramref name="id"/> (and not subsequently overwritten by <see cref="Set"/>
+    /// or cleared by <see cref="Unset(PropertyId)"/>).</summary>
+    public bool IsDeferred(PropertyId id)
+    {
+        ThrowIfDisposed();
+        return _deferredText is not null && _deferredText.ContainsKey(id);
+    }
+
+    /// <summary>Reads the deferred raw text for <paramref name="id"/>. Returns
+    /// <see langword="false"/> when the property has no deferred value (typed slot
+    /// may still be present via <see cref="Get"/>).</summary>
+    public bool TryGetDeferred(PropertyId id, out string? rawText)
+    {
+        ThrowIfDisposed();
+        if (_deferredText is null)
+        {
+            rawText = null;
+            return false;
+        }
+        return _deferredText.TryGetValue(id, out rawText);
     }
 
     // ------------------------------------------------------------

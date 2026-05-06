@@ -180,24 +180,47 @@ internal static class ColorResolver
             return false;
         }
 
+        // Per CSS Color 4 §4.2.1: modern-rgb-syntax REQUIRES `/` before the alpha.
+        // Four whitespace-separated args without a slash (e.g. `rgb(255 0 0 0.5)`)
+        // is malformed — it's neither legal modern (no slash) nor legal legacy
+        // (no commas).
+        if (args.Count == 4
+            && syntax.HasFlag(ColorSyntax.ModernSpace)
+            && !syntax.HasFlag(ColorSyntax.AlphaWasSlash))
+        {
+            reason = "modern rgb()/rgba() syntax requires '/' before the alpha component per CSS Color 4 §4.2.1";
+            return false;
+        }
+
+        // Per §4.2.2: legacy-rgb-syntax REQUIRES the three RGB components to be
+        // either ALL numbers OR ALL percentages — mixing is forbidden in legacy.
+        // (Modern syntax allows mixing.)
+        if (syntax.HasFlag(ColorSyntax.LegacyComma) && args.Count >= 3)
+        {
+            var a0Pct = IsPercentageToken(args[0]);
+            var a1Pct = IsPercentageToken(args[1]);
+            var a2Pct = IsPercentageToken(args[2]);
+            if (!(a0Pct == a1Pct && a1Pct == a2Pct))
+            {
+                reason = "legacy rgb()/rgba() syntax requires all three RGB components to be the same form (all <number> or all <percentage>) per CSS Color 4 §4.2.2";
+                return false;
+            }
+        }
+
         if (!TryParseRgbChannel(args[0], out var r) ||
             !TryParseRgbChannel(args[1], out var g) ||
             !TryParseRgbChannel(args[2], out var b))
         {
-            reason = "rgb()/rgba() component must be a number 0..255 or percentage 0..100%";
+            reason = "rgb()/rgba() component must be a finite number 0..255 or percentage 0..100%";
             return false;
         }
 
         var aByte = (byte)0xFF;
         if (args.Count == 4)
         {
-            if (syntax == ColorSyntax.LegacyComma && !syntax.HasFlag(ColorSyntax.AlphaWasComma))
-            {
-                // Should be impossible — TrySplitColorArgs only adds a 4th arg via comma in legacy.
-            }
             if (!TryParseAlphaComponent(args[3], out var a))
             {
-                reason = "rgb()/rgba() alpha must be a number 0..1 or percentage 0..100%";
+                reason = "rgb()/rgba() alpha must be a finite number 0..1 or percentage 0..100%";
                 return false;
             }
             aByte = a;
@@ -207,14 +230,26 @@ internal static class ColorResolver
         return true;
     }
 
+    private static bool IsPercentageToken(string token) =>
+        token.Length > 0 && token[^1] == '%';
+
     private static bool TryParseHslFunction(string body, out uint argb, out string? reason)
     {
         argb = 0;
         reason = null;
-        if (!TrySplitColorArgs(body, out var args, out _, out reason)) return false;
+        if (!TrySplitColorArgs(body, out var args, out var syntax, out reason)) return false;
         if (args.Count is not (3 or 4))
         {
             reason = $"hsl()/hsla() expects 3 or 4 components, got {args.Count}";
+            return false;
+        }
+
+        // Per CSS Color 4 §4.3.1: modern-hsl-syntax REQUIRES `/` before the alpha.
+        if (args.Count == 4
+            && syntax.HasFlag(ColorSyntax.ModernSpace)
+            && !syntax.HasFlag(ColorSyntax.AlphaWasSlash))
+        {
+            reason = "modern hsl()/hsla() syntax requires '/' before the alpha component per CSS Color 4 §4.3.1";
             return false;
         }
 
@@ -222,7 +257,7 @@ internal static class ColorResolver
             !TryParsePercentComponent(args[1], out var sat) ||
             !TryParsePercentComponent(args[2], out var light))
         {
-            reason = "hsl()/hsla() expects <hue> <sat%> <light%> (with optional alpha)";
+            reason = "hsl()/hsla() expects <hue> <sat%> <light%> (with optional alpha; sat/light must be finite percentages)";
             return false;
         }
 
@@ -231,7 +266,7 @@ internal static class ColorResolver
         {
             if (!TryParseAlphaComponent(args[3], out var a))
             {
-                reason = "hsl()/hsla() alpha must be a number 0..1 or percentage 0..100%";
+                reason = "hsl()/hsla() alpha must be a finite number 0..1 or percentage 0..100%";
                 return false;
             }
             aByte = a;
@@ -337,12 +372,14 @@ internal static class ColorResolver
         {
             if (!double.TryParse(token.AsSpan(0, token.Length - 1),
                 NumberStyles.Float, CultureInfo.InvariantCulture, out var pct)) return false;
+            if (!double.IsFinite(pct)) return false;
             // pct * 255 / 100 (NOT pct * 2.55) — 2.55 is not exactly representable in
             // IEEE-754, so 50 * 2.55 = 127.49999... rounds to 127 instead of 128.
             channel = (byte)Math.Clamp((int)Math.Round(pct * 255.0 / 100.0, MidpointRounding.AwayFromZero), 0, 255);
             return true;
         }
         if (!double.TryParse(token, NumberStyles.Float, CultureInfo.InvariantCulture, out var n)) return false;
+        if (!double.IsFinite(n)) return false;
         channel = (byte)Math.Clamp((int)Math.Round(n, MidpointRounding.AwayFromZero), 0, 255);
         return true;
     }
@@ -355,10 +392,12 @@ internal static class ColorResolver
         {
             if (!double.TryParse(token.AsSpan(0, token.Length - 1),
                 NumberStyles.Float, CultureInfo.InvariantCulture, out var pct)) return false;
+            if (!double.IsFinite(pct)) return false;
             alpha = (byte)Math.Clamp((int)Math.Round(pct * 255.0 / 100.0, MidpointRounding.AwayFromZero), 0, 255);
             return true;
         }
         if (!double.TryParse(token, NumberStyles.Float, CultureInfo.InvariantCulture, out var n)) return false;
+        if (!double.IsFinite(n)) return false;
         alpha = (byte)Math.Clamp((int)Math.Round(n * 255, MidpointRounding.AwayFromZero), 0, 255);
         return true;
     }
@@ -376,6 +415,7 @@ internal static class ColorResolver
         var numText = token.AsSpan(0, i);
         var unit = token.AsSpan(i).ToString().Trim().ToLowerInvariant();
         if (!double.TryParse(numText, NumberStyles.Float, CultureInfo.InvariantCulture, out var raw)) return false;
+        if (!double.IsFinite(raw)) return false;
         degrees = unit switch
         {
             "" or "deg" => raw,
@@ -384,7 +424,7 @@ internal static class ColorResolver
             "turn" => raw * 360.0,
             _ => double.NaN,
         };
-        if (double.IsNaN(degrees)) return false;
+        if (!double.IsFinite(degrees)) return false;
         // Normalize into [0, 360).
         degrees %= 360.0;
         if (degrees < 0) degrees += 360.0;
@@ -397,6 +437,7 @@ internal static class ColorResolver
         if (token.Length == 0 || token[^1] != '%') return false;
         if (!double.TryParse(token.AsSpan(0, token.Length - 1),
             NumberStyles.Float, CultureInfo.InvariantCulture, out var pct)) return false;
+        if (!double.IsFinite(pct)) return false;
         normalized = Math.Clamp(pct / 100.0, 0.0, 1.0);
         return true;
     }

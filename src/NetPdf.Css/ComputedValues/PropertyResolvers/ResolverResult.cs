@@ -1,19 +1,30 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using NetPdf.Css.Properties;
+
 namespace NetPdf.Css.ComputedValues.PropertyResolvers;
 
 /// <summary>
-/// Discriminator for <see cref="ResolverResult"/>. Three semantically-distinct outcomes
+/// Discriminator for <see cref="ResolverResult"/>. Four semantically-distinct outcomes
 /// the cycle-1 resolvers conflated under <see cref="ComputedSlot.Unset"/>:
 /// <list type="bullet">
 ///   <item><see cref="Resolved"/> — typed value available; consumer reads
 ///     <see cref="ResolverResult.Slot"/>.</item>
-///   <item><see cref="Deferred"/> — syntactically valid but needs context the
-///     cascade stage doesn't have (font / viewport / container metrics, an
-///     upstream typed-value parser still on the cycle-2 backlog). Consumer
-///     keeps <see cref="ResolverResult.RawText"/> and re-resolves at a later
-///     stage where the missing context is available.</item>
+///   <item><see cref="Deferred"/> — the resolver successfully validated the value
+///     against the property's grammar but cannot reduce it without context the
+///     cascade stage doesn't have (font / viewport / container metrics).
+///     Consumer keeps <see cref="ResolverResult.RawText"/> and re-resolves at
+///     layout time where the missing context is available. The text IS known
+///     well-formed.</item>
+///   <item><see cref="UnsupportedUnvalidated"/> — the property's
+///     <see cref="NetPdf.Css.Properties.PropertyType"/> has no resolver wired
+///     yet (cycle-2 backlog: <c>FontFamilyList</c>, <c>FontWeight</c>,
+///     <c>FontSize</c>, etc.). The dispatch carries the raw text forward but
+///     <b>has not validated it</b> — a typo could pass through. Distinguished
+///     from <see cref="Deferred"/> so downstream stages and audits know which
+///     values still need a real resolver. Consumer keeps
+///     <see cref="ResolverResult.RawText"/>.</item>
 ///   <item><see cref="Invalid"/> — value text could not be parsed. The cascade's
 ///     "invalid at computed value time" rule applies — the property's initial
 ///     value (or inherited value for inherited properties) is used. A
@@ -24,13 +35,20 @@ internal enum ResolutionState : byte
 {
     /// <summary>The resolver produced a typed value. Slot is meaningful; RawText is null.</summary>
     Resolved = 0,
-    /// <summary>The value is well-formed but needs downstream context. Slot is
-    /// <see cref="ComputedSlot.Unset"/>; RawText carries the original text for
-    /// re-resolution.</summary>
+    /// <summary>The value is well-formed (per the property's grammar) but needs
+    /// downstream context to reduce. Slot is <see cref="ComputedSlot.Unset"/>;
+    /// RawText carries the original text for re-resolution.</summary>
     Deferred = 1,
     /// <summary>The value text could not be parsed. Slot is
     /// <see cref="ComputedSlot.Unset"/>; RawText is null; a diagnostic was emitted.</summary>
     Invalid = 2,
+    /// <summary>The property's <see cref="NetPdf.Css.Properties.PropertyType"/>
+    /// has no resolver wired yet (cycle-2 backlog). The dispatch carries the
+    /// raw text forward but has <b>not validated it</b>. Slot is
+    /// <see cref="ComputedSlot.Unset"/>; RawText carries the original.
+    /// Distinguished from <see cref="Deferred"/> so audits + future cycle-2
+    /// resolvers can find the "still needs validation" surface.</summary>
+    UnsupportedUnvalidated = 3,
 }
 
 /// <summary>
@@ -69,7 +87,58 @@ internal readonly record struct ResolverResult(
     public static ResolverResult Invalid() =>
         new(ComputedSlot.Unset, ResolutionState.Invalid, null);
 
+    /// <summary>Build a <see cref="ResolutionState.UnsupportedUnvalidated"/> result
+    /// for a property whose PropertyType has no resolver wired yet. The raw text
+    /// rides along but is <b>not validated</b> — a typo could pass through.
+    /// Cycle-2 work upgrades these to Resolved / Deferred / Invalid.</summary>
+    public static ResolverResult UnsupportedUnvalidated(string rawText) =>
+        new(ComputedSlot.Unset, ResolutionState.UnsupportedUnvalidated, rawText);
+
     public bool IsResolved => State == ResolutionState.Resolved;
     public bool IsDeferred => State == ResolutionState.Deferred;
     public bool IsInvalid => State == ResolutionState.Invalid;
+    public bool IsUnsupportedUnvalidated => State == ResolutionState.UnsupportedUnvalidated;
+
+    /// <summary><see langword="true"/> when the result carries raw text downstream
+    /// must preserve (i.e., <see cref="ResolutionState.Deferred"/> or
+    /// <see cref="ResolutionState.UnsupportedUnvalidated"/>). Helps consumers
+    /// avoid silently dropping <see cref="RawText"/>.</summary>
+    public bool HasRawText =>
+        State is ResolutionState.Deferred or ResolutionState.UnsupportedUnvalidated;
+
+    /// <summary>
+    /// Materializes this result into <paramref name="style"/> for the given
+    /// <paramref name="propertyId"/>. <see cref="ResolutionState.Resolved"/>
+    /// writes the typed slot via <see cref="ComputedStyle.Set"/>;
+    /// <see cref="ResolutionState.Deferred"/> and
+    /// <see cref="ResolutionState.UnsupportedUnvalidated"/> route the
+    /// <see cref="RawText"/> through <see cref="ComputedStyle.SetDeferred"/>
+    /// so it can't be silently dropped; <see cref="ResolutionState.Invalid"/>
+    /// is a no-op (cascade falls back per L4 §4.4).
+    /// </summary>
+    /// <returns><see langword="true"/> when a value was written;
+    /// <see langword="false"/> for <see cref="ResolutionState.Invalid"/>.</returns>
+    /// <remarks>
+    /// This method is the recommended consumer entry point — using it eliminates
+    /// the cycle-1 footgun where a caller pattern-matched on
+    /// <see cref="IsResolved"/> alone and dropped <see cref="RawText"/> for
+    /// every Deferred / UnsupportedUnvalidated result. Tests on the materialization
+    /// path verify the round-trip.
+    /// </remarks>
+    public bool MaterializeInto(ComputedStyle style, PropertyId propertyId)
+    {
+        switch (State)
+        {
+            case ResolutionState.Resolved:
+                style.Set(propertyId, Slot);
+                return true;
+            case ResolutionState.Deferred:
+            case ResolutionState.UnsupportedUnvalidated:
+                style.SetDeferred(propertyId, RawText!);
+                return true;
+            case ResolutionState.Invalid:
+            default:
+                return false;
+        }
+    }
 }

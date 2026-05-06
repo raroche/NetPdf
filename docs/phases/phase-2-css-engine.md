@@ -205,9 +205,12 @@ Right-to-left evaluation: start at the key selector (rightmost), check it matche
 ### Modern syntax tokens
 | Function | Status | Note |
 |---|---|---|
-| `oklch()`, `oklab()` | parsed + computed | Per CSS Color L4. |
-| `color-mix()` | parsed + computed | Per CSS Color L5. |
-| `light-dark()` | parsed; respects `PreferredColorScheme` | |
+| `oklch()`, `oklab()` | parsed (Task 3 pre-pass); typed evaluation cycle-2 | Cycle-1 [`ColorResolver`](../../src/NetPdf.Css/ComputedValues/PropertyResolvers/ColorResolver.cs) recognizes the function name and emits `CSS-PROPERTY-VALUE-INVALID-001`. AngleSharp.Css 1.0.0-beta.144 silently corrupts `oklch()` to bogus rgba — the pre-pass preserves the authored text in `CssDeclaration.Value.RawText`. Cycle-2 (paired with the pre-pass capture) computes typed values per CSS Color 4 §6 (Oklab) and §7 (Oklch). |
+| `color-mix()` | parsed (Task 3 pre-pass); typed evaluation cycle-2 | Cycle-1 [`ColorResolver`](../../src/NetPdf.Css/ComputedValues/PropertyResolvers/ColorResolver.cs) emits `CSS-PROPERTY-VALUE-INVALID-001`. AngleSharp.Css drops the declaration entirely; the pre-pass restores the authored value as raw text. Cycle-2 computes the mix per CSS Color 5 §2. |
+| `light-dark()` | parsed (Task 3 pre-pass); typed evaluation cycle-2 | Cycle-1 [`ColorResolver`](../../src/NetPdf.Css/ComputedValues/PropertyResolvers/ColorResolver.cs) emits `CSS-PROPERTY-VALUE-INVALID-001`. Cycle-2 evaluates against `PreferredColorScheme`. |
+| `lab()`, `lch()`, `hwb()` | parsed by AngleSharp.Css; typed evaluation cycle-2 | Cycle-1 emits `CSS-PROPERTY-VALUE-INVALID-001`. Cycle-2 will compute via L4 §4.3 / §4.4 conversion. |
+| `rgb()`/`rgba()`, `hsl()`/`hsla()` | ✅ Task 10 cycle 1 (review-pass strict syntax) | Both legacy comma + modern whitespace + slash-alpha. Per Color 4 §4.2.1 / §4.3.1: legacy disallows `/` (4-comma alpha); modern disallows commas; modern with 4 args MUST have `/` before alpha; legacy 3 RGB components must be all-numbers OR all-percentages. Mixed forms emit `CSS-PROPERTY-VALUE-INVALID-001`. All numeric inputs (channels / alpha / hue / sat / light) checked for `IsFinite` before clamping. |
+| Named + system colors + `currentcolor` | ✅ Task 10 cycle 1 | 147 named colors per Color 4 §6.1 in [`CssNamedColors`](../../src/NetPdf.Css/ComputedValues/PropertyResolvers/CssNamedColors.cs); 20 system colors per §10 in [`CssSystemColors`](../../src/NetPdf.Css/ComputedValues/PropertyResolvers/CssSystemColors.cs) with print-friendly fixed values. `currentcolor` uses dedicated [`ComputedSlotTag.CurrentColor`](../../src/NetPdf.Css/ComputedValues/ComputedSlot.cs) (no payload — no user color can collide with the sentinel). |
 | `@container` | parsed; emits `CSS-CONTAINER-QUERY-UNSUPPORTED-001` rendering-time | Roadmap v1.4. |
 | `@layer` | parsed + cascade applies layer ordering | |
 | `:has()` | parsed + selector compiles | Rendering emits `CSS-HAS-RENDERING-NOT-IMPLEMENTED-001` until v1.4. |

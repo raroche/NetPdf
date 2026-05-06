@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Frozen;
 using System.Collections.Generic;
+using System.Text;
 using NetPdf.Css.Diagnostics;
 using NetPdf.Css.Parser;
 using NetPdf.Css.Properties;
@@ -45,12 +46,14 @@ internal static class KeywordResolver
     {
         if (!Tables.TryGetValue(propertyId, out var table))
         {
-            // No table registered for this Keyword-typed property — defer to a later
-            // cycle. Carry the raw text so a future resolver can pick up where we
-            // left off without having to re-cascade.
-            return ResolverResult.Deferred(value);
+            // No table registered for this Keyword-typed property — UnsupportedUnvalidated
+            // (NOT Deferred) because we haven't validated the value against the property's
+            // admitted-keyword set. Cycle-2 keyword tables upgrade these to Resolved /
+            // Invalid as appropriate.
+            return ResolverResult.UnsupportedUnvalidated(value);
         }
-        if (table.TryGetValue(value.ToLowerInvariant(), out var id))
+        var normalized = NormalizeKeywordWhitespace(value);
+        if (table.TryGetValue(normalized, out var id))
             return ResolverResult.Resolved(ComputedSlot.FromKeyword(id));
 
         diagnostics?.Emit(new CssDiagnostic(
@@ -68,8 +71,55 @@ internal static class KeywordResolver
     {
         id = -1;
         if (!Tables.TryGetValue(propertyId, out var table)) return false;
-        return table.TryGetValue(keyword.ToLowerInvariant(), out id);
+        return table.TryGetValue(NormalizeKeywordWhitespace(keyword), out id);
     }
+
+    /// <summary>Lower-case + collapse interior runs of ASCII whitespace into a single
+    /// space + trim edges. Required for compound keywords like <c>first baseline</c>
+    /// or <c>safe center</c> per CSS Box Alignment 3 §4.4 — authors may write any
+    /// amount of whitespace between the parts.</summary>
+    private static string NormalizeKeywordWhitespace(string raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return string.Empty;
+        var sb = new StringBuilder(raw.Length);
+        var prevWs = true; // suppress leading whitespace
+        foreach (var ch in raw)
+        {
+            var c = ch;
+            if (c is ' ' or '\t' or '\r' or '\n' or '\f')
+            {
+                if (!prevWs) sb.Append(' ');
+                prevWs = true;
+                continue;
+            }
+            // ASCII case-fold inline.
+            if (c is >= 'A' and <= 'Z') c = (char)(c + 32);
+            sb.Append(c);
+            prevWs = false;
+        }
+        // Trim trailing space we may have appended.
+        if (sb.Length > 0 && sb[^1] == ' ') sb.Length--;
+        return sb.ToString();
+    }
+
+    // The Box-Alignment helper arrays MUST be declared before Tables — Tables's
+    // initializer calls BuildAlignItemsTable() etc., which reference them. C#
+    // static-field initializers run in textual declaration order; a forward
+    // reference produces null at access time (cctor NullReferenceException).
+    /// <summary>The seven <c>&lt;self-position&gt;</c> values per CSS Box Alignment 3 §4.</summary>
+    private static readonly string[] SelfPositions =
+        { "center", "start", "end", "self-start", "self-end", "flex-start", "flex-end" };
+
+    /// <summary>The <c>&lt;content-position&gt;</c> set per CSS Box Alignment 3 §4
+    /// (note: NO self-start / self-end here — those are <c>&lt;self-position&gt;</c>
+    /// only). <c>left</c> + <c>right</c> are content-position-specific extensions
+    /// for justify-content.</summary>
+    private static readonly string[] ContentPositions =
+        { "center", "start", "end", "flex-start", "flex-end", "left", "right" };
+
+    /// <summary>The <c>&lt;content-distribution&gt;</c> set per §4.5.</summary>
+    private static readonly string[] ContentDistributions =
+        { "space-between", "space-around", "space-evenly", "stretch" };
 
     /// <summary>The per-property keyword tables. Each property maps every admitted
     /// keyword (lower-case) to a stable zero-based id. Populated at module load.</summary>
@@ -81,13 +131,14 @@ internal static class KeywordResolver
         var b = new Dictionary<PropertyId, FrozenDictionary<string, int>>();
 
         // align-items / align-self / justify-content — CSS Box Alignment L3 §4.
-        b[PropertyId.AlignItems] = T("normal", "stretch", "center", "start", "end",
-            "flex-start", "flex-end", "self-start", "self-end", "baseline", "first", "last");
-        b[PropertyId.AlignSelf] = T("auto", "normal", "stretch", "center", "start", "end",
-            "flex-start", "flex-end", "self-start", "self-end", "baseline");
-        b[PropertyId.JustifyContent] = T("normal", "stretch", "center", "start", "end",
-            "flex-start", "flex-end", "left", "right", "space-between", "space-around",
-            "space-evenly");
+        // Per §4.4: <baseline-position> is `[first | last]? baseline` — bare
+        // `first`/`last` are NOT valid, only the compound `first baseline` /
+        // `last baseline`. Per §4.5: <self-position> + optional <overflow-position>
+        // (safe / unsafe) gives the full positional grid. The compound forms are
+        // looked up via whitespace-normalized matching (see NormalizeKeywordWhitespace).
+        b[PropertyId.AlignItems] = BuildAlignItemsTable();
+        b[PropertyId.AlignSelf] = BuildAlignSelfTable();
+        b[PropertyId.JustifyContent] = BuildJustifyContentTable();
 
         // Border style — CSS Backgrounds & Borders 3 §4.4.
         var borderStyle = T("none", "hidden", "dotted", "dashed", "solid", "double",
@@ -166,6 +217,54 @@ internal static class KeywordResolver
         b[PropertyId.WhiteSpace] = T("normal", "pre", "nowrap", "pre-wrap", "break-spaces", "pre-line");
 
         return b.ToFrozenDictionary();
+    }
+
+    /// <summary>Build the align-items table per CSS Box Alignment 3 §4.4.
+    /// Grammar: <c>normal | stretch | &lt;baseline-position&gt; |
+    /// [&lt;overflow-position&gt;? &amp;&amp; &lt;self-position&gt;] | anchor-center</c>.</summary>
+    private static FrozenDictionary<string, int> BuildAlignItemsTable()
+    {
+        var entries = new List<string>(32) { "normal", "stretch", "anchor-center" };
+        // <baseline-position>: baseline | first baseline | last baseline.
+        entries.Add("baseline");
+        entries.Add("first baseline");
+        entries.Add("last baseline");
+        // <self-position> on its own.
+        foreach (var p in SelfPositions) entries.Add(p);
+        // <overflow-position> <self-position>.
+        foreach (var op in new[] { "safe", "unsafe" })
+            foreach (var p in SelfPositions) entries.Add($"{op} {p}");
+        return T(entries.ToArray());
+    }
+
+    /// <summary>Build the align-self table per §4.3. Same as align-items plus
+    /// <c>auto</c>.</summary>
+    private static FrozenDictionary<string, int> BuildAlignSelfTable()
+    {
+        var entries = new List<string>(32) { "auto", "normal", "stretch", "anchor-center" };
+        entries.Add("baseline");
+        entries.Add("first baseline");
+        entries.Add("last baseline");
+        foreach (var p in SelfPositions) entries.Add(p);
+        foreach (var op in new[] { "safe", "unsafe" })
+            foreach (var p in SelfPositions) entries.Add($"{op} {p}");
+        return T(entries.ToArray());
+    }
+
+    /// <summary>Build the justify-content table per §4.5.
+    /// Grammar: <c>normal | &lt;content-distribution&gt; |
+    /// [&lt;overflow-position&gt;? &amp;&amp; [&lt;content-position&gt; | left | right]]</c>.</summary>
+    private static FrozenDictionary<string, int> BuildJustifyContentTable()
+    {
+        var entries = new List<string>(32) { "normal" };
+        // <content-distribution>.
+        foreach (var d in ContentDistributions) entries.Add(d);
+        // <content-position> on its own.
+        foreach (var p in ContentPositions) entries.Add(p);
+        // <overflow-position> <content-position>.
+        foreach (var op in new[] { "safe", "unsafe" })
+            foreach (var p in ContentPositions) entries.Add($"{op} {p}");
+        return T(entries.ToArray());
     }
 
     /// <summary>Build a keyword → id table from a sequence of admitted keywords.

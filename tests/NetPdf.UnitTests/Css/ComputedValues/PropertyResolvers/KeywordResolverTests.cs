@@ -71,14 +71,16 @@ public sealed class KeywordResolverTests
     }
 
     [Fact]
-    public void Property_with_no_table_defers_with_raw_text()
+    public void Property_with_no_table_returns_UnsupportedUnvalidated_with_raw_text()
     {
-        // Per Rec 1: a Keyword-typed property with no table registered yet should
-        // defer (carry raw text for cycle-2 re-resolution), NOT return Invalid.
-        // FontWeight isn't a Keyword PropertyType so its table isn't registered.
+        // Per the hardening review: a Keyword-typed property with no table
+        // registered yet should be UnsupportedUnvalidated (not Deferred — that
+        // implies "validated"). FontWeight isn't a Keyword PropertyType so its
+        // table isn't registered.
         var sink = new CapturingSink();
         var result = KeywordResolver.Resolve("bold", PropertyId.FontWeight, "font-weight", sink, default);
-        Assert.True(result.IsDeferred);
+        Assert.True(result.IsUnsupportedUnvalidated);
+        Assert.False(result.IsDeferred);
         Assert.Equal("bold", result.RawText);
         Assert.Empty(sink.Diagnostics);
     }

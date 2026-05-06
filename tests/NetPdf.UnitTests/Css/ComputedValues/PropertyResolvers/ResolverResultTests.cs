@@ -53,15 +53,31 @@ public sealed class ResolverResultTests
     }
 
     [Fact]
-    public void Three_states_are_mutually_distinct()
+    public void UnsupportedUnvalidated_factory_carries_raw_text_and_unset_slot()
+    {
+        var r = ResolverResult.UnsupportedUnvalidated("Arial");
+        Assert.Equal(ResolutionState.UnsupportedUnvalidated, r.State);
+        Assert.False(r.IsResolved);
+        Assert.False(r.IsDeferred);
+        Assert.False(r.IsInvalid);
+        Assert.True(r.IsUnsupportedUnvalidated);
+        Assert.True(r.HasRawText);
+        Assert.Equal(ComputedSlot.Unset, r.Slot);
+        Assert.Equal("Arial", r.RawText);
+    }
+
+    [Fact]
+    public void Four_states_are_mutually_distinct()
     {
         var resolved = ResolverResult.Resolved(ComputedSlot.FromLengthPx(0));
         var deferred = ResolverResult.Deferred("2em");
         var invalid = ResolverResult.Invalid();
+        var unvalidated = ResolverResult.UnsupportedUnvalidated("foo");
         Assert.NotEqual(resolved, deferred);
         Assert.NotEqual(resolved, invalid);
-        // Deferred(text) and Invalid() differ only in State + RawText. The record
-        // equality should still split them.
+        Assert.NotEqual(resolved, unvalidated);
         Assert.NotEqual(deferred, invalid);
+        Assert.NotEqual(deferred, unvalidated);
+        Assert.NotEqual(invalid, unvalidated);
     }
 }

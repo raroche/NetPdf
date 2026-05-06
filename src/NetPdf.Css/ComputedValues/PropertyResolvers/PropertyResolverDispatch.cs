@@ -92,9 +92,11 @@ internal static class PropertyResolverDispatch
             PropertyType.Keyword => KeywordResolver.Resolve(
                 trimmed, propertyId, meta.Name, diagnostics, location),
 
-            // Cycle 2 deferred PropertyTypes — return Deferred so the cascade carries
-            // the raw text forward instead of treating valid CSS as parse failure.
-            _ => ResolverResult.Deferred(trimmed),
+            // Cycle-2 PropertyTypes — return UnsupportedUnvalidated (NOT Deferred)
+            // because the dispatch hasn't validated the value text against the
+            // property's grammar; a typo would silently pass through. Distinguishing
+            // the two states lets cycle-2 audits find the work surface.
+            _ => ResolverResult.UnsupportedUnvalidated(trimmed),
         };
     }
 }

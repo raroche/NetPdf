@@ -137,6 +137,84 @@ public sealed class BoxBuilderCorpusTests
     }
 
     [Fact]
+    public async Task Corpus_classic_invoice_table_wrappers_all_own_a_TableGrid()
+    {
+        // Task 13 — every Table / InlineTable wrapper produced from the
+        // corpus must own exactly one anonymous TableGrid child holding the
+        // row-groups. The classic-pure-css invoice uses real <table> markup
+        // for the line items.
+        var html = LoadCorpusFile("Corpus/Invoices/01-classic-pure-css.html");
+        var host = new HtmlParsingHost();
+        var document = await host.ParseAsync(html, new HtmlPdfOptions());
+
+        var sheets = AdaptAllSheetsViaPreprocessor(document);
+        var cascade = CascadeResolver.Resolve(document, sheets, CssMediaContext.DefaultPrint);
+        var resolved = VarResolver.Resolve(cascade, document);
+        var root = BoxBuilder.Build(document, resolved);
+
+        var wrappers = Walk(root).Where(b => b.IsTableWrapper).ToList();
+        Assert.NotEmpty(wrappers);
+        foreach (var w in wrappers)
+        {
+            // Wrapper children are zero-or-more captions followed by exactly
+            // one TableGrid. The grid must always be present.
+            var grids = w.Children.Where(c => c.Kind == BoxKind.TableGrid).ToList();
+            Assert.Single(grids);
+            // No row-group lives directly under the wrapper — they all moved
+            // under the grid.
+            Assert.DoesNotContain(w.Children, c =>
+                c.Kind is BoxKind.TableRowGroup
+                    or BoxKind.TableHeaderGroup
+                    or BoxKind.TableFooterGroup);
+        }
+    }
+
+    [Fact]
+    public async Task Corpus_classic_invoice_no_anonymous_table_cells_carry_whitespace()
+    {
+        // Task 13 — whitespace-only text between table internals must be
+        // stripped per Tables L3 §3.1, NOT wrapped in anonymous cells.
+        var html = LoadCorpusFile("Corpus/Invoices/01-classic-pure-css.html");
+        var host = new HtmlParsingHost();
+        var document = await host.ParseAsync(html, new HtmlPdfOptions());
+
+        var sheets = AdaptAllSheetsViaPreprocessor(document);
+        var cascade = CascadeResolver.Resolve(document, sheets, CssMediaContext.DefaultPrint);
+        var resolved = VarResolver.Resolve(cascade, document);
+        var root = BoxBuilder.Build(document, resolved);
+
+        var anonCells = Walk(root)
+            .Where(b => b.Kind == BoxKind.TableCell && b.IsAnonymous)
+            .ToList();
+        // Any anon cells synthesized must contain real content (TextRun with
+        // non-whitespace, an inline-level child, a block, etc.) — not a
+        // single whitespace-only TextRun.
+        foreach (var cell in anonCells)
+        {
+            var hasNonWhitespace = false;
+            foreach (var c in cell.Children)
+            {
+                if (c.Kind != BoxKind.TextRun || !IsAllWhitespace(c.Text))
+                {
+                    hasNonWhitespace = true;
+                    break;
+                }
+            }
+            Assert.True(hasNonWhitespace,
+                "Anonymous TableCell contains only whitespace text — should have been stripped before wrapping.");
+        }
+
+        static bool IsAllWhitespace(string s)
+        {
+            foreach (var c in s)
+            {
+                if (c is not (' ' or '\t' or '\n' or '\r' or '\f')) return false;
+            }
+            return true;
+        }
+    }
+
+    [Fact]
     public async Task Corpus_invoice_does_not_emit_warnings_for_known_good_input()
     {
         // The classic-pure-css invoice is hand-crafted to exercise the cascade

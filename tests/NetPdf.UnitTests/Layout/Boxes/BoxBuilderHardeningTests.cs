@@ -299,24 +299,25 @@ public sealed class BoxBuilderHardeningTests
     }
 
     // ============================================================
-    // Rec 7 — Current table output is structural placeholder, not layout-ready
+    // Rec 7 — Table output now uses the wrapper + TableGrid pair (Task 13)
     // ============================================================
 
     [Fact]
-    public async Task Cycle1_table_produces_Table_kind_but_no_TableGrid_yet()
+    public async Task Task13_table_wrapper_now_contains_TableGrid_per_Tables_L3_2_1()
     {
-        // Document the intentional incomplete state: cycle-1 maps `display: table`
-        // to BoxKind.Table without inserting the TableGrid intermediary that
-        // Tables L3 §2.1 requires. Task 13 ships the wrapper + grid + table
-        // fixup pass. (HTML5 auto-inserts <tbody> for missing row groups, so
-        // table's direct child here is TableRowGroup, NOT TableRow — Task 13
-        // will reparent everything under TableGrid.)
+        // Task 13 lands: every Table / InlineTable wrapper gets exactly one
+        // anonymous TableGrid child holding the table internals (row-groups,
+        // rows, cells). Previously the wrapper held the row-group directly.
         var root = await BuildAsync("<table><tr><td>cell</td></tr></table>");
         var table = Walk(root).First(b => b.Kind == BoxKind.Table);
         Assert.True(table.IsTableWrapper);
-        // Cycle-1 contract: no TableGrid yet. Task 13 will introduce it.
-        Assert.DoesNotContain(Walk(root), b => b.Kind == BoxKind.TableGrid);
-        // The descendant chain still has the table parts (HTML5 auto-tbody).
+        // Wrapper has exactly one child: the TableGrid.
+        Assert.Single(table.Children);
+        Assert.Equal(BoxKind.TableGrid, table.Children[0].Kind);
+        // Table internals live UNDER the grid, not directly under the wrapper.
+        var grid = table.Children[0];
+        Assert.Contains(grid.Children, c => c.Kind == BoxKind.TableRowGroup);
+        // Row-group → row → cell chain still intact.
         var partsKinds = Walk(root).Select(b => b.Kind).ToList();
         Assert.Contains(BoxKind.TableRowGroup, partsKinds);
         Assert.Contains(BoxKind.TableRow, partsKinds);
@@ -324,19 +325,19 @@ public sealed class BoxBuilderHardeningTests
     }
 
     [Fact]
-    public async Task Cycle1_inline_table_also_has_no_TableGrid()
+    public async Task Task13_inline_table_also_gets_TableGrid()
     {
         var root = await BuildAsync(
             "<span class='it'><table><tr><td>cell</td></tr></table></span>",
             ".it { display: inline-table }");
         // The .it span is inline-table → InlineTable wrapper.
         // Inside that span, the actual <table> element also gets a Table box.
-        // Both wrappers exist; neither has a TableGrid yet.
+        // Both wrappers must own a TableGrid post-Task-13.
         var wrappers = Walk(root).Where(b => b.IsTableWrapper).ToList();
         Assert.NotEmpty(wrappers);
         foreach (var w in wrappers)
         {
-            Assert.DoesNotContain(w.Children, c => c.Kind == BoxKind.TableGrid);
+            Assert.Contains(w.Children, c => c.Kind == BoxKind.TableGrid);
         }
     }
 

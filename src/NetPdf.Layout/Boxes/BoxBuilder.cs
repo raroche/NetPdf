@@ -34,25 +34,19 @@ namespace NetPdf.Layout.Boxes;
 /// true (otherwise the registry default applies).
 /// </para>
 /// <para>
-/// <b>Cycle 1 + hardening review scope.</b> DOM walk + display dispatch +
-/// pseudo materialization (<c>::before</c> / <c>::after</c> with
-/// single-string content per <see cref="CssStringParser"/>) +
-/// anonymous-block insertion (Display L3 §3.1) + replaced-element detection
-/// + <c>display: none</c> skip + <c>display: contents</c> child-promotion
-/// (§3.1.1) + <c>&lt;br&gt;</c> as a forced <see cref="BoxKind.LineBreak"/>.
-/// Out of scope (Task 13 + later cycles): table fixup (the Tables L3 §3
-/// box-generation algorithm — synthesizing missing <c>tbody</c>/<c>tr</c>/<c>td</c>
-/// wrappers, the table wrapper + grid materialization), <c>::marker</c>
-/// generation, content-list parsing (counter / attr / open-quote /
-/// close-quote / image / multi-token), block-in-inline split (§3.2).
-/// </para>
-/// <para>
-/// <b>Table output is NOT layout-ready.</b> The Tables L3 §2.1 wrapper +
-/// grid + table-fixup pass is Task 13. Cycle 1 emits <see cref="BoxKind.Table"/>
-/// as the principal box but does not yet insert the
-/// <see cref="BoxKind.TableGrid"/> intermediary or synthesize missing
-/// table internals. Layout consumers should treat the table subtree as
-/// structural-placeholder until Task 13 lands.
+/// <b>Scope through Task 13.</b> DOM walk + display dispatch + pseudo
+/// materialization (<c>::before</c> / <c>::after</c> with single-string
+/// content per <see cref="CssStringParser"/>) + anonymous-block insertion
+/// (Display L3 §3.1) + replaced-element detection + <c>display: none</c>
+/// skip + <c>display: contents</c> child-promotion (§3.1.1) +
+/// <c>&lt;br&gt;</c> as a forced <see cref="BoxKind.LineBreak"/> + table
+/// fixup (Tables L3 §3 — wrapper / grid split per §2.1, anon row-group /
+/// row / cell synthesis for bare table internals, whitespace-only text
+/// stripping between table internals per §3.1). Out of scope (later
+/// cycles): <c>::marker</c> generation, content-list parsing (counter /
+/// attr / open-quote / close-quote / image / multi-token), block-in-inline
+/// split (§3.2), loose <c>display: table-cell</c> outside any table
+/// ancestor (Tables L3 §3.1 misparent-up walk).
 /// </para>
 /// </remarks>
 internal static class BoxBuilder
@@ -173,6 +167,17 @@ internal static class BoxBuilder
         if (afterPseudo is not null) box.AppendChild(afterPseudo);
 
         FixupAnonymousBlocks(box);
+
+        // Table fixup per Tables L3 §3 — split the wrapper into
+        // [captions..., TableGrid → fixed internals]; wrap bare rows / cells /
+        // non-table content in the anon row-group / row / cell scaffolding the
+        // table layout algorithm requires. Runs only on table wrappers since
+        // the algorithm is wrapper-rooted.
+        if (box.Kind is BoxKind.Table or BoxKind.InlineTable)
+        {
+            FixupTable(box);
+        }
+
         return new[] { box };
     }
 
@@ -347,6 +352,307 @@ internal static class BoxBuilder
             or BoxKind.TableCell or BoxKind.TableCaption => true,
         _ => false,
     };
+
+    // ============================================================
+    // Task 13 — Table fixup per CSS Tables L3 §3
+    // ============================================================
+
+    /// <summary>Restructure a table wrapper (<see cref="BoxKind.Table"/> or
+    /// <see cref="BoxKind.InlineTable"/>) per CSS Tables L3 §2.1 + §3.
+    /// After fixup the wrapper has the shape:
+    /// <code>
+    /// Wrapper → [TableCaption*, TableGrid → [TableRowGroup | TableColumnGroup | TableColumn]*]
+    /// </code>
+    /// — captions stay as direct children of the wrapper (so caption-side
+    /// margins compose against the wrapper, not the grid); everything else
+    /// moves under an anonymous <see cref="BoxKind.TableGrid"/>; bare rows /
+    /// cells / non-table content inside the grid get wrapped in synthesized
+    /// row-group / row / cell anonymous boxes per §3.1.1 + §3.1.2;
+    /// whitespace-only text between table internals is stripped per §3.1.</summary>
+    private static void FixupTable(Box wrapper)
+    {
+        var snapshot = SnapshotChildren(wrapper);
+        var filtered = StripWhitespaceTextRuns(snapshot);
+
+        var captions = new List<Box>();
+        var internals = new List<Box>();
+        foreach (var c in filtered)
+        {
+            if (c.Kind == BoxKind.TableCaption) captions.Add(c);
+            else internals.Add(c);
+        }
+
+        // Recurse into explicit row-groups + rows so their bare cells / non-cell
+        // content gets wrapped before grid-level fixup runs.
+        foreach (var box in internals)
+        {
+            switch (box.Kind)
+            {
+                case BoxKind.TableRowGroup:
+                case BoxKind.TableHeaderGroup:
+                case BoxKind.TableFooterGroup:
+                    FixRowGroupContents(box);
+                    break;
+                case BoxKind.TableRow:
+                    FixRowContents(box);
+                    break;
+            }
+        }
+
+        var gridChildren = GridLevelFixup(internals, wrapper.Style);
+
+        // Reassemble: source-order captions first (caption-side: top vs bottom
+        // is a layout-time concern, not box-generation), then the grid.
+        foreach (var caption in captions) wrapper.AppendChild(caption);
+        var grid = Box.Anonymous(BoxKind.TableGrid, wrapper.Style);
+        foreach (var c in gridChildren) grid.AppendChild(c);
+        wrapper.AppendChild(grid);
+    }
+
+    /// <summary>Wrap bare <see cref="BoxKind.TableRow"/> children in an
+    /// anonymous <see cref="BoxKind.TableRowGroup"/>; wrap bare
+    /// <see cref="BoxKind.TableCell"/> + non-table content in an anonymous
+    /// row-group → row → (cell | anon-cell). Pass-through:
+    /// <see cref="BoxKind.TableRowGroup"/>, <see cref="BoxKind.TableHeaderGroup"/>,
+    /// <see cref="BoxKind.TableFooterGroup"/>, <see cref="BoxKind.TableColumn"/>,
+    /// <see cref="BoxKind.TableColumnGroup"/>.</summary>
+    private static List<Box> GridLevelFixup(List<Box> items, ComputedStyle anonStyle)
+    {
+        var result = new List<Box>();
+        List<Box>? bareRowRun = null;
+        List<Box>? bareNonRowRun = null;
+
+        foreach (var item in items)
+        {
+            switch (item.Kind)
+            {
+                case BoxKind.TableRowGroup:
+                case BoxKind.TableHeaderGroup:
+                case BoxKind.TableFooterGroup:
+                case BoxKind.TableColumn:
+                case BoxKind.TableColumnGroup:
+                    FlushBareRowRun(result, ref bareRowRun, anonStyle);
+                    FlushBareNonRowRun(result, ref bareNonRowRun, anonStyle);
+                    result.Add(item);
+                    break;
+                case BoxKind.TableRow:
+                    FlushBareNonRowRun(result, ref bareNonRowRun, anonStyle);
+                    bareRowRun ??= new List<Box>();
+                    bareRowRun.Add(item);
+                    break;
+                default:
+                    FlushBareRowRun(result, ref bareRowRun, anonStyle);
+                    bareNonRowRun ??= new List<Box>();
+                    bareNonRowRun.Add(item);
+                    break;
+            }
+        }
+        FlushBareRowRun(result, ref bareRowRun, anonStyle);
+        FlushBareNonRowRun(result, ref bareNonRowRun, anonStyle);
+        return result;
+
+        static void FlushBareRowRun(List<Box> dest, ref List<Box>? run, ComputedStyle style)
+        {
+            if (run is null || run.Count == 0) return;
+            var anonGroup = NewAnonTablePart(BoxKind.TableRowGroup, style);
+            foreach (var row in run) anonGroup.AppendChild(row);
+            dest.Add(anonGroup);
+            run = null;
+        }
+
+        static void FlushBareNonRowRun(List<Box> dest, ref List<Box>? run, ComputedStyle style)
+        {
+            if (run is null || run.Count == 0) return;
+            // Bare non-rows at the grid level: wrap in anon row-group → anon row,
+            // then bare cells pass through and non-cells wrap in anon cells.
+            var anonGroup = NewAnonTablePart(BoxKind.TableRowGroup, style);
+            var anonRow = NewAnonTablePart(BoxKind.TableRow, style);
+            List<Box>? nonCellRun = null;
+            foreach (var item in run)
+            {
+                if (item.Kind == BoxKind.TableCell)
+                {
+                    FlushNonCellRun(anonRow, ref nonCellRun, style);
+                    anonRow.AppendChild(item);
+                }
+                else
+                {
+                    nonCellRun ??= new List<Box>();
+                    nonCellRun.Add(item);
+                }
+            }
+            FlushNonCellRun(anonRow, ref nonCellRun, style);
+            anonGroup.AppendChild(anonRow);
+            dest.Add(anonGroup);
+            run = null;
+        }
+    }
+
+    /// <summary>Wrap bare <see cref="BoxKind.TableCell"/> + non-table content
+    /// children of an explicit row-group in an anonymous
+    /// <see cref="BoxKind.TableRow"/>; pass-through real
+    /// <see cref="BoxKind.TableRow"/> children. Mutates
+    /// <paramref name="rowGroup"/> in place.</summary>
+    private static void FixRowGroupContents(Box rowGroup)
+    {
+        var snapshot = SnapshotChildren(rowGroup);
+        var filtered = StripWhitespaceTextRuns(snapshot);
+
+        // Recurse into explicit rows first so their non-cell content gets
+        // wrapped before we re-attach.
+        foreach (var c in filtered)
+        {
+            if (c.Kind == BoxKind.TableRow) FixRowContents(c);
+        }
+
+        var fixedChildren = new List<Box>();
+        List<Box>? bareNonRowRun = null;
+
+        foreach (var c in filtered)
+        {
+            if (c.Kind == BoxKind.TableRow)
+            {
+                FlushBareNonRowRun(fixedChildren, ref bareNonRowRun, rowGroup.Style);
+                fixedChildren.Add(c);
+            }
+            else
+            {
+                bareNonRowRun ??= new List<Box>();
+                bareNonRowRun.Add(c);
+            }
+        }
+        FlushBareNonRowRun(fixedChildren, ref bareNonRowRun, rowGroup.Style);
+
+        foreach (var c in fixedChildren) rowGroup.AppendChild(c);
+
+        static void FlushBareNonRowRun(List<Box> dest, ref List<Box>? run, ComputedStyle style)
+        {
+            if (run is null || run.Count == 0) return;
+            var anonRow = NewAnonTablePart(BoxKind.TableRow, style);
+            List<Box>? nonCellRun = null;
+            foreach (var item in run)
+            {
+                if (item.Kind == BoxKind.TableCell)
+                {
+                    FlushNonCellRun(anonRow, ref nonCellRun, style);
+                    anonRow.AppendChild(item);
+                }
+                else
+                {
+                    nonCellRun ??= new List<Box>();
+                    nonCellRun.Add(item);
+                }
+            }
+            FlushNonCellRun(anonRow, ref nonCellRun, style);
+            dest.Add(anonRow);
+            run = null;
+        }
+    }
+
+    /// <summary>Wrap non-<see cref="BoxKind.TableCell"/> children of an explicit
+    /// row in anonymous cells; pass-through real cells. Mutates
+    /// <paramref name="row"/> in place.</summary>
+    private static void FixRowContents(Box row)
+    {
+        var snapshot = SnapshotChildren(row);
+        var filtered = StripWhitespaceTextRuns(snapshot);
+
+        var fixedChildren = new List<Box>();
+        List<Box>? nonCellRun = null;
+
+        foreach (var c in filtered)
+        {
+            if (c.Kind == BoxKind.TableCell)
+            {
+                FlushNonCellRun(fixedChildren, ref nonCellRun, row.Style);
+                fixedChildren.Add(c);
+            }
+            else
+            {
+                nonCellRun ??= new List<Box>();
+                nonCellRun.Add(c);
+            }
+        }
+        FlushNonCellRun(fixedChildren, ref nonCellRun, row.Style);
+
+        foreach (var c in fixedChildren) row.AppendChild(c);
+
+        static void FlushNonCellRun(List<Box> dest, ref List<Box>? run, ComputedStyle style)
+        {
+            if (run is null || run.Count == 0) return;
+            var anonCell = NewAnonTablePart(BoxKind.TableCell, style);
+            foreach (var item in run) anonCell.AppendChild(item);
+            dest.Add(anonCell);
+            run = null;
+        }
+    }
+
+    /// <summary>Helper used by <see cref="GridLevelFixup"/> +
+    /// <see cref="FixRowGroupContents"/> to wrap consecutive non-cell items in
+    /// an anonymous <see cref="BoxKind.TableCell"/> per Tables L3 §3.1.</summary>
+    private static void FlushNonCellRun(Box anonRow, ref List<Box>? run, ComputedStyle style)
+    {
+        if (run is null || run.Count == 0) return;
+        var anonCell = NewAnonTablePart(BoxKind.TableCell, style);
+        foreach (var item in run) anonCell.AppendChild(item);
+        anonRow.AppendChild(anonCell);
+        run = null;
+    }
+
+    /// <summary>Detach <paramref name="parent"/>'s children + return them as a
+    /// fresh list. Used by table fixup to restructure children without
+    /// mutating the live <see cref="Box.Children"/> view mid-walk.</summary>
+    private static List<Box> SnapshotChildren(Box parent)
+    {
+        var snapshot = new List<Box>(parent.Children.Count);
+        foreach (var c in parent.Children) snapshot.Add(c);
+        foreach (var c in snapshot) parent.RemoveChild(c);
+        return snapshot;
+    }
+
+    /// <summary>Drop whitespace-only <see cref="BoxKind.TextRun"/> entries —
+    /// per Tables L3 §3.1, sequences of inline boxes whose only content is
+    /// "white space" between table internals do NOT generate boxes. Without
+    /// this, AngleSharp's preserved indentation between <c>&lt;tr&gt;</c> /
+    /// <c>&lt;td&gt;</c> elements would otherwise become anonymous
+    /// table-cells full of whitespace.</summary>
+    private static List<Box> StripWhitespaceTextRuns(List<Box> children)
+    {
+        var result = new List<Box>(children.Count);
+        foreach (var c in children)
+        {
+            if (c.Kind == BoxKind.TextRun && IsWhitespaceOnly(c.Text)) continue;
+            result.Add(c);
+        }
+        return result;
+    }
+
+    /// <summary><see langword="true"/> when every char in <paramref name="text"/>
+    /// is CSS whitespace (space, tab, LF, CR, FF). An empty string is treated
+    /// as whitespace-only.</summary>
+    private static bool IsWhitespaceOnly(string text)
+    {
+        foreach (var c in text)
+        {
+            if (c is not (' ' or '\t' or '\n' or '\r' or '\f')) return false;
+        }
+        return true;
+    }
+
+    /// <summary>Construct an anonymous table-internal box (row-group, row,
+    /// cell). The public <see cref="Box.Anonymous"/> factory is restricted to
+    /// always-anonymous kinds (<see cref="BoxKind.Root"/>,
+    /// <see cref="BoxKind.LineBox"/>, <see cref="BoxKind.AnonymousBlock"/>,
+    /// <see cref="BoxKind.AnonymousInline"/>, <see cref="BoxKind.TableGrid"/>);
+    /// table internals can be either source-backed (from
+    /// <c>&lt;tr&gt;</c>/<c>&lt;td&gt;</c>/<c>&lt;tbody&gt;</c>) or anonymous
+    /// (synthesized here by table fixup), so we use the constructor directly.
+    /// The style is shared with the parent — see the box-ownership
+    /// invariant in <see cref="Box"/>.</summary>
+    private static Box NewAnonTablePart(BoxKind kind, ComputedStyle style)
+    {
+        return new Box(kind, style, sourceElement: null, BoxPseudo.None, text: string.Empty);
+    }
 
     // ============================================================
     // ComputedStyle construction helpers

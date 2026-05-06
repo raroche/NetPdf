@@ -22,14 +22,14 @@ public sealed class NumberResolverTests
     [InlineData("0", 0.0)]
     [InlineData("1", 1.0)]
     [InlineData("0.5", 0.5)]
-    [InlineData("-2.5", -2.5)]
     [InlineData("0.001", 0.001)]
     [InlineData("100", 100.0)]
     public void Number_round_trips(string input, double expected)
     {
-        var slot = NumberResolver.ResolveNumber(input, PropertyId.FlexGrow, "flex-grow", null, default);
-        Assert.Equal(ComputedSlotTag.Number, slot.Tag);
-        Assert.Equal(expected, slot.AsNumber(), 5);
+        var result = NumberResolver.ResolveNumber(input, PropertyId.FlexGrow, "flex-grow", null, default);
+        Assert.True(result.IsResolved);
+        Assert.Equal(ComputedSlotTag.Number, result.Slot.Tag);
+        Assert.Equal(expected, result.Slot.AsNumber(), 5);
     }
 
     [Theory]
@@ -39,14 +39,44 @@ public sealed class NumberResolverTests
     [InlineData("")]
     [InlineData("NaN")]
     [InlineData("Infinity")]
-    public void Number_with_unit_or_garbage_emits_diagnostic(string input)
+    public void Number_with_unit_or_garbage_is_invalid(string input)
     {
         var sink = new CapturingSink();
-        var slot = NumberResolver.ResolveNumber(input, PropertyId.FlexGrow, "flex-grow", sink, default);
-        Assert.Equal(ComputedSlot.Unset, slot);
+        var result = NumberResolver.ResolveNumber(input, PropertyId.FlexGrow, "flex-grow", sink, default);
+        Assert.True(result.IsInvalid);
         if (input.Length > 0)
             Assert.Single(sink.Diagnostics);
     }
+
+    // ============================================================
+    // Rec 5 — flex-grow / flex-shrink reject negatives per Flexbox 1 §7.1
+    // ============================================================
+
+    [Theory]
+    [InlineData("FlexGrow",   "flex-grow")]
+    [InlineData("FlexShrink", "flex-shrink")]
+    public void Flex_grow_and_shrink_reject_negative(string idName, string propName)
+    {
+        var pid = (PropertyId)System.Enum.Parse(typeof(PropertyId), idName);
+        var sink = new CapturingSink();
+        var result = NumberResolver.ResolveNumber("-2.5", pid, propName, sink, default);
+        Assert.True(result.IsInvalid);
+        Assert.Contains(sink.Diagnostics, d =>
+            d.Code == CssDiagnosticCodes.CssPropertyValueInvalid001 &&
+            d.Message.Contains("negative", System.StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Flex_grow_accepts_zero()
+    {
+        var result = NumberResolver.ResolveNumber("0", PropertyId.FlexGrow, "flex-grow", null, default);
+        Assert.True(result.IsResolved);
+        Assert.Equal(0.0, result.Slot.AsNumber(), 5);
+    }
+
+    // ============================================================
+    // Integer
+    // ============================================================
 
     [Theory]
     [InlineData("0", 0)]
@@ -57,21 +87,24 @@ public sealed class NumberResolverTests
     [InlineData("-2147483648", int.MinValue)]
     public void Integer_round_trips(string input, int expected)
     {
-        var slot = NumberResolver.ResolveInteger(input, PropertyId.FlexGrow, "z-index", null, default);
-        Assert.Equal(ComputedSlotTag.Integer, slot.Tag);
-        Assert.Equal(expected, slot.AsInteger());
+        // Use Top (negatives allowed — positioning offset). FlexGrow / FlexShrink
+        // are in NonNegativeProperties so they'd reject negative integers.
+        var result = NumberResolver.ResolveInteger(input, PropertyId.Top, "z-index", null, default);
+        Assert.True(result.IsResolved);
+        Assert.Equal(ComputedSlotTag.Integer, result.Slot.Tag);
+        Assert.Equal(expected, result.Slot.AsInteger());
     }
 
     [Theory]
-    [InlineData("1.5")]    // decimal — not an integer
-    [InlineData("1e3")]    // exponent — not an integer
+    [InlineData("1.5")]
+    [InlineData("1e3")]
     [InlineData("16px")]
     [InlineData("foo")]
-    public void Integer_with_decimal_or_unit_emits_diagnostic(string input)
+    public void Integer_with_decimal_or_unit_is_invalid(string input)
     {
         var sink = new CapturingSink();
-        var slot = NumberResolver.ResolveInteger(input, PropertyId.FlexGrow, "z-index", sink, default);
-        Assert.Equal(ComputedSlot.Unset, slot);
+        var result = NumberResolver.ResolveInteger(input, PropertyId.Top, "z-index", sink, default);
+        Assert.True(result.IsInvalid);
         Assert.Single(sink.Diagnostics);
     }
 }

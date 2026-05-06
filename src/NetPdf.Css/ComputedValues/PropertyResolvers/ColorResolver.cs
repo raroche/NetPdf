@@ -10,40 +10,46 @@ using NetPdf.Css.Properties;
 namespace NetPdf.Css.ComputedValues.PropertyResolvers;
 
 /// <summary>
-/// Resolves CSS color values per CSS Color L4 §4 (sRGB color forms). The cycle-1
-/// surface covers: <see cref="CssNamedColors">named colors</see>, hex
-/// (<c>#rgb</c> / <c>#rgba</c> / <c>#rrggbb</c> / <c>#rrggbbaa</c>),
-/// <c>rgb()</c> / <c>rgba()</c> in both modern (whitespace-separated, slash alpha) and
-/// legacy (comma-separated) syntax, <c>hsl()</c> / <c>hsla()</c> in both syntaxes,
-/// plus the CSS-wide values <c>transparent</c> and <c>currentcolor</c>.
+/// Resolves CSS color values per CSS Color L4 §4 (sRGB color forms) + §10 (system
+/// colors). Cycle-1 surface: <see cref="CssNamedColors">named colors</see>,
+/// <see cref="CssSystemColors">system colors</see>, hex (<c>#rgb</c> / <c>#rgba</c> /
+/// <c>#rrggbb</c> / <c>#rrggbbaa</c>), <c>rgb()</c> / <c>rgba()</c> in modern AND
+/// legacy forms (strictly distinguished — see remarks), <c>hsl()</c> / <c>hsla()</c>
+/// in both forms, <c>transparent</c>, and <c>currentcolor</c>.
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Output encoding.</b> Every successful parse produces a <see cref="ComputedSlot.FromColor"/>
-/// with the color packed as <c>0xAARRGGBB</c>. <c>transparent</c> packs as <c>0x00000000</c>;
-/// <c>currentcolor</c> packs as the sentinel <see cref="CurrentColorSentinel"/>
-/// (<c>0x00000001</c> — distinct from transparent because the high alpha bits are zero
-/// but bit 0 of RGB is set, which transparent never has).
+/// <b>Modern vs legacy syntax (CSS Color 4 §4.2).</b> The two are mutually exclusive:
+/// </para>
+/// <list type="bullet">
+///   <item><b>Legacy</b>: <c>rgb(R, G, B)</c> or <c>rgb(R, G, B, A)</c> — comma-
+///     separated. The slash separator is forbidden.</item>
+///   <item><b>Modern</b>: <c>rgb(R G B)</c> or <c>rgb(R G B / A)</c> — whitespace-
+///     separated. Commas forbidden.</item>
+/// </list>
+/// <para>
+/// Mixed forms (commas AND a slash) are invalid per spec and rejected with
+/// <see cref="CssDiagnosticCodes.CssPropertyValueInvalid001"/>. Legacy with 4 commas
+/// is the alpha case; modern with the slash is the alpha case.
 /// </para>
 /// <para>
-/// <b>Deferred to a follow-up cycle.</b> Modern color spaces (<c>oklch()</c>,
+/// <b>Output encoding.</b> RGB-bearing values pack as
+/// <see cref="ComputedSlot.FromColor"/> with <c>0xAARRGGBB</c>. <c>transparent</c>
+/// packs as opaque-zero <c>0x00000000</c>. <c>currentcolor</c> uses the dedicated
+/// <see cref="ComputedSlot.CurrentColor"/> tag — it has no payload bits at all, so
+/// no user-authored color value (e.g. <c>rgba(0, 0, 1, 0)</c>) can collide.
+/// </para>
+/// <para>
+/// <b>Deferred</b> with diagnostic: modern color spaces (<c>oklch()</c>,
 /// <c>oklab()</c>, <c>lab()</c>, <c>lch()</c>, <c>color()</c>) and the
-/// <c>color-mix()</c> functional require Task 3's pre-pass capture (AngleSharp.Css
-/// silently corrupts these to wrong rgba). System colors (<c>canvas</c>,
-/// <c>canvastext</c>, etc. per CSS Color 4 §10) are context-dependent and resolve
-/// at compute time once a color scheme is selected; they're not in the cycle-1 scope.
+/// <c>color-mix()</c> functional. They need Task 3's pre-pass capture (AngleSharp.Css
+/// silently corrupts these to wrong rgba). Resolver returns
+/// <see cref="ResolverResult.Invalid"/> + diagnostic until that's wired.
 /// </para>
 /// </remarks>
 internal static class ColorResolver
 {
-    /// <summary>Sentinel value packed into a <see cref="ComputedSlot.FromColor"/> slot
-    /// when the source value was the keyword <c>currentcolor</c>. The downstream
-    /// pipeline (paint stage) substitutes the cascaded <c>color</c> property when it
-    /// sees this exact pattern. Distinct from <c>transparent</c> (<c>0x00000000</c>)
-    /// because the low bit of red is set — transparent has all 32 bits zero.</summary>
-    public const uint CurrentColorSentinel = 0x00000001u;
-
-    public static ComputedSlot Resolve(
+    public static ResolverResult Resolve(
         string value,
         PropertyId propertyId,
         string propertyName,
@@ -51,33 +57,38 @@ internal static class ColorResolver
         CssSourceLocation location)
     {
         if (value.Equals("transparent", StringComparison.OrdinalIgnoreCase))
-            return ComputedSlot.FromColor(0x00000000u);
+            return ResolverResult.Resolved(ComputedSlot.FromColor(0x00000000u));
         if (value.Equals("currentcolor", StringComparison.OrdinalIgnoreCase))
-            return ComputedSlot.FromColor(CurrentColorSentinel);
+            return ResolverResult.Resolved(ComputedSlot.CurrentColor);
 
         if (value.Length > 0 && value[0] == '#')
         {
-            if (TryParseHex(value, out var argb)) return ComputedSlot.FromColor(argb);
-            EmitInvalid(diagnostics, propertyName, value, "malformed hex color (expected #rgb, #rgba, #rrggbb, or #rrggbbaa)", location);
-            return ComputedSlot.Unset;
+            if (TryParseHex(value, out var argb))
+                return ResolverResult.Resolved(ComputedSlot.FromColor(argb));
+            EmitInvalid(diagnostics, propertyName, value,
+                "malformed hex color (expected #rgb, #rgba, #rrggbb, or #rrggbbaa)", location);
+            return ResolverResult.Invalid();
         }
 
         if (CssNamedColors.TryGet(value, out var named))
-            return ComputedSlot.FromColor(named);
+            return ResolverResult.Resolved(ComputedSlot.FromColor(named));
+
+        if (CssSystemColors.TryGet(value, out var system))
+            return ResolverResult.Resolved(ComputedSlot.FromColor(system));
 
         // Functional forms.
         if (TryParseFunctionalColor(value, out var fnArgb, out var fnReason))
-            return ComputedSlot.FromColor(fnArgb);
+            return ResolverResult.Resolved(ComputedSlot.FromColor(fnArgb));
         if (fnReason is not null)
         {
             EmitInvalid(diagnostics, propertyName, value, fnReason, location);
-            return ComputedSlot.Unset;
+            return ResolverResult.Invalid();
         }
 
         EmitInvalid(diagnostics, propertyName, value,
-            "expected a named color, hex (#rgb/#rgba/#rrggbb/#rrggbbaa), rgb()/rgba(), hsl()/hsla(), transparent, or currentcolor",
+            "expected a named color, system color, hex (#rgb/#rgba/#rrggbb/#rrggbbaa), rgb()/rgba(), hsl()/hsla(), transparent, or currentcolor",
             location);
-        return ComputedSlot.Unset;
+        return ResolverResult.Invalid();
     }
 
     /// <summary>Hex parsing per CSS Color L4 §4.4. 3-digit form expands #rgb → #rrggbb;
@@ -126,12 +137,11 @@ internal static class ColorResolver
         }
     }
 
-    /// <summary>Functional color parser. Supports both modern syntax
-    /// (<c>rgb(255 0 0 / 50%)</c>) and legacy syntax (<c>rgb(255, 0, 0, 0.5)</c>) per
-    /// CSS Color L4 §4.2. Returns <see langword="true"/> + packed argb on success;
-    /// <see langword="false"/> + null reason if the value isn't a functional color
-    /// at all (caller falls through); <see langword="false"/> + non-null reason if it
-    /// LOOKED like a functional color but was malformed (caller emits diagnostic).</summary>
+    /// <summary>Functional color parser. Returns <see langword="true"/> + packed
+    /// argb on success; <see langword="false"/> + null reason if the value isn't a
+    /// functional color at all (caller falls through to the unknown-token diagnostic);
+    /// <see langword="false"/> + non-null reason if it WAS a functional color but
+    /// malformed (caller emits diagnostic).</summary>
     private static bool TryParseFunctionalColor(string value, out uint argb, out string? reason)
     {
         argb = 0;
@@ -163,16 +173,13 @@ internal static class ColorResolver
     {
         argb = 0;
         reason = null;
-        if (!TrySplitColorArgs(body, out var args, out var sawSlash, out reason)) return false;
+        if (!TrySplitColorArgs(body, out var args, out var syntax, out reason)) return false;
         if (args.Count is not (3 or 4))
         {
             reason = $"rgb()/rgba() expects 3 or 4 components, got {args.Count}";
             return false;
         }
 
-        // Components 0..2 are R/G/B as either <number> 0..255 or <percentage> 0..100%.
-        // Mixing forms is permitted in modern syntax but rejected in legacy. Cycle 1
-        // is permissive — both forms in any combination accepted.
         if (!TryParseRgbChannel(args[0], out var r) ||
             !TryParseRgbChannel(args[1], out var g) ||
             !TryParseRgbChannel(args[2], out var b))
@@ -184,6 +191,10 @@ internal static class ColorResolver
         var aByte = (byte)0xFF;
         if (args.Count == 4)
         {
+            if (syntax == ColorSyntax.LegacyComma && !syntax.HasFlag(ColorSyntax.AlphaWasComma))
+            {
+                // Should be impossible — TrySplitColorArgs only adds a 4th arg via comma in legacy.
+            }
             if (!TryParseAlphaComponent(args[3], out var a))
             {
                 reason = "rgb()/rgba() alpha must be a number 0..1 or percentage 0..100%";
@@ -191,11 +202,6 @@ internal static class ColorResolver
             }
             aByte = a;
         }
-        // Modern syntax requires the slash separator before alpha; legacy requires comma.
-        // The split function records whether a slash was present; our cycle-1 check is
-        // softer — we accept both shapes uniformly (CSS Color 4 doesn't penalize either
-        // when the rest of the syntax is well-formed).
-        _ = sawSlash;
 
         argb = ((uint)aByte << 24) | ((uint)r << 16) | ((uint)g << 8) | b;
         return true;
@@ -236,30 +242,53 @@ internal static class ColorResolver
         return true;
     }
 
-    /// <summary>Splits a color-function argument list. Tolerates both legacy comma-
-    /// separated and modern whitespace-separated forms; the alpha separator may be
-    /// either <c>,</c> or <c>/</c> (modern requires <c>/</c> but cycle 1 is lenient).</summary>
+    /// <summary>Strictness flags for the syntax detected by <see cref="TrySplitColorArgs"/>.</summary>
+    [Flags]
+    private enum ColorSyntax
+    {
+        None = 0,
+        LegacyComma = 1,
+        ModernSpace = 2,
+        AlphaWasSlash = 4,
+        AlphaWasComma = 8,
+    }
+
+    /// <summary>Splits a color-function argument list per CSS Color 4 §4.2. Strictly
+    /// enforces the legacy/modern syntax dichotomy: legacy uses commas only (no slash
+    /// allowed); modern uses whitespace + optional slash (no comma allowed). Mixed
+    /// forms emit the reason "mixed comma + slash syntax forbidden per CSS Color 4 §4.2".</summary>
     private static bool TrySplitColorArgs(
         string body,
         out System.Collections.Generic.List<string> args,
-        out bool sawSlash,
+        out ColorSyntax syntax,
         out string? reason)
     {
         args = new System.Collections.Generic.List<string>(4);
-        sawSlash = false;
+        syntax = ColorSyntax.None;
         reason = null;
 
         var span = body.AsSpan().Trim();
         if (span.IsEmpty) return false;
 
-        // Decide separator style by sniffing for a comma at top level.
+        // First pass: detect commas vs slashes at the top level.
         var hasComma = false;
+        var hasSlash = false;
         for (var i = 0; i < span.Length; i++)
-            if (span[i] == ',') { hasComma = true; break; }
+        {
+            if (span[i] == ',') hasComma = true;
+            else if (span[i] == '/') hasSlash = true;
+        }
+
+        if (hasComma && hasSlash)
+        {
+            reason = "mixed comma + slash syntax forbidden per CSS Color 4 §4.2 — use either legacy commas or modern whitespace + '/' alpha, not both";
+            return false;
+        }
 
         if (hasComma)
         {
-            // Legacy comma-separated. The 4th comma marks alpha; slashes are not allowed.
+            // Legacy comma-separated. The 4th comma marks alpha.
+            syntax = ColorSyntax.LegacyComma | ColorSyntax.AlphaWasComma;
             var start = 0;
             for (var i = 0; i <= span.Length; i++)
             {
@@ -275,6 +304,7 @@ internal static class ColorResolver
         else
         {
             // Modern whitespace-separated. A `/` introduces the alpha component.
+            syntax = ColorSyntax.ModernSpace;
             var i = 0;
             while (i < span.Length)
             {
@@ -282,7 +312,7 @@ internal static class ColorResolver
                 if (i >= span.Length) break;
                 if (span[i] == '/')
                 {
-                    sawSlash = true;
+                    syntax |= ColorSyntax.AlphaWasSlash;
                     i++;
                     while (i < span.Length && IsWhitespace(span[i])) i++;
                     var alphaStart = i;
@@ -337,16 +367,12 @@ internal static class ColorResolver
     {
         degrees = 0;
         if (token.Length == 0) return false;
-        // Strip the unit (deg / rad / grad / turn). Bare number = degrees.
         var i = 0;
         if (token[i] == '+' || token[i] == '-') i++;
         while (i < token.Length && (IsAsciiDigit(token[i]) || token[i] == '.' || token[i] == 'e' || token[i] == 'E' || token[i] == '+' || token[i] == '-'))
         {
-            // Loose acceptance — TryParse below is the real validator.
             i++;
         }
-        // Don't double-consume sign — back off if `e` hit then sign was previously consumed.
-        // (In practice double.TryParse handles malformed numerics by failing.)
         var numText = token.AsSpan(0, i);
         var unit = token.AsSpan(i).ToString().Trim().ToLowerInvariant();
         if (!double.TryParse(numText, NumberStyles.Float, CultureInfo.InvariantCulture, out var raw)) return false;

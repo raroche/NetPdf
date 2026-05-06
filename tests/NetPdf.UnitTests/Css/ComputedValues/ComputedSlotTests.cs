@@ -106,6 +106,31 @@ public sealed class ComputedSlotTests
         Assert.Throws<System.ArgumentException>(() => ComputedSlot.FromNumber(double.NegativeInfinity));
     }
 
+    [Fact]
+    public void CurrentColor_has_dedicated_tag_and_no_payload()
+    {
+        // Rec 3: dedicated tag — no packed-argb sentinel that could collide with a
+        // user-authored color like rgba(0, 0, 1, 0).
+        var slot = ComputedSlot.CurrentColor;
+        Assert.Equal(ComputedSlotTag.CurrentColor, slot.Tag);
+        Assert.True(slot.IsCurrentColor);
+        Assert.False(slot.IsUnset);
+    }
+
+    [Fact]
+    public void CurrentColor_distinct_from_FromColor_zero()
+    {
+        // The old sentinel was 0x00000001 packed as a Color slot. The new
+        // representation is tag-only, so there's no possible collision with any
+        // ComputedSlot.FromColor(...) value.
+        var cc = ComputedSlot.CurrentColor;
+        var transparent = ComputedSlot.FromColor(0x00000000u);
+        var nearMiss = ComputedSlot.FromColor(0x00000001u);
+        Assert.NotEqual(cc, transparent);
+        Assert.NotEqual(cc, nearMiss);
+        Assert.NotEqual(transparent, nearMiss);
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(7)]

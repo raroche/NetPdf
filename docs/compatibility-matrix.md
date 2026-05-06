@@ -82,11 +82,13 @@ Phase column shows the milestone in which the feature first ships.
 
 | Feature | Status | Phase | Notes |
 |---|---|---|---|
-| `color` (named, hex, rgb, hsl) | ✅ | 2 | AngleSharp.Css normalizes all to `rgba(r,g,b,a)`. |
-| `color` (lab, lch, hwb) | 🧪 | 2 | AngleSharp.Css parses these natively. Validate per-property at Task 9–10 typed-value time. |
-| `color` (oklab, oklch) | 🧪 | 2 | AngleSharp.Css 1.0.0-beta.144 SILENTLY CORRUPTS `oklch(...)` to bogus rgba. Task 3's pre-pass preserves the authored text in `CssDeclaration.Value.RawText`; Tasks 9–10 typed-value resolution converts the raw text. |
-| `color-mix()` | 🧪 | 2 | AngleSharp.Css 1.0.0-beta.144 drops the declaration entirely (empty rule body). Task 3's pre-pass restores the authored value as raw text; Tasks 9–10 will compute the mixed color. |
-| `light-dark()` | 🧪 | 2 | Same AngleSharp drop as `color-mix()`. Raw text preserved; Task 9–10 evaluates against `PreferredColorScheme`. |
+| `color` (named, hex, rgb, hsl) | ✅ | 2 | Task 10 cycle 1's [`ColorResolver`](../src/NetPdf.Css/ComputedValues/PropertyResolvers/ColorResolver.cs) computes typed values from named (147 entries via [`CssNamedColors`](../src/NetPdf.Css/ComputedValues/PropertyResolvers/CssNamedColors.cs)), every hex form (`#rgb`/`#rgba`/`#rrggbb`/`#rrggbbaa`), `rgb()`/`rgba()` and `hsl()`/`hsla()` in BOTH legacy comma + modern whitespace + slash-alpha syntax. Strict syntax separation per CSS Color 4 §4.2 — mixed comma + slash forms emit `CSS-PROPERTY-VALUE-INVALID-001`. |
+| `color` (system colors — `canvas`, `canvastext`, `linktext`, `accentcolor`, etc.) | ✅ | 2 | Task 10 cycle 1 review pass adds [`CssSystemColors`](../src/NetPdf.Css/ComputedValues/PropertyResolvers/CssSystemColors.cs) — fixed-value print palette per CSS Color 4 §10. Required so the cascade's default for `color` (which is `canvastext` per spec) parses cleanly. Screen-browser color-scheme switching is post-v1; print uses paper white / ink black + Mosaic-era link colors. |
+| `color` (`currentcolor` keyword) | ✅ | 2 | Resolved to a dedicated [`ComputedSlotTag.CurrentColor`](../src/NetPdf.Css/ComputedValues/ComputedSlot.cs) tag (no payload), so no user-authored color value can collide with the sentinel. The paint stage substitutes the cascaded `color` value when it sees this tag. |
+| `color` (lab, lch, hwb) | 🧪 | 2 | AngleSharp.Css parses these natively. Task 10 cycle 1 doesn't yet wire the typed evaluation — `ColorResolver` emits `CSS-PROPERTY-VALUE-INVALID-001` for `lab()` / `lch()` until cycle 2 adds the L4 §4.3 / §4.4 conversion. |
+| `color` (oklab, oklch) | 🧪 | 2 | AngleSharp.Css 1.0.0-beta.144 SILENTLY CORRUPTS `oklch(...)` to bogus rgba. Task 3's pre-pass preserves the authored text in `CssDeclaration.Value.RawText`; Task 10 cycle 1 emits `CSS-PROPERTY-VALUE-INVALID-001` for the modern color spaces. Cycle 2 (paired with the pre-pass capture) will compute typed values per CSS Color 4 §6 (Oklab) and §7 (Oklch). |
+| `color-mix()` | 🧪 | 2 | AngleSharp.Css 1.0.0-beta.144 drops the declaration entirely (empty rule body). Task 3's pre-pass restores the authored value as raw text; Task 10 cycle 1 emits `CSS-PROPERTY-VALUE-INVALID-001`. Cycle 2 will compute the mix per CSS Color 5 §2. |
+| `light-dark()` | 🧪 | 2 | Same AngleSharp drop as `color-mix()`. Raw text preserved by Task 3's pre-pass; Task 10 cycle 1 emits `CSS-PROPERTY-VALUE-INVALID-001`. Cycle 2 will evaluate against `PreferredColorScheme`. |
 | `background-color` | ✅ | 3 | |
 | `background-image: url(...)` | ✅ | 4 | |
 | `background-image: linear-gradient()` | ✅ | 4 | PDF native shading pattern. |

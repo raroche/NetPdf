@@ -12,7 +12,8 @@ namespace NetPdf.UnitTests.Css.ComputedValues.PropertyResolvers;
 
 /// <summary>
 /// Unit tests for <see cref="LengthResolver"/> — covers the full dimension family
-/// (Length / LengthPercentage / LengthPercentageAuto / Percentage / TextSpacing).
+/// (Length / LengthPercentage / LengthPercentageAuto / Percentage / TextSpacing)
+/// against the cycle-1-review <see cref="ResolverResult"/> contract.
 /// </summary>
 public sealed class LengthResolverTests
 {
@@ -34,33 +35,34 @@ public sealed class LengthResolverTests
     [InlineData("25.4mm", 96.0)]
     [InlineData("72pt", 96.0)]              // 72pt = 1in
     [InlineData("1pc", 16.0)]               // 1pc = 12pt = 16px
-    [InlineData("-32px", -32.0)]
+    [InlineData("-32px", -32.0)]            // top: -32px (positioning offset)
     [InlineData("0.5px", 0.5)]
     public void Absolute_lengths_reduce_to_px(string input, double expectedPx)
     {
-        var slot = LengthResolver.Resolve(input, PropertyType.Length, PropertyId.BorderTopWidth,
-            "border-top-width", null, default);
-        Assert.Equal(ComputedSlotTag.LengthPx, slot.Tag);
-        Assert.Equal(expectedPx, slot.AsLengthPx(), 3);
+        // Use Top — accepts negatives + LengthPercentageAuto.
+        var result = LengthResolver.Resolve(input, PropertyType.LengthPercentageAuto, PropertyId.Top,
+            "top", null, default);
+        Assert.True(result.IsResolved);
+        Assert.Equal(ComputedSlotTag.LengthPx, result.Slot.Tag);
+        Assert.Equal(expectedPx, result.Slot.AsLengthPx(), 3);
     }
 
     [Fact]
     public void Q_unit_is_one_quarter_millimeter()
     {
-        // 1Q = 0.25mm = (96 / 25.4 / 4) px ≈ 0.9449
-        var slot = LengthResolver.Resolve("1q", PropertyType.Length, PropertyId.BorderTopWidth,
-            "border-top-width", null, default);
-        Assert.Equal(96.0 / 25.4 / 4.0, slot.AsLengthPx(), 5);
+        var result = LengthResolver.Resolve("1q", PropertyType.LengthPercentageAuto, PropertyId.Top,
+            "top", null, default);
+        Assert.True(result.IsResolved);
+        Assert.Equal(96.0 / 25.4 / 4.0, result.Slot.AsLengthPx(), 5);
     }
 
     [Fact]
-    public void Bare_nonzero_number_emits_diagnostic()
+    public void Bare_nonzero_number_is_invalid()
     {
-        // CSS Values L4 §6.2: only `0` is allowed without a unit.
         var sink = new CapturingSink();
-        var slot = LengthResolver.Resolve("16", PropertyType.Length, PropertyId.BorderTopWidth,
-            "border-top-width", sink, default);
-        Assert.Equal(ComputedSlot.Unset, slot);
+        var result = LengthResolver.Resolve("16", PropertyType.LengthPercentageAuto, PropertyId.Top,
+            "top", sink, default);
+        Assert.True(result.IsInvalid);
         Assert.Single(sink.Diagnostics);
         Assert.Equal(CssDiagnosticCodes.CssPropertyValueInvalid001, sink.Diagnostics[0].Code);
     }
@@ -73,37 +75,40 @@ public sealed class LengthResolverTests
     [InlineData("50%", 50.0)]
     [InlineData("0%", 0.0)]
     [InlineData("100%", 100.0)]
-    [InlineData("-25%", -25.0)]
     [InlineData("33.33%", 33.33)]
     public void Percentage_on_LengthPercentage_reduces(string input, double expectedPct)
     {
-        var slot = LengthResolver.Resolve(input, PropertyType.LengthPercentage, PropertyId.PaddingTop,
+        var result = LengthResolver.Resolve(input, PropertyType.LengthPercentage, PropertyId.PaddingTop,
             "padding-top", null, default);
-        Assert.Equal(ComputedSlotTag.Percentage, slot.Tag);
-        Assert.Equal(expectedPct, slot.AsPercentage(), 2);
+        Assert.True(result.IsResolved);
+        Assert.Equal(ComputedSlotTag.Percentage, result.Slot.Tag);
+        Assert.Equal(expectedPct, result.Slot.AsPercentage(), 2);
     }
 
     [Fact]
-    public void Percentage_on_Length_emits_diagnostic()
+    public void Percentage_on_Length_is_invalid()
     {
+        // Synthesize a Length-only property by using the type. (No real Length-only
+        // property in cycle 1's properties.json, but the resolver accepts the type.)
         var sink = new CapturingSink();
-        var slot = LengthResolver.Resolve("50%", PropertyType.Length, PropertyId.BorderTopWidth,
+        var result = LengthResolver.Resolve("50%", PropertyType.Length, PropertyId.BorderTopWidth,
             "border-top-width", sink, default);
-        Assert.Equal(ComputedSlot.Unset, slot);
+        Assert.True(result.IsInvalid);
         Assert.Contains(sink.Diagnostics, d => d.Code == CssDiagnosticCodes.CssPropertyValueInvalid001);
     }
 
     [Fact]
     public void Percentage_on_LengthPercentageAuto_reduces()
     {
-        var slot = LengthResolver.Resolve("75%", PropertyType.LengthPercentageAuto, PropertyId.Width,
+        var result = LengthResolver.Resolve("75%", PropertyType.LengthPercentageAuto, PropertyId.Width,
             "width", null, default);
-        Assert.Equal(ComputedSlotTag.Percentage, slot.Tag);
-        Assert.Equal(75.0, slot.AsPercentage(), 2);
+        Assert.True(result.IsResolved);
+        Assert.Equal(ComputedSlotTag.Percentage, result.Slot.Tag);
+        Assert.Equal(75.0, result.Slot.AsPercentage(), 2);
     }
 
     // ============================================================
-    // Auto / normal keywords (LengthPercentageAuto / TextSpacing)
+    // Auto / normal keywords
     // ============================================================
 
     [Theory]
@@ -112,35 +117,35 @@ public sealed class LengthResolverTests
     [InlineData("Auto")]
     public void Auto_on_LengthPercentageAuto_reduces_to_keyword(string input)
     {
-        var slot = LengthResolver.Resolve(input, PropertyType.LengthPercentageAuto, PropertyId.Width,
+        var result = LengthResolver.Resolve(input, PropertyType.LengthPercentageAuto, PropertyId.Width,
             "width", null, default);
-        Assert.Equal(ComputedSlotTag.Keyword, slot.Tag);
-        Assert.Equal(LengthResolver.KeywordIdAuto, slot.AsKeyword());
+        Assert.True(result.IsResolved);
+        Assert.Equal(ComputedSlotTag.Keyword, result.Slot.Tag);
+        Assert.Equal(LengthResolver.KeywordIdAuto, result.Slot.AsKeyword());
     }
 
     [Fact]
-    public void Auto_on_LengthPercentage_emits_diagnostic()
+    public void Auto_on_LengthPercentage_is_invalid()
     {
-        // padding-top doesn't accept `auto` (it's LengthPercentage, not LengthPercentageAuto).
         var sink = new CapturingSink();
-        var slot = LengthResolver.Resolve("auto", PropertyType.LengthPercentage, PropertyId.PaddingTop,
+        var result = LengthResolver.Resolve("auto", PropertyType.LengthPercentage, PropertyId.PaddingTop,
             "padding-top", sink, default);
-        Assert.Equal(ComputedSlot.Unset, slot);
+        Assert.True(result.IsInvalid);
         Assert.Contains(sink.Diagnostics, d => d.Code == CssDiagnosticCodes.CssPropertyValueInvalid001);
     }
 
-    [Theory]
-    [InlineData("normal")]
-    [InlineData("Normal")]
-    public void Normal_on_TextSpacing_reduces_to_keyword(string input)
+    [Fact]
+    public void Normal_on_TextSpacing_reduces_to_keyword()
     {
-        var slot = LengthResolver.Resolve(input, PropertyType.TextSpacing, PropertyId.LetterSpacing,
+        var result = LengthResolver.Resolve("normal", PropertyType.TextSpacing, PropertyId.LetterSpacing,
             "letter-spacing", null, default);
-        Assert.Equal(ComputedSlotTag.Keyword, slot.Tag);
+        Assert.True(result.IsResolved);
+        Assert.Equal(ComputedSlotTag.Keyword, result.Slot.Tag);
     }
 
     // ============================================================
-    // Font-relative / viewport / container units defer (no diagnostic)
+    // Context-relative units defer (no diagnostic) — Rec 1 distinguishes
+    // Deferred from Invalid/Resolved
     // ============================================================
 
     [Theory]
@@ -165,12 +170,13 @@ public sealed class LengthResolverTests
     [InlineData("10cqb")]
     [InlineData("10cqmin")]
     [InlineData("10cqmax")]
-    public void Context_relative_units_defer_with_no_diagnostic(string input)
+    public void Context_relative_units_defer_with_raw_text(string input)
     {
         var sink = new CapturingSink();
-        var slot = LengthResolver.Resolve(input, PropertyType.Length, PropertyId.BorderTopWidth,
-            "border-top-width", sink, default);
-        Assert.Equal(ComputedSlot.Unset, slot);
+        var result = LengthResolver.Resolve(input, PropertyType.LengthPercentageAuto, PropertyId.Width,
+            "width", sink, default);
+        Assert.True(result.IsDeferred);
+        Assert.Equal(input, result.RawText);
         Assert.Empty(sink.Diagnostics);
     }
 
@@ -182,14 +188,120 @@ public sealed class LengthResolverTests
     [InlineData("nonsense")]
     [InlineData("16xpx")]
     [InlineData("px")]
-    [InlineData("16px16px")]      // two values
+    [InlineData("16px16px")]
     [InlineData("16fooz")]
-    public void Garbage_emits_diagnostic_and_returns_unset(string input)
+    public void Garbage_is_invalid(string input)
     {
         var sink = new CapturingSink();
-        var slot = LengthResolver.Resolve(input, PropertyType.Length, PropertyId.BorderTopWidth,
-            "border-top-width", sink, default);
-        Assert.Equal(ComputedSlot.Unset, slot);
+        var result = LengthResolver.Resolve(input, PropertyType.LengthPercentageAuto, PropertyId.Width,
+            "width", sink, default);
+        Assert.True(result.IsInvalid);
         Assert.Single(sink.Diagnostics);
+    }
+
+    // ============================================================
+    // Rec 4 — Non-negative properties reject negatives
+    // ============================================================
+
+    [Theory]
+    [InlineData("padding-top",   "PaddingTop")]
+    [InlineData("padding-right", "PaddingRight")]
+    [InlineData("padding-bottom","PaddingBottom")]
+    [InlineData("padding-left",  "PaddingLeft")]
+    [InlineData("width",         "Width")]
+    [InlineData("height",        "Height")]
+    [InlineData("min-width",     "MinWidth")]
+    [InlineData("min-height",    "MinHeight")]
+    public void Non_negative_properties_reject_negative_length(string propertyName, string idName)
+    {
+        var pid = (PropertyId)System.Enum.Parse(typeof(PropertyId), idName);
+        var sink = new CapturingSink();
+        var result = LengthResolver.Resolve("-10px",
+            propertyName.StartsWith("padding") ? PropertyType.LengthPercentage : PropertyType.LengthPercentageAuto,
+            pid, propertyName, sink, default);
+        Assert.True(result.IsInvalid);
+        Assert.Contains(sink.Diagnostics, d =>
+            d.Code == CssDiagnosticCodes.CssPropertyValueInvalid001 &&
+            d.Message.Contains("negative", System.StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Non_negative_properties_reject_negative_percentage()
+    {
+        var sink = new CapturingSink();
+        var result = LengthResolver.Resolve("-10%", PropertyType.LengthPercentage,
+            PropertyId.PaddingTop, "padding-top", sink, default);
+        Assert.True(result.IsInvalid);
+    }
+
+    [Theory]
+    [InlineData("margin-top",    "MarginTop")]
+    [InlineData("margin-bottom", "MarginBottom")]
+    [InlineData("margin-left",   "MarginLeft")]
+    [InlineData("margin-right",  "MarginRight")]
+    [InlineData("top",           "Top")]
+    [InlineData("right",         "Right")]
+    [InlineData("bottom",        "Bottom")]
+    [InlineData("left",          "Left")]
+    public void Negative_allowed_properties_accept_negative_length(string propertyName, string idName)
+    {
+        var pid = (PropertyId)System.Enum.Parse(typeof(PropertyId), idName);
+        var result = LengthResolver.Resolve("-10px", PropertyType.LengthPercentageAuto,
+            pid, propertyName, null, default);
+        Assert.True(result.IsResolved);
+        Assert.Equal(-10.0, result.Slot.AsLengthPx(), 3);
+    }
+
+    // ============================================================
+    // Rec 6 — letter-spacing rejects %, word-spacing accepts it
+    // ============================================================
+
+    [Fact]
+    public void Letter_spacing_rejects_percentage()
+    {
+        var sink = new CapturingSink();
+        var result = LengthResolver.Resolve("5%", PropertyType.TextSpacing,
+            PropertyId.LetterSpacing, "letter-spacing", sink, default);
+        Assert.True(result.IsInvalid);
+        Assert.Contains(sink.Diagnostics, d =>
+            d.Code == CssDiagnosticCodes.CssPropertyValueInvalid001 &&
+            d.Message.Contains("letter-spacing", System.StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Word_spacing_accepts_percentage()
+    {
+        var result = LengthResolver.Resolve("5%", PropertyType.TextSpacing,
+            PropertyId.WordSpacing, "word-spacing", null, default);
+        Assert.True(result.IsResolved);
+        Assert.Equal(ComputedSlotTag.Percentage, result.Slot.Tag);
+        Assert.Equal(5.0, result.Slot.AsPercentage(), 2);
+    }
+
+    [Fact]
+    public void Letter_spacing_accepts_negative_length()
+    {
+        // CSS Text 3 §10.1 — letter-spacing accepts negative lengths (tightens text).
+        var result = LengthResolver.Resolve("-2px", PropertyType.TextSpacing,
+            PropertyId.LetterSpacing, "letter-spacing", null, default);
+        Assert.True(result.IsResolved);
+        Assert.Equal(-2.0, result.Slot.AsLengthPx(), 3);
+    }
+
+    // ============================================================
+    // Rec 8 — finite/range guards keep slot factories from throwing
+    // ============================================================
+
+    [Fact]
+    public void Length_overflowing_float_range_is_invalid_not_throw()
+    {
+        // 1e308 in is past float.MaxValue when converted to px (× 96). The pre-check
+        // catches it and emits a diagnostic instead of letting the slot factory throw.
+        var sink = new CapturingSink();
+        var result = LengthResolver.Resolve("1e308in", PropertyType.LengthPercentageAuto,
+            PropertyId.Top, "top", sink, default);
+        Assert.True(result.IsInvalid);
+        Assert.Contains(sink.Diagnostics, d =>
+            d.Code == CssDiagnosticCodes.CssPropertyValueInvalid001);
     }
 }

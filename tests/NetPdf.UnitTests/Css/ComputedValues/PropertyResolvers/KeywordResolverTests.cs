@@ -24,16 +24,17 @@ public sealed class KeywordResolverTests
 
     private static void AssertResolves(string keyword, PropertyId pid)
     {
-        var slot = KeywordResolver.Resolve(keyword, pid, pid.ToString(), null, default);
-        Assert.Equal(ComputedSlotTag.Keyword, slot.Tag);
-        Assert.True(slot.AsKeyword() >= 0);
+        var result = KeywordResolver.Resolve(keyword, pid, pid.ToString(), null, default);
+        Assert.True(result.IsResolved);
+        Assert.Equal(ComputedSlotTag.Keyword, result.Slot.Tag);
+        Assert.True(result.Slot.AsKeyword() >= 0);
     }
 
     private static void AssertInvalid(string keyword, PropertyId pid)
     {
         var sink = new CapturingSink();
-        var slot = KeywordResolver.Resolve(keyword, pid, pid.ToString(), sink, default);
-        Assert.Equal(ComputedSlot.Unset, slot);
+        var result = KeywordResolver.Resolve(keyword, pid, pid.ToString(), sink, default);
+        Assert.True(result.IsInvalid);
         Assert.Single(sink.Diagnostics);
         Assert.Equal(CssDiagnosticCodes.CssPropertyValueInvalid001, sink.Diagnostics[0].Code);
     }
@@ -63,8 +64,6 @@ public sealed class KeywordResolverTests
     [Fact]
     public void TryGetId_returns_dense_zero_based_ids()
     {
-        // The first entry of each table should be id 0; subsequent entries are 1, 2, ...
-        // — the contract that downstream consumers depend on for switch dispatch.
         Assert.True(KeywordResolver.TryGetId(PropertyId.BoxSizing, "content-box", out var contentBoxId));
         Assert.Equal(0, contentBoxId);
         Assert.True(KeywordResolver.TryGetId(PropertyId.BoxSizing, "border-box", out var borderBoxId));
@@ -72,15 +71,15 @@ public sealed class KeywordResolverTests
     }
 
     [Fact]
-    public void Property_with_no_table_returns_Unset_with_no_diagnostic()
+    public void Property_with_no_table_defers_with_raw_text()
     {
-        // Synthetic test: the dispatch normally never asks the keyword resolver for a
-        // non-keyword-typed property, but if it does, behavior is benign (Unset, no
-        // diagnostic) since cycle 1 explicitly leaves room for cycle 2 additions.
+        // Per Rec 1: a Keyword-typed property with no table registered yet should
+        // defer (carry raw text for cycle-2 re-resolution), NOT return Invalid.
+        // FontWeight isn't a Keyword PropertyType so its table isn't registered.
         var sink = new CapturingSink();
-        // FontWeight is not a Keyword PropertyType, so its table isn't registered here.
-        var slot = KeywordResolver.Resolve("bold", PropertyId.FontWeight, "font-weight", sink, default);
-        Assert.Equal(ComputedSlot.Unset, slot);
+        var result = KeywordResolver.Resolve("bold", PropertyId.FontWeight, "font-weight", sink, default);
+        Assert.True(result.IsDeferred);
+        Assert.Equal("bold", result.RawText);
         Assert.Empty(sink.Diagnostics);
     }
 }

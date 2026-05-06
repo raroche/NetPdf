@@ -36,7 +36,7 @@ namespace NetPdf.Css.ComputedValues.PropertyResolvers;
 /// </remarks>
 internal static class KeywordResolver
 {
-    public static ComputedSlot Resolve(
+    public static ResolverResult Resolve(
         string value,
         PropertyId propertyId,
         string propertyName,
@@ -45,20 +45,20 @@ internal static class KeywordResolver
     {
         if (!Tables.TryGetValue(propertyId, out var table))
         {
-            // No table registered yet for this Keyword-typed property — treat as
-            // out-of-scope rather than invalid. Cycle 2 fills any gaps; until then
-            // the cascade falls back to the declared default per properties.json.
-            return ComputedSlot.Unset;
+            // No table registered for this Keyword-typed property — defer to a later
+            // cycle. Carry the raw text so a future resolver can pick up where we
+            // left off without having to re-cascade.
+            return ResolverResult.Deferred(value);
         }
         if (table.TryGetValue(value.ToLowerInvariant(), out var id))
-            return ComputedSlot.FromKeyword(id);
+            return ResolverResult.Resolved(ComputedSlot.FromKeyword(id));
 
         diagnostics?.Emit(new CssDiagnostic(
             CssDiagnosticCodes.CssPropertyValueInvalid001,
             $"'{propertyName}: {value}' — '{value}' is not an admitted keyword for this property.",
             CssDiagnosticSeverity.Warning,
             location));
-        return ComputedSlot.Unset;
+        return ResolverResult.Invalid();
     }
 
     /// <summary>Try to look up a keyword id without dispatching through the resolver

@@ -18,51 +18,46 @@ namespace NetPdf.Css.ComputedValues.PropertyResolvers;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Reduces</b>: absolute lengths (<c>px</c>, <c>in</c>, <c>cm</c>, <c>mm</c>,
+/// <b>Resolved</b>: absolute lengths (<c>px</c>, <c>in</c>, <c>cm</c>, <c>mm</c>,
 /// <c>pt</c>, <c>pc</c>, <c>q</c>) into pixels per the CSS Values L4 §6.1
-/// conversion table; percentages into a fixed-point payload via
-/// <see cref="ComputedSlot.FromPercentage"/>; the unitless zero (<c>0</c> alone is a
-/// valid length per §6.2). Type-specific keywords reduce to per-property keyword ids:
-/// <c>auto</c> for <see cref="PropertyType.LengthPercentageAuto"/>,
+/// conversion table; percentages into a fixed-point payload; the unitless zero
+/// (<c>0</c> alone is a valid length per §6.2). Type-specific keywords reduce to
+/// per-property keyword ids: <c>auto</c> for <see cref="PropertyType.LengthPercentageAuto"/>,
 /// <c>normal</c> for <see cref="PropertyType.TextSpacing"/>.
 /// </para>
 /// <para>
-/// <b>Defers</b>: font-relative units (<c>em</c>, <c>rem</c>, <c>ch</c>, <c>ex</c>,
-/// <c>lh</c>, <c>rlh</c>, <c>cap</c>, <c>ic</c>), viewport-relative units
+/// <b>Deferred</b> (returns <see cref="ResolverResult.Deferred"/> with the original
+/// text — no diagnostic): font-relative units (<c>em</c>, <c>rem</c>, <c>ch</c>,
+/// <c>ex</c>, <c>lh</c>, <c>rlh</c>, <c>cap</c>, <c>ic</c>), viewport-relative units
 /// (<c>vw</c>/<c>vh</c>/<c>svw</c>/<c>lvw</c>/<c>dvw</c>/<c>vmin</c>/<c>vmax</c>/etc.),
-/// and container-relative units (<c>cqw</c>/<c>cqh</c>/<c>cqi</c>/<c>cqb</c>/<c>cqmin</c>/<c>cqmax</c>).
-/// These need a per-element font/viewport/container context that the cascade stage
-/// doesn't have — Phase 3 layout finalizes them. Returns <see cref="ComputedSlot.Unset"/>
-/// with no diagnostic; the post-cascade pipeline carries the original text alongside
-/// the slot for later resolution.
+/// container-relative units (<c>cqw</c>/<c>cqh</c>/<c>cqi</c>/<c>cqb</c>/<c>cqmin</c>/<c>cqmax</c>).
+/// These need a per-element font / viewport / container context that the cascade
+/// stage doesn't have — Phase 3 layout finalizes them.
 /// </para>
 /// <para>
-/// <b>Rejects</b> (emits <see cref="CssDiagnosticCodes.CssPropertyValueInvalid001"/>):
-/// unrecognized units, missing units (e.g., <c>width: 16</c> — non-zero requires a
-/// unit per §6.2), garbled numerics, percentages on properties whose type doesn't
-/// admit them, <c>auto</c> on properties that don't admit it.
-/// </para>
-/// <para>
-/// <b>v1 keyword IDs.</b> The dimension family currently uses two keyword ids:
-/// <c>auto = 0</c>, <c>normal = 0</c>, <c>none = 0</c>. Each property's spec admits
-/// only one, so the namespace doesn't collide. Cycle 2 will introduce a per-property
-/// keyword table for richer enums (e.g., <c>display</c>, <c>position</c>) — those
-/// land with <see cref="KeywordResolver"/> proper.
+/// <b>Invalid</b> (returns <see cref="ResolverResult.Invalid"/> + emits
+/// <see cref="CssDiagnosticCodes.CssPropertyValueInvalid001"/>): unrecognized units,
+/// missing units (e.g., <c>width: 16</c> — non-zero requires a unit per §6.2),
+/// garbled numerics, percentages on properties whose type doesn't admit them
+/// (e.g., <c>letter-spacing: 50%</c>), <c>auto</c> on properties that don't admit
+/// it, <c>letter-spacing: 50%</c> (CSS Text 3 §10.1 — letter-spacing accepts only
+/// <c>normal | &lt;length&gt;</c>; word-spacing accepts <c>&lt;length-percentage&gt;</c>),
+/// negative values for spec-disallowed properties per
+/// <see cref="NonNegativeProperties"/>, NaN/±Infinity from upstream calc reductions.
 /// </para>
 /// </remarks>
 internal static class LengthResolver
 {
     /// <summary>The single keyword id used by the dimension family for the property's
     /// admitted keyword (<c>auto</c>, <c>normal</c>, or <c>none</c>). v1 uses one id
-    /// per property since only one keyword applies; the property's
-    /// <see cref="PropertyMeta.Type"/> tells the consumer which keyword the id means.</summary>
+    /// per property since only one keyword applies.</summary>
     public const int KeywordIdAuto = 0;
     /// <inheritdoc cref="KeywordIdAuto"/>
     public const int KeywordIdNormal = 0;
     /// <inheritdoc cref="KeywordIdAuto"/>
     public const int KeywordIdNone = 0;
 
-    public static ComputedSlot Resolve(
+    public static ResolverResult Resolve(
         string value,
         PropertyType type,
         PropertyId propertyId,
@@ -73,56 +68,88 @@ internal static class LengthResolver
         // Type-specific keywords first — cheaper than a numeric parse and the keyword
         // forms are far more common (e.g., the auto / normal / none defaults).
         if (TryMatchKeyword(value, type, out var keywordSlot))
-            return keywordSlot;
+            return ResolverResult.Resolved(keywordSlot);
 
-        // Numeric path: decompose into (number, unit). The unit is what determines
-        // whether we reduce, defer, or reject. Empty unit + non-zero number is
-        // invalid per CSS Values L4 §6.2; empty unit with the literal `0` is fine.
+        // Numeric path: decompose into (number, unit).
         if (!TrySplitNumberAndUnit(value, out var number, out var unit))
         {
-            EmitInvalid(diagnostics, propertyName, value, "expected a length, percentage, or admitted keyword", location);
-            return ComputedSlot.Unset;
+            EmitInvalid(diagnostics, propertyName, value,
+                "expected a length, percentage, or admitted keyword", location);
+            return ResolverResult.Invalid();
+        }
+
+        // Pre-validate: NaN / Infinity from upstream (calc reductions, scientific
+        // notation overflow) lands here. Reject on the diagnostic path BEFORE the
+        // slot factory's defensive throw fires.
+        if (!double.IsFinite(number))
+        {
+            EmitInvalid(diagnostics, propertyName, value,
+                $"numeric value is not finite ({number})", location);
+            return ResolverResult.Invalid();
         }
 
         // Bare number — only legal when it's exactly zero (CSS Values L4 §6.2).
         if (unit.Length == 0)
         {
-            if (number == 0.0) return ComputedSlot.FromLengthPx(0.0);
-            EmitInvalid(diagnostics, propertyName, value, "non-zero numeric requires a unit", location);
-            return ComputedSlot.Unset;
+            if (number == 0.0) return ResolverResult.Resolved(ComputedSlot.FromLengthPx(0.0));
+            EmitInvalid(diagnostics, propertyName, value,
+                "non-zero numeric requires a unit", location);
+            return ResolverResult.Invalid();
         }
 
-        // Percentage handling: only LengthPercentage / LengthPercentageAuto / Percentage
-        // / TextSpacing accept it. (Length proper rejects.)
+        // Percentage handling — the per-PropertyType + per-PropertyId acceptance grid.
         if (unit == "%")
         {
-            if (type is PropertyType.Length)
+            if (!IsPercentageAllowed(type, propertyId, out var rejectionReason))
             {
-                EmitInvalid(diagnostics, propertyName, value, "percentage is not allowed for this property", location);
-                return ComputedSlot.Unset;
+                EmitInvalid(diagnostics, propertyName, value, rejectionReason, location);
+                return ResolverResult.Invalid();
             }
             if (number < ComputedSlot.MinFixedPercentage || number > ComputedSlot.MaxFixedPercentage)
             {
                 EmitInvalid(diagnostics, propertyName, value,
                     $"percentage out of representable range [{ComputedSlot.MinFixedPercentage}, {ComputedSlot.MaxFixedPercentage}]",
                     location);
-                return ComputedSlot.Unset;
+                return ResolverResult.Invalid();
             }
-            return ComputedSlot.FromPercentage(number);
+            // Negative-value gate (e.g., padding rejects negative percentages).
+            if (number < 0 && NonNegativeProperties.IsRequired(propertyId))
+            {
+                EmitInvalid(diagnostics, propertyName, value,
+                    "negative value not allowed for this property", location);
+                return ResolverResult.Invalid();
+            }
+            return ResolverResult.Resolved(ComputedSlot.FromPercentage(number));
         }
 
         // Absolute lengths fold to px per CSS Values L4 §6.1.
         if (TryAbsoluteUnitToPx(unit, number, out var px))
-            return ComputedSlot.FromLengthPx(px);
+        {
+            // Defensive: even with finite operands, an extreme conversion could overflow
+            // float32. Catch it here on the diagnostic path.
+            if (!double.IsFinite(px) || px > float.MaxValue || px < float.MinValue)
+            {
+                EmitInvalid(diagnostics, propertyName, value,
+                    "length overflows representable px range", location);
+                return ResolverResult.Invalid();
+            }
+            if (px < 0 && NonNegativeProperties.IsRequired(propertyId))
+            {
+                EmitInvalid(diagnostics, propertyName, value,
+                    "negative length not allowed for this property", location);
+                return ResolverResult.Invalid();
+            }
+            return ResolverResult.Resolved(ComputedSlot.FromLengthPx(px));
+        }
 
         // Font/viewport/container-relative units: defer for Phase 3.
-        // Returning Unset with no diagnostic signals "valid but not yet resolvable" —
-        // the post-cascade pipeline keeps the original text for finalization.
+        // The post-cascade pipeline carries the original text via
+        // ResolverResult.RawText so it can be re-resolved with full context.
         if (IsDeferredUnit(unit))
-            return ComputedSlot.Unset;
+            return ResolverResult.Deferred(value);
 
         EmitInvalid(diagnostics, propertyName, value, $"unknown unit '{unit}'", location);
-        return ComputedSlot.Unset;
+        return ResolverResult.Invalid();
     }
 
     private static bool TryMatchKeyword(string value, PropertyType type, out ComputedSlot slot)
@@ -138,9 +165,34 @@ internal static class LengthResolver
             slot = ComputedSlot.FromKeyword(KeywordIdNormal);
             return true;
         }
-        // PropertyType.MaxSize ('max-width: none') would land here in cycle 2 — for now
-        // it's not in the dispatch's switch, so we don't handle it.
         return false;
+    }
+
+    /// <summary>Per-PropertyType + per-PropertyId percentage acceptance gate. CSS
+    /// Text 3 §10.1 splits the TextSpacing family: <c>letter-spacing</c> accepts only
+    /// <c>normal | &lt;length&gt;</c> (no percentage); <c>word-spacing</c> accepts
+    /// <c>normal | &lt;length-percentage&gt;</c>. Length-only rejects all percentages.
+    /// LengthPercentage / LengthPercentageAuto / Percentage / WordSpacing accept.</summary>
+    private static bool IsPercentageAllowed(PropertyType type, PropertyId propertyId, out string reason)
+    {
+        reason = string.Empty;
+        switch (type)
+        {
+            case PropertyType.Length:
+                reason = "percentage is not allowed for this property (Length-only)";
+                return false;
+            case PropertyType.TextSpacing when propertyId == PropertyId.LetterSpacing:
+                reason = "percentage is not allowed for letter-spacing per CSS Text 3 §10.1 (use a length)";
+                return false;
+            case PropertyType.LengthPercentage:
+            case PropertyType.LengthPercentageAuto:
+            case PropertyType.Percentage:
+            case PropertyType.TextSpacing: // word-spacing falls through here
+                return true;
+            default:
+                reason = "percentage is not allowed for this property";
+                return false;
+        }
     }
 
     /// <summary>Splits a CSS dimension into number + unit. Accepts optional sign,
@@ -171,20 +223,14 @@ internal static class LengthResolver
         }
         if (digitsBeforeDot == 0 && digitsAfterDot == 0) return false;
 
-        // Optional exponent (CSS does accept scientific notation in <number>; we
-        // require at least one digit after e/E with optional sign).
+        // Optional exponent — `2em` trap guard: only consume `e` as exponent when
+        // followed by an optional sign + at least one digit. Otherwise treat `e` as
+        // the start of the unit identifier.
         if (i < span.Length && (span[i] == 'e' || span[i] == 'E'))
         {
-            // But guard against the `2em` trap — only consume `e` as exponent when
-            // followed by an optional sign + at least one digit. Otherwise treat
-            // `e` as the start of the unit identifier.
             var lookahead = i + 1;
-            var sawSign = false;
             if (lookahead < span.Length && (span[lookahead] == '+' || span[lookahead] == '-'))
-            {
-                sawSign = true;
                 lookahead++;
-            }
             var sawExpDigit = false;
             while (lookahead < span.Length && IsAsciiDigit(span[lookahead]))
             {
@@ -192,7 +238,6 @@ internal static class LengthResolver
                 lookahead++;
             }
             if (sawExpDigit) i = lookahead;
-            else _ = sawSign; // discard — unit lexing will pick up `em`/`ex`/etc.
         }
 
         var numText = span[..i];
@@ -200,8 +245,6 @@ internal static class LengthResolver
             return false;
 
         unit = span[i..].ToString();
-        // Unit must be ASCII letters or `%`. Reject anything else (e.g., `16xpx`
-        // would have nonsense after the digits — but `1px` lower-cases cleanly).
         if (unit.Length > 0 && unit != "%")
         {
             for (var k = 0; k < unit.Length; k++)

@@ -72,6 +72,15 @@ internal readonly struct ComputedSlot : IEquatable<ComputedSlot>
     /// <summary>Decode the RGBA color. Caller must verify <see cref="Tag"/> first.</summary>
     public uint AsColor() => _u32;
 
+    /// <summary>The <c>currentcolor</c> sentinel. The paint stage substitutes the
+    /// cascaded <c>color</c> value when it sees this slot. Distinct tag (not a packed
+    /// argb sentinel) so a user color like <c>rgba(0, 0, 1, 0)</c> can never collide
+    /// with the keyword.</summary>
+    public static ComputedSlot CurrentColor => new(PackTag(ComputedSlotTag.CurrentColor));
+
+    /// <summary><see langword="true"/> when the slot is the <c>currentcolor</c> sentinel.</summary>
+    public bool IsCurrentColor => Tag == ComputedSlotTag.CurrentColor;
+
     /// <summary>Encode an absolute length in pixels. Rejects NaN and ±Infinity — those
     /// are programming errors, not legitimate computed values.</summary>
     /// <exception cref="ArgumentException">When <paramref name="pixels"/> is NaN or
@@ -261,4 +270,9 @@ internal enum ComputedSlotTag : byte
     /// Distinct from <see cref="Integer"/> (which is signed int32) and
     /// <see cref="LengthPx"/> (which carries dimensional intent).</summary>
     Number = 8,
+    /// <summary>The <c>currentcolor</c> sentinel — payload bytes are unused. The
+    /// paint stage substitutes the cascaded <c>color</c> value when it sees this
+    /// tag. A dedicated tag (not a packed argb pattern) prevents collision with any
+    /// user-authored color value.</summary>
+    CurrentColor = 9,
 }

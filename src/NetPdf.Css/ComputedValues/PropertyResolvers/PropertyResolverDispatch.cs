@@ -10,36 +10,30 @@ namespace NetPdf.Css.ComputedValues.PropertyResolvers;
 
 /// <summary>
 /// Single entry point for converting one property's resolved value text (post-<c>var()</c>
-/// substitution + post-<c>calc()</c> reduction) into a typed <see cref="ComputedSlot"/>.
-/// Dispatches to a per-<see cref="PropertyType"/> resolver. The cycle-1 surface covers the
-/// four highest-impact families: length / color / number / keyword.
+/// substitution + post-<c>calc()</c> reduction) into a <see cref="ResolverResult"/>.
+/// Dispatches to a per-<see cref="PropertyType"/> resolver. The cycle-1 surface covers
+/// the four highest-impact families: length / color / number / keyword.
 /// </summary>
 /// <remarks>
 /// <para>
 /// <b>Pipeline position.</b> Runs after <c>VarResolver</c> (Task 8) +
-/// <c>CalcResolver</c> (Task 9). The input is the post-resolution value text from
-/// <c>ResolvedDeclaration.ResolvedValue</c>; the output is the typed slot the
-/// <c>BoxBuilder</c> (Task 12) writes into a per-element <see cref="ComputedStyle"/>.
+/// <c>CalcResolver</c> (Task 9). Output is a structured <see cref="ResolverResult"/>
+/// — see its docs for the three-way Resolved / Deferred / Invalid contract.
 /// </para>
 /// <para>
-/// <b>Failure shape.</b> When the value text cannot be parsed into the property's
-/// type, the resolver emits <see cref="CssDiagnosticCodes.CssPropertyValueInvalid001"/>
-/// (Warning) and returns <see cref="ComputedSlot.Unset"/>. The cascade-level "invalid
-/// at computed value time" rule then applies — the property's initial value (or
-/// inherited value for inherited properties) is used by downstream stages.
-/// </para>
-/// <para>
-/// <b>Cycle 1 deferred surface.</b> Property types not yet wired return
-/// <see cref="ComputedSlot.Unset"/> with no diagnostic — they're intentionally
-/// out-of-scope, not invalid. Cycle 2 will add: <c>FontFamilyList</c>,
-/// <c>FontWeight</c>, <c>FontSize</c>, <c>LineHeight</c>, <c>LineWidth</c>,
-/// <c>FlexBasis</c>, <c>VerticalAlign</c>, <c>Content</c>, <c>Url</c>, <c>String</c>,
-/// <c>Time</c>, <c>Angle</c>, <c>Resolution</c>.
+/// <b>Cycle 2 deferred PropertyTypes.</b> Property types not yet wired return
+/// <see cref="ResolverResult.Deferred"/> (carrying the raw text for re-resolution),
+/// not <see cref="ResolverResult.Invalid"/>. The distinction matters: deferred
+/// values are valid CSS that simply need a downstream parser; invalid values
+/// trigger the cascade's "fall back to initial / inherited" rule. Cycle 2 will
+/// add: <c>FontFamilyList</c>, <c>FontWeight</c>, <c>FontSize</c>, <c>LineHeight</c>,
+/// <c>LineWidth</c>, <c>FlexBasis</c>, <c>VerticalAlign</c>, <c>Content</c>,
+/// <c>Url</c>, <c>String</c>, <c>Time</c>, <c>Angle</c>, <c>Resolution</c>.
 /// </para>
 /// </remarks>
 internal static class PropertyResolverDispatch
 {
-    /// <summary>Resolve <paramref name="resolvedValue"/> into a typed slot for
+    /// <summary>Resolve <paramref name="resolvedValue"/> into a typed result for
     /// the property identified by <paramref name="propertyId"/>.</summary>
     /// <param name="propertyId">The property whose value is being resolved — drives
     /// the dispatch via its <see cref="PropertyMeta.Type"/>.</param>
@@ -47,9 +41,9 @@ internal static class PropertyResolverDispatch
     /// text. Whitespace at the edges is tolerated.</param>
     /// <param name="diagnostics">Sink for parse failures. <see langword="null"/> is
     /// allowed — failures are still observable through the returned
-    /// <see cref="ComputedSlot.Unset"/>.</param>
+    /// <see cref="ResolverResult.State"/>.</param>
     /// <param name="location">Source location attached to any emitted diagnostic.</param>
-    public static ComputedSlot Resolve(
+    public static ResolverResult Resolve(
         PropertyId propertyId,
         string resolvedValue,
         ICssDiagnosticsSink? diagnostics = null,
@@ -58,11 +52,21 @@ internal static class PropertyResolverDispatch
         ArgumentNullException.ThrowIfNull(resolvedValue);
 
         var idx = (int)propertyId;
-        if (idx < 0 || idx >= PropertyMetadata.Count) return ComputedSlot.Unset;
+        if (idx < 0 || idx >= PropertyMetadata.Count)
+        {
+            // Unknown PropertyId — nothing to do. Treat as Invalid (the cascade
+            // shouldn't have given us this in the first place).
+            return ResolverResult.Invalid();
+        }
 
         var meta = PropertyMetadata.Table[idx];
         var trimmed = resolvedValue.AsSpan().Trim().ToString();
-        if (trimmed.Length == 0) return ComputedSlot.Unset;
+        if (trimmed.Length == 0)
+        {
+            // Empty value text → Invalid (CSS treats empty declaration values as
+            // parse errors that the cascade discards).
+            return ResolverResult.Invalid();
+        }
 
         return meta.Type switch
         {
@@ -70,15 +74,13 @@ internal static class PropertyResolverDispatch
                 trimmed, propertyId, meta.Name, diagnostics, location),
 
             // The dimension family — all five share LengthResolver's parser, with
-            // per-type acceptance rules (auto / none / normal / percentage).
-            PropertyType.Length => LengthResolver.Resolve(
-                trimmed, meta.Type, propertyId, meta.Name, diagnostics, location),
-            PropertyType.LengthPercentage => LengthResolver.Resolve(
-                trimmed, meta.Type, propertyId, meta.Name, diagnostics, location),
-            PropertyType.LengthPercentageAuto => LengthResolver.Resolve(
-                trimmed, meta.Type, propertyId, meta.Name, diagnostics, location),
-            PropertyType.Percentage => LengthResolver.Resolve(
-                trimmed, meta.Type, propertyId, meta.Name, diagnostics, location),
+            // per-type acceptance rules (auto / none / normal / percentage) plus
+            // per-PropertyId rules (letter-spacing rejects %, padding/width/etc.
+            // reject negatives).
+            PropertyType.Length or
+            PropertyType.LengthPercentage or
+            PropertyType.LengthPercentageAuto or
+            PropertyType.Percentage or
             PropertyType.TextSpacing => LengthResolver.Resolve(
                 trimmed, meta.Type, propertyId, meta.Name, diagnostics, location),
 
@@ -90,11 +92,9 @@ internal static class PropertyResolverDispatch
             PropertyType.Keyword => KeywordResolver.Resolve(
                 trimmed, propertyId, meta.Name, diagnostics, location),
 
-            // Cycle 1 deliberately leaves the specialized union types unresolved.
-            // Cycle 2 will wire each one. Returning Unset (no diagnostic) lets the
-            // cascade fall through to initial / inherited as the spec requires for
-            // missing computed values.
-            _ => ComputedSlot.Unset,
+            // Cycle 2 deferred PropertyTypes — return Deferred so the cascade carries
+            // the raw text forward instead of treating valid CSS as parse failure.
+            _ => ResolverResult.Deferred(trimmed),
         };
     }
 }

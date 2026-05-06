@@ -11,12 +11,15 @@ namespace NetPdf.Css.ComputedValues.PropertyResolvers;
 /// <summary>
 /// Resolves CSS unitless numbers per CSS Values L4 §5: <see cref="PropertyType.Number"/>
 /// (any finite real, e.g., <c>flex-grow: 0.5</c>) and <see cref="PropertyType.Integer"/>
-/// (32-bit signed integer, e.g., <c>z-index: 5</c>). Both reject NaN/±Infinity/scientific
-/// notation that overflows the target storage; both reject anything with a unit suffix.
+/// (32-bit signed integer, e.g., <c>z-index: 5</c>). Both reject NaN/±Infinity, both
+/// reject anything with a unit suffix, both reject scientific notation that overflows
+/// the target storage. Per-property non-negativity per
+/// <see cref="NonNegativeProperties"/> (e.g., <c>flex-grow</c> + <c>flex-shrink</c>
+/// must be ≥ 0 per CSS Flexbox 1 §7.1).
 /// </summary>
 internal static class NumberResolver
 {
-    public static ComputedSlot ResolveNumber(
+    public static ResolverResult ResolveNumber(
         string value,
         PropertyId propertyId,
         string propertyName,
@@ -24,31 +27,41 @@ internal static class NumberResolver
         CssSourceLocation location)
     {
         if (!double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out var n)
-            || double.IsNaN(n) || double.IsInfinity(n))
+            || !double.IsFinite(n))
         {
             Emit(diagnostics, propertyName, value,
                 "expected a unitless number (no unit suffix; finite real)", location);
-            return ComputedSlot.Unset;
+            return ResolverResult.Invalid();
         }
-        return ComputedSlot.FromNumber(n);
+        if (n < 0 && NonNegativeProperties.IsRequired(propertyId))
+        {
+            Emit(diagnostics, propertyName, value,
+                "negative value not allowed for this property", location);
+            return ResolverResult.Invalid();
+        }
+        return ResolverResult.Resolved(ComputedSlot.FromNumber(n));
     }
 
-    public static ComputedSlot ResolveInteger(
+    public static ResolverResult ResolveInteger(
         string value,
         PropertyId propertyId,
         string propertyName,
         ICssDiagnosticsSink? diagnostics,
         CssSourceLocation location)
     {
-        // CSS <integer> production allows a leading `+` or `-` plus ASCII digits.
-        // Reject decimal points and exponents — those land in <number>.
         if (!int.TryParse(value, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var n))
         {
             Emit(diagnostics, propertyName, value,
                 "expected a signed 32-bit integer (no unit, no decimal, no exponent)", location);
-            return ComputedSlot.Unset;
+            return ResolverResult.Invalid();
         }
-        return ComputedSlot.FromInteger(n);
+        if (n < 0 && NonNegativeProperties.IsRequired(propertyId))
+        {
+            Emit(diagnostics, propertyName, value,
+                "negative value not allowed for this property", location);
+            return ResolverResult.Invalid();
+        }
+        return ResolverResult.Resolved(ComputedSlot.FromInteger(n));
     }
 
     private static void Emit(

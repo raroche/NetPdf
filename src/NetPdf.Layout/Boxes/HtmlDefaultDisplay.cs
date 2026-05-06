@@ -59,6 +59,20 @@ internal static class HtmlDefaultDisplay
     {
         var dict = new Dictionary<string, string>(StringComparer.Ordinal)
         {
+            // Metadata-content elements per HTML "Rendering" §15.3.1 + §15.5.1
+            // — never produce visible boxes. Without these defaults BoxBuilder
+            // would emit `<title>Invoice</title>` text into the box tree and
+            // `<style>...</style>` rules as visible text content.
+            ["head"] = "none", ["title"] = "none", ["style"] = "none",
+            ["link"] = "none", ["meta"] = "none", ["template"] = "none",
+            ["script"] = "none",   // HtmlParsingHost strips these but defensive
+            ["base"] = "none", ["noscript"] = "none",
+            // Other non-rendering helpers per §15.5: <area> is interactive on
+            // image maps but never produces its own box; <param> is metadata
+            // for <object>; <source>/<track> are metadata for media elements.
+            ["area"] = "none", ["param"] = "none",
+            ["source"] = "none", ["track"] = "none",
+
             // Document structure — block.
             ["html"] = "block", ["body"] = "block",
 

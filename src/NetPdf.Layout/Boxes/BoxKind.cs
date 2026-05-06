@@ -209,4 +209,15 @@ internal enum BoxKind : byte
     /// produced by inline-formatting-context layout per Inline L3 §3. One per
     /// rendered line. Always anonymous.</summary>
     LineBox,
+
+    /// <summary>A forced line break — the box generated for <c>&lt;br&gt;</c>
+    /// per HTML "Rendering" §15.3.6, which UA stylesheets define as
+    /// <c>br { content: "\A"; white-space: pre-line }</c> (i.e., a hard
+    /// newline that the inline-formatting-context layout treats as a
+    /// mandatory break). Modeling it as its own kind rather than as an
+    /// empty <see cref="InlineBox"/> preserves the line-break semantics
+    /// for Phase 3 line layout — an empty inline would silently disappear
+    /// during line construction. Always inline-level + atomic from line
+    /// layout's view.</summary>
+    LineBreak,
 }

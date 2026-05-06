@@ -326,13 +326,16 @@ internal sealed class Box
     };
 
     /// <summary><see langword="true"/> when this box participates in an inline
-    /// formatting context per Inline L3 §2 (atomic or non-atomic).</summary>
+    /// formatting context per Inline L3 §2 (atomic or non-atomic).
+    /// <see cref="BoxKind.LineBreak"/> counts as inline-level — it appears
+    /// inline alongside other inline content and just forces a line break.</summary>
     public bool IsInlineLevel => Kind switch
     {
         BoxKind.InlineBox or BoxKind.InlineBlockContainer
             or BoxKind.InlineFlexContainer or BoxKind.InlineGridContainer
             or BoxKind.InlineTable or BoxKind.InlineReplacedElement
-            or BoxKind.AnonymousInline or BoxKind.TextRun => true,
+            or BoxKind.AnonymousInline or BoxKind.TextRun
+            or BoxKind.LineBreak => true,
         _ => false,
     };
 

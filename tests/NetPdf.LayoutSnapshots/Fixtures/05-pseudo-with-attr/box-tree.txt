@@ -1,10 +1,6 @@
 Root
   BlockContainer @element=html
-    AnonymousBlock
-      TextRun @element=html "\n"
     BlockContainer @element=body
-      AnonymousBlock
-        TextRun @element=body "\n"
       BlockContainer @element=p
         InlineBox @element=p ::before
           TextRun @element=p "[WIDGET] "
@@ -12,4 +8,4 @@ Root
         InlineBox @element=p ::after
           TextRun @element=p "."
       AnonymousBlock
-        TextRun @element=body "\n\n"
+        TextRun @element=body "\n"

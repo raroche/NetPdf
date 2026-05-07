@@ -48,3 +48,9 @@ src/**/Generated/
 
 # Plan files (already external)
 plans/
+
+# macOS Finder / iCloud / Time Machine duplicate files (e.g., `Foo 2.cs`).
+# These should never enter the repo; Directory.Build.props also excludes
+# them from compilation as a second line of defense.
+* [0-9].*
+* 1[0-9].*

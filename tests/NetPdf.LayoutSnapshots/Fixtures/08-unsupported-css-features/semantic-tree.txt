@@ -1,0 +1,6 @@
+Document
+  Paragraph @element=p
+    InlineText "counter test"
+  Paragraph @element=p
+    InlineText "color test"
+  Image @element=img @alt="suppressed pseudo"

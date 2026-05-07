@@ -1,28 +1,18 @@
 Root
   BlockContainer @element=html
     BlockContainer @element=body
-      AnonymousBlock
-        TextRun @element=body "\n"
       BlockContainer @element=ol
-        AnonymousBlock
-          TextRun @element=ol "\n  "
         ListItem @element=li
           Marker @element=li ::marker
             TextRun @element=li "1. "
           TextRun @element=li "first"
-        AnonymousBlock
-          TextRun @element=ol "\n  "
         ListItem @element=li
           Marker @element=li ::marker
             TextRun @element=li "2. "
           TextRun @element=li "second"
-        AnonymousBlock
-          TextRun @element=ol "\n  "
         ListItem @element=li
           Marker @element=li ::marker
             TextRun @element=li "3. "
           TextRun @element=li "third"
-        AnonymousBlock
-          TextRun @element=ol "\n"
       AnonymousBlock
-        TextRun @element=body "\n\n"
+        TextRun @element=body "\n"

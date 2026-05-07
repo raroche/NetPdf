@@ -2,6 +2,9 @@ Root
   BlockContainer @element=html
     BlockContainer @element=body
       BlockContainer @element=p
-        TextRun @element=p "Hello world."
+        TextRun @element=p "counter test"
+      BlockContainer @element=p
+        TextRun @element=p "color test"
       AnonymousBlock
+        InlineReplacedElement @element=img
         TextRun @element=body "\n"

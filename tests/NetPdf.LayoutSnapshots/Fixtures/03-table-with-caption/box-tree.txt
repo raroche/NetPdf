@@ -1,8 +1,6 @@
 Root
   BlockContainer @element=html
     BlockContainer @element=body
-      AnonymousBlock
-        TextRun @element=body "\n"
       Table @element=table
         TableCaption @element=caption
           TextRun @element=caption "Quarterly results"
@@ -23,4 +21,4 @@ Root
               TableCell @element=td
                 TextRun @element=td "Total: 100"
       AnonymousBlock
-        TextRun @element=body "\n\n"
+        TextRun @element=body "\n"

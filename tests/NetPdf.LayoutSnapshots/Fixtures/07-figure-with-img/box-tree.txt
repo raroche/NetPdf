@@ -1,20 +1,12 @@
 Root
   BlockContainer @element=html
     BlockContainer @element=body
-      AnonymousBlock
-        TextRun @element=body "\n"
       BlockContainer @element=figure
         AnonymousBlock
-          TextRun @element=figure "\n  "
           InlineReplacedElement @element=img
-          TextRun @element=figure "\n  "
         BlockContainer @element=figcaption
           TextRun @element=figcaption "Quarterly revenue, Q3 2026"
-        AnonymousBlock
-          TextRun @element=figure "\n"
       AnonymousBlock
-        TextRun @element=body "\n"
+        InlineReplacedElement @element=img
         InlineReplacedElement @element=img
         TextRun @element=body "\n"
-        InlineReplacedElement @element=img
-        TextRun @element=body "\n\n"

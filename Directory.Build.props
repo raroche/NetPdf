@@ -106,4 +106,20 @@
     <None Include="$(MSBuildThisFileDirectory)THIRD-PARTY-NOTICES.md" Pack="true" PackagePath="\" Visible="false" />
   </ItemGroup>
 
+  <!--
+    Exclude macOS Finder / iCloud / Time Machine duplicate files (`Foo 2.cs`,
+    `Foo 3.cs`, etc.) from compilation. Without this, an accidental Finder
+    duplicate of any source file produces duplicate-type-definition compile
+    errors that can stall the entire build for a problem the developer didn't
+    intend. They're also added to `.gitignore` so they never enter version
+    control. The Remove items are scoped to `**/* [0-9].cs` so legitimate
+    files with trailing digits (`UAX29` etc.) aren't affected.
+  -->
+  <ItemGroup>
+    <Compile Remove="**/* [2-9].cs" />
+    <Compile Remove="**/* 1[0-9].cs" />
+    <None Remove="**/* [2-9].cs" />
+    <None Remove="**/* 1[0-9].cs" />
+  </ItemGroup>
+
 </Project>

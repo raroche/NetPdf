@@ -1,0 +1,11 @@
+Root
+  BlockContainer @element=html
+    AnonymousBlock
+      TextRun @element=html "\n"
+    BlockContainer @element=body
+      AnonymousBlock
+        TextRun @element=body "\n"
+      BlockContainer @element=p
+        TextRun @element=p "spacing test"
+      AnonymousBlock
+        TextRun @element=body "\n\n"

@@ -1,0 +1,6 @@
+Document
+  Article @element=article
+    Heading1 @element=h1
+      InlineText "visible heading"
+    Paragraph @element=p
+      InlineText "visible body"

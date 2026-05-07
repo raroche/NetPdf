@@ -9,8 +9,16 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\NetPdf\NetPdf.csproj" />
+    <ProjectReference Include="..\..\src\NetPdf.Css\NetPdf.Css.csproj" />
     <ProjectReference Include="..\..\src\NetPdf.Layout\NetPdf.Layout.csproj" />
     <ProjectReference Include="..\NetPdf.TestKit\NetPdf.TestKit.csproj" />
+  </ItemGroup>
+
+  <!-- Copy the snapshot fixtures next to the test binary so the test driver
+       can locate them at runtime in both IDE + CI runs. The fixtures are the
+       golden source of truth — committed alongside the .cs files. -->
+  <ItemGroup>
+    <None Include="Fixtures\**\*.*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

@@ -1,0 +1,8 @@
+Document
+  List @element=ol
+    ListItem @element=li
+      InlineText "first"
+    ListItem @element=li
+      InlineText "second"
+    ListItem @element=li
+      InlineText "third"

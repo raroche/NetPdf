@@ -490,6 +490,14 @@ internal static class CalcResolver
             var numText = _text[start.._pos];
             if (!double.TryParse(numText, NumberStyles.Float, CultureInfo.InvariantCulture, out var n))
                 throw new CalcParseException($"could not parse number '{numText}'");
+            // Per Phase 2 deep review Rec 5 — reject parsed numbers that
+            // overflow to ±Infinity or are NaN (e.g., `calc(1e500 * 1px)`).
+            // Without this, the value silently propagated into the resolver
+            // and the rewritten CSS text would carry the literal "Infinity"
+            // or "NaN" instead of firing CSS-CALC-INVALID-001 like other
+            // syntax errors do.
+            if (!double.IsFinite(n))
+                throw new CalcParseException($"number '{numText}' is not finite");
             // Read unit suffix (letters / %).
             var unitStart = _pos;
             while (_pos < _text.Length && (IsLetter(_text[_pos]) || _text[_pos] == '%')) _pos++;
@@ -558,28 +566,28 @@ internal static class CalcResolver
     private static CalcValue Add(CalcValue a, CalcValue b)
     {
         if (a.Unit == CalcUnit.Number && b.Unit == CalcUnit.Number)
-            return new CalcValue(a.Magnitude + b.Magnitude, CalcUnit.Number);
+            return Finite(a.Magnitude + b.Magnitude, CalcUnit.Number, "addition overflowed");
         if (a.Unit != b.Unit) throw new CalcDeferredException();
-        return new CalcValue(a.Magnitude + b.Magnitude, a.Unit);
+        return Finite(a.Magnitude + b.Magnitude, a.Unit, "addition overflowed");
     }
 
     private static CalcValue Subtract(CalcValue a, CalcValue b)
     {
         if (a.Unit == CalcUnit.Number && b.Unit == CalcUnit.Number)
-            return new CalcValue(a.Magnitude - b.Magnitude, CalcUnit.Number);
+            return Finite(a.Magnitude - b.Magnitude, CalcUnit.Number, "subtraction overflowed");
         if (a.Unit != b.Unit) throw new CalcDeferredException();
-        return new CalcValue(a.Magnitude - b.Magnitude, a.Unit);
+        return Finite(a.Magnitude - b.Magnitude, a.Unit, "subtraction overflowed");
     }
 
     private static CalcValue Multiply(CalcValue a, CalcValue b)
     {
         // Per L4 §10.4: multiplication requires AT LEAST ONE operand to be a number.
         if (a.Unit == CalcUnit.Number && b.Unit == CalcUnit.Number)
-            return new CalcValue(a.Magnitude * b.Magnitude, CalcUnit.Number);
+            return Finite(a.Magnitude * b.Magnitude, CalcUnit.Number, "multiplication overflowed");
         if (a.Unit == CalcUnit.Number)
-            return new CalcValue(a.Magnitude * b.Magnitude, b.Unit);
+            return Finite(a.Magnitude * b.Magnitude, b.Unit, "multiplication overflowed");
         if (b.Unit == CalcUnit.Number)
-            return new CalcValue(a.Magnitude * b.Magnitude, a.Unit);
+            return Finite(a.Magnitude * b.Magnitude, a.Unit, "multiplication overflowed");
         throw new CalcParseException("cannot multiply two dimensioned values");
     }
 
@@ -593,10 +601,24 @@ internal static class CalcResolver
         // throws — that produces a "ratio" type the spec allows but our typed-value
         // pipeline doesn't yet have a slot for.
         if (b.Unit == CalcUnit.Number)
-            return new CalcValue(a.Magnitude / b.Magnitude, a.Unit);
+            return Finite(a.Magnitude / b.Magnitude, a.Unit, "division overflowed");
         if (a.Unit == b.Unit)
-            return new CalcValue(a.Magnitude / b.Magnitude, CalcUnit.Number);
+            return Finite(a.Magnitude / b.Magnitude, CalcUnit.Number, "division overflowed");
         throw new CalcParseException("cannot divide values of incompatible types");
+    }
+
+    /// <summary>Per Phase 2 deep review Rec 5 — wrap every arithmetic result so
+    /// IEEE 754 overflow / underflow / NaN bubble up as <see cref="CalcParseException"/>
+    /// (which the outer <c>Resolve</c> catches + emits <c>CSS-CALC-INVALID-001</c>)
+    /// instead of producing a CalcValue that downstream stages would render as
+    /// the literal text "Infinity" / "NaN" in CSS. Catches both runaway parses
+    /// (huge exponents in literals) and runaway compositions
+    /// (<c>calc(1e150 * 1e150)</c>) at every binary op.</summary>
+    private static CalcValue Finite(double magnitude, CalcUnit unit, string reason)
+    {
+        if (!double.IsFinite(magnitude))
+            throw new CalcParseException($"{reason} to non-finite magnitude");
+        return new CalcValue(magnitude, unit);
     }
 
     /// <summary>Thrown when a math expression is syntactically invalid.</summary>

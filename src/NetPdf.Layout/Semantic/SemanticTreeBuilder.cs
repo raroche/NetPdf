@@ -82,7 +82,8 @@ internal static class SemanticTreeBuilder
     /// skipped (Task 15 review Rec 1). When omitted, only DOM-level
     /// hiding (the <c>hidden</c> attribute, <c>aria-hidden="true"</c>, and
     /// the metadata-content allowlist) excludes elements.</summary>
-    public static SemanticNode Build(IDocument document, ResolvedCascadeResult? cascade = null)
+    public static SemanticNode Build(IDocument document, ResolvedCascadeResult? cascade = null,
+        System.Threading.CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(document);
         var root = new SemanticNode(SemanticKind.Document);
@@ -92,7 +93,8 @@ internal static class SemanticTreeBuilder
         var ctx = new WalkContext(
             Cascade: cascade,
             PreserveWhitespace: false,
-            DropWhitespaceText: true);
+            DropWhitespaceText: true,
+            CancellationToken: cancellationToken);
         foreach (var node in WalkNode(document.DocumentElement, ctx))
         {
             root.AppendChild(node);
@@ -103,19 +105,24 @@ internal static class SemanticTreeBuilder
     /// <summary>Per-walk context — carries the optional cascade pointer, the
     /// whitespace-preservation flag (Task 15 review Rec 8) so descendants
     /// of <c>&lt;pre&gt;</c> / <c>&lt;code&gt;</c> render their text runs
-    /// raw, and the drop-whitespace flag so containers (sectioning, list,
+    /// raw, the drop-whitespace flag so containers (sectioning, list,
     /// table) suppress pure-indentation text between their structural
     /// children while text-leaf parents (paragraph, listitem, cell)
-    /// preserve word-boundary whitespace.</summary>
+    /// preserve word-boundary whitespace, and the cancellation token
+    /// (Phase 2 deep review Rec 6) so a hostile document stops the walk
+    /// promptly rather than running the full DOM pass before noticing
+    /// the stage boundary in <c>Phase2Pipeline</c>.</summary>
     private readonly record struct WalkContext(
         ResolvedCascadeResult? Cascade,
         bool PreserveWhitespace,
-        bool DropWhitespaceText);
+        bool DropWhitespaceText,
+        System.Threading.CancellationToken CancellationToken);
 
     /// <summary>Walk an arbitrary DOM node (element or text) + return the
     /// semantic node(s) it contributes.</summary>
     private static IReadOnlyList<SemanticNode> WalkNode(INode node, WalkContext ctx)
     {
+        ctx.CancellationToken.ThrowIfCancellationRequested();
         switch (node)
         {
             case IElement element:

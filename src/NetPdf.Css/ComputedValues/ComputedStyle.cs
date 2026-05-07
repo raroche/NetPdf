@@ -178,6 +178,20 @@ internal sealed class ComputedStyle : IDisposable
     /// has marked this style as owned.</summary>
     public bool IsBoxOwned => _isBoxOwned;
 
+    /// <summary>Per Phase 2 deep review Rec 7 — release the box-ownership claim
+    /// + return the instance to the pool. Called by the box-tree disposal sweep
+    /// (<c>Phase2Result.Dispose</c>) once the rendered tree is discarded.
+    /// Without this, every conversion leaks one <see cref="ComputedStyle"/> per
+    /// styled box / pseudo / fragment-pseudo to GC instead of recycling through
+    /// the pool — repeated conversions miss the fast path. Idempotent: a
+    /// double-release is safe.</summary>
+    public void ReleaseFromBox()
+    {
+        if (_disposed) return;
+        _isBoxOwned = false;
+        Dispose();
+    }
+
     /// <summary>
     /// Clears all slots, bitmap words, and the custom-property dictionary, and flips
     /// <see cref="_disposed"/> back to <see langword="false"/>. Called by <see cref="Rent"/>

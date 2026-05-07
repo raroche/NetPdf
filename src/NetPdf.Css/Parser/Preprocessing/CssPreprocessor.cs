@@ -390,7 +390,32 @@ internal static class CssPreprocessor
     /// CSS function (<c>oklch</c>, <c>oklab</c>, <c>color-mix</c>, <c>light-dark</c>).
     /// Returns recovered raw declarations to merge over AngleSharp's mishandled output.
     /// </summary>
-    private static ImmutableArray<CssDeclarationRecovery> ScanForModernDeclarations(string body)
+    /// <summary>Per Phase 2 deep review Rec 3 — exposed to <see cref="CssParserAdapter"/>
+    /// so inline <c>style="..."</c> attributes can be run through the same recovery
+    /// layer as <c>&lt;style&gt;</c> blocks. Without this, AngleSharp.Css 1.0.0-beta.144's
+    /// inline-style parser loses modern colors + multi-arg attr() before the typed
+    /// pipeline gets a chance to diagnose them.</summary>
+    internal static ImmutableArray<CssDeclarationRecovery> ScanForModernDeclarations(string body) =>
+        ScanDeclarations(body, modernOnly: true);
+
+    /// <summary>
+    /// Per Phase 2 deep review Rec 2 — parses every declaration in
+    /// <paramref name="body"/> regardless of whether it contains a modern
+    /// function. Used by <see cref="CssParserAdapter"/>'s opaque-rule
+    /// fallback when AngleSharp drops a style rule entirely (e.g.,
+    /// <c>li::marker { content: counter(items); color: red }</c> in
+    /// AngleSharp.Css 1.0.0-beta.144). Without this, the dropped rule's
+    /// declarations were lost — making <c>::marker</c> content/style
+    /// rules + their CSS-CONTENT-FUNCTION-UNSUPPORTED-001 diagnostic
+    /// unreachable through the production path.
+    /// </summary>
+    /// <remarks>The same scan logic as <see cref="ScanForModernDeclarations"/>
+    /// but emits every parsed declaration. Property name is lower-cased per
+    /// CSS Syntax §2 (case-insensitive).</remarks>
+    internal static ImmutableArray<CssDeclarationRecovery> ScanAllDeclarations(string body) =>
+        ScanDeclarations(body, modernOnly: false);
+
+    private static ImmutableArray<CssDeclarationRecovery> ScanDeclarations(string body, bool modernOnly)
     {
         if (string.IsNullOrWhiteSpace(body)) return ImmutableArray<CssDeclarationRecovery>.Empty;
 
@@ -430,7 +455,10 @@ internal static class CssPreprocessor
             // fallback)` to CssContentList — the diagnostic
             // CSS-ATTR-MULTI-ARG-UNSUPPORTED-001 would only fire on direct
             // unit-test calls.
-            if (ContainsModernValueFunction(rawValue) || ContainsMultiArgAttr(rawValue))
+            var include = modernOnly
+                ? ContainsModernValueFunction(rawValue) || ContainsMultiArgAttr(rawValue)
+                : !string.IsNullOrEmpty(rawValue);
+            if (include)
             {
                 var (cleanValue, isImportant) = ImportantParser.Strip(rawValue);
                 output.Add(new CssDeclarationRecovery(

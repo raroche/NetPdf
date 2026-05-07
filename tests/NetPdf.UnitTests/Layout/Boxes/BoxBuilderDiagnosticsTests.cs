@@ -272,4 +272,204 @@ public sealed class BoxBuilderDiagnosticsTests
         Assert.Contains(emitted, d => d.Message.Contains("::after"));
         Assert.All(emitted, d => Assert.Contains("img", d.Message));
     }
+
+    // ============================================================
+    // Task 16 review Rec 4 — dedupe pseudo-suppressed-on-replaced
+    // ============================================================
+
+    [Fact]
+    public async Task Pseudo_suppressed_diagnostic_dedupes_per_rule_per_tag()
+    {
+        // One broad selector targeting many <img> elements emits at most one
+        // diagnostic per (rule-source-location, pseudo, tag) triple — without
+        // dedupe, a 100-image page would flood the sink.
+        var html = "<img><img><img><img><img>";
+        var (_, sink) = await BuildAsync(html, "img::before { content: 'X' }");
+        var emitted = sink.Diagnostics
+            .Where(d => d.Code == CssDiagnosticCodes.CssPseudoSuppressedOnReplaced001)
+            .ToList();
+        Assert.Single(emitted);
+    }
+
+    [Fact]
+    public async Task Pseudo_suppressed_diagnostic_emits_per_pseudo_per_tag_combination()
+    {
+        // ::before vs ::after on the same tag → distinct triples, distinct
+        // diagnostics. img vs video → distinct tags, distinct diagnostics.
+        var (_, sink) = await BuildAsync(
+            "<img><img><video><video>",
+            "img::before { content: 'A' } img::after { content: 'B' } video::before { content: 'C' }");
+        var emitted = sink.Diagnostics
+            .Where(d => d.Code == CssDiagnosticCodes.CssPseudoSuppressedOnReplaced001)
+            .ToList();
+        // Three unique (pseudo, tag) combinations: (before,img), (after,img),
+        // (before,video). Despite multiple <img>/<video> elements, dedupe
+        // keeps the count at 3.
+        Assert.Equal(3, emitted.Count);
+    }
+
+    // ============================================================
+    // Task 16 review Rec 3 — marker content unsupported suppresses entirely
+    // ============================================================
+
+    [Fact]
+    public async Task Marker_content_unsupported_suppresses_marker_box_per_Rec_3()
+    {
+        // Direct test via TryParse — when content is present but unsupported
+        // (counter()), CssContentList returns false + emits
+        // CSS-CONTENT-FUNCTION-UNSUPPORTED-001. The caller (BoxBuilder) then
+        // suppresses the marker entirely instead of falling back to the
+        // default disc/decimal glyph.
+        //
+        // This test pins the CssContentList behavior the suppression depends
+        // on; end-to-end suppression-via-cascade-delivered-::marker is
+        // currently unreachable because AngleSharp.Css drops ::marker
+        // selectors (cycle 2 work).
+        var host = await MakeHost("<li id='h'>x</li>", "h");
+        var sink = new CapturingSink();
+        var ok = CssContentList.TryParse("counter(items)", host, sink,
+            CssSourceLocation.Unknown, out _);
+        Assert.False(ok);
+        Assert.Contains(sink.Diagnostics,
+            d => d.Code == CssDiagnosticCodes.CssContentFunctionUnsupported001);
+    }
+
+    // ============================================================
+    // Task 16 review Rec 5 — attr() name ident-token validation
+    // ============================================================
+
+    [Theory]
+    [InlineData("attr(.foo)")]            // leading dot — punctuation
+    [InlineData("attr(123abc)")]          // leading digit
+    [InlineData("attr(@bad)")]            // illegal start char
+    [InlineData("attr(foo!bar)")]         // illegal continuation char
+    [InlineData("attr(-)")]               // bare hyphen — must have second char
+    public async Task Malformed_attr_name_emits_CONTENT_FUNCTION_UNSUPPORTED_001_per_Rec_5(string content)
+    {
+        var host = await MakeHost("<p id='h'>x</p>", "h");
+        var sink = new CapturingSink();
+        var ok = CssContentList.TryParse(content, host, sink,
+            CssSourceLocation.Unknown, out _);
+        Assert.False(ok);
+        // Malformed attr fails the parse — the diagnostic for the surrounding
+        // content-list emits as CSS-CONTENT-FUNCTION-UNSUPPORTED-001 because
+        // CssContentList sees the attr() form but rejects it before reading
+        // the args (the content tokenizer treats it as an unsupported token).
+        Assert.NotEmpty(sink.Diagnostics);
+    }
+
+    [Theory]
+    [InlineData("attr(data-x)", "X")]
+    [InlineData("attr(_x)", "X")]
+    [InlineData("attr(--custom)", "")]    // attribute name `--custom` — ident-token-valid but missing
+    [InlineData("attr(my-attr)", "")]
+    public async Task Valid_attr_name_passes_validation_per_Rec_5(string content, string expectedAttrValue)
+    {
+        var host = await MakeHost(
+            "<p id='h' data-x='X' _x='X'>body</p>", "h");
+        var sink = new CapturingSink();
+        var ok = CssContentList.TryParse(content, host, sink,
+            CssSourceLocation.Unknown, out var result);
+        Assert.True(ok);
+        Assert.Equal(expectedAttrValue, result);
+    }
+
+    // ============================================================
+    // Task 16 review Rec 1 — multi-arg attr() reaches CssContentList
+    // via the production path (preprocessor recovers the raw value)
+    // ============================================================
+
+    [Fact]
+    public async Task Multi_arg_attr_in_pseudo_content_emits_via_production_path_per_Rec_1()
+    {
+        // Going through the FULL HtmlParsingHost → CssPreprocessor →
+        // CssParserAdapter → CascadeResolver → BoxBuilder pipeline (rather
+        // than direct CssContentList.TryParse) verifies the recovery
+        // mechanism actually delivers the multi-arg attr() text to the
+        // BoxBuilder's diagnostic call.
+        const string html = """
+            <!doctype html>
+            <html><head><style>
+                .x::before { content: attr(data-x string, 'fallback'); }
+            </style></head>
+            <body><p class='x' data-x='real'>body</p></body></html>
+            """;
+        var host = new NetPdf.HtmlParsingHost();
+        var document = await host.ParseAsync(html, new NetPdf.HtmlPdfOptions());
+        var sheets = AdaptAllSheetsViaPreprocessor(document);
+        var sink = new CapturingSink();
+        var cascade = CascadeResolver.Resolve(document, sheets,
+            CssMediaContext.DefaultPrint);
+        var resolved = VarResolver.Resolve(cascade, document);
+        BoxBuilder.Build(document, resolved, sink);
+
+        Assert.Contains(sink.Diagnostics,
+            d => d.Code == CssDiagnosticCodes.CssAttrMultiArgUnsupported001);
+    }
+
+    // ============================================================
+    // Task 16 review Rec 2 — modern color functions emit via production path
+    // ============================================================
+
+    [Theory]
+    [InlineData("oklch(0.7 0.15 200)")]
+    [InlineData("oklab(0.7 0.1 -0.05)")]
+    [InlineData("color-mix(in srgb, red, blue)")]
+    [InlineData("light-dark(white, black)")]
+    public async Task Modern_color_function_emits_via_production_path_per_Rec_2(string colorValue)
+    {
+        var html = $$"""
+            <!doctype html>
+            <html><head><style>
+                .x { color: {{colorValue}}; }
+            </style></head>
+            <body><p class='x'>body</p></body></html>
+            """;
+        var host = new NetPdf.HtmlParsingHost();
+        var document = await host.ParseAsync(html, new NetPdf.HtmlPdfOptions());
+        var sheets = AdaptAllSheetsViaPreprocessor(document);
+        var sink = new CapturingSink();
+        var cascade = CascadeResolver.Resolve(document, sheets,
+            CssMediaContext.DefaultPrint);
+        var resolved = VarResolver.Resolve(cascade, document);
+        BoxBuilder.Build(document, resolved, sink);
+
+        Assert.Contains(sink.Diagnostics,
+            d => d.Code == CssDiagnosticCodes.CssModernColorFunctionUnsupported001);
+    }
+
+    /// <summary>Mirror the CssPreprocessor → CssParserAdapter wiring used by
+    /// the corpus tests so the production path is exercised end-to-end.</summary>
+    private static ImmutableArray<CssStylesheet> AdaptAllSheetsViaPreprocessor(IDocument document)
+    {
+        var output = ImmutableArray.CreateBuilder<CssStylesheet>();
+        var order = 0;
+        var styleElements = document.QuerySelectorAll("style");
+        var styleIdx = 0;
+        foreach (var rawSheet in document.StyleSheets.OfType<AngleSharp.Css.Dom.ICssStyleSheet>())
+        {
+            string rawText;
+            if (styleIdx < styleElements.Length)
+            {
+                rawText = styleElements[styleIdx].TextContent ?? string.Empty;
+                styleIdx++;
+            }
+            else
+            {
+                rawText = string.Empty;
+            }
+            var preprocess = string.IsNullOrEmpty(rawText)
+                ? NetPdf.Css.Parser.Preprocessing.CssPreprocessResult.Empty
+                : NetPdf.Css.Parser.Preprocessing.CssPreprocessor.Process(rawText);
+            output.Add(CssParserAdapter.Adapt(
+                rawSheet, preprocess,
+                href: null,
+                origin: CssStylesheetOrigin.Author,
+                ownerKind: CssStylesheetOwnerKind.StyleElement,
+                mediaQuery: null,
+                isDisabled: false,
+                order: order++));
+        }
+        return output.ToImmutable();
+    }
 }

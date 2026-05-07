@@ -59,12 +59,14 @@ internal static class CssPreprocessor
     /// <summary>
     /// Modern CSS value functions whose authored text the preprocessor preserves verbatim
     /// because AngleSharp.Css mishandles them (<c>oklch</c> → bogus rgba; <c>color-mix</c>
-    /// / <c>light-dark</c> → empty rule body; <c>oklab</c> → similar to <c>oklch</c>).
+    /// / <c>light-dark</c> → empty rule body; <c>oklab</c> / <c>lab</c> / <c>lch</c> /
+    /// <c>color()</c> → similar). Per Task 16 review Rec 2 — the canonical list lives in
+    /// <see cref="NetPdf.Css.ComputedValues.ModernColorFunctions"/> so the preprocessor's
+    /// recovery + <see cref="NetPdf.Css.ComputedValues.PropertyResolvers.ColorResolver"/>'s
+    /// diagnostic emission stay in lockstep.
     /// </summary>
-    private static readonly FrozenSet<string> ModernValueFunctions = new[]
-    {
-        "oklch", "oklab", "color-mix", "light-dark",
-    }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+    private static FrozenSet<string> ModernValueFunctions =>
+        NetPdf.Css.ComputedValues.ModernColorFunctions.Names;
 
     /// <summary>
     /// Grouping at-rules that AngleSharp emits with a <c>Rules</c> child list. The
@@ -421,7 +423,14 @@ internal static class CssPreprocessor
             var valueSpan = tok.ReadUntilAnyTopLevel(";");
             var rawValue = valueSpan.ToString().Trim();
 
-            if (ContainsModernValueFunction(rawValue))
+            // Per Task 16 review Rec 1 — also recover declarations whose
+            // value contains a multi-arg attr() form. AngleSharp.Css normalizes
+            // attr() calls before they reach the cascade, so without this
+            // recovery the production path never delivers `attr(name type,
+            // fallback)` to CssContentList — the diagnostic
+            // CSS-ATTR-MULTI-ARG-UNSUPPORTED-001 would only fire on direct
+            // unit-test calls.
+            if (ContainsModernValueFunction(rawValue) || ContainsMultiArgAttr(rawValue))
             {
                 var (cleanValue, isImportant) = ImportantParser.Strip(rawValue);
                 output.Add(new CssDeclarationRecovery(
@@ -462,6 +471,81 @@ internal static class CssPreprocessor
                 continue;
             }
             tok.ReadChar();
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// Per Task 16 review Rec 1 — <see langword="true"/> when
+    /// <paramref name="value"/> contains an <c>attr()</c> call with the
+    /// modern multi-arg shape (<c>attr(name type)</c>, <c>attr(name, fallback)</c>,
+    /// <c>attr(name type, fallback)</c>). The bare <c>attr(name)</c> form
+    /// returns <see langword="false"/> — it doesn't need recovery since
+    /// AngleSharp passes single-arg <c>attr()</c> through cleanly.
+    /// </summary>
+    private static bool ContainsMultiArgAttr(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return false;
+        var tok = new CssTokenizer(value.AsSpan(), null);
+        while (!tok.IsEnd)
+        {
+            var c = tok.PeekChar();
+            if (c == '\'' || c == '"') { tok.SkipString(); continue; }
+            if (c == '/' && tok.PeekCharAt(1) == '*') { tok.SkipWhitespaceAndComments(); continue; }
+            if (IsIdentifierStart(c))
+            {
+                var ident = tok.ReadIdentifier();
+                if (tok.PeekChar() == '(')
+                {
+                    var argBlock = tok.ReadParenthesizedBlock();
+                    if (IsAttrIdent(ident) && IsMultiArgAttrBlock(argBlock)) return true;
+                }
+                continue;
+            }
+            tok.ReadChar();
+        }
+        return false;
+    }
+
+    /// <summary>Case-insensitive ASCII match against the literal <c>attr</c>
+    /// (4 chars). The modern <c>attr()</c> in CSS Values L5 is the only
+    /// shape we need to distinguish here — the legacy single-arg form
+    /// is a subset that AngleSharp handles cleanly.</summary>
+    private static bool IsAttrIdent(System.ReadOnlySpan<char> ident) =>
+        ident.Length == 4
+        && (ident[0] | 0x20) == 'a'
+        && (ident[1] | 0x20) == 't'
+        && (ident[2] | 0x20) == 't'
+        && (ident[3] | 0x20) == 'r';
+
+    /// <summary>Detect the multi-arg <c>attr()</c> shape from the
+    /// already-balanced parenthesized block (which includes the surrounding
+    /// parens per <see cref="CssTokenizer.ReadParenthesizedBlock"/>).
+    /// Returns <see langword="true"/> when the block contains a comma OR a
+    /// whitespace-separated token after the first ident — both indicate the
+    /// modern <c>attr(name type)</c> / <c>attr(name, fallback)</c> /
+    /// <c>attr(name type, fallback)</c> form.</summary>
+    private static bool IsMultiArgAttrBlock(System.ReadOnlySpan<char> block)
+    {
+        if (block.Length < 2 || block[0] != '(' || block[^1] != ')') return false;
+        var body = block[1..^1];
+
+        // Comma → unambiguously multi-arg.
+        if (body.IndexOf(',') >= 0) return true;
+
+        // Whitespace-separated tokens → multi-arg. Trim, find first
+        // whitespace, check whether non-whitespace content follows.
+        body = body.Trim();
+        if (body.IsEmpty) return false;
+        var firstWs = -1;
+        for (var i = 0; i < body.Length; i++)
+        {
+            if (body[i] is ' ' or '\t' or '\n' or '\r' or '\f') { firstWs = i; break; }
+        }
+        if (firstWs < 0) return false;
+        for (var i = firstWs + 1; i < body.Length; i++)
+        {
+            if (body[i] is not (' ' or '\t' or '\n' or '\r' or '\f')) return true;
         }
         return false;
     }

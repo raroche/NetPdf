@@ -183,13 +183,20 @@ internal static class ColorResolver
             case "hsl":
             case "hsla":
                 return TryParseHslFunction(body, out argb, out reason);
-            case "oklch": case "oklab": case "lab": case "lch": case "color": case "color-mix":
-                reason = $"modern color function '{fnName}()' is deferred to a follow-up cycle";
-                modernColorFn = fnName;
-                return false;
-            default:
-                return false;
         }
+
+        // Per Task 16 review Rec 2 — modern color functions are recognized
+        // via the shared `ModernColorFunctions` table so the preprocessor's
+        // raw-text recovery + this resolver's diagnostic emission cover the
+        // same set (oklch / oklab / lab / lch / color / color-mix / light-dark).
+        if (ModernColorFunctions.Contains(fnName))
+        {
+            reason = $"modern color function '{fnName}()' is deferred to a follow-up cycle";
+            modernColorFn = fnName;
+            return false;
+        }
+
+        return false;
     }
 
     private static bool TryParseRgbFunction(string body, out uint argb, out string? reason)

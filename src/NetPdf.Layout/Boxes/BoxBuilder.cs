@@ -89,9 +89,17 @@ internal static class BoxBuilder
 
         if (document.DocumentElement is null) return root;
 
+        // Per Task 16 review Rec 4 — dedupe CSS-PSEUDO-SUPPRESSED-ON-REPLACED-001
+        // emissions by (rule-source-location, pseudo-name, element-tag) so a
+        // broad selector like `img::before { content: 'X' }` doesn't flood the
+        // sink with one diagnostic per matching <img> in the document. The
+        // cache is build-scoped — fresh per Build() call.
+        var emittedPseudoSuppressionKeys = new System.Collections.Generic.HashSet<string>(
+            StringComparer.Ordinal);
+
         var docBoxes = BuildElementBoxes(
             document.DocumentElement, parentStyle: rootStyle,
-            cascade, diagnostics);
+            cascade, diagnostics, emittedPseudoSuppressionKeys);
         foreach (var box in docBoxes)
         {
             root.AppendChild(box);
@@ -118,7 +126,8 @@ internal static class BoxBuilder
         IElement element,
         ComputedStyle parentStyle,
         ResolvedCascadeResult cascade,
-        ICssDiagnosticsSink? diagnostics)
+        ICssDiagnosticsSink? diagnostics,
+        System.Collections.Generic.HashSet<string> emittedPseudoSuppressionKeys)
     {
         // <br> is special — it's a forced line break, not a generic inline.
         // Per HTML "Rendering" §15.3.6 the UA stylesheet defines:
@@ -159,7 +168,8 @@ internal static class BoxBuilder
                 var promoted = new List<Box>();
                 foreach (var node in element.ChildNodes)
                 {
-                    BuildChildNode(node, style, element, cascade, diagnostics, promoted);
+                    BuildChildNode(node, style, element, cascade, diagnostics,
+                        emittedPseudoSuppressionKeys, promoted);
                 }
                 style.Dispose();
                 return promoted;
@@ -192,19 +202,22 @@ internal static class BoxBuilder
         // ::before pseudo-element comes before the children. Keys in the cascade
         // are lowercase pseudo-element identifiers without the `::` prefix
         // (per SelectorCompiler's `PseudoElement(lower)` convention).
-        var beforePseudo = BuildPseudo(element, "before", style, cascade, diagnostics);
+        var beforePseudo = BuildPseudo(element, "before", style, cascade, diagnostics,
+            emittedPseudoSuppressionKeys);
         if (beforePseudo is not null) box.AppendChild(beforePseudo);
 
         // Children — DOM nodes in document order.
         var collector = new List<Box>(8);
         foreach (var node in element.ChildNodes)
         {
-            BuildChildNode(node, style, element, cascade, diagnostics, collector);
+            BuildChildNode(node, style, element, cascade, diagnostics,
+                emittedPseudoSuppressionKeys, collector);
         }
         foreach (var c in collector) box.AppendChild(c);
 
         // ::after pseudo-element comes after the children.
-        var afterPseudo = BuildPseudo(element, "after", style, cascade, diagnostics);
+        var afterPseudo = BuildPseudo(element, "after", style, cascade, diagnostics,
+            emittedPseudoSuppressionKeys);
         if (afterPseudo is not null) box.AppendChild(afterPseudo);
 
         FixupAnonymousBlocks(box);
@@ -241,6 +254,7 @@ internal static class BoxBuilder
         IElement parentElement,
         ResolvedCascadeResult cascade,
         ICssDiagnosticsSink? diagnostics,
+        System.Collections.Generic.HashSet<string> emittedPseudoSuppressionKeys,
         List<Box> collector)
     {
         switch (node)
@@ -252,7 +266,8 @@ internal static class BoxBuilder
                 }
                 break;
             case IElement childElement:
-                var produced = BuildElementBoxes(childElement, parentStyle, cascade, diagnostics);
+                var produced = BuildElementBoxes(childElement, parentStyle, cascade,
+                    diagnostics, emittedPseudoSuppressionKeys);
                 foreach (var child in produced) collector.Add(child);
                 break;
             // Comment / CDATA / etc. are ignored for box generation.
@@ -313,12 +328,24 @@ internal static class BoxBuilder
             return null;
         }
 
-        // Per Task 14 review Rec 2 + CSS Pseudo L4 §3.4: ::marker accepts a
-        // `content` property that overrides the default list-style-type
-        // marker. When `content` is absent / `normal` / `none` we fall back
-        // to the list-style-type-derived glyph.
-        var markerText = MarkerContentFromCascade(host, markerRules, diagnostics)
-            ?? MarkerTextFor(host, styleType, cascade);
+        // Per Task 14 review Rec 2 + Task 16 review Rec 3 + CSS Pseudo L4
+        // §3.4: ::marker accepts a `content` property that overrides the
+        // default list-style-type marker. Three outcomes:
+        //   - AbsentOrNormal: fall back to the list-style-type-derived glyph
+        //   - Supported:      use the parsed override text
+        //   - Unsupported:    SUPPRESS the marker entirely — falling back
+        //                     to a default disc/decimal glyph would render
+        //                     a marker the author explicitly did not request
+        var (resolution, overrideText) =
+            ResolveMarkerContent(host, markerRules, diagnostics);
+        if (resolution == MarkerContentResolution.Unsupported)
+        {
+            markerStyle.Dispose();
+            return null;
+        }
+        var markerText = resolution == MarkerContentResolution.Supported
+            ? overrideText ?? string.Empty
+            : MarkerTextFor(host, styleType, cascade);
 
         var markerBox = Box.ForPseudo(BoxKind.Marker, markerStyle, host, BoxPseudo.Marker);
         if (markerText.Length > 0)
@@ -391,21 +418,50 @@ internal static class BoxBuilder
     /// <c>::marker</c> rules through the cascade, this path will fire without
     /// further changes.
     /// </remarks>
-    private static string? MarkerContentFromCascade(IElement host, ResolvedRuleSet? markerRules,
-        ICssDiagnosticsSink? diagnostics)
+    /// <summary>Per Task 16 review Rec 3 — three-way result so callers can
+    /// distinguish "no override (fall back to list-style-type)" from
+    /// "unsupported content (suppress marker entirely after emitting
+    /// diagnostic)". Rendering a default disc/decimal glyph when the author
+    /// asked for <c>counter(items)</c> would surface a marker the author
+    /// didn't request — worse than no marker at all.</summary>
+    private enum MarkerContentResolution
     {
-        if (markerRules is null) return null;
+        /// <summary>No <c>content:</c> rule, or <c>content: normal</c> /
+        /// <c>content: none</c> — fall back to the list-style-type glyph.</summary>
+        AbsentOrNormal = 0,
+        /// <summary>The author wrote <c>content:</c> with a supported value;
+        /// use the resolved text returned alongside the resolution as the
+        /// marker glyph.</summary>
+        Supported = 1,
+        /// <summary>The author wrote <c>content:</c> with an unsupported
+        /// value (counter / url / quote / multi-arg attr); a diagnostic was
+        /// emitted and the marker should be suppressed entirely (no glyph)
+        /// per CSS Pseudo L4 §3.4 — falling back to a default disc/decimal
+        /// would render a marker the author explicitly did not request.</summary>
+        Unsupported = 2,
+    }
+
+    private static (MarkerContentResolution Resolution, string? ResolvedText) ResolveMarkerContent(
+        IElement host, ResolvedRuleSet? markerRules, ICssDiagnosticsSink? diagnostics)
+    {
+        if (markerRules is null) return (MarkerContentResolution.AbsentOrNormal, null);
         var contentDecl = markerRules.GetWinner("content");
-        if (contentDecl is null) return null;
+        if (contentDecl is null) return (MarkerContentResolution.AbsentOrNormal, null);
         var raw = contentDecl.ResolvedValue.Trim();
         if (raw.Length == 0
             || raw.Equals("normal", StringComparison.OrdinalIgnoreCase)
             || raw.Equals("none", StringComparison.OrdinalIgnoreCase))
         {
-            return null;
+            return (MarkerContentResolution.AbsentOrNormal, null);
         }
         var location = contentDecl.OriginalDeclaration.Location;
-        return CssContentList.TryParse(raw, host, diagnostics, location, out var text) ? text : null;
+        if (CssContentList.TryParse(raw, host, diagnostics, location, out var text))
+        {
+            return (MarkerContentResolution.Supported, text);
+        }
+        // CssContentList already emitted CSS-CONTENT-FUNCTION-UNSUPPORTED-001
+        // (or CSS-ATTR-MULTI-ARG-UNSUPPORTED-001). Suppress the marker.
+        return (MarkerContentResolution.Unsupported, null);
     }
 
     /// <summary>Read the computed <c>list-style-type</c> keyword from the
@@ -657,13 +713,27 @@ internal static class BoxBuilder
     /// rule.</summary>
     private static void EmitPseudoSuppressedOnReplaced(
         IElement host, string pseudoName, ResolvedRuleSet ruleSet,
-        ICssDiagnosticsSink? diagnostics)
+        ICssDiagnosticsSink? diagnostics,
+        System.Collections.Generic.HashSet<string> emittedKeys)
     {
         if (diagnostics is null) return;
         var contentDecl = ruleSet.GetWinner("content");
         var location = contentDecl is not null
             ? contentDecl.OriginalDeclaration.Location
             : NetPdf.Css.Parser.CssSourceLocation.Unknown;
+
+        // Per Task 16 review Rec 4 — dedupe by (rule-source-location, pseudo,
+        // element-tag). One broad selector like `img::before` would otherwise
+        // emit per matching <img> in the document, flooding the sink. When the
+        // location is Unknown (no source-tracking; tests / synthesized CSS),
+        // fall back to (pseudo, tag) so the diagnostic still emits at most once
+        // per pseudo+tag pair.
+        var locKey = location.Source is not null
+            ? $"{location.Source}:{location.Line}:{location.Column}"
+            : "?";
+        var dedupKey = $"{locKey}|{pseudoName}|{host.LocalName.ToLowerInvariant()}";
+        if (!emittedKeys.Add(dedupKey)) return;
+
         diagnostics.Emit(new NetPdf.Css.Diagnostics.CssDiagnostic(
             NetPdf.Css.Diagnostics.CssDiagnosticCodes.CssPseudoSuppressedOnReplaced001,
             $"::{pseudoName} on replaced <{host.LocalName}> is suppressed (CSS Pseudo L4 §3 — replaced elements cannot host generated content).",
@@ -676,7 +746,8 @@ internal static class BoxBuilder
         string pseudoName,
         ComputedStyle hostStyle,
         ResolvedCascadeResult cascade,
-        ICssDiagnosticsSink? diagnostics)
+        ICssDiagnosticsSink? diagnostics,
+        System.Collections.Generic.HashSet<string> emittedPseudoSuppressionKeys)
     {
         // Per Task 14 review Rec 1 + CSS Pseudo L4 §3 — replaced elements
         // (img/video/canvas/iframe/object/embed) are atomic and have no
@@ -691,7 +762,8 @@ internal static class BoxBuilder
             // a replaced element with no rules doesn't warrant noise.
             if (ruleSet is not null)
             {
-                EmitPseudoSuppressedOnReplaced(host, pseudoName, ruleSet, diagnostics);
+                EmitPseudoSuppressedOnReplaced(host, pseudoName, ruleSet,
+                    diagnostics, emittedPseudoSuppressionKeys);
             }
             return null;
         }

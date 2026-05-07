@@ -242,10 +242,17 @@ internal static class CssContentList
     /// §10) needs a typed-value pipeline + fallback handling that cycle 2
     /// will deliver. Resolves the attribute case-insensitively against
     /// <paramref name="host"/>; missing attribute → empty string per
-    /// Generated Content L3 §1.3. The <paramref name="reason"/> out param
-    /// distinguishes <see cref="AttrRejectReason.MultiArg"/> from
-    /// <see cref="AttrRejectReason.MalformedSyntax"/> so the caller can
-    /// emit the appropriate diagnostic code.</summary>
+    /// Generated Content L3 §1.3.</summary>
+    /// <remarks>
+    /// Per Task 16 review Rec 5 — the attribute name is validated as a CSS
+    /// <i>ident-token</i> per CSS Syntax §4.3.11 (start: letter / <c>_</c> /
+    /// non-ASCII / escape; continuation: start chars + digits + <c>-</c>;
+    /// optional leading <c>-</c>). Accepting arbitrary punctuation (e.g.,
+    /// <c>attr(.foo)</c>) and reporting a missing attribute would have masked
+    /// real authoring errors. Cycle-1 simplification: ASCII-only validation
+    /// — escape decoding + non-ASCII identifier ranges defer to cycle 2
+    /// alongside the typed-value pipeline.
+    /// </remarks>
     private static bool ReadAttrArgs(
         ReadOnlySpan<char> span, ref int i, IElement host,
         out string value, out AttrRejectReason reason)
@@ -254,17 +261,19 @@ internal static class CssContentList
         reason = AttrRejectReason.MalformedSyntax;
         i = SkipWhitespace(span, i);
 
-        // The attribute name is an ident-token (CSS Syntax §4.3.11); we
-        // accept letters, digits, hyphens, underscores, ASCII identifier
-        // characters. Stop at whitespace, comma, or close-paren.
+        // Per Rec 5: ident-token shape per CSS Syntax §4.3.11. Read ASCII
+        // ident characters (start + continuation rules); reject if the run
+        // is empty OR starts with a non-ident char.
         var nameStart = i;
         while (i < span.Length)
         {
             var c = span[i];
             if (IsCssWhitespace(c) || c == ',' || c == ')') break;
+            if (!IsCssIdentChar(c)) return false; // malformed punctuation
             i++;
         }
         if (i == nameStart) return false; // empty name
+        if (!IsValidCssIdentStart(span[nameStart..i])) return false;
 
         var attrName = span[nameStart..i].ToString();
 
@@ -283,6 +292,37 @@ internal static class CssContentList
         var attr = host.GetAttribute(attrName);
         value = attr ?? string.Empty;
         return true;
+    }
+
+    /// <summary><see langword="true"/> when <paramref name="c"/> is a valid
+    /// continuation char of a CSS ident-token (ASCII subset per cycle-1
+    /// scope). Rec 5: letters / digits / hyphen / underscore.</summary>
+    private static bool IsCssIdentChar(char c) =>
+        (c >= 'a' && c <= 'z')
+        || (c >= 'A' && c <= 'Z')
+        || (c >= '0' && c <= '9')
+        || c == '-' || c == '_';
+
+    /// <summary><see langword="true"/> when <paramref name="ident"/> is a
+    /// valid CSS ident-token start per §4.3.11. ASCII-only check: must start
+    /// with letter / <c>_</c>, OR <c>-</c> followed by another valid start
+    /// char (so <c>--custom</c> is OK). Pure-numeric / leading-digit are
+    /// rejected per the spec.</summary>
+    private static bool IsValidCssIdentStart(ReadOnlySpan<char> ident)
+    {
+        if (ident.IsEmpty) return false;
+        var first = ident[0];
+        if ((first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') || first == '_')
+            return true;
+        if (first == '-')
+        {
+            if (ident.Length < 2) return false;
+            var second = ident[1];
+            return (second >= 'a' && second <= 'z')
+                || (second >= 'A' && second <= 'Z')
+                || second == '_' || second == '-';
+        }
+        return false;
     }
 
     private static bool StartsWithCaseInsensitive(ReadOnlySpan<char> span, int i, string ascii)

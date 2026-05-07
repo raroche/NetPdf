@@ -11,7 +11,9 @@ using AngleSharp;
 using AngleSharp.Css;
 using AngleSharp.Dom;
 using NetPdf.Css.Cascade;
+using NetPdf.Css.ComputedValues;
 using NetPdf.Css.Parser;
+using NetPdf.Css.Properties;
 using NetPdf.Layout.Boxes;
 using Xunit;
 
@@ -354,6 +356,294 @@ public sealed class BoxBuilderTableFixupTests
     // ============================================================
     // Mixed bare row + bare cells coalesce reasonably
     // ============================================================
+
+    // ============================================================
+    // Rec 1 — Tree-wide orphan fixup (Tables L3 §3.1 missing-parents walk)
+    // ============================================================
+
+    [Fact]
+    public async Task Loose_table_cell_outside_table_gets_synthesized_table_wrapper()
+    {
+        // <body><div display:table-cell>x</div></body> — the cell has no table
+        // ancestor. Tables L3 §3.1 requires synthesizing the missing
+        // table+grid+row-group+row scaffolding around it.
+        var root = await BuildAsync(
+            "<div class='c'>x</div>",
+            ".c { display: table-cell }");
+        // Find the synthesized anon Table wrapper.
+        var anonTable = Walk(root)
+            .First(b => b.Kind == BoxKind.Table && b.IsAnonymous);
+        Assert.True(anonTable.IsTableWrapper);
+        // Its grid must contain anon row-group → anon row → real cell.
+        var grid = anonTable.Children.First(c => c.Kind == BoxKind.TableGrid);
+        var anonGroup = grid.Children.First(c => c.Kind == BoxKind.TableRowGroup);
+        Assert.True(anonGroup.IsAnonymous);
+        var anonRow = anonGroup.Children.First(c => c.Kind == BoxKind.TableRow);
+        Assert.True(anonRow.IsAnonymous);
+        var realCell = anonRow.Children.First(c => c.Kind == BoxKind.TableCell);
+        Assert.False(realCell.IsAnonymous);
+        Assert.NotNull(realCell.SourceElement);
+    }
+
+    [Fact]
+    public async Task Loose_table_row_outside_table_gets_synthesized_table_wrapper()
+    {
+        var root = await BuildAsync(
+            "<div class='r'><div class='c'>x</div></div>",
+            ".r { display: table-row } .c { display: table-cell }");
+        var anonTable = Walk(root)
+            .First(b => b.Kind == BoxKind.Table && b.IsAnonymous);
+        var grid = anonTable.Children.First(c => c.Kind == BoxKind.TableGrid);
+        // Bare row at the synthesized grid level → anon row-group wraps the
+        // explicit (real) row.
+        var anonGroup = grid.Children.First();
+        Assert.Equal(BoxKind.TableRowGroup, anonGroup.Kind);
+        Assert.True(anonGroup.IsAnonymous);
+        var explicitRow = anonGroup.Children.First();
+        Assert.Equal(BoxKind.TableRow, explicitRow.Kind);
+        Assert.False(explicitRow.IsAnonymous);
+    }
+
+    [Fact]
+    public async Task Loose_row_group_outside_table_gets_synthesized_table_wrapper()
+    {
+        var root = await BuildAsync(
+            "<div class='g'><div class='r'><div class='c'>x</div></div></div>",
+            ".g { display: table-row-group } .r { display: table-row } .c { display: table-cell }");
+        var anonTable = Walk(root)
+            .First(b => b.Kind == BoxKind.Table && b.IsAnonymous);
+        var grid = anonTable.Children.First(c => c.Kind == BoxKind.TableGrid);
+        // Explicit row-group passes through under grid.
+        var explicitGroup = grid.Children.First();
+        Assert.Equal(BoxKind.TableRowGroup, explicitGroup.Kind);
+        Assert.False(explicitGroup.IsAnonymous);
+    }
+
+    [Fact]
+    public async Task Consecutive_loose_orphans_share_one_synthesized_table()
+    {
+        // Two loose cells in a row should share one anon table+grid+row-group
+        // and a single anon row containing both.
+        var root = await BuildAsync(
+            "<div class='c'>a</div><div class='c'>b</div>",
+            ".c { display: table-cell }");
+        var anonTables = Walk(root)
+            .Where(b => b.Kind == BoxKind.Table && b.IsAnonymous)
+            .ToList();
+        Assert.Single(anonTables);
+        var anonRow = Walk(anonTables[0])
+            .First(b => b.Kind == BoxKind.TableRow && b.IsAnonymous);
+        // Both real cells live in this anon row.
+        var realCells = anonRow.Children
+            .Where(c => c.Kind == BoxKind.TableCell && !c.IsAnonymous)
+            .ToList();
+        Assert.Equal(2, realCells.Count);
+    }
+
+    [Fact]
+    public async Task Loose_orphans_separated_by_normal_block_get_separate_tables()
+    {
+        // A normal block between two loose cells should break the run — each
+        // gets its own anon table.
+        var root = await BuildAsync(
+            "<div class='c'>a</div><p>between</p><div class='c'>b</div>",
+            ".c { display: table-cell }");
+        var anonTables = Walk(root)
+            .Where(b => b.Kind == BoxKind.Table && b.IsAnonymous)
+            .ToList();
+        Assert.Equal(2, anonTables.Count);
+    }
+
+    [Fact]
+    public async Task Loose_caption_outside_table_gets_synthesized_table_wrapper()
+    {
+        var root = await BuildAsync(
+            "<div class='cap'>orphaned caption</div>",
+            ".cap { display: table-caption }");
+        var anonTable = Walk(root)
+            .First(b => b.Kind == BoxKind.Table && b.IsAnonymous);
+        // Caption stays as a direct wrapper child (Rec 5 + Tables L3 §2.1).
+        Assert.Contains(anonTable.Children, c => c.Kind == BoxKind.TableCaption);
+    }
+
+    // ============================================================
+    // Rec 2 — Anonymous-box style isolation (CSS 2.1 §17.5.1 / Tables L3 §3.2)
+    // ============================================================
+
+    [Fact]
+    public async Task Anon_TableGrid_does_not_inherit_wrapper_padding()
+    {
+        // padding-top is non-inheritable. The wrapper has explicit padding;
+        // the synthesized anon grid must take the initial value (0), NOT
+        // inherit the wrapper's padding.
+        var root = await BuildAsync(
+            "<table class='t'><tr><td>x</td></tr></table>",
+            ".t { padding-top: 12px }");
+        var wrapper = FirstTableWrapper(root);
+        var grid = wrapper.Children.First(c => c.Kind == BoxKind.TableGrid);
+        // Wrapper has padding-top set (12px from the rule).
+        Assert.True(wrapper.Style.IsSet(PropertyId.PaddingTop));
+        // Grid's padding-top is the registry initial (0), not 12.
+        Assert.True(grid.Style.IsSet(PropertyId.PaddingTop));
+        Assert.Equal(0.0, grid.Style.Get(PropertyId.PaddingTop).AsLengthPx());
+    }
+
+    [Fact]
+    public async Task Anon_synthesized_row_does_not_inherit_wrapper_padding()
+    {
+        // Padding on the wrapper must not leak to anon row-group / row / cell.
+        var root = await BuildAsync(
+            "<div class='t'><div class='c'>x</div></div>",
+            ".t { display: table; padding-left: 25px } .c { display: table-cell }");
+        var anonRow = Walk(root)
+            .First(b => b.Kind == BoxKind.TableRow && b.IsAnonymous);
+        Assert.Equal(0.0, anonRow.Style.Get(PropertyId.PaddingLeft).AsLengthPx());
+    }
+
+    [Fact]
+    public async Task Anon_grid_DOES_inherit_inheritable_color_from_wrapper()
+    {
+        // Color is inheritable. The grid should pick up the wrapper's color.
+        var root = await BuildAsync(
+            "<table class='t'><tr><td>x</td></tr></table>",
+            ".t { color: rgb(10, 20, 30) }");
+        var wrapper = FirstTableWrapper(root);
+        var grid = wrapper.Children.First(c => c.Kind == BoxKind.TableGrid);
+        Assert.True(grid.Style.IsSet(PropertyId.Color));
+        Assert.Equal(wrapper.Style.Get(PropertyId.Color), grid.Style.Get(PropertyId.Color));
+    }
+
+    // ============================================================
+    // Rec 3 — Replaced element with table-internal display value (Tables L3 §2)
+    // ============================================================
+
+    [Fact]
+    public async Task Replaced_element_with_display_table_cell_becomes_inline_replaced()
+    {
+        // <img display:table-cell> must NOT become a TableCell — replaced
+        // elements are atomic and cannot host the structural roles a
+        // table-internal display value implies. They become inline-level
+        // replaced boxes per Tables L3 §2.
+        var root = await BuildAsync(
+            "<img class='c' src='x.png'>",
+            ".c { display: table-cell }");
+        var imgBox = Walk(root)
+            .First(b => b.SourceElement?.LocalName == "img");
+        Assert.Equal(BoxKind.InlineReplacedElement, imgBox.Kind);
+    }
+
+    [Fact]
+    public async Task Replaced_element_with_display_table_row_becomes_inline_replaced()
+    {
+        var root = await BuildAsync(
+            "<img class='r' src='x.png'>",
+            ".r { display: table-row }");
+        var imgBox = Walk(root).First(b => b.SourceElement?.LocalName == "img");
+        Assert.Equal(BoxKind.InlineReplacedElement, imgBox.Kind);
+    }
+
+    [Fact]
+    public async Task Replaced_element_with_display_table_caption_becomes_inline_replaced()
+    {
+        var root = await BuildAsync(
+            "<img class='cap' src='x.png'>",
+            ".cap { display: table-caption }");
+        var imgBox = Walk(root).First(b => b.SourceElement?.LocalName == "img");
+        Assert.Equal(BoxKind.InlineReplacedElement, imgBox.Kind);
+    }
+
+    [Fact]
+    public async Task Non_replaced_with_display_table_cell_still_becomes_TableCell()
+    {
+        // The replaced-element exception must NOT fire for non-replaced
+        // elements — a div with display:table-cell is a real TableCell.
+        var root = await BuildAsync(
+            "<div class='c'>x</div>",
+            ".c { display: table-cell }");
+        var div = Walk(root).First(b => b.SourceElement?.LocalName == "div");
+        Assert.Equal(BoxKind.TableCell, div.Kind);
+    }
+
+    // ============================================================
+    // Rec 4 — Drop irrelevant children of TableColumn / TableColumnGroup
+    // ============================================================
+
+    [Fact]
+    public async Task TableColumn_drops_all_children()
+    {
+        // <col> is normally void in HTML, but CSS-driven cases (display:
+        // table-column on a non-col element) can have content. Per Tables L3
+        // §3.1.4 the children must be dropped.
+        var root = await BuildAsync(
+            "<div class='col'><span>oops</span></div>",
+            ".col { display: table-column }");
+        var col = Walk(root).First(b => b.Kind == BoxKind.TableColumn);
+        Assert.Empty(col.Children);
+    }
+
+    [Fact]
+    public async Task TableColumnGroup_keeps_only_TableColumn_children()
+    {
+        var root = await BuildAsync(
+            "<div class='cg'><div class='col'></div><span>nope</span><p>also-nope</p></div>",
+            ".cg { display: table-column-group } .col { display: table-column }");
+        var colGroup = Walk(root).First(b => b.Kind == BoxKind.TableColumnGroup);
+        // Only the <div class='col'> should survive.
+        Assert.Single(colGroup.Children);
+        Assert.Equal(BoxKind.TableColumn, colGroup.Children[0].Kind);
+    }
+
+    // ============================================================
+    // Rec 5 — Caption source order preserved relative to the grid
+    // ============================================================
+
+    [Fact]
+    public async Task Caption_before_tbody_lands_before_grid_in_source_order()
+    {
+        var root = await BuildAsync(
+            "<table><caption>top</caption><tr><td>x</td></tr></table>");
+        var wrapper = FirstTableWrapper(root);
+        Assert.Equal(2, wrapper.Children.Count);
+        Assert.Equal(BoxKind.TableCaption, wrapper.Children[0].Kind);
+        Assert.Equal(BoxKind.TableGrid, wrapper.Children[1].Kind);
+    }
+
+    [Fact]
+    public async Task Caption_after_tbody_lands_after_grid_in_source_order()
+    {
+        // Source order: tbody first (HTML5 auto-inserts it for <tr>), then
+        // caption. Caption must appear AFTER the grid in the box tree.
+        var root = await BuildAsync(
+            "<table><tr><td>x</td></tr><caption>bottom</caption></table>");
+        var wrapper = FirstTableWrapper(root);
+        Assert.Equal(2, wrapper.Children.Count);
+        Assert.Equal(BoxKind.TableGrid, wrapper.Children[0].Kind);
+        Assert.Equal(BoxKind.TableCaption, wrapper.Children[1].Kind);
+    }
+
+    [Fact]
+    public async Task Captions_on_both_sides_split_correctly_around_grid()
+    {
+        var root = await BuildAsync(
+            "<table><caption>top</caption><tr><td>x</td></tr><caption>bottom</caption></table>");
+        var wrapper = FirstTableWrapper(root);
+        Assert.Equal(3, wrapper.Children.Count);
+        Assert.Equal(BoxKind.TableCaption, wrapper.Children[0].Kind);
+        Assert.Equal(BoxKind.TableGrid, wrapper.Children[1].Kind);
+        Assert.Equal(BoxKind.TableCaption, wrapper.Children[2].Kind);
+    }
+
+    [Fact]
+    public async Task Multiple_captions_before_tbody_all_land_before_grid()
+    {
+        var root = await BuildAsync(
+            "<table><caption>a</caption><caption>b</caption><tr><td>x</td></tr></table>");
+        var wrapper = FirstTableWrapper(root);
+        Assert.Equal(3, wrapper.Children.Count);
+        Assert.Equal(BoxKind.TableCaption, wrapper.Children[0].Kind);
+        Assert.Equal(BoxKind.TableCaption, wrapper.Children[1].Kind);
+        Assert.Equal(BoxKind.TableGrid, wrapper.Children[2].Kind);
+    }
 
     [Fact]
     public async Task Bare_cell_followed_by_bare_row_creates_two_anon_groups()

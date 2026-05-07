@@ -82,6 +82,15 @@ internal static class BoxBuilder
             root.AppendChild(box);
         }
         FixupAnonymousBlocks(root);
+
+        // Per Rec 1 (Tables L3 §3.1 — Generate Missing Parents): a final
+        // tree-wide pass wraps loose table internals (a CSS-only
+        // `display: table-cell` directly inside <body>, a stray <tr> outside
+        // any table, etc.) in synthesized table+grid+row-group+row scaffolding.
+        // FixupTable above is wrapper-rooted; this pass picks up the orphans
+        // it can't see.
+        FixupOrphanedTableInternals(root);
+
         return root;
     }
 
@@ -167,6 +176,16 @@ internal static class BoxBuilder
         if (afterPseudo is not null) box.AppendChild(afterPseudo);
 
         FixupAnonymousBlocks(box);
+
+        // Per Rec 4 (Tables L3 §3.1.4 — Drop unsupported boxes): TableColumn
+        // accepts no children; TableColumnGroup accepts only TableColumn
+        // children. Strip everything else so the column metadata path doesn't
+        // accidentally render padding / text / nested elements that authors
+        // erroneously put inside <col> / <colgroup>.
+        if (box.Kind is BoxKind.TableColumn or BoxKind.TableColumnGroup)
+        {
+            DropIrrelevantColumnChildren(box);
+        }
 
         // Table fixup per Tables L3 §3 — split the wrapper into
         // [captions..., TableGrid → fixed internals]; wrap bare rows / cells /
@@ -357,6 +376,16 @@ internal static class BoxBuilder
     // Task 13 — Table fixup per CSS Tables L3 §3
     // ============================================================
 
+    /// <summary>Per Rec 5 — captions partitioned by their position relative
+    /// to the first non-caption table internal in source order. Before-set
+    /// goes ahead of the synthesized grid; After-set goes after it.</summary>
+    private readonly struct TableCaptionsSplit
+    {
+        public TableCaptionsSplit() { Before = new(); After = new(); }
+        public List<Box> Before { get; }
+        public List<Box> After { get; }
+    }
+
     /// <summary>Restructure a table wrapper (<see cref="BoxKind.Table"/> or
     /// <see cref="BoxKind.InlineTable"/>) per CSS Tables L3 §2.1 + §3.
     /// After fixup the wrapper has the shape:
@@ -374,12 +403,26 @@ internal static class BoxBuilder
         var snapshot = SnapshotChildren(wrapper);
         var filtered = StripWhitespaceTextRuns(snapshot);
 
-        var captions = new List<Box>();
+        // Per Rec 5: split captions into "before any internal" / "after first
+        // internal" buckets so the grid sits in the correct source-order
+        // position relative to each caption. Caption-side rendering position
+        // is layout-time, but the box tree should faithfully reflect source
+        // order around the synthesized grid.
+        var captions = new TableCaptionsSplit();
         var internals = new List<Box>();
+        var sawInternal = false;
         foreach (var c in filtered)
         {
-            if (c.Kind == BoxKind.TableCaption) captions.Add(c);
-            else internals.Add(c);
+            if (c.Kind == BoxKind.TableCaption)
+            {
+                if (sawInternal) captions.After.Add(c);
+                else captions.Before.Add(c);
+            }
+            else
+            {
+                sawInternal = true;
+                internals.Add(c);
+            }
         }
 
         // Recurse into explicit row-groups + rows so their bare cells / non-cell
@@ -401,12 +444,16 @@ internal static class BoxBuilder
 
         var gridChildren = GridLevelFixup(internals, wrapper.Style);
 
-        // Reassemble: source-order captions first (caption-side: top vs bottom
-        // is a layout-time concern, not box-generation), then the grid.
-        foreach (var caption in captions) wrapper.AppendChild(caption);
-        var grid = Box.Anonymous(BoxKind.TableGrid, wrapper.Style);
+        // Reassemble per Rec 5: preserve caption position relative to the grid.
+        // Captions appearing before any non-caption internal stay before the
+        // grid; captions appearing after the first internal go after the grid.
+        // (Visual position is determined by `caption-side`, but the box-tree
+        // position should faithfully reflect source order around the grid.)
+        foreach (var caption in captions.Before) wrapper.AppendChild(caption);
+        var grid = Box.Anonymous(BoxKind.TableGrid, CreateAnonBoxStyle(wrapper.Style));
         foreach (var c in gridChildren) grid.AppendChild(c);
         wrapper.AppendChild(grid);
+        foreach (var caption in captions.After) wrapper.AppendChild(caption);
     }
 
     /// <summary>Wrap bare <see cref="BoxKind.TableRow"/> children in an
@@ -639,6 +686,135 @@ internal static class BoxBuilder
         return true;
     }
 
+    /// <summary>Per Rec 1 (Tables L3 §3.1 — Generate Missing Parents): walk
+    /// the box tree post-order and wrap orphan table internals
+    /// (<see cref="BoxKind.TableCell"/> not in a row, <see cref="BoxKind.TableRow"/>
+    /// not in a row-group, etc.) in synthesized anonymous Table wrappers.
+    /// <see cref="FixupTable"/> then runs on each synthesized wrapper to insert
+    /// the full row-group / row / cell scaffolding the table layout
+    /// algorithm requires.</summary>
+    /// <remarks>
+    /// Recurses into every box's children before checking the parent itself —
+    /// this lets a TableCell inside a non-table div correctly get wrapped
+    /// even if the cell's own subtree contains further orphans. The recursion
+    /// also descends into table internals (e.g., into a TableCell's content)
+    /// since those cells are block containers and may themselves host further
+    /// orphan internals; the orphan-check at the end is suppressed only for
+    /// table internals whose direct children are already governed by
+    /// <see cref="FixupTable"/> (the wrapper / grid / row-group / row /
+    /// column / column-group / caption families).
+    /// </remarks>
+    private static void FixupOrphanedTableInternals(Box parent)
+    {
+        // Recurse first — children get fixed up before the parent decides
+        // whether to wrap them. Snapshot to avoid mutation-during-iteration.
+        var children = new List<Box>(parent.Children.Count);
+        foreach (var c in parent.Children) children.Add(c);
+        foreach (var c in children) FixupOrphanedTableInternals(c);
+
+        // Suppress orphan check for boxes whose direct children are already
+        // governed by FixupTable. TableCell + TableCaption are block
+        // containers hosting arbitrary content, so their direct children CAN
+        // contain orphans; the others (Table, InlineTable, TableGrid,
+        // TableRowGroup family, TableRow, TableColumn, TableColumnGroup) have
+        // their structures pinned by FixupTable + DropIrrelevantColumnChildren.
+        if (parent.IsTablePart
+            && parent.Kind is not (BoxKind.TableCell or BoxKind.TableCaption))
+        {
+            return;
+        }
+
+        // Sweep parent's (possibly newly-restructured) children for orphans.
+        if (!HasOrphanedTableInternals(parent)) return;
+
+        var snapshot = SnapshotChildren(parent);
+        var result = new List<Box>();
+        List<Box>? orphanRun = null;
+
+        foreach (var child in snapshot)
+        {
+            if (IsOrphanedTableInternal(child, parent.Kind))
+            {
+                orphanRun ??= new List<Box>();
+                orphanRun.Add(child);
+            }
+            else
+            {
+                FlushOrphanRun(result, ref orphanRun, parent.Style);
+                result.Add(child);
+            }
+        }
+        FlushOrphanRun(result, ref orphanRun, parent.Style);
+
+        foreach (var c in result) parent.AppendChild(c);
+
+        // Wrapping orphans introduces block-level Table boxes that may need
+        // to be separated from inline siblings via anonymous-block insertion
+        // (e.g., `<body><span>x</span><div display:table-cell>y</div></body>`).
+        FixupAnonymousBlocks(parent);
+
+        static void FlushOrphanRun(List<Box> result, ref List<Box>? run, ComputedStyle parentStyle)
+        {
+            if (run is null || run.Count == 0) return;
+            // Synthesize a block-level Table wrapper around the orphans, then
+            // run FixupTable to apply the standard row-group / row / cell
+            // wrapping rules on its now-internal children.
+            var anonTable = NewAnonTablePart(BoxKind.Table, parentStyle);
+            foreach (var orphan in run) anonTable.AppendChild(orphan);
+            FixupTable(anonTable);
+            result.Add(anonTable);
+            run = null;
+        }
+    }
+
+    /// <summary>Quick test for "any of <paramref name="parent"/>'s children
+    /// is an orphan that needs wrapping". Skips the snapshot/restructure path
+    /// when there's nothing to do.</summary>
+    private static bool HasOrphanedTableInternals(Box parent)
+    {
+        foreach (var c in parent.Children)
+        {
+            if (IsOrphanedTableInternal(c, parent.Kind)) return true;
+        }
+        return false;
+    }
+
+    /// <summary>Per Tables L3 §3.1, a child box's parent kind is constrained
+    /// by its own kind. Returns <see langword="true"/> when the
+    /// <paramref name="child"/> + <paramref name="parentKind"/> pair violates
+    /// those constraints — i.e., the child is misparented and needs an
+    /// anonymous wrapper.</summary>
+    private static bool IsOrphanedTableInternal(Box child, BoxKind parentKind) => child.Kind switch
+    {
+        BoxKind.TableCaption => parentKind is not (BoxKind.Table or BoxKind.InlineTable),
+        BoxKind.TableRowGroup or BoxKind.TableHeaderGroup or BoxKind.TableFooterGroup
+            => parentKind != BoxKind.TableGrid,
+        BoxKind.TableRow => parentKind is not
+            (BoxKind.TableRowGroup or BoxKind.TableHeaderGroup or BoxKind.TableFooterGroup),
+        BoxKind.TableCell => parentKind != BoxKind.TableRow,
+        BoxKind.TableColumn => parentKind is not (BoxKind.TableColumnGroup or BoxKind.TableGrid),
+        BoxKind.TableColumnGroup => parentKind != BoxKind.TableGrid,
+        _ => false,
+    };
+
+    /// <summary>Per Rec 4 (Tables L3 §3.1.4) — strip children that the
+    /// box-generation rules forbid for column / column-group elements.
+    /// <see cref="BoxKind.TableColumn"/> accepts no children at all (a column
+    /// is metadata-only — it controls the i'th column's width / styling but
+    /// has no rendered content). <see cref="BoxKind.TableColumnGroup"/>
+    /// accepts only <see cref="BoxKind.TableColumn"/> children.</summary>
+    private static void DropIrrelevantColumnChildren(Box columnish)
+    {
+        if (columnish.Children.Count == 0) return;
+        var snapshot = SnapshotChildren(columnish);
+        if (columnish.Kind == BoxKind.TableColumn) return; // Drop everything.
+        // TableColumnGroup: keep only TableColumn children.
+        foreach (var c in snapshot)
+        {
+            if (c.Kind == BoxKind.TableColumn) columnish.AppendChild(c);
+        }
+    }
+
     /// <summary>Construct an anonymous table-internal box (row-group, row,
     /// cell). The public <see cref="Box.Anonymous"/> factory is restricted to
     /// always-anonymous kinds (<see cref="BoxKind.Root"/>,
@@ -646,12 +822,37 @@ internal static class BoxBuilder
     /// <see cref="BoxKind.AnonymousInline"/>, <see cref="BoxKind.TableGrid"/>);
     /// table internals can be either source-backed (from
     /// <c>&lt;tr&gt;</c>/<c>&lt;td&gt;</c>/<c>&lt;tbody&gt;</c>) or anonymous
-    /// (synthesized here by table fixup), so we use the constructor directly.
-    /// The style is shared with the parent — see the box-ownership
-    /// invariant in <see cref="Box"/>.</summary>
-    private static Box NewAnonTablePart(BoxKind kind, ComputedStyle style)
+    /// (synthesized here by table fixup), so we use the constructor directly.</summary>
+    /// <remarks>
+    /// <b>Style isolation</b> per CSS 2.1 §17.5.1 / Tables L3 §3.2: the new
+    /// anonymous box gets its own freshly-rented <see cref="ComputedStyle"/>
+    /// — inheritable properties are copied from <paramref name="parentStyle"/>
+    /// (so <c>color</c> / <c>font-family</c> / <c>line-height</c> propagate
+    /// through the synthesized scaffolding), but non-inheritable properties
+    /// (<c>background</c>, <c>border</c>, <c>padding</c>, <c>margin</c>,
+    /// <c>display</c>) reset to their CSS initial values. Sharing the wrapper's
+    /// style instance directly would leak the wrapper's background / borders
+    /// onto every anon row-group, row, and cell.
+    /// </remarks>
+    private static Box NewAnonTablePart(BoxKind kind, ComputedStyle parentStyle)
     {
-        return new Box(kind, style, sourceElement: null, BoxPseudo.None, text: string.Empty);
+        var anonStyle = CreateAnonBoxStyle(parentStyle);
+        return new Box(kind, anonStyle, sourceElement: null, BoxPseudo.None, text: string.Empty);
+    }
+
+    /// <summary>Rent + initialize a fresh <see cref="ComputedStyle"/> for an
+    /// anonymous box. Non-inheritable properties take their CSS initial
+    /// values (via <see cref="ApplyDefaults"/>); inheritable properties are
+    /// copied from <paramref name="parentStyle"/> via
+    /// <see cref="ApplyInheritance"/>. Per CSS 2.1 §17.5.1 anonymous boxes
+    /// inherit only inheritable properties from their nearest non-anonymous
+    /// ancestor.</summary>
+    private static ComputedStyle CreateAnonBoxStyle(ComputedStyle parentStyle)
+    {
+        var style = ComputedStyle.Rent();
+        ApplyDefaults(style);
+        ApplyInheritance(style, parentStyle);
+        return style;
     }
 
     // ============================================================

@@ -3,6 +3,7 @@
 
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading.Tasks;
 using AngleSharp;
 using AngleSharp.Css;
 using AngleSharp.Io;
@@ -77,7 +78,7 @@ public sealed class Phase2DeepReviewCriticalFixesTests
     // --- C-2: Diagnostic message sanitization --------------------------------
 
     [Fact]
-    public void C2_invalid_selector_with_ansi_escapes_strips_control_chars()
+    public async Task C2_invalid_selector_with_ansi_escapes_strips_control_chars()
     {
         // A hostile selector embeds an ANSI red-color escape sequence + a
         // bell + a NUL. Without sanitization those would land in the
@@ -94,9 +95,9 @@ public sealed class Phase2DeepReviewCriticalFixesTests
 
         // Reach the diagnostic emission via a dedicated probe — the
         // CompileSelectorWithDiagnostics path is internal but called from
-        // CascadeResolver.CollectRules. We compile a stylesheet with a single
-        // rule whose selector is hostile + no rules to avoid a separate
-        // failure.
+        // CascadeResolver.CollectRules. Build a synthetic stylesheet with a
+        // single rule (hostile selector + empty declarations) so the only
+        // diagnostic surfaced is the one under test.
         var sheet = new CssStylesheet(
             Rules: System.Collections.Immutable.ImmutableArray.Create<CssRule>(rule),
             Href: null,
@@ -106,7 +107,7 @@ public sealed class Phase2DeepReviewCriticalFixesTests
             IsDisabled: false,
             Order: 0,
             Location: CssSourceLocation.Unknown);
-        var doc = ParseDoc("<!doctype html><html><body></body></html>");
+        var doc = await ParseDocAsync("<!doctype html><html><body></body></html>");
         var media = NetPdf.Css.Cascade.CssMediaContext.DefaultPrint;
         _ = NetPdf.Css.Cascade.CascadeResolver.Resolve(doc, [sheet], media, sink);
 
@@ -123,7 +124,7 @@ public sealed class Phase2DeepReviewCriticalFixesTests
     }
 
     [Fact]
-    public void C2_extremely_long_selector_truncated_with_ellipsis()
+    public async Task C2_extremely_long_selector_truncated_with_ellipsis()
     {
         // A multi-megabyte hostile selector would bloat the diagnostic
         // message size proportionally without a length cap. Verify the cap
@@ -142,17 +143,21 @@ public sealed class Phase2DeepReviewCriticalFixesTests
             IsDisabled: false,
             Order: 0,
             Location: CssSourceLocation.Unknown);
-        var doc = ParseDoc("<!doctype html><html><body></body></html>");
+        var doc = await ParseDocAsync("<!doctype html><html><body></body></html>");
         var media = NetPdf.Css.Cascade.CssMediaContext.DefaultPrint;
         var sink = new CapturingSink();
         _ = NetPdf.Css.Cascade.CascadeResolver.Resolve(doc, [sheet], media, sink);
 
         var dx = Assert.Single(sink.Diagnostics);
         Assert.Contains("…", dx.Message);
-        // Message length is bounded — message format is roughly
-        // 'Invalid selector "<truncated 80 chars>…" — <reason>. Rule skipped.'
-        // so total stays under ~250 chars.
-        Assert.True(dx.Message.Length < 300, $"diagnostic message too long: {dx.Message.Length} chars");
+        // Worst-case bound for the diagnostic message:
+        //   "Invalid selector \"" (19) + selector max 80 + "\" — " (5)
+        //   + reason max 200 + ". Rule skipped." (15) ≈ 320 chars.
+        // We assert against 400 to leave headroom for future format tweaks
+        // without re-breaking; the assertion exists to catch unbounded
+        // bloat (a 10_000-char selector reaching the message verbatim
+        // would explode past 10_000), not to pin an exact figure.
+        Assert.True(dx.Message.Length < 400, $"diagnostic message too long: {dx.Message.Length} chars");
     }
 
     // --- C-3: Alpha range validation -----------------------------------------
@@ -213,12 +218,15 @@ public sealed class Phase2DeepReviewCriticalFixesTests
         Assert.Equal(ResolutionState.Invalid, result.State);
     }
 
-    private static AngleSharp.Dom.IDocument ParseDoc(string html)
+    private static async Task<AngleSharp.Dom.IDocument> ParseDocAsync(string html)
     {
+        // Async-throughout to avoid `.Result` deadlock under hostile sync
+        // contexts + match the async pattern used elsewhere in the test
+        // suite (Phase2EndToEndTests, CssParserAdapterPreprocessTests).
         var config = Configuration.Default
             .WithCss()
             .WithDefaultLoader(new LoaderOptions { IsResourceLoadingEnabled = false });
         var ctx = BrowsingContext.New(config);
-        return ctx.OpenAsync(req => req.Content(html).Address("about:blank")).Result;
+        return await ctx.OpenAsync(req => req.Content(html).Address("about:blank"));
     }
 }

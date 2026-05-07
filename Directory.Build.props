@@ -58,7 +58,7 @@
       Phase 5 will introduce a small MSBuild task that reads version.json so
       both surfaces have a single source.
     -->
-    <VersionPrefix>0.1.0</VersionPrefix>
+    <VersionPrefix>0.3.0</VersionPrefix>
     <VersionSuffix>alpha</VersionSuffix>
 
     <!-- Symbols & Source Link: enable source-stepping for downstream consumers. -->

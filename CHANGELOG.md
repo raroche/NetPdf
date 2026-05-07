@@ -6,7 +6,116 @@ The repository is **private through Phase 5**; tagged releases below are git tag
 
 ## [Unreleased]
 
-[Unreleased]: https://example.invalid/NetPdf/compare/0.1.0-alpha...HEAD
+[Unreleased]: https://example.invalid/NetPdf/compare/0.3.0-alpha...HEAD
+
+## [0.3.0-alpha] — 2026-05-07
+
+Phase 2 — CSS engine + DOM pipeline. NetPdf can now run an HTML+CSS document through the full Phase 2 pipeline (parse → preprocess → cascade → var → calc → typed-property resolve → box-tree generation → semantic-tree generation) and produce a styled, paginatable box tree paired with an accessibility-ready semantic tree. The PDF byte-writer from Phase 1 remains intact; the missing piece between "HTML in" and "PDF bytes out" is Phase 3 (layout + pagination) + Phase 4 (paint).
+
+### Added
+
+#### HTML parsing host (`NetPdf/HtmlParsingHost`)
+- AngleSharp 1.x configured with scripting **disabled** + resource loading routed through `IResourceLoader` (no AngleSharp resource fetcher leakage). `IsKeepingSourceReferences = true` so HTML diagnostics carry line/column.
+- `<script>` element stripping with `HTML-SCRIPT-IGNORED-001` Warning per element.
+- `javascript:` URL stripping on `<a>`/`<area>` `href` + any element's `xlink:href` with `HTML-JAVASCRIPT-URL-IGNORED-001` Warning.
+- HTML diagnostics flow through the public `IDiagnosticsSink` set on `HtmlPdfOptions.Diagnostics`.
+
+#### CSS parser adapter (`NetPdf.Css.Parser`)
+- AngleSharp.Css 1.0.0-beta.144 bridged to the internal AST. `CssParserAdapter` produces `CssStylesheet` records carrying selectors, declarations, source location, media query, owner-element pairing, and disabled state.
+- `CssPreprocessor` recovery layer: detects + restores authored text for modern functions/values that AngleSharp.Css 1.0.0-beta.144 silently corrupts or drops (`oklch()`, `oklab()`, `lab()`, `lch()`, `color()`, `color-mix()`, `light-dark()`, modern multi-arg `attr(name type, fallback)`).
+- Owner-node-based stylesheet pairing (`<style media="...">` reads media via owner-element walk, not via fragile ordinal pairing).
+
+#### Source-generated property tables (`NetPdf.SourceGen`)
+- `PropertyId` enum + `PropertyMetadata.Table` + `PropertyMetadata.NameToId` (`FrozenDictionary` for case-insensitive O(1) lookup) generated at compile-time from `properties.json`. **Single source of truth** — adding a CSS property is a JSON entry + rebuild.
+- Source-gen emits NPDFGEN0001..0005 diagnostics on schema violations (missing field, duplicate id, malformed value).
+
+#### `ComputedStyle` flat struct (`NetPdf.Css.ComputedValues`)
+- 8-byte `ComputedSlot` value type with a tag in the high byte: `Unset`, `Color`, `CurrentColor`, `LengthPx`, `Integer`, `Number`, `Percent`, `Keyword`, `Inherit`, `Initial`, `Revert`, `Side`. Larger values (font-family lists, gradients) keyed by index into rented side tables.
+- `ComputedStyle` rents a `[InlineArray]`-backed slot block sized to `PropertyMetadata.Count`. ArrayPool-backed.
+- Custom properties (`--*`) live in a separate dictionary on `ComputedStyle`; var() substitution reads through.
+
+#### Selector compiler + matcher (`NetPdf.Css.Selectors`)
+- AngleSharp selector AST → bytecode-style compiled selectors with right-to-left evaluation.
+- Bloom filter on each element's `(tag, classList, id)` accelerates rejection. Specificity computed at compile time.
+- Compound selectors, descendant / child / sibling combinators, attribute selectors, `:hover` / `:focus` / `:checked` / `:nth-child(...)` / `:has(...)` / `:not(...)`. `::before` / `::after` / `::marker` / `::first-line` / `::first-letter` produce pseudo-element selectors with separated rule storage.
+
+#### Cascade resolver (`NetPdf.Css.Cascade`)
+- Specificity / origin / importance / `@layer` ordering + source-order tie-breaking per CSS Cascade L4. UA → User → Author per origin priority.
+- `@layer` ordering with proper later-layer-wins semantics.
+- `:has()` selector parsed + matches; rendering currently emits `CSS-HAS-RENDERING-NOT-IMPLEMENTED-001` until v1.4.
+- `@container` parsed; rendering emits `CSS-CONTAINER-QUERY-UNSUPPORTED-001` (Roadmap v1.4).
+
+#### `var()` substitution (`NetPdf.Css.ComputedValues.VarResolver`)
+- Custom property substitution with circular-reference detection (`CSS-VAR-CIRCULAR-001`) + expansion limit (`CSS-VAR-EXPANSION-LIMIT-001`).
+- Fallback chains (`var(--x, var(--y, 12px))`).
+
+#### `calc` resolver (`NetPdf.Css.ComputedValues.CalcResolver`)
+- `calc()` / `min()` / `max()` / `clamp()` / `abs()` / `sign()` per CSS Values L4 + L5. Mixed-unit arithmetic with proper unit promotion.
+- Division-by-zero detection emits `CSS-CALC-DIV-BY-ZERO-001`.
+- Invalid expressions (mixed dimensions in addition, etc.) emit `CSS-CALC-INVALID-001`.
+
+#### Per-property typed resolvers (`NetPdf.Css.ComputedValues.PropertyResolvers`)
+- Length (px, em, rem, in, cm, mm, pt, pc, vh, vw, vmin, vmax, %), Color (147 named per Color L4 §6.1, 20 system per §10, hex, rgb/rgba legacy + modern, hsl/hsla legacy + modern with strict syntax per Color L4 §4.2.1/§4.3.1, `currentcolor` sentinel), Number, Integer, Keyword (per-property keyword tables generated from `properties.json`).
+- Modern color functions (`oklch`, `oklab`, `lab`, `lch`, `color`, `color-mix`, `light-dark`) parsed via preprocessor recovery; cycle-1 emits `CSS-MODERN-COLOR-FUNCTION-UNSUPPORTED-001` Info; typed evaluation lands cycle-2.
+- `font-weight` resolved to numbers per Color L4 § 4.
+
+#### `Box` hierarchy + `BoxKind` enum (`NetPdf.Layout.Boxes`)
+- Typed enum: `Root`, `BlockContainer`, `InlineBox`, `InlineReplacedElement`, `ListItem`, `Marker`, `AnonymousBlock`, `TextRun`, `LineBreak`, `Table`, `TableGrid`, `TableHeaderGroup`, `TableRowGroup`, `TableFooterGroup`, `TableRow`, `TableColumn`, `TableColumnGroup`, `TableCell`, `TableHeaderCell`, `TableCaption`, `InlineBlockContainer`. `Box` carries `SourceElement?`, `Pseudo`, `Style`, `Children`, optional `FirstLineStyle` / `FirstLetterStyle` (Phase 3 line layout consumes).
+
+#### `BoxBuilder` (`NetPdf.Layout.Boxes.BoxBuilder`)
+- DOM walk + display dispatch + anonymous-block insertion per CSS Display L3 §3.
+- `HtmlDefaultDisplay` UA defaults table per HTML "Rendering" §15.3 (incl. metadata-content `display: none`); `HtmlReplacedElements` covers img/video/audio/canvas/iframe/object/embed.
+- `DisplayMapper` produces `(BoxKind, ResolutionOutcome)` from `(display, element)`. Replaced-element exception per Tables L3 §2.
+- Anonymous block insertion per Display L3 §3.1 (block containers with mixed inline + block children).
+- `display: contents` per Display L3 §3.1.1 (children promoted to grandparent).
+- Table fixup per Tables L3 §3 (single `TableGrid` child + auto-wrapping bare cells/rows in synthesized row-groups + caption position preservation + column child filtering + tree-wide orphan fixup + replaced-element exception + anon-box style isolation).
+- Pseudo-element materialization per CSS Pseudo L4: `::before` / `::after` with `content: ` parsing (string + multi-string concat + `attr(name)` substitution + escape decoding); `::marker` per Lists L3 §3 with 12 `list-style-type` keywords (disc, circle, square, decimal, decimal-leading-zero, lower/upper-roman, lower/upper-alpha, lower/upper-latin, lower-greek); `::first-line` / `::first-letter` style staging on the host box for Phase 3 line layout to apply during fragment rendering.
+- Replaced-element pseudo suppression per Pseudo L4 §3 with diagnostic dedup.
+
+#### `SemanticTreeBuilder` (`NetPdf.Layout.Semantic`)
+- Parallel walk producing 26 PDF/UA-aligned roles (Document, Heading1..6, Paragraph, BlockQuote, Code, List, ListItem, Table family, Link, Image, Figure, FigureCaption, Header / Footer / Nav / Main / Aside / Article / Section, InlineText).
+- Cascade-aware hidden-element exclusion (`display: none`, `visibility: hidden`, ARIA `aria-hidden="true"`, HTML5 `hidden`, metadata-content tags).
+- Image alt tri-state per HTML5 §4.8.3 (`null` for missing, empty string for explicit `alt=""` decorative, normalized non-empty for explicit alt; aria-label fallback).
+- Table-cell metadata captured (rowspan, colspan, scope, headers, abbr) per HTML5 §4.9.10 + §4.9.12.
+- `<a>` without `href` is transparent per HTML5 §4.6.1.
+- `<pre>` / `<code>` preserve descendant text whitespace per HTML5 §15.3.5.
+- v1 policy on generated content: `::before` / `::after` / `::marker` text intentionally absent (DOM-only walk; box-tree-driven rebuild for v1.1 PDF/UA).
+
+#### Diagnostics (`docs/diagnostics-codes.md`)
+- 18 new CSS-* + HTML-* codes registered (CSS-PROPERTY-VALUE-INVALID-001, CSS-PARSE-WARNING-001, CSS-AT-RULE-UNKNOWN-001, CSS-VAR-CIRCULAR-001, CSS-VAR-EXPANSION-LIMIT-001, CSS-CALC-INVALID-001, CSS-CALC-DIV-BY-ZERO-001, CSS-CONTAINER-QUERY-UNSUPPORTED-001, CSS-HAS-RENDERING-NOT-IMPLEMENTED-001, CSS-CONTENT-FUNCTION-UNSUPPORTED-001, CSS-ATTR-MULTI-ARG-UNSUPPORTED-001, CSS-MODERN-COLOR-FUNCTION-UNSUPPORTED-001, CSS-PSEUDO-SUPPRESSED-ON-REPLACED-001, HTML-SCRIPT-IGNORED-001, HTML-JAVASCRIPT-URL-IGNORED-001).
+- Internal `CssDiagnostic` mirrored to public `Diagnostic` via `PublicDiagnosticsSinkAdapter`. A single sink set on `HtmlPdfOptions.Diagnostics` collects HTML + CSS + layout diagnostics.
+
+#### `Phase2Pipeline` (`NetPdf/Phase2/Phase2Pipeline`)
+- Canonical pipeline composition: `RunFromHtmlAsync(html, options, sink, ct)` + `Run(document, sheets, options, sink, ct)`. Returns `Phase2Result(BoxRoot, SemanticRoot, ResolvedCascade, AdaptedSheets)`.
+- `CancellationToken` honored at every stage boundary.
+- `CssMediaContext` built from `HtmlPdfOptions` (MediaType + PageSize → media query evaluation + viewport).
+
+#### Layout snapshot test infrastructure (`tests/NetPdf.LayoutSnapshots`)
+- 9 fixture pairs covering principal Phase 2 surface area: simple paragraph, ordered list with markers, table with caption + scope + colspan, var/calc value chain (with paired computed-value Fact), pseudo-element with attr() substitution, hidden + aria filtering, figure + image alt tri-state, unsupported CSS features (counter() + oklch() + img::before — 3 distinct codes), `<script>` + `javascript:` URL stripping (HTML diagnostics with source location).
+- 3 deterministic serializers: `BoxTreeSerializer`, `SemanticTreeSerializer`, `DiagnosticsSerializer`. Auto-discovered fixture directories.
+- `NETPDF_UPDATE_SNAPSHOTS=1` regenerates goldens.
+- Source-tree path resolution walks up to `NetPdf.slnx` so updates write to source, not `bin/`.
+
+#### Phase 2 pipeline benchmark (`tests/NetPdf.Benchmarks/Phase2PipelineBenchmarks`)
+- 5 benchmarks: 4 corpus invoices (3.7–13.6 KB) + 100 KB synthetic invoice (Phase 2 exit-criterion gate).
+- First-cycle baseline (Apple M4 Pro, .NET 10.0.7, macOS arm64, in-process toolchain):
+  - 01-classic-pure-css.html (3.7 KB): **561 µs**, 1.43 MB allocated.
+  - 02-tailwind-cdn.html (10.8 KB): **547 µs**, 1.34 MB.
+  - 03-tailwind-cdn-responsive.html (13.6 KB): **702 µs**, 1.61 MB.
+  - 04-anvil-running-elements.html (6.3 KB): **717 µs**, 1.58 MB.
+  - 100 KB synthetic invoice: **50.9 ms** (±0.6 ms), 51.3 MB. Sits at the < 50 ms p50 exit-criterion boundary; documented honestly. Phase 3 will dominate runtime cost so optimization deferred.
+
+### Test counts
+- **3220 unit tests** + 96 RealDocuments + 30 LayoutSnapshots = **3346 tests passing** (1 skipped pin-capture utility).
+- AOT/JIT byte-parity gate from Phase 1 remains green.
+
+### Notes / known limitations
+- `HtmlPdf.Convert(html)` still throws `NotImplementedException`. Phase 2 produces the styled box tree; Phase 3 wires layout/pagination, Phase 4 wires paint, then the public facade returns real PDF bytes.
+- External `<link rel="stylesheet">` resource loading is disabled at the AngleSharp boundary in v0.3.x; Phase 5 wires the resource pipeline.
+- Modern color functions (`oklch`/`oklab`/`lab`/`lch`/`color`/`color-mix`/`light-dark`) parse via preprocessor recovery + emit `CSS-MODERN-COLOR-FUNCTION-UNSUPPORTED-001`; typed evaluation lands cycle-2.
+- `::before`/`::after`/`::marker` generated text is materialized in the box tree but intentionally absent from the semantic tree per the v1 PDF/UA policy. v1.1 PDF/UA pass re-sources the semantic tree from the rendered box tree.
+- AngleSharp.Css 1.0.0-beta.144 silently drops `display: contents` + `::marker` selectors during parse. Implementations are correct + load-bearing once cycle 2 wires preprocessor recovery for these.
+- CSS source positions (line/column) are wired through plumbing but emit `CssSourceLocation.Unknown` until Task 3 cycle-2 lands real source tracking.
 
 ## [0.1.0-alpha] — 2026-05-03
 
@@ -127,3 +236,4 @@ Phase 1 — PDF writer + text foundation. NetPdf can now produce well-formed, by
 - `NUGET_API_KEY` set up as GitHub Actions repository secret with `NetPdf*` glob scope.
 
 [0.1.0-alpha]: https://example.invalid/NetPdf/compare/0.0.1-phase0...0.1.0-alpha
+[0.3.0-alpha]: https://example.invalid/NetPdf/compare/0.1.0-alpha...0.3.0-alpha

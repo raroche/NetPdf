@@ -1,8 +1,8 @@
 {
-  "version": "0.1.0-alpha",
-  "phase": 1,
-  "phaseDescription": "PDF writer + text foundation",
+  "version": "0.3.0-alpha",
+  "phase": 2,
+  "phaseDescription": "CSS engine + DOM pipeline",
   "publicApiFrozen": true,
-  "lastUpdated": "2026-05-03",
+  "lastUpdated": "2026-05-07",
   "_note": "Informational only. The MSBuild source-of-truth is Directory.Build.props (VersionPrefix + VersionSuffix). When bumping versions, update BOTH files together, then create the git tag. Phase 5 will introduce a small MSBuild task that reads this file directly."
 }

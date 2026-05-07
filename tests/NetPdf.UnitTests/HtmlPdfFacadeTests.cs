@@ -29,33 +29,34 @@ public sealed class HtmlPdfFacadeTests
         Assert.False(System.Text.RegularExpressions.Regex.IsMatch(version, @"^\d+\.\d+\.\d+\.\d+$"),
             $"HtmlPdf.Version returned the 4-part assembly version '{version}' — should be the " +
             "informational/package version (with the prerelease tag preserved).");
-        // Phase 1 carries the 'alpha' prerelease tag. When this assertion fails on a
-        // legitimate version bump (Phase 2 → 0.3.0-alpha, etc.), update the expectation.
-        Assert.Contains("0.1.0", version, StringComparison.Ordinal);
+        // Phase 2 carries the 0.3.0-alpha tag. When this assertion fails on a
+        // legitimate version bump (Phase 3 → 0.7.0-beta, etc.), update the expectation.
+        Assert.Contains("0.3.0", version, StringComparison.Ordinal);
+        Assert.Contains("alpha", version, StringComparison.Ordinal);
     }
 
     [Fact]
-    public void Convert_string_throws_NotImplementedException_at_phase_1_alpha()
+    public void Convert_string_throws_NotImplementedException_at_phase_2_alpha()
     {
         var ex = Assert.Throws<NotImplementedException>(() =>
             HtmlPdf.Convert("<p>hello</p>"));
-        AssertPhase1AlphaMessage(ex.Message);
+        AssertPhase2AlphaMessage(ex.Message);
     }
 
     [Fact]
-    public async Task ConvertAsync_throws_NotImplementedException_at_phase_1_alpha()
+    public async Task ConvertAsync_throws_NotImplementedException_at_phase_2_alpha()
     {
         var ex = await Assert.ThrowsAsync<NotImplementedException>(async () =>
             await HtmlPdf.ConvertAsync("<p>hello</p>"));
-        AssertPhase1AlphaMessage(ex.Message);
+        AssertPhase2AlphaMessage(ex.Message);
     }
 
     [Fact]
-    public void ConvertDetailed_throws_NotImplementedException_at_phase_1_alpha()
+    public void ConvertDetailed_throws_NotImplementedException_at_phase_2_alpha()
     {
         var ex = Assert.Throws<NotImplementedException>(() =>
             HtmlPdf.ConvertDetailed("<p>hello</p>"));
-        AssertPhase1AlphaMessage(ex.Message);
+        AssertPhase2AlphaMessage(ex.Message);
     }
 
     [Fact]
@@ -72,19 +73,21 @@ public sealed class HtmlPdfFacadeTests
     }
 
     /// <summary>
-    /// Pins the throw-message contract so a regression to "Phase 0" messaging would fail
-    /// loudly. Phase 2 will replace these throws with real implementations and this
-    /// helper goes away with them.
+    /// Pins the throw-message contract so a regression to "Phase 0" / stale "Phase 1"
+    /// messaging would fail loudly. Phase 5 wires the public facade through to the
+    /// internal byte writer, at which point this helper goes away with the throws.
     /// </summary>
-    private static void AssertPhase1AlphaMessage(string message)
+    private static void AssertPhase2AlphaMessage(string message)
     {
-        // The message must NOT identify itself as Phase 0 — that was the pre-review state.
+        // The message must NOT identify itself as Phase 0 / 1 — those were prior states.
         Assert.DoesNotContain("Phase 0", message, StringComparison.Ordinal);
-        // The message MUST acknowledge the 0.1.0-alpha milestone or Phase 2 dependency.
+        Assert.DoesNotContain("0.1.0-alpha", message, StringComparison.Ordinal);
+        // The message MUST acknowledge the 0.3.0-alpha milestone or Phase 3+ dependency.
         Assert.True(
-            message.Contains("0.1.0-alpha", StringComparison.Ordinal)
-            || message.Contains("Phase 2", StringComparison.Ordinal),
-            $"Phase-1-alpha throw message must reference '0.1.0-alpha' or 'Phase 2' so the user " +
-            $"knows which milestone is in flight. Got: '{message}'");
+            message.Contains("0.3.0-alpha", StringComparison.Ordinal)
+            || message.Contains("Phase 3", StringComparison.Ordinal)
+            || message.Contains("Phase 5", StringComparison.Ordinal),
+            $"Phase-2-alpha throw message must reference '0.3.0-alpha' or a future-phase dependency " +
+            $"so the user knows which milestone is in flight. Got: '{message}'");
     }
 }

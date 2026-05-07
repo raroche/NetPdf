@@ -1,0 +1,11 @@
+Root
+  BlockContainer @element=html
+    BlockContainer @element=body
+      BlockContainer @element=p
+        TextRun @element=p "visible"
+      AnonymousBlock
+        InlineBox @element=a
+          TextRun @element=a "click"
+        InlineBox @element=a
+          TextRun @element=a "safe"
+        TextRun @element=body "\n"

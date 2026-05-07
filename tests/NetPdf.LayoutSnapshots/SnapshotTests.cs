@@ -7,9 +7,9 @@ using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using NetPdf.Css.ComputedValues;
-using NetPdf.Css.Diagnostics;
 using NetPdf.Css.Properties;
 using NetPdf.Layout.Boxes;
+using NetPdf.Layout.Semantic;
 using NetPdf.LayoutSnapshots.Serialization;
 using NetPdf.Phase2;
 using Xunit;
@@ -17,46 +17,26 @@ using Xunit;
 namespace NetPdf.LayoutSnapshots;
 
 /// <summary>
-/// Task 18 cycle 1 + hardening — snapshot driver. Each fixture under
-/// <c>tests/NetPdf.LayoutSnapshots/Fixtures/</c> holds:
+/// Task 18 cycle 1 + hardening + hardening 2 — snapshot driver. Each
+/// fixture under <c>tests/NetPdf.LayoutSnapshots/Fixtures/</c> holds:
 /// <list type="bullet">
 ///   <item><c>input.html</c> — minified HTML to render through the
 ///     full Phase 2 pipeline. Authors keep these one-line on purpose
-///     (see Task 18 hardening Rec 4): pretty-printed HTML produces
+///     (Task 18 hardening Rec 4): pretty-printed HTML produces
 ///     spec-correct but noisy whitespace-only <c>TextRun</c>s that
 ///     drown semantic content in the golden — minified input keeps
 ///     the snapshot focused on structural output.</item>
 ///   <item><c>box-tree.txt</c> — golden box-tree serialization.</item>
 ///   <item><c>semantic-tree.txt</c> — golden semantic-tree serialization.</item>
-///   <item><c>diagnostics.txt</c> — golden CSS-diagnostic emission set
-///     (added in hardening Rec 3). Empty file means "this fixture runs
-///     clean"; non-empty captures the exact codes + severities.</item>
+///   <item><c>diagnostics.txt</c> — golden diagnostic emission set
+///     (Task 18 hardening Rec 3). Empty file means "this fixture runs
+///     clean"; non-empty captures exact codes + severities + source
+///     locations. Now sourced from the public <c>IDiagnosticsSink</c>
+///     so HTML-stage diagnostics (<c>HTML-SCRIPT-IGNORED-001</c>,
+///     <c>HTML-JAVASCRIPT-URL-IGNORED-001</c>) land alongside CSS-stage
+///     codes (Task 18 hardening 2 Rec 1).</item>
 /// </list>
 /// </summary>
-/// <remarks>
-/// <para>
-/// <b>Adding a new fixture.</b>
-/// <list type="number">
-///   <item>Create <c>Fixtures/&lt;name&gt;/input.html</c> (minified —
-///     one element per logical position, no inter-tag whitespace).</item>
-///   <item>Run <c>NETPDF_UPDATE_SNAPSHOTS=1 dotnet test
-///     tests/NetPdf.LayoutSnapshots</c> — auto-discovery picks up the
-///     new directory and the helper writes box-tree, semantic-tree,
-///     and diagnostics goldens to the source tree.</item>
-///   <item>Review the diff in git + commit.</item>
-/// </list>
-/// Per Rec 5 the runner auto-discovers every directory under
-/// <c>Fixtures/</c> at test-discovery time so a new fixture cannot sit
-/// silently un-executed.
-/// </para>
-/// <para>
-/// <b>Updating after a change.</b> When a Phase 2 change intentionally
-/// reshapes the box / semantic / diagnostic output, run with
-/// <c>NETPDF_UPDATE_SNAPSHOTS=1</c> to overwrite the goldens. Review the
-/// diff carefully — accidentally regenerating drops the regression-
-/// detection value of the snapshots entirely.
-/// </para>
-/// </remarks>
 public sealed class SnapshotTests
 {
     private static readonly string FixturesRoot =
@@ -124,10 +104,13 @@ public sealed class SnapshotTests
         SnapshotAssert.MatchesFile(actual, Path.Combine(fixtureName, "semantic-tree.txt"));
     }
 
-    /// <summary>Rec 3 — captures the CSS-diagnostic emission set per
-    /// fixture so an unsupported-feature regression (e.g., a previously-
-    /// silent code starts firing) breaks the build instead of staying
-    /// invisible. See <see cref="DiagnosticsSerializer"/> for format.</summary>
+    /// <summary>Task 18 hardening Rec 3 — captures the diagnostic emission
+    /// set per fixture so an unsupported-feature regression (e.g., a
+    /// previously-silent code starts firing) breaks the build instead of
+    /// staying invisible. Per Task 18 hardening 2 Rec 1, the capture path
+    /// is now the public <see cref="IDiagnosticsSink"/> so HTML-stage
+    /// diagnostics land alongside CSS-stage. See
+    /// <see cref="DiagnosticsSerializer"/> for format.</summary>
     [Theory]
     [MemberData(nameof(FixtureNames))]
     public async Task Diagnostics_match_snapshot(string fixtureName)
@@ -137,15 +120,15 @@ public sealed class SnapshotTests
         SnapshotAssert.MatchesFile(actual, Path.Combine(fixtureName, "diagnostics.txt"));
     }
 
-    /// <summary>Rec 2 — the box-tree snapshot for <c>04-var-and-calc</c>
-    /// only proves the tree shape; it does NOT prove the var()/calc() chain
-    /// resolves to the expected pixel value because <see cref="BoxTreeSerializer"/>
-    /// doesn't emit computed-style fields by design (capturing every
-    /// resolved value in the golden would lock in cycle-1 internals + churn
-    /// every fixture every time a property landed). This paired assertion
-    /// closes that gap by reading <c>padding-left</c> from the styled
-    /// <c>p.x</c> box and asserting it resolves to the spec-defined 20px
-    /// (8px base × 2 doubled + 4px = 20px).</summary>
+    /// <summary>Task 18 hardening Rec 2 — closes the value-coverage gap
+    /// for <c>04-var-and-calc</c>. The box-tree snapshot only proves the
+    /// tree shape because <see cref="BoxTreeSerializer"/> doesn't emit
+    /// computed-style fields (capturing every resolved value would lock
+    /// in cycle-1 internals + churn every fixture every time a property
+    /// landed). Reads <c>padding-left</c> from the styled <c>p.x</c> box
+    /// and asserts it resolves to the spec-defined 20px (8px base × 2
+    /// doubled + 4px = 20px) — proves the var()/calc() chain through
+    /// Tasks 8/9/10.</summary>
     [Fact]
     public async Task VarAndCalc_resolves_padding_left_to_20px()
     {
@@ -160,12 +143,54 @@ public sealed class SnapshotTests
         Assert.Equal(20.0, paddingLeft.AsLengthPx(), precision: 4);
     }
 
-    private static async Task<(Box BoxRoot, Layout.Semantic.SemanticNode SemanticRoot, IReadOnlyList<CssDiagnostic> Diagnostics)>
+    /// <summary>Task 18 hardening 2 review Rec 3 — pin the v1 policy that
+    /// <c>::before</c> / <c>::after</c> generated text is intentionally
+    /// <i>absent</i> from the semantic tree. The semantic tree walks the
+    /// static DOM; generated content is materialized by <c>BoxBuilder</c>
+    /// against the rendered tree — bridging is deferred to the Phase 5
+    /// PDF/UA pass that will re-source the semantic tree from the rendered
+    /// box tree (so generated text becomes accessible content per WCAG
+    /// 1.1.1, with the marker / before / after distinction routing
+    /// generated text to <c>InlineText</c> vs <c>/Artifact</c>).
+    /// <para>
+    /// This Fact pins the current state explicitly: the <c>05-pseudo-with-attr</c>
+    /// fixture's box snapshot DOES carry the <c>"[WIDGET] "</c> generated
+    /// text but the semantic tree does NOT. A future change that bridges
+    /// generated content into the semantic tree will fail this assertion
+    /// — the failure tells the author "you crossed an intentional v1
+    /// boundary; update the policy + the snapshot together" rather than
+    /// the snapshot drift looking like an accidental regression.
+    /// </para></summary>
+    [Fact]
+    public async Task PseudoWithAttr_generated_text_is_absent_from_semantic_tree_until_phase_5_pdfua()
+    {
+        var (boxRoot, semanticRoot, _) = await RunPipelineAsync("05-pseudo-with-attr");
+
+        // The pseudo flag lives on the principal InlineBox; the generated
+        // text is its TextRun child. Walk pseudos + collect child text.
+        var pseudoBoxes = WalkBoxes(boxRoot)
+            .Where(b => b.Pseudo == BoxPseudo.Before || b.Pseudo == BoxPseudo.After)
+            .ToList();
+        Assert.NotEmpty(pseudoBoxes);
+        var beforeText = pseudoBoxes.Single(b => b.Pseudo == BoxPseudo.Before)
+            .Children.Single(c => c.Kind == BoxKind.TextRun).Text;
+        var afterText = pseudoBoxes.Single(b => b.Pseudo == BoxPseudo.After)
+            .Children.Single(c => c.Kind == BoxKind.TextRun).Text;
+        Assert.Equal("[WIDGET] ", beforeText);
+        Assert.Equal(".", afterText);
+
+        var aggregateSemanticText = AllSemanticText(semanticRoot);
+        Assert.DoesNotContain("[WIDGET]", aggregateSemanticText);
+        Assert.Equal("item description", aggregateSemanticText.Trim());
+    }
+
+    private static async Task<(Box BoxRoot, SemanticNode SemanticRoot, IReadOnlyList<Diagnostic> Diagnostics)>
         RunPipelineAsync(string fixtureName)
     {
         var html = LoadInputHtml(fixtureName);
         var sink = new CapturingSink();
-        var result = await Phase2Pipeline.RunFromHtmlAsync(html, new HtmlPdfOptions(), sink);
+        var options = new HtmlPdfOptions { Diagnostics = sink };
+        var result = await Phase2Pipeline.RunFromHtmlAsync(html, options);
         return (result.BoxRoot, result.SemanticRoot, sink.Diagnostics);
     }
 
@@ -183,9 +208,22 @@ public sealed class SnapshotTests
                 yield return descendant;
     }
 
-    private sealed class CapturingSink : ICssDiagnosticsSink
+    private static string AllSemanticText(SemanticNode node)
     {
-        public List<CssDiagnostic> Diagnostics { get; } = new();
-        public void Emit(CssDiagnostic diagnostic) => Diagnostics.Add(diagnostic);
+        var sb = new System.Text.StringBuilder();
+        Visit(node, sb);
+        return sb.ToString();
+
+        static void Visit(SemanticNode n, System.Text.StringBuilder buf)
+        {
+            if (n.Kind == SemanticKind.InlineText) buf.Append(n.Text);
+            foreach (var child in n.Children) Visit(child, buf);
+        }
+    }
+
+    private sealed class CapturingSink : IDiagnosticsSink
+    {
+        public List<Diagnostic> Diagnostics { get; } = new();
+        public void Emit(Diagnostic diagnostic) => Diagnostics.Add(diagnostic);
     }
 }

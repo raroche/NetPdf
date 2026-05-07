@@ -1,3 +1,3 @@
-CSS-CONTENT-FUNCTION-UNSUPPORTED-001	Warning	Unsupported content token 'counter()' in 'counter(items)'. Cycle 1 supports string + attr(name) only.
-CSS-MODERN-COLOR-FUNCTION-UNSUPPORTED-001	Info	Modern color function 'oklch()' is unsupported in 'color: oklch(0.7 0.15 250)'. The cascade's invalid-at-computed-value-...
-CSS-PSEUDO-SUPPRESSED-ON-REPLACED-001	Info	::before on replaced <img> is suppressed (CSS Pseudo L4 §3 — replaced elements cannot host generated content).
+CSS-CONTENT-FUNCTION-UNSUPPORTED-001	Warning	<unknown>	Unsupported content token 'counter()' in 'counter(items)'. Cycle 1 supports string + attr(name) only.
+CSS-MODERN-COLOR-FUNCTION-UNSUPPORTED-001	Info	<inline>:1:37	Modern color function 'oklch()' is unsupported in 'color: oklch(0.7 0.15 250)'. The cascade's invalid-at-computed-value-...
+CSS-PSEUDO-SUPPRESSED-ON-REPLACED-001	Info	<unknown>	::before on replaced <img> is suppressed (CSS Pseudo L4 §3 — replaced elements cannot host generated content).

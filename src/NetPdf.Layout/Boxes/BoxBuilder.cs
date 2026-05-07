@@ -34,19 +34,34 @@ namespace NetPdf.Layout.Boxes;
 /// true (otherwise the registry default applies).
 /// </para>
 /// <para>
-/// <b>Scope through Task 13.</b> DOM walk + display dispatch + pseudo
-/// materialization (<c>::before</c> / <c>::after</c> with single-string
-/// content per <see cref="CssStringParser"/>) + anonymous-block insertion
+/// <b>Scope through Task 14.</b> DOM walk + display dispatch + pseudo
+/// materialization (<c>::before</c> / <c>::after</c> with single-string,
+/// multi-string concatenation, and <c>attr(name)</c> content per
+/// <see cref="CssContentList"/>) + anonymous-block insertion
 /// (Display L3 §3.1) + replaced-element detection + <c>display: none</c>
 /// skip + <c>display: contents</c> child-promotion (§3.1.1) +
 /// <c>&lt;br&gt;</c> as a forced <see cref="BoxKind.LineBreak"/> + table
 /// fixup (Tables L3 §3 — wrapper / grid split per §2.1, anon row-group /
 /// row / cell synthesis for bare table internals, whitespace-only text
-/// stripping between table internals per §3.1). Out of scope (later
-/// cycles): <c>::marker</c> generation, content-list parsing (counter /
-/// attr / open-quote / close-quote / image / multi-token), block-in-inline
-/// split (§3.2), loose <c>display: table-cell</c> outside any table
-/// ancestor (Tables L3 §3.1 misparent-up walk).
+/// stripping between table internals per §3.1, tree-wide orphan fixup
+/// for loose <c>display: table-cell</c> / row / row-group outside any
+/// table ancestor per Tables L3 §3.1 "Generate Missing Parents") +
+/// <c>::marker</c> for list-items (Lists L3 §3.1 + Pseudo L4 §3.4 — disc /
+/// circle / square / decimal-family / roman / alpha / lower-greek per
+/// Counter Styles 3 §6) + <c>::first-line</c> / <c>::first-letter</c>
+/// cascade staging (block-container-only per Pseudo L4 §3.2 / §3.3;
+/// Phase 3 line-layout consumes the staged styles).
+/// </para>
+/// <para>
+/// <b>Out of scope (later cycles).</b> Generated content via
+/// <c>counter()</c> / <c>counters()</c> (needs counter-reset / counter-
+/// increment property machinery), <c>image()</c> / <c>url()</c> /
+/// <c>linear-gradient()</c> (needs the resource pipeline),
+/// <c>open-quote</c> / <c>close-quote</c> (needs quotation-stack with
+/// depth tracking + <c>quotes</c> property), modern multi-arg <c>attr()</c>
+/// type / fallback (needs the typed-value pipeline), block-in-inline
+/// split (Display L3 §3.2), <c>list-style-image</c>, <c>&lt;ol start&gt;</c>
+/// / <c>&lt;li value&gt;</c> attribute overrides.
 /// </para>
 /// </remarks>
 internal static class BoxBuilder
@@ -270,14 +285,12 @@ internal static class BoxBuilder
         ResolvedCascadeResult cascade,
         ICssDiagnosticsSink? diagnostics)
     {
-        var styleType = ReadListStyleType(hostStyle, host);
-        if (styleType == "none") return null;
-
         // Apply ::marker pseudo cascade if the author styled it. Per Task 14
         // review Rec 6 + CSS Pseudo L4 §3.4: only the marker-applicable
         // property subset (font-*, color, line-height, letter-spacing,
-        // content, etc.) is honored; arbitrary display/margin/padding/
-        // background slots would otherwise corrupt the marker layout.
+        // content, list-style-type, etc.) is honored; arbitrary
+        // display/margin/padding/background slots would otherwise corrupt
+        // the marker layout.
         var markerStyle = ComputedStyle.Rent();
         ApplyDefaults(markerStyle);
         ApplyInheritance(markerStyle, hostStyle);
@@ -285,6 +298,19 @@ internal static class BoxBuilder
         if (markerRules is not null)
         {
             ApplyMarkerApplicableDeclarations(markerStyle, markerRules, diagnostics);
+        }
+
+        // Per PR #10 review Rec 2: read the EFFECTIVE list-style-type AFTER
+        // marker rules apply so a `li::marker { list-style-type: square }`
+        // declaration overrides the host list-item's value. Reading from
+        // hostStyle before applying marker rules ignored the override.
+        // (`list-style-type` is in MarkerApplicableProperties so the cascade
+        // value lands on markerStyle when delivered.)
+        var styleType = ReadListStyleType(markerStyle, host);
+        if (styleType == "none")
+        {
+            markerStyle.Dispose();
+            return null;
         }
 
         // Per Task 14 review Rec 2 + CSS Pseudo L4 §3.4: ::marker accepts a

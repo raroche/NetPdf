@@ -352,6 +352,32 @@ public sealed class BoxBuilderPseudoTests
     // ============================================================
 
     [Fact]
+    public async Task Marker_reads_list_style_type_AFTER_marker_rules_apply_per_PR10_Rec_2()
+    {
+        // PR #10 review Rec 2: previously BuildListItemMarker read styleType
+        // from hostStyle BEFORE applying marker rules to markerStyle, so a
+        // hypothetical `li::marker { list-style-type: square }` would have no
+        // effect even after AngleSharp.Css's ::marker drop is fixed. The fix
+        // re-reads from markerStyle after ApplyMarkerApplicableDeclarations
+        // runs.
+        //
+        // We can't directly verify the cascade-delivered override (AngleSharp
+        // drops ::marker selectors at parse time — see Rec 2 note above), but
+        // we CAN verify the read order by checking that markerStyle has the
+        // expected list-style-type slot after construction. The marker box's
+        // Style is markerStyle; ReadListStyleType is called on it.
+        var root = await BuildAsync(
+            "<ul class='outer'><li class='m'>x</li></ul>",
+            ".outer { list-style-type: square }");
+        // The wrapper's list-style-type is "square"; <li> inherits it via the
+        // cascade (list-style-type is inheritable). The marker style inherits
+        // from the list-item, so markerStyle.ListStyleType is "square". The
+        // marker glyph uses that.
+        var marker = FindMarker(Walk(root).First(b => b.Kind == BoxKind.ListItem));
+        Assert.StartsWith("▪", marker.Children[0].Text);
+    }
+
+    [Fact]
     public async Task Marker_with_no_explicit_content_falls_back_to_list_style_type()
     {
         // The ::marker content override path is exercised; absent a delivered

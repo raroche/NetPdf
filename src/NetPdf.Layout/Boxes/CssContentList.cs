@@ -17,8 +17,12 @@ namespace NetPdf.Layout.Boxes;
 ///     concatenated in source order. Example: <c>"prefix " "suffix"</c>.</item>
 ///   <item><c>attr(<i>name</i>)</c> — substituted with the host element's
 ///     attribute value (case-insensitive name match per HTML5; missing
-///     attribute → empty string). Cycle-1 ignores the <c>type</c> + fallback
-///     parameters of the modern <c>attr()</c> form per CSS Values L4 §10.</item>
+///     attribute → empty string). Per Task 14 review Rec 4, the modern
+///     multi-arg form <c>attr(<i>name</i> <i>type</i>?, <i>fallback</i>?)</c>
+///     (CSS Values L4 §10) is REJECTED — the parse fails cleanly rather
+///     than silently dropping the type / fallback args and treating as
+///     bare <c>attr(name)</c>. Cycle 2 will deliver the typed-value
+///     pipeline + fallback handling.</item>
 ///   <item>Mixtures of strings + <c>attr()</c>: <c>"Item " attr(data-name)</c>.</item>
 /// </list>
 /// </summary>

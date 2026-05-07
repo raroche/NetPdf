@@ -74,9 +74,17 @@ internal static class CustomPropertyCycleDetector
             }
             // One diagnostic per cycle, listing the members for traceability.
             scc.Sort(StringComparer.Ordinal); // stable ordering for the message
+            // Per Phase A A-6 — sanitize each cycle member before joining. Names
+            // are author-supplied custom-property identifiers so they can carry
+            // C0/C1/DEL or be extremely long.
+            var safeMembers = new List<string>(scc.Count);
+            foreach (var n in scc)
+            {
+                safeMembers.Add(DiagnosticTextSanitizer.Sanitize(n, maxLength: 80));
+            }
             diagnostics?.Emit(new CssDiagnostic(
                 CssDiagnosticCodes.CssVarCircular001,
-                $"Custom property cycle detected: {string.Join(" → ", scc)}. All cycle members are invalid; references resolve to fallback or unset.",
+                $"Custom property cycle detected: {string.Join(" → ", safeMembers)}. All cycle members are invalid; references resolve to fallback or unset.",
                 CssDiagnosticSeverity.Warning,
                 location));
         }

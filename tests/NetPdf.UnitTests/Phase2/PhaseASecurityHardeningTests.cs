@@ -280,4 +280,211 @@ public sealed class PhaseASecurityHardeningTests
         Assert.Contains(parseWarnings,
             d => d.Message.Contains("budget") && d.Message.Contains("suppressed"));
     }
+
+    // --- PR #15 follow-up: Copilot review + user audit ------------------------
+
+    // A-1 widening: SVG xlink:href now uses IsDangerousUrl (data:/vbscript:),
+    // not just IsJavaScriptUrl. (user audit #1.)
+    [Theory]
+    [InlineData("data:text/html,<script>alert(1)</script>")]
+    [InlineData("DATA:image/svg+xml,<svg/>")]
+    [InlineData("vbscript:msgbox(1)")]
+    [InlineData("VBScript:msgbox(1)")]
+    public async Task A1Followup_xlink_href_dangerous_schemes_stripped(string url)
+    {
+        var sink = new CapturingPublicSink();
+        var host = new HtmlParsingHost();
+        var doc = await host.ParseAsync(
+            $"<html><body><svg xmlns=\"http://www.w3.org/2000/svg\"><a xlink:href=\"{url}\"><text>x</text></a></svg></body></html>",
+            new HtmlPdfOptions { Diagnostics = sink });
+        Assert.Contains(sink.Diagnostics, d => d.Code == "HTML-JAVASCRIPT-URL-IGNORED-001");
+        var anchor = doc.QuerySelector("a")!;
+        Assert.False(anchor.HasAttribute("xlink:href"),
+            "expected xlink:href stripped for dangerous scheme");
+    }
+
+    // A-1 widening: img/link/source/track/input/img-srcset attribute paths now
+    // strip dangerous URL schemes. (user audit #2.)
+    [Theory]
+    [InlineData("<img src=\"javascript:alert(1)\">", "img", "src")]
+    [InlineData("<img srcset=\"javascript:alert(1) 1x\">", "img", "srcset")]
+    [InlineData("<link rel=\"stylesheet\" href=\"javascript:alert(1)\">", "link", "href")]
+    [InlineData("<source src=\"javascript:alert(1)\">", "source", "src")]
+    [InlineData("<source srcset=\"javascript:alert(1) 1x\">", "source", "srcset")]
+    [InlineData("<audio src=\"javascript:alert(1)\"></audio>", "audio", "src")]
+    [InlineData("<video src=\"javascript:alert(1)\" poster=\"javascript:alert(1)\"></video>", "video", "src")]
+    [InlineData("<track src=\"javascript:alert(1)\">", "track", "src")]
+    [InlineData("<input type=\"image\" src=\"javascript:alert(1)\">", "input", "src")]
+    [InlineData("<input type=\"image\" formaction=\"javascript:alert(1)\">", "input", "formaction")]
+    [InlineData("<button formaction=\"javascript:alert(1)\">x</button>", "button", "formaction")]
+    public async Task A1Followup_extended_attribute_paths_strip_javascript(
+        string html, string tag, string attr)
+    {
+        var sink = new CapturingPublicSink();
+        var host = new HtmlParsingHost();
+        var doc = await host.ParseAsync($"<html><body>{html}</body></html>",
+            new HtmlPdfOptions { Diagnostics = sink });
+        Assert.Contains(sink.Diagnostics, d => d.Code == "HTML-JAVASCRIPT-URL-IGNORED-001");
+        Assert.False(doc.QuerySelector(tag)!.HasAttribute(attr),
+            $"expected {tag}.{attr} stripped for javascript:");
+    }
+
+    // A-1 widening: meta refresh now accepts whitespace around `url = ...`. The
+    // pre-fix parser only matched the canonical `url=` form; valid HTML5 allows
+    // arbitrary whitespace per §4.2.5.3. (Copilot review #1 + user audit #4.)
+    [Theory]
+    [InlineData("0; url = javascript:alert(1)")]
+    [InlineData("0; URL  =  javascript:alert(1)")]
+    [InlineData("0;url=javascript:alert(1)")]
+    [InlineData("0  ;  url=  javascript:alert(1)")]
+    public async Task A1Followup_meta_refresh_whitespace_around_url_equals(string content)
+    {
+        var sink = new CapturingPublicSink();
+        var host = new HtmlParsingHost();
+        var doc = await host.ParseAsync(
+            $"<html><head><meta http-equiv=\"refresh\" content=\"{content}\"></head><body></body></html>",
+            new HtmlPdfOptions { Diagnostics = sink });
+        Assert.Contains(sink.Diagnostics, d => d.Code == "HTML-JAVASCRIPT-URL-IGNORED-001");
+        Assert.False(doc.QuerySelector("meta")!.HasAttribute("content"));
+    }
+
+    // A-3 follow-up: budget exhaustion message now reports the ACTUAL budget
+    // value (not the hard-coded 10 MiB default). (Copilot review #2.)
+    [Fact]
+    public void A3Followup_budget_diagnostic_reports_actual_value()
+    {
+        var customProperties = new CustomPropertyTable(parent: null);
+        customProperties.Set("--big", new string('a', 200));
+        var sink = new CapturingCssSink();
+        var budget = new VarSubstitution.Budget(bytesPerElement: 100);
+
+        VarSubstitution.Substitute("var(--big)", customProperties, sink, budget: budget);
+        var msg = sink.Diagnostics.First(d => d.Code == "CSS-VAR-EXPANSION-LIMIT-001").Message;
+        Assert.Contains("100 chars", msg);
+        Assert.DoesNotContain("10 MiB", msg);
+    }
+
+    // A-6 follow-up: control chars in author-supplied values are stripped from
+    // every resolver's diagnostic message — not just length resolver +
+    // selector compile. (user audit #5.)
+    private static string BuildPoisonValue(string visible)
+    {
+        var ch = new System.Collections.Generic.List<char>();
+        foreach (var c in "PRE") ch.Add(c);
+        ch.Add((char)0x1B);            // ANSI ESC
+        ch.Add('[');
+        ch.Add('3');
+        ch.Add('1');
+        ch.Add('m');
+        ch.Add((char)0x07);            // BEL
+        ch.Add((char)0x00);            // NUL
+        foreach (var c in visible) ch.Add(c);
+        return new string(ch.ToArray());
+    }
+
+    private static void AssertNoControlChars(string s)
+    {
+        foreach (var c in s)
+        {
+            Assert.False(c < 0x20 || c == 0x7F || (c >= 0x80 && c <= 0x9F),
+                $"U+{(int)c:X4} leaked into diagnostic message");
+        }
+    }
+
+    [Fact]
+    public void A6Followup_keyword_resolver_diagnostic_sanitizes_value()
+    {
+        var poison = BuildPoisonValue("invalid-keyword");
+        var sink = new CapturingCssSink();
+        NetPdf.Css.ComputedValues.PropertyResolvers.KeywordResolver.Resolve(
+            poison,
+            NetPdf.Css.Properties.PropertyId.Display, "display",
+            sink, CssSourceLocation.Unknown);
+        Assert.NotEmpty(sink.Diagnostics);
+        AssertNoControlChars(sink.Diagnostics[0].Message);
+    }
+
+    [Fact]
+    public void A6Followup_number_resolver_diagnostic_sanitizes_value()
+    {
+        var poison = BuildPoisonValue("not-a-number");
+        var sink = new CapturingCssSink();
+        NetPdf.Css.ComputedValues.PropertyResolvers.NumberResolver.ResolveNumber(
+            poison,
+            NetPdf.Css.Properties.PropertyId.FlexGrow, "flex-grow",
+            sink, CssSourceLocation.Unknown);
+        Assert.NotEmpty(sink.Diagnostics);
+        AssertNoControlChars(sink.Diagnostics[0].Message);
+    }
+
+    [Fact]
+    public void A6Followup_color_resolver_modern_color_diagnostic_sanitizes_value()
+    {
+        // oklch() routes through the modern-color emission path. Embed control
+        // chars inside the function body so the value text the diagnostic
+        // interpolates carries them.
+        var poison = "oklch(" + BuildPoisonValue("0.5 0.1 200") + ")";
+        var sink = new CapturingCssSink();
+        NetPdf.Css.ComputedValues.PropertyResolvers.ColorResolver.Resolve(
+            poison,
+            NetPdf.Css.Properties.PropertyId.Color, "color",
+            sink, CssSourceLocation.Unknown);
+        Assert.NotEmpty(sink.Diagnostics);
+        var modern = sink.Diagnostics.Where(
+            d => d.Code == "CSS-MODERN-COLOR-FUNCTION-UNSUPPORTED-001").ToList();
+        Assert.NotEmpty(modern);
+        AssertNoControlChars(modern[0].Message);
+    }
+
+    // A-7 follow-up: HTML diagnostic source paths are now sanitized to
+    // basename, matching CSS diagnostic behavior. (user audit #3.)
+    [Fact]
+    public async Task A7Followup_html_diagnostic_source_path_sanitized()
+    {
+        // Trigger an HTML-EVENT-HANDLER-IGNORED-001 with a BaseUri whose path
+        // would otherwise leak filesystem topology. ToSourceLocation pulls the
+        // string from BaseUri.AbsoluteUri; SanitizeFilePath reduces that to
+        // the basename.
+        var sink = new CapturingPublicSink();
+        var host = new HtmlParsingHost();
+        var opts = new HtmlPdfOptions
+        {
+            Diagnostics = sink,
+            BaseUri = new System.Uri("file:///etc/passwd"),
+        };
+        await host.ParseAsync("<html><body><div onclick=\"x\"></div></body></html>", opts);
+        var diag = sink.Diagnostics.First(d => d.Code == "HTML-EVENT-HANDLER-IGNORED-001");
+        Assert.Equal("passwd", diag.Location.File);
+    }
+
+    // A-8 follow-up: per-rule cancellation in CollectFromRules. A pre-cancelled
+    // token now stops the rule walk before a hostile sheet exhausts CPU on
+    // selector compilation. (user audit #6.)
+    [Fact]
+    public async Task A8Followup_cancellation_during_rule_collection()
+    {
+        // 50k rules. With per-rule cancellation, a pre-cancelled token bails
+        // very fast; without it we'd spend wall-clock seconds in selector
+        // compilation before any post-loop check.
+        var rules = new System.Text.StringBuilder();
+        for (var i = 0; i < 50_000; i++)
+        {
+            rules.Append($".x{i} {{ color: red }} ");
+        }
+        var html = $"<!doctype html><html><head><style>{rules}</style></head><body></body></html>";
+        var cts = new System.Threading.CancellationTokenSource();
+        cts.Cancel();
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        await Assert.ThrowsAsync<System.OperationCanceledException>(async () =>
+        {
+            using var result = await NetPdf.Phase2.Phase2Pipeline.RunFromHtmlAsync(
+                html, new HtmlPdfOptions(), diagnostics: null, cancellationToken: cts.Token);
+        });
+        sw.Stop();
+        // Hard upper bound: per-rule cancellation should bail well under 5
+        // seconds even on cold-start. The unbounded path takes much longer.
+        Assert.True(sw.ElapsedMilliseconds < 5_000,
+            $"expected cancel < 5s; took {sw.ElapsedMilliseconds}ms");
+    }
 }

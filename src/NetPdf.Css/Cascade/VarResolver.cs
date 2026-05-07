@@ -83,7 +83,15 @@ internal static class VarResolver
         // share the budget because they all originate from the same input
         // document position; charging them separately would let an attacker
         // amplify by 5–10× via fragment pseudos.
-        var elementBudget = new VarSubstitution.Budget();
+        //
+        // Per Copilot review #4 — allocate the budget LAZILY: most DOM elements
+        // have no styles (text nodes, raw whitespace, structural wrappers
+        // without rules), so eager allocation paid the per-element 24-byte
+        // overhead for every node. Lazy allocation skips when both
+        // (matched == null) AND no pseudos are styled on this element.
+        VarSubstitution.Budget? elementBudget = null;
+        VarSubstitution.Budget GetOrCreateBudget()
+            => elementBudget ??= new VarSubstitution.Budget();
 
         var hadCustomDecls = false;
         if (matched is not null)
@@ -94,8 +102,8 @@ internal static class VarResolver
             // is "invalid at computed value time"; the earlier substitution-time guard
             // only invalidated the chain that hit the cycle first.
             CustomPropertyCycleDetector.DetectAndMarkInvalid(ownTable, diagnostics);
-            ResolveOwnCustomPropertyValues(ownTable, diagnostics, elementBudget);
-            EmitNonCustomDeclarations(matched, ownTable, element, result, diagnostics, isPseudo: false, budget: elementBudget);
+            ResolveOwnCustomPropertyValues(ownTable, diagnostics, GetOrCreateBudget());
+            EmitNonCustomDeclarations(matched, ownTable, element, result, diagnostics, isPseudo: false, budget: GetOrCreateBudget());
             // Rec 6: ensure elements that have ONLY custom-property declarations still
             // surface a ResolvedRuleSet so callers can read the resolved table via
             // result.TryGetStylesFor(element).CustomProperties. Without this, an element
@@ -120,9 +128,9 @@ internal static class VarResolver
             var pseudoTable = new CustomPropertyTable(ownTable);
             CollectOwnCustomProperties(pseudoMatched, pseudoTable);
             CustomPropertyCycleDetector.DetectAndMarkInvalid(pseudoTable, diagnostics);
-            ResolveOwnCustomPropertyValues(pseudoTable, diagnostics, elementBudget);
+            ResolveOwnCustomPropertyValues(pseudoTable, diagnostics, GetOrCreateBudget());
             EmitNonCustomDeclarations(pseudoMatched, pseudoTable, element, result, diagnostics,
-                isPseudo: true, pseudoName: pair.Pseudo, budget: elementBudget);
+                isPseudo: true, pseudoName: pair.Pseudo, budget: GetOrCreateBudget());
         }
 
         foreach (var child in element.Children)

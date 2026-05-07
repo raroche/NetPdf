@@ -86,9 +86,14 @@ internal static class ColorResolver
             // is a parse error". Cycle 2 will sRGB-convert these.
             if (modernColorFn is not null)
             {
+                // Per Phase A A-6 — sanitize the function name + raw value before
+                // they reach the diagnostic message. modernColorFn is preprocessor
+                // recovery output (effectively trusted) but value is raw author CSS.
+                var safeModernFn = DiagnosticTextSanitizer.Sanitize(modernColorFn);
+                var safeValue = DiagnosticTextSanitizer.Sanitize(value);
                 diagnostics?.Emit(new CssDiagnostic(
                     CssDiagnosticCodes.CssModernColorFunctionUnsupported001,
-                    $"Modern color function '{modernColorFn}()' is unsupported in '{propertyName}: {value}'. The cascade's invalid-at-computed-value-time rule applies (initial / inherited value used).",
+                    $"Modern color function '{safeModernFn}()' is unsupported in '{propertyName}: {safeValue}'. The cascade's invalid-at-computed-value-time rule applies (initial / inherited value used).",
                     CssDiagnosticSeverity.Info,
                     location));
                 return ResolverResult.Invalid();

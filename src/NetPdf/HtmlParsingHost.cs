@@ -167,35 +167,64 @@ internal sealed class HtmlParsingHost
         // A ToArray() snapshot is taken at each query because the mutating walks
         // would otherwise invalidate AngleSharp's live collection.
         StripDangerousUrlOnAttribute(document, "a[href], area[href]", "href", sink, sourceFile);
+        // Per Phase A review feedback (user rec #2) — the strip walk is widened
+        // beyond the cycle-A-1 set to cover every URL-bearing attribute that
+        // can host a fetched resource. The full audit list (img/src,
+        // link/href, source/src + srcset, audio/src, video/src + poster,
+        // track/src, input[type=image]/src, input[formaction]) wasn't in
+        // Phase A's first cut because they're inert today (resource loading
+        // off) — but defense-in-depth: when Phase 5 wires IResourceLoader,
+        // any of these could carry a javascript:/vbscript:/data: payload
+        // that bypasses the loader's IP/scheme allowlist if the value passes
+        // through the parser without the strip first.
         StripDangerousUrlOnAttribute(document, "form[action]", "action", sink, sourceFile);
         StripDangerousUrlOnAttribute(document, "iframe[src]", "src", sink, sourceFile);
         StripDangerousUrlOnAttribute(document, "object[data]", "data", sink, sourceFile);
         StripDangerousUrlOnAttribute(document, "embed[src]", "src", sink, sourceFile);
         StripDangerousUrlOnAttribute(document, "base[href]", "href", sink, sourceFile);
-        // <meta http-equiv="refresh" content="0;url=javascript:..."> — the URL is
-        // embedded inside the content attribute; recognized via prefix-match
-        // after the optional delay value.
+        StripDangerousUrlOnAttribute(document, "img[src]", "src", sink, sourceFile);
+        StripDangerousUrlOnAttribute(document, "link[href]", "href", sink, sourceFile);
+        StripDangerousUrlOnAttribute(document, "source[src]", "src", sink, sourceFile);
+        StripDangerousUrlOnAttribute(document, "source[srcset]", "srcset", sink, sourceFile);
+        StripDangerousUrlOnAttribute(document, "img[srcset]", "srcset", sink, sourceFile);
+        StripDangerousUrlOnAttribute(document, "audio[src]", "src", sink, sourceFile);
+        StripDangerousUrlOnAttribute(document, "video[src]", "src", sink, sourceFile);
+        StripDangerousUrlOnAttribute(document, "video[poster]", "poster", sink, sourceFile);
+        StripDangerousUrlOnAttribute(document, "track[src]", "src", sink, sourceFile);
+        StripDangerousUrlOnAttribute(document, "input[src]", "src", sink, sourceFile);
+        StripDangerousUrlOnAttribute(document, "input[formaction]", "formaction", sink, sourceFile);
+        StripDangerousUrlOnAttribute(document, "button[formaction]", "formaction", sink, sourceFile);
+        // <meta http-equiv="refresh" content="0;url=javascript:..."> — the URL
+        // is embedded inside the content attribute. Per Copilot review #1 +
+        // user recommendation #4, parsing accepts whitespace around the
+        // `url=` separator (HTML5 §4.2.5.3 grammar permits whitespace) and
+        // the diagnostic now describes the EXTRACTED URL's scheme rather
+        // than the whole content attribute (which would always fall through
+        // to "dangerous" because "0;url=..." doesn't start with a scheme).
         foreach (var meta in document.QuerySelectorAll("meta").ToArray())
         {
             var httpEquiv = meta.GetAttribute("http-equiv");
             if (!string.Equals(httpEquiv, "refresh", System.StringComparison.OrdinalIgnoreCase)) continue;
             var content = meta.GetAttribute("content");
             if (string.IsNullOrEmpty(content)) continue;
-            if (!ExtractMetaRefreshUrlIsDangerous(content)) continue;
+            var extractedUrl = ExtractMetaRefreshUrl(content);
+            if (extractedUrl is null || !IsDangerousUrl(extractedUrl)) continue;
             sink?.Emit(new Diagnostic(
                 DiagnosticCodes.HtmlJavaScriptUrlIgnored001,
-                $"A <meta http-equiv=\"refresh\"> declared a {DescribeUrlScheme(content)} URL. The content attribute was removed.",
+                $"A <meta http-equiv=\"refresh\"> declared a {DescribeUrlScheme(extractedUrl)} URL. The content attribute was removed.",
                 DiagnosticSeverity.Warning,
                 ToSourceLocation(meta, sourceFile)));
             meta.RemoveAttribute("content");
         }
 
-        // SVG <a> elements use xlink:href (or, in modern SVG 2, plain href), but the xlink:href
-        // attribute can technically appear on any element. Walk the entire document and strip
-        // every javascript: xlink:href value, not just SVG anchors — defense in depth: any
-        // future emission consumer that interprets xlink:href as a navigation target would
-        // otherwise be the next leak vector. The attribute is removed; the element + its
-        // children remain so visible text still renders.
+        // SVG <a> elements use xlink:href (or, in modern SVG 2, plain href),
+        // but the xlink:href attribute can technically appear on any element.
+        // Walk the entire document and strip every dangerous-scheme xlink:href
+        // value, not just SVG anchors. Per Copilot review #3 + user
+        // recommendation #1, the recognition is widened from
+        // <see cref="IsJavaScriptUrl"/> to <see cref="IsDangerousUrl"/> so
+        // data: + vbscript: in xlink:href are also caught (matching what the
+        // explicit-attribute strip does on regular href / src / etc.).
         foreach (var element in document.All.ToArray())
         {
             string? xlinkHref = null;
@@ -208,11 +237,11 @@ internal sealed class HtmlParsingHost
                     break;
                 }
             }
-            if (xlinkHref is null || !IsJavaScriptUrl(xlinkHref)) continue;
+            if (xlinkHref is null || !IsDangerousUrl(xlinkHref)) continue;
 
             sink?.Emit(new Diagnostic(
                 DiagnosticCodes.HtmlJavaScriptUrlIgnored001,
-                $"A javascript: URL was found on a <{element.LocalName}> element's xlink:href attribute. The attribute was removed; element text retained.",
+                $"A {DescribeUrlScheme(xlinkHref)} URL was found on a <{element.LocalName}> element's xlink:href attribute. The attribute was removed; element text retained.",
                 DiagnosticSeverity.Warning,
                 ToSourceLocation(element, sourceFile)));
 
@@ -281,25 +310,37 @@ internal sealed class HtmlParsingHost
     }
 
     /// <summary>Parses the value of <c>&lt;meta http-equiv="refresh" content="..."&gt;</c>
-    /// and returns true if the embedded URL has a dangerous scheme. The HTML5
-    /// "refresh" pragma format is <c>{seconds}[ ;url={url}]</c> with the URL
-    /// optional; whitespace is forgiving + case-insensitive.</summary>
-    private static bool ExtractMetaRefreshUrlIsDangerous(string content)
+    /// and returns the embedded URL (or <see langword="null"/> when no URL
+    /// segment is present). The HTML5 "refresh" pragma format per §4.2.5.3
+    /// is <c>{seconds}[ ;url={url}]</c> with the URL optional; whitespace is
+    /// forgiving on both sides of the <c>url=</c> separator + the leading
+    /// delay; case-insensitive on the <c>url</c> token. Per Copilot review
+    /// #1 + user recommendation #4, the previous version of this method
+    /// (a) returned a yes/no instead of the URL — which forced the diagnostic
+    /// caller to re-describe the WHOLE content attribute via DescribeUrlScheme,
+    /// and (b) didn't accept whitespace around <c>url =</c>.</summary>
+    private static string? ExtractMetaRefreshUrl(string content)
     {
-        // Skip the leading delay value (digits, optional decimal). Find the URL
-        // segment after the comma/semicolon, trimming optional `url=` prefix.
         var span = content.AsSpan();
         var sepIdx = span.IndexOfAny(';', ',');
-        if (sepIdx < 0) return false; // no URL segment present; nothing to strip
+        if (sepIdx < 0) return null; // no URL segment present
         span = span[(sepIdx + 1)..].TrimStart();
-        // Optional `url=` prefix (case-insensitive).
-        if (span.Length >= 4
+        // Optional `url=` prefix (case-insensitive). Whitespace on EITHER side
+        // of the `=` is permitted ("url = http://..." / "url= http://..." /
+        // "url =http://...") per the spec's tolerant parsing rule.
+        if (span.Length >= 3
             && (span[0] == 'u' || span[0] == 'U')
             && (span[1] == 'r' || span[1] == 'R')
-            && (span[2] == 'l' || span[2] == 'L')
-            && span[3] == '=')
+            && (span[2] == 'l' || span[2] == 'L'))
         {
-            span = span[4..];
+            var afterUrl = span[3..].TrimStart();
+            if (afterUrl.Length > 0 && afterUrl[0] == '=')
+            {
+                span = afterUrl[1..].TrimStart();
+            }
+            // If 'url' isn't followed by '=' (or just whitespace+'='), fall
+            // through with the original span — caller treats the whole
+            // post-separator text as the URL per HTML5's tolerant parsing.
         }
         // Optional surrounding quotes.
         if (span.Length >= 2 && (span[0] == '"' || span[0] == '\''))
@@ -308,7 +349,7 @@ internal sealed class HtmlParsingHost
             var end = span[1..].IndexOf(quote);
             if (end >= 0) span = span[1..(end + 1)];
         }
-        return IsDangerousUrl(span.ToString());
+        return span.IsEmpty ? null : span.ToString();
     }
 
     /// <summary>Per Phase A security hardening A-2 — strip every <c>on*</c>
@@ -356,9 +397,21 @@ internal sealed class HtmlParsingHost
         // AngleSharp populates IElement.SourceReference only when IsKeepingSourceReferences is on
         // (set above) AND the element actually came from the parser. Synthesized fixup elements
         // can return null; fall back to Unknown so the diagnostic still emits cleanly.
+        //
+        // Per Phase A review user-recommendation #3 — sanitize the source path
+        // here at the HTML emission site, not just at the CSS-side adapter.
+        // A host-supplied BaseUri like file:///C:/Users/Foo/secret/index.html
+        // would otherwise leak host filesystem topology into HTML diagnostics
+        // (HTML-SCRIPT-IGNORED-001, HTML-JAVASCRIPT-URL-IGNORED-001,
+        // HTML-EVENT-HANDLER-IGNORED-001). Reduce absolute paths to basename;
+        // sentinels + http(s) URLs pass through unchanged.
+        var safeFile = sourceFile is null
+            ? null
+            : NetPdf.Css.Diagnostics.DiagnosticTextSanitizer.SanitizeFilePath(sourceFile);
+        if (safeFile == "<unknown>") safeFile = null;
         var position = element.SourceReference?.Position;
         return position is { } pos
-            ? new SourceLocation(sourceFile, pos.Line, pos.Column)
+            ? new SourceLocation(safeFile, pos.Line, pos.Column)
             : SourceLocation.Unknown;
     }
 }

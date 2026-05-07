@@ -82,7 +82,7 @@ internal static class CascadeResolver
             if (sheet.IsDisabled) continue;
             if (!media.Matches(sheet.MediaQuery)) continue;
             if (sheet.Order > maxSheetOrder) maxSheetOrder = sheet.Order;
-            CollectRules(sheet, compiledRules, hasContainingStylesheets, media, layers, diagnostics);
+            CollectRules(sheet, compiledRules, hasContainingStylesheets, media, layers, diagnostics, cancellationToken);
         }
 
         if (diagnostics is not null)
@@ -136,7 +136,8 @@ internal static class CascadeResolver
         HashSet<int> hasContainingSheets,
         CssMediaContext media,
         LayerRegistry layers,
-        ICssDiagnosticsSink? diagnostics)
+        ICssDiagnosticsSink? diagnostics,
+        System.Threading.CancellationToken cancellationToken)
     {
         // Per Phase A security hardening A-8 — wrap the diagnostic sink in a
         // per-stylesheet budget that caps CSS-PARSE-WARNING-001 emissions at
@@ -153,7 +154,7 @@ internal static class CascadeResolver
         var ruleOrder = 0;
         CollectFromRules(sheet.Rules, sheet.Origin, sheet.Order, ref ruleOrder,
             output, hasContainingSheets, media, layers,
-            currentLayer: LayerRegistry.UnlayeredIndex, budgetedSink);
+            currentLayer: LayerRegistry.UnlayeredIndex, budgetedSink, cancellationToken);
     }
 
     /// <summary>Per Phase A A-8 — sink decorator that throttles
@@ -222,6 +223,7 @@ internal static class CascadeResolver
         LayerRegistry layers,
         int currentLayer,
         ICssDiagnosticsSink? diagnostics,
+        System.Threading.CancellationToken cancellationToken,
         int depth = 0)
     {
         // Per Phase A A-4 — early-return on excessive nesting; emit one
@@ -238,6 +240,11 @@ internal static class CascadeResolver
 
         foreach (var rule in rules)
         {
+            // Per Phase A A-7 — check cancellation per-rule (not just at the stage
+            // boundary). A hostile stylesheet with millions of rules or an
+            // adversarially-deep nested @media tree could otherwise spend tens of
+            // seconds in selector compilation before any post-loop check runs.
+            cancellationToken.ThrowIfCancellationRequested();
             switch (rule)
             {
                 case CssStyleRule sr:
@@ -246,11 +253,13 @@ internal static class CascadeResolver
                     break;
                 case CssAtRule ar:
                     CollectAtRule(ar, origin, sheetOrder, ref ruleOrder,
-                        output, hasContainingSheets, media, layers, currentLayer, diagnostics, depth);
+                        output, hasContainingSheets, media, layers, currentLayer, diagnostics,
+                        cancellationToken, depth);
                     break;
                 case CssImportRule import:
                     CollectImportRule(import, origin, sheetOrder, ref ruleOrder,
-                        output, hasContainingSheets, media, layers, currentLayer, diagnostics, depth);
+                        output, hasContainingSheets, media, layers, currentLayer, diagnostics,
+                        cancellationToken, depth);
                     break;
                 // Other rule kinds (page, font-face, …) don't contribute declarations to
                 // the regular element cascade; they have separate consumers.
@@ -291,6 +300,7 @@ internal static class CascadeResolver
         LayerRegistry layers,
         int currentLayer,
         ICssDiagnosticsSink? diagnostics,
+        System.Threading.CancellationToken cancellationToken,
         int depth)
     {
         switch (ar.Name)
@@ -298,12 +308,14 @@ internal static class CascadeResolver
             case "media":
                 if (!media.Matches(ar.Prelude)) return;
                 CollectFromRules(ar.ChildRules, origin, sheetOrder, ref ruleOrder,
-                    output, hasContainingSheets, media, layers, currentLayer, diagnostics, depth + 1);
+                    output, hasContainingSheets, media, layers, currentLayer, diagnostics,
+                    cancellationToken, depth + 1);
                 break;
             case "supports":
                 if (!SupportsConditionMatches(ar.Prelude, diagnostics, ar.Location)) return;
                 CollectFromRules(ar.ChildRules, origin, sheetOrder, ref ruleOrder,
-                    output, hasContainingSheets, media, layers, currentLayer, diagnostics, depth + 1);
+                    output, hasContainingSheets, media, layers, currentLayer, diagnostics,
+                    cancellationToken, depth + 1);
                 break;
             case "container":
                 diagnostics?.Emit(new CssDiagnostic(
@@ -314,7 +326,8 @@ internal static class CascadeResolver
                 break;
             case "layer":
                 CollectLayerAtRule(ar, origin, sheetOrder, ref ruleOrder,
-                    output, hasContainingSheets, media, layers, diagnostics, depth);
+                    output, hasContainingSheets, media, layers, diagnostics,
+                    cancellationToken, depth);
                 break;
             default:
                 // Unknown at-rule. Three shapes to handle:
@@ -359,6 +372,7 @@ internal static class CascadeResolver
         CssMediaContext media,
         LayerRegistry layers,
         ICssDiagnosticsSink? diagnostics,
+        System.Threading.CancellationToken cancellationToken,
         int depth)
     {
         var names = LayerRegistry.ParsePrelude(ar.Prelude);
@@ -392,7 +406,8 @@ internal static class CascadeResolver
         }
 
         CollectFromRules(ar.ChildRules, origin, sheetOrder, ref ruleOrder,
-            output, hasContainingSheets, media, layers, layerIdx, diagnostics, depth + 1);
+            output, hasContainingSheets, media, layers, layerIdx, diagnostics,
+            cancellationToken, depth + 1);
     }
 
     /// <summary>Walk an <c>@import</c>'s already-resolved <see cref="CssImportRule.ImportedRules"/>
@@ -417,6 +432,7 @@ internal static class CascadeResolver
         LayerRegistry layers,
         int currentLayer,
         ICssDiagnosticsSink? diagnostics,
+        System.Threading.CancellationToken cancellationToken,
         int depth)
     {
         if (import.ImportedRules.IsEmpty) return;
@@ -437,7 +453,8 @@ internal static class CascadeResolver
         }
 
         CollectFromRules(import.ImportedRules, origin, sheetOrder, ref ruleOrder,
-            output, hasContainingSheets, media, layers, importLayer, diagnostics, depth + 1);
+            output, hasContainingSheets, media, layers, importLayer, diagnostics,
+            cancellationToken, depth + 1);
     }
 
     /// <summary>Per Rec 2: <c>@import url(x) supports(display: grid)</c> arrives at the
@@ -486,9 +503,13 @@ internal static class CascadeResolver
         catch
         {
             // Conservative: any parse failure → unsupported, skip children.
+            // Per Phase A A-6 — sanitize the author-supplied condition before
+            // interpolation; the prelude can carry control chars or be extreme
+            // length.
+            var safeTrimmed = DiagnosticTextSanitizer.Sanitize(trimmed, maxLength: 120);
             diagnostics?.Emit(new CssDiagnostic(
                 CssDiagnosticCodes.CssAtRuleUnknown001,
-                $"@supports condition \"{trimmed}\" could not be evaluated — children skipped.",
+                $"@supports condition \"{safeTrimmed}\" could not be evaluated — children skipped.",
                 CssDiagnosticSeverity.Info, location));
             return false;
         }
@@ -690,9 +711,13 @@ internal static class CascadeResolver
 
     private static void EmitOpaqueAtRuleDiagnostic(CssAtRule ar, ICssDiagnosticsSink? diagnostics)
     {
+        // Per Phase A A-6 — sanitize the at-rule name. Although AngleSharp normalizes
+        // these to ASCII identifiers in well-formed input, malformed CSS can carry an
+        // arbitrary token here; defense-in-depth before interpolation.
+        var safeName = DiagnosticTextSanitizer.Sanitize(ar.Name, maxLength: 60);
         diagnostics?.Emit(new CssDiagnostic(
             CssDiagnosticCodes.CssAtRuleUnknown001,
-            $"@{ar.Name} rule body could not be decomposed; nested rules were not applied to the cascade.",
+            $"@{safeName} rule body could not be decomposed; nested rules were not applied to the cascade.",
             CssDiagnosticSeverity.Info,
             ar.Location));
     }

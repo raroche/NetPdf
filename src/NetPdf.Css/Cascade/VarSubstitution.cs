@@ -84,15 +84,24 @@ internal static class VarSubstitution
     {
         public const int DefaultBytesPerElement = 10 * 1024 * 1024; // 10 MiB
 
+        private readonly long _initialBudget;
         private long _remaining;
         private bool _exhausted;
 
         public Budget(long bytesPerElement = DefaultBytesPerElement)
         {
+            _initialBudget = bytesPerElement;
             _remaining = bytesPerElement;
         }
 
         public bool IsExhausted => _exhausted;
+
+        /// <summary>The initial budget passed to the constructor (in chars).
+        /// Per Copilot review #2 — diagnostic messages should report THIS
+        /// value, not the static default, so a tight test budget (e.g., 100)
+        /// surfaces accurately to the user instead of the always-10-MiB
+        /// default text.</summary>
+        public long InitialBudget => _initialBudget;
 
         /// <summary>Try to charge <paramref name="chars"/> chars against the
         /// remaining budget. Returns true if the charge fit; false if the
@@ -231,9 +240,17 @@ internal static class VarSubstitution
         // diagnostic + return Invalid for this and subsequent calls.
         if (budget is not null && !budget.TryConsume(output.Length))
         {
+            // Per Copilot review #2 — report the ACTUAL budget value, not the
+            // static default. A test that uses Budget(100) will now see "100
+            // chars" in the message instead of misleading "10 MiB". Mid-MiB
+            // budgets render with chars (e.g., 100 chars) since the math
+            // rounds odd budgets to 0 MiB.
+            var budgetText = budget.InitialBudget >= 1024 * 1024
+                ? $"{budget.InitialBudget / (1024 * 1024)} MiB"
+                : $"{budget.InitialBudget} chars";
             diagnostics?.Emit(new CssDiagnostic(
                 CssDiagnosticCodes.CssVarExpansionLimit001,
-                $"var() cumulative output for this element exceeded the {Budget.DefaultBytesPerElement / (1024 * 1024)} MiB budget. Resolved to unset.",
+                $"var() cumulative output for this element exceeded the {budgetText} budget. Resolved to unset.",
                 CssDiagnosticSeverity.Warning,
                 location));
             return SubstitutionResult.Invalid(UnsetSentinel);
@@ -296,9 +313,13 @@ internal static class VarSubstitution
 
         if (visited is not null && visited.Contains(name))
         {
+            // Per Phase A A-6 — sanitize the custom-property name before interpolation.
+            // Names start with `--` but the body chars are author-supplied and could
+            // carry C0/C1/DEL or be extremely long.
+            var safeName = DiagnosticTextSanitizer.Sanitize(name, maxLength: 80);
             diagnostics?.Emit(new CssDiagnostic(
                 CssDiagnosticCodes.CssVarCircular001,
-                $"Circular var() reference detected at '{name}'. Resolved to fallback or unset.",
+                $"Circular var() reference detected at '{safeName}'. Resolved to fallback or unset.",
                 CssDiagnosticSeverity.Warning,
                 location));
             return ResolveFallback(fallbackRaw, customProperties, diagnostics, location, visited, depth, budget);

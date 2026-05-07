@@ -184,9 +184,14 @@ internal static class CssContentList
         // the author wrote — `counter(items)` is more useful than `unrecognized
         // content token`.
         var kind = IdentifyUnsupportedToken(span, i);
+        // Per Phase A A-6 — the token name is sliced from raw author CSS, so it
+        // can carry C0/C1 control chars or extreme length. Sanitize before
+        // interpolation; cap at 40 chars (the function-name + paren shape stays
+        // well under that for any sane input).
+        var safeKind = NetPdf.Css.Diagnostics.DiagnosticTextSanitizer.Sanitize(kind, maxLength: 40);
         sink.Emit(new CssDiagnostic(
             CssDiagnosticCodes.CssContentFunctionUnsupported001,
-            $"Unsupported content token '{kind}' in '{Truncate(raw)}'. Cycle 1 supports string + attr(name) only.",
+            $"Unsupported content token '{safeKind}' in '{Truncate(raw)}'. Cycle 1 supports string + attr(name) only.",
             CssDiagnosticSeverity.Warning,
             location));
     }

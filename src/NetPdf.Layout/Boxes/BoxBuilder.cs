@@ -317,7 +317,7 @@ internal static class BoxBuilder
         // `content` property that overrides the default list-style-type
         // marker. When `content` is absent / `normal` / `none` we fall back
         // to the list-style-type-derived glyph.
-        var markerText = MarkerContentFromCascade(host, markerRules)
+        var markerText = MarkerContentFromCascade(host, markerRules, diagnostics)
             ?? MarkerTextFor(host, styleType, cascade);
 
         var markerBox = Box.ForPseudo(BoxKind.Marker, markerStyle, host, BoxPseudo.Marker);
@@ -391,7 +391,8 @@ internal static class BoxBuilder
     /// <c>::marker</c> rules through the cascade, this path will fire without
     /// further changes.
     /// </remarks>
-    private static string? MarkerContentFromCascade(IElement host, ResolvedRuleSet? markerRules)
+    private static string? MarkerContentFromCascade(IElement host, ResolvedRuleSet? markerRules,
+        ICssDiagnosticsSink? diagnostics)
     {
         if (markerRules is null) return null;
         var contentDecl = markerRules.GetWinner("content");
@@ -403,7 +404,8 @@ internal static class BoxBuilder
         {
             return null;
         }
-        return CssContentList.TryParse(raw, host, out var text) ? text : null;
+        var location = contentDecl.OriginalDeclaration.Location;
+        return CssContentList.TryParse(raw, host, diagnostics, location, out var text) ? text : null;
     }
 
     /// <summary>Read the computed <c>list-style-type</c> keyword from the
@@ -644,6 +646,31 @@ internal static class BoxBuilder
     /// are still skipped (no pseudo box) — counters need the
     /// counter-reset/increment property machinery (cycle 2), images need the
     /// resource pipeline, quotes need a stack-aware quotation depth resolver.</summary>
+    /// <summary>Task 16 cycle 1 — emit
+    /// <see cref="NetPdf.Css.Diagnostics.CssDiagnosticCodes.CssPseudoSuppressedOnReplaced001"/>
+    /// when an author's <c>::before</c> / <c>::after</c> rule targets a
+    /// replaced element. Replaced elements (img/video/canvas/iframe/object/
+    /// embed) are atomic per CSS Pseudo L4 §3 — generated content has no
+    /// place to attach. The author should know their rule has no effect.
+    /// Pulls the source location from the rule's <c>content</c> declaration
+    /// when available, so the diagnostic points back at the offending
+    /// rule.</summary>
+    private static void EmitPseudoSuppressedOnReplaced(
+        IElement host, string pseudoName, ResolvedRuleSet ruleSet,
+        ICssDiagnosticsSink? diagnostics)
+    {
+        if (diagnostics is null) return;
+        var contentDecl = ruleSet.GetWinner("content");
+        var location = contentDecl is not null
+            ? contentDecl.OriginalDeclaration.Location
+            : NetPdf.Css.Parser.CssSourceLocation.Unknown;
+        diagnostics.Emit(new NetPdf.Css.Diagnostics.CssDiagnostic(
+            NetPdf.Css.Diagnostics.CssDiagnosticCodes.CssPseudoSuppressedOnReplaced001,
+            $"::{pseudoName} on replaced <{host.LocalName}> is suppressed (CSS Pseudo L4 §3 — replaced elements cannot host generated content).",
+            NetPdf.Css.Diagnostics.CssDiagnosticSeverity.Info,
+            location));
+    }
+
     private static Box? BuildPseudo(
         IElement host,
         string pseudoName,
@@ -655,9 +682,20 @@ internal static class BoxBuilder
         // (img/video/canvas/iframe/object/embed) are atomic and have no
         // place to host generated content. ::before / ::after declarations
         // on a replaced originating element generate no pseudo box.
-        if (HtmlReplacedElements.IsReplaced(host.LocalName)) return null;
-
         var ruleSet = cascade.TryGetStylesForPseudo(host, pseudoName);
+        if (HtmlReplacedElements.IsReplaced(host.LocalName))
+        {
+            // Task 16 cycle 1: emit a diagnostic so authors learn their
+            // ::before/::after rule on a replaced element will have no
+            // effect. Only emit when a rule actually targeted the pseudo —
+            // a replaced element with no rules doesn't warrant noise.
+            if (ruleSet is not null)
+            {
+                EmitPseudoSuppressedOnReplaced(host, pseudoName, ruleSet, diagnostics);
+            }
+            return null;
+        }
+
         if (ruleSet is null) return null;
 
         var contentDecl = ruleSet.GetWinner("content");
@@ -673,8 +711,12 @@ internal static class BoxBuilder
 
         // Task 14: try the extended content-list parser (multi-string + attr())
         // before falling back to single-string. Counter / image / quote tokens
-        // still produce null (skip the pseudo).
-        if (!CssContentList.TryParse(rawContent, host, out var generatedText))
+        // still produce null (skip the pseudo). Task 16 cycle 1 — pass the
+        // diagnostics sink + declaration source location through so the parser
+        // can emit CSS-CONTENT-FUNCTION-UNSUPPORTED-001 / CSS-ATTR-MULTI-ARG-
+        // UNSUPPORTED-001 when it rejects.
+        var contentLocation = contentDecl.OriginalDeclaration.Location;
+        if (!CssContentList.TryParse(rawContent, host, diagnostics, contentLocation, out var generatedText))
         {
             return null;
         }

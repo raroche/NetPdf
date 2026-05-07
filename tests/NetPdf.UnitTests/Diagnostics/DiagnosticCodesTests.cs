@@ -240,6 +240,90 @@ public sealed class DiagnosticCodesTests
         Assert.Equal("CSS-PROPERTY-VALUE-INVALID-001", DiagnosticCodes.CssPropertyValueInvalid001);
     }
 
+    // ============================================================
+    // Task 16 cycle 1 — new diagnostic codes
+    // ============================================================
+
+    [Fact]
+    public void Css_content_function_unsupported_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(registry,
+            @"\|\s*`?(CSS-CONTENT-FUNCTION-UNSUPPORTED-001)`?\s*\|\s*(\w+)\s*\|");
+        Assert.True(match.Success, "CSS-CONTENT-FUNCTION-UNSUPPORTED-001 row not found");
+        Assert.Equal(DiagnosticCodes.CssContentFunctionUnsupported001, match.Groups[1].Value);
+        Assert.Equal("Warning", match.Groups[2].Value);
+        Assert.Equal(DiagnosticCodes.CssContentFunctionUnsupported001,
+            NetPdf.Css.Diagnostics.CssDiagnosticCodes.CssContentFunctionUnsupported001);
+    }
+
+    [Fact]
+    public void Css_content_function_unsupported_001_constant_value_is_stable()
+    {
+        Assert.Equal("CSS-CONTENT-FUNCTION-UNSUPPORTED-001",
+            DiagnosticCodes.CssContentFunctionUnsupported001);
+    }
+
+    [Fact]
+    public void Css_attr_multi_arg_unsupported_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(registry,
+            @"\|\s*`?(CSS-ATTR-MULTI-ARG-UNSUPPORTED-001)`?\s*\|\s*(\w+)\s*\|");
+        Assert.True(match.Success, "CSS-ATTR-MULTI-ARG-UNSUPPORTED-001 row not found");
+        Assert.Equal(DiagnosticCodes.CssAttrMultiArgUnsupported001, match.Groups[1].Value);
+        Assert.Equal("Warning", match.Groups[2].Value);
+        Assert.Equal(DiagnosticCodes.CssAttrMultiArgUnsupported001,
+            NetPdf.Css.Diagnostics.CssDiagnosticCodes.CssAttrMultiArgUnsupported001);
+    }
+
+    [Fact]
+    public void Css_attr_multi_arg_unsupported_001_constant_value_is_stable()
+    {
+        Assert.Equal("CSS-ATTR-MULTI-ARG-UNSUPPORTED-001",
+            DiagnosticCodes.CssAttrMultiArgUnsupported001);
+    }
+
+    [Fact]
+    public void Css_modern_color_function_unsupported_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(registry,
+            @"\|\s*`?(CSS-MODERN-COLOR-FUNCTION-UNSUPPORTED-001)`?\s*\|\s*(\w+)\s*\|");
+        Assert.True(match.Success, "CSS-MODERN-COLOR-FUNCTION-UNSUPPORTED-001 row not found");
+        Assert.Equal(DiagnosticCodes.CssModernColorFunctionUnsupported001, match.Groups[1].Value);
+        Assert.Equal("Info", match.Groups[2].Value);
+        Assert.Equal(DiagnosticCodes.CssModernColorFunctionUnsupported001,
+            NetPdf.Css.Diagnostics.CssDiagnosticCodes.CssModernColorFunctionUnsupported001);
+    }
+
+    [Fact]
+    public void Css_modern_color_function_unsupported_001_constant_value_is_stable()
+    {
+        Assert.Equal("CSS-MODERN-COLOR-FUNCTION-UNSUPPORTED-001",
+            DiagnosticCodes.CssModernColorFunctionUnsupported001);
+    }
+
+    [Fact]
+    public void Css_pseudo_suppressed_on_replaced_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(registry,
+            @"\|\s*`?(CSS-PSEUDO-SUPPRESSED-ON-REPLACED-001)`?\s*\|\s*(\w+)\s*\|");
+        Assert.True(match.Success, "CSS-PSEUDO-SUPPRESSED-ON-REPLACED-001 row not found");
+        Assert.Equal(DiagnosticCodes.CssPseudoSuppressedOnReplaced001, match.Groups[1].Value);
+        Assert.Equal("Info", match.Groups[2].Value);
+        Assert.Equal(DiagnosticCodes.CssPseudoSuppressedOnReplaced001,
+            NetPdf.Css.Diagnostics.CssDiagnosticCodes.CssPseudoSuppressedOnReplaced001);
+    }
+
+    [Fact]
+    public void Css_pseudo_suppressed_on_replaced_001_constant_value_is_stable()
+    {
+        Assert.Equal("CSS-PSEUDO-SUPPRESSED-ON-REPLACED-001",
+            DiagnosticCodes.CssPseudoSuppressedOnReplaced001);
+    }
+
     private static string LoadRegistry()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

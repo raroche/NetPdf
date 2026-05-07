@@ -212,6 +212,27 @@ internal static class CascadeResolver
     /// stack budget.</summary>
     private const int MaxAtRuleNestingDepth = 32;
 
+    /// <summary>Per Phase B B-2 — maximum number of compiled rules per
+    /// stylesheet. A hostile sheet with millions of rules would otherwise
+    /// pour CPU into selector compilation + per-element matching even with
+    /// the bloom-filter pre-filter active. 50k is wide enough for any
+    /// real-world author CSS (Tailwind's full build is ~30k) while bounding
+    /// the per-stylesheet upper limit.</summary>
+    internal const int MaxRulesPerStylesheet = 50_000;
+
+    /// <summary>Per Phase B B-2 — maximum number of declarations on a single
+    /// rule. Real rules have &lt; 30; an attacker could synthesize a rule
+    /// with thousands of <c>data-x: y</c> declarations to bloat the cascade
+    /// table per element. Excess declarations are dropped from the tail.</summary>
+    internal const int MaxDeclarationsPerRule = 256;
+
+    /// <summary>Per Phase B B-2 — maximum number of selector alternatives in
+    /// one rule's selector list (i.e., comma-separated selector groups).
+    /// Real rules have &lt; 5 (occasionally &lt; 100 for normalize.css-style
+    /// shorthand); 1024 is the wide cap that catches doc-bombing without
+    /// rejecting legitimate megalists.</summary>
+    internal const int MaxSelectorAlternatives = 1024;
+
     private static void CollectFromRules(
         ImmutableArray<CssRule> rules,
         CssStylesheetOrigin origin,
@@ -245,6 +266,23 @@ internal static class CascadeResolver
             // adversarially-deep nested @media tree could otherwise spend tens of
             // seconds in selector compilation before any post-loop check runs.
             cancellationToken.ThrowIfCancellationRequested();
+
+            // Per Phase B B-2 — cap the running count of compiled rules per
+            // stylesheet so a hostile sheet with millions of rules doesn't
+            // pull the cascade into multi-second CPU paths. Emit one
+            // diagnostic at the moment of overflow + drop every subsequent
+            // rule (style + at-rule child rules included — the cap is
+            // sheet-wide, not per-grouping).
+            if (output.Count >= MaxRulesPerStylesheet)
+            {
+                diagnostics?.Emit(new CssDiagnostic(
+                    CssDiagnosticCodes.CssRuleLimitExceeded001,
+                    $"Stylesheet exceeded the {MaxRulesPerStylesheet}-rule cap; remaining rules skipped.",
+                    CssDiagnosticSeverity.Warning,
+                    CssSourceLocation.Unknown));
+                return;
+            }
+
             switch (rule)
             {
                 case CssStyleRule sr:
@@ -280,9 +318,25 @@ internal static class CascadeResolver
         var compiled = CompileSelector(sr.Selector.RawText, diagnostics, sr.Location);
         if (compiled is not null && compiled.ContainsHas)
             hasContainingSheets.Add(sheetOrder);
+
+        // Per Phase B B-2 — cap declarations per rule. A hostile rule with
+        // thousands of `data-*: value` declarations would inflate every
+        // matched-rule-set per element; tail-truncate so the cascade still
+        // sees the head (most rules pile their important props at the top).
+        var declarations = sr.Declarations;
+        if (declarations.Length > MaxDeclarationsPerRule)
+        {
+            diagnostics?.Emit(new CssDiagnostic(
+                CssDiagnosticCodes.CssRuleLimitExceeded001,
+                $"Rule exceeded the {MaxDeclarationsPerRule}-declaration cap; tail declarations dropped.",
+                CssDiagnosticSeverity.Warning,
+                sr.Location));
+            declarations = ImmutableArray.CreateRange(declarations.Take(MaxDeclarationsPerRule));
+        }
+
         output.Add(new CompiledRule(
             Selectors: compiled,
-            Declarations: sr.Declarations,
+            Declarations: declarations,
             Origin: origin,
             StylesheetOrder: sheetOrder,
             RuleOrder: ruleOrder++,

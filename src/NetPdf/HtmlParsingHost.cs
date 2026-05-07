@@ -127,11 +127,89 @@ internal sealed class HtmlParsingHost
             .ConfigureAwait(false);
 
         var sourceFile = options.BaseUri?.AbsoluteUri;
-        StripScripts(document, options.Diagnostics, sourceFile);
-        StripJavaScriptUrls(document, options.Diagnostics, sourceFile);
-        StripEventHandlerAttributes(document, options.Diagnostics, sourceFile);
+        // Per Phase B B-4 — iterative strip until stable. AngleSharp normalization
+        // can re-route content (e.g., SVG <foreignObject> containing HTML) so a
+        // single strip pass may leave dangerous attributes / elements in the
+        // tree. Re-run the three strip walks until a pass finds nothing to
+        // remove, capped at MaxStripIterations to bound CPU.
+        StripUntilStable(document, options.Diagnostics, sourceFile);
+        // Per Phase B B-1 — DoS caps on the parsed DOM. Runs AFTER strip so the
+        // element / attribute counts measure the real rendering surface, not
+        // material that's about to be removed anyway.
+        EnforceDomSizeCaps(document, options.Diagnostics, sourceFile);
         return document;
     }
+
+    /// <summary>Per Phase B B-4 — fixed-point loop over the three strip walks.
+    /// Most documents converge after the first pass (nothing to remove);
+    /// adversarial documents may need a second pass when AngleSharp's
+    /// normalization re-emits content. <see cref="MaxStripIterations"/>
+    /// bounds wall-clock CPU. If the loop exits at the cap with dangerous
+    /// content still present, emit <c>HTML-STRIP-NOT-STABLE-001</c>.</summary>
+    private static void StripUntilStable(IDocument document, IDiagnosticsSink? sink, string? sourceFile)
+    {
+        for (var iter = 0; iter < MaxStripIterations; iter++)
+        {
+            StripScripts(document, sink, sourceFile);
+            StripJavaScriptUrls(document, sink, sourceFile);
+            StripEventHandlerAttributes(document, sink, sourceFile);
+            if (!HasDangerousContent(document)) return;
+        }
+        sink?.Emit(new Diagnostic(
+            DiagnosticCodes.HtmlStripNotStable001,
+            $"Iterative HTML strip did not converge after {MaxStripIterations} passes; dangerous content may remain in the DOM.",
+            DiagnosticSeverity.Warning,
+            SourceLocation.Unknown));
+    }
+
+    /// <summary>Per Phase B B-4 — maximum number of strip iterations before
+    /// emitting <c>HTML-STRIP-NOT-STABLE-001</c>. Most documents finish in
+    /// the first pass (nothing to remove); 4 is generous for layered
+    /// SVG / foreignObject / nested-namespace cases without inviting
+    /// adversarial amplification.</summary>
+    internal const int MaxStripIterations = 4;
+
+    /// <summary>Returns <see langword="true"/> when the document still
+    /// contains <c>&lt;script&gt;</c> elements, <c>javascript:</c>-bearing
+    /// URL attributes, or <c>on*</c> event-handler attributes after the
+    /// most recent strip pass. Fast path: walk the document once + check
+    /// element name / attribute names against the strip predicates.</summary>
+    private static bool HasDangerousContent(IDocument document)
+    {
+        if (document.DocumentElement is null) return false;
+        foreach (var el in document.All)
+        {
+            if (el is null) continue;
+            // <script> elements (any namespace).
+            if (string.Equals(el.LocalName, "script", System.StringComparison.OrdinalIgnoreCase))
+                return true;
+            foreach (var attr in el.Attributes)
+            {
+                if (attr is null) continue;
+                var name = attr.LocalName;
+                if (name.Length >= 3
+                    && (name[0] == 'o' || name[0] == 'O')
+                    && (name[1] == 'n' || name[1] == 'N'))
+                {
+                    return true; // surviving on* event handler
+                }
+                // Surviving javascript: / vbscript: / data: URL on a known
+                // url-bearing attribute name. The strip walk covers many
+                // attributes by selector; this check is a safety net.
+                if (IsKnownUrlAttribute(name) && IsDangerousUrl(attr.Value))
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>Per Phase B B-4 — attribute names recognized as URL-bearing
+    /// for the <see cref="HasDangerousContent"/> safety net. Mirrors the
+    /// strip walk's coverage: every name that <see cref="StripJavaScriptUrls"/>
+    /// touches.</summary>
+    private static bool IsKnownUrlAttribute(string name) =>
+        name is "href" or "src" or "srcset" or "action" or "data" or "poster"
+             or "formaction" or "content";
 
     private static void StripScripts(IDocument document, IDiagnosticsSink? sink, string? sourceFile)
     {
@@ -248,6 +326,101 @@ internal sealed class HtmlParsingHost
             // Remove via (namespaceUri, localName) so the right xlink-namespaced attribute drops.
             element.RemoveAttribute(NamespaceNames.XLinkUri, "href");
         }
+
+        // Per Phase B B-5 — SVG-namespace-specific strip pass. SVG carries
+        // executable surfaces beyond what the HTML strip walk above covers:
+        //   1. <animate>/<set>/<animateTransform>/<animateMotion> can SET an
+        //      element's href / xlink:href / src to a javascript: URL via
+        //      attributeName + to/from/values. AngleSharp doesn't apply the
+        //      animation, but Phase 5 PDF emission could re-route the value
+        //      into clickable annotations. Strip the animation if its target
+        //      attribute is URL-bearing AND any of its value forms is dangerous.
+        //   2. <use href="javascript:...">: SVG 2 unprefixed form. The HTML
+        //      strip walk only covers a/area, not <use>. The xlink:href loop
+        //      above covers the prefixed variant; add the unprefixed too.
+        //   3. Generic SVG namespace `href` (without xlink prefix) on any
+        //      element — defense-in-depth for elements not yet enumerated.
+        StripSvgSpecific(document, sink, sourceFile);
+    }
+
+    /// <summary>Per Phase B B-5 — strip SVG-specific dangerous-URL surfaces
+    /// not caught by the HTML walk: <c>&lt;use href&gt;</c> (and other SVG
+    /// elements with unprefixed <c>href</c>), and animation elements
+    /// (<c>&lt;animate&gt;</c>, <c>&lt;set&gt;</c>, <c>&lt;animateTransform&gt;</c>,
+    /// <c>&lt;animateMotion&gt;</c>) whose <c>attributeName</c> is URL-bearing
+    /// and whose <c>to</c> / <c>from</c> / <c>values</c> name a dangerous
+    /// scheme.</summary>
+    private static void StripSvgSpecific(IDocument document, IDiagnosticsSink? sink, string? sourceFile)
+    {
+        foreach (var element in document.All.ToArray())
+        {
+            // Only inspect SVG-namespaced elements; HTML href has been
+            // covered by the explicit-attribute strip walk above.
+            if (!string.Equals(element.NamespaceUri, NamespaceNames.SvgUri, System.StringComparison.Ordinal))
+                continue;
+
+            // Unprefixed href on any SVG element (covers <use href>, <image href>,
+            // <pattern href>, <linearGradient href>, etc.). The element-name set
+            // for SVG href is large and growing; checking every SVG element
+            // with an unprefixed href avoids the maintenance treadmill.
+            var href = element.GetAttribute("href");
+            if (href is not null && IsDangerousUrl(href))
+            {
+                sink?.Emit(new Diagnostic(
+                    DiagnosticCodes.HtmlJavaScriptUrlIgnored001,
+                    $"A {DescribeUrlScheme(href)} URL was found on an SVG <{element.LocalName}> element's href attribute. The attribute was removed.",
+                    DiagnosticSeverity.Warning,
+                    ToSourceLocation(element, sourceFile)));
+                element.RemoveAttribute("href");
+            }
+
+            // Animation elements: <animate>, <set>, <animateTransform>,
+            // <animateMotion>. If attributeName is URL-bearing AND any of
+            // to/from/values contains a dangerous scheme, drop the entire
+            // animation — there's no safe partial recovery.
+            if (IsSvgAnimationElement(element.LocalName))
+            {
+                var attributeName = element.GetAttribute("attributeName");
+                if (attributeName is null) continue;
+                if (!IsKnownUrlAttribute(attributeName)) continue;
+
+                if (HasDangerousAnimationValue(element))
+                {
+                    sink?.Emit(new Diagnostic(
+                        DiagnosticCodes.HtmlJavaScriptUrlIgnored001,
+                        $"An SVG <{element.LocalName}> element targeted '{attributeName}' with a dangerous URL value. The animation element was removed.",
+                        DiagnosticSeverity.Warning,
+                        ToSourceLocation(element, sourceFile)));
+                    element.Remove();
+                }
+            }
+        }
+    }
+
+    /// <summary>True for the four SVG animation elements that can set an
+    /// attribute to an attacker-controlled value at "play time": <c>animate</c>,
+    /// <c>set</c>, <c>animateTransform</c>, <c>animateMotion</c>. Names
+    /// match the SVG spec's element local names case-sensitively (SVG is
+    /// case-sensitive in the XML grammar; AngleSharp preserves case in the
+    /// SVG namespace).</summary>
+    private static bool IsSvgAnimationElement(string localName) =>
+        localName is "animate" or "set" or "animateTransform" or "animateMotion";
+
+    /// <summary>Returns true when any of the animation element's value
+    /// attributes (<c>to</c>, <c>from</c>, <c>values</c>) contains a
+    /// javascript: / vbscript: / data: URL. <c>values</c> is a
+    /// semicolon-separated list per SVG Animation; check each segment.</summary>
+    private static bool HasDangerousAnimationValue(IElement element)
+    {
+        if (IsDangerousUrl(element.GetAttribute("to"))) return true;
+        if (IsDangerousUrl(element.GetAttribute("from"))) return true;
+        var values = element.GetAttribute("values");
+        if (string.IsNullOrEmpty(values)) return false;
+        foreach (var v in values.Split(';'))
+        {
+            if (IsDangerousUrl(v.Trim())) return true;
+        }
+        return false;
     }
 
     /// <summary>
@@ -389,6 +562,154 @@ internal sealed class HtmlParsingHost
                     ToSourceLocation(element, sourceFile)));
                 element.RemoveAttribute(name);
             }
+        }
+    }
+
+    // ----- Phase B B-1: DOM size caps -------------------------------------
+
+    /// <summary>Maximum total number of <see cref="IElement"/> nodes in the
+    /// post-strip document. Real-world large invoices / reports have a few
+    /// thousand elements; 250k is a wide allowance that still cuts off
+    /// adversarial documents long before downstream stages start consuming
+    /// minutes of CPU on selector matching alone.</summary>
+    internal const int MaxElementCount = 250_000;
+
+    /// <summary>Maximum nesting depth of element ancestors. Hand-authored docs
+    /// rarely exceed 50; mXSS payloads + zip-bomb-shaped HTML deliberately
+    /// nest far past that. 1024 keeps the recursive walks (cascade,
+    /// VarResolver, BoxBuilder) inside their stack budgets.</summary>
+    internal const int MaxNestingDepth = 1024;
+
+    /// <summary>Maximum number of attributes on a single element. Real
+    /// elements have &lt; 20; an attacker piling thousands of <c>data-*</c>
+    /// attributes on one element would make AngleSharp's per-attribute
+    /// lookups quadratic.</summary>
+    internal const int MaxAttributesPerElement = 256;
+
+    /// <summary>Maximum length of a single attribute value. 1 MiB is generous
+    /// — base64-encoded inline images on <c>src</c> live in the same
+    /// neighborhood — but tight enough that a single <c>data-x="...10MB..."</c>
+    /// can't pull the document into the multi-megabyte band by itself.</summary>
+    internal const int MaxAttributeValueLength = 1024 * 1024;
+
+    /// <summary>Maximum length of a single text-node's content. Legitimate
+    /// large text (verbose chapter, JSON fixture, long table cell) exists,
+    /// so the cap is permissive. 4 MiB stops a single <c>&lt;pre&gt;</c>
+    /// block from becoming a memory bomb on its own.</summary>
+    internal const int MaxTextContentLength = 4 * 1024 * 1024;
+
+    /// <summary>Walk the document depth-first, count elements / attributes /
+    /// text-content lengths, and TRUNCATE any region that exceeds the
+    /// per-document caps. One <c>HTML-DOM-LIMIT-EXCEEDED-001</c> diagnostic
+    /// per violation kind so a pathological doc emits at most ~5 entries —
+    /// not one per offending node.</summary>
+    private static void EnforceDomSizeCaps(IDocument document, IDiagnosticsSink? sink, string? sourceFile)
+    {
+        if (document.DocumentElement is null) return;
+
+        var emitted = new System.Collections.Generic.HashSet<string>();
+        void EmitOnce(string kind, string message, INode? node)
+        {
+            if (!emitted.Add(kind)) return;
+            sink?.Emit(new Diagnostic(
+                DiagnosticCodes.HtmlDomLimitExceeded001,
+                message,
+                DiagnosticSeverity.Warning,
+                node is IElement el ? ToSourceLocation(el, sourceFile) : SourceLocation.Unknown));
+        }
+
+        var elementCount = 0;
+        var stack = new System.Collections.Generic.Stack<(IElement Node, int Depth)>();
+        stack.Push((document.DocumentElement, 0));
+
+        while (stack.Count > 0)
+        {
+            var (element, depth) = stack.Pop();
+            elementCount++;
+
+            if (elementCount > MaxElementCount)
+            {
+                EmitOnce("count",
+                    $"DOM element count exceeded the {MaxElementCount} cap; remaining elements were dropped.",
+                    element);
+                element.Remove();
+                continue;
+            }
+
+            if (depth > MaxNestingDepth)
+            {
+                EmitOnce("depth",
+                    $"DOM nesting depth exceeded the {MaxNestingDepth} cap; over-deep subtree was dropped.",
+                    element);
+                element.Remove();
+                continue;
+            }
+
+            EnforceAttributeCaps(element, EmitOnce);
+            EnforceChildTextLengths(element, EmitOnce);
+
+            // Snapshot children before push — Remove() mutates the parent's
+            // child collection. Push in reverse so traversal is left-to-right
+            // (depth-first pre-order).
+            var children = element.Children.ToArray();
+            for (var i = children.Length - 1; i >= 0; i--)
+            {
+                stack.Push((children[i], depth + 1));
+            }
+        }
+    }
+
+    /// <summary>Trim attributes past <see cref="MaxAttributesPerElement"/> and
+    /// clamp any over-long attribute value to <see cref="MaxAttributeValueLength"/>
+    /// chars (with U+2026 ellipsis). Emits at most one diagnostic per
+    /// violation kind.</summary>
+    private static void EnforceAttributeCaps(IElement element, System.Action<string, string, INode?> emitOnce)
+    {
+        // Snapshot the attribute names; the live attribute collection
+        // invalidates as we remove entries.
+        var attrSnapshot = element.Attributes.Where(a => a is not null).ToArray();
+        if (attrSnapshot.Length > MaxAttributesPerElement)
+        {
+            emitOnce("attr-count",
+                $"Element <{element.LocalName}> exceeded the {MaxAttributesPerElement} attributes-per-element cap; excess attributes removed.",
+                element);
+            for (var i = MaxAttributesPerElement; i < attrSnapshot.Length; i++)
+            {
+                element.RemoveAttribute(attrSnapshot[i]!.NamespaceUri, attrSnapshot[i]!.Name);
+            }
+            attrSnapshot = element.Attributes.Where(a => a is not null).ToArray();
+        }
+        foreach (var attr in attrSnapshot)
+        {
+            if (attr is null) continue;
+            var value = attr.Value;
+            if (value is null) continue;
+            if (value.Length <= MaxAttributeValueLength) continue;
+            emitOnce("attr-length",
+                $"An attribute value exceeded the {MaxAttributeValueLength / 1024} KiB cap; value clamped.",
+                element);
+            // U+2026 sentinel marks the truncation point; downstream code
+            // that decodes the value (e.g., url() / srcset) will simply fail
+            // to resolve — better than processing megabytes of attacker text.
+            element.SetAttribute(attr.NamespaceUri, attr.Name, value[..MaxAttributeValueLength] + "…");
+        }
+    }
+
+    /// <summary>Walk the element's text-node children and clamp any whose
+    /// content exceeds <see cref="MaxTextContentLength"/>. Element children
+    /// are not visited here — the depth-first walk in
+    /// <see cref="EnforceDomSizeCaps"/> visits them on their own.</summary>
+    private static void EnforceChildTextLengths(IElement element, System.Action<string, string, INode?> emitOnce)
+    {
+        foreach (var child in element.ChildNodes)
+        {
+            if (child is not IText text) continue;
+            var data = text.Data;
+            if (data is null || data.Length <= MaxTextContentLength) continue;
+            emitOnce("text-length",
+                $"A text node exceeded the {MaxTextContentLength / (1024 * 1024)} MiB cap; content clamped.",
+                element);
+            text.Data = data[..MaxTextContentLength];
         }
     }
 

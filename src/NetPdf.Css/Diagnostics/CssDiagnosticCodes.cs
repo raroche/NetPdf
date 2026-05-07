@@ -73,4 +73,11 @@ internal static class CssDiagnosticCodes
     /// CSS Pseudo L4 §3 the pseudo-element is suppressed because replaced elements
     /// are atomic and can't host generated content. Severity: Info.</summary>
     public const string CssPseudoSuppressedOnReplaced001 = "CSS-PSEUDO-SUPPRESSED-ON-REPLACED-001";
+
+    /// <summary>A stylesheet exceeded one of the per-stylesheet DoS caps:
+    /// total rule count, declarations per rule, or selector alternatives per
+    /// rule. The cascade resolver stops processing rules past the cap and
+    /// truncates declaration / alternative lists to the configured limit.
+    /// Per Phase B B-2. Severity: Warning.</summary>
+    public const string CssRuleLimitExceeded001 = "CSS-RULE-LIMIT-EXCEEDED-001";
 }

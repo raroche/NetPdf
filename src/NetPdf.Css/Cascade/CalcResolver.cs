@@ -49,6 +49,16 @@ internal static class CalcResolver
     /// limit for consistency.</summary>
     public const int MaxDepth = 32;
 
+    /// <summary>Per Phase B B-3 — maximum length of a single math-function body
+    /// (the text between the opening <c>(</c> and the matching <c>)</c>). A
+    /// hand-authored <c>calc()</c> rarely exceeds ~120 chars; thousands of
+    /// chars indicate either a generated bundle (acceptable) or an attacker
+    /// trying to amplify CPU through a long operand chain that <see cref="MaxDepth"/>
+    /// alone wouldn't catch (depth measures nesting, not breadth). 4 KiB
+    /// keeps adversarial inputs to bounded CPU while leaving headroom for
+    /// generated CSS.</summary>
+    public const int MaxBodyLength = 4 * 1024;
+
     /// <summary>Math-function names recognized by this resolver, lowercase. Detection
     /// is ASCII case-insensitive per CSS Syntax L3, but the name on the left is the
     /// canonical form used for dispatch.</summary>
@@ -88,6 +98,19 @@ internal static class CalcResolver
                     return output.ToString();
                 }
                 var body = rawValue[bodyStart..bodyEnd];
+                // Per Phase B B-3 — body-length cap. Emit one diagnostic +
+                // pass through verbatim (downstream layout treats unreduced
+                // calc() as invalid-at-computed-value-time per spec).
+                if (body.Length > MaxBodyLength)
+                {
+                    diagnostics?.Emit(new CssDiagnostic(
+                        CssDiagnosticCodes.CssCalcInvalid001,
+                        $"{fnName}() body exceeded the {MaxBodyLength}-char cap; expression preserved verbatim and treated as invalid at computed-value time.",
+                        CssDiagnosticSeverity.Warning, location));
+                    output.Append(rawValue, pos, bodyEnd - pos + 1);
+                    pos = bodyEnd + 1;
+                    continue;
+                }
                 var reduced = TryReduceFunction(fnName, body, diagnostics, location);
                 if (reduced.HasValue)
                 {

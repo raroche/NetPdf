@@ -201,14 +201,13 @@ public sealed class Phase2DeepReviewHardeningTests
         Assert.False(pBox.Style.IsBoxOwned);
     }
 
-    [Fact]
-    public async Task Rec7_phase2_result_dispose_is_idempotent()
-    {
-        const string html = "<!doctype html><html><body><p>hello</p></body></html>";
-        var result = await Phase2Pipeline.RunFromHtmlAsync(html, new HtmlPdfOptions());
-        result.Dispose();
-        result.Dispose(); // second call must not throw.
-    }
+    // (Rec7_phase2_result_dispose_is_idempotent removed per PR #13 Copilot
+    // review feedback — calling Dispose twice on a Phase2Result is unsafe in
+    // the presence of pool re-rental: between the two disposes another
+    // pipeline run can rent + reset the same ComputedStyle instances, so
+    // the second dispose returns now-foreign styles to the bag + corrupts
+    // the other run. The single-call contract is documented on Phase2Result
+    // itself; we don't pin "idempotent" as a behavior.)
 
     // --- Helpers -------------------------------------------------------------
 

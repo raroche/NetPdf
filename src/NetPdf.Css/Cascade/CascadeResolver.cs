@@ -501,15 +501,20 @@ internal static class CascadeResolver
                 // block. Per CSS Conditional L3 §4.1.3, the test must succeed
                 // ONLY if both the property is supported AND the value would
                 // be accepted. Probe the typed pipeline with a null diagnostics
-                // sink — a Resolved or Deferred outcome counts as supported
-                // (Deferred handles var()/calc() which only resolve at layout
-                // time but represent valid syntactic values); Invalid means
-                // the value didn't parse, so the block must NOT apply.
+                // sink and WHITELIST Resolved + Deferred outcomes (per PR #13
+                // review feedback): Resolved = typed value produced; Deferred
+                // = well-formed but needs downstream context (var()/calc()).
+                // UnsupportedUnvalidated (the cycle-2 backlog state where the
+                // resolver isn't wired yet) must NOT count as supported —
+                // returning true on it would say "yes, NetPdf supports this"
+                // when in fact NetPdf hasn't validated the value at all.
+                // Invalid is the parse-error case + obviously unsupported.
                 var rawValue = inner[(colon + 1)..].Trim();
                 if (rawValue.Length == 0) return false;
                 var probe = ComputedValues.PropertyResolvers.PropertyResolverDispatch.Resolve(
                     propertyId, rawValue, diagnostics: null, location: CssSourceLocation.Unknown);
-                return probe.State != ComputedValues.PropertyResolvers.ResolutionState.Invalid;
+                return probe.State == ComputedValues.PropertyResolvers.ResolutionState.Resolved
+                    || probe.State == ComputedValues.PropertyResolvers.ResolutionState.Deferred;
             }
             // Sub-expression — re-evaluate.
             var sub = new SupportsParser(inner);

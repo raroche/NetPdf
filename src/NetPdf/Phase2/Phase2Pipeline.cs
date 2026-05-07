@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
 using System;
+using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
 using System.Threading;
@@ -12,6 +13,7 @@ using NetPdf.Css.Cascade;
 using NetPdf.Css.Diagnostics;
 using NetPdf.Css.Parser;
 using NetPdf.Css.Parser.Preprocessing;
+using NetPdf.Diagnostics;
 using NetPdf.Layout.Boxes;
 using NetPdf.Layout.Semantic;
 
@@ -31,10 +33,15 @@ namespace NetPdf.Phase2;
 ///   <item><see cref="HtmlParsingHost"/> — HTML → AngleSharp DOM with
 ///     scripting permanently off.</item>
 ///   <item><see cref="CssPreprocessor"/> + <see cref="CssParserAdapter"/> —
-///     parses each <c>&lt;style&gt;</c>'s CSS through AngleSharp's parser and
-///     overlays the preprocessor's recovery side-data
+///     parses each <c>&lt;style&gt;</c>'s CSS through AngleSharp's parser
+///     and overlays the preprocessor's recovery side-data
 ///     (modern-color-function raw-value preservation, multi-arg
-///     <c>attr()</c> recovery per Task 16 hardening Rec 1, etc.).</item>
+///     <c>attr()</c> recovery per Task 16 hardening Rec 1, etc.). Per
+///     Task 17 review Rec 6, sheets are paired with their owning
+///     <c>&lt;style&gt;</c> element via <see cref="IStyleSheet.OwnerNode"/>
+///     rather than fragile ordinal-index pairing — stylesheets that get
+///     disabled or come from external <c>&lt;link&gt;</c> elements no
+///     longer corrupt the order.</item>
 ///   <item><see cref="CascadeResolver"/> — origin / importance / layer /
 ///     specificity / source-order resolution per CSS Cascade L4 §6.4.</item>
 ///   <item><see cref="VarResolver"/> — <c>var()</c> + custom-property
@@ -49,18 +56,29 @@ namespace NetPdf.Phase2;
 /// </list>
 /// </para>
 /// <para>
+/// <b>Diagnostic threading.</b> Per Task 17 review Rec 1, the
+/// <see cref="ICssDiagnosticsSink"/> is forwarded to every stage that
+/// emits — not just <see cref="BoxBuilder"/>. Lost diagnostics in cycle 1
+/// included <c>:has()</c> rendering-not-implemented, malformed selectors,
+/// unsupported at-rules / container queries (cascade), <c>var()</c>
+/// circular / expansion-limit, <c>calc()</c> invalid / div-by-zero
+/// (var-resolver). All now reach the supplied sink.
+/// </para>
+/// <para>
+/// <b>Media-context threading.</b> Per Task 17 review Rec 2, the cascade's
+/// <see cref="CssMediaContext"/> is built from the supplied
+/// <see cref="HtmlPdfOptions"/> rather than always using
+/// <see cref="CssMediaContext.DefaultPrint"/>. Authors who pass
+/// <c>MediaType = CssMediaType.Screen</c> or a non-default
+/// <c>PageSize</c> get correct <c>@media</c>-query evaluation against
+/// their actual viewport.
+/// </para>
+/// <para>
 /// <b>Determinism contract.</b> Same input HTML + same options → identical
 /// box tree shape (modulo per-rental <c>ComputedStyle</c> instances from
 /// the cascade pool — the property values they carry are deterministic).
 /// The dedup HashSet for diagnostics is build-scoped so emission counts
 /// are stable per run.
-/// </para>
-/// <para>
-/// <b>Cycle-1 deferrals.</b> External stylesheet loading (cross-origin
-/// <c>&lt;link rel="stylesheet"&gt;</c>) — Phase 2 disables resource loading
-/// at the AngleSharp boundary; Phase 5 wires the resource pipeline. Inline
-/// <c>style</c> attributes are honored via <see cref="CascadeResolver"/>'s
-/// internal walk (no extra wiring needed here).
 /// </para>
 /// </remarks>
 internal static class Phase2Pipeline
@@ -68,7 +86,9 @@ internal static class Phase2Pipeline
     /// <summary>HTML-string entry point — the test-friendly path. Parses
     /// <paramref name="html"/> via <see cref="HtmlParsingHost"/>, extracts
     /// the document's <c>&lt;style&gt;</c> elements via the preprocessor +
-    /// adapter, then runs <see cref="Run"/>.</summary>
+    /// adapter, then runs <see cref="Run"/>. Per Task 17 review Rec 5,
+    /// <paramref name="cancellationToken"/> is checked at each stage
+    /// boundary (parsing → cascade → var → box → semantic).</summary>
     public static async Task<Phase2Result> RunFromHtmlAsync(
         string html,
         HtmlPdfOptions options,
@@ -81,53 +101,129 @@ internal static class Phase2Pipeline
         var host = new HtmlParsingHost();
         var document = await host.ParseAsync(html, options, cancellationToken)
             .ConfigureAwait(false);
+        cancellationToken.ThrowIfCancellationRequested();
 
         var sheets = ExtractStylesheets(document);
-        return Run(document, sheets, diagnostics);
+        // Per Task 17 review Rec 4: when no explicit sink is supplied, auto-
+        // wire HtmlPdfOptions.Diagnostics through the adapter so a single
+        // public sink collects HTML + CSS + layout diagnostics.
+        var effectiveSink = diagnostics ?? PublicDiagnosticsSinkAdapter.ForOptions(options);
+        return Run(document, sheets, options, effectiveSink, cancellationToken);
     }
 
     /// <summary>Document entry point — for callers that already have an
     /// <see cref="IDocument"/> + adapted stylesheet list (e.g., when
     /// integration tests parse the document themselves to inject custom
-    /// metadata).</summary>
+    /// metadata). Honors <paramref name="cancellationToken"/> at each
+    /// stage boundary.</summary>
     public static Phase2Result Run(
         IDocument document,
         ImmutableArray<CssStylesheet> sheets,
-        ICssDiagnosticsSink? diagnostics)
+        HtmlPdfOptions options,
+        ICssDiagnosticsSink? diagnostics,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(document);
+        ArgumentNullException.ThrowIfNull(options);
 
-        var cascade = CascadeResolver.Resolve(document, sheets, CssMediaContext.DefaultPrint);
-        var resolved = VarResolver.Resolve(cascade, document);
+        var media = BuildMediaContext(options);
 
+        cancellationToken.ThrowIfCancellationRequested();
+        var cascade = CascadeResolver.Resolve(document, sheets, media, diagnostics);
+
+        cancellationToken.ThrowIfCancellationRequested();
+        var resolved = VarResolver.Resolve(cascade, document, diagnostics);
+
+        cancellationToken.ThrowIfCancellationRequested();
         var boxRoot = BoxBuilder.Build(document, resolved, diagnostics);
+
+        cancellationToken.ThrowIfCancellationRequested();
         var semanticRoot = SemanticTreeBuilder.Build(document, resolved);
 
         return new Phase2Result(boxRoot, semanticRoot, resolved, sheets);
     }
 
+    /// <summary>Per Task 17 review Rec 2 — build the cascade's media
+    /// evaluation context from <paramref name="options"/>. Maps
+    /// <see cref="HtmlPdfOptions.MediaType"/> to the lower-cased media
+    /// string the cascade expects ("print" / "screen") and projects the
+    /// viewport dimensions from <see cref="HtmlPdfOptions.PageSize"/>.
+    /// <see cref="CssMediaContext.DevicePixelRatio"/> + <see cref="CssMediaContext.PreferredColorScheme"/>
+    /// stay at their defaults until <see cref="HtmlPdfOptions"/> grows
+    /// matching options (post-v1).</summary>
+    private static CssMediaContext BuildMediaContext(HtmlPdfOptions options)
+    {
+        var mediaTypeString = options.MediaType switch
+        {
+            CssMediaType.Screen => "screen",
+            _ => "print",
+        };
+        return new CssMediaContext(
+            MediaType: mediaTypeString,
+            ViewportWidthPx: options.PageSize.WidthPx,
+            ViewportHeightPx: options.PageSize.HeightPx,
+            DevicePixelRatio: 1.0,
+            PreferredColorScheme: "light");
+    }
+
     /// <summary>Extract every <c>&lt;style&gt;</c> element's CSS content,
     /// preprocess it for recovery side-data, and adapt the AngleSharp.Css
-    /// CSSOM into NetPdf's typed AST. Mirrors the pattern used by the
-    /// per-stage corpus tests so behavior stays consistent.</summary>
+    /// CSSOM into NetPdf's typed AST.</summary>
+    /// <remarks>
+    /// <para>
+    /// <b>Owner-node pairing</b> per Task 17 review Rec 6 — each adapted
+    /// stylesheet is sourced from a specific <c>&lt;style&gt;</c> element
+    /// via <see cref="IStyleSheet.OwnerNode"/> rather than the previous
+    /// ordinal-index pairing (which was fragile when disabled / external
+    /// <c>&lt;link&gt;</c> sheets entered <c>document.StyleSheets</c>).
+    /// </para>
+    /// <para>
+    /// <b>Media + disabled metadata</b> per Task 17 review Rec 3 — each
+    /// owner element's <c>media</c> attribute (or the rawSheet's
+    /// <see cref="IStyleSheet.Media"/> / <see cref="IStyleSheet.IsDisabled"/>)
+    /// is passed to <c>CssParserAdapter.Adapt</c> so the cascade's
+    /// media-query gate works correctly. Without this, a
+    /// <c>&lt;style media="screen"&gt;</c> would have applied during print.
+    /// </para>
+    /// </remarks>
     private static ImmutableArray<CssStylesheet> ExtractStylesheets(IDocument document)
     {
         var output = ImmutableArray.CreateBuilder<CssStylesheet>();
         var order = 0;
-        var styleElements = document.QuerySelectorAll("style");
-        var styleIdx = 0;
         foreach (var rawSheet in document.StyleSheets.OfType<ICssStyleSheet>())
         {
+            // Per Rec 6: pair via OwnerNode rather than ordinal index. When
+            // the sheet has no owner (synthesized / detached), fall through
+            // to an empty raw-text path — the preprocessor's recovery
+            // side-data is empty in that case.
             string rawText;
-            if (styleIdx < styleElements.Length)
+            string? mediaQuery = null;
+            var isDisabled = rawSheet.IsDisabled;
+            if (rawSheet.OwnerNode is IElement ownerElement)
             {
-                rawText = styleElements[styleIdx].TextContent ?? string.Empty;
-                styleIdx++;
+                rawText = ownerElement.TextContent ?? string.Empty;
+                // Per Rec 3: read the `media` attribute from the owner
+                // element (authoritative for inline <style> blocks).
+                var rawMedia = ownerElement.GetAttribute("media");
+                mediaQuery = string.IsNullOrWhiteSpace(rawMedia) ? null : rawMedia;
             }
             else
             {
                 rawText = string.Empty;
             }
+
+            // Fall back to the rawSheet's MediaText when the owner had no
+            // explicit media attribute — covers <link> sheets where
+            // AngleSharp populates Media from the link's media attribute.
+            if (mediaQuery is null)
+            {
+                var mediaText = rawSheet.Media?.MediaText;
+                if (!string.IsNullOrWhiteSpace(mediaText))
+                {
+                    mediaQuery = mediaText;
+                }
+            }
+
             var preprocess = string.IsNullOrEmpty(rawText)
                 ? CssPreprocessResult.Empty
                 : CssPreprocessor.Process(rawText);
@@ -136,8 +232,8 @@ internal static class Phase2Pipeline
                 href: null,
                 origin: CssStylesheetOrigin.Author,
                 ownerKind: CssStylesheetOwnerKind.StyleElement,
-                mediaQuery: null,
-                isDisabled: false,
+                mediaQuery: mediaQuery,
+                isDisabled: isDisabled,
                 order: order++));
         }
         return output.ToImmutable();

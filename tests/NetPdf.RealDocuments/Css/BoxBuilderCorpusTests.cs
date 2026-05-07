@@ -215,6 +215,64 @@ public sealed class BoxBuilderCorpusTests
     }
 
     [Fact]
+    public async Task Synthetic_ordered_list_produces_markers_with_decimal_text()
+    {
+        // Task 14 corpus integration — until we ship a list-bearing invoice
+        // sample, run a small synthetic doc through the production path.
+        const string html = """
+            <!doctype html>
+            <html><body>
+              <ol>
+                <li>First</li>
+                <li>Second</li>
+                <li>Third</li>
+              </ol>
+            </body></html>
+            """;
+        var host = new HtmlParsingHost();
+        var document = await host.ParseAsync(html, new HtmlPdfOptions());
+        var sheets = AdaptAllSheetsViaPreprocessor(document);
+        var cascade = CascadeResolver.Resolve(document, sheets, CssMediaContext.DefaultPrint);
+        var resolved = VarResolver.Resolve(cascade, document);
+        var root = BoxBuilder.Build(document, resolved);
+
+        var markers = Walk(root)
+            .Where(b => b.Kind == BoxKind.Marker)
+            .ToList();
+        Assert.Equal(3, markers.Count);
+        // Decimal sequence per HTML "Rendering" §15.3.4 default for <ol>.
+        Assert.StartsWith("1.", markers[0].Children[0].Text);
+        Assert.StartsWith("2.", markers[1].Children[0].Text);
+        Assert.StartsWith("3.", markers[2].Children[0].Text);
+    }
+
+    [Fact]
+    public async Task Synthetic_unordered_list_produces_disc_markers()
+    {
+        const string html = """
+            <!doctype html>
+            <html><body>
+              <ul>
+                <li>Apple</li>
+                <li>Banana</li>
+              </ul>
+            </body></html>
+            """;
+        var host = new HtmlParsingHost();
+        var document = await host.ParseAsync(html, new HtmlPdfOptions());
+        var sheets = AdaptAllSheetsViaPreprocessor(document);
+        var cascade = CascadeResolver.Resolve(document, sheets, CssMediaContext.DefaultPrint);
+        var resolved = VarResolver.Resolve(cascade, document);
+        var root = BoxBuilder.Build(document, resolved);
+
+        var markers = Walk(root)
+            .Where(b => b.Kind == BoxKind.Marker)
+            .ToList();
+        Assert.Equal(2, markers.Count);
+        Assert.All(markers, m => Assert.StartsWith("•", m.Children[0].Text));
+    }
+
+    [Fact]
     public async Task Corpus_invoice_does_not_emit_warnings_for_known_good_input()
     {
         // The classic-pure-css invoice is hand-crafted to exercise the cascade

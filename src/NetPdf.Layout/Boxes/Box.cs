@@ -93,6 +93,23 @@ internal sealed class Box
     /// <see cref="BoxKind.Root"/> box.</summary>
     public Box? Parent { get; private set; }
 
+    /// <summary>Task 14 — staged <c>::first-line</c> cascade style for this
+    /// box's first formatted line, or <see langword="null"/> when the cascade
+    /// had no <c>::first-line</c> rules. Box generation cannot materialize
+    /// <c>::first-line</c> as a box because the affected glyph extent depends
+    /// on line-breaking + container width (which Phase 3 layout owns).
+    /// Phase 3 reads this style during line-fragment rendering and overlays
+    /// the inheritable subset (<c>color</c>, <c>font-style</c>,
+    /// <c>text-decoration</c>, etc.) on the first line per CSS Pseudo L4 §3.1.</summary>
+    public ComputedStyle? FirstLineStyle { get; internal set; }
+
+    /// <summary>Task 14 — staged <c>::first-letter</c> cascade style for this
+    /// box's first formatted character, or <see langword="null"/> when the
+    /// cascade had no <c>::first-letter</c> rules. Same Phase-3-deferred
+    /// rationale as <see cref="FirstLineStyle"/>; the letter extent depends
+    /// on shaping + line breaking, not box generation.</summary>
+    public ComputedStyle? FirstLetterStyle { get; internal set; }
+
     /// <summary>The immediate children in document order. Backed by a
     /// <see cref="ReadOnlyCollection{T}"/> wrapper (Task 11 hardening Rec 3) —
     /// casting to <see cref="IList{T}"/> + mutating throws

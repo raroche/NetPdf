@@ -157,6 +157,23 @@ internal static class BoxBuilder
 
         var box = Box.ForElement(kind, style, element);
 
+        // Per Task 14: collect ::first-line / ::first-letter cascade styles
+        // for Phase 3 line-layout to apply during fragment rendering. Box
+        // generation cannot materialize them because the affected glyph extent
+        // depends on line-breaking + container width, so we just stage them.
+        StageFragmentPseudoStyles(box, element, style, cascade, diagnostics);
+
+        // ::marker — for list-items, generated BEFORE ::before per Lists L3
+        // §3.1: the marker is the first inline-level child of the list item
+        // when `list-style-position: inside` and an out-of-flow sibling when
+        // `outside`. Cycle 1 emits it as the first child regardless; layout
+        // honors `list-style-position` later.
+        if (kind == BoxKind.ListItem)
+        {
+            var marker = BuildListItemMarker(element, style, cascade, diagnostics);
+            if (marker is not null) box.AppendChild(marker);
+        }
+
         // ::before pseudo-element comes before the children. Keys in the cascade
         // are lowercase pseudo-element identifiers without the `::` prefix
         // (per SelectorCompiler's `PseudoElement(lower)` convention).
@@ -227,13 +244,238 @@ internal static class BoxBuilder
         }
     }
 
+    // ============================================================
+    // Task 14 — Pseudo-element materialization (::marker, ::first-line/letter)
+    // ============================================================
+
+    /// <summary>Build the marker box for a list-item (Lists L3 §3 + Pseudo
+    /// L4 §3.4). Returns <see langword="null"/> for
+    /// <c>list-style-type: none</c>; otherwise produces a
+    /// <see cref="BoxKind.Marker"/> box carrying a <see cref="BoxPseudo.Marker"/>
+    /// designation, a <see cref="BoxKind.TextRun"/> child holding the marker
+    /// glyph (disc / number / alpha / roman per <c>list-style-type</c>), and
+    /// a freshly-rented <see cref="ComputedStyle"/> that inherits from the
+    /// list-item + applies the cascade's <c>::marker</c> rule if any.</summary>
+    /// <remarks>
+    /// Cycle-1 deferrals: <c>list-style-image</c> (needs the resource pipeline);
+    /// <c>@counter-style</c> custom counters (post-v1); <c>&lt;ol start&gt;</c> /
+    /// <c>&lt;li value&gt;</c> attribute overrides (cycle 2). The marker is
+    /// always inserted as the first child of the list item — cycle 1 does NOT
+    /// honor <c>list-style-position: outside</c> by attaching to the
+    /// list-item's principal box's outside flow; that's a layout-time concern.
+    /// </remarks>
+    private static Box? BuildListItemMarker(
+        IElement host,
+        ComputedStyle hostStyle,
+        ResolvedCascadeResult cascade,
+        ICssDiagnosticsSink? diagnostics)
+    {
+        var styleType = ReadListStyleType(hostStyle, host);
+        if (styleType == "none") return null;
+
+        var markerText = MarkerTextFor(host, styleType);
+
+        var markerStyle = ComputedStyle.Rent();
+        ApplyDefaults(markerStyle);
+        ApplyInheritance(markerStyle, hostStyle);
+
+        // Apply ::marker pseudo cascade if the author styled it.
+        var markerRules = cascade.TryGetStylesForPseudo(host, "marker");
+        if (markerRules is not null)
+        {
+            ApplyResolvedDeclarations(markerStyle, markerRules, diagnostics);
+        }
+
+        var markerBox = Box.ForPseudo(BoxKind.Marker, markerStyle, host, BoxPseudo.Marker);
+        if (markerText.Length > 0)
+        {
+            markerBox.AppendChild(Box.TextRun(markerText, markerStyle, host));
+        }
+        return markerBox;
+    }
+
+    /// <summary>Read the computed <c>list-style-type</c> keyword from the
+    /// list-item's style. When the cascade hasn't set it explicitly, walks
+    /// up the DOM to find an <c>&lt;ol&gt;</c> / <c>&lt;ul&gt;</c> /
+    /// <c>&lt;menu&gt;</c> ancestor and returns the corresponding HTML UA
+    /// default per "Rendering" §15.3.4 — <c>decimal</c> for <c>ol</c>,
+    /// <c>disc</c> for <c>ul</c>/<c>menu</c>. Defaults to <c>disc</c> when
+    /// no list-context ancestor exists.</summary>
+    private static string ReadListStyleType(ComputedStyle style, IElement element)
+    {
+        if (style.IsSet(PropertyId.ListStyleType))
+        {
+            var slot = style.Get(PropertyId.ListStyleType);
+            if (slot.Tag == ComputedSlotTag.Keyword)
+            {
+                var name = ListStyleTypeName(slot.AsKeyword());
+                if (name is not null) return name;
+            }
+        }
+        // No cascade-resolved value — consult the nearest list-context
+        // ancestor for the UA default.
+        var ancestor = element.ParentElement;
+        while (ancestor is not null)
+        {
+            var name = ancestor.LocalName;
+            if (string.Equals(name, "ol", StringComparison.OrdinalIgnoreCase))
+                return "decimal";
+            if (string.Equals(name, "ul", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(name, "menu", StringComparison.OrdinalIgnoreCase))
+                return "disc";
+            ancestor = ancestor.ParentElement;
+        }
+        return "disc";
+    }
+
+    /// <summary>Reverse-map <see cref="KeywordResolver"/>'s
+    /// <see cref="PropertyId.ListStyleType"/> table indices to their string
+    /// keywords. Cycle-1 maintains this manually; cycle 2 will source-generate
+    /// the reverse map alongside the keyword tables themselves.</summary>
+    private static string? ListStyleTypeName(int id) => id switch
+    {
+        0 => "none", 1 => "disc", 2 => "circle", 3 => "square",
+        4 => "decimal", 5 => "decimal-leading-zero",
+        6 => "lower-roman", 7 => "upper-roman",
+        8 => "lower-alpha", 9 => "upper-alpha",
+        10 => "lower-latin", 11 => "upper-latin",
+        12 => "lower-greek",
+        _ => null,
+    };
+
+    /// <summary>Compose the marker glyph + trailing space for the given
+    /// list-style-type. Numeric / alphabetic markers consult
+    /// <see cref="ComputeListItemPosition"/> (1-indexed sibling position
+    /// among list-item children).</summary>
+    private static string MarkerTextFor(IElement host, string listStyleType)
+    {
+        // Trailing NBSP keeps the marker visually attached to the content
+        // even when text shaping aggressively collapses spaces around it.
+        const string trailer = " ";
+        return listStyleType switch
+        {
+            "disc" => "•" + trailer,             // •
+            "circle" => "◦" + trailer,           // ◦
+            "square" => "▪" + trailer,           // ▪
+            "decimal" => ComputeListItemPosition(host).ToString(System.Globalization.CultureInfo.InvariantCulture) + "." + trailer,
+            "decimal-leading-zero" => FormatDecimalLeadingZero(ComputeListItemPosition(host)) + "." + trailer,
+            "lower-roman" => ToRoman(ComputeListItemPosition(host), upper: false) + "." + trailer,
+            "upper-roman" => ToRoman(ComputeListItemPosition(host), upper: true) + "." + trailer,
+            "lower-alpha" or "lower-latin" => ToAlpha(ComputeListItemPosition(host), upper: false) + "." + trailer,
+            "upper-alpha" or "upper-latin" => ToAlpha(ComputeListItemPosition(host), upper: true) + "." + trailer,
+            // lower-greek: cycle-1 falls back to disc until we ship the full
+            // counter-style name list.
+            _ => "•" + trailer,
+        };
+    }
+
+    /// <summary>Count this <paramref name="host"/>'s 1-indexed position among
+    /// its sibling <c>&lt;li&gt;</c> elements. Cycle-1 ignores
+    /// <c>&lt;ol start&gt;</c> / <c>&lt;li value&gt;</c> attribute overrides
+    /// per the marker XML doc; CSS counter-reset / counter-increment are
+    /// out-of-scope until the property machinery lands.</summary>
+    private static int ComputeListItemPosition(IElement host)
+    {
+        var parent = host.ParentElement;
+        if (parent is null) return 1;
+        var index = 1;
+        foreach (var sibling in parent.Children)
+        {
+            if (ReferenceEquals(sibling, host)) return index;
+            if (sibling.LocalName.Equals("li", StringComparison.OrdinalIgnoreCase))
+            {
+                index++;
+            }
+        }
+        return index;
+    }
+
+    /// <summary>Format a list position with a leading zero when the count is
+    /// less than 10 (per Lists L3 §7.1's <c>decimal-leading-zero</c>).</summary>
+    private static string FormatDecimalLeadingZero(int n) =>
+        n < 10 && n >= 0
+            ? "0" + n.ToString(System.Globalization.CultureInfo.InvariantCulture)
+            : n.ToString(System.Globalization.CultureInfo.InvariantCulture);
+
+    /// <summary>Roman-numeral conversion 1..3999. Out-of-range values fall
+    /// back to decimal per Lists L3 §7.1.4.</summary>
+    private static string ToRoman(int n, bool upper)
+    {
+        if (n < 1 || n > 3999)
+            return n.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var sb = new System.Text.StringBuilder();
+        var pairs = new (string, int)[]
+        {
+            ("M", 1000), ("CM", 900), ("D", 500), ("CD", 400),
+            ("C", 100), ("XC", 90), ("L", 50), ("XL", 40),
+            ("X", 10), ("IX", 9), ("V", 5), ("IV", 4), ("I", 1),
+        };
+        foreach (var (sym, val) in pairs)
+        {
+            while (n >= val) { sb.Append(sym); n -= val; }
+        }
+        var s = sb.ToString();
+        return upper ? s : s.ToLowerInvariant();
+    }
+
+    /// <summary>Bijective base-26 alphabetic conversion (1→a, 26→z, 27→aa, …)
+    /// per Lists L3 §7.1.4.</summary>
+    private static string ToAlpha(int n, bool upper)
+    {
+        if (n < 1) return n.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var sb = new System.Text.StringBuilder();
+        var baseChar = upper ? 'A' : 'a';
+        while (n > 0)
+        {
+            n--;
+            sb.Insert(0, (char)(baseChar + (n % 26)));
+            n /= 26;
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>Stage <c>::first-line</c> + <c>::first-letter</c> cascade
+    /// styles on <paramref name="box"/> for Phase 3 line-layout to apply
+    /// during fragment rendering. Box generation cannot materialize them as
+    /// boxes because the affected glyph extent depends on line-breaking +
+    /// container width — Phase 3 owns that. Returns silently when no rules
+    /// apply (the common case).</summary>
+    private static void StageFragmentPseudoStyles(
+        Box box,
+        IElement element,
+        ComputedStyle elementStyle,
+        ResolvedCascadeResult cascade,
+        ICssDiagnosticsSink? diagnostics)
+    {
+        var firstLineRules = cascade.TryGetStylesForPseudo(element, "first-line");
+        if (firstLineRules is not null)
+        {
+            var s = ComputedStyle.Rent();
+            ApplyDefaults(s);
+            ApplyInheritance(s, elementStyle);
+            ApplyResolvedDeclarations(s, firstLineRules, diagnostics);
+            box.FirstLineStyle = s;
+        }
+
+        var firstLetterRules = cascade.TryGetStylesForPseudo(element, "first-letter");
+        if (firstLetterRules is not null)
+        {
+            var s = ComputedStyle.Rent();
+            ApplyDefaults(s);
+            ApplyInheritance(s, elementStyle);
+            ApplyResolvedDeclarations(s, firstLetterRules, diagnostics);
+            box.FirstLetterStyle = s;
+        }
+    }
+
     /// <summary>Generate the box for a pseudo-element rule set when one is
     /// registered + has a non-<c>none</c>/non-<c>normal</c> <c>content</c>
-    /// property. Cycle 1 + hardening: only single-CSS-string <c>content</c> is
-    /// rendered (via <see cref="CssStringParser"/>); <c>counter()</c> /
-    /// <c>attr()</c> / <c>url()</c> / <c>open-quote</c> / <c>close-quote</c> /
-    /// multi-token content is silently skipped (no pseudo box) — those need
-    /// the typed content-list parser shipping in cycle 2.</summary>
+    /// property. Task 14 cycle 1 supports single + multi-string concatenation
+    /// + <c>attr(<i>name</i>)</c>; <c>counter()</c>/<c>counters()</c>,
+    /// <c>image()</c>/<c>url()</c>, and <c>open-quote</c>/<c>close-quote</c>
+    /// are still skipped (no pseudo box) — counters need the
+    /// counter-reset/increment property machinery (cycle 2), images need the
+    /// resource pipeline, quotes need a stack-aware quotation depth resolver.</summary>
     private static Box? BuildPseudo(
         IElement host,
         string pseudoName,
@@ -255,10 +497,10 @@ internal static class BoxBuilder
             return null;
         }
 
-        // Only single-string content is supported in cycle 1. Non-string
-        // content (counter/attr/url/quote/multi-token) silently produces no
-        // pseudo box — emitting the literal text would be worse than nothing.
-        if (!CssStringParser.TryParseSingleString(rawContent, out var generatedText))
+        // Task 14: try the extended content-list parser (multi-string + attr())
+        // before falling back to single-string. Counter / image / quote tokens
+        // still produce null (skip the pseudo).
+        if (!CssContentList.TryParse(rawContent, host, out var generatedText))
         {
             return null;
         }
@@ -946,6 +1188,12 @@ internal static class BoxBuilder
         {
             var meta = PropertyMetadata.Table[i];
             if (meta.Id == PropertyId.Display) continue;
+            // Task 14: list-style-type's UA default depends on the element
+            // (`ol` → decimal, `ul`/`menu` → disc, others → disc) per HTML
+            // "Rendering" §15.3.4. Skip the registry default (disc) and let
+            // ReadListStyleType resolve via DOM-ancestor lookup so an <ol>
+            // without an explicit cascade rule still numbers its items.
+            if (meta.Id == PropertyId.ListStyleType) continue;
             var result = PropertyResolverDispatch.Resolve(meta.Id, meta.DefaultValue);
             result.MaterializeInto(style, meta.Id);
         }

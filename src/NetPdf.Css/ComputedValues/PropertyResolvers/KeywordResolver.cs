@@ -189,6 +189,16 @@ internal static class KeywordResolver
         // out-of-scope for cycle 1).
         b[PropertyId.FontStyle] = T("normal", "italic", "oblique");
 
+        // list-style-type — CSS Lists 3 §7.1 (subset of named counter-styles
+        // shipped in cycle 1; full @counter-style support is post-v1).
+        b[PropertyId.ListStyleType] = T("none", "disc", "circle", "square",
+            "decimal", "decimal-leading-zero",
+            "lower-roman", "upper-roman", "lower-alpha", "upper-alpha",
+            "lower-latin", "upper-latin", "lower-greek");
+
+        // list-style-position — CSS Lists 3 §6.
+        b[PropertyId.ListStylePosition] = T("inside", "outside");
+
         // overflow — CSS Overflow 3 §3.1.
         var overflow = T("visible", "hidden", "clip", "scroll", "auto");
         b[PropertyId.OverflowX] = overflow;

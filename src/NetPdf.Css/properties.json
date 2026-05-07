@@ -40,6 +40,8 @@
     { "name": "left", "id": "Left", "type": "LengthPercentageAuto", "default": "auto", "inherit": false, "applies_to": "Positioned", "computed": "Specified" },
     { "name": "letter-spacing", "id": "LetterSpacing", "type": "TextSpacing", "default": "normal", "inherit": true, "applies_to": "All", "computed": "AbsoluteLength" },
     { "name": "line-height", "id": "LineHeight", "type": "LineHeight", "default": "normal", "inherit": true, "applies_to": "All", "computed": "Specified" },
+    { "name": "list-style-position", "id": "ListStylePosition", "type": "Keyword", "default": "outside", "inherit": true, "applies_to": "ListItem", "computed": "Specified" },
+    { "name": "list-style-type", "id": "ListStyleType", "type": "Keyword", "default": "disc", "inherit": true, "applies_to": "ListItem", "computed": "Specified" },
     { "name": "margin-bottom", "id": "MarginBottom", "type": "LengthPercentageAuto", "default": "0", "inherit": false, "applies_to": "BlockOrInlineOrReplaced", "computed": "Specified" },
     { "name": "margin-left", "id": "MarginLeft", "type": "LengthPercentageAuto", "default": "0", "inherit": false, "applies_to": "BlockOrInlineOrReplaced", "computed": "Specified" },
     { "name": "margin-right", "id": "MarginRight", "type": "LengthPercentageAuto", "default": "0", "inherit": false, "applies_to": "BlockOrInlineOrReplaced", "computed": "Specified" },

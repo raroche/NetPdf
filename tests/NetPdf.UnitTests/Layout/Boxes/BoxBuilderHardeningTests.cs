@@ -224,13 +224,15 @@ public sealed class BoxBuilderHardeningTests
 
     [Theory]
     [InlineData("counter(items)")]
-    [InlineData("attr(data-label)")]
     [InlineData("url(image.png)")]
     [InlineData("open-quote")]
     [InlineData("close-quote")]
-    [InlineData("\"PRE\" \"POST\"")]   // multi-token concatenation
     public async Task Pseudo_with_unsupported_content_form_emits_no_box(string contentValue)
     {
+        // Task 14 cycle 1 added multi-string concatenation + attr() support, so
+        // those forms moved out of this "unsupported" theory. Counter / image /
+        // quote tokens still skip silently — counter machinery + resource
+        // pipeline + quote-stack tracking are cycle-2 work.
         var root = await BuildAsync(
             "<p>x</p>",
             $"p::before {{ content: {contentValue} }}");

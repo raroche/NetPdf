@@ -134,4 +134,13 @@ internal enum SemanticKind : byte
     Article,
     /// <summary><c>&lt;section&gt;</c>.</summary>
     Section,
+
+    /// <summary>Per Task 15 review Rec 3 + Rec 7 — a run of inline text
+    /// preserved as its own semantic node so transparent-container text
+    /// (loose text under <c>&lt;div&gt;</c> / <c>&lt;body&gt;</c>) and
+    /// inline text inside leaf-recognized parents (the prefix / suffix
+    /// around a <c>&lt;a&gt;</c> in a <c>&lt;p&gt;</c>) aren't double-tagged
+    /// via the parent's aggregate <see cref="SemanticNode.Text"/>. Carries
+    /// its text content; never has children.</summary>
+    InlineText,
 }

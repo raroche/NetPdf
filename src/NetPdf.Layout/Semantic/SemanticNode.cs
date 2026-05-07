@@ -49,27 +49,78 @@ internal sealed class SemanticNode
     /// <summary>The accessible-name text for image / figure nodes — taken in
     /// priority order from the <c>alt</c> attribute (<see cref="SemanticKind.Image"/>),
     /// the <c>aria-label</c> attribute, or the child <c>&lt;figcaption&gt;</c>'s
-    /// text content (<see cref="SemanticKind.Figure"/>). <see langword="null"/>
-    /// when no accessible name applies (or none of the resolution sources
-    /// supplied one).</summary>
+    /// text content (<see cref="SemanticKind.Figure"/>).</summary>
+    /// <remarks>
+    /// <b>Tri-state semantics</b> per Task 15 review Rec 6 + HTML5 §4.8.3 +
+    /// WAI-ARIA accessible-name computation:
+    /// <list type="bullet">
+    ///   <item><see langword="null"/> — no source supplied a name (no <c>alt</c>
+    ///     attribute, no <c>aria-label</c>, no <c>&lt;figcaption&gt;</c>).
+    ///     Phase-5 paint should flag this as a broken image / synthesize a
+    ///     name from the filename.</item>
+    ///   <item>Empty string (<c>""</c>) with <see cref="HasExplicitDecorativeAlt"/>
+    ///     <see langword="true"/> — the author marked the image decorative
+    ///     via <c>alt=""</c>. Phase-5 paint should emit the image as an
+    ///     <c>/Artifact</c> per PDF/UA §7.1.</item>
+    ///   <item>Non-empty string — the accessible name to render.</item>
+    /// </list>
+    /// </remarks>
     public string? AltText { get; }
 
-    /// <summary>The text content this node carries — populated for "leaf-ish"
-    /// kinds (headings, paragraphs, list items, table cells, links, etc.) so
-    /// downstream consumers don't have to walk the DOM again to reconstruct
-    /// the readable text. Empty string for container kinds (Document, List,
-    /// Table, Section family).</summary>
+    /// <summary>Per Task 15 review Rec 6 — distinguishes the missing-alt
+    /// case (<c>&lt;img&gt;</c> with no <c>alt</c> attribute, broken
+    /// accessibility) from the explicit-decorative case (<c>&lt;img alt=""&gt;</c>
+    /// per HTML5 §4.8.3 — author intentionally marked the image as not
+    /// contributing accessible text). <see langword="true"/> only when the
+    /// HTML originally had <c>alt=""</c>; <see langword="false"/> when
+    /// <c>alt</c> was missing entirely OR <c>alt</c> had a non-empty value.</summary>
+    public bool HasExplicitDecorativeAlt { get; }
+
+    /// <summary>Per Task 15 review Rec 5 — table-cell metadata
+    /// (<c>rowspan</c> / <c>colspan</c> / <c>scope</c> / <c>headers</c> /
+    /// <c>abbr</c>) for <see cref="SemanticKind.TableHeaderCell"/> +
+    /// <see cref="SemanticKind.TableCell"/> nodes. <see langword="null"/>
+    /// for every other kind.</summary>
+    public TableCellMetadata? Cell { get; }
+
+    /// <summary>Text content carried by this node. Per Task 15 review Rec 7,
+    /// only <see cref="SemanticKind.InlineText"/> nodes populate this with
+    /// non-empty text — every other kind carries its readable text via
+    /// child <see cref="SemanticKind.InlineText"/> spans interleaved with
+    /// nested semantic structure. This avoids the previous cycle's
+    /// double-tagging where a paragraph and its child link both stored
+    /// the link's text.</summary>
     /// <remarks>
-    /// Cycle-1 captures the entire subtree text (via AngleSharp's
-    /// <c>IElement.TextContent</c>), so a paragraph containing a link
-    /// will surface the link's text in both the paragraph's
-    /// <see cref="Text"/> AND the nested <see cref="SemanticKind.Link"/>
-    /// node's <see cref="Text"/>. Phase 5 paint chooses the appropriate
-    /// granularity by traversing the tree depth-first; double-counting is a
-    /// known cycle-1 limitation that cycle 2 will resolve by interleaving
-    /// text spans with semantic children.
+    /// To compute the readable text of an arbitrary node (for accessibility
+    /// names, summary strings, etc.), use <see cref="AggregateText"/> —
+    /// it walks descendants depth-first and concatenates each leaf
+    /// <see cref="SemanticKind.InlineText"/>'s text in document order.
     /// </remarks>
     public string Text { get; }
+
+    /// <summary>Per Task 15 review Rec 7 — depth-first concatenation of every
+    /// leaf <see cref="SemanticKind.InlineText"/> descendant's
+    /// <see cref="Text"/>, in document order. The single source of truth
+    /// for "what does this subtree read as" without storing redundant
+    /// aggregates on container nodes.</summary>
+    public string AggregateText
+    {
+        get
+        {
+            var sb = new System.Text.StringBuilder();
+            AppendInto(this, sb);
+            return sb.ToString();
+            static void AppendInto(SemanticNode n, System.Text.StringBuilder sb)
+            {
+                if (n._children.Count == 0)
+                {
+                    sb.Append(n.Text);
+                    return;
+                }
+                foreach (var c in n._children) AppendInto(c, sb);
+            }
+        }
+    }
 
     /// <summary>The immediate children in document order. Backed by a
     /// <see cref="ReadOnlyCollection{T}"/> wrapper so consumers can't mutate
@@ -83,12 +134,16 @@ internal sealed class SemanticNode
         IElement? sourceElement = null,
         string? href = null,
         string? altText = null,
+        bool hasExplicitDecorativeAlt = false,
+        TableCellMetadata? cell = null,
         string? text = null)
     {
         Kind = kind;
         SourceElement = sourceElement;
         Href = href;
         AltText = altText;
+        HasExplicitDecorativeAlt = hasExplicitDecorativeAlt;
+        Cell = cell;
         Text = text ?? string.Empty;
         Children = new ReadOnlyCollection<SemanticNode>(_children);
     }

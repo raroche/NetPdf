@@ -129,6 +129,7 @@ internal sealed class HtmlParsingHost
         var sourceFile = options.BaseUri?.AbsoluteUri;
         StripScripts(document, options.Diagnostics, sourceFile);
         StripJavaScriptUrls(document, options.Diagnostics, sourceFile);
+        StripEventHandlerAttributes(document, options.Diagnostics, sourceFile);
         return document;
     }
 
@@ -151,23 +152,42 @@ internal sealed class HtmlParsingHost
 
     private static void StripJavaScriptUrls(IDocument document, IDiagnosticsSink? sink, string? sourceFile)
     {
-        // Only attributes that produce link annotations in Phase 4 emission are scanned:
-        //   - href on <a> / <area>
-        //   - xlink:href on SVG <a> (matched via attribute presence — XPath-style namespace
-        //     selectors are awkward in CSS; we walk the SVG <a> elements directly).
-        // A ToArray() snapshot is taken because we will be mutating attributes during the walk.
-        foreach (var element in document.QuerySelectorAll("a[href], area[href]").ToArray())
+        // Per Phase A security hardening A-1 — the strip walk covers every HTML
+        // attribute that names a navigable URL or fetched resource. Cycle 1 only
+        // touched <a href>, <area href>, and xlink:href; the rest survived
+        // verbatim. The deep-review threat model + the [DomPDF / Apryse / EvoPDF]
+        // CVE survey confirms that <form action>, <iframe src>, <object data>,
+        // <embed src>, <base href>, and <meta http-equiv="refresh" content="0;url=...">
+        // all reach a sink that interprets URLs in real-world HTML-to-PDF
+        // engines — and Phase 5 paint or PDF/UA emission could route any of them
+        // into the output PDF. Stripping aggressive but consistent: for any URL
+        // attribute on any element, if the value names javascript: / vbscript: /
+        // data: schemes, drop the attribute + emit one diagnostic per attribute.
+        //
+        // A ToArray() snapshot is taken at each query because the mutating walks
+        // would otherwise invalidate AngleSharp's live collection.
+        StripDangerousUrlOnAttribute(document, "a[href], area[href]", "href", sink, sourceFile);
+        StripDangerousUrlOnAttribute(document, "form[action]", "action", sink, sourceFile);
+        StripDangerousUrlOnAttribute(document, "iframe[src]", "src", sink, sourceFile);
+        StripDangerousUrlOnAttribute(document, "object[data]", "data", sink, sourceFile);
+        StripDangerousUrlOnAttribute(document, "embed[src]", "src", sink, sourceFile);
+        StripDangerousUrlOnAttribute(document, "base[href]", "href", sink, sourceFile);
+        // <meta http-equiv="refresh" content="0;url=javascript:..."> — the URL is
+        // embedded inside the content attribute; recognized via prefix-match
+        // after the optional delay value.
+        foreach (var meta in document.QuerySelectorAll("meta").ToArray())
         {
-            var href = element.GetAttribute("href");
-            if (!IsJavaScriptUrl(href)) continue;
-
+            var httpEquiv = meta.GetAttribute("http-equiv");
+            if (!string.Equals(httpEquiv, "refresh", System.StringComparison.OrdinalIgnoreCase)) continue;
+            var content = meta.GetAttribute("content");
+            if (string.IsNullOrEmpty(content)) continue;
+            if (!ExtractMetaRefreshUrlIsDangerous(content)) continue;
             sink?.Emit(new Diagnostic(
                 DiagnosticCodes.HtmlJavaScriptUrlIgnored001,
-                $"A javascript: URL was found on a <{element.LocalName}> element's href attribute. The attribute was removed; element text retained.",
+                $"A <meta http-equiv=\"refresh\"> declared a {DescribeUrlScheme(content)} URL. The content attribute was removed.",
                 DiagnosticSeverity.Warning,
-                ToSourceLocation(element, sourceFile)));
-
-            element.RemoveAttribute("href");
+                ToSourceLocation(meta, sourceFile)));
+            meta.RemoveAttribute("content");
         }
 
         // SVG <a> elements use xlink:href (or, in modern SVG 2, plain href), but the xlink:href
@@ -206,7 +226,19 @@ internal sealed class HtmlParsingHost
     /// and space characters are stripped; embedded tab/CR/LF/FF inside the scheme are skipped;
     /// the scheme is matched case-insensitively.
     /// </summary>
-    internal static bool IsJavaScriptUrl(string? value)
+    internal static bool IsJavaScriptUrl(string? value) => SchemeMatches(value, "javascript:");
+
+    /// <summary>Per Phase A security hardening A-1 — the dangerous-URL set:
+    /// <c>javascript:</c> (scripting), <c>vbscript:</c> (legacy IE scripting),
+    /// and <c>data:</c> (carries arbitrary bytes; `data:text/html` + `data:image/svg+xml`
+    /// are common SSRF / XSS sneak paths in HTML-to-PDF research). Other schemes
+    /// (<c>file:</c>, <c>http:</c>, <c>https:</c>) are NOT stripped here — they're
+    /// inert today (resource loading off) + Phase 5's IResourceLoader is the
+    /// right control point for those once fetching is wired.</summary>
+    internal static bool IsDangerousUrl(string? value) =>
+        SchemeMatches(value, "javascript:") || SchemeMatches(value, "vbscript:") || SchemeMatches(value, "data:");
+
+    private static bool SchemeMatches(string? value, string target)
     {
         if (string.IsNullOrEmpty(value)) return false;
         var span = value.AsSpan();
@@ -214,7 +246,6 @@ internal sealed class HtmlParsingHost
         // Per WHATWG URL §3.5, the basic URL parser removes leading C0-control + space.
         while (!span.IsEmpty && span[0] <= 0x20) span = span[1..];
 
-        const string target = "javascript:";
         var matched = 0;
         foreach (var c in span)
         {
@@ -225,6 +256,99 @@ internal sealed class HtmlParsingHost
             matched++;
         }
         return matched == target.Length;
+    }
+
+    private static string DescribeUrlScheme(string? value) =>
+        SchemeMatches(value, "javascript:") ? "javascript:" :
+        SchemeMatches(value, "vbscript:") ? "vbscript:" :
+        SchemeMatches(value, "data:") ? "data:" : "dangerous";
+
+    private static void StripDangerousUrlOnAttribute(
+        IDocument document, string querySelector, string attributeName,
+        IDiagnosticsSink? sink, string? sourceFile)
+    {
+        foreach (var element in document.QuerySelectorAll(querySelector).ToArray())
+        {
+            var value = element.GetAttribute(attributeName);
+            if (!IsDangerousUrl(value)) continue;
+            sink?.Emit(new Diagnostic(
+                DiagnosticCodes.HtmlJavaScriptUrlIgnored001,
+                $"A <{element.LocalName}> element's {attributeName} attribute carried a {DescribeUrlScheme(value)} URL. The attribute was removed; element text retained.",
+                DiagnosticSeverity.Warning,
+                ToSourceLocation(element, sourceFile)));
+            element.RemoveAttribute(attributeName);
+        }
+    }
+
+    /// <summary>Parses the value of <c>&lt;meta http-equiv="refresh" content="..."&gt;</c>
+    /// and returns true if the embedded URL has a dangerous scheme. The HTML5
+    /// "refresh" pragma format is <c>{seconds}[ ;url={url}]</c> with the URL
+    /// optional; whitespace is forgiving + case-insensitive.</summary>
+    private static bool ExtractMetaRefreshUrlIsDangerous(string content)
+    {
+        // Skip the leading delay value (digits, optional decimal). Find the URL
+        // segment after the comma/semicolon, trimming optional `url=` prefix.
+        var span = content.AsSpan();
+        var sepIdx = span.IndexOfAny(';', ',');
+        if (sepIdx < 0) return false; // no URL segment present; nothing to strip
+        span = span[(sepIdx + 1)..].TrimStart();
+        // Optional `url=` prefix (case-insensitive).
+        if (span.Length >= 4
+            && (span[0] == 'u' || span[0] == 'U')
+            && (span[1] == 'r' || span[1] == 'R')
+            && (span[2] == 'l' || span[2] == 'L')
+            && span[3] == '=')
+        {
+            span = span[4..];
+        }
+        // Optional surrounding quotes.
+        if (span.Length >= 2 && (span[0] == '"' || span[0] == '\''))
+        {
+            var quote = span[0];
+            var end = span[1..].IndexOf(quote);
+            if (end >= 0) span = span[1..(end + 1)];
+        }
+        return IsDangerousUrl(span.ToString());
+    }
+
+    /// <summary>Per Phase A security hardening A-2 — strip every <c>on*</c>
+    /// event-handler attribute from every element. Inert today (NetPdf does not
+    /// run scripts), but defense-in-depth for Phase 5's PDF/UA tagged-structure
+    /// emission, which could otherwise route an attacker-controlled
+    /// <c>onclick="alert(...)"</c> into accessibility metadata. The recognition
+    /// rule is the WHATWG HTML Standard's: any attribute whose ASCII-lowercased
+    /// name starts with <c>on</c> is a content-attribute event handler. We
+    /// don't try to validate the JavaScript inside — the attribute itself is
+    /// sufficient signal to drop.</summary>
+    private static void StripEventHandlerAttributes(IDocument document, IDiagnosticsSink? sink, string? sourceFile)
+    {
+        foreach (var element in document.All.ToArray())
+        {
+            // Snapshot the attribute names; we can't iterate a live attribute
+            // collection while removing entries.
+            var toRemove = default(System.Collections.Generic.List<string>);
+            foreach (var attr in element.Attributes)
+            {
+                if (attr is null) continue;
+                var name = attr.LocalName;
+                if (name.Length < 3) continue;
+                // ASCII case-insensitive prefix check on "on".
+                if ((name[0] == 'o' || name[0] == 'O') && (name[1] == 'n' || name[1] == 'N'))
+                {
+                    (toRemove ??= new()).Add(name);
+                }
+            }
+            if (toRemove is null) continue;
+            foreach (var name in toRemove)
+            {
+                sink?.Emit(new Diagnostic(
+                    DiagnosticCodes.HtmlEventHandlerIgnored001,
+                    $"Event-handler attribute '{name}' was found on a <{element.LocalName}> element. The attribute was removed; element + text retained.",
+                    DiagnosticSeverity.Info,
+                    ToSourceLocation(element, sourceFile)));
+                element.RemoveAttribute(name);
+            }
+        }
     }
 
     private static SourceLocation ToSourceLocation(IElement element, string? sourceFile)

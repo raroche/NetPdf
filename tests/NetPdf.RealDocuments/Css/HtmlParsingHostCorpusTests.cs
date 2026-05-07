@@ -53,11 +53,19 @@ public sealed class HtmlParsingHostCorpusTests
 
         var document = await host.ParseAsync(html, new HtmlPdfOptions { Diagnostics = sink });
 
+        // Per Phase A A-2: the parser now also strips event-handler
+        // attributes; tailwind invoices may carry inline on*-attributes from
+        // their UI scripts. The script-stripped requirement still holds, but
+        // the diagnostic set is the union of HTML-SCRIPT-IGNORED-001 +
+        // HTML-EVENT-HANDLER-IGNORED-001. Assert at least one of the script
+        // code, then allow either code in the diagnostic set.
         Assert.NotEmpty(sink.Diagnostics);
+        Assert.Contains(sink.Diagnostics, d => d.Code == "HTML-SCRIPT-IGNORED-001");
         Assert.All(sink.Diagnostics, d =>
         {
-            Assert.Equal("HTML-SCRIPT-IGNORED-001", d.Code);
-            Assert.Equal(DiagnosticSeverity.Warning, d.Severity);
+            Assert.True(
+                d.Code is "HTML-SCRIPT-IGNORED-001" or "HTML-EVENT-HANDLER-IGNORED-001",
+                $"unexpected diagnostic code '{d.Code}'");
         });
         Assert.Empty(document.QuerySelectorAll("script"));
     }

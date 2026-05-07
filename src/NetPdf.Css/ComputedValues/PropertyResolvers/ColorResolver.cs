@@ -516,9 +516,14 @@ internal static class ColorResolver
         ICssDiagnosticsSink? sink, string propertyName, string value, string reason,
         CssSourceLocation location)
     {
+        // Per Phase A A-6 — sanitize untrusted property value + reason text
+        // before they flow into the diagnostic message. Property names are
+        // generator-validated (frozen-set lookup) so they're trusted.
+        var safeValue = DiagnosticTextSanitizer.Sanitize(value);
+        var safeReason = DiagnosticTextSanitizer.Sanitize(reason);
         sink?.Emit(new CssDiagnostic(
             CssDiagnosticCodes.CssPropertyValueInvalid001,
-            $"Could not parse '{propertyName}: {value}' — {reason}.",
+            $"Could not parse '{propertyName}: {safeValue}' — {safeReason}.",
             CssDiagnosticSeverity.Warning,
             location));
     }

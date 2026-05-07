@@ -457,21 +457,32 @@ public sealed class HtmlParsingHostTests
     }
 
     [Fact]
-    public async Task ParseAsync_event_handler_attributes_are_left_in_place()
+    public async Task ParseAsync_event_handler_attributes_are_stripped()
     {
-        // Documented decision: event handlers are inert without a JS engine. Stripping
-        // them would add DOM churn for no security benefit (PDF readers cannot dispatch
-        // them). If a future phase emits attribute values into tagged-PDF metadata, this
-        // policy is revisited then.
+        // Per Phase A security hardening A-2 — the previous policy (leave
+        // event handlers in place because PDF readers can't dispatch them)
+        // was reversed. Phase 5's PDF/UA emission could surface attribute
+        // values into accessibility metadata, so we strip on*-prefixed
+        // attributes at parse time + emit HTML-EVENT-HANDLER-IGNORED-001
+        // (Info severity) for each.
         var sink = new CapturingSink();
         var host = new HtmlParsingHost();
 
         var document = await host.ParseAsync(
-            "<html><body><button onclick=\"doStuff()\">click</button></body></html>",
+            "<html><body><button onclick=\"doStuff()\" onmouseover=\"hover()\">click</button></body></html>",
             new HtmlPdfOptions { Diagnostics = sink });
 
-        Assert.Empty(sink.Diagnostics);
-        Assert.Equal("doStuff()", document.QuerySelector("button")!.GetAttribute("onclick"));
+        Assert.Equal(2, sink.Diagnostics.Count);
+        Assert.All(sink.Diagnostics, d =>
+        {
+            Assert.Equal("HTML-EVENT-HANDLER-IGNORED-001", d.Code);
+            Assert.Equal(DiagnosticSeverity.Info, d.Severity);
+        });
+        var btn = document.QuerySelector("button")!;
+        Assert.False(btn.HasAttribute("onclick"));
+        Assert.False(btn.HasAttribute("onmouseover"));
+        // Button text retained — we strip the attribute, not the element.
+        Assert.Equal("click", btn.TextContent);
     }
 
     [Fact]

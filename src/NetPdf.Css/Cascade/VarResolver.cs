@@ -77,6 +77,14 @@ internal static class VarResolver
         // chain. Even when the element has no matched declarations, we still need a
         // per-element table so children inherit through us correctly.
         var ownTable = new CustomPropertyTable(parentCustomProperties);
+        // Per Phase A A-3 — one cumulative-budget instance per element scopes
+        // all var() substitutions for THIS element (the host's own properties
+        // and every pseudo on the same element). Pseudos on the same element
+        // share the budget because they all originate from the same input
+        // document position; charging them separately would let an attacker
+        // amplify by 5–10× via fragment pseudos.
+        var elementBudget = new VarSubstitution.Budget();
+
         var hadCustomDecls = false;
         if (matched is not null)
         {
@@ -86,8 +94,8 @@ internal static class VarResolver
             // is "invalid at computed value time"; the earlier substitution-time guard
             // only invalidated the chain that hit the cycle first.
             CustomPropertyCycleDetector.DetectAndMarkInvalid(ownTable, diagnostics);
-            ResolveOwnCustomPropertyValues(ownTable, diagnostics);
-            EmitNonCustomDeclarations(matched, ownTable, element, result, diagnostics, isPseudo: false);
+            ResolveOwnCustomPropertyValues(ownTable, diagnostics, elementBudget);
+            EmitNonCustomDeclarations(matched, ownTable, element, result, diagnostics, isPseudo: false, budget: elementBudget);
             // Rec 6: ensure elements that have ONLY custom-property declarations still
             // surface a ResolvedRuleSet so callers can read the resolved table via
             // result.TryGetStylesFor(element).CustomProperties. Without this, an element
@@ -112,9 +120,9 @@ internal static class VarResolver
             var pseudoTable = new CustomPropertyTable(ownTable);
             CollectOwnCustomProperties(pseudoMatched, pseudoTable);
             CustomPropertyCycleDetector.DetectAndMarkInvalid(pseudoTable, diagnostics);
-            ResolveOwnCustomPropertyValues(pseudoTable, diagnostics);
+            ResolveOwnCustomPropertyValues(pseudoTable, diagnostics, elementBudget);
             EmitNonCustomDeclarations(pseudoMatched, pseudoTable, element, result, diagnostics,
-                isPseudo: true, pseudoName: pair.Pseudo);
+                isPseudo: true, pseudoName: pair.Pseudo, budget: elementBudget);
         }
 
         foreach (var child in element.Children)
@@ -156,7 +164,8 @@ internal static class VarResolver
     /// <c>"unset"</c> sentinel string as if it were a valid value.</summary>
     private static void ResolveOwnCustomPropertyValues(
         CustomPropertyTable ownTable,
-        ICssDiagnosticsSink? diagnostics)
+        ICssDiagnosticsSink? diagnostics,
+        VarSubstitution.Budget budget)
     {
         // Snapshot the names to avoid mutating-while-enumerating.
         var names = new List<string>(ownTable.OwnNames);
@@ -166,7 +175,7 @@ internal static class VarResolver
             // value is unreachable anyway. Re-Setting would clear the invalid flag,
             // re-promoting cycle members to "valid (with garbage value)".
             if (!ownTable.TryGetValue(name, out var raw)) continue;
-            var resolved = VarSubstitution.Substitute(raw, ownTable, diagnostics);
+            var resolved = VarSubstitution.Substitute(raw, ownTable, diagnostics, budget: budget);
             if (resolved.IsInvalid)
             {
                 // Mark invalid instead of storing "unset" as a literal value. This is
@@ -188,7 +197,8 @@ internal static class VarResolver
         ResolvedCascadeResult result,
         ICssDiagnosticsSink? diagnostics,
         bool isPseudo,
-        string? pseudoName = null)
+        string? pseudoName = null,
+        VarSubstitution.Budget? budget = null)
     {
         ResolvedRuleSet? targetSet = null;
         foreach (var name in matched.Properties)
@@ -198,7 +208,7 @@ internal static class VarResolver
             if (winner is null) continue;
             var raw = winner.Declaration.Value.RawText ?? string.Empty;
             var substituted = VarSubstitution.Substitute(raw, customProperties, diagnostics,
-                location: winner.Declaration.Location);
+                location: winner.Declaration.Location, budget: budget);
             // After var() substitution, run the math-function resolver (Task 9) so
             // calc() / min() / max() / clamp() / abs() / sign() expressions reduce to
             // single concrete values when possible. Mixed-unit cases (50% + 16px) are

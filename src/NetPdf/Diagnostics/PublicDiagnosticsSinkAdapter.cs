@@ -79,6 +79,21 @@ internal sealed class PublicDiagnosticsSinkAdapter : ICssDiagnosticsSink
         _ => DiagnosticSeverity.Warning,
     };
 
-    private static SourceLocation ConvertLocation(CssSourceLocation location) =>
-        new(location.Source, location.Line, location.Column);
+    private static SourceLocation ConvertLocation(CssSourceLocation location)
+    {
+        // Per Phase A A-7 — normalize Source via DiagnosticTextSanitizer so a
+        // host-supplied BaseUri like file:///C:/Users/Foo/secret/index.html
+        // doesn't leak host filesystem topology into a diagnostic that may
+        // flow into a public log. https:// + sentinel values pass through
+        // unchanged; absolute filesystem paths are reduced to their basename.
+        var safeFile = location.Source is null
+            ? null
+            : DiagnosticTextSanitizer.SanitizeFilePath(location.Source);
+        // SanitizeFilePath returns "<unknown>" for empty/null inputs; preserve
+        // null on the public surface (consumers expect SourceLocation.File =
+        // null for "no info"). The "<unknown>" sentinel is reserved for
+        // CSS-side diagnostics where it carries explicit "unknown" semantics.
+        if (safeFile == "<unknown>") safeFile = null;
+        return new SourceLocation(safeFile, location.Line, location.Column);
+    }
 }

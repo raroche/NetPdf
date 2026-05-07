@@ -1,2 +1,2 @@
-HTML-JAVASCRIPT-URL-IGNORED-001	Warning	<inline>:1:82	A javascript: URL was found on a <a> element's href attribute. The attribute was removed; element text retained.
+HTML-JAVASCRIPT-URL-IGNORED-001	Warning	<inline>:1:82	A <a> element's href attribute carried a javascript: URL. The attribute was removed; element text retained.
 HTML-SCRIPT-IGNORED-001	Warning	<inline>:1:28	A <script> element was encountered. NetPdf does not execute JavaScript in v1. The element was removed from the rendering...

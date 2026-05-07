@@ -21,11 +21,27 @@ internal static class DiagnosticCodes
     public const string HtmlScriptIgnored001 = "HTML-SCRIPT-IGNORED-001";
 
     /// <summary>
-    /// An <c>href</c> / <c>xlink:href</c> attribute carried a <c>javascript:</c> URL. The
-    /// attribute was removed so the link will not appear in the emitted PDF; the surrounding
-    /// element and its text content remain. Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// An <c>href</c> / <c>xlink:href</c> / <c>action</c> / <c>src</c> / <c>data</c> /
+    /// <c>content</c> attribute carried a <c>javascript:</c> / <c>vbscript:</c> /
+    /// <c>data:</c> URL. The attribute was removed so the URL is not honored downstream;
+    /// the surrounding element + its text content remain. Phase A (Phase 2 deep review
+    /// security pass) widened the strip beyond the original <c>&lt;a&gt;</c>/<c>&lt;area&gt;</c>
+    /// /<c>xlink:href</c> coverage to also include <c>&lt;form action&gt;</c>,
+    /// <c>&lt;iframe src&gt;</c>, <c>&lt;object data&gt;</c>, <c>&lt;embed src&gt;</c>,
+    /// <c>&lt;base href&gt;</c>, and <c>&lt;meta http-equiv="refresh" content="0;url=..."&gt;</c>.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
     /// </summary>
     public const string HtmlJavaScriptUrlIgnored001 = "HTML-JAVASCRIPT-URL-IGNORED-001";
+
+    /// <summary>
+    /// An <c>on*</c> event-handler attribute (e.g., <c>onclick</c>, <c>onload</c>,
+    /// <c>onerror</c>, <c>onmouseover</c>) was found on an element. NetPdf does not
+    /// execute scripts in v1, so the handler is inert today — but Phase 5 PDF/UA
+    /// emission could surface attribute values into accessibility metadata. The
+    /// attribute is stripped at parse time as a defense-in-depth measure.
+    /// Severity: <see cref="DiagnosticSeverity.Info"/>.
+    /// </summary>
+    public const string HtmlEventHandlerIgnored001 = "HTML-EVENT-HANDLER-IGNORED-001";
 
     // endregion HTML-*
 

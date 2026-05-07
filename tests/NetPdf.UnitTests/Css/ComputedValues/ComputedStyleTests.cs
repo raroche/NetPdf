@@ -339,7 +339,10 @@ public sealed class ComputedStyleTests
     [Fact]
     public void Operations_throw_after_dispose()
     {
-        var style = ComputedStyle.Rent();
+        // Same parallel-rent race as Dispose_then_post_dispose_access_throws —
+        // use the test-only exclusive-from-pool factory so the disposed flag
+        // stays observably true across the assertions.
+        var style = ComputedStyle.RentForExclusiveTesting();
         style.Dispose();
         Assert.Throws<System.ObjectDisposedException>(
             () => style.Get(PropertyId.Color));
@@ -360,13 +363,19 @@ public sealed class ComputedStyleTests
     [Fact]
     public void Dispose_then_post_dispose_access_throws()
     {
-        var style = ComputedStyle.Rent();
+        // Use the test-only exclusive-from-pool factory so the disposed flag
+        // stays observably true across the assertion. Without this, xUnit's
+        // parallel runner can race another test's `ComputedStyle.Rent()`
+        // call between this test's `Dispose()` and the `Assert.Throws`,
+        // pulling the just-disposed instance from the pool, calling Reset()
+        // (which flips _disposed back to false), and silently neutralizing
+        // the assertion. The production soft-guard contract documents this
+        // race as best-effort by design — the test is asserting that the
+        // soft guard fires WHEN the instance hasn't been re-rented yet.
+        var style = ComputedStyle.RentForExclusiveTesting();
         style.SetCustomProperty("--brand", ComputedSlot.FromColor(0xFFFF0000u));
         Assert.Equal(1, style.CustomPropertyCount);
         style.Dispose();
-        // Soft guard: instance still exists in the pool, but the original holder must
-        // not touch it (use-after-Dispose is a programming error). The disposed flag
-        // catches this whenever the same instance hasn't been re-rented yet.
         Assert.Throws<System.ObjectDisposedException>(() => _ = style.CustomPropertyCount);
     }
 

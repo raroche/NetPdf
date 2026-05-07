@@ -68,9 +68,16 @@ internal static class NumberResolver
         ICssDiagnosticsSink? sink, string propertyName, string value, string reason,
         CssSourceLocation location)
     {
+        // Per Phase A A-6 — sanitize untrusted value + reason before message
+        // interpolation. Property names are generator-validated (frozen-set
+        // lookup), so they're trusted. Reason is internal but is sanitized
+        // defensively so a future change can't accidentally interpolate raw
+        // input into it without picking up the protection.
+        var safeValue = DiagnosticTextSanitizer.Sanitize(value);
+        var safeReason = DiagnosticTextSanitizer.Sanitize(reason);
         sink?.Emit(new CssDiagnostic(
             CssDiagnosticCodes.CssPropertyValueInvalid001,
-            $"Could not parse '{propertyName}: {value}' — {reason}.",
+            $"Could not parse '{propertyName}: {safeValue}' — {safeReason}.",
             CssDiagnosticSeverity.Warning,
             location));
     }

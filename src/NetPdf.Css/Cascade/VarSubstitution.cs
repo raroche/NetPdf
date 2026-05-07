@@ -65,6 +65,63 @@ internal static class VarSubstitution
     /// fail fast on adversarial input.</summary>
     public const int MaxOutputLength = 1024 * 1024;
 
+    /// <summary>Per Phase A security hardening A-3 — element-scoped cumulative
+    /// budget for var() substitution output. Cycle 1's <see cref="MaxOutputLength"/>
+    /// is a per-CALL cap, but <see cref="VarResolver"/> calls
+    /// <see cref="Substitute"/> repeatedly per element (once per custom property,
+    /// once per non-custom declaration). With N properties each near the per-call
+    /// cap, total output for one element can reach N MiB. The budget tracks total
+    /// consumed chars across every <see cref="Substitute"/> call sharing the same
+    /// budget instance + cuts off further substitutions when exhausted. 10 MiB is
+    /// generous for any real document while bounding adversarial input.
+    /// <para>
+    /// The budget is OPTIONAL — when null, substitution falls back to the
+    /// per-call cap only (preserves existing behavior for direct callers).
+    /// <see cref="VarResolver"/> creates one budget per element + threads it
+    /// through every substitution for that element.
+    /// </para></summary>
+    public sealed class Budget
+    {
+        public const int DefaultBytesPerElement = 10 * 1024 * 1024; // 10 MiB
+
+        private readonly long _initialBudget;
+        private long _remaining;
+        private bool _exhausted;
+
+        public Budget(long bytesPerElement = DefaultBytesPerElement)
+        {
+            _initialBudget = bytesPerElement;
+            _remaining = bytesPerElement;
+        }
+
+        public bool IsExhausted => _exhausted;
+
+        /// <summary>The initial budget passed to the constructor (in chars).
+        /// Per Copilot review #2 — diagnostic messages should report THIS
+        /// value, not the static default, so a tight test budget (e.g., 100)
+        /// surfaces accurately to the user instead of the always-10-MiB
+        /// default text.</summary>
+        public long InitialBudget => _initialBudget;
+
+        /// <summary>Try to charge <paramref name="chars"/> chars against the
+        /// remaining budget. Returns true if the charge fit; false if the
+        /// budget is exhausted (caller should bail with the
+        /// <c>CSS-VAR-EXPANSION-LIMIT-001</c> diagnostic).</summary>
+        public bool TryConsume(int chars)
+        {
+            if (_exhausted) return false;
+            if (chars <= 0) return true;
+            if (_remaining < chars)
+            {
+                _exhausted = true;
+                _remaining = 0;
+                return false;
+            }
+            _remaining -= chars;
+            return true;
+        }
+    }
+
     /// <summary>Convenience wrapper around <see cref="Substitute"/> that discards the
     /// invalid flag and returns just the substituted text. Use the structured form
     /// (<see cref="Substitute"/>) when the caller needs to react to "invalid at
@@ -76,8 +133,9 @@ internal static class VarSubstitution
         ICssDiagnosticsSink? diagnostics = null,
         CssSourceLocation location = default,
         HashSet<string>? visited = null,
-        int depth = 0)
-        => Substitute(rawValue, customProperties, diagnostics, location, visited, depth).Value;
+        int depth = 0,
+        Budget? budget = null)
+        => Substitute(rawValue, customProperties, diagnostics, location, visited, depth, budget).Value;
 
     /// <summary>Substitute every <c>var(--name, fallback)</c> in <paramref name="rawValue"/>.
     /// Returns a <see cref="SubstitutionResult"/> with the resolved text + an
@@ -95,13 +153,18 @@ internal static class VarSubstitution
     /// carry it through to detect cycles.</param>
     /// <param name="depth">Recursion-depth counter; bounded by
     /// <see cref="MaxRecursionDepth"/>. Top-level callers pass 0.</param>
+    /// <param name="budget">Optional element-scoped cumulative output budget per
+    /// Phase A A-3. Null = no cumulative cap (per-call <see cref="MaxOutputLength"/>
+    /// still applies). <see cref="VarResolver"/> creates one budget per element +
+    /// passes it to every substitution for that element.</param>
     public static SubstitutionResult Substitute(
         string rawValue,
         CustomPropertyTable customProperties,
         ICssDiagnosticsSink? diagnostics = null,
         CssSourceLocation location = default,
         HashSet<string>? visited = null,
-        int depth = 0)
+        int depth = 0,
+        Budget? budget = null)
     {
         if (string.IsNullOrEmpty(rawValue)) return SubstitutionResult.Valid(rawValue ?? string.Empty);
         // Cheap fast-path: ASCII-CI search for "var(" with any case combination.
@@ -114,6 +177,15 @@ internal static class VarSubstitution
                 $"var() substitution exceeded the maximum depth of {MaxRecursionDepth}. Resolved to unset.",
                 CssDiagnosticSeverity.Warning,
                 location));
+            return SubstitutionResult.Invalid(UnsetSentinel);
+        }
+
+        // Per Phase A A-3 — short-circuit if the cumulative element budget is
+        // already exhausted from a prior substitution on the same element.
+        // Diagnostic was already emitted at the moment of exhaustion; subsequent
+        // calls return Invalid silently to avoid flooding the sink.
+        if (budget is not null && budget.IsExhausted)
+        {
             return SubstitutionResult.Invalid(UnsetSentinel);
         }
 
@@ -152,7 +224,7 @@ internal static class VarSubstitution
                     return SubstitutionResult.Valid(output.ToString());
                 }
                 var body = rawValue[bodyStart..bodyEnd];
-                var resolved = ResolveVar(body, customProperties, diagnostics, location, visited, depth + 1);
+                var resolved = ResolveVar(body, customProperties, diagnostics, location, visited, depth + 1, budget);
                 output.Append(resolved.Value);
                 if (resolved.IsInvalid) anyInvalid = true;
                 pos = bodyEnd + 1; // skip past `)`
@@ -161,6 +233,29 @@ internal static class VarSubstitution
             output.Append(c);
             pos++;
         }
+
+        // Per Phase A A-3 — charge the final output length against the
+        // element-scoped cumulative budget. Exhaustion here means the element
+        // has consumed too many chars across all its substitutions; emit one
+        // diagnostic + return Invalid for this and subsequent calls.
+        if (budget is not null && !budget.TryConsume(output.Length))
+        {
+            // Per Copilot review #2 — report the ACTUAL budget value, not the
+            // static default. A test that uses Budget(100) will now see "100
+            // chars" in the message instead of misleading "10 MiB". Mid-MiB
+            // budgets render with chars (e.g., 100 chars) since the math
+            // rounds odd budgets to 0 MiB.
+            var budgetText = budget.InitialBudget >= 1024 * 1024
+                ? $"{budget.InitialBudget / (1024 * 1024)} MiB"
+                : $"{budget.InitialBudget} chars";
+            diagnostics?.Emit(new CssDiagnostic(
+                CssDiagnosticCodes.CssVarExpansionLimit001,
+                $"var() cumulative output for this element exceeded the {budgetText} budget. Resolved to unset.",
+                CssDiagnosticSeverity.Warning,
+                location));
+            return SubstitutionResult.Invalid(UnsetSentinel);
+        }
+
         return anyInvalid
             ? SubstitutionResult.Invalid(output.ToString())
             : SubstitutionResult.Valid(output.ToString());
@@ -205,31 +300,36 @@ internal static class VarSubstitution
         ICssDiagnosticsSink? diagnostics,
         CssSourceLocation location,
         HashSet<string>? visited,
-        int depth)
+        int depth,
+        Budget? budget)
     {
         var (nameRaw, fallbackRaw) = SplitOnTopLevelComma(body);
         var name = nameRaw.Trim();
         if (string.IsNullOrEmpty(name) || !name.StartsWith("--", StringComparison.Ordinal))
         {
             // Malformed var() — treat as missing/fallback.
-            return ResolveFallback(fallbackRaw, customProperties, diagnostics, location, visited, depth);
+            return ResolveFallback(fallbackRaw, customProperties, diagnostics, location, visited, depth, budget);
         }
 
         if (visited is not null && visited.Contains(name))
         {
+            // Per Phase A A-6 — sanitize the custom-property name before interpolation.
+            // Names start with `--` but the body chars are author-supplied and could
+            // carry C0/C1/DEL or be extremely long.
+            var safeName = DiagnosticTextSanitizer.Sanitize(name, maxLength: 80);
             diagnostics?.Emit(new CssDiagnostic(
                 CssDiagnosticCodes.CssVarCircular001,
-                $"Circular var() reference detected at '{name}'. Resolved to fallback or unset.",
+                $"Circular var() reference detected at '{safeName}'. Resolved to fallback or unset.",
                 CssDiagnosticSeverity.Warning,
                 location));
-            return ResolveFallback(fallbackRaw, customProperties, diagnostics, location, visited, depth);
+            return ResolveFallback(fallbackRaw, customProperties, diagnostics, location, visited, depth, budget);
         }
 
         if (!customProperties.TryGetValue(name, out var value))
         {
             // Name not declared OR marked invalid by the cycle-detection pre-pass —
             // either way, fall through to fallback.
-            return ResolveFallback(fallbackRaw, customProperties, diagnostics, location, visited, depth);
+            return ResolveFallback(fallbackRaw, customProperties, diagnostics, location, visited, depth, budget);
         }
 
         // Lazily allocate the visited set once per resolution and mutate in place across
@@ -242,7 +342,7 @@ internal static class VarSubstitution
         visitedSet.Add(name);
         try
         {
-            return Substitute(value, customProperties, diagnostics, location, visitedSet, depth);
+            return Substitute(value, customProperties, diagnostics, location, visitedSet, depth, budget);
         }
         finally
         {
@@ -259,7 +359,8 @@ internal static class VarSubstitution
         ICssDiagnosticsSink? diagnostics,
         CssSourceLocation location,
         HashSet<string>? visited,
-        int depth)
+        int depth,
+        Budget? budget)
     {
         // No comma in the var() at all — INVALID at computed value time per spec.
         if (fallbackRaw is null) return SubstitutionResult.Invalid(UnsetSentinel);
@@ -267,7 +368,7 @@ internal static class VarSubstitution
         var trimmed = fallbackRaw.Trim();
         if (string.IsNullOrEmpty(trimmed)) return SubstitutionResult.Valid(string.Empty);
         // Fallback may itself contain var() — recurse with the same depth + visited set.
-        return Substitute(trimmed, customProperties, diagnostics, location, visited, depth);
+        return Substitute(trimmed, customProperties, diagnostics, location, visited, depth, budget);
     }
 
     private static int FindMatchingCloseParen(string text, int start)

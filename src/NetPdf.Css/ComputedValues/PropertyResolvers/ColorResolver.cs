@@ -86,9 +86,14 @@ internal static class ColorResolver
             // is a parse error". Cycle 2 will sRGB-convert these.
             if (modernColorFn is not null)
             {
+                // Per Phase A A-6 — sanitize the function name + raw value before
+                // they reach the diagnostic message. modernColorFn is preprocessor
+                // recovery output (effectively trusted) but value is raw author CSS.
+                var safeModernFn = DiagnosticTextSanitizer.Sanitize(modernColorFn);
+                var safeValue = DiagnosticTextSanitizer.Sanitize(value);
                 diagnostics?.Emit(new CssDiagnostic(
                     CssDiagnosticCodes.CssModernColorFunctionUnsupported001,
-                    $"Modern color function '{modernColorFn}()' is unsupported in '{propertyName}: {value}'. The cascade's invalid-at-computed-value-time rule applies (initial / inherited value used).",
+                    $"Modern color function '{safeModernFn}()' is unsupported in '{propertyName}: {safeValue}'. The cascade's invalid-at-computed-value-time rule applies (initial / inherited value used).",
                     CssDiagnosticSeverity.Info,
                     location));
                 return ResolverResult.Invalid();
@@ -516,9 +521,14 @@ internal static class ColorResolver
         ICssDiagnosticsSink? sink, string propertyName, string value, string reason,
         CssSourceLocation location)
     {
+        // Per Phase A A-6 — sanitize untrusted property value + reason text
+        // before they flow into the diagnostic message. Property names are
+        // generator-validated (frozen-set lookup) so they're trusted.
+        var safeValue = DiagnosticTextSanitizer.Sanitize(value);
+        var safeReason = DiagnosticTextSanitizer.Sanitize(reason);
         sink?.Emit(new CssDiagnostic(
             CssDiagnosticCodes.CssPropertyValueInvalid001,
-            $"Could not parse '{propertyName}: {value}' — {reason}.",
+            $"Could not parse '{propertyName}: {safeValue}' — {safeReason}.",
             CssDiagnosticSeverity.Warning,
             location));
     }

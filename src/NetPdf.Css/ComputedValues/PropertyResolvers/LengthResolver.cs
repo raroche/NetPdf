@@ -293,9 +293,13 @@ internal static class LengthResolver
         ICssDiagnosticsSink? sink, string propertyName, string value, string reason,
         CssSourceLocation location)
     {
+        // Per Phase A A-6 — sanitize untrusted value + reason before message
+        // interpolation; see DiagnosticTextSanitizer for rationale.
+        var safeValue = DiagnosticTextSanitizer.Sanitize(value);
+        var safeReason = DiagnosticTextSanitizer.Sanitize(reason);
         sink?.Emit(new CssDiagnostic(
             CssDiagnosticCodes.CssPropertyValueInvalid001,
-            $"Could not parse '{propertyName}: {value}' — {reason}.",
+            $"Could not parse '{propertyName}: {safeValue}' — {safeReason}.",
             CssDiagnosticSeverity.Warning,
             location));
     }

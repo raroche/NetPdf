@@ -82,7 +82,7 @@ internal static class CascadeResolver
             if (sheet.IsDisabled) continue;
             if (!media.Matches(sheet.MediaQuery)) continue;
             if (sheet.Order > maxSheetOrder) maxSheetOrder = sheet.Order;
-            CollectRules(sheet, compiledRules, hasContainingStylesheets, media, layers, diagnostics);
+            CollectRules(sheet, compiledRules, hasContainingStylesheets, media, layers, diagnostics, cancellationToken);
         }
 
         if (diagnostics is not null)
@@ -136,13 +136,81 @@ internal static class CascadeResolver
         HashSet<int> hasContainingSheets,
         CssMediaContext media,
         LayerRegistry layers,
-        ICssDiagnosticsSink? diagnostics)
+        ICssDiagnosticsSink? diagnostics,
+        System.Threading.CancellationToken cancellationToken)
     {
+        // Per Phase A security hardening A-8 — wrap the diagnostic sink in a
+        // per-stylesheet budget that caps CSS-PARSE-WARNING-001 emissions at
+        // 100. A hostile CSS with thousands of broken selectors would
+        // otherwise flood the consumer's sink + downstream log infrastructure;
+        // the cap keeps the signal intact (the first ~100 broken rules are
+        // still surfaced) while silencing the spam tail. Other diagnostic
+        // codes pass through unbudgeted — the cap is specifically about
+        // selector-parse warnings since they're the easiest amplifier.
+        var budgetedSink = diagnostics is null
+            ? null
+            : new SelectorParseWarningBudgetSink(diagnostics);
+
         var ruleOrder = 0;
         CollectFromRules(sheet.Rules, sheet.Origin, sheet.Order, ref ruleOrder,
             output, hasContainingSheets, media, layers,
-            currentLayer: LayerRegistry.UnlayeredIndex, diagnostics);
+            currentLayer: LayerRegistry.UnlayeredIndex, budgetedSink, cancellationToken);
     }
+
+    /// <summary>Per Phase A A-8 — sink decorator that throttles
+    /// CSS-PARSE-WARNING-001 to <see cref="MaxSelectorParseWarningsPerSheet"/>
+    /// per stylesheet. After the budget is exceeded, further selector-parse
+    /// warnings are silently dropped + a single summary diagnostic is emitted
+    /// noting how many additional warnings would have followed. All other
+    /// codes pass through unconditionally.</summary>
+    private sealed class SelectorParseWarningBudgetSink : ICssDiagnosticsSink
+    {
+        public const int MaxSelectorParseWarningsPerSheet = 100;
+
+        private readonly ICssDiagnosticsSink _inner;
+        private int _emitted;
+        private int _suppressed;
+        private bool _summaryEmitted;
+
+        public SelectorParseWarningBudgetSink(ICssDiagnosticsSink inner)
+        {
+            _inner = inner;
+        }
+
+        public void Emit(CssDiagnostic diagnostic)
+        {
+            if (diagnostic.Code != CssDiagnosticCodes.CssParseWarning001)
+            {
+                _inner.Emit(diagnostic);
+                return;
+            }
+            if (_emitted < MaxSelectorParseWarningsPerSheet)
+            {
+                _inner.Emit(diagnostic);
+                _emitted++;
+                return;
+            }
+            _suppressed++;
+            if (!_summaryEmitted)
+            {
+                _summaryEmitted = true;
+                _inner.Emit(new CssDiagnostic(
+                    CssDiagnosticCodes.CssParseWarning001,
+                    $"Selector-parse warnings exceeded the per-stylesheet budget ({MaxSelectorParseWarningsPerSheet}); further selector failures are suppressed for this stylesheet.",
+                    CssDiagnosticSeverity.Warning,
+                    diagnostic.Location));
+            }
+        }
+    }
+
+    /// <summary>Per Phase A security hardening A-4 — bound the rule-walker
+    /// recursion depth so an attacker stylesheet with thousands of nested
+    /// <c>@media</c> / <c>@supports</c> / <c>@layer</c> / <c>@import</c>
+    /// rules can't escalate into <c>StackOverflowException</c> (uncatchable).
+    /// 32 is generous for any hand-authored CSS (typical nesting is 2–3 levels)
+    /// while bounding adversarial inputs to well under the .NET default 1 MiB
+    /// stack budget.</summary>
+    private const int MaxAtRuleNestingDepth = 32;
 
     private static void CollectFromRules(
         ImmutableArray<CssRule> rules,
@@ -154,10 +222,29 @@ internal static class CascadeResolver
         CssMediaContext media,
         LayerRegistry layers,
         int currentLayer,
-        ICssDiagnosticsSink? diagnostics)
+        ICssDiagnosticsSink? diagnostics,
+        System.Threading.CancellationToken cancellationToken,
+        int depth = 0)
     {
+        // Per Phase A A-4 — early-return on excessive nesting; emit one
+        // diagnostic so the author sees why their guarded rules were skipped.
+        if (depth > MaxAtRuleNestingDepth)
+        {
+            diagnostics?.Emit(new CssDiagnostic(
+                CssDiagnosticCodes.CssAtRuleUnknown001,
+                $"@-rule nesting exceeded the depth limit ({MaxAtRuleNestingDepth}); contained rules skipped.",
+                CssDiagnosticSeverity.Warning,
+                CssSourceLocation.Unknown));
+            return;
+        }
+
         foreach (var rule in rules)
         {
+            // Per Phase A A-7 — check cancellation per-rule (not just at the stage
+            // boundary). A hostile stylesheet with millions of rules or an
+            // adversarially-deep nested @media tree could otherwise spend tens of
+            // seconds in selector compilation before any post-loop check runs.
+            cancellationToken.ThrowIfCancellationRequested();
             switch (rule)
             {
                 case CssStyleRule sr:
@@ -166,11 +253,13 @@ internal static class CascadeResolver
                     break;
                 case CssAtRule ar:
                     CollectAtRule(ar, origin, sheetOrder, ref ruleOrder,
-                        output, hasContainingSheets, media, layers, currentLayer, diagnostics);
+                        output, hasContainingSheets, media, layers, currentLayer, diagnostics,
+                        cancellationToken, depth);
                     break;
                 case CssImportRule import:
                     CollectImportRule(import, origin, sheetOrder, ref ruleOrder,
-                        output, hasContainingSheets, media, layers, currentLayer, diagnostics);
+                        output, hasContainingSheets, media, layers, currentLayer, diagnostics,
+                        cancellationToken, depth);
                     break;
                 // Other rule kinds (page, font-face, …) don't contribute declarations to
                 // the regular element cascade; they have separate consumers.
@@ -210,19 +299,23 @@ internal static class CascadeResolver
         CssMediaContext media,
         LayerRegistry layers,
         int currentLayer,
-        ICssDiagnosticsSink? diagnostics)
+        ICssDiagnosticsSink? diagnostics,
+        System.Threading.CancellationToken cancellationToken,
+        int depth)
     {
         switch (ar.Name)
         {
             case "media":
                 if (!media.Matches(ar.Prelude)) return;
                 CollectFromRules(ar.ChildRules, origin, sheetOrder, ref ruleOrder,
-                    output, hasContainingSheets, media, layers, currentLayer, diagnostics);
+                    output, hasContainingSheets, media, layers, currentLayer, diagnostics,
+                    cancellationToken, depth + 1);
                 break;
             case "supports":
                 if (!SupportsConditionMatches(ar.Prelude, diagnostics, ar.Location)) return;
                 CollectFromRules(ar.ChildRules, origin, sheetOrder, ref ruleOrder,
-                    output, hasContainingSheets, media, layers, currentLayer, diagnostics);
+                    output, hasContainingSheets, media, layers, currentLayer, diagnostics,
+                    cancellationToken, depth + 1);
                 break;
             case "container":
                 diagnostics?.Emit(new CssDiagnostic(
@@ -233,7 +326,8 @@ internal static class CascadeResolver
                 break;
             case "layer":
                 CollectLayerAtRule(ar, origin, sheetOrder, ref ruleOrder,
-                    output, hasContainingSheets, media, layers, diagnostics);
+                    output, hasContainingSheets, media, layers, diagnostics,
+                    cancellationToken, depth);
                 break;
             default:
                 // Unknown at-rule. Three shapes to handle:
@@ -277,7 +371,9 @@ internal static class CascadeResolver
         HashSet<int> hasContainingSheets,
         CssMediaContext media,
         LayerRegistry layers,
-        ICssDiagnosticsSink? diagnostics)
+        ICssDiagnosticsSink? diagnostics,
+        System.Threading.CancellationToken cancellationToken,
+        int depth)
     {
         var names = LayerRegistry.ParsePrelude(ar.Prelude);
         var hasBody = !ar.ChildRules.IsEmpty || !string.IsNullOrEmpty(ar.RawBody);
@@ -310,7 +406,8 @@ internal static class CascadeResolver
         }
 
         CollectFromRules(ar.ChildRules, origin, sheetOrder, ref ruleOrder,
-            output, hasContainingSheets, media, layers, layerIdx, diagnostics);
+            output, hasContainingSheets, media, layers, layerIdx, diagnostics,
+            cancellationToken, depth + 1);
     }
 
     /// <summary>Walk an <c>@import</c>'s already-resolved <see cref="CssImportRule.ImportedRules"/>
@@ -334,7 +431,9 @@ internal static class CascadeResolver
         CssMediaContext media,
         LayerRegistry layers,
         int currentLayer,
-        ICssDiagnosticsSink? diagnostics)
+        ICssDiagnosticsSink? diagnostics,
+        System.Threading.CancellationToken cancellationToken,
+        int depth)
     {
         if (import.ImportedRules.IsEmpty) return;
         if (!media.Matches(import.MediaQuery)) return;
@@ -354,7 +453,8 @@ internal static class CascadeResolver
         }
 
         CollectFromRules(import.ImportedRules, origin, sheetOrder, ref ruleOrder,
-            output, hasContainingSheets, media, layers, importLayer, diagnostics);
+            output, hasContainingSheets, media, layers, importLayer, diagnostics,
+            cancellationToken, depth + 1);
     }
 
     /// <summary>Per Rec 2: <c>@import url(x) supports(display: grid)</c> arrives at the
@@ -403,9 +503,13 @@ internal static class CascadeResolver
         catch
         {
             // Conservative: any parse failure → unsupported, skip children.
+            // Per Phase A A-6 — sanitize the author-supplied condition before
+            // interpolation; the prelude can carry control chars or be extreme
+            // length.
+            var safeTrimmed = DiagnosticTextSanitizer.Sanitize(trimmed, maxLength: 120);
             diagnostics?.Emit(new CssDiagnostic(
                 CssDiagnosticCodes.CssAtRuleUnknown001,
-                $"@supports condition \"{trimmed}\" could not be evaluated — children skipped.",
+                $"@supports condition \"{safeTrimmed}\" could not be evaluated — children skipped.",
                 CssDiagnosticSeverity.Info, location));
             return false;
         }
@@ -607,9 +711,13 @@ internal static class CascadeResolver
 
     private static void EmitOpaqueAtRuleDiagnostic(CssAtRule ar, ICssDiagnosticsSink? diagnostics)
     {
+        // Per Phase A A-6 — sanitize the at-rule name. Although AngleSharp normalizes
+        // these to ASCII identifiers in well-formed input, malformed CSS can carry an
+        // arbitrary token here; defense-in-depth before interpolation.
+        var safeName = DiagnosticTextSanitizer.Sanitize(ar.Name, maxLength: 60);
         diagnostics?.Emit(new CssDiagnostic(
             CssDiagnosticCodes.CssAtRuleUnknown001,
-            $"@{ar.Name} rule body could not be decomposed; nested rules were not applied to the cascade.",
+            $"@{safeName} rule body could not be decomposed; nested rules were not applied to the cascade.",
             CssDiagnosticSeverity.Info,
             ar.Location));
     }
@@ -649,8 +757,8 @@ internal static class CascadeResolver
             // diagnostic output for an attacker-supplied multi-megabyte
             // selector. The reason string can also embed the raw selector
             // fragment, so it gets the same treatment.
-            var safeRaw = SanitizeForDiagnosticMessage(raw, maxLength: 80);
-            var safeReason = SanitizeForDiagnosticMessage(ex.Reason, maxLength: 200);
+            var safeRaw = DiagnosticTextSanitizer.Sanitize(raw, maxLength: 80);
+            var safeReason = DiagnosticTextSanitizer.Sanitize(ex.Reason, maxLength: 200);
             diagnostics?.Emit(new CssDiagnostic(
                 CssDiagnosticCodes.CssParseWarning001,
                 $"Invalid selector \"{safeRaw}\" — {safeReason}. Rule skipped.",
@@ -660,28 +768,8 @@ internal static class CascadeResolver
         }
     }
 
-    /// <summary>Per Phase 2 deep review C-2 — strip C0 / C1 control characters
-    /// (0x00..0x1F + 0x7F..0x9F) so an attacker can't inject ANSI / VT100
-    /// escape sequences via a CSS selector that reaches a logging sink. Also
-    /// caps length at <paramref name="maxLength"/> chars + appends an
-    /// ellipsis marker so multi-megabyte hostile selectors don't blow up
-    /// diagnostic message size. Replaces stripped chars with the U+FFFD
-    /// replacement marker so the redaction is observable to a reader.</summary>
-    private static string SanitizeForDiagnosticMessage(string raw, int maxLength)
-    {
-        if (string.IsNullOrEmpty(raw)) return string.Empty;
-        var capped = raw.Length > maxLength ? raw.AsSpan(0, maxLength) : raw.AsSpan();
-        var sb = new System.Text.StringBuilder(capped.Length);
-        foreach (var ch in capped)
-        {
-            if (ch < 0x20 || ch == 0x7F || (ch >= 0x80 && ch <= 0x9F))
-                sb.Append('�');
-            else
-                sb.Append(ch);
-        }
-        if (raw.Length > maxLength) sb.Append('…');
-        return sb.ToString();
-    }
+    // The sanitizer was factored out into Diagnostics/DiagnosticTextSanitizer
+    // per Phase A A-6 so all emission sites can share one implementation.
 
     /// <summary>Recursive DOM walk in document order. Carries the ancestor-self bloom as
     /// a value-copied parameter — each frame copies parent's bloom, adds this element's

@@ -56,9 +56,13 @@ internal static class KeywordResolver
         if (table.TryGetValue(normalized, out var id))
             return ResolverResult.Resolved(ComputedSlot.FromKeyword(id));
 
+        // Per Phase A A-6 — sanitize untrusted value before message interpolation.
+        // Property names are generator-validated (frozen-set lookup); raw value is
+        // author CSS so it could carry C0/C1/DEL chars or extreme length.
+        var safeValue = DiagnosticTextSanitizer.Sanitize(value);
         diagnostics?.Emit(new CssDiagnostic(
             CssDiagnosticCodes.CssPropertyValueInvalid001,
-            $"'{propertyName}: {value}' — '{value}' is not an admitted keyword for this property.",
+            $"'{propertyName}: {safeValue}' — '{safeValue}' is not an admitted keyword for this property.",
             CssDiagnosticSeverity.Warning,
             location));
         return ResolverResult.Invalid();

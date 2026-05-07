@@ -162,9 +162,15 @@ internal static class CalcResolver
         }
         catch (CalcParseException ex)
         {
+            // Per Phase A A-6 — sanitize the exception message before interpolation.
+            // CalcParseException is internal but its message can interpolate raw
+            // author tokens (e.g., "unknown unit 'XYZ'", "could not parse number
+            // 'NaN'") sliced from the body, so a malformed declaration with C0
+            // / C1 / DEL chars or extreme length could leak into the sink.
+            var safeMsg = DiagnosticTextSanitizer.Sanitize(ex.Message, maxLength: 200);
             diagnostics?.Emit(new CssDiagnostic(
                 CssDiagnosticCodes.CssCalcInvalid001,
-                $"Invalid {fnName}() expression: {ex.Message}",
+                $"Invalid {fnName}() expression: {safeMsg}",
                 CssDiagnosticSeverity.Warning, location));
             return null;
         }

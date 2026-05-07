@@ -59,6 +59,16 @@ internal static class CssContentList
     public static bool TryParse(string raw, IElement host, out string result)
         => TryParse(raw, host, sink: null, location: CssSourceLocation.Unknown, out result);
 
+    // Per Phase A security hardening A-5 — cap on the concatenated output of
+    // one ::before / ::after / ::marker content-list parse. A pseudo-element's
+    // content is rendered into the output PDF; without a cap, an attacker can
+    // craft a content value with a multi-megabyte attribute (e.g., a span
+    // with data-x set to 10 MiB + ::before { content: attr(data-x) ... }) that
+    // bloats the box tree + downstream PDF without bound. 64 KiB per pseudo is
+    // generous for any sane label / numeration string while keeping
+    // adversarial input bounded.
+    private const int MaxContentOutputChars = 64 * 1024;
+
     /// <summary>Parse <paramref name="raw"/> as a CSS content-list value
     /// against <paramref name="host"/> for <c>attr()</c> resolution; emit a
     /// diagnostic to <paramref name="sink"/> when the parse fails on an
@@ -89,7 +99,7 @@ internal static class CssContentList
             {
                 if (!ReadString(span, ref i, out var stringPart)) return false;
                 if (!CssStringParser.TryParseSingleString(stringPart, out var decoded)) return false;
-                sb.Append(decoded);
+                if (!TryAppendBounded(sb, decoded, sink, raw, location)) return false;
                 continue;
             }
 
@@ -104,7 +114,7 @@ internal static class CssContentList
                     EmitAttrRejection(sink, raw, location, rejectedReason);
                     return false;
                 }
-                sb.Append(attrValue);
+                if (!TryAppendBounded(sb, attrValue, sink, raw, location)) return false;
                 continue;
             }
 
@@ -115,6 +125,28 @@ internal static class CssContentList
         }
 
         result = sb.ToString();
+        return true;
+    }
+
+    /// <summary>Per Phase A A-5 — append <paramref name="text"/> to
+    /// <paramref name="sb"/> only if doing so stays under the per-pseudo
+    /// output cap. Returns false on overflow + emits one diagnostic so the
+    /// author sees why the pseudo-element generated no box. The cap is hit
+    /// LAZILY (we don't refuse partial output beforehand) so a benign label
+    /// near the boundary still works.</summary>
+    private static bool TryAppendBounded(
+        StringBuilder sb, string text, ICssDiagnosticsSink? sink, string raw, CssSourceLocation location)
+    {
+        if (sb.Length + text.Length > MaxContentOutputChars)
+        {
+            sink?.Emit(new CssDiagnostic(
+                CssDiagnosticCodes.CssContentFunctionUnsupported001,
+                $"Generated content for this pseudo-element exceeded the {MaxContentOutputChars / 1024} KiB output cap. The pseudo generates no box. Raw value: '{Truncate(raw)}'.",
+                CssDiagnosticSeverity.Warning,
+                location));
+            return false;
+        }
+        sb.Append(text);
         return true;
     }
 
@@ -152,9 +184,14 @@ internal static class CssContentList
         // the author wrote — `counter(items)` is more useful than `unrecognized
         // content token`.
         var kind = IdentifyUnsupportedToken(span, i);
+        // Per Phase A A-6 — the token name is sliced from raw author CSS, so it
+        // can carry C0/C1 control chars or extreme length. Sanitize before
+        // interpolation; cap at 40 chars (the function-name + paren shape stays
+        // well under that for any sane input).
+        var safeKind = NetPdf.Css.Diagnostics.DiagnosticTextSanitizer.Sanitize(kind, maxLength: 40);
         sink.Emit(new CssDiagnostic(
             CssDiagnosticCodes.CssContentFunctionUnsupported001,
-            $"Unsupported content token '{kind}' in '{Truncate(raw)}'. Cycle 1 supports string + attr(name) only.",
+            $"Unsupported content token '{safeKind}' in '{Truncate(raw)}'. Cycle 1 supports string + attr(name) only.",
             CssDiagnosticSeverity.Warning,
             location));
     }
@@ -181,12 +218,12 @@ internal static class CssContentList
         return name;
     }
 
-    private static string Truncate(string s)
-    {
-        const int max = 80;
-        if (s.Length <= max) return s;
-        return s[..max] + "…";
-    }
+    /// <summary>Per Phase A A-6 — uses the central diagnostic-text sanitizer
+    /// so this helper applies BOTH length truncation + control-char stripping
+    /// (ANSI / NUL injection defense) when the raw content-value is
+    /// interpolated into a diagnostic message.</summary>
+    private static string Truncate(string s) =>
+        NetPdf.Css.Diagnostics.DiagnosticTextSanitizer.Sanitize(s, maxLength: 80);
 
     private enum AttrRejectReason
     {

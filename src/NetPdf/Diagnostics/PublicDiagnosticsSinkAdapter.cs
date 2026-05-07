@@ -31,11 +31,13 @@ namespace NetPdf.Diagnostics;
 /// (Source / Line / Column) → <see cref="SourceLocation"/> (File / Line / Column).
 /// </para>
 /// <para>
-/// <b>Null sink no-op.</b> Constructing with <see langword="null"/>
-/// produces a sink whose <see cref="Emit"/> drops the diagnostic — so
-/// callers never need to null-check before forwarding. <see cref="ForOptions"/>
-/// returns <see langword="null"/> when the public sink is also null, so
-/// downstream stages can fast-skip the entire emission path.
+/// <b>Null-handling at the entry points.</b> The constructor rejects
+/// <see langword="null"/> so callers never construct an adapter that
+/// silently drops diagnostics. Use <see cref="ForOptions"/> when
+/// nullability is expected — it returns <see langword="null"/> when the
+/// public sink on <see cref="HtmlPdfOptions.Diagnostics"/> is also null,
+/// letting downstream stages fast-skip the entire emission path
+/// (<see cref="ICssDiagnosticsSink"/>? consumers treat null as "drop").
 /// </para>
 /// </remarks>
 internal sealed class PublicDiagnosticsSinkAdapter : ICssDiagnosticsSink

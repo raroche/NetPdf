@@ -694,14 +694,6 @@ internal static class BoxBuilder
         }
     }
 
-    /// <summary>Generate the box for a pseudo-element rule set when one is
-    /// registered + has a non-<c>none</c>/non-<c>normal</c> <c>content</c>
-    /// property. Task 14 cycle 1 supports single + multi-string concatenation
-    /// + <c>attr(<i>name</i>)</c>; <c>counter()</c>/<c>counters()</c>,
-    /// <c>image()</c>/<c>url()</c>, and <c>open-quote</c>/<c>close-quote</c>
-    /// are still skipped (no pseudo box) — counters need the
-    /// counter-reset/increment property machinery (cycle 2), images need the
-    /// resource pipeline, quotes need a stack-aware quotation depth resolver.</summary>
     /// <summary>Task 16 cycle 1 — emit
     /// <see cref="NetPdf.Css.Diagnostics.CssDiagnosticCodes.CssPseudoSuppressedOnReplaced001"/>
     /// when an author's <c>::before</c> / <c>::after</c> rule targets a
@@ -741,6 +733,14 @@ internal static class BoxBuilder
             location));
     }
 
+    /// <summary>Generate the box for a pseudo-element rule set when one is
+    /// registered + has a non-<c>none</c>/non-<c>normal</c> <c>content</c>
+    /// property. Task 14 cycle 1 supports single + multi-string concatenation
+    /// + <c>attr(<i>name</i>)</c>; <c>counter()</c>/<c>counters()</c>,
+    /// <c>image()</c>/<c>url()</c>, and <c>open-quote</c>/<c>close-quote</c>
+    /// are still skipped (no pseudo box) — counters need the
+    /// counter-reset/increment property machinery (cycle 2), images need the
+    /// resource pipeline, quotes need a stack-aware quotation depth resolver.</summary>
     private static Box? BuildPseudo(
         IElement host,
         string pseudoName,

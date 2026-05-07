@@ -199,11 +199,31 @@ internal static class Phase2Pipeline
             string rawText;
             string? mediaQuery = null;
             var isDisabled = rawSheet.IsDisabled;
+            var ownerKind = CssStylesheetOwnerKind.Unknown;
             if (rawSheet.OwnerNode is IElement ownerElement)
             {
-                rawText = ownerElement.TextContent ?? string.Empty;
+                // Per PR #11 review (Rec 3 of the Copilot pass): infer
+                // ownerKind from the actual owner element rather than
+                // hardcoding StyleElement. document.StyleSheets includes
+                // <link> sheets too (when external stylesheet loading is
+                // enabled in a future cycle); their provenance must surface
+                // correctly to diagnostics + tracing.
+                ownerKind = ownerElement.LocalName.ToLowerInvariant() switch
+                {
+                    "style" => CssStylesheetOwnerKind.StyleElement,
+                    "link" => CssStylesheetOwnerKind.LinkElement,
+                    _ => CssStylesheetOwnerKind.Unknown,
+                };
+
+                // Inline <style> elements own their CSS as TextContent.
+                // <link> elements have no inline text — their CSS is
+                // delivered via the resource loader (cycle 2 scope).
+                rawText = ownerKind == CssStylesheetOwnerKind.StyleElement
+                    ? (ownerElement.TextContent ?? string.Empty)
+                    : string.Empty;
+
                 // Per Rec 3: read the `media` attribute from the owner
-                // element (authoritative for inline <style> blocks).
+                // element (authoritative for both inline <style> + <link>).
                 var rawMedia = ownerElement.GetAttribute("media");
                 mediaQuery = string.IsNullOrWhiteSpace(rawMedia) ? null : rawMedia;
             }
@@ -231,7 +251,7 @@ internal static class Phase2Pipeline
                 rawSheet, preprocess,
                 href: null,
                 origin: CssStylesheetOrigin.Author,
-                ownerKind: CssStylesheetOwnerKind.StyleElement,
+                ownerKind: ownerKind,
                 mediaQuery: mediaQuery,
                 isDisabled: isDisabled,
                 order: order++));

@@ -36,15 +36,15 @@ public sealed class BoxBuilderDiagnosticsTests
         return await ctx.OpenAsync(req => req.Content(html));
     }
 
-    private static async Task<CssStylesheet> ParseSheet(string css)
+    private static Task<CssStylesheet> ParseSheet(string css)
     {
         var ctx = BrowsingContext.New(Configuration.Default.WithCss());
         var parser = ctx.GetService<AngleSharp.Css.Parser.ICssParser>()!;
         var sheet = parser.ParseStyleSheet(css);
-        return CssParserAdapter.Adapt(sheet, href: null,
+        return Task.FromResult(CssParserAdapter.Adapt(sheet, href: null,
             origin: CssStylesheetOrigin.Author,
             ownerKind: CssStylesheetOwnerKind.StyleElement,
-            mediaQuery: null, isDisabled: false, order: 0);
+            mediaQuery: null, isDisabled: false, order: 0));
     }
 
     private static async Task<(Box root, CapturingSink sink)> BuildAsync(string html, string? css = null)

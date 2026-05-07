@@ -635,13 +635,47 @@ internal static class CascadeResolver
         }
         catch (SelectorParseException ex)
         {
+            // Per Phase 2 deep review C-2 — sanitize BOTH the selector text and
+            // the exception reason before formatting them into the diagnostic
+            // message. Untrusted CSS can carry ANSI escape sequences, NUL /
+            // control chars, or extreme length; emitting verbatim could let a
+            // hostile stylesheet inject control sequences into a downstream
+            // sink (terminal log, JSON encoder, etc.) and would also bloat
+            // diagnostic output for an attacker-supplied multi-megabyte
+            // selector. The reason string can also embed the raw selector
+            // fragment, so it gets the same treatment.
+            var safeRaw = SanitizeForDiagnosticMessage(raw, maxLength: 80);
+            var safeReason = SanitizeForDiagnosticMessage(ex.Reason, maxLength: 200);
             diagnostics?.Emit(new CssDiagnostic(
                 CssDiagnosticCodes.CssParseWarning001,
-                $"Invalid selector \"{raw}\" — {ex.Reason}. Rule skipped.",
+                $"Invalid selector \"{safeRaw}\" — {safeReason}. Rule skipped.",
                 CssDiagnosticSeverity.Warning,
                 loc));
             return null;
         }
+    }
+
+    /// <summary>Per Phase 2 deep review C-2 — strip C0 / C1 control characters
+    /// (0x00..0x1F + 0x7F..0x9F) so an attacker can't inject ANSI / VT100
+    /// escape sequences via a CSS selector that reaches a logging sink. Also
+    /// caps length at <paramref name="maxLength"/> chars + appends an
+    /// ellipsis marker so multi-megabyte hostile selectors don't blow up
+    /// diagnostic message size. Replaces stripped chars with the U+FFFD
+    /// replacement marker so the redaction is observable to a reader.</summary>
+    private static string SanitizeForDiagnosticMessage(string raw, int maxLength)
+    {
+        if (string.IsNullOrEmpty(raw)) return string.Empty;
+        var capped = raw.Length > maxLength ? raw.AsSpan(0, maxLength) : raw.AsSpan();
+        var sb = new System.Text.StringBuilder(capped.Length);
+        foreach (var ch in capped)
+        {
+            if (ch < 0x20 || ch == 0x7F || (ch >= 0x80 && ch <= 0x9F))
+                sb.Append('�');
+            else
+                sb.Append(ch);
+        }
+        if (raw.Length > maxLength) sb.Append('…');
+        return sb.ToString();
     }
 
     /// <summary>Recursive DOM walk in document order. Carries the ancestor-self bloom as

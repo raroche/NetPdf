@@ -35,11 +35,26 @@ namespace NetPdf.Phase2;
 /// </para>
 /// <para>
 /// <b>Use pattern.</b> <c>using var result = await Phase2Pipeline.RunFromHtmlAsync(...);</c>
-/// is the typical call site. Direct in-place disposal is also fine —
-/// <see cref="Dispose"/> is idempotent. After disposal, the box tree's
-/// <c>Style</c> properties are stale references that should not be read
-/// (any access throws <see cref="ObjectDisposedException"/> via the soft
-/// guard until the pool re-rents the instance).
+/// is the typical call site. After disposal, the box tree's <c>Style</c>
+/// properties are stale references that should not be read (any access
+/// throws <see cref="ObjectDisposedException"/> via the soft guard until
+/// the pool re-rents the instance).
+/// </para>
+/// <para>
+/// <b>Single-call contract.</b> <see cref="Dispose"/> must be called AT MOST
+/// ONCE per logical result, on the original instance — NOT on a copy. This
+/// is a value-type with reference fields: copying a <see cref="Phase2Result"/>
+/// (e.g., <c>var snap = result;</c>, passing by value, capturing in a closure)
+/// shares the box tree by reference, so disposing both the original AND a
+/// copy releases the same pooled <see cref="ComputedStyle"/> instances
+/// twice. Under pool churn (any other <c>Phase2Pipeline</c> call between
+/// the two disposals), the second release returns now-foreign styles to
+/// the bag + corrupts the other run. Per PR #13 review feedback, the
+/// previous "idempotent" guarantee was unsafe — the soft-guard
+/// <c>_disposed</c> flag in <see cref="ComputedStyle"/> short-circuits the
+/// same-instance double-release case, but it doesn't protect against the
+/// re-rented case. Treat <see cref="Dispose"/> like a real
+/// <c>IDisposable</c>: call once, on the owner.
 /// </para>
 /// </remarks>
 /// <param name="BoxRoot">The root <see cref="Box"/> from
@@ -57,10 +72,11 @@ internal readonly record struct Phase2Result(
     ImmutableArray<CssStylesheet> Sheets) : IDisposable
 {
     /// <summary>Walks <see cref="BoxRoot"/> + releases every unique
-    /// box-owned <see cref="ComputedStyle"/> back to the pool. Idempotent —
-    /// <see cref="ComputedStyle.ReleaseFromBox"/> short-circuits on already-
-    /// disposed instances. Called automatically by <c>using var result = ...</c>
-    /// patterns.</summary>
+    /// box-owned <see cref="ComputedStyle"/> back to the pool. Per the
+    /// "single-call contract" in the type's <c>&lt;remarks&gt;</c>, must
+    /// be called at most once per logical result; calling on a copied
+    /// instance after the original has been disposed can corrupt other
+    /// pipeline runs that have re-rented the same pool slots.</summary>
     public void Dispose()
     {
         if (BoxRoot is null) return;

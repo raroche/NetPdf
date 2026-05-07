@@ -423,12 +423,19 @@ internal static class ColorResolver
             if (!double.TryParse(token.AsSpan(0, token.Length - 1),
                 NumberStyles.Float, CultureInfo.InvariantCulture, out var pct)) return false;
             if (!double.IsFinite(pct)) return false;
-            alpha = (byte)Math.Clamp((int)Math.Round(pct * 255.0 / 100.0, MidpointRounding.AwayFromZero), 0, 255);
+            // Per Phase 2 deep review C-3 + CSS Color L4 §4.2.1: the alpha
+            // component is range-validated, not just clamped at computed-value
+            // time. Out-of-range alpha (e.g., `rgb(255 0 0 / 200%)` or `/ -50%`)
+            // is invalid + the whole declaration should be rejected. Channels
+            // for R/G/B legitimately clamp per spec; alpha does NOT.
+            if (pct < 0 || pct > 100) return false;
+            alpha = (byte)Math.Round(pct * 255.0 / 100.0, MidpointRounding.AwayFromZero);
             return true;
         }
         if (!double.TryParse(token, NumberStyles.Float, CultureInfo.InvariantCulture, out var n)) return false;
         if (!double.IsFinite(n)) return false;
-        alpha = (byte)Math.Clamp((int)Math.Round(n * 255, MidpointRounding.AwayFromZero), 0, 255);
+        if (n < 0 || n > 1) return false;
+        alpha = (byte)Math.Round(n * 255, MidpointRounding.AwayFromZero);
         return true;
     }
 

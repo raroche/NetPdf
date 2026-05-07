@@ -75,10 +75,14 @@ internal static class BoxBuilder
     /// every styled element + pseudo-element.</param>
     /// <param name="diagnostics">Sink for property-resolution failures.
     /// <see langword="null"/> is allowed.</param>
+    /// <param name="cancellationToken">Per Phase 2 deep review Rec 6 — checked at every
+    /// element so a hostile document stops promptly rather than running the full
+    /// box-tree pass before noticing the stage boundary in <c>Phase2Pipeline</c>.</param>
     public static Box Build(
         IDocument document,
         ResolvedCascadeResult cascade,
-        ICssDiagnosticsSink? diagnostics = null)
+        ICssDiagnosticsSink? diagnostics = null,
+        System.Threading.CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(document);
         ArgumentNullException.ThrowIfNull(cascade);
@@ -99,7 +103,7 @@ internal static class BoxBuilder
 
         var docBoxes = BuildElementBoxes(
             document.DocumentElement, parentStyle: rootStyle,
-            cascade, diagnostics, emittedPseudoSuppressionKeys);
+            cascade, diagnostics, emittedPseudoSuppressionKeys, cancellationToken);
         foreach (var box in docBoxes)
         {
             root.AppendChild(box);
@@ -127,8 +131,13 @@ internal static class BoxBuilder
         ComputedStyle parentStyle,
         ResolvedCascadeResult cascade,
         ICssDiagnosticsSink? diagnostics,
-        System.Collections.Generic.HashSet<string> emittedPseudoSuppressionKeys)
+        System.Collections.Generic.HashSet<string> emittedPseudoSuppressionKeys,
+        System.Threading.CancellationToken cancellationToken)
     {
+        // Per Phase 2 deep review Rec 6 — check at every element so a hostile
+        // 100k-element document stops promptly instead of running the full
+        // box-tree pass before noticing the stage boundary in Phase2Pipeline.
+        cancellationToken.ThrowIfCancellationRequested();
         // <br> is special — it's a forced line break, not a generic inline.
         // Per HTML "Rendering" §15.3.6 the UA stylesheet defines:
         //   br { content: "\A"; white-space: pre-line }
@@ -169,7 +178,7 @@ internal static class BoxBuilder
                 foreach (var node in element.ChildNodes)
                 {
                     BuildChildNode(node, style, element, cascade, diagnostics,
-                        emittedPseudoSuppressionKeys, promoted);
+                        emittedPseudoSuppressionKeys, promoted, cancellationToken);
                 }
                 style.Dispose();
                 return promoted;
@@ -211,7 +220,7 @@ internal static class BoxBuilder
         foreach (var node in element.ChildNodes)
         {
             BuildChildNode(node, style, element, cascade, diagnostics,
-                emittedPseudoSuppressionKeys, collector);
+                emittedPseudoSuppressionKeys, collector, cancellationToken);
         }
         foreach (var c in collector) box.AppendChild(c);
 
@@ -255,7 +264,8 @@ internal static class BoxBuilder
         ResolvedCascadeResult cascade,
         ICssDiagnosticsSink? diagnostics,
         System.Collections.Generic.HashSet<string> emittedPseudoSuppressionKeys,
-        List<Box> collector)
+        List<Box> collector,
+        System.Threading.CancellationToken cancellationToken)
     {
         switch (node)
         {
@@ -267,7 +277,7 @@ internal static class BoxBuilder
                 break;
             case IElement childElement:
                 var produced = BuildElementBoxes(childElement, parentStyle, cascade,
-                    diagnostics, emittedPseudoSuppressionKeys);
+                    diagnostics, emittedPseudoSuppressionKeys, cancellationToken);
                 foreach (var child in produced) collector.Add(child);
                 break;
             // Comment / CDATA / etc. are ignored for box generation.

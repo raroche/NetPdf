@@ -65,7 +65,8 @@ internal static class CascadeResolver
         IDocument document,
         ImmutableArray<CssStylesheet> stylesheets,
         CssMediaContext media,
-        ICssDiagnosticsSink? diagnostics = null)
+        ICssDiagnosticsSink? diagnostics = null,
+        System.Threading.CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(document);
         ArgumentNullException.ThrowIfNull(media);
@@ -76,6 +77,7 @@ internal static class CascadeResolver
         var maxSheetOrder = 0;
         for (var i = 0; i < stylesheets.Length; i++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             var sheet = stylesheets[i];
             if (sheet.IsDisabled) continue;
             if (!media.Matches(sheet.MediaQuery)) continue;
@@ -101,7 +103,7 @@ internal static class CascadeResolver
         if (document.DocumentElement is null) return result;
 
         var rootBloom = default(SelectorBloomFilter);
-        WalkElement(document.DocumentElement, compiledRules, in rootBloom, result);
+        WalkElement(document.DocumentElement, compiledRules, in rootBloom, result, cancellationToken);
 
         // Inline styles enter as a virtual stylesheet with stylesheet-order pinned ABOVE
         // the maximum real stylesheet order so the source-order tie-break (when two
@@ -109,7 +111,7 @@ internal static class CascadeResolver
         // last. The IsInlineStyle flag is what makes them beat selectors of any
         // specificity per L4 §6.4.3 — independent of the source-order pinning.
         var inlineStylesheetOrder = maxSheetOrder + 1;
-        WalkInlineStyles(document.DocumentElement, result, inlineStylesheetOrder);
+        WalkInlineStyles(document.DocumentElement, result, inlineStylesheetOrder, cancellationToken);
 
         return result;
     }
@@ -491,9 +493,28 @@ internal static class CascadeResolver
             if (colon > 0 && IsIdentifierLike(inner.AsSpan(0, colon)))
             {
                 var prop = inner[..colon].Trim();
-                // Value is checked by spec but our v1 simplification: presence of a
-                // registered property name is enough.
-                return PropertyMetadata.NameToId.ContainsKey(prop);
+                if (!PropertyMetadata.NameToId.TryGetValue(prop, out var propertyId)) return false;
+
+                // Per Phase 2 deep review Rec 4 — also validate the VALUE.
+                // Cycle 1 returned true on bare property-name presence, so
+                // `@supports (color: not-a-color)` would apply the guarded
+                // block. Per CSS Conditional L3 §4.1.3, the test must succeed
+                // ONLY if both the property is supported AND the value would
+                // be accepted. Probe the typed pipeline with a null diagnostics
+                // sink and WHITELIST Resolved + Deferred outcomes (per PR #13
+                // review feedback): Resolved = typed value produced; Deferred
+                // = well-formed but needs downstream context (var()/calc()).
+                // UnsupportedUnvalidated (the cycle-2 backlog state where the
+                // resolver isn't wired yet) must NOT count as supported —
+                // returning true on it would say "yes, NetPdf supports this"
+                // when in fact NetPdf hasn't validated the value at all.
+                // Invalid is the parse-error case + obviously unsupported.
+                var rawValue = inner[(colon + 1)..].Trim();
+                if (rawValue.Length == 0) return false;
+                var probe = ComputedValues.PropertyResolvers.PropertyResolverDispatch.Resolve(
+                    propertyId, rawValue, diagnostics: null, location: CssSourceLocation.Unknown);
+                return probe.State == ComputedValues.PropertyResolvers.ResolutionState.Resolved
+                    || probe.State == ComputedValues.PropertyResolvers.ResolutionState.Deferred;
             }
             // Sub-expression — re-evaluate.
             var sub = new SupportsParser(inner);
@@ -619,13 +640,47 @@ internal static class CascadeResolver
         }
         catch (SelectorParseException ex)
         {
+            // Per Phase 2 deep review C-2 — sanitize BOTH the selector text and
+            // the exception reason before formatting them into the diagnostic
+            // message. Untrusted CSS can carry ANSI escape sequences, NUL /
+            // control chars, or extreme length; emitting verbatim could let a
+            // hostile stylesheet inject control sequences into a downstream
+            // sink (terminal log, JSON encoder, etc.) and would also bloat
+            // diagnostic output for an attacker-supplied multi-megabyte
+            // selector. The reason string can also embed the raw selector
+            // fragment, so it gets the same treatment.
+            var safeRaw = SanitizeForDiagnosticMessage(raw, maxLength: 80);
+            var safeReason = SanitizeForDiagnosticMessage(ex.Reason, maxLength: 200);
             diagnostics?.Emit(new CssDiagnostic(
                 CssDiagnosticCodes.CssParseWarning001,
-                $"Invalid selector \"{raw}\" — {ex.Reason}. Rule skipped.",
+                $"Invalid selector \"{safeRaw}\" — {safeReason}. Rule skipped.",
                 CssDiagnosticSeverity.Warning,
                 loc));
             return null;
         }
+    }
+
+    /// <summary>Per Phase 2 deep review C-2 — strip C0 / C1 control characters
+    /// (0x00..0x1F + 0x7F..0x9F) so an attacker can't inject ANSI / VT100
+    /// escape sequences via a CSS selector that reaches a logging sink. Also
+    /// caps length at <paramref name="maxLength"/> chars + appends an
+    /// ellipsis marker so multi-megabyte hostile selectors don't blow up
+    /// diagnostic message size. Replaces stripped chars with the U+FFFD
+    /// replacement marker so the redaction is observable to a reader.</summary>
+    private static string SanitizeForDiagnosticMessage(string raw, int maxLength)
+    {
+        if (string.IsNullOrEmpty(raw)) return string.Empty;
+        var capped = raw.Length > maxLength ? raw.AsSpan(0, maxLength) : raw.AsSpan();
+        var sb = new System.Text.StringBuilder(capped.Length);
+        foreach (var ch in capped)
+        {
+            if (ch < 0x20 || ch == 0x7F || (ch >= 0x80 && ch <= 0x9F))
+                sb.Append('�');
+            else
+                sb.Append(ch);
+        }
+        if (raw.Length > maxLength) sb.Append('…');
+        return sb.ToString();
     }
 
     /// <summary>Recursive DOM walk in document order. Carries the ancestor-self bloom as
@@ -635,14 +690,20 @@ internal static class CascadeResolver
     /// The 512-byte struct copy per frame is cheap relative to the matcher work that
     /// dominates the per-element cost.</summary>
     private static void WalkElement(IElement element, List<CompiledRule> rules,
-        in SelectorBloomFilter ancestorBloom, CascadeResult result)
+        in SelectorBloomFilter ancestorBloom, CascadeResult result,
+        System.Threading.CancellationToken cancellationToken)
     {
+        // Per Phase 2 deep review Rec 6 — check at every element so a hostile
+        // 100k-element document stops promptly instead of running the full
+        // selector match pass before noticing the stage boundary in
+        // Phase2Pipeline.
+        cancellationToken.ThrowIfCancellationRequested();
         var bloom = ancestorBloom; // value copy — independent from caller's
         AddElementTokens(element, ref bloom);
         ApplyRulesToElement(element, rules, in bloom, result);
         foreach (var child in element.Children)
         {
-            WalkElement(child, rules, in bloom, result);
+            WalkElement(child, rules, in bloom, result, cancellationToken);
         }
     }
 
@@ -771,20 +832,26 @@ internal static class CascadeResolver
     /// origin/importance bucket per L4 §6.4.3.</summary>
     private static readonly Specificity InlineStyleSpecificity = new(1, 0, 0);
 
-    private static void WalkInlineStyles(IElement element, CascadeResult result, int inlineStylesheetOrder)
+    private static void WalkInlineStyles(IElement element, CascadeResult result, int inlineStylesheetOrder, System.Threading.CancellationToken cancellationToken)
     {
-        WalkInlineStylesRecursive(element, result, inlineStylesheetOrder, ruleOrder: 0);
+        WalkInlineStylesRecursive(element, result, inlineStylesheetOrder, ruleOrder: 0, cancellationToken);
     }
 
-    private static int WalkInlineStylesRecursive(IElement element, CascadeResult result, int inlineStylesheetOrder, int ruleOrder)
+    private static int WalkInlineStylesRecursive(IElement element, CascadeResult result, int inlineStylesheetOrder, int ruleOrder, System.Threading.CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         var styleAttr = element.GetAttribute("style");
         if (!string.IsNullOrEmpty(styleAttr))
         {
             var anglesharpStyle = AngleSharp.Css.Dom.ElementCssInlineStyleExtensions.GetStyle(element);
             if (anglesharpStyle is not null)
             {
-                var declarations = CssParserAdapter.AdaptInlineStyle(anglesharpStyle);
+                // Per Phase 2 deep review Rec 3 — feed the raw style attribute
+                // text through CssPreprocessor recovery so modern colors +
+                // multi-arg attr() in inline styles reach the typed pipeline,
+                // matching the behavior of <style> blocks.
+                var declarations = CssParserAdapter.AdaptInlineStyleWithRecovery(
+                    anglesharpStyle, styleAttr, CssSourceLocation.Unknown);
                 if (!declarations.IsEmpty)
                 {
                     var target = result.StylesFor(element);
@@ -808,7 +875,7 @@ internal static class CascadeResolver
         }
         foreach (var child in element.Children)
         {
-            ruleOrder = WalkInlineStylesRecursive(child, result, inlineStylesheetOrder, ruleOrder);
+            ruleOrder = WalkInlineStylesRecursive(child, result, inlineStylesheetOrder, ruleOrder, cancellationToken);
         }
         return ruleOrder;
     }

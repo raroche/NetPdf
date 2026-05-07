@@ -129,16 +129,21 @@ internal static class Phase2Pipeline
         var media = BuildMediaContext(options);
 
         cancellationToken.ThrowIfCancellationRequested();
-        var cascade = CascadeResolver.Resolve(document, sheets, media, diagnostics);
+        // Per Phase 2 deep review Rec 6 — pass the token INTO each stage so
+        // the walkers check at every element, not just at the stage boundary.
+        // Hostile inputs (e.g., 100k synthesized rows) now stop within
+        // microseconds of cancellation rather than running the full per-stage
+        // pass before the next boundary check.
+        var cascade = CascadeResolver.Resolve(document, sheets, media, diagnostics, cancellationToken);
 
         cancellationToken.ThrowIfCancellationRequested();
         var resolved = VarResolver.Resolve(cascade, document, diagnostics);
 
         cancellationToken.ThrowIfCancellationRequested();
-        var boxRoot = BoxBuilder.Build(document, resolved, diagnostics);
+        var boxRoot = BoxBuilder.Build(document, resolved, diagnostics, cancellationToken);
 
         cancellationToken.ThrowIfCancellationRequested();
-        var semanticRoot = SemanticTreeBuilder.Build(document, resolved);
+        var semanticRoot = SemanticTreeBuilder.Build(document, resolved, cancellationToken);
 
         return new Phase2Result(boxRoot, semanticRoot, resolved, sheets);
     }

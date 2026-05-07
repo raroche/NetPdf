@@ -121,10 +121,23 @@ internal static class SelectorCompiler
         private readonly string _text;
         private int _pos;
 
+        /// <summary>Tracks parser recursion depth across the <c>ParseSelectorList</c>
+        /// + <see cref="ParseSubGroup"/> chains so an attacker selector with thousands
+        /// of nested <c>:is()</c> / <c>:not()</c> / <c>:has()</c> invocations can't
+        /// escalate into <c>StackOverflowException</c> (uncatchable). Mirror of
+        /// <c>VarSubstitution.MaxRecursionDepth</c>'s defense from Phase 2 deep review.
+        /// Limit picked to comfortably accommodate hand-authored CSS (real selectors
+        /// rarely exceed 5 levels of pseudo-class nesting) while bounding adversarial
+        /// inputs to well under the .NET 1 MiB default stack budget.</summary>
+        private const int MaxRecursionDepth = 64;
+
+        private int _depth;
+
         public Parser(string text)
         {
             _text = text;
             _pos = 0;
+            _depth = 0;
         }
 
         /// <summary>Parse <c>SelectorList := ComplexSelector ("," ComplexSelector)*</c>.
@@ -141,6 +154,23 @@ internal static class SelectorCompiler
         /// L4 §3.7).</summary>
 
         public SelectorList ParseSelectorList(SelectorContext ctx, out bool anyAlternativeAttempted)
+        {
+            // Depth guard per Phase 2 deep review C-1 — bound recursion so a
+            // pathological `:is(:is(:is(...)))` payload can't crash the host.
+            if (_depth >= MaxRecursionDepth)
+                throw new SelectorParseException(_text, _pos, "selector nesting exceeds depth limit");
+            _depth++;
+            try
+            {
+                return ParseSelectorListCore(ctx, out anyAlternativeAttempted);
+            }
+            finally
+            {
+                _depth--;
+            }
+        }
+
+        private SelectorList ParseSelectorListCore(SelectorContext ctx, out bool anyAlternativeAttempted)
         {
             anyAlternativeAttempted = false;
             var alts = ImmutableArray.CreateBuilder<SelectorBytecode>();

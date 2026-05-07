@@ -146,6 +146,34 @@ internal static class CssParserAdapter
     }
 
     /// <summary>
+    /// Adapts an inline style block where the raw <c>style="..."</c> text is also
+    /// available, running it through the same recovery layer as <c>&lt;style&gt;</c>
+    /// blocks. Per Phase 2 deep review Rec 3 — without this, inline modern colors
+    /// (<c>style="color: oklch(...)"</c>) and multi-arg <c>attr()</c> forms were lost
+    /// or misdiagnosed because the typed pipeline only ever saw AngleSharp.Css
+    /// 1.0.0-beta.144's normalized output. The recovery scan finds modern
+    /// declarations in <paramref name="rawStyleText"/> and merges them over the
+    /// AngleSharp-parsed declarations using the same priority rules as
+    /// <see cref="AdaptDeclarationsWithRecovery"/>.
+    /// </summary>
+    public static ImmutableArray<CssDeclaration> AdaptInlineStyleWithRecovery(
+        ICssStyleDeclaration style,
+        string? rawStyleText,
+        CssSourceLocation location)
+    {
+        ArgumentNullException.ThrowIfNull(style);
+        if (string.IsNullOrWhiteSpace(rawStyleText)) return AdaptProperties(style);
+
+        var recoveredDeclarations = CssPreprocessor.ScanForModernDeclarations(rawStyleText);
+        if (recoveredDeclarations.IsEmpty) return AdaptProperties(style);
+
+        var recovery = new CssStyleRuleRecovery(
+            OrdinalIndex: 0,
+            Declarations: recoveredDeclarations);
+        return AdaptDeclarationsWithRecovery(style, recovery, location);
+    }
+
+    /// <summary>
     /// Walks the top-level rules. The slot list from the preprocessor is the source of
     /// truth for source order. The merge strategy is robust against drift: each slot is
     /// tentatively paired with the next AngleSharp rule, but if the rule kinds don't match
@@ -215,7 +243,26 @@ internal static class CssParserAdapter
     private static bool SlotMatchesAngleSharpRule(CssRuleSlot slot, ICssRule ang)
     {
         if (slot.Kind == CssRuleSlotKind.StyleRule)
-            return ang is ICssStyleRule;
+        {
+            if (ang is not ICssStyleRule styleRule) return false;
+            // Per Phase 2 deep review Rec 1 — kind-only matching let a
+            // dropped style rule (e.g., `li::marker { ... }` in AngleSharp.Css
+            // 1.0.0-beta.144) consume the NEXT style rule in source order,
+            // corrupting source locations + recovery ordinals downstream.
+            // Two-tier match:
+            //   (1) AngleSharp emitted an empty selector — its parser failed
+            //       on at least one selector token (e.g., `::marker`) but
+            //       kept the declaration body. Pair with slot so the slot's
+            //       authored selector + AngleSharp's parsed declarations
+            //       merge — preserves both the source location AND the body.
+            //   (2) AngleSharp's selector matches the slot's normalized
+            //       prelude — happy path.
+            //   (3) Otherwise the slot's selector + AngleSharp's selector
+            //       describe DIFFERENT rules (real drift); demote slot to
+            //       opaque without advancing AngleSharp.
+            if (string.IsNullOrEmpty(styleRule.SelectorText)) return true;
+            return SelectorTextEquivalent(slot.Prelude, styleRule.SelectorText);
+        }
 
         if (ang is ICssStyleRule) return false; // slot expects at-rule but AngleSharp gave us a style rule
 
@@ -255,11 +302,22 @@ internal static class CssParserAdapter
     {
         if (slot.Kind == CssRuleSlotKind.StyleRule)
         {
-            // Defensive: AngleSharp dropped a style rule. Emit it with raw selector and an
-            // empty declaration set; downstream consumers see the structural placeholder.
+            // Per Phase 2 deep review Rec 2 — recover the dropped rule's
+            // declarations from RawBody so downstream stages (CascadeResolver +
+            // CssContentList + ColorResolver + the diagnostic dispatcher) can
+            // still process them. Without this, a dropped rule like
+            // `li::marker { content: counter(items); color: red }` lost its
+            // body entirely + the spec-required CSS-CONTENT-FUNCTION-UNSUPPORTED-001
+            // emission was unreachable through the production path. The scanner
+            // is forgiving (skips malformed declarations) and lower-cases
+            // property names per CSS Syntax §2.
+            var recovery = CssPreprocessor.ScanAllDeclarations(slot.RawBody);
+            var declarations = recovery.IsEmpty
+                ? ImmutableArray<CssDeclaration>.Empty
+                : ToCssDeclarations(recovery, slot.Location);
             return new CssStyleRule(
                 Selector: new CssSelector(slot.Prelude),
-                Declarations: ImmutableArray<CssDeclaration>.Empty,
+                Declarations: declarations,
                 Location: slot.Location);
         }
         return new CssAtRule(
@@ -269,6 +327,69 @@ internal static class CssParserAdapter
             ChildRules: ImmutableArray<CssRule>.Empty,
             Location: slot.Location,
             RawBody: slot.RawBody);
+    }
+
+    private static ImmutableArray<CssDeclaration> ToCssDeclarations(
+        ImmutableArray<CssDeclarationRecovery> recovery,
+        CssSourceLocation location)
+    {
+        var output = ImmutableArray.CreateBuilder<CssDeclaration>(recovery.Length);
+        foreach (var rec in recovery)
+        {
+            output.Add(new CssDeclaration(
+                Property: rec.Property,
+                Value: new CssValue(rec.RawValueText),
+                IsImportant: rec.IsImportant,
+                Location: location));
+        }
+        return output.ToImmutable();
+    }
+
+    /// <summary>Returns <see langword="true"/> if two selector strings represent the
+    /// same selector after collapsing whitespace runs to a single space + trimming
+    /// ends. CSS selectors are case-sensitive (per CSS Selectors L4 §2 — element
+    /// names are case-insensitive in HTML but case-sensitive in XML; class / id /
+    /// pseudo-* tokens are always case-sensitive); we compare ordinal so the
+    /// strictest of the cases applies. Per Phase 2 deep review Rec 1.</summary>
+    private static bool SelectorTextEquivalent(string slotPrelude, string? angleSharpSelector)
+    {
+        if (string.IsNullOrEmpty(slotPrelude)) return string.IsNullOrEmpty(angleSharpSelector);
+        if (string.IsNullOrEmpty(angleSharpSelector)) return false;
+        return string.Equals(
+            NormalizeSelector(slotPrelude),
+            NormalizeSelector(angleSharpSelector),
+            StringComparison.Ordinal);
+    }
+
+    private static string NormalizeSelector(string s)
+    {
+        // Collapse internal whitespace runs to a single space; trim ends.
+        // Keeps `* > p` and `*>p` identical without altering token semantics.
+        var sb = new System.Text.StringBuilder(s.Length);
+        var lastWasWhitespace = false;
+        foreach (var ch in s)
+        {
+            if (char.IsWhiteSpace(ch))
+            {
+                if (sb.Length > 0 && !lastWasWhitespace) sb.Append(' ');
+                lastWasWhitespace = true;
+            }
+            else if (ch == '>' || ch == '+' || ch == '~' || ch == ',')
+            {
+                // Combinator / comma: drop trailing space, append, mark last-not-whitespace.
+                if (sb.Length > 0 && sb[sb.Length - 1] == ' ') sb.Length--;
+                sb.Append(ch);
+                lastWasWhitespace = true; // suppress space immediately after.
+            }
+            else
+            {
+                sb.Append(ch);
+                lastWasWhitespace = false;
+            }
+        }
+        // Trim trailing space if any.
+        while (sb.Length > 0 && sb[sb.Length - 1] == ' ') sb.Length--;
+        return sb.ToString();
     }
 
     /// <summary>
@@ -348,7 +469,7 @@ internal static class CssParserAdapter
         switch (rule)
         {
             case ICssStyleRule s:
-                return AdaptStyleRule(s, preprocess, slot.Location, ref ctx);
+                return AdaptStyleRule(s, preprocess, slot, ref ctx);
             case ICssMediaRule m:
                 return AdaptGroupingRule(m, "media", m.Media?.MediaText ?? string.Empty, m.Rules, slot.NestedSlots, preprocess, ref ctx, slot.Location);
             case ICssSupportsRule s:
@@ -385,7 +506,7 @@ internal static class CssParserAdapter
         switch (rule)
         {
             case ICssStyleRule s:
-                return AdaptStyleRule(s, preprocess, location, ref ctx);
+                return AdaptStyleRuleWithoutSlot(s, preprocess, location, ref ctx);
             case ICssMediaRule m:
                 return AdaptMediaRule(m, location);
             case ICssSupportsRule s:
@@ -450,7 +571,11 @@ internal static class CssParserAdapter
             location);
     }
 
-    private static CssStyleRule AdaptStyleRule(ICssStyleRule rule, CssPreprocessResult preprocess, CssSourceLocation location, ref MergeContext ctx)
+    /// <summary>Adapter path for AngleSharp rules that arrived AFTER the slot
+    /// list was exhausted (defensive case where AngleSharp emitted more rules
+    /// than the preprocessor predicted) — no slot prelude available, so use
+    /// AngleSharp's selector text directly.</summary>
+    private static CssStyleRule AdaptStyleRuleWithoutSlot(ICssStyleRule rule, CssPreprocessResult preprocess, CssSourceLocation location, ref MergeContext ctx)
     {
         var ordinal = ctx.StyleRuleOrdinal++;
         var recovery = LookupStyleRuleRecovery(preprocess, ordinal);
@@ -458,6 +583,24 @@ internal static class CssParserAdapter
             new CssSelector(rule.SelectorText ?? string.Empty),
             AdaptDeclarationsWithRecovery(rule.Style, recovery, location),
             location);
+    }
+
+    private static CssStyleRule AdaptStyleRule(ICssStyleRule rule, CssPreprocessResult preprocess, CssRuleSlot slot, ref MergeContext ctx)
+    {
+        var ordinal = ctx.StyleRuleOrdinal++;
+        var recovery = LookupStyleRuleRecovery(preprocess, ordinal);
+        // Per Phase 2 deep review Rec 1 — when AngleSharp's selector is empty
+        // (it failed to parse the selector but kept the body), prefer the
+        // slot's authored prelude. This restores the original selector text
+        // for `li::marker` etc. which AngleSharp.Css 1.0.0-beta.144 emits as
+        // an empty-selector rule.
+        var selectorText = !string.IsNullOrEmpty(rule.SelectorText)
+            ? rule.SelectorText
+            : slot.Prelude;
+        return new CssStyleRule(
+            new CssSelector(selectorText ?? string.Empty),
+            AdaptDeclarationsWithRecovery(rule.Style, recovery, slot.Location),
+            slot.Location);
     }
 
     private static CssStyleRuleRecovery? LookupStyleRuleRecovery(CssPreprocessResult preprocess, int ordinal)

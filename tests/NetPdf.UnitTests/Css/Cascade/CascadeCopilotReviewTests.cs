@@ -207,9 +207,16 @@ public sealed class CascadeCopilotReviewTests
     [Fact]
     public async Task Copilot5_Supports_with_paren_inside_quoted_value_does_not_truncate()
     {
-        // Synthesize @supports with a quoted value containing `)` so the paren-counter is
-        // exercised. AngleSharp.Css's parser doesn't reliably preserve this shape so we
-        // build the AST directly.
+        // Verify the @supports paren-counter is quote-aware: a `)` inside
+        // `"..."` must NOT close the outer condition group. The inner test
+        // uses `not(content: "a)b")` — content is in the cycle-2 backlog
+        // (UnsupportedUnvalidated state under the post-PR-#13 tightened
+        // whitelist), so the inner returns false; `not(false)` = true. AND'd
+        // with `(color: red)` (Resolved → true), the conjunction is true and
+        // the block applies. If the parser TRUNCATED at the quoted `)`, the
+        // prelude would parse as something else (or fail) + the inner color
+        // rule wouldn't apply — so observing the rule applied proves the
+        // paren-tracking is correct.
         var doc = await ParseHtml("<p>x</p>");
         var innerRule = new CssStyleRule(
             Selector: new CssSelector("p"),
@@ -218,7 +225,7 @@ public sealed class CascadeCopilotReviewTests
             Location: CssSourceLocation.Unknown);
         var supports = new CssAtRule(
             Name: "supports",
-            Prelude: "(content: \"a)b\") and (color: red)",
+            Prelude: "(not (content: \"a)b\")) and (color: red)",
             Declarations: ImmutableArray<CssDeclaration>.Empty,
             ChildRules: ImmutableArray.Create<CssRule>(innerRule),
             Location: CssSourceLocation.Unknown);
@@ -228,14 +235,17 @@ public sealed class CascadeCopilotReviewTests
         var result = CascadeResolver.Resolve(doc, ImmutableArray.Create(sheet),
             CssMediaContext.DefaultPrint, sink);
 
-        // Both inner conditions evaluate true (content + color are registered properties).
-        // The quote-aware parser must not truncate at the `)` inside `"a)b"`.
         Assert.NotNull(result.TryGetStylesFor(Q(doc, "p"))?.GetWinner("color"));
     }
 
     [Fact]
     public async Task Copilot5_Supports_with_single_quoted_paren_does_not_truncate()
     {
+        // Same paren-tracking check for SINGLE-quoted strings. `font-family`
+        // is also UnsupportedUnvalidated under the tightened whitelist, so
+        // `(font-family: 'a)b')` evaluates false. `not(false)` = true →
+        // block applies → inner color rule found. Demonstrates the
+        // single-quoted string variant.
         var doc = await ParseHtml("<p>x</p>");
         var innerRule = new CssStyleRule(
             Selector: new CssSelector("p"),
@@ -244,7 +254,7 @@ public sealed class CascadeCopilotReviewTests
             Location: CssSourceLocation.Unknown);
         var supports = new CssAtRule(
             Name: "supports",
-            Prelude: "(font-family: 'a)b')",
+            Prelude: "not (font-family: 'a)b')",
             Declarations: ImmutableArray<CssDeclaration>.Empty,
             ChildRules: ImmutableArray.Create<CssRule>(innerRule),
             Location: CssSourceLocation.Unknown);

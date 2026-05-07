@@ -136,22 +136,20 @@ public sealed class BoxBuilderHardeningTests
     }
 
     [Fact]
-    public async Task Pseudo_on_replaced_element_does_not_become_replaced_kind()
+    public async Task Pseudo_on_replaced_element_is_suppressed_per_Pseudo_L4()
     {
-        // <img>::before — the pseudo is NOT a replaced element. Cycle-1 bug:
-        // BuildPseudo passed host.LocalName ("img") to DisplayMapper, which
-        // detected replaced + returned InlineReplacedElement.
+        // Task 14 review Rec 1 + CSS Pseudo L4 §3 — replaced elements (img,
+        // video, canvas, iframe, object, embed) cannot host generated content.
+        // Their atomic content has no place for ::before / ::after boxes, so
+        // the pseudos are suppressed. (Earlier Task 12 cycle-1 bug had them
+        // routing to InlineReplacedElement; the cycle-1 hardening fix routed
+        // them to InlineBox; the proper fix per spec is no box at all.)
         var root = await BuildAsync(
             "<img>",
-            "img::before { content: 'CAPTION' }");
+            "img::before { content: 'CAPTION' } img::after { content: 'TAIL' }");
         var img = Walk(root).First(b => b.SourceElement?.LocalName == "img");
-        // The pseudo must come BEFORE the img's content, but img has no
-        // children of its own — so pseudo lives on the img box.
-        var pseudo = img.Children.FirstOrDefault(c => c.Pseudo == BoxPseudo.Before);
-        Assert.NotNull(pseudo);
-        Assert.NotEqual(BoxKind.InlineReplacedElement, pseudo!.Kind);
-        Assert.NotEqual(BoxKind.BlockReplacedElement, pseudo.Kind);
-        Assert.Equal(BoxKind.InlineBox, pseudo.Kind);
+        Assert.DoesNotContain(img.Children, c => c.Pseudo == BoxPseudo.Before);
+        Assert.DoesNotContain(img.Children, c => c.Pseudo == BoxPseudo.After);
     }
 
     [Fact]

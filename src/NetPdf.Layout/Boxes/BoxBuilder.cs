@@ -273,18 +273,26 @@ internal static class BoxBuilder
         var styleType = ReadListStyleType(hostStyle, host);
         if (styleType == "none") return null;
 
-        var markerText = MarkerTextFor(host, styleType);
-
+        // Apply ::marker pseudo cascade if the author styled it. Per Task 14
+        // review Rec 6 + CSS Pseudo L4 §3.4: only the marker-applicable
+        // property subset (font-*, color, line-height, letter-spacing,
+        // content, etc.) is honored; arbitrary display/margin/padding/
+        // background slots would otherwise corrupt the marker layout.
         var markerStyle = ComputedStyle.Rent();
         ApplyDefaults(markerStyle);
         ApplyInheritance(markerStyle, hostStyle);
-
-        // Apply ::marker pseudo cascade if the author styled it.
         var markerRules = cascade.TryGetStylesForPseudo(host, "marker");
         if (markerRules is not null)
         {
-            ApplyResolvedDeclarations(markerStyle, markerRules, diagnostics);
+            ApplyMarkerApplicableDeclarations(markerStyle, markerRules, diagnostics);
         }
+
+        // Per Task 14 review Rec 2 + CSS Pseudo L4 §3.4: ::marker accepts a
+        // `content` property that overrides the default list-style-type
+        // marker. When `content` is absent / `normal` / `none` we fall back
+        // to the list-style-type-derived glyph.
+        var markerText = MarkerContentFromCascade(host, markerRules)
+            ?? MarkerTextFor(host, styleType, cascade);
 
         var markerBox = Box.ForPseudo(BoxKind.Marker, markerStyle, host, BoxPseudo.Marker);
         if (markerText.Length > 0)
@@ -292,6 +300,84 @@ internal static class BoxBuilder
             markerBox.AppendChild(Box.TextRun(markerText, markerStyle, host));
         }
         return markerBox;
+    }
+
+    /// <summary>Per Task 14 review Rec 6 + CSS Pseudo L4 §3.4 — apply the
+    /// subset of author <c>::marker</c> declarations that affect marker
+    /// layout / rendering. The spec restricts ::marker to text-related
+    /// properties (font-*, color, line-height, letter-spacing, word-spacing,
+    /// text-transform, white-space, content, etc.); arbitrary <c>display</c>
+    /// / <c>margin-*</c> / <c>padding-*</c> / <c>background-*</c> /
+    /// <c>position</c> declarations would corrupt layout if honored.</summary>
+    private static void ApplyMarkerApplicableDeclarations(
+        ComputedStyle style,
+        ResolvedRuleSet ruleSet,
+        ICssDiagnosticsSink? diagnostics)
+    {
+        foreach (var winner in ruleSet.Winners)
+        {
+            if (!IsMarkerApplicableProperty(winner.Property)) continue;
+            if (!PropertyMetadata.NameToId.TryGetValue(winner.Property, out var id)) continue;
+            var location = winner.OriginalDeclaration.Location;
+            var result = PropertyResolverDispatch.Resolve(id, winner.ResolvedValue, diagnostics, location);
+            result.MaterializeInto(style, id);
+        }
+    }
+
+    /// <summary>The CSS property name allowlist for <c>::marker</c> per
+    /// Pseudo L4 §3.4. Cycle-1 covers the inheritable text + font subset that
+    /// NetPdf currently registers in <c>properties.json</c>; future property
+    /// additions (white-space, text-transform, text-decoration-*, etc.) will
+    /// extend this list as they ship.</summary>
+    private static readonly System.Collections.Generic.HashSet<string> MarkerApplicableProperties =
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            "color",
+            "content",
+            "cursor",
+            "font-style",
+            "font-weight",
+            "letter-spacing",
+            "line-height",
+            "list-style-position",   // affects whether marker is inline-flow
+            "list-style-type",       // re-mapping default style on the marker itself
+        };
+
+    private static bool IsMarkerApplicableProperty(string propertyName) =>
+        MarkerApplicableProperties.Contains(propertyName);
+
+    /// <summary>Try to extract a marker text override from the
+    /// <c>::marker { content: ... }</c> declaration. Returns the parsed text
+    /// when the content is a supported form (string / multi-string /
+    /// <c>attr()</c> per <see cref="CssContentList"/>); returns
+    /// <see langword="null"/> when content is absent / <c>normal</c> /
+    /// <c>none</c> / unsupported (let the default list-style-type marker
+    /// take over).</summary>
+    /// <remarks>
+    /// <b>AngleSharp.Css 1.0.0-beta.144 limitation.</b> The current parser
+    /// silently drops <c>::marker</c> selectors during CSS parse (similar to
+    /// its <c>display: contents</c> behavior — see <see cref="DisplayMapper"/>
+    /// remarks). As a result, in practice the cascade delivers
+    /// <see langword="null"/> for <see cref="ResolvedCascadeResult.TryGetStylesForPseudo"/>
+    /// with pseudo "marker" today, and this method always returns
+    /// <see langword="null"/>. The implementation is still correct per CSS
+    /// Pseudo L4 §3.4 — once cycle 2's CssPreprocessor recovery preserves
+    /// <c>::marker</c> rules through the cascade, this path will fire without
+    /// further changes.
+    /// </remarks>
+    private static string? MarkerContentFromCascade(IElement host, ResolvedRuleSet? markerRules)
+    {
+        if (markerRules is null) return null;
+        var contentDecl = markerRules.GetWinner("content");
+        if (contentDecl is null) return null;
+        var raw = contentDecl.ResolvedValue.Trim();
+        if (raw.Length == 0
+            || raw.Equals("normal", StringComparison.OrdinalIgnoreCase)
+            || raw.Equals("none", StringComparison.OrdinalIgnoreCase))
+        {
+            return null;
+        }
+        return CssContentList.TryParse(raw, host, out var text) ? text : null;
     }
 
     /// <summary>Read the computed <c>list-style-type</c> keyword from the
@@ -346,8 +432,9 @@ internal static class BoxBuilder
     /// <summary>Compose the marker glyph + trailing space for the given
     /// list-style-type. Numeric / alphabetic markers consult
     /// <see cref="ComputeListItemPosition"/> (1-indexed sibling position
-    /// among list-item children).</summary>
-    private static string MarkerTextFor(IElement host, string listStyleType)
+    /// among list-item children, where "list-item" means computed
+    /// <c>display: list-item</c> per Task 14 review Rec 3).</summary>
+    private static string MarkerTextFor(IElement host, string listStyleType, ResolvedCascadeResult cascade)
     {
         // Trailing NBSP keeps the marker visually attached to the content
         // even when text shaping aggressively collapses spaces around it.
@@ -357,24 +444,52 @@ internal static class BoxBuilder
             "disc" => "•" + trailer,             // •
             "circle" => "◦" + trailer,           // ◦
             "square" => "▪" + trailer,           // ▪
-            "decimal" => ComputeListItemPosition(host).ToString(System.Globalization.CultureInfo.InvariantCulture) + "." + trailer,
-            "decimal-leading-zero" => FormatDecimalLeadingZero(ComputeListItemPosition(host)) + "." + trailer,
-            "lower-roman" => ToRoman(ComputeListItemPosition(host), upper: false) + "." + trailer,
-            "upper-roman" => ToRoman(ComputeListItemPosition(host), upper: true) + "." + trailer,
-            "lower-alpha" or "lower-latin" => ToAlpha(ComputeListItemPosition(host), upper: false) + "." + trailer,
-            "upper-alpha" or "upper-latin" => ToAlpha(ComputeListItemPosition(host), upper: true) + "." + trailer,
-            // lower-greek: cycle-1 falls back to disc until we ship the full
-            // counter-style name list.
+            "decimal" => ComputeListItemPosition(host, cascade).ToString(System.Globalization.CultureInfo.InvariantCulture) + "." + trailer,
+            "decimal-leading-zero" => FormatDecimalLeadingZero(ComputeListItemPosition(host, cascade)) + "." + trailer,
+            "lower-roman" => ToRoman(ComputeListItemPosition(host, cascade), upper: false) + "." + trailer,
+            "upper-roman" => ToRoman(ComputeListItemPosition(host, cascade), upper: true) + "." + trailer,
+            "lower-alpha" or "lower-latin" => ToAlpha(ComputeListItemPosition(host, cascade), upper: false) + "." + trailer,
+            "upper-alpha" or "upper-latin" => ToAlpha(ComputeListItemPosition(host, cascade), upper: true) + "." + trailer,
+            "lower-greek" => ToGreek(ComputeListItemPosition(host, cascade)) + "." + trailer,
             _ => "•" + trailer,
         };
     }
 
+    /// <summary>Bijective base-24 Greek alphabetic conversion per CSS Counter
+    /// Styles 3 §6 — symbols α β γ δ ε ζ η θ ι κ λ μ ν ξ ο π ρ σ τ υ φ χ ψ ω
+    /// (omits final-sigma ς since lists use the medial form per Counter
+    /// Styles 3 Appendix). Values 1..24 → α..ω; 25..600 → αα..ωω; etc.</summary>
+    private static string ToGreek(int n)
+    {
+        if (n < 1) return n.ToString(System.Globalization.CultureInfo.InvariantCulture);
+        var sb = new System.Text.StringBuilder();
+        while (n > 0)
+        {
+            n--;
+            sb.Insert(0, GreekLowerSymbols[n % GreekLowerSymbols.Length]);
+            n /= GreekLowerSymbols.Length;
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>The 24 lowercase Greek symbols used by <c>lower-greek</c>
+    /// per CSS Counter Styles 3 §6.</summary>
+    private static readonly char[] GreekLowerSymbols =
+    {
+        'α', 'β', 'γ', 'δ', 'ε', 'ζ', 'η', 'θ',
+        'ι', 'κ', 'λ', 'μ', 'ν', 'ξ', 'ο', 'π',
+        'ρ', 'σ', 'τ', 'υ', 'φ', 'χ', 'ψ', 'ω',
+    };
+
     /// <summary>Count this <paramref name="host"/>'s 1-indexed position among
-    /// its sibling <c>&lt;li&gt;</c> elements. Cycle-1 ignores
+    /// its sibling list-items per Task 14 review Rec 3 — "list-item" is any
+    /// element whose computed <c>display</c> is <c>list-item</c>, NOT just
+    /// <c>&lt;li&gt;</c>. CSS-only authors who put <c>display: list-item</c>
+    /// on a div get correct numbering. Cycle-1 still ignores
     /// <c>&lt;ol start&gt;</c> / <c>&lt;li value&gt;</c> attribute overrides
-    /// per the marker XML doc; CSS counter-reset / counter-increment are
+    /// (cycle 2); CSS <c>counter-reset</c> / <c>counter-increment</c> are
     /// out-of-scope until the property machinery lands.</summary>
-    private static int ComputeListItemPosition(IElement host)
+    private static int ComputeListItemPosition(IElement host, ResolvedCascadeResult cascade)
     {
         var parent = host.ParentElement;
         if (parent is null) return 1;
@@ -382,12 +497,32 @@ internal static class BoxBuilder
         foreach (var sibling in parent.Children)
         {
             if (ReferenceEquals(sibling, host)) return index;
-            if (sibling.LocalName.Equals("li", StringComparison.OrdinalIgnoreCase))
-            {
-                index++;
-            }
+            if (IsListItemElement(sibling, cascade)) index++;
         }
         return index;
+    }
+
+    /// <summary>Per Task 14 review Rec 3 — <see langword="true"/> when
+    /// <paramref name="element"/>'s computed <c>display</c> is
+    /// <c>list-item</c>. The HTML UA default for <c>&lt;li&gt;</c> is
+    /// <c>list-item</c> (per HtmlDefaultDisplay), but any element can have
+    /// <c>display: list-item</c> via CSS — we must count those too.</summary>
+    private static bool IsListItemElement(IElement element, ResolvedCascadeResult cascade)
+    {
+        // Check explicit cascade rule first; if absent or doesn't change
+        // display, fall back to the UA default for the element's local name.
+        var ruleSet = cascade.TryGetStylesFor(element);
+        if (ruleSet is not null)
+        {
+            var displayDecl = ruleSet.GetWinner("display");
+            if (displayDecl is not null)
+            {
+                var v = displayDecl.ResolvedValue.Trim();
+                return v.Equals("list-item", StringComparison.OrdinalIgnoreCase);
+            }
+        }
+        // Fall back to UA default — only `<li>` defaults to list-item.
+        return string.Equals(element.LocalName, "li", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>Format a list position with a leading zero when the count is
@@ -447,6 +582,13 @@ internal static class BoxBuilder
         ResolvedCascadeResult cascade,
         ICssDiagnosticsSink? diagnostics)
     {
+        // Per Task 14 review Rec 5 + CSS Pseudo L4 §3.2 / §3.3:
+        // ::first-line and ::first-letter only apply to block-container
+        // boxes (their semantics describe styling of the first line / first
+        // typographic letter of the inline formatting context the box
+        // establishes). Skip the rent + apply work for ineligible kinds.
+        if (!IsBlockContainer(box.Kind)) return;
+
         var firstLineRules = cascade.TryGetStylesForPseudo(element, "first-line");
         if (firstLineRules is not null)
         {
@@ -483,6 +625,12 @@ internal static class BoxBuilder
         ResolvedCascadeResult cascade,
         ICssDiagnosticsSink? diagnostics)
     {
+        // Per Task 14 review Rec 1 + CSS Pseudo L4 §3 — replaced elements
+        // (img/video/canvas/iframe/object/embed) are atomic and have no
+        // place to host generated content. ::before / ::after declarations
+        // on a replaced originating element generate no pseudo box.
+        if (HtmlReplacedElements.IsReplaced(host.LocalName)) return null;
+
         var ruleSet = cascade.TryGetStylesForPseudo(host, pseudoName);
         if (ruleSet is null) return null;
 

@@ -110,6 +110,39 @@ public sealed class CssContentListTests
     }
 
     [Fact]
+    public async Task Attr_with_type_argument_is_rejected_per_Rec_4()
+    {
+        // Modern attr(name type) form — cycle 1 rejects rather than silently
+        // dropping the type and treating as bare attr(name). Phase 2 cycle-2
+        // will implement the typed form properly.
+        var host = await MakeHost("<p id='h' data-x='real'>x</p>", "h");
+        Assert.False(CssContentList.TryParse("attr(data-x string)", host, out _));
+    }
+
+    [Fact]
+    public async Task Attr_with_fallback_argument_is_rejected_per_Rec_4()
+    {
+        var host = await MakeHost("<p id='h'>x</p>", "h");
+        Assert.False(CssContentList.TryParse("attr(missing, 'fallback')", host, out _));
+    }
+
+    [Fact]
+    public async Task Attr_with_type_and_fallback_is_rejected_per_Rec_4()
+    {
+        var host = await MakeHost("<p id='h' data-x='real'>x</p>", "h");
+        Assert.False(CssContentList.TryParse("attr(data-x string, 'fallback')", host, out _));
+    }
+
+    [Fact]
+    public async Task Attr_with_only_whitespace_inside_after_name_still_works()
+    {
+        // A single trailing space before the close-paren is fine.
+        var host = await MakeHost("<p id='h' data-x='Y'>x</p>", "h");
+        Assert.True(CssContentList.TryParse("attr(data-x )", host, out var result));
+        Assert.Equal("Y", result);
+    }
+
+    [Fact]
     public async Task Escape_in_string_decoded_properly()
     {
         var host = await MakeHost("<p id='h'>x</p>", "h");

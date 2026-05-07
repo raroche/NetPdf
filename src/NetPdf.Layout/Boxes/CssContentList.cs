@@ -128,11 +128,15 @@ internal static class CssContentList
     }
 
     /// <summary>Parse the argument list of an <c>attr(...)</c> call. Cycle 1
-    /// supports the bare <c>attr(name)</c> form and tolerates the
-    /// <c>attr(name, type)</c> / <c>attr(name, type, fallback)</c> forms by
-    /// reading only the attribute name + ignoring the rest. Resolves the
-    /// attribute case-insensitively against <paramref name="host"/>; missing
-    /// attribute → empty string per Generated Content L3 §1.3.</summary>
+    /// supports ONLY the bare <c>attr(name)</c> form — per Task 14 review
+    /// Rec 4, multi-arg forms (<c>attr(name type)</c>,
+    /// <c>attr(name, fallback)</c>, <c>attr(name type, fallback)</c>) cause
+    /// the entire content-list parse to fail rather than silently treating
+    /// them as bare <c>attr(name)</c>. The full modern syntax (CSS Values L4
+    /// §10) needs a typed-value pipeline + fallback handling that cycle 2
+    /// will deliver. Resolves the attribute case-insensitively against
+    /// <paramref name="host"/>; missing attribute → empty string per
+    /// Generated Content L3 §1.3.</summary>
     private static bool ReadAttrArgs(
         ReadOnlySpan<char> span, ref int i, IElement host, out string value)
     {
@@ -153,18 +157,12 @@ internal static class CssContentList
 
         var attrName = span[nameStart..i].ToString();
 
-        // Skip the rest of the args (type + fallback) — cycle 1 ignores them.
-        // Walk to the matching close-paren, balancing nesting just in case.
-        var depth = 1;
-        while (i < span.Length && depth > 0)
-        {
-            var c = span[i];
-            if (c == '(') depth++;
-            else if (c == ')') depth--;
-            i++;
-            if (depth == 0) break;
-        }
-        if (depth != 0) return false; // unterminated
+        // Reject extra args per Rec 4 — anything between the name and the
+        // close-paren that isn't pure whitespace is an unsupported form.
+        i = SkipWhitespace(span, i);
+        if (i >= span.Length) return false; // no close-paren at all
+        if (span[i] != ')') return false;   // type / fallback / etc. → reject
+        i++; // consume the close-paren
 
         var attr = host.GetAttribute(attrName);
         value = attr ?? string.Empty;

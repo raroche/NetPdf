@@ -136,22 +136,20 @@ public sealed class BoxBuilderHardeningTests
     }
 
     [Fact]
-    public async Task Pseudo_on_replaced_element_does_not_become_replaced_kind()
+    public async Task Pseudo_on_replaced_element_is_suppressed_per_Pseudo_L4()
     {
-        // <img>::before — the pseudo is NOT a replaced element. Cycle-1 bug:
-        // BuildPseudo passed host.LocalName ("img") to DisplayMapper, which
-        // detected replaced + returned InlineReplacedElement.
+        // Task 14 review Rec 1 + CSS Pseudo L4 §3 — replaced elements (img,
+        // video, canvas, iframe, object, embed) cannot host generated content.
+        // Their atomic content has no place for ::before / ::after boxes, so
+        // the pseudos are suppressed. (Earlier Task 12 cycle-1 bug had them
+        // routing to InlineReplacedElement; the cycle-1 hardening fix routed
+        // them to InlineBox; the proper fix per spec is no box at all.)
         var root = await BuildAsync(
             "<img>",
-            "img::before { content: 'CAPTION' }");
+            "img::before { content: 'CAPTION' } img::after { content: 'TAIL' }");
         var img = Walk(root).First(b => b.SourceElement?.LocalName == "img");
-        // The pseudo must come BEFORE the img's content, but img has no
-        // children of its own — so pseudo lives on the img box.
-        var pseudo = img.Children.FirstOrDefault(c => c.Pseudo == BoxPseudo.Before);
-        Assert.NotNull(pseudo);
-        Assert.NotEqual(BoxKind.InlineReplacedElement, pseudo!.Kind);
-        Assert.NotEqual(BoxKind.BlockReplacedElement, pseudo.Kind);
-        Assert.Equal(BoxKind.InlineBox, pseudo.Kind);
+        Assert.DoesNotContain(img.Children, c => c.Pseudo == BoxPseudo.Before);
+        Assert.DoesNotContain(img.Children, c => c.Pseudo == BoxPseudo.After);
     }
 
     [Fact]
@@ -224,13 +222,15 @@ public sealed class BoxBuilderHardeningTests
 
     [Theory]
     [InlineData("counter(items)")]
-    [InlineData("attr(data-label)")]
     [InlineData("url(image.png)")]
     [InlineData("open-quote")]
     [InlineData("close-quote")]
-    [InlineData("\"PRE\" \"POST\"")]   // multi-token concatenation
     public async Task Pseudo_with_unsupported_content_form_emits_no_box(string contentValue)
     {
+        // Task 14 cycle 1 added multi-string concatenation + attr() support, so
+        // those forms moved out of this "unsupported" theory. Counter / image /
+        // quote tokens still skip silently — counter machinery + resource
+        // pipeline + quote-stack tracking are cycle-2 work.
         var root = await BuildAsync(
             "<p>x</p>",
             $"p::before {{ content: {contentValue} }}");
@@ -299,24 +299,25 @@ public sealed class BoxBuilderHardeningTests
     }
 
     // ============================================================
-    // Rec 7 — Current table output is structural placeholder, not layout-ready
+    // Rec 7 — Table output now uses the wrapper + TableGrid pair (Task 13)
     // ============================================================
 
     [Fact]
-    public async Task Cycle1_table_produces_Table_kind_but_no_TableGrid_yet()
+    public async Task Task13_table_wrapper_now_contains_TableGrid_per_Tables_L3_2_1()
     {
-        // Document the intentional incomplete state: cycle-1 maps `display: table`
-        // to BoxKind.Table without inserting the TableGrid intermediary that
-        // Tables L3 §2.1 requires. Task 13 ships the wrapper + grid + table
-        // fixup pass. (HTML5 auto-inserts <tbody> for missing row groups, so
-        // table's direct child here is TableRowGroup, NOT TableRow — Task 13
-        // will reparent everything under TableGrid.)
+        // Task 13 lands: every Table / InlineTable wrapper gets exactly one
+        // anonymous TableGrid child holding the table internals (row-groups,
+        // rows, cells). Previously the wrapper held the row-group directly.
         var root = await BuildAsync("<table><tr><td>cell</td></tr></table>");
         var table = Walk(root).First(b => b.Kind == BoxKind.Table);
         Assert.True(table.IsTableWrapper);
-        // Cycle-1 contract: no TableGrid yet. Task 13 will introduce it.
-        Assert.DoesNotContain(Walk(root), b => b.Kind == BoxKind.TableGrid);
-        // The descendant chain still has the table parts (HTML5 auto-tbody).
+        // Wrapper has exactly one child: the TableGrid.
+        Assert.Single(table.Children);
+        Assert.Equal(BoxKind.TableGrid, table.Children[0].Kind);
+        // Table internals live UNDER the grid, not directly under the wrapper.
+        var grid = table.Children[0];
+        Assert.Contains(grid.Children, c => c.Kind == BoxKind.TableRowGroup);
+        // Row-group → row → cell chain still intact.
         var partsKinds = Walk(root).Select(b => b.Kind).ToList();
         Assert.Contains(BoxKind.TableRowGroup, partsKinds);
         Assert.Contains(BoxKind.TableRow, partsKinds);
@@ -324,19 +325,19 @@ public sealed class BoxBuilderHardeningTests
     }
 
     [Fact]
-    public async Task Cycle1_inline_table_also_has_no_TableGrid()
+    public async Task Task13_inline_table_also_gets_TableGrid()
     {
         var root = await BuildAsync(
             "<span class='it'><table><tr><td>cell</td></tr></table></span>",
             ".it { display: inline-table }");
         // The .it span is inline-table → InlineTable wrapper.
         // Inside that span, the actual <table> element also gets a Table box.
-        // Both wrappers exist; neither has a TableGrid yet.
+        // Both wrappers must own a TableGrid post-Task-13.
         var wrappers = Walk(root).Where(b => b.IsTableWrapper).ToList();
         Assert.NotEmpty(wrappers);
         foreach (var w in wrappers)
         {
-            Assert.DoesNotContain(w.Children, c => c.Kind == BoxKind.TableGrid);
+            Assert.Contains(w.Children, c => c.Kind == BoxKind.TableGrid);
         }
     }
 

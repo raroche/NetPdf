@@ -74,6 +74,17 @@ internal static class DisplayMapper
         var isReplaced = elementLocalName is not null
             && HtmlReplacedElements.IsReplaced(elementLocalName);
 
+        // CSS Tables L3 §2: a replaced element specifying a table-internal
+        // display value (table-row, table-cell, table-column, table-caption,
+        // any of the *-group / column-group variants) is treated as
+        // inline-level — replaced elements are atomic and cannot host the
+        // structural roles those display values describe.
+        if (isReplaced && IsTableInternalDisplay(d))
+        {
+            kind = BoxKind.InlineReplacedElement;
+            return DisplayMappingResult.Resolved;
+        }
+
         switch (d)
         {
             case "none":
@@ -166,4 +177,19 @@ internal static class DisplayMapper
                 return DisplayMappingResult.Unsupported;
         }
     }
+
+    /// <summary><see langword="true"/> when <paramref name="display"/> is a
+    /// table-internal display value per Tables L3 §2 — i.e., one of the
+    /// values that describes a structural role inside a table (row group,
+    /// row, cell, column / column-group, caption). The outer table
+    /// values (<c>table</c>, <c>inline-table</c>) are NOT included; those
+    /// are wrapper kinds, not internals.</summary>
+    private static bool IsTableInternalDisplay(string display) => display switch
+    {
+        "table-row-group" or "table-header-group" or "table-footer-group"
+            or "table-row" or "table-cell"
+            or "table-column-group" or "table-column"
+            or "table-caption" => true,
+        _ => false,
+    };
 }

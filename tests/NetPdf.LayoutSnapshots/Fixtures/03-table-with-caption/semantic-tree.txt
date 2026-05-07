@@ -1,0 +1,17 @@
+Document
+  Table @element=table
+    TableCaption @element=caption
+      InlineText "Quarterly results"
+    TableRow @element=tr
+      TableHeaderCell @element=th @scope=col
+        InlineText "Quarter"
+      TableHeaderCell @element=th @scope=col
+        InlineText "Revenue"
+    TableRow @element=tr
+      TableCell @element=td
+        InlineText "Q1"
+      TableCell @element=td
+        InlineText "100"
+    TableRow @element=tr
+      TableCell @element=td @colspan=2
+        InlineText "Total: 100"

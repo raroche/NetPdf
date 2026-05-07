@@ -1,0 +1,13 @@
+Root
+  BlockContainer @element=html
+    BlockContainer @element=body
+      BlockContainer @element=article
+        BlockContainer @element=h1
+          TextRun @element=h1 "visible heading"
+        BlockContainer @element=section
+          BlockContainer @element=p
+            TextRun @element=p "aria-hidden body"
+        BlockContainer @element=p
+          TextRun @element=p "visible body"
+      AnonymousBlock
+        TextRun @element=body "\n"

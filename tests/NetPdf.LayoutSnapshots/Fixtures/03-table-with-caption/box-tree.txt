@@ -1,0 +1,24 @@
+Root
+  BlockContainer @element=html
+    BlockContainer @element=body
+      Table @element=table
+        TableCaption @element=caption
+          TextRun @element=caption "Quarterly results"
+        TableGrid
+          TableHeaderGroup @element=thead
+            TableRow @element=tr
+              TableCell @element=th
+                TextRun @element=th "Quarter"
+              TableCell @element=th
+                TextRun @element=th "Revenue"
+          TableRowGroup @element=tbody
+            TableRow @element=tr
+              TableCell @element=td
+                TextRun @element=td "Q1"
+              TableCell @element=td
+                TextRun @element=td "100"
+            TableRow @element=tr
+              TableCell @element=td
+                TextRun @element=td "Total: 100"
+      AnonymousBlock
+        TextRun @element=body "\n"

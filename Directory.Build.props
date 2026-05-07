@@ -58,7 +58,7 @@
       Phase 5 will introduce a small MSBuild task that reads version.json so
       both surfaces have a single source.
     -->
-    <VersionPrefix>0.1.0</VersionPrefix>
+    <VersionPrefix>0.3.0</VersionPrefix>
     <VersionSuffix>alpha</VersionSuffix>
 
     <!-- Symbols & Source Link: enable source-stepping for downstream consumers. -->
@@ -104,6 +104,28 @@
     <None Include="$(MSBuildThisFileDirectory)README.md" Pack="true" PackagePath="\" Visible="false" />
     <None Include="$(MSBuildThisFileDirectory)NOTICE" Pack="true" PackagePath="\" Visible="false" />
     <None Include="$(MSBuildThisFileDirectory)THIRD-PARTY-NOTICES.md" Pack="true" PackagePath="\" Visible="false" />
+  </ItemGroup>
+
+  <!--
+    Exclude macOS Finder / iCloud / Time Machine duplicate files (`Foo 2.cs`,
+    `Foo 3.cs`, ..., `Foo 99.cs`) from compilation. Without this, an accidental
+    Finder duplicate of any source file produces duplicate-type-definition
+    compile errors that can stall the entire build for a problem the developer
+    didn't intend. They're also added to `.gitignore` so they never enter
+    version control. Two glob patterns paired:
+      - `**/* [2-9].cs`        matches `Foo 2.cs` .. `Foo 9.cs` (single digit)
+      - `**/* [1-9][0-9].cs`   matches `Foo 10.cs` .. `Foo 99.cs` (two digits)
+    Single digits 0/1 are intentionally NOT excluded — legitimate names like
+    `chapter 1.cs` or `step 0.cs` aren't typical Finder duplicates and would
+    surprise authors if silently dropped. The space before the number is
+    required so legitimate files with trailing digits (`UAX29.cs`, `Type8x8.cs`)
+    aren't affected.
+  -->
+  <ItemGroup>
+    <Compile Remove="**/* [2-9].cs" />
+    <Compile Remove="**/* [1-9][0-9].cs" />
+    <None Remove="**/* [2-9].cs" />
+    <None Remove="**/* [1-9][0-9].cs" />
   </ItemGroup>
 
 </Project>

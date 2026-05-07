@@ -1,0 +1,7 @@
+Document
+  Figure @element=figure @alt="Quarterly revenue, Q3 2026"
+    Image @element=img @alt="Q3 revenue chart"
+    FigureCaption @element=figcaption
+      InlineText "Quarterly revenue, Q3 2026"
+  Image @element=img @alt=<decorative>
+  Image @element=img @alt=<missing>

@@ -1,0 +1,12 @@
+Root
+  BlockContainer @element=html
+    BlockContainer @element=body
+      BlockContainer @element=figure
+        AnonymousBlock
+          InlineReplacedElement @element=img
+        BlockContainer @element=figcaption
+          TextRun @element=figcaption "Quarterly revenue, Q3 2026"
+      AnonymousBlock
+        InlineReplacedElement @element=img
+        InlineReplacedElement @element=img
+        TextRun @element=body "\n"

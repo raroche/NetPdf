@@ -1,0 +1,3 @@
+Document
+  Paragraph @element=p
+    InlineText "Hello world."

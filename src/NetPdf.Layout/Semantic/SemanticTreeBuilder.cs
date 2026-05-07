@@ -46,6 +46,33 @@ namespace NetPdf.Layout.Semantic;
 /// cycle 2 alongside the rendered-tree-driven rebuild), HTML5 computed
 /// header associations (<c>headers</c> resolution against the layout grid).
 /// </para>
+/// <para>
+/// <b>v1 policy on generated content (per Task 18 hardening 2 review Rec 3).</b>
+/// Generated text from <c>::before</c> / <c>::after</c> / <c>::marker</c>
+/// pseudos is intentionally <i>absent</i> from the semantic tree in v1.
+/// The semantic tree is sourced from the static DOM; the generated content
+/// is materialized by <see cref="Boxes.BoxBuilder"/> against the rendered
+/// tree, not visible to a DOM-only walk. Two consequences flow from this:
+/// <list type="bullet">
+///   <item>Box snapshots show <c>TextRun</c> text for, e.g., a
+///     <c>.label::before { content: "[" attr(data-tag) "] " }</c> rule
+///     while the corresponding semantic snapshot does <i>not</i> include
+///     that text — the gap is intentional, not a bug.</item>
+///   <item>For PDF/UA tagged-PDF emission in v1.1+, the rendered-tree-
+///     driven rebuild will route generated text into the parent semantic
+///     node as either <c>InlineText</c> (when the generated content
+///     conveys information per WCAG 1.1.1 — list markers, attr-substituted
+///     labels) or as <c>/Artifact</c>-marked content (when purely
+///     decorative — leaders, ornamental quotes). The decision boundary
+///     keys off the <c>::marker</c> vs <c>::before</c>/<c>::after</c>
+///     distinction (markers are always informational; before/after default
+///     to artifact unless they substitute element data via <c>attr()</c>
+///     / <c>counter()</c>).</item>
+/// </list>
+/// The <c>SnapshotTests.PseudoWithAttr_generated_text_is_absent_from_semantic_tree_until_phase_5_pdfua</c>
+/// Fact pins the current state explicitly so a future change is caught
+/// as an intentional crossing of this boundary, not snapshot drift.
+/// </para>
 /// </remarks>
 internal static class SemanticTreeBuilder
 {

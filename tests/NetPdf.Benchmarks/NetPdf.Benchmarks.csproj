@@ -44,6 +44,13 @@
       Replaces inline fixture duplication in PdfWriteBenchmarks.cs.
     -->
     <ProjectReference Include="..\NetPdf.TestKit\NetPdf.TestKit.csproj" />
+    <!--
+      Phase 2 pipeline benchmarks consume internal types (`Phase2Result`,
+      `Box`, `BoxKind`) through transitive InternalsVisibleTo grants on
+      NetPdf.Css + NetPdf.Layout to NetPdf.Benchmarks.
+    -->
+    <ProjectReference Include="..\..\src\NetPdf.Css\NetPdf.Css.csproj" />
+    <ProjectReference Include="..\..\src\NetPdf.Layout\NetPdf.Layout.csproj" />
   </ItemGroup>
 
   <ItemGroup>

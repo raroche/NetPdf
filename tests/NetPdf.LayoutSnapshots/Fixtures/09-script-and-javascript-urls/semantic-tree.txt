@@ -1,0 +1,6 @@
+Document
+  Paragraph @element=p
+    InlineText "visible"
+  InlineText "click"
+  Link @element=a @href="https://example.com"
+    InlineText "safe"

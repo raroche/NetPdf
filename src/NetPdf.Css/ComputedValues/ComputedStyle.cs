@@ -74,6 +74,19 @@ internal sealed class ComputedStyle : IDisposable
 
     private bool _disposed;
 
+    /// <summary>Test-only flag — when set, <see cref="Dispose"/> marks the
+    /// instance disposed but does NOT return it to <see cref="_pool"/>, so
+    /// the disposed-flag guard stays observably true. Without this, the
+    /// soft-guard contract races under parallel test execution: another
+    /// thread can <see cref="Rent"/> the just-disposed instance + reset the
+    /// flag before the original holder's use-after-dispose access fires
+    /// <see cref="ObjectDisposedException"/>. The race is intentional in
+    /// production (the soft guard is documented as best-effort), but
+    /// non-deterministic for unit tests that assert the throw. Set via
+    /// <see cref="RentForExclusiveTesting"/>; never set in production
+    /// rent paths.</summary>
+    private bool _excludedFromPool;
+
     /// <summary>Set by <see cref="MarkAsBoxOwned"/> when a box-tree node attaches
     /// this style. Once set, <see cref="Dispose"/> refuses to return the instance
     /// to the pool — the box still references it, and pool re-rental would let
@@ -104,6 +117,24 @@ internal sealed class ComputedStyle : IDisposable
         return new ComputedStyle();
     }
 
+    /// <summary>Test-only factory — returns a fresh instance that bypasses
+    /// the pool entirely. <see cref="Dispose"/> marks the instance disposed
+    /// but skips the <see cref="_pool"/>.<see cref="ConcurrentBag{T}.Add"/>
+    /// call, so the disposed flag stays observably true regardless of
+    /// concurrent <see cref="Rent"/> activity in parallel tests. Use this
+    /// when a unit test asserts the use-after-dispose <see cref="ObjectDisposedException"/>
+    /// — the production <see cref="Rent"/> path's soft-guard contract is
+    /// documented as best-effort + races by design under high churn, which
+    /// is fine in production but non-deterministic in xUnit's parallel
+    /// runner. The instance is never recycled (it's leaked at end of test);
+    /// negligible overhead since called rarely.</summary>
+    internal static ComputedStyle RentForExclusiveTesting()
+    {
+        var instance = new ComputedStyle();
+        instance._excludedFromPool = true;
+        return instance;
+    }
+
     /// <summary>
     /// Marks the instance disposed and queues it back to the pool for re-rental
     /// (subject to <see cref="MaxPoolSize"/>). Idempotent. The slot/bitmap clearing
@@ -122,6 +153,7 @@ internal sealed class ComputedStyle : IDisposable
         if (_disposed) return;
         if (_isBoxOwned) return;
         _disposed = true;
+        if (_excludedFromPool) return;
         if (_pool.Count < MaxPoolSize)
         {
             _pool.Add(this);

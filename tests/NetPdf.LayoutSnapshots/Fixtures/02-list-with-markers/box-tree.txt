@@ -1,0 +1,18 @@
+Root
+  BlockContainer @element=html
+    BlockContainer @element=body
+      BlockContainer @element=ol
+        ListItem @element=li
+          Marker @element=li ::marker
+            TextRun @element=li "1. "
+          TextRun @element=li "first"
+        ListItem @element=li
+          Marker @element=li ::marker
+            TextRun @element=li "2. "
+          TextRun @element=li "second"
+        ListItem @element=li
+          Marker @element=li ::marker
+            TextRun @element=li "3. "
+          TextRun @element=li "third"
+      AnonymousBlock
+        TextRun @element=body "\n"

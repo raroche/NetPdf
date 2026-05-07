@@ -48,3 +48,28 @@ src/**/Generated/
 
 # Plan files (already external)
 plans/
+
+# macOS Finder / iCloud / Time Machine duplicate files (e.g., `Foo 2.cs`).
+# Scoped to source-shaped extensions only — these are the file types where
+# a duplicate produces real build damage (CS source: duplicate-type defs;
+# MSBuild config: redefined targets; properties.json duplicate: source-gen
+# crash). Per Task 18 hardening 2 review Rec 4, the patterns intentionally
+# do NOT match .html / .txt / .md / .png / .pdf / etc. so legitimate
+# numbered docs, fixtures, and assets (`Sample 2.html`, `screenshot 3.png`)
+# are tracked normally. Directory.Build.props provides the matching
+# compile-time defense for `.cs` only. Force-add a legitimately named
+# numbered file with `git add -f path/to/file`.
+#
+# Two glob shapes paired to cover single-digit and two-digit suffixes
+# (`Foo 0.cs` .. `Foo 99.cs`) — Copilot review on PR #12 caught that
+# the previous `1[0-9]` pattern missed `Foo 20.cs` and beyond.
+* [0-9].cs
+* [1-9][0-9].cs
+* [0-9].csproj
+* [1-9][0-9].csproj
+* [0-9].props
+* [1-9][0-9].props
+* [0-9].targets
+* [1-9][0-9].targets
+* [0-9].json
+* [1-9][0-9].json

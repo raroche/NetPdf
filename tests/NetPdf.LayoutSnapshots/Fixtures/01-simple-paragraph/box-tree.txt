@@ -1,0 +1,7 @@
+Root
+  BlockContainer @element=html
+    BlockContainer @element=body
+      BlockContainer @element=p
+        TextRun @element=p "Hello world."
+      AnonymousBlock
+        TextRun @element=body "\n"

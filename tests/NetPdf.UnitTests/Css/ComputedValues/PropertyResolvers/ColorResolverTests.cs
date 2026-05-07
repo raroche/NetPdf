@@ -239,11 +239,16 @@ public sealed class ColorResolverTests
     [InlineData("color-mix(in srgb, red, blue)")]
     public void Modern_color_functions_are_invalid_until_cycle_2(string value)
     {
+        // Task 16 cycle 1 — modern color functions now emit the dedicated
+        // CSS-MODERN-COLOR-FUNCTION-UNSUPPORTED-001 (Info) instead of the
+        // generic CSS-PROPERTY-VALUE-INVALID-001 (Warning) so authors can
+        // distinguish "known unsupported feature" from "parse error".
         var sink = new CapturingSink();
         var result = ColorResolver.Resolve(value, PropertyId.Color, "color", sink, default);
         Assert.True(result.IsInvalid);
         Assert.Single(sink.Diagnostics);
-        Assert.Equal(CssDiagnosticCodes.CssPropertyValueInvalid001, sink.Diagnostics[0].Code);
+        Assert.Equal(CssDiagnosticCodes.CssModernColorFunctionUnsupported001, sink.Diagnostics[0].Code);
+        Assert.Equal(CssDiagnosticSeverity.Info, sink.Diagnostics[0].Severity);
     }
 
     // ============================================================

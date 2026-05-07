@@ -48,6 +48,10 @@ Severity levels:
 | `CSS-BOXSHADOW-BLUR-RASTER-001` | Info | Blurred box-shadow triggered raster fallback. |
 | `CSS-TEXTSHADOW-BLUR-RASTER-001` | Info | Blurred text-shadow triggered raster fallback. |
 | `CSS-WRITING-MODE-SIDEWAYS-UNSUPPORTED-001` | Warning | `sideways-rl`/`sideways-lr` writing modes treated as `vertical-rl`/`vertical-lr`. |
+| `CSS-CONTENT-FUNCTION-UNSUPPORTED-001` | Warning | A `content:` value (on `::before`/`::after`/`::marker`) used a function/keyword that cycle 1 doesn't yet handle (`counter()` / `counters()` / `url()` / `image()` / `image-set()` / `linear-gradient()` / `open-quote` / `close-quote` / `no-open-quote` / `no-close-quote`). The pseudo-element generates no box. Roadmap cycle 2 ships counter machinery + the resource pipeline + quotation-stack tracking. |
+| `CSS-ATTR-MULTI-ARG-UNSUPPORTED-001` | Warning | A modern `attr(name type, fallback)` form was rejected — cycle 1 supports the bare `attr(name)` form only. The pseudo-element generates no box rather than silently dropping the type / fallback args. Roadmap cycle 2 delivers the typed-value pipeline. |
+| `CSS-MODERN-COLOR-FUNCTION-UNSUPPORTED-001` | Info | A modern color function (`oklch()` / `oklab()` / `lab()` / `lch()` / `color()` / `color-mix()`) was used in a property value. Cycle 1 rejects these — the cascade's "invalid at computed value time" rule applies (initial / inherited value used). Roadmap cycle 2 ships sRGB-conversion of these so the rendered color is approximate but visible. |
+| `CSS-PSEUDO-SUPPRESSED-ON-REPLACED-001` | Info | A `::before` / `::after` rule targeted a replaced element (`<img>` / `<video>` / `<canvas>` / `<iframe>` / `<object>` / `<embed>`); per CSS Pseudo L4 §3 the pseudo-element is suppressed because replaced elements are atomic and can't host generated content. The author rule has no effect. |
 
 ---
 

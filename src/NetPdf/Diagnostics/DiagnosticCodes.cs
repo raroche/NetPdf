@@ -99,5 +99,43 @@ internal static class DiagnosticCodes
     /// </summary>
     public const string CssPropertyValueInvalid001 = "CSS-PROPERTY-VALUE-INVALID-001";
 
+    /// <summary>
+    /// A <c>content:</c> value (on <c>::before</c> / <c>::after</c> / <c>::marker</c>)
+    /// used a function / keyword that cycle 1 doesn't yet handle (<c>counter()</c> /
+    /// <c>counters()</c> / <c>url()</c> / <c>image()</c> / <c>image-set()</c> /
+    /// <c>linear-gradient()</c> / <c>open-quote</c> / <c>close-quote</c> /
+    /// <c>no-open-quote</c> / <c>no-close-quote</c>). The pseudo-element generates no
+    /// box. Roadmap cycle 2 ships counter machinery + the resource pipeline +
+    /// quotation-stack tracking. Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string CssContentFunctionUnsupported001 = "CSS-CONTENT-FUNCTION-UNSUPPORTED-001";
+
+    /// <summary>
+    /// A modern <c>attr(name type, fallback)</c> form was rejected — cycle 1 supports
+    /// the bare <c>attr(name)</c> form only. The pseudo-element generates no box rather
+    /// than silently dropping the type / fallback args. Roadmap cycle 2 delivers the
+    /// typed-value pipeline. Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string CssAttrMultiArgUnsupported001 = "CSS-ATTR-MULTI-ARG-UNSUPPORTED-001";
+
+    /// <summary>
+    /// A modern color function (<c>oklch()</c> / <c>oklab()</c> / <c>lab()</c> /
+    /// <c>lch()</c> / <c>color()</c> / <c>color-mix()</c>) was used in a property
+    /// value. Cycle 1 rejects these — the cascade's "invalid at computed value
+    /// time" rule applies. Roadmap cycle 2 ships sRGB-conversion so the rendered
+    /// color is approximate but visible. Severity: <see cref="DiagnosticSeverity.Info"/>.
+    /// </summary>
+    public const string CssModernColorFunctionUnsupported001 = "CSS-MODERN-COLOR-FUNCTION-UNSUPPORTED-001";
+
+    /// <summary>
+    /// A <c>::before</c> / <c>::after</c> rule targeted a replaced element
+    /// (<c>&lt;img&gt;</c> / <c>&lt;video&gt;</c> / <c>&lt;canvas&gt;</c> /
+    /// <c>&lt;iframe&gt;</c> / <c>&lt;object&gt;</c> / <c>&lt;embed&gt;</c>); per
+    /// CSS Pseudo L4 §3 the pseudo-element is suppressed because replaced elements
+    /// are atomic and can't host generated content. The author rule has no effect.
+    /// Severity: <see cref="DiagnosticSeverity.Info"/>.
+    /// </summary>
+    public const string CssPseudoSuppressedOnReplaced001 = "CSS-PSEUDO-SUPPRESSED-ON-REPLACED-001";
+
     // endregion CSS-*
 }

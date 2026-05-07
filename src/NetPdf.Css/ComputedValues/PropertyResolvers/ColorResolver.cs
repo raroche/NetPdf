@@ -77,10 +77,22 @@ internal static class ColorResolver
             return ResolverResult.Resolved(ComputedSlot.FromColor(system));
 
         // Functional forms.
-        if (TryParseFunctionalColor(value, out var fnArgb, out var fnReason))
+        if (TryParseFunctionalColor(value, out var fnArgb, out var fnReason, out var modernColorFn))
             return ResolverResult.Resolved(ComputedSlot.FromColor(fnArgb));
         if (fnReason is not null)
         {
+            // Task 16 cycle 1 — modern color functions emit a distinct Info
+            // diagnostic so authors can see "this is unsupported" vs. "this
+            // is a parse error". Cycle 2 will sRGB-convert these.
+            if (modernColorFn is not null)
+            {
+                diagnostics?.Emit(new CssDiagnostic(
+                    CssDiagnosticCodes.CssModernColorFunctionUnsupported001,
+                    $"Modern color function '{modernColorFn}()' is unsupported in '{propertyName}: {value}'. The cascade's invalid-at-computed-value-time rule applies (initial / inherited value used).",
+                    CssDiagnosticSeverity.Info,
+                    location));
+                return ResolverResult.Invalid();
+            }
             EmitInvalid(diagnostics, propertyName, value, fnReason, location);
             return ResolverResult.Invalid();
         }
@@ -141,11 +153,21 @@ internal static class ColorResolver
     /// argb on success; <see langword="false"/> + null reason if the value isn't a
     /// functional color at all (caller falls through to the unknown-token diagnostic);
     /// <see langword="false"/> + non-null reason if it WAS a functional color but
-    /// malformed (caller emits diagnostic).</summary>
-    private static bool TryParseFunctionalColor(string value, out uint argb, out string? reason)
+    /// malformed (caller emits diagnostic). Per Task 16 cycle 1, the
+    /// <paramref name="modernColorFn"/> out parameter carries the lower-cased
+    /// function name (<c>oklch</c> / <c>oklab</c> / <c>lab</c> / <c>lch</c> /
+    /// <c>color</c> / <c>color-mix</c>) when the rejection is for an
+    /// unsupported modern color space — the caller emits
+    /// <c>CSS-MODERN-COLOR-FUNCTION-UNSUPPORTED-001</c> (Info) for those
+    /// rather than the generic <c>CSS-PROPERTY-VALUE-INVALID-001</c> (Warning)
+    /// so authors can tell the difference between an unsupported feature
+    /// and a parse error.</summary>
+    private static bool TryParseFunctionalColor(string value, out uint argb,
+        out string? reason, out string? modernColorFn)
     {
         argb = 0;
         reason = null;
+        modernColorFn = null;
         var openIdx = value.IndexOf('(');
         var closeIdx = value.Length > 0 && value[^1] == ')' ? value.Length - 1 : -1;
         if (openIdx < 0 || closeIdx < 0 || openIdx >= closeIdx) return false;
@@ -161,12 +183,20 @@ internal static class ColorResolver
             case "hsl":
             case "hsla":
                 return TryParseHslFunction(body, out argb, out reason);
-            case "oklch": case "oklab": case "lab": case "lch": case "color": case "color-mix":
-                reason = $"modern color function '{fnName}()' is deferred to a follow-up cycle";
-                return false;
-            default:
-                return false;
         }
+
+        // Per Task 16 review Rec 2 — modern color functions are recognized
+        // via the shared `ModernColorFunctions` table so the preprocessor's
+        // raw-text recovery + this resolver's diagnostic emission cover the
+        // same set (oklch / oklab / lab / lch / color / color-mix / light-dark).
+        if (ModernColorFunctions.Contains(fnName))
+        {
+            reason = $"modern color function '{fnName}()' is deferred to a follow-up cycle";
+            modernColorFn = fnName;
+            return false;
+        }
+
+        return false;
     }
 
     private static bool TryParseRgbFunction(string body, out uint argb, out string? reason)

@@ -4,6 +4,8 @@
 using System;
 using System.Text;
 using AngleSharp.Dom;
+using NetPdf.Css.Diagnostics;
+using NetPdf.Css.Parser;
 
 namespace NetPdf.Layout.Boxes;
 
@@ -37,20 +39,37 @@ namespace NetPdf.Layout.Boxes;
 /// depth tracking + the <c>quotes</c> property).
 /// </para>
 /// <para>
-/// The parser is forgiving: any unrecognized token aborts the parse cleanly
-/// (returns false) so the caller can drop the pseudo rather than emit garbled
-/// text. Failures are NOT diagnosed — generating no box for unsupported content
-/// is the spec-compliant fallback per Generated Content L3 §1.3 (<c>content</c>
-/// has computed value <c>normal</c> when invalid).
+/// <b>Task 16 cycle 1 — diagnostic emission.</b> The
+/// <see cref="TryParse(string, IElement, ICssDiagnosticsSink?, CssSourceLocation, out string)"/>
+/// overload emits one of two diagnostic codes when the parse fails:
+/// <see cref="CssDiagnosticCodes.CssContentFunctionUnsupported001"/> for
+/// unsupported functions (<c>counter()</c> / <c>url()</c> / etc.) or unsupported
+/// keywords (<c>open-quote</c> / <c>close-quote</c>); and
+/// <see cref="CssDiagnosticCodes.CssAttrMultiArgUnsupported001"/> when the
+/// modern multi-arg <c>attr()</c> form is detected. The sink-less overload
+/// remains for callers that don't have a sink in scope.
 /// </para>
 /// </remarks>
 internal static class CssContentList
 {
-    /// <summary>Parse <paramref name="raw"/> as a CSS content-list value
-    /// against <paramref name="host"/> for <c>attr()</c> resolution. Returns
-    /// <see langword="true"/> + the concatenated text on success;
-    /// <see langword="false"/> when the value uses unsupported tokens.</summary>
+    /// <summary>Sink-less convenience overload — see the four-argument form
+    /// for the diagnostic-emitting path. Returns <see langword="true"/> + the
+    /// concatenated text on success; <see langword="false"/> when the value
+    /// uses unsupported tokens (no diagnostic emitted).</summary>
     public static bool TryParse(string raw, IElement host, out string result)
+        => TryParse(raw, host, sink: null, location: CssSourceLocation.Unknown, out result);
+
+    /// <summary>Parse <paramref name="raw"/> as a CSS content-list value
+    /// against <paramref name="host"/> for <c>attr()</c> resolution; emit a
+    /// diagnostic to <paramref name="sink"/> when the parse fails on an
+    /// unsupported token. Returns <see langword="true"/> + the concatenated
+    /// text on success; <see langword="false"/> on rejection.</summary>
+    public static bool TryParse(
+        string raw,
+        IElement host,
+        ICssDiagnosticsSink? sink,
+        CssSourceLocation location,
+        out string result)
     {
         result = string.Empty;
         if (string.IsNullOrWhiteSpace(raw)) return false;
@@ -78,18 +97,101 @@ internal static class CssContentList
             if (StartsWithCaseInsensitive(span, i, "attr("))
             {
                 i += "attr(".Length;
-                if (!ReadAttrArgs(span, ref i, host, out var attrValue)) return false;
+                var attrAccepted = ReadAttrArgs(span, ref i, host, out var attrValue,
+                    out var rejectedReason);
+                if (!attrAccepted)
+                {
+                    EmitAttrRejection(sink, raw, location, rejectedReason);
+                    return false;
+                }
                 sb.Append(attrValue);
                 continue;
             }
 
             // Anything else: counter()/counters()/url()/image()/image-set()/
             // linear-gradient()/open-quote/close-quote/identifier — bail.
+            EmitContentFunctionUnsupported(sink, span, i, raw, location);
             return false;
         }
 
         result = sb.ToString();
         return true;
+    }
+
+    private static void EmitAttrRejection(
+        ICssDiagnosticsSink? sink, string raw, CssSourceLocation location, AttrRejectReason reason)
+    {
+        if (sink is null) return;
+        switch (reason)
+        {
+            case AttrRejectReason.MultiArg:
+                sink.Emit(new CssDiagnostic(
+                    CssDiagnosticCodes.CssAttrMultiArgUnsupported001,
+                    $"Modern attr() multi-arg form rejected — cycle 1 supports the bare attr(name) form only. Value: '{Truncate(raw)}'.",
+                    CssDiagnosticSeverity.Warning,
+                    location));
+                return;
+            case AttrRejectReason.MalformedSyntax:
+            default:
+                // Fall through to the generic content-function diagnostic for
+                // truly malformed attr() (no name, unterminated, etc.).
+                sink.Emit(new CssDiagnostic(
+                    CssDiagnosticCodes.CssContentFunctionUnsupported001,
+                    $"Malformed attr() in content value: '{Truncate(raw)}'.",
+                    CssDiagnosticSeverity.Warning,
+                    location));
+                return;
+        }
+    }
+
+    private static void EmitContentFunctionUnsupported(
+        ICssDiagnosticsSink? sink, ReadOnlySpan<char> span, int i, string raw, CssSourceLocation location)
+    {
+        if (sink is null) return;
+        // Try to identify the unsupported token kind so the message names what
+        // the author wrote — `counter(items)` is more useful than `unrecognized
+        // content token`.
+        var kind = IdentifyUnsupportedToken(span, i);
+        sink.Emit(new CssDiagnostic(
+            CssDiagnosticCodes.CssContentFunctionUnsupported001,
+            $"Unsupported content token '{kind}' in '{Truncate(raw)}'. Cycle 1 supports string + attr(name) only.",
+            CssDiagnosticSeverity.Warning,
+            location));
+    }
+
+    /// <summary>Best-effort identification of the unsupported token at
+    /// <paramref name="i"/> so the diagnostic message can name it. Returns the
+    /// function name (with trailing <c>(</c>) when followed by a paren, or the
+    /// identifier text otherwise. Falls back to a single-char snippet when the
+    /// token shape isn't recognizable.</summary>
+    private static string IdentifyUnsupportedToken(ReadOnlySpan<char> span, int i)
+    {
+        var start = i;
+        var end = i;
+        while (end < span.Length)
+        {
+            var c = span[end];
+            if (c == '(' || IsCssWhitespace(c) || c == ',' || c == ')') break;
+            end++;
+        }
+        if (start == end) return "?";
+        var name = span[start..end].ToString();
+        // If followed by '(' it's a function call.
+        if (end < span.Length && span[end] == '(') return name + "()";
+        return name;
+    }
+
+    private static string Truncate(string s)
+    {
+        const int max = 80;
+        if (s.Length <= max) return s;
+        return s[..max] + "…";
+    }
+
+    private enum AttrRejectReason
+    {
+        MalformedSyntax = 0,
+        MultiArg = 1,
     }
 
     /// <summary>Advance <paramref name="i"/> past the leading-whitespace run.</summary>
@@ -141,23 +243,37 @@ internal static class CssContentList
     /// will deliver. Resolves the attribute case-insensitively against
     /// <paramref name="host"/>; missing attribute → empty string per
     /// Generated Content L3 §1.3.</summary>
+    /// <remarks>
+    /// Per Task 16 review Rec 5 — the attribute name is validated as a CSS
+    /// <i>ident-token</i> per CSS Syntax §4.3.11 (start: letter / <c>_</c> /
+    /// non-ASCII / escape; continuation: start chars + digits + <c>-</c>;
+    /// optional leading <c>-</c>). Accepting arbitrary punctuation (e.g.,
+    /// <c>attr(.foo)</c>) and reporting a missing attribute would have masked
+    /// real authoring errors. Cycle-1 simplification: ASCII-only validation
+    /// — escape decoding + non-ASCII identifier ranges defer to cycle 2
+    /// alongside the typed-value pipeline.
+    /// </remarks>
     private static bool ReadAttrArgs(
-        ReadOnlySpan<char> span, ref int i, IElement host, out string value)
+        ReadOnlySpan<char> span, ref int i, IElement host,
+        out string value, out AttrRejectReason reason)
     {
         value = string.Empty;
+        reason = AttrRejectReason.MalformedSyntax;
         i = SkipWhitespace(span, i);
 
-        // The attribute name is an ident-token (CSS Syntax §4.3.11); we
-        // accept letters, digits, hyphens, underscores, ASCII identifier
-        // characters. Stop at whitespace, comma, or close-paren.
+        // Per Rec 5: ident-token shape per CSS Syntax §4.3.11. Read ASCII
+        // ident characters (start + continuation rules); reject if the run
+        // is empty OR starts with a non-ident char.
         var nameStart = i;
         while (i < span.Length)
         {
             var c = span[i];
             if (IsCssWhitespace(c) || c == ',' || c == ')') break;
+            if (!IsCssIdentChar(c)) return false; // malformed punctuation
             i++;
         }
         if (i == nameStart) return false; // empty name
+        if (!IsValidCssIdentStart(span[nameStart..i])) return false;
 
         var attrName = span[nameStart..i].ToString();
 
@@ -165,12 +281,48 @@ internal static class CssContentList
         // close-paren that isn't pure whitespace is an unsupported form.
         i = SkipWhitespace(span, i);
         if (i >= span.Length) return false; // no close-paren at all
-        if (span[i] != ')') return false;   // type / fallback / etc. → reject
+        if (span[i] != ')')
+        {
+            // Multi-arg form (type and/or fallback) — explicit Rec 4 rejection.
+            reason = AttrRejectReason.MultiArg;
+            return false;
+        }
         i++; // consume the close-paren
 
         var attr = host.GetAttribute(attrName);
         value = attr ?? string.Empty;
         return true;
+    }
+
+    /// <summary><see langword="true"/> when <paramref name="c"/> is a valid
+    /// continuation char of a CSS ident-token (ASCII subset per cycle-1
+    /// scope). Rec 5: letters / digits / hyphen / underscore.</summary>
+    private static bool IsCssIdentChar(char c) =>
+        (c >= 'a' && c <= 'z')
+        || (c >= 'A' && c <= 'Z')
+        || (c >= '0' && c <= '9')
+        || c == '-' || c == '_';
+
+    /// <summary><see langword="true"/> when <paramref name="ident"/> is a
+    /// valid CSS ident-token start per §4.3.11. ASCII-only check: must start
+    /// with letter / <c>_</c>, OR <c>-</c> followed by another valid start
+    /// char (so <c>--custom</c> is OK). Pure-numeric / leading-digit are
+    /// rejected per the spec.</summary>
+    private static bool IsValidCssIdentStart(ReadOnlySpan<char> ident)
+    {
+        if (ident.IsEmpty) return false;
+        var first = ident[0];
+        if ((first >= 'a' && first <= 'z') || (first >= 'A' && first <= 'Z') || first == '_')
+            return true;
+        if (first == '-')
+        {
+            if (ident.Length < 2) return false;
+            var second = ident[1];
+            return (second >= 'a' && second <= 'z')
+                || (second >= 'A' && second <= 'Z')
+                || second == '_' || second == '-';
+        }
+        return false;
     }
 
     private static bool StartsWithCaseInsensitive(ReadOnlySpan<char> span, int i, string ascii)

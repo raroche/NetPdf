@@ -67,9 +67,53 @@ namespace NetPdf.Layout.Layouters;
 ///   page boundaries.</item>
 /// </list>
 ///
-/// <para><b>Cycle 1 deferrals (still — to subsequent commits):</b></para>
+/// <para><b>Cycle 2 (this revision) — adjacent-sibling margin collapse
+/// per CSS 2.1 §8.3.1.</b> Adjacent block siblings' bottom-margin +
+/// top-margin collapse to the spec formula
+/// <c>max(positives) - max(absolute values of negatives)</c> via
+/// <see cref="MarginCollapse.Collapse"/>. Cross-page collapse
+/// suppressed per CSS Fragmentation L3 §6.1 (collapse chain resets
+/// at every <see cref="AttemptLayout"/> entry). Non-block children
+/// (inline / atomic — Task 10's domain) reset the collapse chain so
+/// margins don't collapse across content that should create a line
+/// box (PR #23 review fix #3).</para>
+///
+/// <para><b>Cycle 2 PR #23 review fixes (this revision):</b></para>
 /// <list type="bullet">
-///   <item><b>Cycle 2.</b> Margin collapsing per CSS 2.1 §8.3.1.</item>
+///   <item><b>#1 — Rewind retry resumes from checkpoint.</b> After
+///   a NeedsRewind, the layouter resumes from
+///   <c>checkpoint.LastEmittedChildIndex + 1</c> rather than the
+///   constructor's incoming continuation. Pre-fix the retry would
+///   re-emit the already-preserved fragments + duplicate the
+///   output.</item>
+///   <item><b>#2 + Copilot #1 — Oversized resumed-block forward
+///   progress.</b> The forced-overflow branch fires on "nothing
+///   emitted on the current fragmentainer" rather than
+///   "no prior pages consumed". An oversized block first on page 2+
+///   now makes forward progress instead of looping.</item>
+///   <item><b>#3 — Inline content interrupts margin adjacency.</b>
+///   When a non-block child is skipped, the collapse chain resets
+///   (the inline content would create a line box that breaks
+///   adjacency per CSS 2.1 §8.3.1).</item>
+///   <item><b>#4 — Resolver-facing UsedBlockSize stays non-negative.</b>
+///   Negative-margin blocks can produce a negative margin-box advance.
+///   The fragment's BlockOffset preserves the visual negative offset,
+///   but <see cref="FragmentainerContext.UsedBlockSize"/> is clamped
+///   to 0 so the next <see cref="BreakOpportunity.UsedBlockSize"/>
+///   doesn't trip <see cref="CostModel.Score"/>'s non-negative
+///   guard.</item>
+///   <item><b>#5 — Border-box inline size clamped.</b> Oversized
+///   left/right margins can produce a negative border-box inline
+///   size; the layouter clamps to 0 to keep the fragment record
+///   well-formed.</item>
+/// </list>
+///
+/// <para><b>Cycle 2 deferrals (still — to subsequent commits):</b></para>
+/// <list type="bullet">
+///   <item><b>Cycle 2b.</b> Recursive nested-block layout (PR #22
+///   review fix #4). Cycle 1 + 2 walk <c>_rootBox.Children</c> only;
+///   nested block descendants (<c>div &gt; p</c>) aren't laid out.
+///   Failing-skip integration test pins the deferral.</item>
 ///   <item><b>Cycle 3.</b> BFC root detection; intrinsic sizing
 ///   modes (<c>min-content</c> / <c>max-content</c> / <c>fit-content</c>);
 ///   width / height auto resolution per §10.3.3 + §10.6.2;
@@ -78,11 +122,9 @@ namespace NetPdf.Layout.Layouters;
 ///   from <c>ComputedStyle</c> into <see cref="BreakOpportunity"/>
 ///   flags; logical-axis margin/padding/border accessors that
 ///   honor <see cref="LayoutContext.WritingMode"/> (PR #22 review
-///   fix #5).</item>
-///   <item><b>Cycle 2-3.</b> Recursive nested-block layout (PR #22
-///   review fix #4 — current cycle 1 walks <c>_rootBox.Children</c>
-///   only, not nested block descendants). Failing-skip integration
-///   tests pin the deferral.</item>
+///   fix #5); parent/first-child + parent/last-child margin collapse
+///   (CSS 2.1 §8.3.1 — needs recursive layout + BFC detection); BFC
+///   root collapse suppression.</item>
 ///   <item><b>Phase 3 Task 8.</b> Float interaction via the
 ///   <c>FloatManager</c>.</item>
 ///   <item><b>Phase 3 Task 10.</b> Inline content within blocks
@@ -101,6 +143,22 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// returns the prior one to the pool internally) OR the layouter
     /// is disposed.</summary>
     private CheckpointLease _activeLease;
+
+    /// <summary>Per PR #23 review fix #1 — the index to resume at on
+    /// the NEXT call to <see cref="AttemptLayout"/>. Set when the
+    /// layouter returns <see cref="LayoutAttemptOutcome.NeedsRewind"/>
+    /// — the coordinator restores fragmentainer state from the
+    /// rewind-target checkpoint, then re-calls <see cref="AttemptLayout"/>;
+    /// without this field the retry would re-derive its starting
+    /// point from the constructor's <see cref="_incomingContinuation"/>
+    /// (typically index 0 for page 1) and re-emit the already-
+    /// preserved fragments, doubling the output.
+    ///
+    /// <para>Initialized to <c>-1</c> meaning "use the incoming
+    /// continuation"; set to
+    /// <c>checkpoint.LastEmittedChildIndex + 1</c> just before
+    /// returning <see cref="LayoutAttemptOutcome.NeedsRewind"/>.</para></summary>
+    private int _resumeAtChildIdxAfterRewind = -1;
 
     /// <summary>Construct a layouter for <paramref name="rootBox"/>'s
     /// block children, emitting fragments into <paramref name="sink"/>.
@@ -167,11 +225,22 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         ArgumentNullException.ThrowIfNull(resolver);
         cancellationToken.ThrowIfCancellationRequested();
 
-        // Resume from the incoming continuation if provided. (Validated
-        // in the constructor — at this point we know it's a
-        // BlockContinuation if non-null.)
+        // Per PR #23 review fix #1 — resume point. After a rewind,
+        // the coordinator restores state + re-calls AttemptLayout; the
+        // retry must resume from the rewind-target's
+        // LastEmittedChildIndex + 1, NOT from the constructor's
+        // incoming continuation. The _resumeAtChildIdxAfterRewind
+        // field is set just before returning NeedsRewind; on entry,
+        // -1 means "use the incoming continuation" (first call OR
+        // re-entry post a clean PageComplete / AllDone, which the
+        // coordinator's contract doesn't actually do).
         var incomingBlock = _incomingContinuation as BlockContinuation;
-        var startChildIdx = incomingBlock?.ResumeAtChild ?? 0;
+        var startChildIdx = _resumeAtChildIdxAfterRewind >= 0
+            ? _resumeAtChildIdxAfterRewind
+            : incomingBlock?.ResumeAtChild ?? 0;
+        // Reset for the next iteration. If THIS attempt rewinds again,
+        // the rewind branch sets it again before returning.
+        _resumeAtChildIdxAfterRewind = -1;
         var priorPagesConsumed = incomingBlock?.ConsumedBlockSize ?? 0.0;
 
         // Snapshot UsedBlockSize at entry. Per-page extent placed by
@@ -184,13 +253,39 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // emission.
         var emittedThisAttempt = 0;
 
+        // Per Phase 3 Task 7 cycle 2 + CSS 2.1 §8.3.1 — adjacent-
+        // sibling vertical margin collapsing. Track the prior
+        // adjoining block's margin-end so the next block's margin-
+        // start can collapse with it via MarginCollapse.Collapse.
+        // Reset conditions:
+        //   - Page boundary (every AttemptLayout entry initializes
+        //     hasPriorAdjoiningBlock=false) — per CSS Fragmentation
+        //     L3 §6.1, margins meeting at a fragmentainer boundary
+        //     don't collapse.
+        //   - Non-block child between two blocks (PR #23 review fix
+        //     #3) — inline / atomic content creates a line box that
+        //     breaks adjacency per §8.3.1. The next block's
+        //     marginTop is honored without collapse.
+        var prevBlockMarginEnd = 0.0;
+        var hasPriorAdjoiningBlock = false;
+
         for (var childIdx = startChildIdx; childIdx < _rootBox.Children.Count; childIdx++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var child = _rootBox.Children[childIdx];
 
             // Cycle 1: only block-level children are laid out.
-            if (!child.IsBlockLevel) continue;
+            if (!child.IsBlockLevel)
+            {
+                // Per PR #23 review fix #3 — non-block content (inline
+                // / atomic) creates a line box that breaks margin
+                // adjacency per CSS 2.1 §8.3.1. Reset the collapse
+                // chain so the next block applies its full marginTop
+                // without collapsing across the line box.
+                hasPriorAdjoiningBlock = false;
+                prevBlockMarginEnd = 0;
+                continue;
+            }
 
             // Read the box-axis extents.
             // Cycle 1 — assumes resolved px values; auto / percentage
@@ -207,23 +302,67 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             var marginInlineEnd = child.Style.ReadLengthPxOrZero(PropertyId.MarginRight);
 
             // Per PR #22 review fix #3 + Copilot #2 — BoxFragment is
-            // the BORDER box on both axes. Compute both:
-            // - marginBoxBlockSize: drives pagination accounting
-            //   (cursor advance + fit-check).
-            // - borderBoxBlockSize: stored on the fragment for the
-            //   painter.
+            // the BORDER box on both axes.
             var borderBoxBlockSize = borderStart + paddingStart + contentBlock
                 + paddingEnd + borderEnd;
-            var marginBoxBlockSize = marginStart + borderBoxBlockSize + marginEnd;
 
-            var borderBoxInlineSize = fragmentainer.ContentInlineSize
-                - marginInlineStart - marginInlineEnd;
+            // Per PR #23 review fix #5 — clamp the border-box inline
+            // size to non-negative. Oversized left/right margins
+            // (margin-left + margin-right > ContentInlineSize) would
+            // otherwise produce a negative inline size + destabilize
+            // downstream painting. The fragment records 0 inline-size
+            // in that case; future cycle 3 will emit a layout
+            // overflow diagnostic.
+            var borderBoxInlineSize = Math.Max(0,
+                fragmentainer.ContentInlineSize - marginInlineStart - marginInlineEnd);
+
+            // Per Phase 3 Task 7 cycle 2 + CSS 2.1 §8.3.1 — adjacent-
+            // sibling margin collapse.
+            //
+            // `effectiveTopGap` = the actual top gap between this
+            // block's border-box top edge + the BFC's prior content:
+            //   - First block on the page → marginStart (no prior
+            //     block to collapse with; page boundary is a hard
+            //     barrier per CSS Fragmentation L3 §6.1).
+            //   - Subsequent blocks → MarginCollapse.Collapse(
+            //     prevBlockMarginEnd, marginStart) per §8.3.1.
+            //
+            // `topShift` = the offset from the current
+            // fragmentainer.UsedBlockSize (which ALREADY includes
+            // prevBlockMarginEnd from the prior block's emission)
+            // to this block's border-box top edge:
+            //   - First block: topShift = marginStart.
+            //   - Subsequent: topShift = effectiveTopGap -
+            //     prevBlockMarginEnd (subtract because the prior
+            //     bottom margin was already added; replace it with
+            //     the collapsed gap). Can be negative when collapse
+            //     reduces the total spacing.
+            double effectiveTopGap;
+            double topShift;
+            if (!hasPriorAdjoiningBlock)
+            {
+                effectiveTopGap = marginStart;
+                topShift = marginStart;
+            }
+            else
+            {
+                effectiveTopGap = MarginCollapse.Collapse(prevBlockMarginEnd, marginStart);
+                topShift = effectiveTopGap - prevBlockMarginEnd;
+            }
+
+            // Margin-box block size of the current block (the cursor
+            // advance from the prior block's border-box bottom edge
+            // to this block's margin-end edge). For the first block
+            // it includes the full marginStart; for subsequent blocks
+            // it includes the collapsed gap MINUS the part already
+            // consumed in prevBlockMarginEnd (= topShift). Drives the
+            // resolver's fit-check.
+            var marginBoxBlockSize = topShift + borderBoxBlockSize + marginEnd;
 
             // Per PR #22 review fix #6 — clamp ChunkBlockSize to
             // non-negative for BreakOpportunity.EnsureValid. Negative
-            // margin-box sizes are valid (CSS allows negative margins
-            // that visually overlap), but the BreakOpportunity's fit-
-            // measure can't be negative.
+            // values are valid for the cursor (negative margins move
+            // backward) but the fit-check measure can't be negative.
             var chunkForBreakCheck = Math.Max(0, marginBoxBlockSize);
 
             // Per PR #22 review fix #2 — capture a checkpoint at the
@@ -260,39 +399,55 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         + "checkpoint. This violates the IBreakResolver contract — "
                         + "Rewind requires the resolver to name a checkpoint.");
                 }
+                // Per PR #23 review fix #1 — store the resume point
+                // for the next AttemptLayout entry. The coordinator
+                // restores fragmentainer state from RewindTo, then
+                // re-calls AttemptLayout; without this the retry
+                // would re-derive its starting point from the
+                // constructor's incoming continuation + re-emit the
+                // already-preserved fragments.
+                _resumeAtChildIdxAfterRewind = decision.RewindTo.LastEmittedChildIndex + 1;
                 return LayoutAttemptResult.NeedsRewind(decision.RewindTo, decision.Cost);
             }
 
             if (decision.Action == BreakAction.BreakHere)
             {
-                // Per PR #22 review fix #1 — oversized-block forward
-                // progress. If BreakHere fires AND we haven't emitted
-                // anything on this attempt AND no prior pages
-                // contributed (== fresh page genuinely starting from
-                // scratch with this child), emit anyway as forced
-                // overflow rather than returning a zero-progress
+                // Per PR #22 review fix #1 + PR #23 review fix #2 +
+                // Copilot #1 — oversized-block forward progress. If
+                // BreakHere fires AND we haven't emitted anything ON
+                // THIS FRAGMENTAINER (top of page), emit anyway as
+                // forced overflow rather than returning a zero-progress
                 // PageComplete that would loop forever.
+                //
+                // Pre-fix the condition required `priorPagesConsumed
+                // == 0 && initialUsed == 0` — meaning oversized blocks
+                // that were the first child on PAGE 2+ (or pages with
+                // reserved header space) wouldn't trigger the forward-
+                // progress path. The corrected predicate is "nothing
+                // emitted on the current fragmentainer" — independent
+                // of cumulative cross-page extent.
                 var nothingEmittedThisAttempt = emittedThisAttempt == 0;
-                var freshPageStart = priorPagesConsumed == 0
-                    && fragmentainer.UsedBlockSize == initialUsed
-                    && initialUsed == 0;
+                var atTopOfPage = fragmentainer.UsedBlockSize == initialUsed;
 
-                if (nothingEmittedThisAttempt && freshPageStart)
+                if (nothingEmittedThisAttempt && atTopOfPage)
                 {
                     // Forced overflow: the block is taller than the
                     // fragmentainer — committing it anyway lets
-                    // pagination make progress. The
-                    // LayoutRetryCoordinator emits
-                    // PAGINATION-FORCED-OVERFLOW-001 when the
-                    // LastResort attempt fires; the cost we attribute
-                    // here reflects the overflow.
+                    // pagination make progress.
+                    // First block on the (possibly resumed) page →
+                    // topShift = effectiveTopGap = marginStart; no
+                    // collapse-arithmetic needed.
                     _sink.Emit(new BoxFragment(
                         Box: child,
                         InlineOffset: marginInlineStart,
-                        BlockOffset: fragmentainer.UsedBlockSize + marginStart,
+                        BlockOffset: fragmentainer.UsedBlockSize + topShift,
                         InlineSize: borderBoxInlineSize,
                         BlockSize: borderBoxBlockSize));
-                    fragmentainer.UsedBlockSize += marginBoxBlockSize;
+                    // Per PR #23 review fix #4 — clamp UsedBlockSize
+                    // to non-negative so subsequent BreakOpportunity
+                    // construction doesn't trip CostModel's guard.
+                    fragmentainer.UsedBlockSize = Math.Max(0,
+                        fragmentainer.UsedBlockSize + marginBoxBlockSize);
                     emittedThisAttempt++;
 
                     // Resume on the NEXT child (childIdx+1) so progress
@@ -318,17 +473,33 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     cost: decision.Cost);
             }
 
-            // BreakAction.Continue — emit the fragment + advance.
-            // Per PR #22 review fix #3 — store BORDER box dimensions;
-            // advance cursor by margin-box extent.
+            // BreakAction.Continue — emit + advance cursor.
+            // Per PR #22 review fix #3 — fragment stores BORDER box
+            // dimensions. Per Phase 3 Task 7 cycle 2 — topShift
+            // already accounts for adjacent-sibling margin collapse.
+            // The BlockOffset on the fragment can be NEGATIVE when
+            // negative margins overlap with prior content — that
+            // visual offset is preserved on the fragment for the
+            // painter, but the resolver-facing
+            // fragmentainer.UsedBlockSize is clamped to 0 (PR #23
+            // review fix #4).
+            var blockOffset = fragmentainer.UsedBlockSize + topShift;
             _sink.Emit(new BoxFragment(
                 Box: child,
                 InlineOffset: marginInlineStart,
-                BlockOffset: fragmentainer.UsedBlockSize + marginStart,
+                BlockOffset: blockOffset,
                 InlineSize: borderBoxInlineSize,
                 BlockSize: borderBoxBlockSize));
 
-            fragmentainer.UsedBlockSize += marginBoxBlockSize;
+            // Per PR #23 review fix #4 — clamp UsedBlockSize to
+            // non-negative. A valid block with very negative margins
+            // could otherwise drive the cursor below zero, then the
+            // next BreakOpportunity.UsedBlockSize would trip
+            // CostModel.Score's non-negative guard.
+            fragmentainer.UsedBlockSize = Math.Max(0,
+                fragmentainer.UsedBlockSize + marginBoxBlockSize);
+            prevBlockMarginEnd = marginEnd;
+            hasPriorAdjoiningBlock = true;
             emittedThisAttempt++;
         }
 

@@ -124,14 +124,22 @@ internal ref struct LayoutContext
 
     /// <summary>Per Phase 3 review fix #1 — restore the counter table
     /// from a <see cref="LayoutCheckpoint"/> snapshot. Pass
-    /// <see langword="null"/> to reset to the lazy-alloc-not-yet
-    /// state. The implementation copies into the existing dict where
-    /// possible to keep allocation pressure low across rewinds.</summary>
+    /// <see langword="null"/> (or an empty dict) to reset to the
+    /// lazy-alloc-not-yet state — per PR #19 Copilot review #2,
+    /// drop the backing dict reference (not just clear it) so
+    /// <see cref="PeekCounters"/> returns <see langword="null"/>
+    /// after restore + the next <see cref="Counter"/> call re-
+    /// triggers the lazy-alloc path. Without this, an "untouched"
+    /// counter state and a "touched-then-cleared" state were
+    /// observably different through PeekCounters, breaking the
+    /// stated allocation contract.</summary>
     internal void RestoreCounters(Dictionary<string, int>? snapshot)
     {
         if (snapshot is null || snapshot.Count == 0)
         {
-            _counters?.Clear();
+            // Drop the dict ref so PeekCounters returns null again,
+            // matching the freshly-constructed-context state.
+            _counters = null;
             return;
         }
         _counters ??= new Dictionary<string, int>(snapshot.Count, StringComparer.Ordinal);

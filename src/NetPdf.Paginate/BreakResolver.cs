@@ -1,8 +1,6 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
-using System.Collections.Generic;
-
 namespace NetPdf.Paginate;
 
 /// <summary>
@@ -44,11 +42,23 @@ internal sealed class BreakResolver : IBreakResolver
     /// CSS Fragmentation L3 §4.2.</summary>
     public int WidowsRequired { get; }
 
-    /// <summary>Stack of registered checkpoints. The most recently
-    /// registered is at the top; <see cref="GetLastCheckpoint"/>
-    /// returns the top. <c>List</c> rather than <c>Stack</c> so
-    /// tests can inspect prior registrations.</summary>
-    private readonly List<LayoutCheckpoint> _checkpoints = new();
+    /// <summary>Per PR #19 review #1 — Task-1 stub keeps only the most
+    /// recent registered checkpoint. When a new checkpoint registers,
+    /// the prior one is returned to <see cref="LayoutCheckpointPool"/>
+    /// so the bounded retry loop's checkpoint allocation amortizes
+    /// across attempts. Pre-fix the stub appended into a <c>List</c>
+    /// without ever returning to the pool — once layouters started
+    /// registering checkpoints (Phase 3 Task 4+) memory would grow
+    /// without bound + defeat the pool entirely.
+    ///
+    /// <para>The DP optimizer (Task 4) replaces this single-slot
+    /// strategy with a frontier-aware version that returns
+    /// checkpoints to the pool as the rewind frontier passes them;
+    /// until then, single-slot is correct for the stub's greedy
+    /// behavior (rewind isn't emitted, so prior checkpoints are
+    /// always reachable-only-by-the-most-recent registration).</para>
+    /// </summary>
+    private LayoutCheckpoint? _lastCheckpoint;
 
     public BreakResolver() : this(orphansRequired: 2, widowsRequired: 2) { }
 
@@ -97,13 +107,19 @@ internal sealed class BreakResolver : IBreakResolver
     public void RegisterCheckpoint(LayoutCheckpoint checkpoint)
     {
         ArgumentNullException.ThrowIfNull(checkpoint);
-        _checkpoints.Add(checkpoint);
+        // Per PR #19 review #1 — return the prior checkpoint to the
+        // pool before overwriting. The IBreakResolver contract says
+        // the resolver returns checkpoints to LayoutCheckpointPool
+        // once the rewind frontier passes; for the stub, "passes" =
+        // "a newer checkpoint is registered" (greedy never rewinds,
+        // so prior checkpoints are unreachable once superseded).
+        if (_lastCheckpoint is not null && !ReferenceEquals(_lastCheckpoint, checkpoint))
+        {
+            LayoutCheckpointPool.Return(_lastCheckpoint);
+        }
+        _lastCheckpoint = checkpoint;
     }
 
     /// <inheritdoc />
-    public LayoutCheckpoint? GetLastCheckpoint()
-    {
-        if (_checkpoints.Count == 0) return null;
-        return _checkpoints[^1];
-    }
+    public LayoutCheckpoint? GetLastCheckpoint() => _lastCheckpoint;
 }

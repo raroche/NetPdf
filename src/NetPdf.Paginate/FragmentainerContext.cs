@@ -108,10 +108,18 @@ internal sealed class FragmentainerContext
 
     /// <summary>Allocate a fresh context for the next page in the
     /// document. Page index advances by one;
-    /// <see cref="UsedBlockSize"/> resets to zero; named-string state +
-    /// page-content-area dimensions carry forward (page sizing per
+    /// <see cref="UsedBlockSize"/> resets to zero; the
+    /// <see cref="NamedStrings"/> table + <see cref="TotalPages"/> +
+    /// content-area dimensions carry forward (page sizing per
     /// @page :first / :left / :right is the layouter's job — this
-    /// helper assumes the same content-area as the current page).</summary>
+    /// helper assumes the same content-area as the current page).
+    ///
+    /// <para>Per PR #19 Copilot review #5 — note that author counters
+    /// (<c>counter(page)</c>, <c>counter(section)</c>, etc.) live in
+    /// <see cref="LayoutContext"/>, NOT in this class, so they are
+    /// NOT propagated by Clone. The pre-fix docstring incorrectly
+    /// claimed counter state carried; that's the layouter's
+    /// responsibility (counters are document-scoped, not page-scoped).</para></summary>
     public FragmentainerContext Clone()
     {
         var next = new FragmentainerContext(ContentInlineSize, BlockSize)

@@ -57,9 +57,18 @@ namespace NetPdf.Paginate;
 /// must land on a page matching this parity (<c>left</c>/<c>right</c>
 /// or <c>recto</c>/<c>verso</c>). The optimizer may emit one extra
 /// blank page (<c>:blank</c> @page-rule) to satisfy parity.</param>
-/// <param name="WidowOrphanLineCount">For inline-block contexts, the
-/// number of lines the chunk occupies. Drives widows / orphans
-/// calculation.</param>
+/// <param name="LinesBeforeBreak">Per PR #19 Copilot review #3 —
+/// the number of lines emitted on the CURRENT page (before the
+/// candidate break) for the paragraph this opportunity belongs to.
+/// <see cref="CostModel.Score"/> compares this against the author's
+/// <c>orphans</c> property: a value below the requirement triggers
+/// the orphan penalty. The widows penalty uses the
+/// <c>lineCountAfterBreak</c> argument the resolver computes
+/// separately. Pre-fix this was named <c>WidowOrphanLineCount</c>
+/// with a docstring claiming it was "lines the chunk occupies",
+/// but the cost model + the <see cref="Line"/> helper both treated
+/// it as lines-before-the-break — the ambiguous name encouraged
+/// future layouters to wire it wrong.</param>
 /// <param name="StrandsHeading">Per Phase 3 review fix #5 — set when
 /// breaking here would leave a heading at the bottom of the page with
 /// zero content lines following. Triggers the
@@ -77,7 +86,7 @@ internal readonly record struct BreakOpportunity(
     bool ForceBreak,
     bool AvoidBreak,
     PageParity ForceParity,
-    int WidowOrphanLineCount,
+    int LinesBeforeBreak,
     bool StrandsHeading,
     bool SplitsFlexOrGridLine)
 {
@@ -92,9 +101,9 @@ internal readonly record struct BreakOpportunity(
         if (!double.IsFinite(ChunkBlockSize) || ChunkBlockSize < 0)
             throw new ArgumentException(
                 $"ChunkBlockSize must be finite + non-negative; got {ChunkBlockSize}", nameof(ChunkBlockSize));
-        if (WidowOrphanLineCount < 0)
+        if (LinesBeforeBreak < 0)
             throw new ArgumentException(
-                $"WidowOrphanLineCount must be non-negative; got {WidowOrphanLineCount}", nameof(WidowOrphanLineCount));
+                $"LinesBeforeBreak must be non-negative; got {LinesBeforeBreak}", nameof(LinesBeforeBreak));
     }
 
     /// <summary>Convenience helper for the common case of a
@@ -103,7 +112,7 @@ internal readonly record struct BreakOpportunity(
     public static BreakOpportunity Block(double usedBlockSize, double chunkBlockSize) =>
         new(usedBlockSize, chunkBlockSize, BreakOpportunityClass.BlockBoundary,
             ForceBreak: false, AvoidBreak: false, ForceParity: PageParity.Any,
-            WidowOrphanLineCount: 0, StrandsHeading: false, SplitsFlexOrGridLine: false);
+            LinesBeforeBreak: 0, StrandsHeading: false, SplitsFlexOrGridLine: false);
 
     /// <summary>Convenience helper for a line boundary inside a
     /// paragraph; carries the line count so the orphan / widow
@@ -111,7 +120,7 @@ internal readonly record struct BreakOpportunity(
     public static BreakOpportunity Line(double usedBlockSize, double chunkBlockSize, int linesBefore) =>
         new(usedBlockSize, chunkBlockSize, BreakOpportunityClass.LineBoundary,
             ForceBreak: false, AvoidBreak: false, ForceParity: PageParity.Any,
-            WidowOrphanLineCount: linesBefore, StrandsHeading: false, SplitsFlexOrGridLine: false);
+            LinesBeforeBreak: linesBefore, StrandsHeading: false, SplitsFlexOrGridLine: false);
 }
 
 /// <summary>

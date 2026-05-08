@@ -6,10 +6,12 @@ namespace NetPdf.Paginate;
 /// <summary>
 /// Per CSS Writing Modes L3 §3.1 — the document / element block-flow
 /// direction. Drives which axis is "block" vs "inline" + how the
-/// layouter reads the box sizes. NetPdf v1 supports the four mainline
-/// modes; <c>sideways-rl</c> / <c>sideways-lr</c> emit
+/// layouter reads the box sizes. NetPdf v1 represents three mainline
+/// modes as enum members (<c>HorizontalTb</c>, <c>VerticalRl</c>,
+/// <c>VerticalLr</c>); <c>sideways-rl</c> / <c>sideways-lr</c> are NOT
+/// distinct enum values — they emit
 /// <c>CSS-WRITING-MODE-SIDEWAYS-UNSUPPORTED-001</c> + are projected to
-/// the closest <see cref="WritingMode"/> per the compatibility matrix.
+/// the closest enum member per the compatibility matrix.
 /// </summary>
 internal enum WritingMode
 {

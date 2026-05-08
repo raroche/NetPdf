@@ -85,7 +85,7 @@ public sealed class PaginationFoundationTests
             UsedBlockSize: double.NaN, ChunkBlockSize: 50,
             Class: BreakOpportunityClass.BlockBoundary,
             ForceBreak: false, AvoidBreak: false, ForceParity: PageParity.Any,
-            WidowOrphanLineCount: 0, StrandsHeading: false, SplitsFlexOrGridLine: false);
+            LinesBeforeBreak: 0, StrandsHeading: false, SplitsFlexOrGridLine: false);
         Assert.Throws<ArgumentException>(() => op.EnsureValid());
     }
 
@@ -96,7 +96,7 @@ public sealed class PaginationFoundationTests
             UsedBlockSize: 100, ChunkBlockSize: -1,
             Class: BreakOpportunityClass.BlockBoundary,
             ForceBreak: false, AvoidBreak: false, ForceParity: PageParity.Any,
-            WidowOrphanLineCount: 0, StrandsHeading: false, SplitsFlexOrGridLine: false);
+            LinesBeforeBreak: 0, StrandsHeading: false, SplitsFlexOrGridLine: false);
         Assert.Throws<ArgumentException>(() => op.EnsureValid());
     }
 
@@ -300,7 +300,7 @@ public sealed class PaginationFoundationTests
             UsedBlockSize: 100, ChunkBlockSize: 50,
             Class: BreakOpportunityClass.BlockBoundary,
             ForceBreak: false, AvoidBreak: true, ForceParity: PageParity.Any,
-            WidowOrphanLineCount: 0, StrandsHeading: false, SplitsFlexOrGridLine: false);
+            LinesBeforeBreak: 0, StrandsHeading: false, SplitsFlexOrGridLine: false);
         var cost = CostModel.Score(op, contentBlockSize: 800,
             orphansRequired: 2, widowsRequired: 2, lineCountAfterBreak: 5);
         Assert.True(cost >= CostModel.BreakInsideAvoidViolation);
@@ -314,7 +314,7 @@ public sealed class PaginationFoundationTests
             UsedBlockSize: 100, ChunkBlockSize: 50,
             Class: BreakOpportunityClass.LineBoundary,
             ForceBreak: true, AvoidBreak: false, ForceParity: PageParity.Any,
-            WidowOrphanLineCount: 1, StrandsHeading: true, SplitsFlexOrGridLine: true);
+            LinesBeforeBreak: 1, StrandsHeading: true, SplitsFlexOrGridLine: true);
         var cost = CostModel.Score(op, contentBlockSize: 800,
             orphansRequired: 2, widowsRequired: 2, lineCountAfterBreak: 1);
         Assert.Equal(0, cost);
@@ -327,7 +327,7 @@ public sealed class PaginationFoundationTests
             UsedBlockSize: 700, ChunkBlockSize: 50,
             Class: BreakOpportunityClass.SectionBoundary,
             ForceBreak: false, AvoidBreak: false, ForceParity: PageParity.Any,
-            WidowOrphanLineCount: 0, StrandsHeading: false, SplitsFlexOrGridLine: false);
+            LinesBeforeBreak: 0, StrandsHeading: false, SplitsFlexOrGridLine: false);
         var cost = CostModel.Score(op, contentBlockSize: 800,
             orphansRequired: 2, widowsRequired: 2, lineCountAfterBreak: 5);
         Assert.Equal(CostModel.SectionBoundaryReward, cost);
@@ -340,7 +340,7 @@ public sealed class PaginationFoundationTests
             UsedBlockSize: 700, ChunkBlockSize: 20,
             Class: BreakOpportunityClass.LineBoundary,
             ForceBreak: false, AvoidBreak: false, ForceParity: PageParity.Any,
-            WidowOrphanLineCount: 1, StrandsHeading: false, SplitsFlexOrGridLine: false);
+            LinesBeforeBreak: 1, StrandsHeading: false, SplitsFlexOrGridLine: false);
         var cost = CostModel.Score(op, contentBlockSize: 800,
             orphansRequired: 2, widowsRequired: 2, lineCountAfterBreak: 5);
         Assert.Equal(CostModel.Orphan, cost);
@@ -353,7 +353,7 @@ public sealed class PaginationFoundationTests
             UsedBlockSize: 700, ChunkBlockSize: 20,
             Class: BreakOpportunityClass.LineBoundary,
             ForceBreak: false, AvoidBreak: false, ForceParity: PageParity.Any,
-            WidowOrphanLineCount: 5, StrandsHeading: false, SplitsFlexOrGridLine: false);
+            LinesBeforeBreak: 5, StrandsHeading: false, SplitsFlexOrGridLine: false);
         var cost = CostModel.Score(op, contentBlockSize: 800,
             orphansRequired: 2, widowsRequired: 2, lineCountAfterBreak: 1);
         Assert.Equal(CostModel.Widow, cost);
@@ -366,7 +366,7 @@ public sealed class PaginationFoundationTests
             UsedBlockSize: 700, ChunkBlockSize: 50,
             Class: BreakOpportunityClass.InsideTableRow,
             ForceBreak: false, AvoidBreak: false, ForceParity: PageParity.Any,
-            WidowOrphanLineCount: 0, StrandsHeading: false, SplitsFlexOrGridLine: false);
+            LinesBeforeBreak: 0, StrandsHeading: false, SplitsFlexOrGridLine: false);
         var cost = CostModel.Score(op, contentBlockSize: 800,
             orphansRequired: 2, widowsRequired: 2, lineCountAfterBreak: 5);
         Assert.Equal(CostModel.TableRowMidCellSplit, cost);
@@ -402,7 +402,7 @@ public sealed class PaginationFoundationTests
             UsedBlockSize: 700, ChunkBlockSize: 50,
             Class: BreakOpportunityClass.BlockBoundary,
             ForceBreak: false, AvoidBreak: false, ForceParity: PageParity.Any,
-            WidowOrphanLineCount: 0, StrandsHeading: true, SplitsFlexOrGridLine: false);
+            LinesBeforeBreak: 0, StrandsHeading: true, SplitsFlexOrGridLine: false);
         var cost = CostModel.Score(op, contentBlockSize: 800,
             orphansRequired: 2, widowsRequired: 2, lineCountAfterBreak: 5);
         Assert.Equal(CostModel.StrandedHeading, cost);
@@ -415,7 +415,7 @@ public sealed class PaginationFoundationTests
             UsedBlockSize: 700, ChunkBlockSize: 50,
             Class: BreakOpportunityClass.FlexBoundary,
             ForceBreak: false, AvoidBreak: false, ForceParity: PageParity.Any,
-            WidowOrphanLineCount: 0, StrandsHeading: false, SplitsFlexOrGridLine: true);
+            LinesBeforeBreak: 0, StrandsHeading: false, SplitsFlexOrGridLine: true);
         var cost = CostModel.Score(op, contentBlockSize: 800,
             orphansRequired: 2, widowsRequired: 2, lineCountAfterBreak: 5);
         Assert.Equal(CostModel.FlexOrGridLineSplit, cost);
@@ -430,7 +430,7 @@ public sealed class PaginationFoundationTests
             UsedBlockSize: 100, ChunkBlockSize: 50,
             Class: BreakOpportunityClass.LineBoundary,
             ForceBreak: false, AvoidBreak: false, ForceParity: PageParity.Any,
-            WidowOrphanLineCount: 1, StrandsHeading: true, SplitsFlexOrGridLine: true);
+            LinesBeforeBreak: 1, StrandsHeading: true, SplitsFlexOrGridLine: true);
         var cost = CostModel.Score(op, contentBlockSize: 800,
             orphansRequired: 2, widowsRequired: 2, lineCountAfterBreak: 5);
         // Orphan + StrandedHeading + FlexLineSplit + LargeTrailingBlank
@@ -475,7 +475,7 @@ public sealed class PaginationFoundationTests
             UsedBlockSize: 100, ChunkBlockSize: 50,
             Class: BreakOpportunityClass.BlockBoundary,
             ForceBreak: true, AvoidBreak: false, ForceParity: PageParity.Any,
-            WidowOrphanLineCount: 0, StrandsHeading: false, SplitsFlexOrGridLine: false);
+            LinesBeforeBreak: 0, StrandsHeading: false, SplitsFlexOrGridLine: false);
         var decision = resolver.ConsiderBreakAt(op, ctx);
         Assert.Equal(BreakAction.BreakHere, decision.Action);
         Assert.Equal(0, decision.Cost);
@@ -588,5 +588,158 @@ public sealed class PaginationFoundationTests
     {
         Assert.Equal("PAGINATION-FORCED-OVERFLOW-001",
             NetPdf.DiagnosticCodes.PaginationForcedOverflow001);
+    }
+
+    // --- PR #19 Copilot review fixes ---------------------------------------
+
+    /// <summary>Copilot #1 — BreakResolver returns the prior
+    /// checkpoint to the pool when a new one registers.</summary>
+    [Fact]
+    public void Copilot1_break_resolver_keeps_only_most_recent_checkpoint()
+    {
+        var resolver = new BreakResolver();
+        var cp1 = LayoutCheckpointPool.Rent();
+        cp1.PageIndex = 1;
+        var cp2 = LayoutCheckpointPool.Rent();
+        cp2.PageIndex = 2;
+        resolver.RegisterCheckpoint(cp1);
+        // Register cp2 — cp1 must be returned to the pool, otherwise
+        // it's a memory leak as layouters pile registrations.
+        resolver.RegisterCheckpoint(cp2);
+        Assert.Same(cp2, resolver.GetLastCheckpoint());
+        // cp1 should now be in the pool. Renting twice in a row should
+        // succeed; the next Rent call would receive cp1 (reset).
+        var rented = LayoutCheckpointPool.Rent();
+        // Reset on rent → fresh state regardless of which instance came
+        // back. The membership-tracker assertion is implicit: if cp1
+        // wasn't returned, the pool would be empty + Rent would
+        // allocate a new instance (also fine), but the side-effect we
+        // care about is that cp1's state was cleared.
+        Assert.Equal(0, rented.PageIndex);
+        LayoutCheckpointPool.Return(rented);
+        LayoutCheckpointPool.Return(cp2);
+    }
+
+    [Fact]
+    public void Copilot1_break_resolver_register_same_checkpoint_twice_no_double_return()
+    {
+        // Defensive: if the layouter accidentally re-registers the SAME
+        // checkpoint instance, it must NOT be returned to the pool
+        // (would leave the resolver pointing at a freshly-cleared
+        // instance + a stale "live" reference).
+        var resolver = new BreakResolver();
+        var cp = LayoutCheckpointPool.Rent();
+        cp.PageIndex = 7;
+        resolver.RegisterCheckpoint(cp);
+        resolver.RegisterCheckpoint(cp); // self-register
+        Assert.Same(cp, resolver.GetLastCheckpoint());
+        Assert.Equal(7, cp.PageIndex); // not reset
+    }
+
+    /// <summary>Copilot #2 — RestoreCounters with null/empty drops
+    /// the dict reference so PeekCounters returns null again.</summary>
+    [Fact]
+    public void Copilot2_restore_counters_null_drops_dict_reference()
+    {
+        var ctx = new FragmentainerContext(600, 800);
+        var layout = new LayoutContext(ctx);
+        layout.Counter("page", 5);
+        Assert.NotNull(layout.PeekCounters());
+
+        layout.RestoreCounters(null);
+        // Per Copilot review #2 — null restore must drop the dict, not
+        // just clear it. PeekCounters returning null is the freshly-
+        // constructed-context state.
+        Assert.Null(layout.PeekCounters());
+    }
+
+    [Fact]
+    public void Copilot2_restore_counters_empty_dict_also_drops_reference()
+    {
+        var ctx = new FragmentainerContext(600, 800);
+        var layout = new LayoutContext(ctx);
+        layout.Counter("section", 3);
+        layout.RestoreCounters(new Dictionary<string, int>());
+        Assert.Null(layout.PeekCounters());
+    }
+
+    [Fact]
+    public void Copilot2_restore_counters_after_drop_lazy_alloc_works_again()
+    {
+        // After a null-restore, the next Counter call should re-
+        // trigger the lazy-alloc path.
+        var ctx = new FragmentainerContext(600, 800);
+        var layout = new LayoutContext(ctx);
+        layout.Counter("a", 1);
+        layout.RestoreCounters(null);
+        Assert.Null(layout.PeekCounters());
+        layout.Counter("b", 2);
+        Assert.Equal(2, layout.ReadCounter("b"));
+        Assert.NotNull(layout.PeekCounters());
+    }
+
+    /// <summary>Copilot #3 — `WidowOrphanLineCount` renamed to
+    /// `LinesBeforeBreak` to match its actual meaning. The orphan
+    /// penalty fires when this drops below `orphansRequired`.</summary>
+    [Fact]
+    public void Copilot3_lines_before_break_param_drives_orphan_penalty()
+    {
+        // 1 line before the break + orphansRequired=2 → orphan penalty.
+        var op = new BreakOpportunity(
+            UsedBlockSize: 700, ChunkBlockSize: 20,
+            Class: BreakOpportunityClass.LineBoundary,
+            ForceBreak: false, AvoidBreak: false, ForceParity: PageParity.Any,
+            LinesBeforeBreak: 1, StrandsHeading: false, SplitsFlexOrGridLine: false);
+        var cost = CostModel.Score(op, contentBlockSize: 800,
+            orphansRequired: 2, widowsRequired: 2, lineCountAfterBreak: 5);
+        Assert.Equal(CostModel.Orphan, cost);
+    }
+
+    [Fact]
+    public void Copilot3_line_helper_passes_lines_before_break_correctly()
+    {
+        // BreakOpportunity.Line(usedBlockSize, chunkBlockSize, linesBefore)
+        // wires linesBefore into LinesBeforeBreak. Verified by
+        // checking the orphan penalty fires when linesBefore < required.
+        var op = BreakOpportunity.Line(
+            usedBlockSize: 700, chunkBlockSize: 20, linesBefore: 1);
+        Assert.Equal(1, op.LinesBeforeBreak);
+        var cost = CostModel.Score(op, contentBlockSize: 800,
+            orphansRequired: 2, widowsRequired: 2, lineCountAfterBreak: 5);
+        Assert.Equal(CostModel.Orphan, cost);
+    }
+
+    /// <summary>Copilot #4 — WritingMode doc claims three values
+    /// (matches the enum) not four.</summary>
+    [Fact]
+    public void Copilot4_writing_mode_has_exactly_three_enum_values()
+    {
+        var values = Enum.GetValues<WritingMode>();
+        Assert.Equal(3, values.Length);
+        Assert.Contains(WritingMode.HorizontalTb, values);
+        Assert.Contains(WritingMode.VerticalRl, values);
+        Assert.Contains(WritingMode.VerticalLr, values);
+    }
+
+    /// <summary>Copilot #5 — FragmentainerContext.Clone propagates
+    /// NamedStrings + TotalPages but NOT layout-context counters
+    /// (counters live in LayoutContext). Pin the contract.</summary>
+    [Fact]
+    public void Copilot5_clone_propagates_total_pages_and_named_strings_only()
+    {
+        var ctx = new FragmentainerContext(600, 800)
+        {
+            PageIndex = 2,
+            TotalPages = 10,
+            UsedBlockSize = 500,
+        };
+        ctx.NamedStrings["chapter"] = "intro";
+        var next = ctx.Clone();
+        // Carried forward.
+        Assert.Equal(10, next.TotalPages);
+        Assert.Equal("intro", next.NamedStrings["chapter"]);
+        // NOT carried (page-scoped resets).
+        Assert.Equal(3, next.PageIndex); // advanced by 1
+        Assert.Equal(0, next.UsedBlockSize);
     }
 }

@@ -148,7 +148,7 @@ internal static class CostModel
                 cost += TableRowMidCellSplit;
                 break;
             case BreakOpportunityClass.LineBoundary:
-                if (opportunity.WidowOrphanLineCount < orphansRequired) cost += Orphan;
+                if (opportunity.LinesBeforeBreak < orphansRequired) cost += Orphan;
                 if (lineCountAfterBreak < widowsRequired) cost += Widow;
                 break;
             case BreakOpportunityClass.BlockBoundary:

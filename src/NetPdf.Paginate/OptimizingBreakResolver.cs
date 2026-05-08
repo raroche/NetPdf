@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using NetPdf.Paginate.Diagnostics;
 
 namespace NetPdf.Paginate;
 
@@ -38,15 +39,17 @@ namespace NetPdf.Paginate;
 /// either resolver behind the <see cref="IBreakResolver"/> interface;
 /// tests pin both.</para>
 ///
-/// <para><b>Diagnostic emission.</b> The optimizer signals fallback
-/// via <see cref="OptimizerResult.FellBackToGreedy"/>. The integrating
-/// layouter is responsible for translating that flag into a
-/// <c>PAGINATION-OPTIMIZER-FALLBACK-001</c> diagnostic on the public
-/// <c>NetPdf.IDiagnosticsSink</c>. <see cref="OptimizingBreakResolver"/>
-/// itself does NOT emit diagnostics — Paginate's dependency direction
-/// (NetPdf → NetPdf.Paginate, not the reverse) prohibits referencing
-/// the facade's sink type. See <c>OptimizerResult</c> XML doc for the
-/// full rationale.</para>
+/// <para><b>Diagnostic emission (Phase 3 Task 5 PR #21 review fix #5).</b>
+/// The optimizer signals fallback via
+/// <see cref="OptimizerResult.FellBackToGreedy"/>. When this resolver
+/// is constructed with a non-<see langword="null"/>
+/// <see cref="IPaginateDiagnosticsSink"/>, it emits
+/// <c>PAGINATION-OPTIMIZER-FALLBACK-001</c> directly on each batched
+/// fallback — closing the gap where future layouters could silently
+/// drop the diagnostic by forgetting to read
+/// <see cref="OptimizerResult.FellBackToGreedy"/>. The integrating
+/// composition root translates the Paginate-side diagnostic to the
+/// public <c>NetPdf.IDiagnosticsSink</c> at the assembly boundary.</para>
 /// </summary>
 internal sealed class OptimizingBreakResolver : IBreakResolver
 {
@@ -57,6 +60,13 @@ internal sealed class OptimizingBreakResolver : IBreakResolver
     /// <summary>Author's <c>widows</c> property — defaults to 2 per
     /// CSS Fragmentation L3 §4.2.</summary>
     public int WidowsRequired { get; }
+
+    /// <summary>Per Phase 3 Task 5 PR #21 review fix #5 — optional
+    /// diagnostic sink. When non-<see langword="null"/>, the resolver
+    /// emits <c>PAGINATION-OPTIMIZER-FALLBACK-001</c> on every batched
+    /// fallback. <see langword="null"/> sink keeps the legacy
+    /// "FallbackCount only" behavior for unit tests.</summary>
+    public IPaginateDiagnosticsSink? Diagnostics { get; }
 
     /// <summary>Per PR #19 review #1 + Phase 3 Task 4 review fix #7 —
     /// stores the full <see cref="CheckpointLease"/> (not just the
@@ -69,13 +79,20 @@ internal sealed class OptimizingBreakResolver : IBreakResolver
 
     /// <summary>Per Phase 3 Task 4 — count of times <see cref="ResolveBreaks"/>
     /// fell through to greedy on this resolver instance. Test-only
-    /// observation point; the layouter integration emits the
-    /// per-call diagnostic via <see cref="OptimizerResult.FellBackToGreedy"/>.</summary>
+    /// observation point + a redundancy check for the diagnostic
+    /// emission path.</summary>
     internal int FallbackCount { get; private set; }
 
-    public OptimizingBreakResolver() : this(orphansRequired: 2, widowsRequired: 2) { }
+    public OptimizingBreakResolver()
+        : this(orphansRequired: 2, widowsRequired: 2, diagnostics: null) { }
 
     public OptimizingBreakResolver(int orphansRequired, int widowsRequired)
+        : this(orphansRequired, widowsRequired, diagnostics: null) { }
+
+    public OptimizingBreakResolver(
+        int orphansRequired,
+        int widowsRequired,
+        IPaginateDiagnosticsSink? diagnostics)
     {
         if (orphansRequired < 0)
             throw new ArgumentOutOfRangeException(nameof(orphansRequired));
@@ -83,6 +100,7 @@ internal sealed class OptimizingBreakResolver : IBreakResolver
             throw new ArgumentOutOfRangeException(nameof(widowsRequired));
         OrphansRequired = orphansRequired;
         WidowsRequired = widowsRequired;
+        Diagnostics = diagnostics;
     }
 
     /// <inheritdoc />
@@ -118,9 +136,17 @@ internal sealed class OptimizingBreakResolver : IBreakResolver
     /// <inheritdoc />
     /// <remarks>Per Phase 3 Task 4 — runs the bounded DP optimizer
     /// over <paramref name="opportunities"/>. When the optimizer
-    /// reports <see cref="OptimizerResult.FellBackToGreedy"/>,
-    /// <see cref="FallbackCount"/> increments so tests can observe
-    /// the fallback rate without parsing diagnostics.</remarks>
+    /// reports <see cref="OptimizerResult.FellBackToGreedy"/>:
+    /// <list type="bullet">
+    ///   <item><see cref="FallbackCount"/> increments (test
+    ///   observation hook).</item>
+    ///   <item>Per Phase 3 Task 5 PR #21 review fix #5 — emits
+    ///   <c>PAGINATION-OPTIMIZER-FALLBACK-001</c> on
+    ///   <see cref="Diagnostics"/> when supplied. The fallback reason
+    ///   from the optimizer is included in the message so the consumer
+    ///   can distinguish budget-exhaustion vs monotonicity-violation
+    ///   vs no-feasible-pair root causes.</item>
+    /// </list></remarks>
     public OptimizerResult ResolveBreaks(
         IReadOnlyList<BreakOpportunity> opportunities, FragmentainerContext ctx)
     {
@@ -136,6 +162,13 @@ internal sealed class OptimizingBreakResolver : IBreakResolver
         if (result.FellBackToGreedy)
         {
             FallbackCount++;
+            // Per PR #21 review fix #5 — emit the diagnostic so it
+            // can't be silently dropped by future layouters that forget
+            // to inspect FellBackToGreedy.
+            Diagnostics?.Emit(new PaginateDiagnostic(
+                PaginateDiagnosticCodes.PaginationOptimizerFallback001,
+                $"Optimizer fell back to greedy: {result.FallbackReason ?? "<no reason given>"}",
+                PaginateDiagnosticSeverity.Info));
         }
 
         return result;
@@ -159,4 +192,17 @@ internal sealed class OptimizingBreakResolver : IBreakResolver
 
     /// <inheritdoc />
     public LayoutCheckpoint? GetLastCheckpoint() => _lastLease.Checkpoint;
+
+    /// <inheritdoc />
+    /// <remarks>Per Phase 3 Task 5 PR #21 review fix #4 — releases
+    /// the final held lease. Idempotent: a second Dispose call is a
+    /// no-op (default-struct lease has null Checkpoint).</remarks>
+    public void Dispose()
+    {
+        if (_lastLease.Checkpoint is not null)
+        {
+            LayoutCheckpointPool.Return(_lastLease);
+            _lastLease = default;
+        }
+    }
 }

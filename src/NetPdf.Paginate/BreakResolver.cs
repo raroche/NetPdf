@@ -184,4 +184,17 @@ internal sealed class BreakResolver : IBreakResolver
 
     /// <inheritdoc />
     public LayoutCheckpoint? GetLastCheckpoint() => _lastLease.Checkpoint;
+
+    /// <inheritdoc />
+    /// <remarks>Per Phase 3 Task 5 PR #21 review fix #4 — releases
+    /// the final held lease. Idempotent: a second Dispose call is a
+    /// no-op (default-struct lease has null Checkpoint).</remarks>
+    public void Dispose()
+    {
+        if (_lastLease.Checkpoint is not null)
+        {
+            LayoutCheckpointPool.Return(_lastLease);
+            _lastLease = default;
+        }
+    }
 }

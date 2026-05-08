@@ -1,6 +1,7 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System;
 using System.Collections.Generic;
 
 namespace NetPdf.Paginate;
@@ -51,7 +52,7 @@ namespace NetPdf.Paginate;
 /// <para>The two coordinate spaces coincide on the first page. The
 /// distinction matters only when batching across multiple pages.</para>
 /// </summary>
-internal interface IBreakResolver
+internal interface IBreakResolver : IDisposable
 {
     /// <summary>Ask the resolver what to do at the current candidate
     /// break point. The layouter passes the per-page context (so the
@@ -114,4 +115,13 @@ internal interface IBreakResolver
     /// token stays inside the resolver so callers can't accidentally
     /// double-Return through this read path.</summary>
     LayoutCheckpoint? GetLastCheckpoint();
+
+    // Per Phase 3 Task 5 PR #21 review fix #4 — Dispose is inherited
+    // from IDisposable. Implementations release the final held
+    // checkpoint lease so the last registered checkpoint doesn't pin
+    // its referenced graphs (continuation, named-strings snapshot,
+    // float state) past the render. Pre-fix the resolver held its
+    // final checkpoint forever — leaking one checkpoint per render.
+    // Dispose must be idempotent: a second call after the first is
+    // a no-op (default-struct lease has null Checkpoint).
 }

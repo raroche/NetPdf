@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
 using System;
+using System.Threading;
 using NetPdf.Paginate.Diagnostics;
 
 namespace NetPdf.Paginate;
@@ -20,7 +21,9 @@ namespace NetPdf.Paginate;
 ///   <item>Attempt 0 — <see cref="LayoutAttemptStrategy.Strict"/>.
 ///   Honor all constraints. If layouter returns
 ///   <see cref="LayoutAttemptOutcome.NeedsRewind"/>, restore from
-///   the named checkpoint + advance to attempt 1.</item>
+///   the named checkpoint + sync <c>fragmentainer</c> from
+///   <c>layout.Fragmentainer</c> (PR #21 review fix #2) + advance
+///   to attempt 1.</item>
 ///   <item>Attempt 1 — <see cref="LayoutAttemptStrategy.DropAvoidInside"/>.
 ///   Drop <c>break-inside: avoid</c> constraints. If layouter still
 ///   returns <see cref="LayoutAttemptOutcome.NeedsRewind"/>, restore
@@ -32,6 +35,34 @@ namespace NetPdf.Paginate;
 ///   contract violation).</item>
 /// </list>
 ///
+/// <para><b>PR #21 review fixes.</b></para>
+/// <list type="bullet">
+///   <item><b>#1 — NeedsRewind requires non-null RewindTo.</b> The
+///   coordinator calls
+///   <see cref="LayoutAttemptResult.ValidateOrThrow"/> on every
+///   layouter response. A NeedsRewind result with null RewindTo
+///   throws <see cref="InvalidOperationException"/> rather than
+///   silently retrying from dirty state.</item>
+///   <item><b>#2 — Fragmentainer sync after restore.</b>
+///   <see cref="LayoutCheckpoint.RestoreInto"/> may reseat
+///   <c>layout.Fragmentainer</c> back to the captured one (per Task 4
+///   review fix #6 — speculative-swap undo). The coordinator now
+///   reassigns its local <c>fragmentainer</c> from
+///   <c>layout.Fragmentainer</c> after each restore, so the next
+///   attempt receives the correct instance.</item>
+///   <item><b>#3 — Fragment-output rollback.</b> Optional
+///   <see cref="IFragmentSink"/> — when supplied, the coordinator
+///   calls <see cref="IFragmentSink.RollbackTo"/> with the
+///   checkpoint's <see cref="LayoutCheckpoint.FragmentOutputCursor"/>
+///   on rewind. Layouters that emit only on
+///   <see cref="LayoutAttemptOutcome.PageComplete"/> can leave the
+///   sink <see langword="null"/>.</item>
+///   <item><b>#6 — Cancellation.</b> <see cref="CancellationToken"/>
+///   threaded through; checked before each attempt so a slow
+///   document doesn't burn through retries past the caller's
+///   deadline.</item>
+/// </list>
+///
 /// <para><b>Why bounded.</b> Per the plan's "Common pitfalls" section
 /// (#"Re-layout loop infinite recursion"): without a hard cap, a
 /// pathological combination of constraints could loop forever.
@@ -39,28 +70,6 @@ namespace NetPdf.Paginate;
 /// algorithm (drop break-inside-avoid → drop break-before/after-avoid
 /// → emit overflow); higher values aren't supported by the spec
 /// either.</para>
-///
-/// <para><b>Diagnostic emission.</b> Per Phase 3 Task 4 review fix
-/// design — the coordinator takes an optional
-/// <see cref="IPaginateDiagnosticsSink"/>; when non-<see langword="null"/>,
-/// the LastResort attempt emits <c>PAGINATION-FORCED-OVERFLOW-001</c>
-/// before the attempt runs (so consumers see the warning even if the
-/// last-resort attempt itself has issues). The facade adapter (in the
-/// <c>NetPdf</c> project) translates these to the public
-/// <c>NetPdf.IDiagnosticsSink</c>.</para>
-///
-/// <para><b>State management.</b> The coordinator does NOT take its
-/// own checkpoint at the start — the layouter is responsible for
-/// capturing checkpoints at appropriate points internally + returning
-/// the relevant one in
-/// <see cref="LayoutAttemptResult.RewindTo"/>. This matches the
-/// existing <see cref="IBreakResolver.RegisterCheckpoint"/> contract:
-/// the layouter owns the rent/Capture lifecycle, the resolver
-/// references the checkpoint, the coordinator drives retry logic.
-/// On rewind, the coordinator calls <see cref="LayoutCheckpoint.RestoreInto"/>
-/// — which (per Phase 3 Task 4 review fix #6) reseats
-/// <c>layout.Fragmentainer</c> back to the captured one if a
-/// speculative swap occurred.</para>
 /// </summary>
 internal sealed class LayoutRetryCoordinator
 {
@@ -74,9 +83,20 @@ internal sealed class LayoutRetryCoordinator
     /// LastResort attempt is invoked.</summary>
     public IPaginateDiagnosticsSink? Diagnostics { get; }
 
-    public LayoutRetryCoordinator(IPaginateDiagnosticsSink? diagnostics = null)
+    /// <summary>Per Phase 3 Task 5 PR #21 review fix #3 — optional
+    /// fragment-output rollback sink. When non-<see langword="null"/>,
+    /// the coordinator calls <see cref="IFragmentSink.RollbackTo"/>
+    /// with the checkpoint's
+    /// <see cref="LayoutCheckpoint.FragmentOutputCursor"/> on rewind
+    /// before the next attempt runs.</summary>
+    public IFragmentSink? FragmentSink { get; }
+
+    public LayoutRetryCoordinator(
+        IPaginateDiagnosticsSink? diagnostics = null,
+        IFragmentSink? fragmentSink = null)
     {
         Diagnostics = diagnostics;
+        FragmentSink = fragmentSink;
     }
 
     /// <summary>Run <paramref name="layouter"/> against
@@ -88,26 +108,43 @@ internal sealed class LayoutRetryCoordinator
     /// <see cref="LayoutAttemptOutcome.NeedsRewind"/> is never returned
     /// — the coordinator either resolves it via retry or escalates
     /// to LastResort.</summary>
+    /// <exception cref="InvalidOperationException">A layouter
+    /// returned <see cref="LayoutAttemptOutcome.NeedsRewind"/> with
+    /// a null <see cref="LayoutAttemptResult.RewindTo"/> — contract
+    /// violation per PR #21 review fix #1.</exception>
+    /// <exception cref="OperationCanceledException">
+    /// <paramref name="cancellationToken"/> fired before or during a
+    /// retry attempt.</exception>
     public LayoutAttemptResult Run(
         ILayouter layouter,
         FragmentainerContext fragmentainer,
         ref LayoutContext layout,
-        IBreakResolver resolver)
+        IBreakResolver resolver,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(layouter);
         ArgumentNullException.ThrowIfNull(fragmentainer);
         ArgumentNullException.ThrowIfNull(resolver);
 
+        // Capture the original page index for diagnostic messaging —
+        // RestoreInto on a partially-captured checkpoint can reset
+        // PageIndex to 0, which would mislead the consumer about
+        // which page had problems.
+        var originalPageIndex = fragmentainer.PageIndex;
+
         // Track best-cost across attempts so a future enhancement
         // could pick the cheapest attempt's result. Currently the
-        // coordinator returns the LAST result (latest attempt wins
-        // when LastResort fires); cost tracking is recorded for the
-        // diagnostic message + future optimizer integration.
+        // coordinator returns the latest result.
         double bestCost = double.PositiveInfinity;
         LayoutAttemptResult? bestResult = null;
 
         for (var attempt = 0; attempt <= MaxRetries; attempt++)
         {
+            // Per PR #21 review fix #6 — cancellation check before
+            // each attempt. Layouters SHOULD check inside their long-
+            // running inner loops too.
+            cancellationToken.ThrowIfCancellationRequested();
+
             var strategy = AttemptToStrategy(attempt);
 
             // Per Phase 3 Task 5 — emit the forced-overflow diagnostic
@@ -121,18 +158,22 @@ internal sealed class LayoutRetryCoordinator
                 Diagnostics?.Emit(new PaginateDiagnostic(
                     PaginateDiagnosticCodes.PaginationForcedOverflow001,
                     $"Pagination required {MaxRetries} retries on fragmentainer page index "
-                    + $"{fragmentainer.PageIndex}; falling back to last-resort layout that "
+                    + $"{originalPageIndex}; falling back to last-resort layout that "
                     + "drops avoid-break constraints + commits best-effort result.",
                     PaginateDiagnosticSeverity.Warning));
             }
 
-            var result = layouter.AttemptLayout(fragmentainer, ref layout, resolver, strategy);
+            var result = layouter.AttemptLayout(
+                fragmentainer, ref layout, resolver, strategy, cancellationToken);
+
+            // Per PR #21 review fix #1 — enforce the NeedsRewind
+            // invariant. A null RewindTo here means the layouter
+            // wanted to retry without restoring state — which would
+            // silently corrupt the next attempt.
+            result.ValidateOrThrow();
 
             if (result.Outcome != LayoutAttemptOutcome.NeedsRewind)
             {
-                // Done — or done-enough. Record best-cost for visibility
-                // (future enhancement — currently we just return the
-                // latest result).
                 if (result.Cost < bestCost)
                 {
                     bestCost = result.Cost;
@@ -145,11 +186,12 @@ internal sealed class LayoutRetryCoordinator
 
             if (strategy == LayoutAttemptStrategy.LastResort)
             {
-                // The layouter returned NeedsRewind on the LastResort
-                // attempt — contract violation. The bounded retry
-                // contract guarantees no more retries; return a
-                // best-effort result anyway. This path is defensive;
-                // a well-behaved layouter never reaches here.
+                // Defensive: the layouter returned NeedsRewind on the
+                // LastResort attempt — contract violation. Validation
+                // above accepted it (RewindTo is non-null per fix #1)
+                // but we have no more retries. Return a best-effort
+                // PageComplete to terminate the loop. This path
+                // shouldn't be reachable in well-behaved layouters.
                 return new LayoutAttemptResult(
                     LayoutAttemptOutcome.PageComplete,
                     Continuation: result.Continuation,
@@ -164,11 +206,25 @@ internal sealed class LayoutRetryCoordinator
                 bestResult = result;
             }
 
-            // Restore from the named checkpoint + advance to next attempt.
-            // Per Phase 3 Task 4 review fix #6 — RestoreInto reseats
-            // layout.Fragmentainer to the captured one if a speculative
-            // swap occurred.
-            result.RewindTo?.RestoreInto(fragmentainer, ref layout);
+            // Per PR #21 review fix #3 — roll back any fragments
+            // emitted past the checkpoint's cursor. The optional sink
+            // is the layouter's responsibility to register; layouters
+            // that emit only on PageComplete can leave it null.
+            FragmentSink?.RollbackTo(result.RewindTo!.FragmentOutputCursor);
+
+            // Restore from the named checkpoint. Per Phase 3 Task 4
+            // review fix #6 — RestoreInto reseats layout.Fragmentainer
+            // to the captured one if a speculative swap occurred.
+            // RewindTo is guaranteed non-null by ValidateOrThrow above.
+            result.RewindTo!.RestoreInto(fragmentainer, ref layout);
+
+            // Per PR #21 review fix #2 — synchronize the local
+            // fragmentainer with layout.Fragmentainer. RestoreInto
+            // may have reseated layout.Fragmentainer to the captured
+            // (original) instance; without this sync the next
+            // AttemptLayout would receive a different fragmentainer
+            // than what layout.Fragmentainer points at.
+            fragmentainer = layout.Fragmentainer;
         }
 
         // Unreachable in well-behaved control flow — the LastResort

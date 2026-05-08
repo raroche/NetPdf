@@ -1,6 +1,9 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System;
+using System.Threading;
+
 namespace NetPdf.Paginate;
 
 /// <summary>
@@ -41,7 +44,27 @@ namespace NetPdf.Paginate;
 /// signal "this configuration can't satisfy constraints; restore +
 /// retry"; the layouter then propagates that decision up via
 /// <see cref="LayoutAttemptResult.Outcome"/> =
-/// <see cref="LayoutAttemptOutcome.NeedsRewind"/>.</para>
+/// <see cref="LayoutAttemptOutcome.NeedsRewind"/> with a non-null
+/// <see cref="LayoutAttemptResult.RewindTo"/>.</para>
+///
+/// <para><b>Fragment emission contract (Phase 3 Task 5 PR #21 review
+/// fix #3).</b> A layouter that returns
+/// <see cref="LayoutAttemptOutcome.NeedsRewind"/> MUST NOT have
+/// emitted any fragments to the active <see cref="IFragmentSink"/> —
+/// retry restores layout state but cannot un-emit fragments without
+/// an explicit rollback hook. Layouters that need to emit fragments
+/// incrementally before they're sure they won't rewind MUST register
+/// an <see cref="IFragmentSink"/> with the
+/// <see cref="LayoutRetryCoordinator"/>; the coordinator calls
+/// <see cref="IFragmentSink.RollbackTo"/> with the checkpoint's
+/// <see cref="LayoutCheckpoint.FragmentOutputCursor"/> on rewind.</para>
+///
+/// <para><b>Cancellation (Phase 3 Task 5 PR #21 review fix #6).</b>
+/// The <see cref="CancellationToken"/> threads through to layouters
+/// for cooperative cancellation. The coordinator checks the token
+/// before each attempt; layouters SHOULD check it inside long-running
+/// inner loops (per-element / per-line) so a slow document doesn't
+/// burn through retries past the caller's deadline.</para>
 /// </summary>
 internal interface ILayouter
 {
@@ -60,18 +83,21 @@ internal interface ILayouter
     ///   <see cref="LayoutAttemptOutcome.AllDone"/> with
     ///   <see cref="LayoutAttemptResult.Continuation"/> = <see langword="null"/>.</item>
     ///   <item>The resolver returned <see cref="BreakAction.Rewind"/> →
-    ///   <see cref="LayoutAttemptOutcome.NeedsRewind"/> with
-    ///   <see cref="LayoutAttemptResult.RewindTo"/> naming the
-    ///   checkpoint to restore from. The coordinator handles the
-    ///   restore + retry. Forbidden when <paramref name="strategy"/>
-    ///   is <see cref="LayoutAttemptStrategy.LastResort"/>.</item>
+    ///   <see cref="LayoutAttemptOutcome.NeedsRewind"/> with a
+    ///   non-<see langword="null"/> <see cref="LayoutAttemptResult.RewindTo"/>
+    ///   naming the checkpoint to restore from. Per PR #21 review
+    ///   fix #1 the coordinator throws
+    ///   <see cref="InvalidOperationException"/> when this invariant
+    ///   is violated. Forbidden when <paramref name="strategy"/> is
+    ///   <see cref="LayoutAttemptStrategy.LastResort"/>.</item>
     /// </list>
     /// </summary>
     LayoutAttemptResult AttemptLayout(
         FragmentainerContext fragmentainer,
         ref LayoutContext layout,
         IBreakResolver resolver,
-        LayoutAttemptStrategy strategy);
+        LayoutAttemptStrategy strategy,
+        CancellationToken cancellationToken = default);
 }
 
 /// <summary>
@@ -95,8 +121,11 @@ internal enum LayoutAttemptOutcome
     /// constraint cannot be satisfied under the current
     /// <see cref="LayoutAttemptStrategy"/>). The coordinator restores
     /// from <see cref="LayoutAttemptResult.RewindTo"/> + retries with
-    /// a relaxed strategy. Forbidden when the current strategy is
-    /// <see cref="LayoutAttemptStrategy.LastResort"/>.</summary>
+    /// a relaxed strategy. <see cref="LayoutAttemptResult.RewindTo"/>
+    /// MUST be non-<see langword="null"/> per PR #21 review fix #1 —
+    /// the coordinator throws <see cref="InvalidOperationException"/>
+    /// when the invariant is violated. Forbidden when the current
+    /// strategy is <see cref="LayoutAttemptStrategy.LastResort"/>.</summary>
     NeedsRewind = 2,
 }
 
@@ -136,6 +165,18 @@ internal enum LayoutAttemptStrategy
 /// <summary>
 /// Per Phase 3 Task 5 — result of a single
 /// <see cref="ILayouter.AttemptLayout"/> call.
+///
+/// <para><b>Invariants (PR #21 review fix #1).</b></para>
+/// <list type="bullet">
+///   <item><see cref="Outcome"/> = <see cref="LayoutAttemptOutcome.NeedsRewind"/>
+///   ⟹ <see cref="RewindTo"/> non-<see langword="null"/>. The
+///   coordinator throws <see cref="InvalidOperationException"/> when
+///   this invariant is violated to prevent silent dirty-state retry.</item>
+///   <item><see cref="Outcome"/> = <see cref="LayoutAttemptOutcome.AllDone"/>
+///   ⟹ <see cref="Continuation"/> = <see langword="null"/>.</item>
+/// </list>
+/// Use <see cref="ValidateOrThrow"/> at any boundary that consumes a
+/// raw result struct.
 /// </summary>
 /// <param name="Outcome">Category of result; the coordinator branches
 /// on this value.</param>
@@ -144,20 +185,55 @@ internal enum LayoutAttemptStrategy
 /// <see langword="null"/> for <see cref="LayoutAttemptOutcome.AllDone"/>
 /// + <see cref="LayoutAttemptOutcome.NeedsRewind"/>.</param>
 /// <param name="RewindTo">For <see cref="LayoutAttemptOutcome.NeedsRewind"/>,
-/// the checkpoint to restore state from before retrying.
-/// <see langword="null"/> for the other outcomes.</param>
-/// <param name="Cost">Total <see cref="CostModel"/> cost accumulated
-/// during this attempt; used by the coordinator to track best-cost
-/// across attempts. 0 when the attempt didn't run any cost-model
-/// scoring (e.g., trivial early-return).</param>
+/// the checkpoint to restore state from before retrying. MUST be
+/// non-<see langword="null"/> for the rewind outcome (PR #21 review
+/// fix #1). <see langword="null"/> for the other outcomes.</param>
+/// <param name="Cost"><see cref="CostModel"/> cost accumulated during
+/// this attempt; used by the coordinator to track best-cost across
+/// attempts (currently informational; Phase 3 Task 7+ may use it for
+/// best-attempt selection across retries). Can be 0 for trivial
+/// fast-path results, non-zero for layouts that ran cost-model
+/// scoring.</param>
 internal readonly record struct LayoutAttemptResult(
     LayoutAttemptOutcome Outcome,
     LayoutContinuation? Continuation,
     LayoutCheckpoint? RewindTo,
     double Cost)
 {
-    /// <summary>Convenience: a "page complete + zero cost" result
-    /// for trivial-fit cases.</summary>
+    /// <summary>Per PR #21 review fix #1 — verify the result honors
+    /// the documented invariants. Throws
+    /// <see cref="InvalidOperationException"/> when violated; the
+    /// coordinator calls this on every layouter response so a
+    /// misbehaving layouter is caught immediately rather than
+    /// silently retrying from dirty state.</summary>
+    public void ValidateOrThrow()
+    {
+        if (Outcome == LayoutAttemptOutcome.NeedsRewind && RewindTo is null)
+        {
+            throw new InvalidOperationException(
+                "LayoutAttemptResult invariant violation: "
+                + "Outcome=NeedsRewind requires non-null RewindTo. "
+                + "A layouter that returns NeedsRewind without naming a "
+                + "checkpoint causes the coordinator to retry from dirty "
+                + "state — silently corrupting downstream pagination. "
+                + "Use LayoutAttemptResult.NeedsRewind(checkpoint, cost) "
+                + "factory or capture a checkpoint before declining.");
+        }
+        if (Outcome == LayoutAttemptOutcome.AllDone && Continuation is not null)
+        {
+            throw new InvalidOperationException(
+                "LayoutAttemptResult invariant violation: "
+                + "Outcome=AllDone requires null Continuation. AllDone "
+                + "means no more pages are needed; a continuation token "
+                + "would imply otherwise.");
+        }
+    }
+
+    /// <summary>Convenience: a "page complete" result with the named
+    /// continuation + cost. <paramref name="cost"/> may be any
+    /// non-negative value — the coordinator uses cost for best-attempt
+    /// tracking across retries (PR #21 review fix — XML doc no longer
+    /// implies the cost is always zero).</summary>
     public static LayoutAttemptResult PageComplete(LayoutContinuation? continuation, double cost) =>
         new(LayoutAttemptOutcome.PageComplete, continuation, RewindTo: null, cost);
 
@@ -167,7 +243,40 @@ internal readonly record struct LayoutAttemptResult(
         new(LayoutAttemptOutcome.AllDone, Continuation: null, RewindTo: null, cost);
 
     /// <summary>Convenience: a "needs rewind" result naming the
-    /// checkpoint to restore from.</summary>
-    public static LayoutAttemptResult NeedsRewind(LayoutCheckpoint rewindTo, double cost) =>
-        new(LayoutAttemptOutcome.NeedsRewind, Continuation: null, rewindTo, cost);
+    /// checkpoint to restore from. Per PR #21 review fix #1 — the
+    /// <paramref name="rewindTo"/> parameter is non-nullable, so
+    /// constructing a NeedsRewind via this factory cannot violate
+    /// the invariant.</summary>
+    public static LayoutAttemptResult NeedsRewind(LayoutCheckpoint rewindTo, double cost)
+    {
+        ArgumentNullException.ThrowIfNull(rewindTo);
+        return new(LayoutAttemptOutcome.NeedsRewind, Continuation: null, rewindTo, cost);
+    }
+}
+
+/// <summary>
+/// Per Phase 3 Task 5 PR #21 review fix #3 — fragment-output rollback
+/// hook. The coordinator passes this to layouters that emit fragments
+/// incrementally; on rewind the coordinator calls
+/// <see cref="RollbackTo"/> with the checkpoint's
+/// <see cref="LayoutCheckpoint.FragmentOutputCursor"/> so any fragments
+/// emitted past that cursor are discarded before the retry.
+///
+/// <para>Layouters that emit fragments only on
+/// <see cref="LayoutAttemptOutcome.PageComplete"/> (i.e., never
+/// before they're sure they won't rewind) don't need this — the
+/// coordinator's <c>fragmentSink</c> can stay
+/// <see langword="null"/>. The plan section "Re-layout loop bound"
+/// + the <see cref="LayoutCheckpoint.FragmentOutputCursor"/> docstring
+/// describe this contract; the hook is the wire that lets it work.</para>
+/// </summary>
+internal interface IFragmentSink
+{
+    /// <summary>Discard any fragments emitted past
+    /// <paramref name="cursor"/>. Called by the coordinator on rewind
+    /// before the layouter retries. After this call the sink's state
+    /// MUST match what it was when the checkpoint was captured (i.e.,
+    /// the next emission appends starting from position
+    /// <paramref name="cursor"/>).</summary>
+    void RollbackTo(int cursor);
 }

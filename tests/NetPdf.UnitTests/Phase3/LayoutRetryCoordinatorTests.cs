@@ -1,7 +1,9 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System;
 using System.Collections.Generic;
+using System.Threading;
 using NetPdf.Paginate;
 using NetPdf.Paginate.Diagnostics;
 using Xunit;
@@ -385,42 +387,470 @@ public sealed class LayoutRetryCoordinatorTests
     }
 
     // ====================================================================
+    //  PR #21 follow-up review fixes — regression tests
+    // ====================================================================
+
+    // --- Rec #1: NeedsRewind with null RewindTo is a contract violation -
+
+    [Fact]
+    public void LayoutAttemptResult_validate_throws_on_NeedsRewind_with_null_checkpoint()
+    {
+        // Direct construction (bypassing the factory) with NeedsRewind
+        // + null RewindTo violates the invariant. ValidateOrThrow
+        // catches it.
+        var bad = new LayoutAttemptResult(
+            LayoutAttemptOutcome.NeedsRewind,
+            Continuation: null,
+            RewindTo: null,
+            Cost: 1000);
+
+        Assert.Throws<InvalidOperationException>(() => bad.ValidateOrThrow());
+    }
+
+    [Fact]
+    public void LayoutAttemptResult_validate_throws_on_AllDone_with_continuation()
+    {
+        var bad = new LayoutAttemptResult(
+            LayoutAttemptOutcome.AllDone,
+            Continuation: new BlockContinuation(0, 0),
+            RewindTo: null,
+            Cost: 0);
+
+        Assert.Throws<InvalidOperationException>(() => bad.ValidateOrThrow());
+    }
+
+    [Fact]
+    public void LayoutAttemptResult_NeedsRewind_factory_throws_on_null_checkpoint()
+    {
+        Assert.Throws<ArgumentNullException>(() =>
+            LayoutAttemptResult.NeedsRewind(null!, cost: 0));
+    }
+
+    [Fact]
+    public void Coordinator_throws_when_layouter_returns_NeedsRewind_with_null_checkpoint()
+    {
+        // A layouter that constructs NeedsRewind directly with null
+        // RewindTo (bypassing the factory) MUST cause the coordinator
+        // to throw — not silently retry from dirty state.
+        var layouter = new InvariantViolatingLayouter();
+        var ctx = new FragmentainerContext(600, 800);
+        var layout = new LayoutContext(ctx);
+        var resolver = new BreakResolver();
+        var coordinator = new LayoutRetryCoordinator();
+
+        var threw = false;
+        try
+        {
+            coordinator.Run(layouter, ctx, ref layout, resolver);
+        }
+        catch (InvalidOperationException)
+        {
+            threw = true;
+        }
+        Assert.True(threw, "Coordinator must throw on invariant violation, not retry from dirty state.");
+    }
+
+    // --- Rec #2: fragmentainer sync after restore ----------------------
+
+    [Fact]
+    public void Coordinator_syncs_fragmentainer_to_captured_one_after_restore()
+    {
+        // Per PR #21 review fix #2 — after RestoreInto reseats
+        // layout.Fragmentainer to the captured (original) one, the
+        // coordinator must pass that SAME instance (not the original
+        // parameter) into the next AttemptLayout call.
+        var original = new FragmentainerContext(600, 800)
+        {
+            PageIndex = 0,
+            UsedBlockSize = 100,
+        };
+        var layout = new LayoutContext(original);
+
+        // Capture a checkpoint while layout.Fragmentainer = original.
+        var lease = LayoutCheckpointPool.Rent();
+        var cp = lease.Checkpoint!;
+        cp.Capture(original, layout, fragmentOutputCursor: 0,
+            lastEmittedChildIndex: -1, incomingContinuation: null,
+            pageCounterValue: 0);
+
+        // Layouter that swaps to a clone on attempt 0 + asks for
+        // rewind, then on attempt 1 records which fragmentainer it
+        // received.
+        var layouter = new SwapAndRewindLayouter(cp, original);
+
+        var resolver = new BreakResolver();
+        var coordinator = new LayoutRetryCoordinator();
+        var result = coordinator.Run(layouter, original, ref layout, resolver);
+
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        Assert.Equal(2, layouter.ReceivedFragmentainers.Count);
+        // After restore, the coordinator MUST pass the captured
+        // (original) fragmentainer to attempt 1, NOT the speculative
+        // clone that the layouter swapped to during attempt 0.
+        Assert.Same(original, layouter.ReceivedFragmentainers[1]);
+
+        LayoutCheckpointPool.Return(lease);
+    }
+
+    // --- Rec #3: IFragmentSink.RollbackTo is called on rewind --------
+
+    [Fact]
+    public void Coordinator_calls_RollbackTo_with_captured_cursor_on_rewind()
+    {
+        var sink = new RecordingFragmentSink();
+        var layouter = new MockLayouter();
+        // Capture a real checkpoint with a non-zero FragmentOutputCursor
+        // so we can verify the rollback gets the right value.
+        layouter.PlanRewindWithCursor(cost: 1000, fragmentOutputCursor: 7);
+        layouter.Plan(LayoutAttemptOutcome.PageComplete, cost: 100);
+
+        var ctx = new FragmentainerContext(600, 800);
+        var layout = new LayoutContext(ctx);
+        var resolver = new BreakResolver();
+        var coordinator = new LayoutRetryCoordinator(diagnostics: null, fragmentSink: sink);
+
+        coordinator.Run(layouter, ctx, ref layout, resolver);
+
+        Assert.Single(sink.RollbackCallLog);
+        Assert.Equal(7, sink.RollbackCallLog[0]);
+
+        layouter.Dispose();
+    }
+
+    [Fact]
+    public void Coordinator_rolls_back_twice_for_two_rewinds()
+    {
+        var sink = new RecordingFragmentSink();
+        var layouter = new MockLayouter();
+        layouter.PlanRewindWithCursor(cost: 1000, fragmentOutputCursor: 5);  // attempt 0 fails
+        layouter.PlanRewindWithCursor(cost: 1000, fragmentOutputCursor: 5);  // attempt 1 fails
+        layouter.Plan(LayoutAttemptOutcome.PageComplete, cost: 200);          // attempt 2 (LastResort)
+
+        var ctx = new FragmentainerContext(600, 800);
+        var layout = new LayoutContext(ctx);
+        var resolver = new BreakResolver();
+        // Provide the diagnostics sink so the LastResort emits properly.
+        var diagSink = new RecordingSink();
+        var coordinator = new LayoutRetryCoordinator(diagSink, sink);
+
+        coordinator.Run(layouter, ctx, ref layout, resolver);
+
+        Assert.Equal(2, sink.RollbackCallLog.Count);
+
+        layouter.Dispose();
+    }
+
+    [Fact]
+    public void Coordinator_no_rollback_when_no_fragment_sink_supplied()
+    {
+        // Coordinator with null fragmentSink must not throw on rewind —
+        // layouters that emit only on PageComplete don't need a sink.
+        var layouter = new MockLayouter();
+        layouter.PlanRewindWithCursor(cost: 1000, fragmentOutputCursor: 7);
+        layouter.Plan(LayoutAttemptOutcome.PageComplete, cost: 100);
+
+        var ctx = new FragmentainerContext(600, 800);
+        var layout = new LayoutContext(ctx);
+        var resolver = new BreakResolver();
+        var coordinator = new LayoutRetryCoordinator(diagnostics: null, fragmentSink: null);
+
+        // Should not throw despite fragmentSink being null.
+        var result = coordinator.Run(layouter, ctx, ref layout, resolver);
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+
+        layouter.Dispose();
+    }
+
+    // --- Rec #4: IBreakResolver.Dispose returns held lease -----------
+
+    [Fact]
+    public void BreakResolver_dispose_returns_held_lease_to_pool()
+    {
+        var resolver = new BreakResolver();
+        var lease = LayoutCheckpointPool.Rent();
+        var cp = lease.Checkpoint!;
+        cp.PageIndex = 7;
+        resolver.RegisterCheckpoint(lease);
+
+        Assert.Same(cp, resolver.GetLastCheckpoint());
+
+        resolver.Dispose();
+
+        // After dispose, the lease should be returned to the pool —
+        // the next Rent might receive cp (now reset).
+        var nextLease = LayoutCheckpointPool.Rent();
+        // Reset on rent → fresh state.
+        Assert.Equal(0, nextLease.Checkpoint!.PageIndex);
+        LayoutCheckpointPool.Return(nextLease);
+    }
+
+    [Fact]
+    public void BreakResolver_dispose_is_idempotent()
+    {
+        var resolver = new BreakResolver();
+        var lease = LayoutCheckpointPool.Rent();
+        resolver.RegisterCheckpoint(lease);
+        resolver.Dispose();
+        // Second dispose must be safe — no-op (default-struct lease
+        // has null Checkpoint after first dispose).
+        resolver.Dispose();
+    }
+
+    [Fact]
+    public void OptimizingResolver_dispose_returns_held_lease()
+    {
+        var resolver = new OptimizingBreakResolver();
+        var lease = LayoutCheckpointPool.Rent();
+        var cp = lease.Checkpoint!;
+        cp.PageIndex = 11;
+        resolver.RegisterCheckpoint(lease);
+
+        Assert.Same(cp, resolver.GetLastCheckpoint());
+
+        resolver.Dispose();
+
+        var nextLease = LayoutCheckpointPool.Rent();
+        Assert.Equal(0, nextLease.Checkpoint!.PageIndex);
+        LayoutCheckpointPool.Return(nextLease);
+    }
+
+    [Fact]
+    public void Resolver_using_block_releases_lease_on_scope_exit()
+    {
+        // Idiomatic usage pattern — resolvers are IDisposable so
+        // `using var resolver = ...` releases the held lease on
+        // scope exit.
+        LayoutCheckpoint? captured;
+        using (var resolver = new BreakResolver())
+        {
+            var lease = LayoutCheckpointPool.Rent();
+            captured = lease.Checkpoint;
+            captured!.PageIndex = 99;
+            resolver.RegisterCheckpoint(lease);
+        }
+        // After using-block: the lease was returned via resolver.Dispose.
+        // Renting again should yield a Reset checkpoint.
+        var nextLease = LayoutCheckpointPool.Rent();
+        Assert.Equal(0, nextLease.Checkpoint!.PageIndex);
+        LayoutCheckpointPool.Return(nextLease);
+    }
+
+    // --- Rec #5: PAGINATION-OPTIMIZER-FALLBACK-001 emission ---------
+
+    [Fact]
+    public void OptimizingResolver_emits_fallback_diagnostic_when_optimizer_falls_back()
+    {
+        var sink = new RecordingSink();
+        using var resolver = new OptimizingBreakResolver(
+            orphansRequired: 2, widowsRequired: 2, diagnostics: sink);
+
+        // Trigger fallback via non-monotonic input.
+        var ops = new[]
+        {
+            BreakOpportunity.Block(usedBlockSize: 100, chunkBlockSize: 50),
+            BreakOpportunity.Block(usedBlockSize: 200, chunkBlockSize: 50),
+            BreakOpportunity.Block(usedBlockSize: 50, chunkBlockSize: 50),  // out of order
+        };
+        var ctx = new FragmentainerContext(600, 800);
+
+        var result = resolver.ResolveBreaks(ops, ctx);
+
+        Assert.True(result.FellBackToGreedy);
+        Assert.Single(sink.Diagnostics);
+        Assert.Equal(PaginateDiagnosticCodes.PaginationOptimizerFallback001,
+            sink.Diagnostics[0].Code);
+        Assert.Equal(PaginateDiagnosticSeverity.Info, sink.Diagnostics[0].Severity);
+        // Message should include the FallbackReason for diagnostic clarity.
+        Assert.Contains("monotonically", sink.Diagnostics[0].Message,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void OptimizingResolver_does_not_emit_when_no_fallback()
+    {
+        var sink = new RecordingSink();
+        using var resolver = new OptimizingBreakResolver(
+            orphansRequired: 2, widowsRequired: 2, diagnostics: sink);
+
+        var ops = new[]
+        {
+            BreakOpportunity.Block(usedBlockSize: 100, chunkBlockSize: 50),
+            BreakOpportunity.Block(usedBlockSize: 200, chunkBlockSize: 50),
+        };
+        var ctx = new FragmentainerContext(600, 800);
+
+        var result = resolver.ResolveBreaks(ops, ctx);
+
+        Assert.False(result.FellBackToGreedy);
+        Assert.Empty(sink.Diagnostics);
+    }
+
+    [Fact]
+    public void OptimizingResolver_null_sink_does_not_throw_on_fallback()
+    {
+        // Construction with null sink keeps the test-friendly behavior
+        // (FallbackCount only). No NullReferenceException on emit path.
+        using var resolver = new OptimizingBreakResolver(
+            orphansRequired: 2, widowsRequired: 2, diagnostics: null);
+
+        var ops = new[]
+        {
+            BreakOpportunity.Block(usedBlockSize: 100, chunkBlockSize: 50),
+            BreakOpportunity.Block(usedBlockSize: 50, chunkBlockSize: 50),  // non-monotonic
+        };
+        var ctx = new FragmentainerContext(600, 800);
+
+        // Should not throw.
+        var result = resolver.ResolveBreaks(ops, ctx);
+        Assert.True(result.FellBackToGreedy);
+        Assert.Equal(1, resolver.FallbackCount);
+    }
+
+    // --- Rec #6: CancellationToken --------------------------------
+
+    [Fact]
+    public void Coordinator_throws_OperationCanceled_before_first_attempt()
+    {
+        var layouter = new MockLayouter();
+        var ctx = new FragmentainerContext(600, 800);
+        var layout = new LayoutContext(ctx);
+        var resolver = new BreakResolver();
+        var coordinator = new LayoutRetryCoordinator();
+
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+
+        var threw = false;
+        try
+        {
+            coordinator.Run(layouter, ctx, ref layout, resolver, cts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            threw = true;
+        }
+        Assert.True(threw);
+        Assert.Empty(layouter.AttemptLog);  // never reached AttemptLayout
+    }
+
+    [Fact]
+    public void Coordinator_throws_OperationCanceled_between_retries()
+    {
+        // Cancel after the first attempt's NeedsRewind — the second
+        // iteration's pre-attempt check fires the exception.
+        var layouter = new CancelAfterFirstAttemptLayouter();
+        var ctx = new FragmentainerContext(600, 800);
+        var layout = new LayoutContext(ctx);
+        var resolver = new BreakResolver();
+        var coordinator = new LayoutRetryCoordinator();
+
+        var threw = false;
+        try
+        {
+            coordinator.Run(layouter, ctx, ref layout, resolver,
+                layouter.CancellationToken);
+        }
+        catch (OperationCanceledException)
+        {
+            threw = true;
+        }
+        Assert.True(threw);
+        // Exactly one attempt ran before cancellation fired.
+        Assert.Single(layouter.AttemptLog);
+
+        layouter.Dispose();
+    }
+
+    // --- Copilot #2: PageComplete XML doc nit ---------------------
+
+    [Fact]
+    public void LayoutAttemptResult_PageComplete_helper_accepts_non_zero_cost()
+    {
+        // Per Copilot #2 — the docstring no longer implies zero cost.
+        var continuation = new BlockContinuation(3, 100);
+        var r = LayoutAttemptResult.PageComplete(continuation, cost: 250);
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, r.Outcome);
+        Assert.Same(continuation, r.Continuation);
+        Assert.Null(r.RewindTo);
+        Assert.Equal(250, r.Cost);
+    }
+
+    // ====================================================================
     //  Test doubles
     // ====================================================================
 
     /// <summary>Mock layouter that emits a pre-planned sequence of
     /// <see cref="LayoutAttemptResult"/>s + records each invocation's
-    /// strategy.</summary>
-    private sealed class MockLayouter : ILayouter
+    /// strategy. Per Phase 3 Task 5 PR #21 review fix #1 — rewind
+    /// results carry a real checkpoint (rented from the pool) so they
+    /// satisfy the new <see cref="LayoutAttemptResult.ValidateOrThrow"/>
+    /// invariant. The mock returns its rented leases on
+    /// <see cref="IDisposable.Dispose"/>.</summary>
+    private sealed class MockLayouter : ILayouter, IDisposable
     {
         private readonly Queue<LayoutAttemptResult> _planned = new();
+        private readonly List<CheckpointLease> _rentedLeases = new();
         public List<LayoutAttemptStrategy> AttemptLog { get; } = new();
 
         public void Plan(LayoutAttemptOutcome outcome, double cost)
         {
+            // Validate the planned outcome — the test contract is
+            // that PlanRewind must be used for NeedsRewind so the
+            // checkpoint is non-null.
+            if (outcome == LayoutAttemptOutcome.NeedsRewind)
+            {
+                throw new InvalidOperationException(
+                    "Use PlanRewind() for NeedsRewind to attach a real checkpoint.");
+            }
             _planned.Enqueue(new LayoutAttemptResult(outcome, null, null, cost));
         }
 
         public void PlanRewind(double cost)
         {
-            // The coordinator only inspects the RewindTo when it's
-            // non-null; a null RewindTo here means the coordinator's
-            // RestoreInto call is a no-op. Sufficient for testing the
-            // retry sequencing.
-            _planned.Enqueue(new LayoutAttemptResult(
-                LayoutAttemptOutcome.NeedsRewind, null, null, cost));
+            // Per PR #21 review fix #1 — NeedsRewind now requires a
+            // non-null RewindTo. Capture a real checkpoint from the
+            // pool (the coordinator's RestoreInto call is then a real
+            // no-op-on-fresh-state, since we never call Capture on it).
+            var lease = LayoutCheckpointPool.Rent();
+            _rentedLeases.Add(lease);
+            _planned.Enqueue(LayoutAttemptResult.NeedsRewind(lease.Checkpoint!, cost));
+        }
+
+        public void PlanRewindWithCursor(double cost, int fragmentOutputCursor)
+        {
+            // Variant for fragment-rollback testing. Sets the captured
+            // checkpoint's FragmentOutputCursor so the coordinator's
+            // sink.RollbackTo gets a verifiable value.
+            var lease = LayoutCheckpointPool.Rent();
+            _rentedLeases.Add(lease);
+            lease.Checkpoint!.FragmentOutputCursor = fragmentOutputCursor;
+            _planned.Enqueue(LayoutAttemptResult.NeedsRewind(lease.Checkpoint, cost));
         }
 
         public LayoutAttemptResult AttemptLayout(
             FragmentainerContext fragmentainer,
             ref LayoutContext layout,
             IBreakResolver resolver,
-            LayoutAttemptStrategy strategy)
+            LayoutAttemptStrategy strategy,
+            CancellationToken cancellationToken = default)
         {
+            // Per PR #21 review fix #6 — layouters should observe the
+            // cancellation token. The mock checks once per attempt;
+            // real layouters check inside their inner loops too.
+            cancellationToken.ThrowIfCancellationRequested();
             AttemptLog.Add(strategy);
             return _planned.Count > 0
                 ? _planned.Dequeue()
                 : LayoutAttemptResult.PageComplete(null, 0);
+        }
+
+        public void Dispose()
+        {
+            foreach (var lease in _rentedLeases)
+            {
+                LayoutCheckpointPool.Return(lease);
+            }
+            _rentedLeases.Clear();
         }
     }
 
@@ -441,8 +871,10 @@ public sealed class LayoutRetryCoordinatorTests
             FragmentainerContext fragmentainer,
             ref LayoutContext layout,
             IBreakResolver resolver,
-            LayoutAttemptStrategy strategy)
+            LayoutAttemptStrategy strategy,
+            CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             ObservedAtStart.Add((
                 fragmentainer.UsedBlockSize,
                 fragmentainer.NamedStrings.TryGetValue("chapter", out var c) ? c : null));
@@ -466,5 +898,120 @@ public sealed class LayoutRetryCoordinatorTests
     {
         public List<PaginateDiagnostic> Diagnostics { get; } = new();
         public void Emit(PaginateDiagnostic diagnostic) => Diagnostics.Add(diagnostic);
+    }
+
+    /// <summary>Recording fragment sink that records each
+    /// <see cref="IFragmentSink.RollbackTo"/> call's cursor for
+    /// assertion. Mock for the Phase 3 Task 5 PR #21 review fix #3
+    /// fragment-rollback contract.</summary>
+    private sealed class RecordingFragmentSink : IFragmentSink
+    {
+        public List<int> RollbackCallLog { get; } = new();
+        public void RollbackTo(int cursor) => RollbackCallLog.Add(cursor);
+    }
+
+    /// <summary>Layouter that constructs <see cref="LayoutAttemptResult"/>
+    /// with NeedsRewind + null RewindTo (bypassing the factory's
+    /// non-null guard) to verify the coordinator's
+    /// <see cref="LayoutAttemptResult.ValidateOrThrow"/> catches the
+    /// invariant violation.</summary>
+    private sealed class InvariantViolatingLayouter : ILayouter
+    {
+        public LayoutAttemptResult AttemptLayout(
+            FragmentainerContext fragmentainer,
+            ref LayoutContext layout,
+            IBreakResolver resolver,
+            LayoutAttemptStrategy strategy,
+            CancellationToken cancellationToken = default)
+        {
+            // Direct construction violates the invariant — null RewindTo
+            // with NeedsRewind outcome.
+            return new LayoutAttemptResult(
+                LayoutAttemptOutcome.NeedsRewind,
+                Continuation: null,
+                RewindTo: null,
+                Cost: 1000);
+        }
+    }
+
+    /// <summary>Layouter that swaps <c>layout.Fragmentainer</c> to a
+    /// clone on attempt 0, asks for rewind to a checkpoint that
+    /// captured the original ref, then on attempt 1 records which
+    /// fragmentainer instance the coordinator passed in. Verifies
+    /// PR #21 review fix #2 (fragmentainer sync after restore).</summary>
+    private sealed class SwapAndRewindLayouter : ILayouter
+    {
+        private readonly LayoutCheckpoint _checkpoint;
+        private readonly FragmentainerContext _original;
+        public List<FragmentainerContext> ReceivedFragmentainers { get; } = new();
+        private bool _rewindAlreadyAsked;
+
+        public SwapAndRewindLayouter(LayoutCheckpoint checkpoint, FragmentainerContext original)
+        {
+            _checkpoint = checkpoint;
+            _original = original;
+        }
+
+        public LayoutAttemptResult AttemptLayout(
+            FragmentainerContext fragmentainer,
+            ref LayoutContext layout,
+            IBreakResolver resolver,
+            LayoutAttemptStrategy strategy,
+            CancellationToken cancellationToken = default)
+        {
+            ReceivedFragmentainers.Add(fragmentainer);
+
+            if (!_rewindAlreadyAsked)
+            {
+                _rewindAlreadyAsked = true;
+                // Speculative swap — clone the fragmentainer + repoint
+                // layout. After rewind, layout.Fragmentainer should be
+                // back to _original (per Task 4 review fix #6).
+                var speculative = _original.Clone();
+                layout.Fragmentainer = speculative;
+                return LayoutAttemptResult.NeedsRewind(_checkpoint, cost: 1000);
+            }
+
+            return LayoutAttemptResult.PageComplete(null, cost: 100);
+        }
+    }
+
+    /// <summary>Layouter that triggers cancellation between attempts
+    /// 0 and 1 by canceling its own token after attempt 0.</summary>
+    private sealed class CancelAfterFirstAttemptLayouter : ILayouter, IDisposable
+    {
+        private readonly CancellationTokenSource _cts = new();
+        private readonly List<CheckpointLease> _rentedLeases = new();
+        public List<LayoutAttemptStrategy> AttemptLog { get; } = new();
+        public CancellationToken CancellationToken => _cts.Token;
+
+        public LayoutAttemptResult AttemptLayout(
+            FragmentainerContext fragmentainer,
+            ref LayoutContext layout,
+            IBreakResolver resolver,
+            LayoutAttemptStrategy strategy,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            AttemptLog.Add(strategy);
+
+            // After attempt 0, cancel our own CTS so the coordinator's
+            // pre-attempt-1 check fires.
+            _cts.Cancel();
+
+            var lease = LayoutCheckpointPool.Rent();
+            _rentedLeases.Add(lease);
+            return LayoutAttemptResult.NeedsRewind(lease.Checkpoint!, cost: 1000);
+        }
+
+        public void Dispose()
+        {
+            _cts.Dispose();
+            foreach (var lease in _rentedLeases)
+            {
+                LayoutCheckpointPool.Return(lease);
+            }
+            _rentedLeases.Clear();
+        }
     }
 }

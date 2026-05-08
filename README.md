@@ -125,6 +125,101 @@ Below is the v1 contract — what `HtmlPdf.Convert(html)` will support once Phas
 - **Native AOT compatible.**
 - **Deterministic output:** identical input → identical bytes.
 
+## Running NetPdf on untrusted HTML
+
+Library-level guards (Phases A–D security hardening) protect against the
+known HTML-to-PDF attack classes documented in the threat-model corpus
+(SSRF tags, CSS SSRF, local-file read, SVG animation tricks, data-URI
+polyglots, resource bombs, image / font decoder bugs, PDF active content,
+diagnostic log injection). They do NOT replace OS-level isolation. If
+you run NetPdf in an API or web service that accepts customer-supplied
+HTML, follow this checklist:
+
+### 1. Pin `SecurityPolicy.UntrustedHtml`
+
+```csharp
+var options = new HtmlPdfOptions
+{
+    SecurityPolicy = SecurityPolicy.UntrustedHtml, // Phase D D-2
+    Diagnostics = sink,
+};
+```
+
+`UntrustedHtml` disables every URL-fetching surface (file://, http(s),
+data:) + tightens per-render fetch budgets. Use `TrustedTemplate` only
+for HTML you authored. The default `SafeDefault` is a middle-ground for
+desktop / batch use cases.
+
+### 2. Process / container isolation
+
+Run the conversion worker as a low-privilege user in a
+container / process boundary:
+
+- **Drop privileges:** non-root user, no `CAP_*` capabilities, `umask 077`.
+- **Read-only root filesystem:** mount `/tmp` as `tmpfs` with `noexec`.
+- **No ambient network access:** if Phase 5 enables outbound fetches,
+  use an egress proxy + outbound allowlist + block route to
+  `169.254.169.254` (AWS / GCE / Azure / Alibaba IMDS),
+  `127.0.0.0/8`, `10/8`, `172.16-31/12`, `192.168/16`,
+  `fc00::/7`, `fe80::/10`. NetPdf's `UriSafetyValidator` does this at
+  the application layer; route-level blocking is defense in depth.
+- **No ambient secrets:** no AWS profile, no GCP service account, no
+  `.kube/config`, no SSH keys, no `/proc/.../environ` reachable from
+  the renderer's user.
+- **CPU + memory limits:** `cgroups` / `--memory` / `--cpus`. NetPdf's
+  per-render caps (DOM size, CSS rule count, calc body length, image /
+  font validators) bound the typical worst case, but a kernel-level
+  limit is the final backstop.
+- **No shell execution:** the worker never exec's a subprocess.
+  NetPdf does not spawn processes, but third-party deps in your
+  service might.
+
+### 3. Vulnerability scanning
+
+- Run `dotnet list package --vulnerable --include-transitive` on every
+  build. NetPdf vendors only AngleSharp + AngleSharp.Css + HarfBuzzSharp
+  + SkiaSharp; none has a current CVE in the v1 dependency ranges.
+- Subscribe to security advisories for HarfBuzz (CVE-2024-56732 class)
+  + libwebp (CVE-2023-4863 class) + libjpeg-turbo + libpng. NetPdf's
+  pre-decode validators (Phase C C-1, Phase D D-4) bound the attack
+  surface but don't fix decoder bugs.
+- The `NetPdf.BannedAnalyzer` Roslyn analyzer enforces the dependency
+  allowlist at compile time. Do not disable it in your service build.
+
+### 4. Resource allowlist
+
+- If Phase 5's resource loader is enabled in your service, configure
+  `SecurityPolicy.AllowedHosts` to an explicit allowlist of domains
+  your templates are permitted to fetch from. Wildcards
+  (`*.cdn.example.com`) match a single subdomain level.
+- Set `MaxResourcesPerRender` / `MaxTotalResourceBytes` /
+  `MaxRedirectHops` lower than the defaults if your use case allows.
+
+### 5. Output handling
+
+- The conversion produces deterministic bytes (same input → same PDF).
+  This means you can cache results by input hash without worrying
+  about timestamp-based cache poisoning.
+- The PDF preflight (Phase D D-6) rejects any active-content key
+  (`/OpenAction`, `/AA`, `/JavaScript`, `/Launch`, `/URI`,
+  `/SubmitForm`, `/ImportData`, `/GoToR`, `/GoToE`, `/EmbeddedFile`,
+  `/EmbeddedFiles`, `/RichMedia`) before bytes are written. There is no
+  opt-in flag for these in v1. If you intentionally need link
+  annotations, request feature flag `Features.LinkAnnotations` (cycle 2).
+- Set `HtmlPdfOptions.Title` / `Author` / `Subject` to constants you
+  control, not to attacker-supplied template content. NetPdf
+  sanitizes these (Phase C C-3) but a constant is one less surface to
+  worry about.
+
+### 6. Threat-model corpus
+
+The exploit-corpus regression tests in
+[`tests/NetPdf.UnitTests/Phase2/PhaseDSecurityHardeningTests.cs`](tests/NetPdf.UnitTests/Phase2/PhaseDSecurityHardeningTests.cs)
+under the `D8_corpus_*` prefix pin one test per known attack class.
+When adding a feature that touches input parsing or resource loading,
+add a corresponding `D8_corpus_*` test that verifies the new feature
+doesn't regress the defense.
+
 ## License
 
 [Apache-2.0](LICENSE).

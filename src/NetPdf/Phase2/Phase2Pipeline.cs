@@ -137,7 +137,7 @@ internal static class Phase2Pipeline
         var cascade = CascadeResolver.Resolve(document, sheets, media, diagnostics, cancellationToken);
 
         cancellationToken.ThrowIfCancellationRequested();
-        var resolved = VarResolver.Resolve(cascade, document, diagnostics);
+        var resolved = VarResolver.Resolve(cascade, document, diagnostics, cancellationToken);
 
         cancellationToken.ThrowIfCancellationRequested();
         var boxRoot = BoxBuilder.Build(document, resolved, diagnostics, cancellationToken);

@@ -57,21 +57,39 @@ public static class ImageSafetyValidator
     /// pixel-area worst case (a 32 MiB JPEG can decode to ~50 megapixels).</summary>
     public const int MaxBytes = 32 * 1024 * 1024;
 
-    /// <summary>Maximum width / height (pixels) on either axis. 8 192 covers any
-    /// realistic invoice / report input (an A4 page at 600 DPI is 4 960 × 7 016)
-    /// while keeping the per-axis worst case bounded.</summary>
-    /// <remarks>Per PR #17 review user-recommendation #2 — tightened from 16 384
-    /// to 8 192. The raster fallback path (RasterImageXObject) decodes to RGBA8888,
-    /// then splits into RGB plane + grayscale alpha plane + Flate-compressed buffers
-    /// — at 16 384², peak memory hit ~1.6 GiB across these intermediate buffers.
-    /// 8 192² caps that at ~400 MiB, comfortably fitting most process budgets.</remarks>
+    /// <summary>Maximum width / height (pixels) on either axis for the
+    /// PASSTHROUGH path (JPEG / PNG go through directly to PDF as
+    /// /DCTDecode / /FlateDecode streams; no full RGBA decode in process
+    /// memory). 8 192 covers any realistic invoice / report input (an A4
+    /// page at 600 DPI is 4 960 × 7 016).</summary>
+    /// <remarks>Per PR #17 user-recommendation #2 + Phase D D-4 —
+    /// per-path caps. Passthrough JPEG/PNG only briefly hold the
+    /// encoded bytes; the image is wrapped + emitted to the PDF stream
+    /// without a full RGBA decode buffer. 8 192² is fine for that
+    /// path. The raster path has tighter caps below.</remarks>
     public const int MaxDimension = 8 * 1024;
 
-    /// <summary>Maximum total decoded pixel area. 8 192² = 67 megapixels;
-    /// caps the memory pressure of a decoded RGBA buffer at ≈256 MiB worst case.
-    /// A "1 px × 100 000 000 px" image would slip past <see cref="MaxDimension"/>
-    /// without this cap.</summary>
+    /// <summary>Maximum total decoded pixel area for the passthrough
+    /// path. 8 192² ≈ 67 megapixels. JPEG/PNG passthrough never
+    /// materializes a full RGBA buffer so this is the encoded-image
+    /// bound only.</summary>
     public const long MaxPixelArea = (long)MaxDimension * MaxDimension;
+
+    /// <summary>Per Phase D D-4 — maximum width / height (pixels) on
+    /// either axis for the RASTER path (GIF / WebP /
+    /// <see cref="RasterImageXObject"/> path). Raster decoding goes
+    /// through Skia → RGBA8888 buffer → split into RGB plane + alpha
+    /// plane + per-plane Flate-compressed buffers; peak memory is
+    /// ~5× the encoded RGBA bytes. 4 096² caps the peak around
+    /// 320 MiB worst case, comfortably below the 1 GiB band most
+    /// process budgets allow.</summary>
+    public const int MaxRasterDimension = 4 * 1024;
+
+    /// <summary>Per Phase D D-4 — maximum decoded pixel area for the
+    /// raster path. 4 096² ≈ 16.7 megapixels. Tight enough that even
+    /// the worst-case RGBA + RGB-plane + alpha-plane + Flate-buffer
+    /// combo stays under 320 MiB.</summary>
+    public const long MaxRasterPixelArea = (long)MaxRasterDimension * MaxRasterDimension;
 
     /// <summary>Three-state verdict returned by <see cref="Validate"/>.
     /// Mirror of the validator pattern used by <c>NetPdf.UriSafetyValidator</c>
@@ -190,19 +208,32 @@ public static class ImageSafetyValidator
                 format);
         }
 
-        if (width > MaxDimension || height > MaxDimension)
+        // Per Phase D D-4 — per-path dimension caps. JPEG / PNG go
+        // through the passthrough path (no full RGBA decode in process
+        // memory) so they get the looser MaxDimension. GIF / WebP / BMP
+        // go through the raster path (Skia → RGBA8888 → split planes)
+        // which gets the tighter MaxRasterDimension. AVIF is rejected
+        // earlier in this method.
+        var (axisCap, areaCap) = format switch
+        {
+            ImageFormat.Jpeg or ImageFormat.Png => (MaxDimension, MaxPixelArea),
+            ImageFormat.Gif or ImageFormat.WebP or ImageFormat.Bmp =>
+                (MaxRasterDimension, MaxRasterPixelArea),
+            _ => (MaxDimension, MaxPixelArea), // unreachable; keeps compiler happy
+        };
+        if (width > axisCap || height > axisCap)
         {
             return new ValidationResult(
                 ImageSafetyVerdict.Unsafe,
-                $"declared dimensions ({width} × {height}) exceed the {MaxDimension}-px per-axis cap",
+                $"declared dimensions ({width} × {height}) exceed the {axisCap}-px per-axis cap for {format}",
                 format);
         }
         var area = (long)width * height;
-        if (area > MaxPixelArea)
+        if (area > areaCap)
         {
             return new ValidationResult(
                 ImageSafetyVerdict.Unsafe,
-                $"declared pixel area ({area}) exceeds the {MaxPixelArea}-pixel cap",
+                $"declared pixel area ({area}) exceeds the {areaCap}-pixel cap for {format}",
                 format);
         }
 

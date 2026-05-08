@@ -40,6 +40,82 @@ internal static class PdfPreflightValidator
         ValidateTrailerRootShape(writer.Trailer, writer.Objects);
         ValidateExplicitIdShape(writer.Trailer);
         ValidateGraph(writer.Objects, writer.Trailer);
+        // Per Phase D D-6 — walk every dictionary in the document graph
+        // looking for active-content keys (/OpenAction, /AA, /JavaScript,
+        // /Launch, /URI, /SubmitForm, /ImportData, /GoToR, /GoToE,
+        // /EmbeddedFile, /Names/EmbeddedFiles). Phase 1's PDF writer never
+        // emits any of these (verified by the Phase B B-6 contract test
+        // over SmokeDocumentFactory output) but as Phase 4 wires
+        // annotations + Phase 5 wires links, an accidental introduction
+        // is a real risk. The preflight catches it BEFORE bytes are
+        // written, in a unit-testable way (negative tests use
+        // constructed PdfDictionary objects).
+        ValidateNoActiveContent(writer.Objects, writer.Trailer);
+    }
+
+    /// <summary>Per Phase D D-6 — walk dictionaries + reject any
+    /// active-content key. Closed denylist; covers the surfaces that
+    /// the major HTML-to-PDF CVE survey calls out (Apryse argument-
+    /// injection RCE via <c>/Launch</c>, generic JS-action surfaces,
+    /// embedded-file egress).</summary>
+    /// <remarks>The denylist is keyed on PDF dictionary names. Each
+    /// dictionary is checked for explicit prohibited keys; the
+    /// values themselves are NOT walked further (a benign dictionary
+    /// that happens to contain <c>"OpenAction"</c> as a string value
+    /// inside, e.g., a content-stream comment, is irrelevant — only
+    /// the dictionary KEYS matter for action dispatching).</remarks>
+    private static void ValidateNoActiveContent(IndirectObjectStore store, PdfDictionary trailer)
+    {
+        for (int i = 0; i < store.Count; i++)
+        {
+            VisitDictionariesForActiveContent(store.AllEntries[i].Object!,
+                new HashSet<PdfObject>(ReferenceEqualityComparer.Instance));
+        }
+        VisitDictionariesForActiveContent(trailer,
+            new HashSet<PdfObject>(ReferenceEqualityComparer.Instance));
+    }
+
+    /// <summary>Per Phase D D-6 — names that, as dictionary keys,
+    /// indicate an active-content action or embedded-file surface
+    /// NetPdf v1 must never emit.</summary>
+    private static readonly string[] ActiveContentKeys =
+    [
+        "OpenAction",   // catalog action: runs on document open
+        "AA",           // additional actions: focus / blur / open / etc.
+        "JavaScript",   // JS object / action body
+        "JS",           // JS script body inside an action
+        "Launch",       // launches an external program
+        "URI",          // /URI action — external link
+        "SubmitForm",   // posts form data to a URL
+        "ImportData",   // imports form data from a URL
+        "GoToR",        // remote GoTo — fetches a URL
+        "GoToE",        // GoTo embedded — references an embedded file
+        "EmbeddedFile", // embedded file substream
+        "EmbeddedFiles",// /Names entry exposing embedded files
+        "RichMedia",    // RichMedia annotation (Flash / 3D)
+    ];
+
+    private static void VisitDictionariesForActiveContent(PdfObject obj, HashSet<PdfObject> visited)
+    {
+        if (obj is PdfIndirectRef) return; // refs are walked at the store level
+        if (!visited.Add(obj)) return;
+        if (obj is PdfDictionary dict)
+        {
+            foreach (var key in ActiveContentKeys)
+            {
+                if (dict.Get(new PdfName(key)) is not null)
+                {
+                    throw new InvalidOperationException(
+                        $"PdfPreflightValidator: dictionary contains the active-content key '/{key}', "
+                        + "which NetPdf v1 must never emit. If this is intentional, the writer needs "
+                        + "an explicit allowlist gate (currently no such opt-in exists).");
+                }
+            }
+        }
+        foreach (var child in obj.EnumerateChildren())
+        {
+            VisitDictionariesForActiveContent(child, visited);
+        }
     }
 
     private static void ValidateVersion(string version)

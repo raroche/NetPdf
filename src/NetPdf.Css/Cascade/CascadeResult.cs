@@ -86,9 +86,14 @@ internal sealed class CascadeResult
     public bool MatchedLimitReached { get; private set; }
 
     /// <summary>Add <paramref name="count"/> to the cumulative tracker.
-    /// Returns <see langword="true"/> when the cap is hit on this call
-    /// (caller emits the one-shot diagnostic + any subsequent calls go
-    /// through but the matched-rule-sets simply aren't written to).</summary>
+    /// Returns <see langword="false"/> ONLY when the cap was already
+    /// reached on a previous call (subsequent overflow attempts
+    /// short-circuit). Returns <see langword="true"/> in all other
+    /// cases — including the call that crosses the cap. Per PR #17
+    /// Copilot review #7 the previous "returns true when the cap is
+    /// hit" doc was inverted; callers should detect overflow by reading
+    /// <see cref="MatchedLimitReached"/> AFTER the call (compare with
+    /// its value BEFORE the call to detect the transition).</summary>
     internal bool TryConsumeMatched(int count)
     {
         if (MatchedLimitReached) return false;
@@ -96,7 +101,6 @@ internal sealed class CascadeResult
         if (TotalMatchedDeclarationCount > CascadeResolver.MaxMatchedDeclarationsPerRender)
         {
             MatchedLimitReached = true;
-            return true; // first overflow — caller should emit + continue
         }
         return true;
     }

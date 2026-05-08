@@ -487,37 +487,21 @@ public sealed class PdfDocumentTests
     }
 
     [Fact]
-    public void RegisterImage_AVIF_fixture_through_PdfDocument_when_host_decodes()
+    public void RegisterImage_AVIF_now_rejected_by_phase_C_safety_gate()
     {
-        // Pinned 1×1 white opaque AVIF from the libavif test corpus (BSD-2-Clause).
-        // AVIF decode is host-dependent (macOS SkiaSharp 3.119 lacks libavif decoder);
-        // skip cleanly on hosts that can't decode it.
+        // Per PR #17 Phase C C-1 follow-up — AVIF rejected by
+        // ImageSafetyValidator before RasterImageXObject.Build returns.
+        // The fixture stays for post-v1 wireup; the test now pins the
+        // rejection contract.
         using var stream = typeof(PdfDocumentTests).Assembly
             .GetManifestResourceStream("NetPdf.UnitTests.Resources.Images.white_1x1.avif")
             ?? throw new InvalidOperationException("Test resource white_1x1.avif missing.");
         using var ms = new MemoryStream();
         stream.CopyTo(ms);
 
-        ImageXObjectResult raster;
-        try
-        {
-            raster = RasterImageXObject.Build(ms.ToArray());
-        }
-        catch (InvalidDataException)
-        {
-            return; // AVIF not decodable on this host
-        }
-
-        var doc = new PdfDocument();
-        var imageRef = doc.RegisterImage(raster);
-        doc.AddPage(MediaBoxSize.A4).PlaceImage(imageRef, 0, 0, 100, 100);
-        var bytes = doc.Save();
-        var content = Encoding.ASCII.GetString(bytes);
-
-        // Opaque AVIF → no SMask.
-        Assert.DoesNotContain("/SMask ", content, StringComparison.Ordinal);
-        Assert.Contains("/Subtype /Image", content, StringComparison.Ordinal);
-        Assert.Contains("/ColorSpace /DeviceRGB", content, StringComparison.Ordinal);
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => RasterImageXObject.Build(ms.ToArray()));
+        Assert.Contains("AVIF", ex.Message, StringComparison.Ordinal);
     }
 
     // ───── AppendContent contract ────────────────────────────────────────────

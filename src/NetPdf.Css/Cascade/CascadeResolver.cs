@@ -340,25 +340,49 @@ internal static class CascadeResolver
         HashSet<int> hasContainingSheets,
         ICssDiagnosticsSink? diagnostics)
     {
-        var compiled = CompileSelector(sr.Selector.RawText, diagnostics, sr.Location);
-        if (compiled is not null && compiled.ContainsHas)
-            hasContainingSheets.Add(sheetOrder);
-
-        // Per PR #16 review user-recommendation #3 + Copilot review #6 —
-        // enforce MaxSelectorAlternatives. The cap was declared in Phase B
-        // but never wired up; a single rule with millions of comma-separated
-        // alternatives (each compiled to its own SelectorBytecode) would
-        // amplify the per-element matching loop past the per-rule budget.
-        // Truncate post-compile by rebuilding the SelectorList with only
-        // the first N alternatives — the matching loop iterates the
-        // truncated list directly.
-        if (compiled is not null && compiled.Alternatives.Length > MaxSelectorAlternatives)
+        // Per PR #17 review user-recommendation #7 — pre-compile cap on
+        // top-level comma-separated alternatives. Counting commas in the
+        // raw selector text is much cheaper than letting SelectorCompiler
+        // walk + parse + allocate millions of SelectorBytecodes only to
+        // truncate them afterward. The count is paren/bracket-aware so
+        // commas inside `:is(.a, .b, ...)` aren't counted as top-level
+        // alternatives — that nested set has its own bound (specificity
+        // is a single bytecode field anyway).
+        var rawSelector = sr.Selector.RawText;
+        var topLevelAlternatives = CountTopLevelSelectorAlternatives(rawSelector);
+        var truncatedRaw = rawSelector;
+        var preCompileTruncated = false;
+        if (topLevelAlternatives > MaxSelectorAlternatives)
         {
             diagnostics?.Emit(new CssDiagnostic(
                 CssDiagnosticCodes.CssRuleLimitExceeded001,
-                $"Rule exceeded the {MaxSelectorAlternatives}-selector-alternative cap; excess alternatives dropped.",
+                $"Rule exceeded the {MaxSelectorAlternatives}-selector-alternative cap; truncated before compilation.",
                 CssDiagnosticSeverity.Warning,
                 sr.Location));
+            truncatedRaw = TruncateSelectorAtTopLevelComma(rawSelector, MaxSelectorAlternatives);
+            preCompileTruncated = true;
+        }
+
+        var compiled = CompileSelector(truncatedRaw, diagnostics, sr.Location);
+        if (compiled is not null && compiled.ContainsHas)
+            hasContainingSheets.Add(sheetOrder);
+
+        // Belt-and-suspenders post-compile check — pathological raw text
+        // could still produce > MaxSelectorAlternatives compiled
+        // alternatives if the comma-counter undershoots (it shouldn't,
+        // but the post-compile truncation is cheap insurance against
+        // future selector grammar changes). Skip the diagnostic here
+        // when we already emitted one pre-compile.
+        if (compiled is not null && compiled.Alternatives.Length > MaxSelectorAlternatives)
+        {
+            if (!preCompileTruncated)
+            {
+                diagnostics?.Emit(new CssDiagnostic(
+                    CssDiagnosticCodes.CssRuleLimitExceeded001,
+                    $"Rule exceeded the {MaxSelectorAlternatives}-selector-alternative cap; excess alternatives dropped.",
+                    CssDiagnosticSeverity.Warning,
+                    sr.Location));
+            }
             compiled = new NetPdf.Css.Selectors.SelectorList(
                 ImmutableArray.CreateRange(compiled.Alternatives.Take(MaxSelectorAlternatives)),
                 compiled.SourceText);
@@ -841,6 +865,93 @@ internal static class CascadeResolver
              or "keyframes" or "font-feature-values" or "font-palette-values"
              or "scroll-timeline" or "view-transition"
              or "charset" or "namespace";
+
+    /// <summary>Per PR #17 review user-recommendation #7 — count top-level
+    /// (i.e., not inside <c>:is()</c> / <c>:where()</c> / attribute
+    /// selectors / nested parens / strings) commas in <paramref name="raw"/>.
+    /// The number of selector alternatives is <c>commas + 1</c>. Cheap
+    /// linear scan with depth tracking; runs before
+    /// <see cref="SelectorCompiler.Compile"/> so a millions-alternatives
+    /// rule short-circuits before allocations begin.</summary>
+    private static int CountTopLevelSelectorAlternatives(string raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return 0;
+        var commas = 0;
+        var parenDepth = 0;
+        var bracketDepth = 0;
+        var i = 0;
+        while (i < raw.Length)
+        {
+            var c = raw[i];
+            // String literals — skip to matching quote.
+            if (c == '"' || c == '\'')
+            {
+                var quote = c;
+                i++;
+                while (i < raw.Length && raw[i] != quote)
+                {
+                    if (raw[i] == '\\' && i + 1 < raw.Length) i += 2;
+                    else i++;
+                }
+                if (i < raw.Length) i++; // consume closing quote
+                continue;
+            }
+            if (c == '(') parenDepth++;
+            else if (c == ')') { if (parenDepth > 0) parenDepth--; }
+            else if (c == '[') bracketDepth++;
+            else if (c == ']') { if (bracketDepth > 0) bracketDepth--; }
+            else if (c == ',' && parenDepth == 0 && bracketDepth == 0)
+            {
+                commas++;
+            }
+            i++;
+        }
+        return commas + 1;
+    }
+
+    /// <summary>Truncate <paramref name="raw"/> at the
+    /// <paramref name="maxAlternatives"/>-th top-level comma (keeping
+    /// alternatives 0..maxAlternatives-1). Mirrors
+    /// <see cref="CountTopLevelSelectorAlternatives"/>'s paren/bracket/string
+    /// awareness so we don't truncate inside an <c>:is(...)</c>.</summary>
+    private static string TruncateSelectorAtTopLevelComma(string raw, int maxAlternatives)
+    {
+        if (maxAlternatives <= 0) return string.Empty;
+        var commasSeen = 0;
+        var parenDepth = 0;
+        var bracketDepth = 0;
+        var i = 0;
+        while (i < raw.Length)
+        {
+            var c = raw[i];
+            if (c == '"' || c == '\'')
+            {
+                var quote = c;
+                i++;
+                while (i < raw.Length && raw[i] != quote)
+                {
+                    if (raw[i] == '\\' && i + 1 < raw.Length) i += 2;
+                    else i++;
+                }
+                if (i < raw.Length) i++;
+                continue;
+            }
+            if (c == '(') parenDepth++;
+            else if (c == ')') { if (parenDepth > 0) parenDepth--; }
+            else if (c == '[') bracketDepth++;
+            else if (c == ']') { if (bracketDepth > 0) bracketDepth--; }
+            else if (c == ',' && parenDepth == 0 && bracketDepth == 0)
+            {
+                commasSeen++;
+                if (commasSeen >= maxAlternatives)
+                {
+                    return raw[..i];
+                }
+            }
+            i++;
+        }
+        return raw;
+    }
 
     private static SelectorList? CompileSelector(string raw, ICssDiagnosticsSink? diagnostics, CssSourceLocation loc)
     {

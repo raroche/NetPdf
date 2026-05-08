@@ -209,9 +209,38 @@ public static class UriSafetyValidator
                 $"redirect chain exceeded the {policy.MaxRedirectHops}-hop cap");
         }
 
-        // Cross-scheme downgrade. Allow same-scheme + http → https upgrades.
+        // Per PR #17 Copilot review #1 — HTTP Location: headers are often
+        // relative URIs ("/next-page" or "next-page"). Uri.Scheme throws
+        // on relative URIs, so the pre-fix code crashed callers. Reject
+        // with a clear reason; the loader is expected to resolve relative
+        // URIs against the origin URI before calling ValidateRedirect.
+        if (!redirectTarget.IsAbsoluteUri)
+        {
+            return new Verdict(SafetyOutcome.Unsafe,
+                "redirect target is a relative URI; loader must resolve against origin before validating");
+        }
+        if (!origin.IsAbsoluteUri)
+        {
+            return new Verdict(SafetyOutcome.Unsafe,
+                "origin is a relative URI; loader must pass an absolute origin");
+        }
+
+        // Per PR #17 review user-recommendation #6 — redirect targets
+        // for HTTP(S) fetches must stay on HTTP(S). A redirect to data:
+        // (which Validate would accept under default policy) lets a
+        // server slip arbitrary bytes back as if they came from the
+        // origin URL; a redirect to file: would route the loader at the
+        // local filesystem with no base-path check. Reject anything
+        // outside http/https before policy validation.
         var originScheme = origin.Scheme.ToLowerInvariant();
         var targetScheme = redirectTarget.Scheme.ToLowerInvariant();
+        if (targetScheme is not ("http" or "https"))
+        {
+            return new Verdict(SafetyOutcome.Unsafe,
+                $"redirect target scheme '{targetScheme}:' is not http(s); resource fetches must stay on the network surface");
+        }
+
+        // Cross-scheme downgrade. Allow same-scheme + http → https upgrades.
         if (originScheme == "https" && targetScheme == "http")
         {
             return new Verdict(SafetyOutcome.Unsafe,

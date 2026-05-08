@@ -194,12 +194,13 @@ public sealed class PhaseCSecurityHardeningTests
                 $"Sanitized output retained control char U+{(int)c:X4}");
             Assert.NotEqual((char)0x7F, c);
         }
-        // Forbidden chars are replaced with '?' (ASCII-safe). Visible
-        // text still surfaces.
+        // Per PR #17 review user-recommendation #3 — forbidden chars now
+        // replaced with U+FFFD (REPLACEMENT CHARACTER). EncodeMetadataString
+        // routes the non-ASCII output through PdfHexString.
         Assert.Contains("Hello", sanitized, StringComparison.Ordinal);
         Assert.Contains("Red", sanitized, StringComparison.Ordinal);
         Assert.Contains("End", sanitized, StringComparison.Ordinal);
-        Assert.Contains('?', sanitized);
+        Assert.Contains('�', sanitized);
     }
 
     [Fact]
@@ -207,9 +208,9 @@ public sealed class PhaseCSecurityHardeningTests
     {
         var giant = new string('x', 8 * 1024); // > 4 KiB cap
         var sanitized = NetPdf.Pdf.PdfDocument.SanitizeMetadataString(giant);
-        Assert.True(sanitized.Length <= 4096 + 3, // + "..." (ASCII-safe ellipsis)
-            $"expected ≤ 4096 + 3 chars; got {sanitized.Length}");
-        Assert.EndsWith("...", sanitized);
+        Assert.True(sanitized.Length <= 4096 + 1, // + U+2026 ellipsis
+            $"expected ≤ 4096 + 1 chars; got {sanitized.Length}");
+        Assert.EndsWith("…", sanitized);
     }
 
     [Fact]
@@ -346,5 +347,146 @@ public sealed class PhaseCSecurityHardeningTests
         var redirectTarget = new Uri("https://api.example.com/v1/page");
         var verdict = UriSafetyValidator.ValidateRedirect(origin, redirectTarget, policy, hopsAlreadyFollowed: 2);
         Assert.True(verdict.IsSafe, verdict.Reason);
+    }
+
+    // --- PR #17 follow-up: review fixes -------------------------------------
+
+    // P1 #1 — raster fallback now routed through validator + AVIF rejection.
+    [Fact]
+    public void C1Followup_raster_build_rejects_unknown_bytes()
+    {
+        var bytes = new byte[64];
+        for (var i = 0; i < bytes.Length; i++) bytes[i] = (byte)i;
+        Assert.Throws<InvalidOperationException>(() =>
+            NetPdf.Pdf.Images.RasterImageXObject.Build(bytes));
+    }
+
+    [Fact]
+    public void C1Followup_avif_format_recognized_then_rejected()
+    {
+        // ISOBMFF box: 4-byte size (any), "ftyp" at 4..7, brand "avif" at 8..11.
+        var bytes = new byte[32];
+        bytes[0] = 0; bytes[1] = 0; bytes[2] = 0; bytes[3] = 0x18; // box size 24
+        bytes[4] = 0x66; bytes[5] = 0x74; bytes[6] = 0x79; bytes[7] = 0x70; // "ftyp"
+        bytes[8] = 0x61; bytes[9] = 0x76; bytes[10] = 0x69; bytes[11] = 0x66; // "avif"
+        Assert.Equal(NetPdf.Pdf.Images.ImageSafetyValidator.ImageFormat.Avif,
+            NetPdf.Pdf.Images.ImageSafetyValidator.SniffFormat(bytes));
+        var result = NetPdf.Pdf.Images.ImageSafetyValidator.Validate(bytes);
+        Assert.False(result.IsSafe);
+        Assert.Contains("AVIF", result.Reason!, StringComparison.Ordinal);
+    }
+
+    // P1 #2 — image dimension cap tightened to 8 KiB per axis.
+    [Fact]
+    public void C1Followup_max_dimension_lowered_to_8k()
+    {
+        Assert.Equal(8 * 1024, NetPdf.Pdf.Images.ImageSafetyValidator.MaxDimension);
+    }
+
+    // P1 #3 — non-ASCII metadata routed via UTF-16BE hex string instead of
+    // throwing at PdfLiteralString.
+    [Fact]
+    public void C3Followup_unicode_title_does_not_throw_on_save()
+    {
+        var doc = new PdfDocument { Title = "Résumé — 2026 中文 🚀" };
+        doc.AddPage(MediaBoxSize.A4);
+        var bytes = doc.Save();
+        Assert.True(bytes.Length > 0);
+        // Output should contain a hex-string Title rendering (starts with "<")
+        // for the non-ASCII path, with the UTF-16BE BOM bytes "FEFF".
+        var text = System.Text.Encoding.Latin1.GetString(bytes);
+        Assert.Contains("/Title <FEFF", text, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void C3Followup_ascii_title_still_uses_literal_string()
+    {
+        var doc = new PdfDocument { Title = "Plain ASCII Title" };
+        doc.AddPage(MediaBoxSize.A4);
+        var bytes = doc.Save();
+        var text = System.Text.Encoding.Latin1.GetString(bytes);
+        // ASCII path uses PdfLiteralString form: /Title (...)
+        Assert.Contains("/Title (Plain ASCII Title)", text, StringComparison.Ordinal);
+    }
+
+    // P2 #6 — ValidateRedirect rejects non-http(s) targets.
+    [Theory]
+    [InlineData("data:text/plain,hi")]
+    [InlineData("file:///etc/passwd")]
+    [InlineData("ftp://example.com/")]
+    [InlineData("gopher://example.com/")]
+    public void C6Followup_redirect_to_non_http_scheme_rejected(string target)
+    {
+        var policy = new SecurityPolicy
+        {
+            AllowHttpScheme = true,
+            AllowHttpsScheme = true,
+            AllowDataUri = true, // would normally accept data: at top level
+            AllowFileScheme = true, // would normally accept file: at top level
+        };
+        var origin = new Uri("https://example.com/page");
+        var verdict = UriSafetyValidator.ValidateRedirect(origin, new Uri(target), policy, 0);
+        Assert.False(verdict.IsSafe);
+        Assert.Contains("not http(s)", verdict.Reason!, StringComparison.Ordinal);
+    }
+
+    // Copilot #1 — relative URIs return Unsafe with clear reason instead of
+    // throwing.
+    [Fact]
+    public void C6Followup_relative_redirect_returns_unsafe()
+    {
+        var policy = new SecurityPolicy { AllowHttpsScheme = true };
+        var origin = new Uri("https://example.com/page");
+        var redirectTarget = new Uri("/next-page", UriKind.Relative);
+        var verdict = UriSafetyValidator.ValidateRedirect(origin, redirectTarget, policy, 0);
+        Assert.False(verdict.IsSafe);
+        Assert.Contains("relative URI", verdict.Reason!, StringComparison.Ordinal);
+    }
+
+    // P2 #7 — selector cap pre-compile counts top-level commas.
+    [Fact]
+    public async Task C2Followup_selector_alternative_cap_runs_pre_compile()
+    {
+        // 1500-alternative selector. The pre-compile counter should fire +
+        // emit CSS-RULE-LIMIT-EXCEEDED-001 with "truncated before
+        // compilation" in the message.
+        var alternatives = new System.Text.StringBuilder();
+        const int count = 1500;
+        for (var i = 0; i < count; i++)
+        {
+            if (i > 0) alternatives.Append(", ");
+            alternatives.Append($".x{i}");
+        }
+        var html = $"<!doctype html><html><head><style>{alternatives} {{ color: red }}</style></head><body><div class='x0'>x</div></body></html>";
+        var sink = new CapturingPublicSink();
+        using var result = await NetPdf.Phase2.Phase2Pipeline.RunFromHtmlAsync(
+            html, new HtmlPdfOptions { Diagnostics = sink });
+        Assert.Contains(sink.Diagnostics,
+            d => d.Code == "CSS-RULE-LIMIT-EXCEEDED-001"
+                 && d.Message.Contains("truncated before compilation"));
+    }
+
+    // P2 #8 — BMP int.MinValue dimensions don't throw OverflowException.
+    [Fact]
+    public void C1Followup_bmp_with_int_min_dimensions_returns_unsafe()
+    {
+        // BM signature + DIB header with width = 0x80000000 (int.MinValue,
+        // little-endian).
+        var bytes = new byte[64];
+        bytes[0] = 0x42; bytes[1] = 0x4D;
+        // Width at 18..21 = 0x80000000.
+        bytes[18] = 0x00; bytes[19] = 0x00; bytes[20] = 0x00; bytes[21] = 0x80;
+        // Height at 22..25 = 0x80000000.
+        bytes[22] = 0x00; bytes[23] = 0x00; bytes[24] = 0x00; bytes[25] = 0x80;
+        var result = NetPdf.Pdf.Images.ImageSafetyValidator.Validate(bytes);
+        Assert.False(result.IsSafe);
+        // Either the Int32-range check or the dimension cap fires; both are valid
+        // rejections. Just verify no throw.
+    }
+
+    private sealed class CapturingPublicSink : IDiagnosticsSink
+    {
+        public System.Collections.Generic.List<Diagnostic> Diagnostics { get; } = new();
+        public void Emit(Diagnostic d) => Diagnostics.Add(d);
     }
 }

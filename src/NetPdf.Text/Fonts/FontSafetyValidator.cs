@@ -20,17 +20,19 @@ namespace NetPdf.Text.Fonts;
 ///   <c>@font-face</c>, an attacker who can serve a font URL could pick the
 ///   filename + content. The validator's format-magic check + size cap stop
 ///   the cache from accepting non-fonts.</item>
-///   <item><b>SVG-in-OpenType.</b> The OpenType <c>SVG </c> table can carry
-///   arbitrary SVG payloads that some shapers / renderers process as images.
-///   v1 doesn't render <c>SVG </c> glyphs, but the validator rejects fonts
-///   whose sfnt table list includes only the <c>SVG </c> table (no <c>glyf</c>
-///   / <c>CFF </c> / <c>CFF2</c>) — those would have nothing to render with
-///   our shaper anyway, and accepting them invites future bug surface.</item>
 /// </list>
 ///
 /// <para>The validator does NOT replace the structural validation in
 /// <c>OpenTypeFont.Parse</c> — it just bounds the attack surface before parse
 /// runs. Parse is still authoritative for table-by-table integrity.</para>
+///
+/// <para><b>What this validator does NOT inspect:</b> sfnt table tags
+/// (<c>cmap</c> / <c>glyf</c> / <c>SVG </c> / etc.) — only the
+/// <c>numTables</c> count + directory bounds. SVG-in-OpenType fonts are
+/// accepted by this gate; future hardening could walk the table tags to
+/// reject SVG-only fonts (a real attack surface) but that work is not in
+/// Phase C. Per PR #17 Copilot review #2 the docs were over-claiming;
+/// they now state actual coverage.</para>
 /// </summary>
 public static class FontSafetyValidator
 {

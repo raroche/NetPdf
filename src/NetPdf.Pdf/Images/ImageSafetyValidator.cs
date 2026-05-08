@@ -36,12 +36,18 @@ namespace NetPdf.Pdf.Images;
 /// in libwebp / libpng / libjpeg-turbo themselves are out of scope (they're fixed
 /// upstream); the validator just bounds the attack surface.</para>
 ///
-/// <para><b>Phase C contract.</b> Image entry points call <see cref="Validate"/>
-/// at the top + return <see cref="ImageSafetyVerdict.Unsafe"/> on rejection without
-/// invoking the parser. The PdfDocument-level emission code emits
-/// <c>RES-IMAGE-UNSAFE-001</c> through the public diagnostics sink. <see cref="MaxBytes"/>
-/// + <see cref="MaxDimension"/> + <see cref="MaxPixelArea"/> are <see langword="const"/>
-/// so future phases can override via a config struct without breaking this contract.</para>
+/// <para><b>Phase C contract (PR #17 follow-up).</b> Image entry points
+/// (<c>JpegImageXObject.Build</c>, <c>PngImageXObject.Build</c>,
+/// <c>RasterImageXObject.Build</c>) call <see cref="Validate"/> at the top +
+/// throw <see cref="System.InvalidOperationException"/> on rejection,
+/// containing the verdict reason. The Phase 5 resource-loader pipeline will
+/// translate that exception into <c>RES-IMAGE-UNSAFE-001</c> through the
+/// public diagnostics sink; today's code paths surface the failure as an
+/// exception because there's no diagnostics-sink seam at the existing
+/// callers (Phase 1 PDF-write paths). <see cref="MaxBytes"/> +
+/// <see cref="MaxDimension"/> + <see cref="MaxPixelArea"/> are
+/// <see langword="const"/> so future phases can override via a config
+/// struct without breaking this contract.</para>
 /// </summary>
 public static class ImageSafetyValidator
 {
@@ -51,13 +57,18 @@ public static class ImageSafetyValidator
     /// pixel-area worst case (a 32 MiB JPEG can decode to ~50 megapixels).</summary>
     public const int MaxBytes = 32 * 1024 * 1024;
 
-    /// <summary>Maximum width / height (pixels) on either axis. 16 384 covers any
-    /// realistic input (an A4 page at 600 DPI is 4 960 × 7 016); above this is
-    /// almost certainly an attack or a runaway poster-sized scan.</summary>
-    public const int MaxDimension = 16 * 1024;
+    /// <summary>Maximum width / height (pixels) on either axis. 8 192 covers any
+    /// realistic invoice / report input (an A4 page at 600 DPI is 4 960 × 7 016)
+    /// while keeping the per-axis worst case bounded.</summary>
+    /// <remarks>Per PR #17 review user-recommendation #2 — tightened from 16 384
+    /// to 8 192. The raster fallback path (RasterImageXObject) decodes to RGBA8888,
+    /// then splits into RGB plane + grayscale alpha plane + Flate-compressed buffers
+    /// — at 16 384², peak memory hit ~1.6 GiB across these intermediate buffers.
+    /// 8 192² caps that at ~400 MiB, comfortably fitting most process budgets.</remarks>
+    public const int MaxDimension = 8 * 1024;
 
-    /// <summary>Maximum total decoded pixel area. 16 384² ≈ 268 megapixels;
-    /// caps the memory pressure of a decoded RGBA buffer at ≈1 GiB worst case.
+    /// <summary>Maximum total decoded pixel area. 8 192² = 67 megapixels;
+    /// caps the memory pressure of a decoded RGBA buffer at ≈256 MiB worst case.
     /// A "1 px × 100 000 000 px" image would slip past <see cref="MaxDimension"/>
     /// without this cap.</summary>
     public const long MaxPixelArea = (long)MaxDimension * MaxDimension;
@@ -79,9 +90,12 @@ public static class ImageSafetyValidator
     /// <param name="Verdict">Safe or Unsafe.</param>
     /// <param name="Reason">When unsafe, a human-readable reason suitable for
     /// inclusion in a diagnostic message. <see langword="null"/> when safe.</param>
-    /// <param name="DetectedFormat">When safe, the format identified by
-    /// magic-byte sniffing. <see cref="ImageFormat.Unknown"/> otherwise (never
-    /// returned for Unsafe verdicts).</param>
+    /// <param name="DetectedFormat">The format identified by magic-byte
+    /// sniffing. <see cref="ImageFormat.Unknown"/> when sniffing failed
+    /// (Unsafe verdict from too-short / unrecognized-magic). For
+    /// post-magic Unsafe verdicts (oversized, dimensions over cap), the
+    /// detected format IS reported so callers can produce specific
+    /// diagnostics. Per PR #17 Copilot review #6.</param>
     public readonly record struct ValidationResult(
         ImageSafetyVerdict Verdict,
         string? Reason,
@@ -100,6 +114,11 @@ public static class ImageSafetyValidator
         Gif,
         WebP,
         Bmp,
+        /// <summary>AVIF — ISOBMFF-wrapped AV1. Per PR #17 review
+        /// user-recommendation #1, AVIF input recognition lets the C-1 gate
+        /// reject AVIF bytes explicitly (we don't decode them in v1) rather
+        /// than letting them reach Skia / libavif as "Unknown".</summary>
+        Avif,
     }
 
     /// <summary>Validate <paramref name="bytes"/> against the per-image safety
@@ -144,8 +163,21 @@ public static class ImageSafetyValidator
         {
             return new ValidationResult(
                 ImageSafetyVerdict.Unsafe,
-                "image bytes did not match any recognized format signature (JPEG / PNG / GIF / WebP / BMP)",
+                "image bytes did not match any recognized format signature (JPEG / PNG / GIF / WebP / BMP / AVIF)",
                 ImageFormat.Unknown);
+        }
+        // Per PR #17 review user-recommendation #1 — AVIF is recognized so
+        // SniffFormat can distinguish it from Unknown, but explicitly
+        // rejected here. v1 does not decode AVIF (no libavif on the macOS
+        // SkiaSharp build per project_dev_environment memory + the C-1
+        // threat model considers AVIF in scope but support is post-v1).
+        // Letting it through to Skia/libavif would defeat the gate.
+        if (format == ImageFormat.Avif)
+        {
+            return new ValidationResult(
+                ImageSafetyVerdict.Unsafe,
+                "AVIF input rejected: NetPdf v1 does not decode AVIF (libavif unavailable on the SkiaSharp build)",
+                ImageFormat.Avif);
         }
 
         // 3. Dimension peek. Format-specific; each branch only reads the
@@ -218,6 +250,21 @@ public static class ImageSafetyValidator
             return ImageFormat.Bmp;
         }
 
+        // AVIF — ISOBMFF box at bytes 0..7: 4-byte size + "ftyp" + brand at
+        // bytes 8..11 ("avif" / "avis" / "heic" — the latter two are
+        // adjacent ISOBMFF brands that share the same box structure).
+        // Per PR #17 review user-recommendation #1.
+        if (bytes[4] == 0x66 && bytes[5] == 0x74 && bytes[6] == 0x79 && bytes[7] == 0x70)
+        {
+            // Check the major brand at bytes 8..11.
+            if (bytes[8] == 0x61 && bytes[9] == 0x76 && bytes[10] == 0x69 && bytes[11] == 0x66) // "avif"
+                return ImageFormat.Avif;
+            if (bytes[8] == 0x61 && bytes[9] == 0x76 && bytes[10] == 0x69 && bytes[11] == 0x73) // "avis"
+                return ImageFormat.Avif;
+            if (bytes[8] == 0x68 && bytes[9] == 0x65 && bytes[10] == 0x69 && bytes[11] == 0x63) // "heic"
+                return ImageFormat.Avif;
+        }
+
         return ImageFormat.Unknown;
     }
 
@@ -262,12 +309,21 @@ public static class ImageSafetyValidator
             case ImageFormat.Bmp:
                 // BMP DIB header (BITMAPINFOHEADER): width at bytes 18..21,
                 // height at 22..25, little-endian, signed (height can be
-                // negative for top-down). Take absolute value.
+                // negative for top-down). Take absolute value via long so
+                // 0x80000000 (int.MinValue) doesn't throw OverflowException
+                // out of Math.Abs(int) — per PR #17 review user-recommendation #8.
                 if (bytes.Length < 26) { reason = "header truncated"; return false; }
-                var bmpW = bytes[18] | (bytes[19] << 8) | (bytes[20] << 16) | (bytes[21] << 24);
-                var bmpH = bytes[22] | (bytes[23] << 8) | (bytes[24] << 16) | (bytes[25] << 24);
-                width = Math.Abs(bmpW);
-                height = Math.Abs(bmpH);
+                var bmpW = (long)(bytes[18] | (bytes[19] << 8) | (bytes[20] << 16) | (bytes[21] << 24));
+                var bmpH = (long)(bytes[22] | (bytes[23] << 8) | (bytes[24] << 16) | (bytes[25] << 24));
+                var bmpAbsW = Math.Abs(bmpW);
+                var bmpAbsH = Math.Abs(bmpH);
+                if (bmpAbsW > int.MaxValue || bmpAbsH > int.MaxValue)
+                {
+                    reason = "BMP dimensions exceed Int32 range";
+                    return false;
+                }
+                width = (int)bmpAbsW;
+                height = (int)bmpAbsH;
                 if (width <= 0 || height <= 0) { reason = "non-positive dimensions"; return false; }
                 return true;
 

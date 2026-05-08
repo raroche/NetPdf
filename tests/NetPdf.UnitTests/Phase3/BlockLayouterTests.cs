@@ -610,6 +610,220 @@ public sealed class BlockLayouterTests
     }
 
     // ====================================================================
+    //  PR #23 review fixes — regression tests
+    // ====================================================================
+
+    // --- P1 #1: Rewind retry resumes from checkpoint, not constructor -
+
+    [Fact]
+    public void Cycle2_rewind_retry_does_not_duplicate_fragments()
+    {
+        // PR #23 review fix #1 — integration test with
+        // LayoutRetryCoordinator + BlockLayouter. Resolver Continues
+        // for blocks 0 and 1 (emits both), then Rewinds at block 2's
+        // boundary. Retry must resume at block 2 (LEC=1 + 1 = 2),
+        // NOT at index 0 (which would duplicate blocks 0 and 1).
+        var sink = new RecordingFragmentSink();
+        var (root, _) = BuildTree(
+            (height: 100, marginTop: 0, marginBottom: 0),
+            (height: 100, marginTop: 0, marginBottom: 0),
+            (height: 100, marginTop: 0, marginBottom: 0));
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new RewindAtBlock2Resolver();
+        var coordinator = new LayoutRetryCoordinator(diagnostics: null, fragmentSink: sink);
+
+        var result = coordinator.Run(layouter, ctx, ref layoutCtx, resolver);
+
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+        // 3 blocks emitted once each — no duplication. Pre-fix the
+        // retry would re-emit blocks 0 + 1 → 5 fragments instead of 3.
+        Assert.Equal(3, sink.Fragments.Count);
+    }
+
+    [Fact]
+    public void Cycle2_rewind_resume_uses_checkpoint_LastEmittedChildIndex()
+    {
+        // Direct test: after a rewind, the layouter's NEXT
+        // AttemptLayout call resumes at the correct child index.
+        // Drives the layouter directly (without the coordinator) to
+        // verify the per-instance state-machine.
+        var sink = new RecordingFragmentSink();
+        var (root, _) = BuildTree(
+            (height: 100, marginTop: 0, marginBottom: 0),
+            (height: 100, marginTop: 0, marginBottom: 0),
+            (height: 100, marginTop: 0, marginBottom: 0));
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new RewindAtBlock2Resolver();
+
+        // First call: Continue, Continue, Rewind at block 2.
+        var firstResult = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+        Assert.Equal(LayoutAttemptOutcome.NeedsRewind, firstResult.Outcome);
+
+        // After firstResult.RewindTo!.RestoreInto + sink.RollbackTo
+        // (which we simulate manually here):
+        Assert.NotNull(firstResult.RewindTo);
+        firstResult.RewindTo!.RestoreInto(ctx, ref layoutCtx);
+        sink.RollbackTo(firstResult.RewindTo.FragmentOutputCursor);
+        Assert.Equal(2, sink.Fragments.Count);  // blocks 0+1 preserved
+
+        // Second call: should resume at block 2 (LEC=1 + 1 = 2).
+        var secondResult = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+        Assert.Equal(LayoutAttemptOutcome.AllDone, secondResult.Outcome);
+        // After retry: 3 fragments total (blocks 0, 1 from first; block 2 from second).
+        Assert.Equal(3, sink.Fragments.Count);
+    }
+
+    // --- P1 #2 + Copilot #1: oversized resumed-block on later page ---
+
+    [Fact]
+    public void Cycle2_oversized_block_first_on_resumed_page_makes_progress()
+    {
+        // PR #23 review fix #2 + Copilot #1 — when the first child
+        // on PAGE 2+ (resumed via continuation, priorPagesConsumed > 0)
+        // is oversized, the forced-overflow path MUST still trigger
+        // so pagination makes progress. Pre-fix the predicate
+        // required priorPagesConsumed == 0, so this scenario would
+        // loop forever returning ResumeAtChild=current.
+        var sink = new RecordingFragmentSink();
+        var (root, _) = BuildTree(
+            (height: 100, marginTop: 0, marginBottom: 0),    // page 1 (already emitted in priorPagesConsumed)
+            (height: 1500, marginTop: 0, marginBottom: 0));  // page 2 first child — oversized
+
+        // Resume on page 2 with prior pages = 100 px consumed.
+        var continuation = new BlockContinuation(ResumeAtChild: 1, ConsumedBlockSize: 100);
+        using var layouter = new BlockLayouter(root, sink, continuation);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        // Forward progress: the oversized block IS emitted.
+        Assert.Single(sink.Fragments);
+        Assert.Equal(1500, sink.Fragments[0].BlockSize);
+        // Continuation advances to the NEXT child (= 2 = end of input).
+        var blockCont = Assert.IsType<BlockContinuation>(result.Continuation);
+        Assert.Equal(2, blockCont.ResumeAtChild);
+        // Cost picks up the overflow penalty.
+        Assert.True(result.Cost >= CostModel.BreakInsideAvoidViolation);
+    }
+
+    // --- P2 #3: non-block content interrupts margin adjacency ---------
+
+    [Fact]
+    public void Cycle2_inline_child_between_blocks_breaks_margin_adjacency()
+    {
+        // PR #23 review fix #3 — inline content creates a line box
+        // that breaks margin adjacency per CSS 2.1 §8.3.1. Margins
+        // must NOT collapse across the line box.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        // Block 0: marginBottom=20
+        var b0Style = MakeStyle();
+        SetLengthPx(b0Style, PropertyId.Height, 100);
+        SetLengthPx(b0Style, PropertyId.MarginBottom, 20);
+        root.AppendChild(Box.ForElement(BoxKind.BlockContainer, b0Style, MakeElement()));
+
+        // Inline content between blocks (line-box-creating).
+        root.AppendChild(Box.TextRun("inline text", MakeStyle()));
+
+        // Block 1: marginTop=15
+        var b1Style = MakeStyle();
+        SetLengthPx(b1Style, PropertyId.Height, 100);
+        SetLengthPx(b1Style, PropertyId.MarginTop, 15);
+        root.AppendChild(Box.ForElement(BoxKind.BlockContainer, b1Style, MakeElement()));
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(2, sink.Fragments.Count);
+        // Block 0: BlockOffset=0, BlockSize=100. Cursor after = 120 (100+20).
+        Assert.Equal(0, sink.Fragments[0].BlockOffset);
+        // Block 1: NO collapse (inline child broke adjacency).
+        // BlockOffset = 120 (cursor) + 15 (marginTop, fully applied) = 135.
+        // Pre-fix: would collapse(20, 15) = 20, topShift = 0, BlockOffset = 120.
+        Assert.Equal(135, sink.Fragments[1].BlockOffset);
+    }
+
+    // --- P2 #4: negative margins keep UsedBlockSize non-negative ----
+
+    [Fact]
+    public void Cycle2_negative_margin_does_not_drive_used_block_size_below_zero()
+    {
+        // PR #23 review fix #4 — a block with very-negative margin-bottom
+        // can produce a negative margin-box advance. The cursor in
+        // fragmentainer.UsedBlockSize must clamp to 0 so the next
+        // BreakOpportunity doesn't trip CostModel.Score's non-negative
+        // guard.
+        var sink = new RecordingFragmentSink();
+        var (root, _) = BuildTree(
+            (height: 50, marginTop: 0, marginBottom: -200),  // ends at -150 (clamped to 0)
+            (height: 100, marginTop: 0, marginBottom: 0));
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        // Should not throw. Without the clamp, the second block's
+        // BreakOpportunity.UsedBlockSize would be -150, tripping
+        // CostModel's guard.
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+        Assert.Equal(2, sink.Fragments.Count);
+        // After the second block, cursor advance = max(0, ...). Should be ≥ 0.
+        Assert.True(ctx.UsedBlockSize >= 0);
+    }
+
+    // --- P2 #5: huge margin keeps inline-size non-negative -----------
+
+    [Fact]
+    public void Cycle2_huge_inline_margins_clamp_inline_size_to_zero()
+    {
+        // PR #23 review fix #5 — when margin-left + margin-right
+        // exceed ContentInlineSize, the resulting border-box inline
+        // size is negative. Clamp to 0 so the fragment record stays
+        // well-formed.
+        var sink = new RecordingFragmentSink();
+        var style = MakeStyle();
+        SetLengthPx(style, PropertyId.MarginLeft, 700);   // 700 + 200 = 900 > 600
+        SetLengthPx(style, PropertyId.MarginRight, 200);
+        SetLengthPx(style, PropertyId.Height, 100);
+
+        var root = Box.CreateRoot(MakeStyle());
+        root.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Single(sink.Fragments);
+        // Pre-fix: InlineSize = 600 - 700 - 200 = -300 (invalid).
+        // Post-fix: clamped to 0.
+        Assert.Equal(0, sink.Fragments[0].InlineSize);
+    }
+
+    // ====================================================================
     //  Cycle 2-3 deferral pins — failing-skip integration tests
     // ====================================================================
 
@@ -868,6 +1082,58 @@ public sealed class BlockLayouterTests
             {
                 LayoutCheckpointPool.Return(_last);
                 _last = default;
+            }
+        }
+    }
+
+    /// <summary>Resolver that returns Continue for blocks 0 + 1 +
+    /// Rewind for block 2 (first time only) + Continue for block 2
+    /// on retry. Used to verify PR #23 review fix #1 (no fragment
+    /// duplication after rewind).</summary>
+    private sealed class RewindAtBlock2Resolver : IBreakResolver
+    {
+        private int _calls;
+        private bool _rewoundOnce;
+        private CheckpointLease _lastLease;
+
+        public BreakDecision ConsiderBreakAt(BreakOpportunity opportunity, FragmentainerContext ctx)
+        {
+            _calls++;
+            // First call (block 0) + second call (block 1): Continue.
+            // Third call (block 2): Rewind (once). Fourth+: Continue.
+            if (_calls == 3 && !_rewoundOnce)
+            {
+                _rewoundOnce = true;
+                // The rewind-target IS the just-registered checkpoint
+                // (block 2 boundary, LEC=1).
+                return new BreakDecision(
+                    BreakAction.Rewind, 0, _lastLease.Checkpoint);
+            }
+            return BreakDecision.Continue;
+        }
+
+        public OptimizerResult ResolveBreaks(
+            IReadOnlyList<BreakOpportunity> opportunities, FragmentainerContext ctx)
+            => OptimizerResult.Empty;
+
+        public void RegisterCheckpoint(CheckpointLease lease)
+        {
+            if (_lastLease.Checkpoint is not null
+                && !ReferenceEquals(_lastLease.Checkpoint, lease.Checkpoint))
+            {
+                LayoutCheckpointPool.Return(_lastLease);
+            }
+            _lastLease = lease;
+        }
+
+        public LayoutCheckpoint? GetLastCheckpoint() => _lastLease.Checkpoint;
+
+        public void Dispose()
+        {
+            if (_lastLease.Checkpoint is not null)
+            {
+                LayoutCheckpointPool.Return(_lastLease);
+                _lastLease = default;
             }
         }
     }

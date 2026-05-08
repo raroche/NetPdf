@@ -10,7 +10,7 @@ namespace NetPdf.Paginate.Diagnostics;
 /// public <c>IDiagnosticsSink</c> at the assembly boundary.
 ///
 /// <para>Same pattern as
-/// <see cref="NetPdf.Css.Diagnostics.ICssDiagnosticsSink"/> — an
+/// <c>NetPdf.Css.Diagnostics.ICssDiagnosticsSink</c> — an
 /// internal-to-the-pipeline interface that the public facade adapts.</para>
 ///
 /// <para><b>Thread safety.</b> Implementations should be thread-safe;

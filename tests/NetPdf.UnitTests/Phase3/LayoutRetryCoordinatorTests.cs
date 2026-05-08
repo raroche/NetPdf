@@ -137,12 +137,14 @@ public sealed class LayoutRetryCoordinatorTests
     // --- LastResort + still-NeedsRewind contract violation ----------
 
     [Fact]
-    public void Run_handles_layouter_contract_violation_at_LastResort()
+    public void Run_throws_InvalidOperationException_when_LastResort_returns_NeedsRewind()
     {
-        // Defensive: if the layouter erroneously returns NeedsRewind on
-        // the LastResort attempt (contract violation), the coordinator
-        // must still terminate + return a best-effort result rather
-        // than infinite-looping.
+        // Per PR #24 review pass — a layouter that returns NeedsRewind
+        // on the LastResort attempt is a HARD contract violation. The
+        // coordinator throws InvalidOperationException rather than
+        // synthesizing a PageComplete (which the cycle 1 + 2 behavior
+        // did, masking real layouter bugs that could drop content).
+        // Fail-fast surfaces the violation immediately.
         var layouter = new MockLayouter();
         layouter.PlanRewind(cost: 1000);  // attempt 0
         layouter.PlanRewind(cost: 1000);  // attempt 1
@@ -154,15 +156,25 @@ public sealed class LayoutRetryCoordinatorTests
         var resolver = new BreakResolver();
         var coordinator = new LayoutRetryCoordinator(sink);
 
-        var result = coordinator.Run(layouter, ctx, ref layout, resolver);
+        var threw = false;
+        try
+        {
+            coordinator.Run(layouter, ctx, ref layout, resolver);
+        }
+        catch (System.InvalidOperationException ex)
+        {
+            threw = true;
+            Assert.Contains("ILayouter contract violation", ex.Message);
+            Assert.Contains("LastResort", ex.Message);
+        }
+        Assert.True(threw, "Coordinator must throw on LastResort+NeedsRewind contract violation");
 
-        // The coordinator should NOT return NeedsRewind to its caller —
-        // by the time we exhaust retries, the result must be terminal.
-        Assert.NotEqual(LayoutAttemptOutcome.NeedsRewind, result.Outcome);
+        // All 3 attempts ran (the throw fires at the end of the
+        // 3rd attempt's NeedsRewind branch).
         Assert.Equal(3, layouter.AttemptLog.Count);
 
-        // Diagnostic still emitted — it's emitted BEFORE the LastResort
-        // attempt regardless of what the attempt returns.
+        // Diagnostic still emitted before the LastResort attempt —
+        // emission order is BEFORE attempt runs.
         Assert.Single(sink.Diagnostics);
         Assert.Equal(PaginateDiagnosticCodes.PaginationForcedOverflow001,
             sink.Diagnostics[0].Code);
@@ -482,7 +494,11 @@ public sealed class LayoutRetryCoordinatorTests
         var coordinator = new LayoutRetryCoordinator();
         var result = coordinator.Run(layouter, original, ref layout, resolver);
 
-        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        // Per PR #24 review pass — SwapAndRewindLayouter's
+        // attempt-1 path returns AllDone (no further pages needed).
+        // The test's primary assertion is ReceivedFragmentainers
+        // reference identity, not the outcome shape.
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
         Assert.Equal(2, layouter.ReceivedFragmentainers.Count);
         // After restore, the coordinator MUST pass the captured
         // (original) fragmentainer to attempt 1, NOT the speculative
@@ -776,6 +792,149 @@ public sealed class LayoutRetryCoordinatorTests
     }
 
     // ====================================================================
+    //  PR #24 review pass — regression tests for tightened contracts
+    // ====================================================================
+
+    [Fact]
+    public void PageComplete_factory_throws_on_null_continuation()
+    {
+        // Per PR #24 review pass — PageComplete requires a non-null
+        // Continuation. The factory enforces at construction.
+        Assert.Throws<System.ArgumentNullException>(() =>
+            LayoutAttemptResult.PageComplete(null!, cost: 100));
+    }
+
+    [Fact]
+    public void Validate_throws_on_PageComplete_with_null_continuation()
+    {
+        // Per PR #24 review pass — ValidateOrThrow catches direct-record
+        // construction that bypasses the factory.
+        var bad = new LayoutAttemptResult(
+            LayoutAttemptOutcome.PageComplete,
+            Continuation: null,
+            RewindTo: null,
+            Cost: 0);
+
+        var threw = false;
+        try { bad.ValidateOrThrow(); }
+        catch (System.InvalidOperationException ex)
+        {
+            threw = true;
+            Assert.Contains("PageComplete requires non-null Continuation", ex.Message);
+        }
+        Assert.True(threw);
+    }
+
+    [Fact]
+    public void OptimizingResolver_diagnostic_sink_throw_is_swallowed()
+    {
+        // Per PR #24 review pass — IPaginateDiagnosticsSink contract
+        // says Emit MUST NOT throw, but a misbehaving sink shouldn't
+        // be able to take down the layout pipeline. The resolver wraps
+        // Emit in try/catch + drops the exception. Tests with a
+        // throwing sink verify the pipeline survives.
+        var throwingSink = new ThrowingSink();
+        using var resolver = new OptimizingBreakResolver(2, 2, throwingSink);
+
+        var ops = new[]
+        {
+            BreakOpportunity.Block(usedBlockSize: 100, chunkBlockSize: 50),
+            BreakOpportunity.Block(usedBlockSize: 50, chunkBlockSize: 50),  // non-monotonic
+        };
+        var ctx = new FragmentainerContext(600, 800);
+
+        // Should NOT throw despite the sink throwing.
+        var result = resolver.ResolveBreaks(ops, ctx);
+        Assert.True(result.FellBackToGreedy);
+        // FallbackCount still increments — observability preserved.
+        Assert.Equal(1, resolver.FallbackCount);
+    }
+
+    [Fact]
+    public void Coordinator_diagnostic_sink_throw_is_swallowed()
+    {
+        // Same guard at the coordinator level. A throwing sink during
+        // the LastResort emission must not corrupt the retry state.
+        var throwingSink = new ThrowingSink();
+        var layouter = new MockLayouter();
+        layouter.PlanRewind(cost: 1000);  // attempt 0
+        layouter.PlanRewind(cost: 1000);  // attempt 1
+        layouter.Plan(LayoutAttemptOutcome.PageComplete, cost: 100);  // attempt 2 — succeeds
+
+        var ctx = new FragmentainerContext(600, 800);
+        var layout = new LayoutContext(ctx);
+        var resolver = new BreakResolver();
+        var coordinator = new LayoutRetryCoordinator(throwingSink);
+
+        // Should NOT throw despite the sink throwing during LastResort
+        // emission.
+        var result = coordinator.Run(layouter, ctx, ref layout, resolver);
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        Assert.Equal(3, layouter.AttemptLog.Count);
+    }
+
+    [Fact]
+    public void OptimizingResolver_resolve_breaks_honors_cancellation_token()
+    {
+        // Per PR #24 review pass — ResolveBreaks accepts a
+        // CancellationToken so batched windows can be cancelled.
+        using var resolver = new OptimizingBreakResolver();
+        var ops = new[]
+        {
+            BreakOpportunity.Block(usedBlockSize: 100, chunkBlockSize: 50),
+        };
+        var ctx = new FragmentainerContext(600, 800);
+
+        using var cts = new System.Threading.CancellationTokenSource();
+        cts.Cancel();
+
+        var threw = false;
+        try
+        {
+            resolver.ResolveBreaks(ops, ctx, cts.Token);
+        }
+        catch (System.OperationCanceledException)
+        {
+            threw = true;
+        }
+        Assert.True(threw);
+    }
+
+    [Fact]
+    public void Optimizer_optimize_honors_cancellation_token()
+    {
+        // Direct test of Optimizer.Optimize CT.
+        var ops = new[]
+        {
+            BreakOpportunity.Block(usedBlockSize: 100, chunkBlockSize: 50),
+        };
+
+        using var cts = new System.Threading.CancellationTokenSource();
+        cts.Cancel();
+
+        var threw = false;
+        try
+        {
+            Optimizer.Optimize(ops, contentBlockSize: 800,
+                orphansRequired: 2, widowsRequired: 2,
+                cancellationToken: cts.Token);
+        }
+        catch (System.OperationCanceledException)
+        {
+            threw = true;
+        }
+        Assert.True(threw);
+    }
+
+    /// <summary>Sink that throws on every Emit call. Used to verify
+    /// the layout pipeline's defensive try/catch guards.</summary>
+    private sealed class ThrowingSink : IPaginateDiagnosticsSink
+    {
+        public void Emit(PaginateDiagnostic diagnostic)
+            => throw new System.InvalidOperationException("Hostile sink");
+    }
+
+    // ====================================================================
     //  Test doubles
     // ====================================================================
 
@@ -802,7 +961,16 @@ public sealed class LayoutRetryCoordinatorTests
                 throw new InvalidOperationException(
                     "Use PlanRewind() for NeedsRewind to attach a real checkpoint.");
             }
-            _planned.Enqueue(new LayoutAttemptResult(outcome, null, null, cost));
+            // Per PR #24 review pass — PageComplete requires non-null
+            // Continuation. The mock supplies a placeholder
+            // BlockContinuation; tests that need to inspect the
+            // continuation specifically should use the lower-level
+            // _planned.Enqueue + a custom result, or this is the
+            // sentinel.
+            LayoutContinuation? continuation = outcome == LayoutAttemptOutcome.PageComplete
+                ? new BlockContinuation(ResumeAtChild: 0, ConsumedBlockSize: 0)
+                : null;
+            _planned.Enqueue(new LayoutAttemptResult(outcome, continuation, null, cost));
         }
 
         public void PlanRewind(double cost)
@@ -841,7 +1009,7 @@ public sealed class LayoutRetryCoordinatorTests
             AttemptLog.Add(strategy);
             return _planned.Count > 0
                 ? _planned.Dequeue()
-                : LayoutAttemptResult.PageComplete(null, 0);
+                : LayoutAttemptResult.AllDone(0);
         }
 
         public void Dispose()
@@ -888,7 +1056,7 @@ public sealed class LayoutRetryCoordinatorTests
             }
 
             // Subsequent attempt — observe the restored state, then complete.
-            return LayoutAttemptResult.PageComplete(null, cost: 100);
+            return LayoutAttemptResult.AllDone(cost: 100);
         }
     }
 
@@ -972,7 +1140,7 @@ public sealed class LayoutRetryCoordinatorTests
                 return LayoutAttemptResult.NeedsRewind(_checkpoint, cost: 1000);
             }
 
-            return LayoutAttemptResult.PageComplete(null, cost: 100);
+            return LayoutAttemptResult.AllDone(cost: 100);
         }
     }
 

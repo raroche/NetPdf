@@ -155,7 +155,13 @@ internal sealed class LayoutRetryCoordinator
             // happened.
             if (strategy == LayoutAttemptStrategy.LastResort)
             {
-                Diagnostics?.Emit(new PaginateDiagnostic(
+                // Per PR #24 review pass — guard against sink throws.
+                // The IPaginateDiagnosticsSink contract says
+                // implementations MUST NOT throw, but a misbehaving
+                // sink (e.g., a hostile host adapter) shouldn't be
+                // able to take down the layout pipeline + leave the
+                // coordinator in an inconsistent retry state.
+                OptimizingBreakResolver.SafeEmit(Diagnostics, new PaginateDiagnostic(
                     PaginateDiagnosticCodes.PaginationForcedOverflow001,
                     $"Pagination required {MaxRetries} retries on fragmentainer page index "
                     + $"{originalPageIndex}; falling back to last-resort layout that "
@@ -186,17 +192,28 @@ internal sealed class LayoutRetryCoordinator
 
             if (strategy == LayoutAttemptStrategy.LastResort)
             {
-                // Defensive: the layouter returned NeedsRewind on the
-                // LastResort attempt — contract violation. Validation
-                // above accepted it (RewindTo is non-null per fix #1)
-                // but we have no more retries. Return a best-effort
-                // PageComplete to terminate the loop. This path
-                // shouldn't be reachable in well-behaved layouters.
-                return new LayoutAttemptResult(
-                    LayoutAttemptOutcome.PageComplete,
-                    Continuation: result.Continuation,
-                    RewindTo: null,
-                    Cost: result.Cost);
+                // Per PR #24 review pass — a layouter returning
+                // NeedsRewind on the LastResort attempt is a HARD
+                // contract violation. The strategy explicitly
+                // forbids it (see ILayouter XML doc). Pre-fix the
+                // coordinator silently fabricated a PageComplete
+                // result, but that:
+                //   (a) returned a PageComplete with a potentially
+                //       null Continuation (the new ValidateOrThrow
+                //       would reject this construction), and
+                //   (b) hid a real layouter bug that could drop
+                //       content + corrupt downstream pagination.
+                // Throw fail-fast so the caller (test or layout
+                // pipeline) sees the violation immediately.
+                throw new InvalidOperationException(
+                    "ILayouter contract violation: layouter returned "
+                    + "LayoutAttemptOutcome.NeedsRewind on the LastResort "
+                    + "attempt. LastResort is the final retry — the "
+                    + "layouter MUST commit a result (PageComplete or "
+                    + "AllDone) regardless of constraint violations. "
+                    + "See ILayouter.AttemptLayout XML doc for the "
+                    + "contract. RewindTo checkpoint = "
+                    + (result.RewindTo is not null ? "<set>" : "<null>") + ".");
             }
 
             // Track best-cost from the failed-but-instructive attempt.

@@ -200,12 +200,36 @@ internal readonly record struct LayoutAttemptResult(
     LayoutCheckpoint? RewindTo,
     double Cost)
 {
-    /// <summary>Per PR #21 review fix #1 — verify the result honors
-    /// the documented invariants. Throws
+    /// <summary>Per PR #21 review fix #1 + PR #24 review pass — verify
+    /// the result honors the documented invariants. Throws
     /// <see cref="InvalidOperationException"/> when violated; the
     /// coordinator calls this on every layouter response so a
     /// misbehaving layouter is caught immediately rather than
-    /// silently retrying from dirty state.</summary>
+    /// silently retrying from dirty state OR returning ambiguous
+    /// outcomes.
+    ///
+    /// <para><b>Invariants checked:</b></para>
+    /// <list type="bullet">
+    ///   <item><see cref="LayoutAttemptOutcome.NeedsRewind"/> ⟹
+    ///   <see cref="RewindTo"/> non-<see langword="null"/>. Without
+    ///   the checkpoint the coordinator can't restore state for
+    ///   the retry.</item>
+    ///   <item><b>PR #24 review pass — <see cref="LayoutAttemptOutcome.PageComplete"/>
+    ///   ⟹ <see cref="Continuation"/> non-<see langword="null"/>.</b>
+    ///   "PageComplete" means "the page is full; the next page must
+    ///   resume from the carried continuation". A null continuation
+    ///   would mean "the next page has no resume target" which is
+    ///   the <see cref="LayoutAttemptOutcome.AllDone"/> semantic.
+    ///   Allowing both <c>PageComplete(null)</c> + <c>AllDone</c>
+    ///   creates an ambiguity where the coordinator + caller can't
+    ///   tell whether more pages are needed. Pre-fix the cycle-1
+    ///   factory let layouters construct <c>PageComplete(null)</c>
+    ///   + the test doubles relied on this; this revision fails
+    ///   fast on the construction path.</item>
+    ///   <item><see cref="LayoutAttemptOutcome.AllDone"/> ⟹
+    ///   <see cref="Continuation"/> <see langword="null"/>. The
+    ///   inverse of the PageComplete invariant.</item>
+    /// </list></summary>
     public void ValidateOrThrow()
     {
         if (Outcome == LayoutAttemptOutcome.NeedsRewind && RewindTo is null)
@@ -219,6 +243,17 @@ internal readonly record struct LayoutAttemptResult(
                 + "Use LayoutAttemptResult.NeedsRewind(checkpoint, cost) "
                 + "factory or capture a checkpoint before declining.");
         }
+        if (Outcome == LayoutAttemptOutcome.PageComplete && Continuation is null)
+        {
+            // Per PR #24 review pass — PageComplete must carry a
+            // continuation. AllDone is the no-continuation success
+            // outcome.
+            throw new InvalidOperationException(
+                "LayoutAttemptResult invariant violation: "
+                + "Outcome=PageComplete requires non-null Continuation. "
+                + "PageComplete means the next page must know where to resume; "
+                + "use AllDone for the no-more-pages-needed outcome.");
+        }
         if (Outcome == LayoutAttemptOutcome.AllDone && Continuation is not null)
         {
             throw new InvalidOperationException(
@@ -230,12 +265,19 @@ internal readonly record struct LayoutAttemptResult(
     }
 
     /// <summary>Convenience: a "page complete" result with the named
-    /// continuation + cost. <paramref name="cost"/> may be any
-    /// non-negative value — the coordinator uses cost for best-attempt
-    /// tracking across retries (PR #21 review fix — XML doc no longer
-    /// implies the cost is always zero).</summary>
-    public static LayoutAttemptResult PageComplete(LayoutContinuation? continuation, double cost) =>
-        new(LayoutAttemptOutcome.PageComplete, continuation, RewindTo: null, cost);
+    /// continuation + cost.
+    ///
+    /// <para>Per PR #24 review pass — <paramref name="continuation"/>
+    /// is non-nullable. PageComplete means "this page is full; the
+    /// next page must know where to resume" — a null continuation
+    /// is the AllDone semantic. The factory enforces the invariant
+    /// at the construction boundary; <see cref="ValidateOrThrow"/>
+    /// catches direct-record-construction violations.</para></summary>
+    public static LayoutAttemptResult PageComplete(LayoutContinuation continuation, double cost)
+    {
+        ArgumentNullException.ThrowIfNull(continuation);
+        return new(LayoutAttemptOutcome.PageComplete, continuation, RewindTo: null, cost);
+    }
 
     /// <summary>Convenience: an "all done" result for layouters that
     /// finished all content within the current fragmentainer.</summary>

@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Threading;
 
 namespace NetPdf.Paginate;
 
@@ -136,13 +137,21 @@ internal static class Optimizer
     /// (CSS Fragmentation L3 §4.2). Defaults to 2 in the spec.</param>
     /// <param name="widowsRequired">Author's <c>widows</c> property.
     /// Defaults to 2.</param>
+    /// <param name="cancellationToken">Per PR #24 review pass —
+    /// thread the caller's cancellation through to the DP. Pathological
+    /// inputs (1000s of candidates, dense per-page distributions) can
+    /// burn cycles inside a single Optimize call; the token gives the
+    /// coordinator + the layouter pipeline cancellation visibility
+    /// during a batched window.</param>
     public static OptimizerResult Optimize(
         IReadOnlyList<BreakOpportunity> opportunities,
         double contentBlockSize,
         int orphansRequired,
-        int widowsRequired)
+        int widowsRequired,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(opportunities);
+        cancellationToken.ThrowIfCancellationRequested();
         if (!double.IsFinite(contentBlockSize) || contentBlockSize <= 0)
             throw new ArgumentOutOfRangeException(nameof(contentBlockSize),
                 $"contentBlockSize must be finite + positive; got {contentBlockSize}");
@@ -196,6 +205,12 @@ internal static class Optimizer
 
         while (i2 < n)
         {
+            // Per PR #24 review pass — cancellation check at the
+            // outer-loop boundary. The pair-eval loop below also
+            // checks before each evaluation; this catches the case
+            // where the outer loop runs many windows without the
+            // pair-eval count tripping its budget.
+            cancellationToken.ThrowIfCancellationRequested();
             // ---- Step 1 (review fix #1 + Copilot #2): early exit
             // when the remainder fits + no forced break ahead. ----
             var tailEnd = opportunities[n - 1].UsedBlockSize + opportunities[n - 1].ChunkBlockSize;

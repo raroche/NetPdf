@@ -670,7 +670,7 @@ public sealed class BlockLayouterTests
         }
 
         public OptimizerResult ResolveBreaks(
-            IReadOnlyList<BreakOpportunity> opportunities, FragmentainerContext ctx)
+            IReadOnlyList<BreakOpportunity> opportunities, FragmentainerContext ctx, CancellationToken cancellationToken = default)
             => OptimizerResult.Empty;
 
         public void RegisterCheckpoint(CheckpointLease lease) { }
@@ -688,7 +688,7 @@ public sealed class BlockLayouterTests
             => BreakDecision.Continue;
 
         public OptimizerResult ResolveBreaks(
-            IReadOnlyList<BreakOpportunity> opportunities, FragmentainerContext ctx)
+            IReadOnlyList<BreakOpportunity> opportunities, FragmentainerContext ctx, CancellationToken cancellationToken = default)
             => OptimizerResult.Empty;
 
         public void RegisterCheckpoint(CheckpointLease lease)
@@ -725,7 +725,7 @@ public sealed class BlockLayouterTests
             => BreakDecision.Continue;
 
         public OptimizerResult ResolveBreaks(
-            IReadOnlyList<BreakOpportunity> opportunities, FragmentainerContext ctx)
+            IReadOnlyList<BreakOpportunity> opportunities, FragmentainerContext ctx, CancellationToken cancellationToken = default)
             => OptimizerResult.Empty;
 
         public void RegisterCheckpoint(CheckpointLease lease)

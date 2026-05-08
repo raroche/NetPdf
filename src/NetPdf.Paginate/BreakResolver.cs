@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Threading;
 
 namespace NetPdf.Paginate;
 
@@ -119,10 +120,13 @@ internal sealed class BreakResolver : IBreakResolver
     /// any page; the cost must reflect the overflow even when the
     /// current page hasn't yet exceeded its capacity).</para></remarks>
     public OptimizerResult ResolveBreaks(
-        IReadOnlyList<BreakOpportunity> opportunities, FragmentainerContext ctx)
+        IReadOnlyList<BreakOpportunity> opportunities,
+        FragmentainerContext ctx,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(opportunities);
         ArgumentNullException.ThrowIfNull(ctx);
+        cancellationToken.ThrowIfCancellationRequested();
 
         if (opportunities.Count == 0)
         {
@@ -135,6 +139,10 @@ internal sealed class BreakResolver : IBreakResolver
 
         for (var i = 0; i < opportunities.Count; i++)
         {
+            // Per PR #24 review pass — cancellation check inside the
+            // greedy pass too. Cheap; loop body is small but pathological
+            // inputs can have very long candidate lists.
+            cancellationToken.ThrowIfCancellationRequested();
             var opp = opportunities[i];
             opp.EnsureValid();
 

@@ -19,6 +19,18 @@ namespace NetPdf.Paginate;
 /// in <c>vertical-rl</c> / <c>vertical-lr</c> writing modes can use
 /// the same opportunity record without renaming.</para>
 ///
+/// <para><b>UsedBlockSize coordinate space.</b> Per Phase 3 Task 4
+/// review fix #2 + Copilot review #8 — the meaning depends on which
+/// resolver path consumes the opportunity:</para>
+/// <list type="bullet">
+///   <item><b><see cref="IBreakResolver.ConsiderBreakAt"/> (streaming).</b>
+///   Per-fragmentainer cumulative size — resets at each page break.
+///   Matches the original <c>height-from-page-top</c> semantics.</item>
+///   <item><b><see cref="IBreakResolver.ResolveBreaks"/> (batched).</b>
+///   Cumulative-across-window — monotonically non-decreasing so the
+///   DP can subtract <c>pageStart</c> to recover per-page measurements.</item>
+/// </list>
+///
 /// <para><b>Forced + avoid metadata.</b> Per Phase 3 review fix #3 +
 /// CSS Fragmentation L3 §3.1, <c>break-before</c> / <c>break-after</c>
 /// can FORCE a break (<c>page</c>, <c>left</c>, <c>right</c>,
@@ -30,15 +42,18 @@ namespace NetPdf.Paginate;
 /// unused-state bugs).</para>
 /// </summary>
 /// <param name="UsedBlockSize">Cumulative block-axis size (CSS px)
-/// consumed in the current fragmentainer at the moment this candidate
-/// was offered. Per Phase 3 review fix #4, the cost model scores
-/// against this snapshot value (not the live FragmentainerContext)
-/// so the optimizer can evaluate historical candidates after the
-/// layouter has moved past them.</param>
+/// consumed at the moment this candidate was offered. Coordinate
+/// space (per-fragmentainer vs cumulative-across-window) depends on
+/// the consumer; see the type-level XML doc.</param>
 /// <param name="ChunkBlockSize">Block-axis size (CSS px) of the next
 /// chunk that would land if the layouter <see cref="BreakAction.Continue"/>'s
 /// past this point. Cost model uses this to detect candidates that
-/// would trigger a fragmentainer overflow.</param>
+/// would trigger a fragmentainer overflow; per Phase 3 Task 4
+/// Copilot reviews #3, #4, #5 a value greater than the fragmentainer
+/// extent contributes the <see cref="CostModel.BreakInsideAvoidViolation"/>
+/// penalty (the chunk can't fit on any page; surface the overflow
+/// in the cost so the layouter emits
+/// <c>PAGINATION-FORCED-OVERFLOW-001</c>).</param>
 /// <param name="Class">What kind of boundary this is — block / line /
 /// table-row / etc. The cost model's penalty matrix keys off this.</param>
 /// <param name="ForceBreak">Per CSS Fragmentation L3 §3.1 — set when
@@ -62,13 +77,7 @@ namespace NetPdf.Paginate;
 /// candidate break) for the paragraph this opportunity belongs to.
 /// <see cref="CostModel.Score"/> compares this against the author's
 /// <c>orphans</c> property: a value below the requirement triggers
-/// the orphan penalty. The widows penalty uses the
-/// <c>lineCountAfterBreak</c> argument the resolver computes
-/// separately. Pre-fix this was named <c>WidowOrphanLineCount</c>
-/// with a docstring claiming it was "lines the chunk occupies",
-/// but the cost model + the <see cref="Line"/> helper both treated
-/// it as lines-before-the-break — the ambiguous name encouraged
-/// future layouters to wire it wrong.</param>
+/// the orphan penalty.</param>
 /// <param name="StrandsHeading">Per Phase 3 review fix #5 — set when
 /// breaking here would leave a heading at the bottom of the page with
 /// zero content lines following. Triggers the
@@ -79,6 +88,19 @@ namespace NetPdf.Paginate;
 /// Triggers the <see cref="CostModel.FlexOrGridLineSplit"/> penalty.
 /// Distinct from <see cref="AvoidBreak"/> — the line CAN be split
 /// (cost paid), versus <c>avoid</c> which is effectively forbidden.</param>
+/// <param name="ParagraphId">Per Phase 3 Task 4 review fix #5 —
+/// optional paragraph identity for accurate widow scoring. Matches
+/// CSS Fragmentation L3 §4.2 + L4 §4.5 — the <c>widows</c> property
+/// counts lines AFTER a break in the SAME block container. Layouters
+/// set this to a non-zero stable identifier per source paragraph
+/// (e.g., the box-tree ID of the inline-formatting context). The
+/// optimizer uses it to count "how many subsequent line opportunities
+/// share this ParagraphId" for the widow check. Default 0 means "no
+/// paragraph identity available"; the optimizer falls back to a
+/// heuristic counting consecutive <see cref="BreakOpportunityClass.LineBoundary"/>
+/// opportunities until a non-line or different-class boundary
+/// appears. Block / table / flex / grid opportunities ignore this
+/// field — widows apply to inline formatting only.</param>
 internal readonly record struct BreakOpportunity(
     double UsedBlockSize,
     double ChunkBlockSize,
@@ -88,7 +110,8 @@ internal readonly record struct BreakOpportunity(
     PageParity ForceParity,
     int LinesBeforeBreak,
     bool StrandsHeading,
-    bool SplitsFlexOrGridLine)
+    bool SplitsFlexOrGridLine,
+    int ParagraphId = 0)
 {
     /// <summary>Per Phase 3 review fix #8 — geometry inputs must be
     /// finite + non-negative. NaN / negative values silently corrupt
@@ -104,6 +127,9 @@ internal readonly record struct BreakOpportunity(
         if (LinesBeforeBreak < 0)
             throw new ArgumentException(
                 $"LinesBeforeBreak must be non-negative; got {LinesBeforeBreak}", nameof(LinesBeforeBreak));
+        if (ParagraphId < 0)
+            throw new ArgumentException(
+                $"ParagraphId must be non-negative; got {ParagraphId}", nameof(ParagraphId));
     }
 
     /// <summary>Convenience helper for the common case of a
@@ -112,15 +138,21 @@ internal readonly record struct BreakOpportunity(
     public static BreakOpportunity Block(double usedBlockSize, double chunkBlockSize) =>
         new(usedBlockSize, chunkBlockSize, BreakOpportunityClass.BlockBoundary,
             ForceBreak: false, AvoidBreak: false, ForceParity: PageParity.Any,
-            LinesBeforeBreak: 0, StrandsHeading: false, SplitsFlexOrGridLine: false);
+            LinesBeforeBreak: 0, StrandsHeading: false, SplitsFlexOrGridLine: false,
+            ParagraphId: 0);
 
     /// <summary>Convenience helper for a line boundary inside a
     /// paragraph; carries the line count so the orphan / widow
-    /// penalty fires correctly.</summary>
-    public static BreakOpportunity Line(double usedBlockSize, double chunkBlockSize, int linesBefore) =>
+    /// penalty fires correctly. <paramref name="paragraphId"/> per
+    /// Phase 3 Task 4 review fix #5 — optional paragraph identity
+    /// for accurate widow scoring (default 0 falls back to the
+    /// consecutive-LineBoundary heuristic).</summary>
+    public static BreakOpportunity Line(
+        double usedBlockSize, double chunkBlockSize, int linesBefore, int paragraphId = 0) =>
         new(usedBlockSize, chunkBlockSize, BreakOpportunityClass.LineBoundary,
             ForceBreak: false, AvoidBreak: false, ForceParity: PageParity.Any,
-            LinesBeforeBreak: linesBefore, StrandsHeading: false, SplitsFlexOrGridLine: false);
+            LinesBeforeBreak: linesBefore, StrandsHeading: false, SplitsFlexOrGridLine: false,
+            ParagraphId: paragraphId);
 }
 
 /// <summary>

@@ -117,25 +117,29 @@ public sealed class PaginationFoundationTests
     [Fact]
     public void Checkpoint_pool_rent_returns_freshly_reset_instance()
     {
-        var cp1 = LayoutCheckpointPool.Rent();
+        var cp1Lease = LayoutCheckpointPool.Rent(); var cp1 = cp1Lease.Checkpoint!;
         cp1.PageIndex = 5;
         cp1.UsedBlockSize = 123;
         cp1.LastEmittedChildIndex = 7;
         cp1.IncomingContinuation = new BlockContinuation(3, 100);
-        LayoutCheckpointPool.Return(cp1);
+        LayoutCheckpointPool.Return(cp1Lease);
 
-        var cp2 = LayoutCheckpointPool.Rent();
+        var cp2Lease = LayoutCheckpointPool.Rent(); var cp2 = cp2Lease.Checkpoint!;
         Assert.Equal(0, cp2.PageIndex);
         Assert.Equal(0, cp2.UsedBlockSize);
         Assert.Equal(-1, cp2.LastEmittedChildIndex);
         Assert.Null(cp2.IncomingContinuation);
-        LayoutCheckpointPool.Return(cp2);
+        LayoutCheckpointPool.Return(cp2Lease);
     }
 
     [Fact]
-    public void Checkpoint_pool_handles_null_return_gracefully()
+    public void Checkpoint_pool_handles_default_lease_gracefully()
     {
-        LayoutCheckpointPool.Return(null);
+        // Per Phase 3 Task 4 review fix #7 — default(CheckpointLease)
+        // has a null Checkpoint property; Return must drop it on the
+        // floor (the pre-fix API took LayoutCheckpoint?, this verifies
+        // the lease-API equivalent of the original null-safety check).
+        LayoutCheckpointPool.Return(default);
     }
 
     // --- Review #6: pool double-return + null-large-refs -----------------
@@ -143,39 +147,39 @@ public sealed class PaginationFoundationTests
     [Fact]
     public void Checkpoint_pool_rejects_double_return_no_aliasing()
     {
-        var cp = LayoutCheckpointPool.Rent();
+        var cpLease = LayoutCheckpointPool.Rent(); var cp = cpLease.Checkpoint!;
         cp.PageIndex = 99;
-        LayoutCheckpointPool.Return(cp);
+        LayoutCheckpointPool.Return(cpLease);
         // Second return must be a no-op (not a duplicate add). Without
         // the guard, two concurrent Rent() calls could hand out the
         // same instance.
-        LayoutCheckpointPool.Return(cp);
+        LayoutCheckpointPool.Return(cpLease);
         // Rent twice — must produce two distinct instances if the
         // double-return was rejected; if accepted, both rentals
         // would alias the same backing instance (verified by writing
         // to one + observing the other).
-        var a = LayoutCheckpointPool.Rent();
-        var b = LayoutCheckpointPool.Rent();
+        var aLease = LayoutCheckpointPool.Rent(); var a = aLease.Checkpoint!;
+        var bLease = LayoutCheckpointPool.Rent(); var b = bLease.Checkpoint!;
         Assert.NotSame(a, b);
         a.PageIndex = 11;
         b.PageIndex = 22;
         Assert.Equal(11, a.PageIndex);
         Assert.Equal(22, b.PageIndex);
-        LayoutCheckpointPool.Return(a);
-        LayoutCheckpointPool.Return(b);
+        LayoutCheckpointPool.Return(aLease);
+        LayoutCheckpointPool.Return(bLease);
     }
 
     [Fact]
     public void Checkpoint_return_clears_large_reference_fields()
     {
-        var cp = LayoutCheckpointPool.Rent();
+        var cpLease = LayoutCheckpointPool.Rent(); var cp = cpLease.Checkpoint!;
         cp.IncomingContinuation = new TableContinuation(true, false, 5, ColumnLayoutCache: new object());
         cp.NamedStringsSnapshot = new Dictionary<string, string> { ["x"] = "y" };
         cp.CountersSnapshot = new Dictionary<string, int> { ["page"] = 1 };
         cp.FloatManagerStateSnapshot = new object();
         // Hold a weak reference target to verify the pool doesn't pin
         // the inner state for the GC.
-        LayoutCheckpointPool.Return(cp);
+        LayoutCheckpointPool.Return(cpLease);
         // After Return, every large-ref field must be cleared so GC
         // can reclaim the referenced graphs while the checkpoint
         // sits idle.
@@ -202,7 +206,7 @@ public sealed class PaginationFoundationTests
         layout.AvailableInlineSize = 500;
         layout.AvailableBlockSize = 700;
 
-        var cp = LayoutCheckpointPool.Rent();
+        var cpLease = LayoutCheckpointPool.Rent(); var cp = cpLease.Checkpoint!;
         cp.Capture(ctx, layout, fragmentOutputCursor: 4,
             lastEmittedChildIndex: 2, incomingContinuation: null,
             pageCounterValue: 3);
@@ -236,7 +240,7 @@ public sealed class PaginationFoundationTests
         Assert.Equal(7, layout.ReadCounter("figure"));
         Assert.Equal(0, layout.ReadCounter("brand-new")); // discarded
 
-        LayoutCheckpointPool.Return(cp);
+        LayoutCheckpointPool.Return(cpLease);
     }
 
     [Fact]
@@ -244,7 +248,7 @@ public sealed class PaginationFoundationTests
     {
         var ctx = new FragmentainerContext(600, 800);
         var layout = new LayoutContext(ctx);
-        var cp = LayoutCheckpointPool.Rent();
+        var cpLease = LayoutCheckpointPool.Rent(); var cp = cpLease.Checkpoint!;
 
         cp.Capture(ctx, layout, fragmentOutputCursor: 0,
             lastEmittedChildIndex: -1, incomingContinuation: null,
@@ -254,7 +258,7 @@ public sealed class PaginationFoundationTests
         // (no allocation overhead in the common case).
         Assert.Null(cp.NamedStringsSnapshot);
         Assert.Null(cp.CountersSnapshot);
-        LayoutCheckpointPool.Return(cp);
+        LayoutCheckpointPool.Return(cpLease);
     }
 
     // --- LayoutContext ref struct (block-axis naming) --------------------
@@ -486,12 +490,12 @@ public sealed class PaginationFoundationTests
     {
         var resolver = new BreakResolver();
         Assert.Null(resolver.GetLastCheckpoint());
-        var cp1 = LayoutCheckpointPool.Rent();
+        var cp1Lease = LayoutCheckpointPool.Rent(); var cp1 = cp1Lease.Checkpoint!;
         cp1.PageIndex = 1;
-        var cp2 = LayoutCheckpointPool.Rent();
+        var cp2Lease = LayoutCheckpointPool.Rent(); var cp2 = cp2Lease.Checkpoint!;
         cp2.PageIndex = 2;
-        resolver.RegisterCheckpoint(cp1);
-        resolver.RegisterCheckpoint(cp2);
+        resolver.RegisterCheckpoint(cp1Lease);
+        resolver.RegisterCheckpoint(cp2Lease);
         Assert.Same(cp2, resolver.GetLastCheckpoint());
     }
 
@@ -598,26 +602,26 @@ public sealed class PaginationFoundationTests
     public void Copilot1_break_resolver_keeps_only_most_recent_checkpoint()
     {
         var resolver = new BreakResolver();
-        var cp1 = LayoutCheckpointPool.Rent();
+        var cp1Lease = LayoutCheckpointPool.Rent(); var cp1 = cp1Lease.Checkpoint!;
         cp1.PageIndex = 1;
-        var cp2 = LayoutCheckpointPool.Rent();
+        var cp2Lease = LayoutCheckpointPool.Rent(); var cp2 = cp2Lease.Checkpoint!;
         cp2.PageIndex = 2;
-        resolver.RegisterCheckpoint(cp1);
+        resolver.RegisterCheckpoint(cp1Lease);
         // Register cp2 — cp1 must be returned to the pool, otherwise
         // it's a memory leak as layouters pile registrations.
-        resolver.RegisterCheckpoint(cp2);
+        resolver.RegisterCheckpoint(cp2Lease);
         Assert.Same(cp2, resolver.GetLastCheckpoint());
         // cp1 should now be in the pool. Renting twice in a row should
         // succeed; the next Rent call would receive cp1 (reset).
-        var rented = LayoutCheckpointPool.Rent();
+        var rentedLease = LayoutCheckpointPool.Rent(); var rented = rentedLease.Checkpoint!;
         // Reset on rent → fresh state regardless of which instance came
         // back. The membership-tracker assertion is implicit: if cp1
         // wasn't returned, the pool would be empty + Rent would
         // allocate a new instance (also fine), but the side-effect we
         // care about is that cp1's state was cleared.
         Assert.Equal(0, rented.PageIndex);
-        LayoutCheckpointPool.Return(rented);
-        LayoutCheckpointPool.Return(cp2);
+        LayoutCheckpointPool.Return(rentedLease);
+        LayoutCheckpointPool.Return(cp2Lease);
     }
 
     [Fact]
@@ -628,10 +632,10 @@ public sealed class PaginationFoundationTests
         // (would leave the resolver pointing at a freshly-cleared
         // instance + a stale "live" reference).
         var resolver = new BreakResolver();
-        var cp = LayoutCheckpointPool.Rent();
+        var cpLease = LayoutCheckpointPool.Rent(); var cp = cpLease.Checkpoint!;
         cp.PageIndex = 7;
-        resolver.RegisterCheckpoint(cp);
-        resolver.RegisterCheckpoint(cp); // self-register
+        resolver.RegisterCheckpoint(cpLease);
+        resolver.RegisterCheckpoint(cpLease); // self-register
         Assert.Same(cp, resolver.GetLastCheckpoint());
         Assert.Equal(7, cp.PageIndex); // not reset
     }

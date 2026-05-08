@@ -11,9 +11,13 @@
        (ILayouter, LayoutCheckpoint, LayoutContinuation, LayoutContext,
        IBreakResolver). NetPdf.Layout REFERENCES this assembly so its
        layouters can implement ILayouter. The reverse direction would
-       create a dependency cycle. NetPdf.Paginate is therefore a
-       leaf-ish node — it depends only on NetPdf (via the diagnostic
-       parity test) at build time, not on layouter-side code.
+       create a dependency cycle. NetPdf.Paginate is therefore a true
+       leaf node — it has ZERO project references.
+
+       The diagnostic-codes parity check (PaginateDiagnosticCodes vs
+       NetPdf.DiagnosticCodes) is enforced at TEST time by
+       NetPdf.UnitTests, which references both assemblies. There is
+       no build-time dependency from Paginate to NetPdf.
 
        Pre-Task-7 the project reference ran NetPdf.Paginate -> NetPdf.Layout,
        but Paginate never actually used any Layout types — the reference

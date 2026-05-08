@@ -48,16 +48,29 @@ namespace NetPdf.Paginate;
 /// <see cref="LayoutAttemptResult.RewindTo"/>.</para>
 ///
 /// <para><b>Fragment emission contract (Phase 3 Task 5 PR #21 review
-/// fix #3).</b> A layouter that returns
-/// <see cref="LayoutAttemptOutcome.NeedsRewind"/> MUST NOT have
-/// emitted any fragments to the active <see cref="IFragmentSink"/> —
-/// retry restores layout state but cannot un-emit fragments without
-/// an explicit rollback hook. Layouters that need to emit fragments
-/// incrementally before they're sure they won't rewind MUST register
-/// an <see cref="IFragmentSink"/> with the
-/// <see cref="LayoutRetryCoordinator"/>; the coordinator calls
-/// <see cref="IFragmentSink.RollbackTo"/> with the checkpoint's
-/// <see cref="LayoutCheckpoint.FragmentOutputCursor"/> on rewind.</para>
+/// fix #3 + Copilot resolution).</b> Two valid emission patterns:
+/// <list type="bullet">
+///   <item><b>All-or-nothing (no rollback hook).</b> The layouter
+///   buffers its fragments internally and only flushes to the sink
+///   on <see cref="LayoutAttemptOutcome.PageComplete"/> /
+///   <see cref="LayoutAttemptOutcome.AllDone"/>. Returning
+///   <see cref="LayoutAttemptOutcome.NeedsRewind"/> MUST NOT have
+///   produced any visible side effects on the sink.</item>
+///   <item><b>Incremental with rollback (opt-in).</b> The layouter
+///   emits fragments as it goes, and registers an
+///   <see cref="IFragmentSink"/> with the
+///   <see cref="LayoutRetryCoordinator"/>; on rewind, the coordinator
+///   calls <see cref="IFragmentSink.RollbackTo"/> with the
+///   checkpoint's
+///   <see cref="LayoutCheckpoint.FragmentOutputCursor"/> to discard
+///   the speculative fragments. The layouter's
+///   <see cref="LayoutAttemptOutcome.NeedsRewind"/> result is
+///   permitted because the rollback hook will undo the emission.</item>
+/// </list>
+/// A layouter MAY NOT mix the two patterns: emitting incrementally
+/// without registering an <see cref="IFragmentSink"/> leaves the
+/// sink in a corrupted state on rewind (retry restores layout state
+/// but cannot un-emit fragments without the explicit rollback hook).</para>
 ///
 /// <para><b>Cancellation (Phase 3 Task 5 PR #21 review fix #6).</b>
 /// The <see cref="CancellationToken"/> threads through to layouters

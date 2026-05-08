@@ -43,7 +43,7 @@ public sealed class LayoutRetryCoordinatorTests
     [Fact]
     public void Run_returns_layouter_result_when_no_rewind_needed()
     {
-        var layouter = new MockLayouter();
+        using var layouter = new MockLayouter();
         layouter.Plan(LayoutAttemptOutcome.PageComplete, cost: 100);
 
         var ctx = new FragmentainerContext(600, 800);
@@ -62,7 +62,7 @@ public sealed class LayoutRetryCoordinatorTests
     [Fact]
     public void Run_returns_AllDone_without_emitting_diagnostic()
     {
-        var layouter = new MockLayouter();
+        using var layouter = new MockLayouter();
         layouter.Plan(LayoutAttemptOutcome.AllDone, cost: 0);
         var sink = new RecordingSink();
 
@@ -82,7 +82,7 @@ public sealed class LayoutRetryCoordinatorTests
     [Fact]
     public void Run_retries_once_when_first_attempt_returns_NeedsRewind()
     {
-        var layouter = new MockLayouter();
+        using var layouter = new MockLayouter();
         // Attempt 0 (Strict) → NeedsRewind. Attempt 1 (DropAvoidInside)
         // → PageComplete. Coordinator retries once + returns the
         // second result.
@@ -106,7 +106,7 @@ public sealed class LayoutRetryCoordinatorTests
     [Fact]
     public void Run_retries_twice_when_first_two_attempts_return_NeedsRewind()
     {
-        var layouter = new MockLayouter();
+        using var layouter = new MockLayouter();
         // Attempts 0, 1 → NeedsRewind. Attempt 2 (LastResort) → PageComplete.
         layouter.PlanRewind(cost: 1000);
         layouter.PlanRewind(cost: 800);
@@ -145,7 +145,7 @@ public sealed class LayoutRetryCoordinatorTests
         // synthesizing a PageComplete (which the cycle 1 + 2 behavior
         // did, masking real layouter bugs that could drop content).
         // Fail-fast surfaces the violation immediately.
-        var layouter = new MockLayouter();
+        using var layouter = new MockLayouter();
         layouter.PlanRewind(cost: 1000);  // attempt 0
         layouter.PlanRewind(cost: 1000);  // attempt 1
         layouter.PlanRewind(cost: 1000);  // attempt 2 — contract violation
@@ -187,7 +187,7 @@ public sealed class LayoutRetryCoordinatorTests
     {
         // Coordinator with null sink must not throw when LastResort
         // is reached — it just doesn't emit.
-        var layouter = new MockLayouter();
+        using var layouter = new MockLayouter();
         layouter.PlanRewind(cost: 1000);
         layouter.PlanRewind(cost: 1000);
         layouter.Plan(LayoutAttemptOutcome.PageComplete, cost: 500);
@@ -205,7 +205,7 @@ public sealed class LayoutRetryCoordinatorTests
     [Fact]
     public void Run_diagnostic_message_includes_page_index()
     {
-        var layouter = new MockLayouter();
+        using var layouter = new MockLayouter();
         layouter.PlanRewind(cost: 1000);
         layouter.PlanRewind(cost: 1000);
         layouter.Plan(LayoutAttemptOutcome.PageComplete, cost: 500);
@@ -295,7 +295,7 @@ public sealed class LayoutRetryCoordinatorTests
     [Fact]
     public void Run_throws_on_null_fragmentainer()
     {
-        var layouter = new MockLayouter();
+        using var layouter = new MockLayouter();
         var ctx = new FragmentainerContext(600, 800);
         var layout = new LayoutContext(ctx);
         var resolver = new BreakResolver();
@@ -316,7 +316,7 @@ public sealed class LayoutRetryCoordinatorTests
     [Fact]
     public void Run_throws_on_null_resolver()
     {
-        var layouter = new MockLayouter();
+        using var layouter = new MockLayouter();
         var ctx = new FragmentainerContext(600, 800);
         var layout = new LayoutContext(ctx);
         var coordinator = new LayoutRetryCoordinator();
@@ -514,7 +514,7 @@ public sealed class LayoutRetryCoordinatorTests
     public void Coordinator_calls_RollbackTo_with_captured_cursor_on_rewind()
     {
         var sink = new RecordingFragmentSink();
-        var layouter = new MockLayouter();
+        using var layouter = new MockLayouter();
         // Capture a real checkpoint with a non-zero FragmentOutputCursor
         // so we can verify the rollback gets the right value.
         layouter.PlanRewindWithCursor(cost: 1000, fragmentOutputCursor: 7);
@@ -537,7 +537,7 @@ public sealed class LayoutRetryCoordinatorTests
     public void Coordinator_rolls_back_twice_for_two_rewinds()
     {
         var sink = new RecordingFragmentSink();
-        var layouter = new MockLayouter();
+        using var layouter = new MockLayouter();
         layouter.PlanRewindWithCursor(cost: 1000, fragmentOutputCursor: 5);  // attempt 0 fails
         layouter.PlanRewindWithCursor(cost: 1000, fragmentOutputCursor: 5);  // attempt 1 fails
         layouter.Plan(LayoutAttemptOutcome.PageComplete, cost: 200);          // attempt 2 (LastResort)
@@ -561,7 +561,7 @@ public sealed class LayoutRetryCoordinatorTests
     {
         // Coordinator with null fragmentSink must not throw on rewind —
         // layouters that emit only on PageComplete don't need a sink.
-        var layouter = new MockLayouter();
+        using var layouter = new MockLayouter();
         layouter.PlanRewindWithCursor(cost: 1000, fragmentOutputCursor: 7);
         layouter.Plan(LayoutAttemptOutcome.PageComplete, cost: 100);
 
@@ -727,7 +727,7 @@ public sealed class LayoutRetryCoordinatorTests
     [Fact]
     public void Coordinator_throws_OperationCanceled_before_first_attempt()
     {
-        var layouter = new MockLayouter();
+        using var layouter = new MockLayouter();
         var ctx = new FragmentainerContext(600, 800);
         var layout = new LayoutContext(ctx);
         var resolver = new BreakResolver();
@@ -856,7 +856,7 @@ public sealed class LayoutRetryCoordinatorTests
         // Same guard at the coordinator level. A throwing sink during
         // the LastResort emission must not corrupt the retry state.
         var throwingSink = new ThrowingSink();
-        var layouter = new MockLayouter();
+        using var layouter = new MockLayouter();
         layouter.PlanRewind(cost: 1000);  // attempt 0
         layouter.PlanRewind(cost: 1000);  // attempt 1
         layouter.Plan(LayoutAttemptOutcome.PageComplete, cost: 100);  // attempt 2 — succeeds

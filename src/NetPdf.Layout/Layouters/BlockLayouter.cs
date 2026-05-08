@@ -290,6 +290,21 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // emission.
         var emittedThisAttempt = 0;
 
+        // Per PR #24/#25 Copilot review — track the actual last-
+        // emitted child index, separate from the loop counter
+        // `childIdx`. The pre-fix `lastEmittedChildIndex: childIdx - 1`
+        // was wrong when the child at `childIdx - 1` was a skipped
+        // non-block-level node (e.g., a TextRun between two block
+        // siblings). The contract for
+        // <see cref="LayoutCheckpoint.LastEmittedChildIndex"/> is the
+        // index of the last FULLY-EMITTED box, not the loop predecessor.
+        // -1 = nothing emitted yet on this attempt's start (the
+        // `startChildIdx - 1` baseline conveys "resume from
+        // startChildIdx" if the rewind targets the very first
+        // candidate); the resume-after-rewind path adds 1 in
+        // `_resumeAtChildIdxAfterRewind = LastEmittedChildIndex + 1`.
+        var lastEmittedIdx = startChildIdx - 1;
+
         // Per Phase 3 Task 7 cycle 2 + CSS 2.1 §8.3.1 — adjacent-
         // sibling vertical margin collapsing. Track the prior
         // adjoining block's margin-end so the next block's margin-
@@ -439,7 +454,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 fragmentainer,
                 in layout,
                 fragmentOutputCursor: _sink.Cursor,
-                lastEmittedChildIndex: childIdx - 1,
+                // Per PR #24/#25 Copilot review — use the actual last-
+                // emitted index, not `childIdx - 1` which mis-names a
+                // skipped non-block-level predecessor as "emitted".
+                // The contract is "last fully-emitted box index";
+                // skipped children are not emitted.
+                lastEmittedChildIndex: lastEmittedIdx,
                 incomingContinuation: _incomingContinuation,
                 pageCounterValue: layout.ReadCounter("page"));
             resolver.RegisterCheckpoint(newLease);
@@ -542,16 +562,41 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     fragmentainer.UsedBlockSize = Math.Max(0,
                         fragmentainer.UsedBlockSize + marginBoxBlockSize);
                     emittedThisAttempt++;
+                    // Per PR #24/#25 Copilot review — track actual
+                    // last-emitted index for accurate checkpoint
+                    // metadata. The next checkpoint capture (or the
+                    // rewind retry's resume point) reads this rather
+                    // than `childIdx - 1` (which would mis-credit
+                    // skipped non-block-level predecessors).
+                    lastEmittedIdx = childIdx;
 
                     // Resume on the NEXT child (childIdx+1) so progress
                     // is monotonic. ConsumedBlockSize = cumulative
                     // across-pages per Copilot #1 + the field's docs.
+                    //
+                    // Per PR #24/#25 Copilot review — avoid double-
+                    // counting BreakInsideAvoidViolation. CostModel.Score
+                    // already adds the penalty when
+                    // `ChunkBlockSize > contentBlockSize` (oversized
+                    // chunk), so `decision.Cost` for a genuinely
+                    // oversized block already includes it. The forced-
+                    // overflow penalty MUST still apply for the
+                    // alternative case where the chunk would fit on a
+                    // FRESH page but not the remaining space — i.e.,
+                    // we're forcing a break that the spec says should
+                    // be avoided. Only add the penalty when Score
+                    // didn't already.
+                    var alreadyOverflowPenalized =
+                        chunkForBreakCheck > fragmentainer.BlockSize;
+                    var forcedOverflowCost = alreadyOverflowPenalized
+                        ? decision.Cost
+                        : decision.Cost + CostModel.BreakInsideAvoidViolation;
                     return LayoutAttemptResult.PageComplete(
                         new BlockContinuation(
                             ResumeAtChild: childIdx + 1,
                             ConsumedBlockSize: priorPagesConsumed
                                 + (fragmentainer.UsedBlockSize - _pageStartUsedBlockSize)),
-                        cost: decision.Cost + CostModel.BreakInsideAvoidViolation);
+                        cost: forcedOverflowCost);
                 }
 
                 // Normal page break — content placed earlier on this
@@ -602,6 +647,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             prevBlockMarginEnd = marginEnd;
             hasPriorAdjoiningBlock = true;
             emittedThisAttempt++;
+            // Per PR #24/#25 Copilot review — track actual last-emitted
+            // index. See the forced-overflow path for the contract
+            // rationale.
+            lastEmittedIdx = childIdx;
         }
 
         // All children laid out — no more pages needed.

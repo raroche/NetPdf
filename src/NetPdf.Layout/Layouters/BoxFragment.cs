@@ -17,7 +17,7 @@ namespace NetPdf.Layout.Layouters;
 ///
 /// <para><b>Per Phase 3 Task 7 cycle 1 PR #22 review fix #3 +
 /// Copilot #2 — geometry IS the BORDER BOX</b> (not the margin
-/// box). Cycle-1 cycle-1 originally documented "margin box" but the
+/// box). Cycle 1 originally documented "margin box" but the
 /// inline-axis math used border-box subtraction (margin-left/right
 /// stripped) while the block-axis math used margin-box addition
 /// (margin-top/bottom included) — inconsistent. This revision

@@ -6,6 +6,7 @@ using System.Threading;
 using NetPdf.Css.Properties;
 using NetPdf.Layout.Boxes;
 using NetPdf.Paginate;
+using NetPdf.Paginate.Diagnostics;
 
 namespace NetPdf.Layout.Layouters;
 
@@ -136,6 +137,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     private readonly Box _rootBox;
     private readonly IBlockFragmentSink _sink;
     private readonly LayoutContinuation? _incomingContinuation;
+    private readonly IPaginateDiagnosticsSink? _diagnostics;
 
     /// <summary>Per PR #22 review fix #2 — the lease for the most
     /// recently registered checkpoint. Held until the next checkpoint
@@ -160,6 +162,31 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// returning <see cref="LayoutAttemptOutcome.NeedsRewind"/>.</para></summary>
     private int _resumeAtChildIdxAfterRewind = -1;
 
+    /// <summary>Per PR #26 review fix #2 — page-start baseline for
+    /// <see cref="BlockContinuation.ConsumedBlockSize"/> accounting.
+    /// On the first <see cref="AttemptLayout"/> entry this captures
+    /// <see cref="FragmentainerContext.UsedBlockSize"/> at page-start;
+    /// it is NOT reset on rewind retries (which restore UsedBlockSize
+    /// to the checkpoint's mid-page cursor). Without this, the retry
+    /// would compute <c>ConsumedBlockSize = priorPagesConsumed +
+    /// (UsedBlockSize - midpage)</c>, undercounting by midpage. The
+    /// field stays at <see cref="double.NaN"/> until the first
+    /// AttemptLayout entry; subsequent entries (rewind retries)
+    /// preserve the original baseline.</summary>
+    private double _pageStartUsedBlockSize = double.NaN;
+
+    /// <summary>Per PR #26 review fix #3 — margin-collapse frontier
+    /// preserved across rewind. After a rewind, the retry must
+    /// resume with the same prevBlockMarginEnd + hasPriorAdjoiningBlock
+    /// state that existed AT the checkpoint, otherwise the retried
+    /// child applies its full top margin instead of collapsing with
+    /// the preserved previous block's bottom margin. Set just before
+    /// returning NeedsRewind; consumed on the next AttemptLayout
+    /// entry.</summary>
+    private double _prevBlockMarginEndAfterRewind;
+    private bool _hasPriorAdjoiningBlockAfterRewind;
+    private bool _hasRewindCollapseState;
+
     /// <summary>Construct a layouter for <paramref name="rootBox"/>'s
     /// block children, emitting fragments into <paramref name="sink"/>.
     /// <paramref name="incomingContinuation"/> resumes a multi-page
@@ -180,7 +207,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     public BlockLayouter(
         Box rootBox,
         IBlockFragmentSink sink,
-        LayoutContinuation? incomingContinuation = null)
+        LayoutContinuation? incomingContinuation = null,
+        IPaginateDiagnosticsSink? diagnostics = null)
     {
         ArgumentNullException.ThrowIfNull(rootBox);
         ArgumentNullException.ThrowIfNull(sink);
@@ -211,6 +239,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         _rootBox = rootBox;
         _sink = sink;
         _incomingContinuation = incomingContinuation;
+        _diagnostics = diagnostics;
     }
 
     /// <inheritdoc />
@@ -247,6 +276,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // THIS attempt = fragmentainer.UsedBlockSize - initialUsed.
         var initialUsed = fragmentainer.UsedBlockSize;
 
+        // Per PR #26 review fix #2 — page-start baseline for
+        // ConsumedBlockSize accounting. Set on first entry, NOT
+        // reset on rewind retries.
+        if (double.IsNaN(_pageStartUsedBlockSize))
+        {
+            _pageStartUsedBlockSize = initialUsed;
+        }
+
         // Track whether this attempt has emitted any fragment so far.
         // Per PR #22 review fix #1 — the oversized-block forward-
         // progress path needs to know if BreakHere fires before any
@@ -266,8 +303,17 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         //     #3) — inline / atomic content creates a line box that
         //     breaks adjacency per §8.3.1. The next block's
         //     marginTop is honored without collapse.
-        var prevBlockMarginEnd = 0.0;
-        var hasPriorAdjoiningBlock = false;
+        // Per PR #26 review fix #3 — preserve collapse frontier
+        // across rewind. If the prior attempt set the rewind
+        // collapse state, restore it here so the retried child
+        // collapses correctly with the preserved previous block's
+        // bottom margin.
+        var prevBlockMarginEnd = _hasRewindCollapseState
+            ? _prevBlockMarginEndAfterRewind
+            : 0.0;
+        var hasPriorAdjoiningBlock = _hasRewindCollapseState
+            && _hasPriorAdjoiningBlockAfterRewind;
+        _hasRewindCollapseState = false;
 
         for (var childIdx = startChildIdx; childIdx < _rootBox.Children.Count; childIdx++)
         {
@@ -363,7 +409,26 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // non-negative for BreakOpportunity.EnsureValid. Negative
             // values are valid for the cursor (negative margins move
             // backward) but the fit-check measure can't be negative.
-            var chunkForBreakCheck = Math.Max(0, marginBoxBlockSize);
+            // Per PR #26 review fix #4 — negative margins can hide
+            // visual overflow. Pre-fix `Math.Max(0, marginBoxBlockSize)`
+            // hides cases like `margin-top:-1000; height:2000;
+            // margin-bottom:-1000` where a 2000-px border box appears
+            // to require 0 fragmentainer space. The break-fit measure
+            // must use the VISUAL extent (positive contributions),
+            // separate from the cursor-advance measure
+            // (signed margin-box). Take the maximum of:
+            //   - net margin-box advance (clamped non-negative — what
+            //     the cursor will move by)
+            //   - border-box block size + non-negative margin parts
+            //     (what visually occupies the page)
+            // The latter dominates when negative margins cancel a
+            // large border box.
+            var visualBlockExtent = borderBoxBlockSize
+                + Math.Max(0, marginStart)
+                + Math.Max(0, marginEnd);
+            var chunkForBreakCheck = Math.Max(
+                Math.Max(0, marginBoxBlockSize),
+                visualBlockExtent);
 
             // Per PR #22 review fix #2 — capture a checkpoint at the
             // candidate-break boundary BEFORE consulting the resolver.
@@ -407,6 +472,15 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // constructor's incoming continuation + re-emit the
                 // already-preserved fragments.
                 _resumeAtChildIdxAfterRewind = decision.RewindTo.LastEmittedChildIndex + 1;
+                // Per PR #26 review fix #3 — capture the collapse
+                // frontier so the retry resumes with the same
+                // prevBlockMarginEnd + hasPriorAdjoiningBlock state
+                // that existed AT this checkpoint. Without it, the
+                // retry would reset to the page-start state +
+                // double-apply the next block's marginTop.
+                _prevBlockMarginEndAfterRewind = prevBlockMarginEnd;
+                _hasPriorAdjoiningBlockAfterRewind = hasPriorAdjoiningBlock;
+                _hasRewindCollapseState = true;
                 return LayoutAttemptResult.NeedsRewind(decision.RewindTo, decision.Cost);
             }
 
@@ -434,6 +508,25 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     // Forced overflow: the block is taller than the
                     // fragmentainer — committing it anyway lets
                     // pagination make progress.
+                    //
+                    // Per PR #26 review fix #1 — emit
+                    // PAGINATION-FORCED-OVERFLOW-001 here so the
+                    // diagnostic isn't lost when the forced-overflow
+                    // path fires on Strict (= the LayoutRetryCoordinator
+                    // never reaches LastResort because the layouter
+                    // returned PageComplete first). The coordinator
+                    // ALSO emits the diagnostic when it triggers
+                    // LastResort directly; the dual-emission is OK
+                    // because consumers de-duplicate by code + page
+                    // index, OR see the redundant emission as the
+                    // signal-amplification it is.
+                    OptimizingBreakResolver.SafeEmit(_diagnostics, new PaginateDiagnostic(
+                        PaginateDiagnosticCodes.PaginationForcedOverflow001,
+                        $"BlockLayouter: forced overflow on fragmentainer page index "
+                        + $"{fragmentainer.PageIndex}, child index {childIdx} — "
+                        + "block is taller than the fragmentainer. Committed anyway "
+                        + "to make pagination progress.",
+                        PaginateDiagnosticSeverity.Warning));
                     // First block on the (possibly resumed) page →
                     // topShift = effectiveTopGap = marginStart; no
                     // collapse-arithmetic needed.
@@ -457,7 +550,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         new BlockContinuation(
                             ResumeAtChild: childIdx + 1,
                             ConsumedBlockSize: priorPagesConsumed
-                                + (fragmentainer.UsedBlockSize - initialUsed)),
+                                + (fragmentainer.UsedBlockSize - _pageStartUsedBlockSize)),
                         cost: decision.Cost + CostModel.BreakInsideAvoidViolation);
                 }
 
@@ -465,11 +558,19 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // page. Resume at THIS child on the next page.
                 // Per Copilot #1 — ConsumedBlockSize accumulates across
                 // pages, not just this attempt.
+                // Per PR #26 review fix #2 — use _pageStartUsedBlockSize
+                // (set on FIRST AttemptLayout entry, NOT reset on rewind
+                // retries) so the page extent is the cumulative
+                // contribution from ALL emissions on this page,
+                // including those before a rewind. Pre-fix used
+                // `initialUsed` (= UsedBlockSize at THIS entry), which
+                // on rewind retries reflects the mid-page restore
+                // cursor, undercounting the page extent.
                 return LayoutAttemptResult.PageComplete(
                     new BlockContinuation(
                         ResumeAtChild: childIdx,
                         ConsumedBlockSize: priorPagesConsumed
-                            + (fragmentainer.UsedBlockSize - initialUsed)),
+                            + (fragmentainer.UsedBlockSize - _pageStartUsedBlockSize)),
                     cost: decision.Cost);
             }
 

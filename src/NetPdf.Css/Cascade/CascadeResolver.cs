@@ -152,9 +152,16 @@ internal static class CascadeResolver
             : new SelectorParseWarningBudgetSink(diagnostics);
 
         var ruleOrder = 0;
+        // Per PR #16 review user-recommendation #4 — capture the starting
+        // output count so the rule-cap check is per-stylesheet, not global.
+        // Without this, a multi-sheet document where the first sheet
+        // approaches MaxRulesPerStylesheet would silently truncate
+        // subsequent independent sheets.
+        var sheetStartCount = output.Count;
         CollectFromRules(sheet.Rules, sheet.Origin, sheet.Order, ref ruleOrder,
             output, hasContainingSheets, media, layers,
-            currentLayer: LayerRegistry.UnlayeredIndex, budgetedSink, cancellationToken);
+            currentLayer: LayerRegistry.UnlayeredIndex, budgetedSink,
+            sheetStartCount, cancellationToken);
     }
 
     /// <summary>Per Phase A A-8 — sink decorator that throttles
@@ -212,6 +219,27 @@ internal static class CascadeResolver
     /// stack budget.</summary>
     private const int MaxAtRuleNestingDepth = 32;
 
+    /// <summary>Per Phase B B-2 — maximum number of compiled rules per
+    /// stylesheet. A hostile sheet with millions of rules would otherwise
+    /// pour CPU into selector compilation + per-element matching even with
+    /// the bloom-filter pre-filter active. 50k is wide enough for any
+    /// real-world author CSS (Tailwind's full build is ~30k) while bounding
+    /// the per-stylesheet upper limit.</summary>
+    internal const int MaxRulesPerStylesheet = 50_000;
+
+    /// <summary>Per Phase B B-2 — maximum number of declarations on a single
+    /// rule. Real rules have &lt; 30; an attacker could synthesize a rule
+    /// with thousands of <c>data-x: y</c> declarations to bloat the cascade
+    /// table per element. Excess declarations are dropped from the tail.</summary>
+    internal const int MaxDeclarationsPerRule = 256;
+
+    /// <summary>Per Phase B B-2 — maximum number of selector alternatives in
+    /// one rule's selector list (i.e., comma-separated selector groups).
+    /// Real rules have &lt; 5 (occasionally &lt; 100 for normalize.css-style
+    /// shorthand); 1024 is the wide cap that catches doc-bombing without
+    /// rejecting legitimate megalists.</summary>
+    internal const int MaxSelectorAlternatives = 1024;
+
     private static void CollectFromRules(
         ImmutableArray<CssRule> rules,
         CssStylesheetOrigin origin,
@@ -223,6 +251,7 @@ internal static class CascadeResolver
         LayerRegistry layers,
         int currentLayer,
         ICssDiagnosticsSink? diagnostics,
+        int sheetStartCount,
         System.Threading.CancellationToken cancellationToken,
         int depth = 0)
     {
@@ -245,6 +274,27 @@ internal static class CascadeResolver
             // adversarially-deep nested @media tree could otherwise spend tens of
             // seconds in selector compilation before any post-loop check runs.
             cancellationToken.ThrowIfCancellationRequested();
+
+            // Per Phase B B-2 — cap the running count of compiled rules per
+            // stylesheet so a hostile sheet with millions of rules doesn't
+            // pull the cascade into multi-second CPU paths. Emit one
+            // diagnostic at the moment of overflow + drop every subsequent
+            // rule (style + at-rule child rules included — the cap is
+            // sheet-wide, not per-grouping).
+            // Per PR #16 review user-recommendation #4 — the count is
+            // PER-STYLESHEET (output.Count - sheetStartCount), not the
+            // global output.Count, so a sheet that previously hit the cap
+            // doesn't poison every subsequent independent sheet.
+            if (output.Count - sheetStartCount >= MaxRulesPerStylesheet)
+            {
+                diagnostics?.Emit(new CssDiagnostic(
+                    CssDiagnosticCodes.CssRuleLimitExceeded001,
+                    $"Stylesheet exceeded the {MaxRulesPerStylesheet}-rule cap; remaining rules skipped.",
+                    CssDiagnosticSeverity.Warning,
+                    CssSourceLocation.Unknown));
+                return;
+            }
+
             switch (rule)
             {
                 case CssStyleRule sr:
@@ -254,12 +304,12 @@ internal static class CascadeResolver
                 case CssAtRule ar:
                     CollectAtRule(ar, origin, sheetOrder, ref ruleOrder,
                         output, hasContainingSheets, media, layers, currentLayer, diagnostics,
-                        cancellationToken, depth);
+                        sheetStartCount, cancellationToken, depth);
                     break;
                 case CssImportRule import:
                     CollectImportRule(import, origin, sheetOrder, ref ruleOrder,
                         output, hasContainingSheets, media, layers, currentLayer, diagnostics,
-                        cancellationToken, depth);
+                        sheetStartCount, cancellationToken, depth);
                     break;
                 // Other rule kinds (page, font-face, …) don't contribute declarations to
                 // the regular element cascade; they have separate consumers.
@@ -280,9 +330,45 @@ internal static class CascadeResolver
         var compiled = CompileSelector(sr.Selector.RawText, diagnostics, sr.Location);
         if (compiled is not null && compiled.ContainsHas)
             hasContainingSheets.Add(sheetOrder);
+
+        // Per PR #16 review user-recommendation #3 + Copilot review #6 —
+        // enforce MaxSelectorAlternatives. The cap was declared in Phase B
+        // but never wired up; a single rule with millions of comma-separated
+        // alternatives (each compiled to its own SelectorBytecode) would
+        // amplify the per-element matching loop past the per-rule budget.
+        // Truncate post-compile by rebuilding the SelectorList with only
+        // the first N alternatives — the matching loop iterates the
+        // truncated list directly.
+        if (compiled is not null && compiled.Alternatives.Length > MaxSelectorAlternatives)
+        {
+            diagnostics?.Emit(new CssDiagnostic(
+                CssDiagnosticCodes.CssRuleLimitExceeded001,
+                $"Rule exceeded the {MaxSelectorAlternatives}-selector-alternative cap; excess alternatives dropped.",
+                CssDiagnosticSeverity.Warning,
+                sr.Location));
+            compiled = new NetPdf.Css.Selectors.SelectorList(
+                ImmutableArray.CreateRange(compiled.Alternatives.Take(MaxSelectorAlternatives)),
+                compiled.SourceText);
+        }
+
+        // Per Phase B B-2 — cap declarations per rule. A hostile rule with
+        // thousands of `data-*: value` declarations would inflate every
+        // matched-rule-set per element; tail-truncate so the cascade still
+        // sees the head (most rules pile their important props at the top).
+        var declarations = sr.Declarations;
+        if (declarations.Length > MaxDeclarationsPerRule)
+        {
+            diagnostics?.Emit(new CssDiagnostic(
+                CssDiagnosticCodes.CssRuleLimitExceeded001,
+                $"Rule exceeded the {MaxDeclarationsPerRule}-declaration cap; tail declarations dropped.",
+                CssDiagnosticSeverity.Warning,
+                sr.Location));
+            declarations = ImmutableArray.CreateRange(declarations.Take(MaxDeclarationsPerRule));
+        }
+
         output.Add(new CompiledRule(
             Selectors: compiled,
-            Declarations: sr.Declarations,
+            Declarations: declarations,
             Origin: origin,
             StylesheetOrder: sheetOrder,
             RuleOrder: ruleOrder++,
@@ -300,6 +386,7 @@ internal static class CascadeResolver
         LayerRegistry layers,
         int currentLayer,
         ICssDiagnosticsSink? diagnostics,
+        int sheetStartCount,
         System.Threading.CancellationToken cancellationToken,
         int depth)
     {
@@ -309,13 +396,13 @@ internal static class CascadeResolver
                 if (!media.Matches(ar.Prelude)) return;
                 CollectFromRules(ar.ChildRules, origin, sheetOrder, ref ruleOrder,
                     output, hasContainingSheets, media, layers, currentLayer, diagnostics,
-                    cancellationToken, depth + 1);
+                    sheetStartCount, cancellationToken, depth + 1);
                 break;
             case "supports":
                 if (!SupportsConditionMatches(ar.Prelude, diagnostics, ar.Location)) return;
                 CollectFromRules(ar.ChildRules, origin, sheetOrder, ref ruleOrder,
                     output, hasContainingSheets, media, layers, currentLayer, diagnostics,
-                    cancellationToken, depth + 1);
+                    sheetStartCount, cancellationToken, depth + 1);
                 break;
             case "container":
                 diagnostics?.Emit(new CssDiagnostic(
@@ -327,7 +414,7 @@ internal static class CascadeResolver
             case "layer":
                 CollectLayerAtRule(ar, origin, sheetOrder, ref ruleOrder,
                     output, hasContainingSheets, media, layers, diagnostics,
-                    cancellationToken, depth);
+                    sheetStartCount, cancellationToken, depth);
                 break;
             default:
                 // Unknown at-rule. Three shapes to handle:
@@ -372,6 +459,7 @@ internal static class CascadeResolver
         CssMediaContext media,
         LayerRegistry layers,
         ICssDiagnosticsSink? diagnostics,
+        int sheetStartCount,
         System.Threading.CancellationToken cancellationToken,
         int depth)
     {
@@ -407,7 +495,7 @@ internal static class CascadeResolver
 
         CollectFromRules(ar.ChildRules, origin, sheetOrder, ref ruleOrder,
             output, hasContainingSheets, media, layers, layerIdx, diagnostics,
-            cancellationToken, depth + 1);
+            sheetStartCount, cancellationToken, depth + 1);
     }
 
     /// <summary>Walk an <c>@import</c>'s already-resolved <see cref="CssImportRule.ImportedRules"/>
@@ -432,6 +520,7 @@ internal static class CascadeResolver
         LayerRegistry layers,
         int currentLayer,
         ICssDiagnosticsSink? diagnostics,
+        int sheetStartCount,
         System.Threading.CancellationToken cancellationToken,
         int depth)
     {
@@ -454,7 +543,7 @@ internal static class CascadeResolver
 
         CollectFromRules(import.ImportedRules, origin, sheetOrder, ref ruleOrder,
             output, hasContainingSheets, media, layers, importLayer, diagnostics,
-            cancellationToken, depth + 1);
+            sheetStartCount, cancellationToken, depth + 1);
     }
 
     /// <summary>Per Rec 2: <c>@import url(x) supports(display: grid)</c> arrives at the

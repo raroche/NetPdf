@@ -19,6 +19,10 @@ Severity levels:
 | `HTML-JAVASCRIPT-URL-IGNORED-001` | Warning | An `href`/`xlink:href` attribute carried a `javascript:` URL. The attribute was removed so the link will not appear in the emitted PDF; the surrounding element and its text content remain. |
 | `HTML-CANVAS-IGNORED-001` | Warning | A `<canvas>` element was encountered. NetPdf does not execute the scripted drawing API. Replaced with empty space. |
 | `HTML-OBJECT-EMBED-UNSUPPORTED-001` | Warning | `<object>` or `<embed>` encountered; not supported. |
+| `HTML-EVENT-HANDLER-IGNORED-001` | Info | An `on*` event-handler attribute (e.g., `onclick`, `onload`) was found on an element and stripped. NetPdf does not execute scripts in v1; the strip is defense-in-depth so Phase 5 PDF/UA emission can't surface attribute values into accessibility metadata. |
+| `HTML-DOM-LIMIT-EXCEEDED-001` | Warning | The parsed DOM exceeded one of the per-document DoS caps (element count, nesting depth, attributes per element, attribute value length, or text-node content length). Excess regions are removed; over-long values + text are clamped with `…`. One diagnostic per violation kind. Per Phase B B-1. |
+| `HTML-STRIP-NOT-STABLE-001` | Warning | The iterative HTML strip pass did not converge after the maximum iteration cap; dangerous content (script / `on*` handler / `javascript:`/`vbscript:`/`data:` URL) may remain in the DOM. Defense against AngleSharp normalization or SVG `<foreignObject>` re-introducing stripped content. The message names the surviving kinds. Per Phase B B-4. |
+| `HTML-INPUT-TOO-LARGE-001` | Warning | The HTML input length exceeded the per-document character cap; the parse was rejected before AngleSharp materialized the tree. Defends against very large single-string inputs that would otherwise consume parser CPU + heap. Per Phase B B-1 (PR #16 follow-up). |
 
 ---
 
@@ -52,6 +56,9 @@ Severity levels:
 | `CSS-ATTR-MULTI-ARG-UNSUPPORTED-001` | Warning | A modern `attr(name type, fallback)` form was rejected — cycle 1 supports the bare `attr(name)` form only. The pseudo-element generates no box rather than silently dropping the type / fallback args. Roadmap cycle 2 delivers the typed-value pipeline. |
 | `CSS-MODERN-COLOR-FUNCTION-UNSUPPORTED-001` | Info | A modern color function (`oklch()` / `oklab()` / `lab()` / `lch()` / `color()` / `color-mix()`) was used in a property value. Cycle 1 rejects these — the cascade's "invalid at computed value time" rule applies (initial / inherited value used). Roadmap cycle 2 ships sRGB-conversion of these so the rendered color is approximate but visible. |
 | `CSS-PSEUDO-SUPPRESSED-ON-REPLACED-001` | Info | A `::before` / `::after` rule targeted a replaced element (`<img>` / `<video>` / `<canvas>` / `<iframe>` / `<object>` / `<embed>`); per CSS Pseudo L4 §3 the pseudo-element is suppressed because replaced elements are atomic and can't host generated content. The author rule has no effect. |
+| `CSS-VAR-EXPANSION-LIMIT-001` | Warning | A `var()` substitution exceeded a depth, output-length, or per-element cumulative-output budget. Per Phase A A-3. |
+| `CSS-CONTENT-FUNCTION-UNSUPPORTED-001` | Warning | `content` value used a function or keyword the cycle-1 list parser doesn't accept (e.g., `counter()`, `url()`, `open-quote`), or the per-pseudo generated-content output exceeded the 64 KiB cap. Per Phase A A-5. |
+| `CSS-RULE-LIMIT-EXCEEDED-001` | Warning | A stylesheet exceeded one of the per-stylesheet / per-rule DoS caps: rule count (50 000 per sheet), declarations on a single rule (256), or selector alternatives in one rule's selector list (1 024). On rule-count overflow the cascade stops processing further rules; on per-rule overflow the declaration / alternative list is tail-truncated. Per Phase B B-2 (selector-alternative enforcement added in PR #16 follow-up). |
 
 ---
 
@@ -129,4 +136,4 @@ Or streamed live via `HtmlPdfOptions.Diagnostics: IDiagnosticsSink`.
 
 ---
 
-Last updated: 2026-05-04 (Phase 2 Task 1 review cycle: added `HTML-JAVASCRIPT-URL-IGNORED-001`).
+Last updated: 2026-05-07 (PR #16 review cycle: added `HTML-EVENT-HANDLER-IGNORED-001`, `HTML-DOM-LIMIT-EXCEEDED-001`, `HTML-STRIP-NOT-STABLE-001`, `HTML-INPUT-TOO-LARGE-001`, `CSS-VAR-EXPANSION-LIMIT-001`, `CSS-CONTENT-FUNCTION-UNSUPPORTED-001`, `CSS-RULE-LIMIT-EXCEEDED-001`).

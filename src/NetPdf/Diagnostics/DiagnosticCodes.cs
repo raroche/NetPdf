@@ -43,6 +43,42 @@ internal static class DiagnosticCodes
     /// </summary>
     public const string HtmlEventHandlerIgnored001 = "HTML-EVENT-HANDLER-IGNORED-001";
 
+    /// <summary>
+    /// A parsed HTML document exceeded one of the per-document DoS caps:
+    /// total element count, nesting depth, attributes per element, attribute
+    /// value length, or text-node content length. The offending region was
+    /// truncated (excess elements / attributes removed; excess text /
+    /// attribute-value strings clamped) so downstream stages still see a
+    /// rendering-shaped document. One diagnostic is emitted per violation
+    /// kind, naming the cap that fired. Per Phase B B-1.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string HtmlDomLimitExceeded001 = "HTML-DOM-LIMIT-EXCEEDED-001";
+
+    /// <summary>
+    /// The iterative HTML strip pass (per Phase B B-4 — defense against
+    /// AngleSharp normalization or SVG <c>&lt;foreignObject&gt;</c>
+    /// re-introducing stripped script / javascript-URL / event-handler
+    /// content) failed to converge after the maximum iteration cap.
+    /// Dangerous content may still be present in the DOM. The diagnostic
+    /// message names the surviving kind(s) — <c>&lt;script&gt;</c>,
+    /// <c>on*</c> event handler, or <c>javascript:</c>/<c>vbscript:</c>/<c>data:</c>
+    /// URL — so the author can investigate.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string HtmlStripNotStable001 = "HTML-STRIP-NOT-STABLE-001";
+
+    /// <summary>
+    /// The HTML input length exceeded the per-document character cap
+    /// (<see cref="HtmlParsingHost.MaxInputLength"/>). The parse is
+    /// rejected before AngleSharp materializes the tree — defends against
+    /// "1 GiB single-string" attacks where post-parse caps would only
+    /// fire after the parser had already consumed memory + CPU on the
+    /// full input. Per Phase B B-1 follow-up (PR #16 review).
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string HtmlInputTooLarge001 = "HTML-INPUT-TOO-LARGE-001";
+
     // endregion HTML-*
 
     // region CSS-*

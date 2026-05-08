@@ -73,4 +73,18 @@ internal static class CssDiagnosticCodes
     /// CSS Pseudo L4 §3 the pseudo-element is suppressed because replaced elements
     /// are atomic and can't host generated content. Severity: Info.</summary>
     public const string CssPseudoSuppressedOnReplaced001 = "CSS-PSEUDO-SUPPRESSED-ON-REPLACED-001";
+
+    /// <summary>A stylesheet exceeded one of the per-stylesheet / per-rule
+    /// DoS caps: total rules per stylesheet
+    /// (<see cref="Cascade.CascadeResolver.MaxRulesPerStylesheet"/>),
+    /// declarations on a single rule
+    /// (<see cref="Cascade.CascadeResolver.MaxDeclarationsPerRule"/>),
+    /// or comma-separated selector alternatives in one rule's selector list
+    /// (<see cref="Cascade.CascadeResolver.MaxSelectorAlternatives"/>).
+    /// On rule-count overflow the cascade resolver stops processing further
+    /// rules in that stylesheet; on per-rule overflow it tail-truncates the
+    /// declaration or alternative list to the configured limit.
+    /// Per Phase B B-2 + PR #16 review (selector-alternative enforcement
+    /// added in follow-up). Severity: Warning.</summary>
+    public const string CssRuleLimitExceeded001 = "CSS-RULE-LIMIT-EXCEEDED-001";
 }

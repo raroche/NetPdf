@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using NetPdf.Paginate.Diagnostics;
 
 namespace NetPdf.Paginate;
 
@@ -62,6 +63,27 @@ internal ref struct LayoutContext
     /// is allocated.</summary>
     public FragmentainerContext Fragmentainer;
 
+    /// <summary>Per post-Task-7 review (recommendation P1 #2) —
+    /// ambient pagination diagnostics sink. Pre-fix, the
+    /// <see cref="LayoutRetryCoordinator"/> + each layouter received
+    /// their OWN <see cref="IPaginateDiagnosticsSink"/> at construction.
+    /// A composition root that wired only the coordinator's sink would
+    /// miss <c>PAGINATION-FORCED-OVERFLOW-001</c> emitted from a
+    /// layouter's own forward-progress path on the Strict attempt
+    /// (because LastResort never fires when Strict commits).
+    ///
+    /// <para>Post-fix, the sink lives on the layout context — the
+    /// natural ambient holder. The coordinator's <c>Run</c> threads
+    /// its sink through to <c>layout.Diagnostics</c> on entry; the
+    /// layouter reads from <c>layout.Diagnostics</c> rather than
+    /// from a constructor-injected field. Wiring once at the
+    /// composition root reaches both sides.</para>
+    ///
+    /// <para><see langword="null"/> means "no diagnostic sink wired";
+    /// emission sites use the <c>OptimizingBreakResolver.SafeEmit</c>
+    /// helper which is null-safe.</para></summary>
+    public IPaginateDiagnosticsSink? Diagnostics;
+
     /// <summary>Document-scoped counter values per CSS Lists L3 §4.
     /// Keys are counter names (<c>page</c>, <c>pages</c>, author-defined);
     /// values are integer counter readings at the current layout
@@ -81,6 +103,7 @@ internal ref struct LayoutContext
         WritingMode = WritingMode.HorizontalTb;
         IsRtl = false;
         Fragmentainer = fragmentainer;
+        Diagnostics = null;
         _counters = null;
     }
 

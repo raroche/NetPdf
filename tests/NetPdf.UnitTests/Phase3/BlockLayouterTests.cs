@@ -1012,6 +1012,290 @@ public sealed class BlockLayouterTests
         Assert.True(result.Cost >= CostModel.BreakInsideAvoidViolation);
     }
 
+    // --- Post-Task-7 review #3: collapsed margins don't overcount in overflow check --
+
+    [Fact]
+    public void PostTask7_collapsed_margins_do_not_trigger_false_page_break()
+    {
+        // Post-Task-7 review (recommendation P2 #3) — `visualBlockExtent`
+        // pre-fix used raw `marginStart`. After collapse the actual top
+        // contribution is `topShift`, NOT `marginStart`. With a previous
+        // block bottom-margin of 80 + current block top-margin of 10,
+        // the collapsed gap = max(80, 10) = 80, which is already in
+        // fragmentainer.UsedBlockSize (the prior block's emission added
+        // it). topShift = 80 - 80 = 0 — current block's top contributes
+        // 0 additional space. Pre-fix counted +10, which on a fragmentainer
+        // boundary would create a false page break.
+        //
+        // Test scenario:
+        //   page block size = 800
+        //   block 1: height=100, marginBottom=80 → cursor goes 0→180
+        //     (border-box top=0, border-box bottom=100, +80 marginBottom = 180)
+        //   block 2: height=620, marginTop=10
+        //     - collapsed gap = max(80, 10) = 80 (already counted)
+        //     - topShift = 0
+        //     - actual visual top contribution = 0
+        //     - block 2's border-box top = 180; bottom = 800 — fits exactly.
+        //   Total page contribution = 800. NO overflow.
+        //
+        // Pre-fix: visualBlockExtent = 620 + max(0,10) + max(0,0) = 630.
+        //   chunkForBreakCheck = max(620, 630) = 630.
+        //   UsedBlockSize at decision = 180. 180 + 630 = 810 > 800 → BreakHere
+        //   → false page break (block 2 spuriously fails to fit).
+        // Post-fix: visualBlockExtent = 620 + max(0,topShift=0) + max(0,0) = 620.
+        //   chunkForBreakCheck = max(620, 620) = 620.
+        //   180 + 620 = 800 ≤ 800 → Continue. Block fits.
+        var sink = new RecordingFragmentSink();
+        var (root, _) = BuildTree(
+            (height: 100, marginTop: 0, marginBottom: 80),
+            (height: 620, marginTop: 10, marginBottom: 0));
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // Both blocks fit; layouter returns AllDone (no continuation needed).
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+        Assert.Equal(2, sink.Fragments.Count);
+        // Block 1: BlockOffset=0, BlockSize=100.
+        Assert.Equal(0, sink.Fragments[0].BlockOffset);
+        Assert.Equal(100, sink.Fragments[0].BlockSize);
+        // Block 2: collapsed-with-prior. effectiveTopGap=80, topShift=0.
+        // BlockOffset = UsedBlockSize-after-block-1 (180) + topShift (0) = 180.
+        Assert.Equal(180, sink.Fragments[1].BlockOffset);
+        Assert.Equal(620, sink.Fragments[1].BlockSize);
+    }
+
+    // --- Post-Task-7 review #5: checkpoint-owned margin-collapse frontier ---
+
+    [Fact]
+    public void PostTask7_rewind_to_older_checkpoint_uses_that_checkpoints_frontier()
+    {
+        // Post-Task-7 review (recommendation P2 #5) — pre-fix, the
+        // layouter stored the margin-collapse frontier in private
+        // fields populated AT REWIND TIME with the LAYOUTER'S CURRENT
+        // state. That works for the current single-slot resolver
+        // (always rewinds to the most-recent checkpoint), but would
+        // break a future resolver that retains multiple checkpoints +
+        // rewinds to an OLDER one (e.g., DP-optimal rewind across a
+        // window).
+        //
+        // Post-fix, the frontier is captured ON THE CHECKPOINT at
+        // capture time, and the rewind branch reads from
+        // `decision.RewindTo` rather than the layouter's "now" state.
+        //
+        // This test simulates the retained-multiple-checkpoints case
+        // with a resolver that:
+        //   - Stashes the FIRST checkpoint it sees (block 1 boundary —
+        //     no prior adjoining block, no collapse state).
+        //   - Continues through blocks 1, 2.
+        //   - At block 3, returns Rewind targeting the STASHED first
+        //     checkpoint (NOT the just-registered block-3 one).
+        // The layouter should resume with:
+        //   - LastEmittedChildIndex from the stashed checkpoint
+        //     (= -1 or 0 depending on capture timing — see resolver).
+        //   - The FRONTIER captured at the stashed checkpoint
+        //     (`hasAdjoiningBlockOnEntry: false`,
+        //      `prevBlockMarginEnd: 0`).
+        // Pre-fix would (incorrectly) restore the LAYOUTER'S state at
+        // rewind-call time — which corresponds to AFTER block 2 was
+        // emitted, so prevBlockMarginEnd != 0.
+        var sink = new RecordingFragmentSink();
+        var (root, _) = BuildTree(
+            (height: 100, marginTop: 0, marginBottom: 50),  // block 0 — bottom=50
+            (height: 100, marginTop: 0, marginBottom: 80),  // block 1 — bottom=80
+            (height: 100, marginTop: 0, marginBottom: 30)); // block 2 — bottom=30
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new RewindToFirstCheckpointResolver();
+
+        // First attempt: resolver stashes the first checkpoint (block 0
+        // boundary), continues through blocks 0+1, then rewinds to the
+        // stashed first checkpoint at block 2 boundary.
+        var firstResult = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+        Assert.Equal(LayoutAttemptOutcome.NeedsRewind, firstResult.Outcome);
+
+        // The stashed checkpoint's frontier should reflect the BLOCK 0
+        // boundary state: hasAdjoiningBlockOnEntry=false (no block emitted
+        // yet at that point), prevBlockMarginEnd=0.
+        Assert.NotNull(firstResult.RewindTo);
+        Assert.False(firstResult.RewindTo!.HasAdjoiningBlockOnEntry);
+        Assert.Equal(0, firstResult.RewindTo.PrevBlockMarginEnd);
+
+        // Restore + retry. The retry should resume from the stashed
+        // checkpoint's LastEmittedChildIndex+1 = 0 (since
+        // LastEmittedChildIndex = -1 — nothing emitted before block 0).
+        firstResult.RewindTo.RestoreInto(ctx, ref layoutCtx);
+        sink.RollbackTo(firstResult.RewindTo.FragmentOutputCursor);
+        resolver.SuppressNextRewind = true;
+
+        var secondResult = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+        Assert.Equal(LayoutAttemptOutcome.AllDone, secondResult.Outcome);
+        // 3 blocks emitted on the retry. Block 0 starts at offset 0
+        // (no collapse — frontier was hasAdjoiningBlock=false). If pre-
+        // fix had restored the wrong frontier (block 2's state), block 0
+        // on retry would have collapsed against a phantom prior margin.
+        Assert.Equal(3, sink.Fragments.Count);
+        Assert.Equal(0, sink.Fragments[0].BlockOffset);
+    }
+
+    /// <summary>Resolver that retains the FIRST checkpoint it sees +
+    /// rewinds to it on the third Consider call. Simulates the future
+    /// retained-multiple-checkpoints resolver scenario for the P2 #5
+    /// regression.</summary>
+    private sealed class RewindToFirstCheckpointResolver : IBreakResolver
+    {
+        public bool SuppressNextRewind;
+        private int _calls;
+        private CheckpointLease _firstLease;
+        private CheckpointLease _latestLease;
+
+        public BreakDecision ConsiderBreakAt(BreakOpportunity opportunity, FragmentainerContext ctx)
+        {
+            _calls++;
+            // On call 3 (block 2 boundary), rewind to the FIRST
+            // captured checkpoint (block 0 boundary).
+            if (_calls == 3 && !SuppressNextRewind)
+            {
+                return new BreakDecision(BreakAction.Rewind, 0, _firstLease.Checkpoint);
+            }
+            return BreakDecision.Continue;
+        }
+
+        public OptimizerResult ResolveBreaks(
+            IReadOnlyList<BreakOpportunity> opportunities, FragmentainerContext ctx, CancellationToken cancellationToken = default)
+            => OptimizerResult.Empty;
+
+        public void RegisterCheckpoint(CheckpointLease lease)
+        {
+            // Stash the FIRST checkpoint we ever see.
+            if (_firstLease.Checkpoint is null)
+            {
+                _firstLease = lease;
+                return;
+            }
+            // Subsequent checkpoints — return the prior LATEST (NOT the
+            // first; we want to keep the first alive for the rewind).
+            if (_latestLease.Checkpoint is not null
+                && !ReferenceEquals(_latestLease.Checkpoint, lease.Checkpoint)
+                && !ReferenceEquals(_latestLease.Checkpoint, _firstLease.Checkpoint))
+            {
+                LayoutCheckpointPool.Return(_latestLease);
+            }
+            _latestLease = lease;
+        }
+
+        public LayoutCheckpoint? GetLastCheckpoint() => _latestLease.Checkpoint ?? _firstLease.Checkpoint;
+
+        public void Dispose()
+        {
+            if (_firstLease.Checkpoint is not null)
+            {
+                LayoutCheckpointPool.Return(_firstLease);
+                _firstLease = default;
+            }
+            if (_latestLease.Checkpoint is not null)
+            {
+                LayoutCheckpointPool.Return(_latestLease);
+                _latestLease = default;
+            }
+        }
+    }
+
+    // --- Post-Task-7 review #1 (P1 #2): diagnostics flow through ---
+    // --- LayoutContext from coordinator to layouter --------------
+
+    [Fact]
+    public void PostTask7_coordinator_diagnostics_reach_layouter_via_layout_context()
+    {
+        // Post-Task-7 review (recommendation P1 #2) — pre-fix the
+        // coordinator + layouter each had their own diagnostic sink
+        // wired separately. A composition root that wired ONLY the
+        // coordinator's sink would miss
+        // PAGINATION-FORCED-OVERFLOW-001 emitted from the layouter's
+        // forward-progress path on the Strict attempt (LastResort
+        // never fires when Strict commits).
+        //
+        // Post-fix, the coordinator threads its sink into
+        // layout.Diagnostics on entry; the layouter reads from
+        // layout.Diagnostics. Wiring once at the coordinator reaches
+        // both sides.
+        //
+        // Test: oversized block (taller than the page) on fragmentainer
+        // 0. Strict path: resolver returns BreakHere (block too tall);
+        // layouter's forward-progress hits the forced-overflow path
+        // BEFORE LastResort. Pre-fix this would emit nothing on the
+        // coordinator's sink (layouter's _diagnostics was null —
+        // we never set it via constructor); post-fix it emits because
+        // the coordinator pushes its sink to layout.Diagnostics.
+        var diagSink = new RecordingDiagnosticsSink();
+        var sink = new RecordingFragmentSink();
+
+        var style = MakeStyle();
+        SetLengthPx(style, PropertyId.Height, 2000);  // taller than page
+        var root = Box.CreateRoot(MakeStyle());
+        root.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+
+        // Layouter constructed WITHOUT a diagnostics arg — the
+        // coordinator's sink is the only one wired.
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        var coordinator = new LayoutRetryCoordinator(diagnostics: diagSink, fragmentSink: sink);
+        using var resolver = new BreakResolver();
+
+        var result = coordinator.Run(layouter, ctx, ref layoutCtx, resolver);
+
+        // Layouter's Strict-path forward-progress emits the diagnostic.
+        // Pre-fix: nothing emitted (layouter._diagnostics was null).
+        // Post-fix: emitted via layout.Diagnostics.
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        Assert.Single(diagSink.Diagnostics);
+        Assert.Equal(PaginateDiagnosticCodes.PaginationForcedOverflow001,
+            diagSink.Diagnostics[0].Code);
+        Assert.Contains("forced overflow", diagSink.Diagnostics[0].Message,
+            System.StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void PostTask7_constructor_injected_sink_still_works_for_direct_construction()
+    {
+        // Backward-compat sanity: tests / direct callers that pass an
+        // IPaginateDiagnosticsSink to the BlockLayouter constructor
+        // (without going through the coordinator) still get diagnostics.
+        // The lookup is `layout.Diagnostics ?? _diagnostics` so the
+        // constructor sink wins when the ambient one isn't set.
+        var diagSink = new RecordingDiagnosticsSink();
+        var sink = new RecordingFragmentSink();
+
+        var style = MakeStyle();
+        SetLengthPx(style, PropertyId.Height, 2000);
+        var root = Box.CreateRoot(MakeStyle());
+        root.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+
+        using var layouter = new BlockLayouter(
+            root, sink, incomingContinuation: null, diagnostics: diagSink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);  // layoutCtx.Diagnostics = null
+        using var resolver = new BreakResolver();
+
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        Assert.Single(diagSink.Diagnostics);
+        Assert.Equal(PaginateDiagnosticCodes.PaginationForcedOverflow001,
+            diagSink.Diagnostics[0].Code);
+    }
+
     /// <summary>Recording sink for diagnostics — captures all emitted
     /// PaginateDiagnostics for assertion. Per the IPaginateDiagnosticsSink
     /// contract: must not throw.</summary>

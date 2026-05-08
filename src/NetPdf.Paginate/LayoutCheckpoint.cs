@@ -139,6 +139,40 @@ internal sealed class LayoutCheckpoint
     /// re-attempt produces a consistent fragment sequence.</summary>
     public int FragmentOutputCursor;
 
+    /// <summary>Per post-Task-7 review (recommendation P2 #5) — the
+    /// adjacent-margin-collapse frontier captured at this checkpoint
+    /// so a rewind to THIS specific checkpoint restores the correct
+    /// previous-block bottom margin (not the layouter's latest state,
+    /// which may correspond to a different — older or newer —
+    /// candidate-break boundary).
+    ///
+    /// <para>Cycle 2's PR #26 fix #3 stored the frontier in layouter-
+    /// private fields, populated only on the rewind branch. That works
+    /// for the current resolver (always rewinds to the most-recent
+    /// checkpoint) but breaks once the resolver retains multiple
+    /// checkpoints + chooses a non-most-recent one (a future
+    /// optimizer-aware path). Storing the frontier on the checkpoint
+    /// itself decouples the layouter's "current" state from the
+    /// "rewind-target" state.</para>
+    ///
+    /// <para>Layouters that don't model adjacent-margin collapse
+    /// (inline / table / flex / grid) leave both fields at their
+    /// zero defaults; <see cref="HasAdjoiningBlockOnEntry"/> stays
+    /// <see langword="false"/>, signaling "no collapse state to
+    /// restore". The fields are public + named generically so other
+    /// future block-flow layouters (nested BlockLayouter, etc.) can
+    /// reuse the slot.</para></summary>
+    public double PrevBlockMarginEnd;
+
+    /// <summary>Per post-Task-7 review (P2 #5) — companion flag to
+    /// <see cref="PrevBlockMarginEnd"/>. <see langword="true"/> when
+    /// an adjacent block sibling was emitted before this checkpoint
+    /// (so the next block's top margin should collapse with
+    /// <see cref="PrevBlockMarginEnd"/>); <see langword="false"/>
+    /// when this is the first block on the page or a non-block
+    /// child broke adjacency.</summary>
+    public bool HasAdjoiningBlockOnEntry;
+
     /// <summary>Per Phase 3 Task 4 review fix #7 — lease token stamped
     /// at <see cref="LayoutCheckpointPool.Rent"/> time + cleared by
     /// <see cref="LayoutCheckpointPool.Return"/> via atomic CAS. A
@@ -173,13 +207,20 @@ internal sealed class LayoutCheckpoint
         int fragmentOutputCursor,
         int lastEmittedChildIndex,
         LayoutContinuation? incomingContinuation,
-        int pageCounterValue)
+        int pageCounterValue,
+        double prevBlockMarginEnd = 0,
+        bool hasAdjoiningBlockOnEntry = false)
     {
         PageIndex = fragmentainer.PageIndex;
         UsedBlockSize = fragmentainer.UsedBlockSize;
         LastEmittedChildIndex = lastEmittedChildIndex;
         IncomingContinuation = incomingContinuation;
         PageCounterValue = pageCounterValue;
+        // Per post-Task-7 review (P2 #5) — capture the margin-collapse
+        // frontier so a rewind to THIS checkpoint restores the right
+        // prior-block bottom margin.
+        PrevBlockMarginEnd = prevBlockMarginEnd;
+        HasAdjoiningBlockOnEntry = hasAdjoiningBlockOnEntry;
 
         // Deep-copy mutable tables so the live layout can mutate them
         // without aliasing the snapshot.
@@ -295,6 +336,11 @@ internal sealed class LayoutCheckpoint
         CapturedFragmentainerRef = null;
         FloatManagerStateSnapshot = null;
         FragmentOutputCursor = 0;
+        // Per post-Task-7 review (P2 #5) — clear margin-collapse
+        // frontier on return-to-pool so a stale value doesn't leak
+        // into a fresh rent.
+        PrevBlockMarginEnd = 0;
+        HasAdjoiningBlockOnEntry = false;
         // Per fix #7 — _leaseToken intentionally NOT touched here.
     }
 }

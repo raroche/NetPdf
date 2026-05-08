@@ -60,10 +60,31 @@ public sealed class SafeHttpResourceLoader : IResourceLoader, IDisposable
     private readonly HttpClient _httpClient;
     private readonly SecurityPolicy _policy;
 
+    /// <summary>Per post-Task-7 review (recommendation P1 #1) — the
+    /// <see cref="SecurityPolicy"/> this loader captured at construction.
+    /// Exposed so <see cref="SafeResourceLoader"/>'s constructor can
+    /// detect a policy-divergence misconfig (the wrapper's
+    /// <see cref="ResourceFetchContext.Policy"/> differing from the
+    /// inner HTTP loader's policy) + reject it at construction rather
+    /// than letting redirects / AllowedHosts / per-resource-bytes
+    /// validation use one policy while scheme / IP-blocklist
+    /// validation uses another. Read-only — set once at construction.</summary>
+    public SecurityPolicy Policy => _policy;
+
     /// <summary>Construct with the active <see cref="SecurityPolicy"/>.
     /// The loader captures the policy at construction so the configured
     /// IP blocklist + redirect cap + per-resource size cap apply
-    /// uniformly across every fetch issued by this loader instance.</summary>
+    /// uniformly across every fetch issued by this loader instance.
+    ///
+    /// <para>Per post-Task-7 review (P1 #1) — when this loader is
+    /// wrapped by a <see cref="SafeResourceLoader"/> whose
+    /// <see cref="ResourceFetchContext.Policy"/> differs from the
+    /// policy passed here, the wrapper's constructor throws
+    /// <see cref="ArgumentException"/> to surface the misconfig before
+    /// any divergent decisions are made. To keep them in sync, prefer
+    /// <see cref="SafeResourceLoader.CreateWithSafeHttp"/>, which
+    /// constructs both with the context's policy as the single source
+    /// of truth.</para></summary>
     public SafeHttpResourceLoader(SecurityPolicy? policy = null)
     {
         _policy = policy ?? SecurityPolicy.SafeDefault;

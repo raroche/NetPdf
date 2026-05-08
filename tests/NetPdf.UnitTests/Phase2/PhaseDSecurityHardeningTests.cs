@@ -740,6 +740,196 @@ public sealed class PhaseDSecurityHardeningTests
         Assert.Empty(refs);
     }
 
+    // Post-Task-7 review — nested non-resource helper functions inside
+    // image-set / cross-fade / image. Pre-fix bugs:
+    //   (1) String args of helpers like type() / format() were captured
+    //       as phantom URLs (e.g., "image/png" extracted from
+    //       `image-set("a.png" 1x, type("image/png"))`).
+    //   (2) The helper's closing ) decremented the resource-fn depth,
+    //       prematurely closing the image-set context so legitimate
+    //       strings AFTER the helper would not be captured.
+    // The fix tracks an inner-non-resource paren depth separately; only
+    // strings at the IMMEDIATE level of the resource fn (innerNonResourceDepth
+    // == 0) count as URLs, and helper close-parens decrement the inner
+    // depth, leaving the resource-fn context intact.
+
+    [Fact]
+    public void PostTask7_image_set_with_type_helper_does_not_extract_helper_string()
+    {
+        // CSS Images L4 §6 — type("image/png") is a helper inside
+        // image-set, NOT a URL-bearing entry. Pre-fix the parser
+        // captured "image/png" as a phantom URL.
+        var refs = NetPdf.Css.Resources.CssResourceExtractor.ExtractFromDeclaration(
+            "background-image",
+            "image-set(\"a.png\" 1x, type(\"image/png\"))",
+            NetPdf.Css.Parser.CssSourceLocation.Unknown);
+        // Only "a.png" is a URL; "image/png" is a MIME type argument.
+        Assert.Single(refs);
+        Assert.Equal("a.png", refs[0].Url);
+    }
+
+    [Fact]
+    public void PostTask7_image_set_with_format_helper_does_not_extract_helper_string()
+    {
+        // url(...) format("png") inside image-set — format() is a
+        // helper hint, "png" is its arg, NOT a URL.
+        var refs = NetPdf.Css.Resources.CssResourceExtractor.ExtractFromDeclaration(
+            "background-image",
+            "image-set(url(\"a.png\") format(\"png\"))",
+            NetPdf.Css.Parser.CssSourceLocation.Unknown);
+        // Only the url() emits a URL; format("png") does NOT.
+        Assert.Single(refs);
+        Assert.Equal("a.png", refs[0].Url);
+    }
+
+    [Fact]
+    public void PostTask7_image_set_helper_close_paren_does_not_close_resource_fn()
+    {
+        // Pre-fix: the closing ) of type() decremented resourceFnDepth,
+        // so the SECOND legitimate string ("c.png") AFTER the helper was
+        // outside the resource-fn context and not captured.
+        // Post-fix: helper ) decrements innerNonResourceDepth; the
+        // image-set context survives until its OWN closing ).
+        var refs = NetPdf.Css.Resources.CssResourceExtractor.ExtractFromDeclaration(
+            "background-image",
+            "image-set(\"a.png\" 1x, type(\"image/png\") , \"c.png\" 2x)",
+            NetPdf.Css.Parser.CssSourceLocation.Unknown);
+        // BOTH "a.png" + "c.png" are real URLs; "image/png" is NOT.
+        Assert.Equal(2, refs.Count);
+        Assert.Equal("a.png", refs[0].Url);
+        Assert.Equal("c.png", refs[1].Url);
+    }
+
+    [Fact]
+    public void PostTask7_image_set_with_calc_helper_does_not_extract_helper_string()
+    {
+        // calc() is a helper that may appear in resource-fn args; its
+        // own contents are arithmetic, not URLs. (calc rarely contains
+        // strings, but cover the safety case so we don't regress later.)
+        var refs = NetPdf.Css.Resources.CssResourceExtractor.ExtractFromDeclaration(
+            "background-image",
+            "image-set(\"a.png\" calc(1 * 1x))",
+            NetPdf.Css.Parser.CssSourceLocation.Unknown);
+        Assert.Single(refs);
+        Assert.Equal("a.png", refs[0].Url);
+    }
+
+    [Fact]
+    public void PostTask7_nested_resource_fns_still_extract_strings()
+    {
+        // Pathological but legal — image-set inside cross-fade. Both
+        // are resource-list functions, so strings at either level are
+        // URLs. The fix must not break this: nested resource-fn
+        // depths still count as resource-fn level (innerNonResourceDepth
+        // stays at 0 because the inner is opened via
+        // TryMatchResourceFunctionStart, not as a non-resource paren).
+        var refs = NetPdf.Css.Resources.CssResourceExtractor.ExtractFromDeclaration(
+            "background-image",
+            "cross-fade(image-set(\"a.png\" 1x), \"b.png\", 50%)",
+            NetPdf.Css.Parser.CssSourceLocation.Unknown);
+        Assert.Equal(2, refs.Count);
+        Assert.Equal("a.png", refs[0].Url);
+        Assert.Equal("b.png", refs[1].Url);
+    }
+
+    // ====================================================================
+    //  Post-Task-7 review #1 (P1 #1) — HTTP loader policy unification.
+    //  SafeHttpResourceLoader's constructor-captured policy + the
+    //  SafeResourceLoader's ResourceFetchContext.Policy were independent
+    //  decisions; the wrapper validated scheme/IP/AllowedHosts against
+    //  context.Policy while the inner loader validated redirects +
+    //  per-resource bytes against its own policy. Mismatch = silent
+    //  security gap. Post-fix: detect ReferenceEquals divergence at
+    //  wrapper construction + throw, plus a CreateWithSafeHttp factory
+    //  that wires both with the context's policy as the single source.
+    // ====================================================================
+
+    [Fact]
+    public void PostTask7_safe_resource_loader_throws_when_inner_http_loader_has_divergent_policy()
+    {
+        // Two distinct SecurityPolicy instances (even with identical
+        // fields) → divergence. Pre-fix, this constructed silently +
+        // redirect/AllowedHosts validation could use a different
+        // policy than the wrapper's URI safety check. Post-fix throws.
+        var policyA = new SecurityPolicy { AllowHttpsScheme = true };
+        var policyB = new SecurityPolicy { AllowHttpsScheme = true };
+        using var http = new SafeHttpResourceLoader(policyA);
+        var ctx = new ResourceFetchContext(policyB, baseUri: null,
+            cancellationToken: System.Threading.CancellationToken.None);
+
+        var ex = Assert.Throws<ArgumentException>(() =>
+            new SafeResourceLoader(http, ctx));
+        Assert.Contains("same instance", ex.Message,
+            System.StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("CreateWithSafeHttp", ex.Message,
+            System.StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void PostTask7_safe_resource_loader_accepts_inner_http_loader_with_same_policy_instance()
+    {
+        // Same SecurityPolicy instance shared between both layers →
+        // no divergence; constructor accepts.
+        var policy = new SecurityPolicy { AllowHttpsScheme = true };
+        using var http = new SafeHttpResourceLoader(policy);
+        var ctx = new ResourceFetchContext(policy, baseUri: null,
+            cancellationToken: System.Threading.CancellationToken.None);
+
+        var loader = new SafeResourceLoader(http, ctx);
+        Assert.NotNull(loader);
+    }
+
+    [Fact]
+    public void PostTask7_safe_resource_loader_accepts_non_http_inner_loader()
+    {
+        // The divergence check applies ONLY to SafeHttpResourceLoader
+        // inners (the only well-known policy-aware type). A custom
+        // user-supplied IResourceLoader is opaque — the wrapper can't
+        // know what policy it uses, so the check is skipped.
+        var policy = new SecurityPolicy();
+        var ctx = new ResourceFetchContext(policy, baseUri: null,
+            cancellationToken: System.Threading.CancellationToken.None);
+        var customInner = new InvocationCountingLoader();
+
+        var loader = new SafeResourceLoader(customInner, ctx);
+        Assert.NotNull(loader);
+    }
+
+    [Fact]
+    public void PostTask7_create_with_safe_http_wires_both_layers_with_context_policy()
+    {
+        // The factory ensures both the wrapper + the inner HTTP loader
+        // see the SAME SecurityPolicy instance (= context.Policy).
+        var policy = new SecurityPolicy { AllowHttpsScheme = true };
+        var ctx = new ResourceFetchContext(policy, baseUri: null,
+            cancellationToken: System.Threading.CancellationToken.None);
+
+        using var bundle = SafeResourceLoader.CreateWithSafeHttp(ctx);
+        Assert.NotNull(bundle.Wrapper);
+        Assert.NotNull(bundle.UnderlyingHttpLoader);
+        // The HTTP loader's Policy is the context's policy.
+        Assert.Same(policy, bundle.UnderlyingHttpLoader.Policy);
+    }
+
+    [Fact]
+    public void PostTask7_safe_http_resource_loader_policy_property_returns_constructor_value()
+    {
+        // Sanity: the new public Policy getter exposes the
+        // constructor-captured value.
+        var policy = new SecurityPolicy { MaxRedirectHops = 7 };
+        using var http = new SafeHttpResourceLoader(policy);
+        Assert.Same(policy, http.Policy);
+    }
+
+    [Fact]
+    public void PostTask7_safe_http_resource_loader_policy_property_defaults_to_safe_default()
+    {
+        // When constructed without an explicit policy, Policy returns
+        // SecurityPolicy.SafeDefault.
+        using var http = new SafeHttpResourceLoader();
+        Assert.Same(SecurityPolicy.SafeDefault, http.Policy);
+    }
+
     // P2 #5: Symlink-aware file sandbox.
     [Fact]
     public void DReview_symlink_traversal_test_doc()

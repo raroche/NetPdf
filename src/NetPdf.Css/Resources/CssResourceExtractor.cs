@@ -180,6 +180,28 @@ internal static class CssResourceExtractor
     /// <c>background-image: image-set("https://attacker/a.png" 1x)</c>
     /// would not be reported. The fix tracks whether we're inside one
     /// of these functions + treats string literals there as URLs.</para>
+    ///
+    /// <para><b>Per post-Task-7 review — nested non-resource functions.</b>
+    /// CSS Images L4 §6 also allows resource lists to contain
+    /// <i>non-resource</i> helper functions like <c>type("image/png")</c>
+    /// or <c>format("avif")</c>. Pre-fix the parser:
+    /// <list type="bullet">
+    ///   <item>Treated string args of those helpers as URLs (so
+    ///   <c>image-set("a.png" 1x, type("image/png"))</c> would emit
+    ///   <c>"image/png"</c> as a phantom URL).</item>
+    ///   <item>Decremented the resource-fn depth when seeing the
+    ///   helper's closing <c>)</c>, prematurely exiting the
+    ///   <c>image-set</c> context (so legitimate strings AFTER the
+    ///   helper would not be captured).</item>
+    /// </list>
+    /// The fix tracks an inner non-resource paren depth separately
+    /// from the resource-fn depth: only strings at the IMMEDIATE
+    /// level of a resource fn (innerNonResourceDepth == 0) count as
+    /// URLs, and the closing <c>)</c> of a helper decrements the
+    /// inner depth, leaving the resource-fn depth intact. Nested
+    /// resource fns (<c>image-set(image-set("nested.png" 1x) 2x)</c>)
+    /// are unaffected — the inner image-set still goes through
+    /// <see cref="TryMatchResourceFunctionStart"/>.</para>
     /// </summary>
     public static IReadOnlyList<string> EnumerateUrls(string value)
     {
@@ -190,12 +212,19 @@ internal static class CssResourceExtractor
         // image-set() / cross-fade() / image() and string literals are
         // URL-bearing rather than skip-only.
         var resourceFnDepth = 0;
+        // Per post-Task-7 review — track non-resource paren nesting
+        // INSIDE the current resource fn body. While > 0 we're inside
+        // a helper like type() or format(); strings are NOT URLs
+        // and the helper's closing ) decrements this counter, NOT
+        // the resource-fn depth.
+        var innerNonResourceDepth = 0;
         var i = 0;
         while (i < value.Length)
         {
             var c = value[i];
-            // CSS string literal handling — when inside a resource fn,
-            // capture it as a URL; otherwise skip it entirely.
+            // CSS string literal handling — when inside a resource fn
+            // AT THE IMMEDIATE LEVEL (not nested in a helper), capture
+            // it as a URL; otherwise skip it entirely.
             if (c == '"' || c == '\'')
             {
                 var quote = c;
@@ -206,7 +235,9 @@ internal static class CssResourceExtractor
                     if (value[i] == '\\' && i + 1 < value.Length) i += 2;
                     else i++;
                 }
-                if (resourceFnDepth > 0 && i <= value.Length)
+                if (resourceFnDepth > 0
+                    && innerNonResourceDepth == 0
+                    && i <= value.Length)
                 {
                     var url = value[stringStart..Math.Min(i, value.Length)];
                     if (!string.IsNullOrEmpty(url)) results.Add(url);
@@ -214,7 +245,9 @@ internal static class CssResourceExtractor
                 if (i < value.Length) i++;
                 continue;
             }
-            // Match url( case-insensitively.
+            // Match url( case-insensitively. url() is captured regardless
+            // of whether we're inside a helper (its semantics are
+            // unambiguous + matches the CSS Images L4 §6 grammar).
             if (TryMatchKeywordOpenParen(value, i, "url"))
             {
                 if (i > 0 && IsIdentContinue(value[i - 1])) { i++; continue; }
@@ -234,14 +267,47 @@ internal static class CssResourceExtractor
             if (TryMatchResourceFunctionStart(value, i, out var consumed))
             {
                 resourceFnDepth++;
+                // Reset inner-non-resource depth — the new resource-fn
+                // body starts fresh at depth 0.
+                // (Nested non-resource depth is per-resource-fn — when
+                // we re-enter the outer fn after the inner closes, the
+                // outer's inner depth is whatever it was before. We
+                // track this implicitly via the close-paren branch
+                // below, which decrements innerNonResourceDepth before
+                // resourceFnDepth.)
                 i += consumed;
                 continue;
             }
-            if (resourceFnDepth > 0 && c == ')')
+            // Inside a resource fn: track nested non-resource ( and ).
+            if (resourceFnDepth > 0)
             {
-                resourceFnDepth--;
-                i++;
-                continue;
+                if (c == '(')
+                {
+                    // Some non-resource function opens. Could be type(),
+                    // format(), calc(), etc. Track its nesting so its
+                    // strings + closing ) don't pollute the outer
+                    // resource-fn state.
+                    innerNonResourceDepth++;
+                    i++;
+                    continue;
+                }
+                if (c == ')')
+                {
+                    if (innerNonResourceDepth > 0)
+                    {
+                        // Closing a helper inside the resource fn.
+                        // Resource-fn depth STAYS — we're still
+                        // collecting from its body.
+                        innerNonResourceDepth--;
+                    }
+                    else
+                    {
+                        // Closing the resource fn itself.
+                        resourceFnDepth--;
+                    }
+                    i++;
+                    continue;
+                }
             }
             i++;
         }

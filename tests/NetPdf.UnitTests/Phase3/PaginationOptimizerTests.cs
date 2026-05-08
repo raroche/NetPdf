@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using NetPdf.Paginate;
 using Xunit;
 
@@ -1374,5 +1375,79 @@ public sealed class PaginationOptimizerTests
         Assert.Equal(1, layout.ReadCounter("page"));
         // Speculative ctx is left alone (caller-discarded; its mutated
         // state is irrelevant to layout going forward).
+    }
+
+    // ====================================================================
+    //  Post-Task-7 review (recommendation P2 #4) — Optimizer cancellation /
+    //  budget timing. Pre-fix Optimize validated every opportunity BEFORE
+    //  applying MaxCandidatesBeforeFallback (so a 10k-element pre-cancelled
+    //  input would still walk all 10k validations); Greedy didn't accept
+    //  a CancellationToken at all. Post-fix: budget cap precedes per-
+    //  opportunity validation; both validation + greedy fallback poll
+    //  the token at every 64-opportunity boundary.
+    // ====================================================================
+
+    [Fact]
+    public void PostTask7_optimize_pre_cancelled_token_throws_for_over_budget_input()
+    {
+        // Build a candidate set just above MaxCandidatesBeforeFallback
+        // (16384). Pre-fix would walk all 16385 EnsureValid calls before
+        // checking the cancellation token. Post-fix: budget cap precedes
+        // validation, falls into Greedy, which polls the token on its
+        // first 64-element boundary and throws.
+        var n = Optimizer.MaxCandidatesBeforeFallback + 1;
+        var opps = new List<BreakOpportunity>(n);
+        for (var i = 0; i < n; i++)
+        {
+            opps.Add(BreakOpportunity.Block(usedBlockSize: i * 10.0, chunkBlockSize: 10));
+        }
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        Assert.Throws<OperationCanceledException>(() =>
+            Optimizer.Optimize(
+                opps, contentBlockSize: 800, orphansRequired: 2, widowsRequired: 2,
+                cancellationToken: cts.Token));
+    }
+
+    [Fact]
+    public void PostTask7_optimize_pre_cancelled_token_throws_during_validation_under_budget()
+    {
+        // Under-budget input — the DP path runs. Per post-Task-7 fix,
+        // the validation loop polls the token at every 64-element
+        // boundary; a pre-cancelled token must throw on the very
+        // first check (i == 0).
+        var n = 256;  // well under MaxCandidatesBeforeFallback
+        var opps = new List<BreakOpportunity>(n);
+        for (var i = 0; i < n; i++)
+        {
+            opps.Add(BreakOpportunity.Block(usedBlockSize: i * 10.0, chunkBlockSize: 10));
+        }
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        Assert.Throws<OperationCanceledException>(() =>
+            Optimizer.Optimize(
+                opps, contentBlockSize: 800, orphansRequired: 2, widowsRequired: 2,
+                cancellationToken: cts.Token));
+    }
+
+    [Fact]
+    public void PostTask7_optimize_uncancelled_over_budget_input_falls_back_to_greedy_without_throwing()
+    {
+        // Sanity: the budget-first reorder didn't break the fallback
+        // semantics. An over-budget input + uncancelled token should
+        // still succeed via the greedy path (FellBackToGreedy = true).
+        var n = Optimizer.MaxCandidatesBeforeFallback + 1;
+        var opps = new List<BreakOpportunity>(n);
+        for (var i = 0; i < n; i++)
+        {
+            opps.Add(BreakOpportunity.Block(usedBlockSize: i * 10.0, chunkBlockSize: 10));
+        }
+        var result = Optimizer.Optimize(
+            opps, contentBlockSize: 800, orphansRequired: 2, widowsRequired: 2,
+            cancellationToken: CancellationToken.None);
+        Assert.True(result.FellBackToGreedy);
+        Assert.NotNull(result.FallbackReason);
+        Assert.Contains("greedy fallback", result.FallbackReason!,
+            StringComparison.OrdinalIgnoreCase);
     }
 }

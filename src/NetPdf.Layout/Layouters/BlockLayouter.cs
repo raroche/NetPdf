@@ -438,8 +438,25 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             //     (what visually occupies the page)
             // The latter dominates when negative margins cancel a
             // large border box.
+            //
+            // Per post-Task-7 review (recommendation P2 #3) —
+            // collapsed-margin overcounting. After adjacent-margin
+            // collapse, the actual top contribution is `topShift`,
+            // NOT raw `marginStart`. Pre-fix used `Math.Max(0, marginStart)`
+            // which double-counts a margin that has already been
+            // collapsed away with the previous block's marginBottom.
+            // Example: prev block's marginBottom=80, current block's
+            // marginTop=10. After collapse the top contribution is 0
+            // (the 80 is already in fragmentainer.UsedBlockSize from
+            // the prior emission; the collapsed gap of 80 replaces
+            // both, so topShift = 80 - 80 = 0). Pre-fix counted +10
+            // → false page break near a boundary. Post-fix uses
+            // topShift, which is `marginStart` for the first block
+            // on a page (no collapse) and `effectiveTopGap -
+            // prevBlockMarginEnd` (= the actual additional advance)
+            // for subsequent collapsed blocks.
             var visualBlockExtent = borderBoxBlockSize
-                + Math.Max(0, marginStart)
+                + Math.Max(0, topShift)
                 + Math.Max(0, marginEnd);
             var chunkForBreakCheck = Math.Max(
                 Math.Max(0, marginBoxBlockSize),
@@ -461,7 +478,15 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // skipped children are not emitted.
                 lastEmittedChildIndex: lastEmittedIdx,
                 incomingContinuation: _incomingContinuation,
-                pageCounterValue: layout.ReadCounter("page"));
+                pageCounterValue: layout.ReadCounter("page"),
+                // Per post-Task-7 review (P2 #5) — capture the margin-
+                // collapse frontier on the checkpoint itself so a rewind
+                // to THIS specific checkpoint restores the right
+                // previous-block bottom margin (instead of the layouter's
+                // latest fields which may correspond to a different
+                // candidate-break boundary).
+                prevBlockMarginEnd: prevBlockMarginEnd,
+                hasAdjoiningBlockOnEntry: hasPriorAdjoiningBlock);
             resolver.RegisterCheckpoint(newLease);
             // The resolver's internal RegisterCheckpoint returns the
             // PRIOR lease to the pool via the lease-token CAS; we just
@@ -498,8 +523,19 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // that existed AT this checkpoint. Without it, the
                 // retry would reset to the page-start state +
                 // double-apply the next block's marginTop.
-                _prevBlockMarginEndAfterRewind = prevBlockMarginEnd;
-                _hasPriorAdjoiningBlockAfterRewind = hasPriorAdjoiningBlock;
+                //
+                // Per post-Task-7 review (P2 #5) — read the frontier
+                // from the chosen rewind-target checkpoint, NOT from
+                // the layouter's current state. The current state
+                // corresponds to the just-registered checkpoint
+                // (which the resolver typically picks); but if the
+                // resolver returns an OLDER checkpoint as the rewind
+                // target (a future optimizer-aware path retains
+                // multiple checkpoints), the layouter's "current"
+                // frontier is the wrong frontier. The checkpoint's
+                // own captured fields are authoritative.
+                _prevBlockMarginEndAfterRewind = decision.RewindTo.PrevBlockMarginEnd;
+                _hasPriorAdjoiningBlockAfterRewind = decision.RewindTo.HasAdjoiningBlockOnEntry;
                 _hasRewindCollapseState = true;
                 return LayoutAttemptResult.NeedsRewind(decision.RewindTo, decision.Cost);
             }
@@ -540,7 +576,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     // because consumers de-duplicate by code + page
                     // index, OR see the redundant emission as the
                     // signal-amplification it is.
-                    OptimizingBreakResolver.SafeEmit(_diagnostics, new PaginateDiagnostic(
+                    // Per post-Task-7 review (P1 #2) — prefer the
+                    // ambient sink on the layout context (set by the
+                    // coordinator's Run) over the constructor-injected
+                    // sink. Falls back to the constructor sink for
+                    // direct-construction callers (tests, integration
+                    // helpers) that don't go through the coordinator.
+                    var diagSink = layout.Diagnostics ?? _diagnostics;
+                    OptimizingBreakResolver.SafeEmit(diagSink, new PaginateDiagnostic(
                         PaginateDiagnosticCodes.PaginationForcedOverflow001,
                         $"BlockLayouter: forced overflow on fragmentainer page index "
                         + $"{fragmentainer.PageIndex}, child index {childIdx} — "

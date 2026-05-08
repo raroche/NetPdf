@@ -166,20 +166,36 @@ internal static class Optimizer
             return OptimizerResult.Empty;
         }
 
-        // Per-opportunity validation. EnsureValid catches NaN /
-        // negative geometry — the DP's arithmetic depends on finite
-        // values to compare costs deterministically.
-        for (var i = 0; i < n; i++)
-        {
-            opportunities[i].EnsureValid();
-        }
-
-        // Whole-window budget cap.
+        // Per post-Task-7 review (recommendation P2 #4) — budget cap
+        // checked BEFORE the per-opportunity validation loop. Pathological
+        // inputs (10k+ candidates) used to burn the validation cycles
+        // even though the next step would discard the DP path entirely
+        // and fall back to greedy. Greedy's own loop validates each
+        // opportunity individually as it consumes them, so the
+        // up-front validation is wasted work in the over-budget case.
         if (n > MaxCandidatesBeforeFallback)
         {
             return Greedy(opportunities, contentBlockSize, orphansRequired, widowsRequired,
                 fallbackReason:
-                    $"Candidate set size {n} exceeds DP budget {MaxCandidatesBeforeFallback}; greedy fallback.");
+                    $"Candidate set size {n} exceeds DP budget {MaxCandidatesBeforeFallback}; greedy fallback.",
+                cancellationToken: cancellationToken);
+        }
+
+        // Per-opportunity validation. EnsureValid catches NaN /
+        // negative geometry — the DP's arithmetic depends on finite
+        // values to compare costs deterministically.
+        // Per post-Task-7 review (P2 #4) — cancellation check at every
+        // 64-opportunity boundary. A pre-cancelled token + a 1024-element
+        // input would otherwise still walk all 1024 EnsureValid calls
+        // before checking. 64 was chosen so the wasted work per check
+        // is bounded in microseconds.
+        for (var i = 0; i < n; i++)
+        {
+            if ((i & 0x3F) == 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+            opportunities[i].EnsureValid();
         }
 
         // Monotonicity check — UsedBlockSize must be non-decreasing.
@@ -193,7 +209,8 @@ internal static class Optimizer
                 return Greedy(opportunities, contentBlockSize, orphansRequired, widowsRequired,
                     fallbackReason:
                         "UsedBlockSize is not monotonically non-decreasing; the DP requires "
-                        + "cumulative block-axis position. Greedy fallback.");
+                        + "cumulative block-axis position. Greedy fallback.",
+                    cancellationToken: cancellationToken);
             }
         }
 
@@ -252,7 +269,8 @@ internal static class Optimizer
                 return Greedy(opportunities, contentBlockSize, orphansRequired, widowsRequired,
                     fallbackReason:
                         $"Per-page candidate count {inPageCount} exceeds MaxCandidatesPerPage="
-                        + $"{MaxCandidatesPerPage}; greedy fallback.");
+                        + $"{MaxCandidatesPerPage}; greedy fallback.",
+                    cancellationToken: cancellationToken);
             }
 
             // ---- Step 2 (review fix #4): if a forced break is
@@ -382,7 +400,8 @@ internal static class Optimizer
                     {
                         return Greedy(opportunities, contentBlockSize, orphansRequired, widowsRequired,
                             fallbackReason:
-                                $"DP exceeded MaxPairEvaluations={MaxPairEvaluations}; greedy fallback.");
+                                $"DP exceeded MaxPairEvaluations={MaxPairEvaluations}; greedy fallback.",
+                            cancellationToken: cancellationToken);
                     }
 
                     var oppB2 = opportunities[b2];
@@ -412,7 +431,8 @@ internal static class Optimizer
                 return Greedy(opportunities, contentBlockSize, orphansRequired, widowsRequired,
                     fallbackReason:
                         $"DP could not find a feasible (b1, b2) pair starting at index {i2}: "
-                        + "every in-window candidate was avoid-break + not forced. Greedy fallback.");
+                        + "every in-window candidate was avoid-break + not forced. Greedy fallback.",
+                    cancellationToken: cancellationToken);
             }
 
             breaks.Add(bestB1);
@@ -514,7 +534,8 @@ internal static class Optimizer
         double contentBlockSize,
         int orphansRequired,
         int widowsRequired,
-        string fallbackReason)
+        string fallbackReason,
+        CancellationToken cancellationToken = default)
     {
         var breaks = new List<int>(capacity: Math.Min(64, opportunities.Count));
         double totalCost = 0;
@@ -522,6 +543,15 @@ internal static class Optimizer
 
         for (var i = 0; i < opportunities.Count; i++)
         {
+            // Per post-Task-7 review (P2 #4) — greedy fallback on a
+            // pathological window (the over-budget path) can still
+            // burn cycles on a pre-cancelled token. Check at every
+            // 64-opportunity boundary so the wasted-work bound is
+            // microseconds.
+            if ((i & 0x3F) == 0)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+            }
             var opp = opportunities[i];
             opp.EnsureValid();
 

@@ -72,6 +72,30 @@ internal sealed class FontFace : IDisposable
     /// </summary>
     public static FontFace Load(ReadOnlyMemory<byte> fontBytes, string source)
     {
+        // Per Phase C C-2 — pre-decode safety gate. Catches non-fonts (e.g.,
+        // a binary blob renamed to .ttf), oversized inputs, and sfnt headers
+        // that declare millions of tables before OpenTypeFont.Parse + HarfBuzz
+        // run on the bytes.
+        var verdict = FontSafetyValidator.Validate(fontBytes.Span);
+        if (!verdict.IsSafe)
+        {
+            throw new InvalidOperationException(
+                $"Font '{source}' rejected by pre-decode safety validator: {verdict.Reason}");
+        }
+        // Per PR #17 review user-recommendation #5 + Copilot #3 — WOFF /
+        // WOFF2 carry a wrapped sfnt that needs format-specific decoding
+        // (Brotli for WOFF2, zlib for WOFF) before OpenTypeFont.Parse can
+        // walk the table directory. The validator currently only sniffs
+        // the wrapped magic; OpenTypeFont.Parse on wrapped bytes would
+        // misread the directory. Phase 5's @font-face loader will own
+        // WOFF/WOFF2 decoding; until then, FontFace.Load rejects wrapped
+        // formats explicitly so the contract matches reality.
+        if (verdict.DetectedFormat is FontSafetyValidator.FontFormat.Woff
+            or FontSafetyValidator.FontFormat.Woff2)
+        {
+            throw new InvalidOperationException(
+                $"Font '{source}' is in {verdict.DetectedFormat} format; NetPdf v1 cannot decode the wrapped sfnt — pass the unwrapped TTF/OTF.");
+        }
         var font = OpenTypeFont.Parse(fontBytes);
         var metadata = FontMetadata.Extract(font);
         return new FontFace(font, metadata, source);

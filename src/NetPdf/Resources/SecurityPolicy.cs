@@ -43,9 +43,33 @@ public sealed class SecurityPolicy
 
     public long MaxResourceBytes { get; init; } = 25L * 1024 * 1024;
 
+    /// <summary>Per Phase C C-5 — maximum number of distinct resources
+    /// (images / fonts / stylesheets / etc.) the loader may fetch during one
+    /// render. Defends against documents that reference thousands of
+    /// resources to amplify outbound traffic. Real documents rarely
+    /// exceed 50; the default of 200 leaves headroom for icon-heavy
+    /// dashboards.</summary>
+    public int MaxResourcesPerRender { get; init; } = 200;
+
+    /// <summary>Per Phase C C-5 — maximum total bytes summed across every
+    /// fetched resource for one render. Bounds the cumulative network +
+    /// memory cost when an attacker references many small-but-numerous
+    /// resources (each individually under <see cref="MaxResourceBytes"/>).
+    /// 100 MiB is generous for any realistic document.</summary>
+    public long MaxTotalResourceBytes { get; init; } = 100L * 1024 * 1024;
+
+    /// <summary>Per Phase C C-6 — maximum HTTP redirect hops to follow on a
+    /// single resource fetch. Each hop must be re-validated against the
+    /// rest of this policy via <c>UriSafetyValidator.ValidateRedirect</c>;
+    /// even with that, hostile servers can construct redirect loops or
+    /// "open redirect → SSRF" chains. 5 matches RFC 7231 §6.4 guidance
+    /// + browser defaults.</summary>
+    public int MaxRedirectHops { get; init; } = 5;
+
     /// <summary>
     /// The default — BaseUri-sandboxed file:// reads, data URIs, no HTTP(S), 10 s timeout,
-    /// 25 MB cap. Suitable for most document-rendering scenarios out of the box.
+    /// 25 MB cap, 200 resources per render, 100 MiB total, 5 redirect hops. Suitable
+    /// for most document-rendering scenarios out of the box.
     /// </summary>
     public static SecurityPolicy SafeDefault { get; } = new();
 }

@@ -139,30 +139,25 @@ public sealed class RasterImageXObjectTests
     }
 
     [Fact]
-    public void Opaque_AVIF_emits_DeviceRGB_image_without_SMask_when_host_libavif_is_present()
+    public void Opaque_AVIF_now_rejected_by_phase_C_safety_gate()
     {
-        // Bundled libavif test fixture (white_1x1.avif, 305 bytes, BSD-2-Clause).
-        // AVIF decode is host-dependent — see RasterImageDecoder XML. Skip cleanly on
-        // hosts where libavif isn't linked into SkiaSharp.
+        // Per PR #17 Phase C C-1 follow-up — AVIF input is now explicitly
+        // rejected by ImageSafetyValidator before reaching
+        // RasterImageDecoder. The previous "decode if libavif present, skip
+        // otherwise" semantics changed: NetPdf v1 doesn't decode AVIF on
+        // any host (the Phase C threat model considers AVIF in scope but
+        // support is post-v1, and macOS SkiaSharp lacks libavif anyway).
+        // The bundled fixture stays in the resource set for the future
+        // post-v1 wireup.
         using var stream = typeof(RasterImageXObjectTests).Assembly
             .GetManifestResourceStream("NetPdf.UnitTests.Resources.Images.white_1x1.avif")
             ?? throw new InvalidOperationException("Test resource white_1x1.avif missing.");
         using var ms = new MemoryStream();
         stream.CopyTo(ms);
 
-        ImageXObjectResult result;
-        try
-        {
-            result = RasterImageXObject.Build(ms.ToArray());
-        }
-        catch (InvalidDataException)
-        {
-            return; // AVIF not decodable on this host — see RasterImageDecoder XML.
-        }
-        Assert.Null(result.SMask);
-        Assert.Equal(1, GetInt(result.Image.Dictionary, PdfNames.Width));
-        Assert.Equal(1, GetInt(result.Image.Dictionary, PdfNames.Height));
-        Assert.Equal("DeviceRGB", GetName(result.Image.Dictionary, PdfNames.ColorSpace)!.Value);
+        var ex = Assert.Throws<InvalidOperationException>(
+            () => RasterImageXObject.Build(ms.ToArray()));
+        Assert.Contains("AVIF", ex.Message, StringComparison.Ordinal);
     }
 
     // ───── HasAlpha contract validation (review follow-up #2) ────────────────

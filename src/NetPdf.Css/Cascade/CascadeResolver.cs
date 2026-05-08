@@ -103,7 +103,7 @@ internal static class CascadeResolver
         if (document.DocumentElement is null) return result;
 
         var rootBloom = default(SelectorBloomFilter);
-        WalkElement(document.DocumentElement, compiledRules, in rootBloom, result, cancellationToken);
+        WalkElement(document.DocumentElement, compiledRules, in rootBloom, result, diagnostics, cancellationToken);
 
         // Inline styles enter as a virtual stylesheet with stylesheet-order pinned ABOVE
         // the maximum real stylesheet order so the source-order tie-break (when two
@@ -111,7 +111,7 @@ internal static class CascadeResolver
         // last. The IsInlineStyle flag is what makes them beat selectors of any
         // specificity per L4 §6.4.3 — independent of the source-order pinning.
         var inlineStylesheetOrder = maxSheetOrder + 1;
-        WalkInlineStyles(document.DocumentElement, result, inlineStylesheetOrder, cancellationToken);
+        WalkInlineStyles(document.DocumentElement, result, inlineStylesheetOrder, diagnostics, cancellationToken);
 
         return result;
     }
@@ -240,6 +240,19 @@ internal static class CascadeResolver
     /// rejecting legitimate megalists.</summary>
     internal const int MaxSelectorAlternatives = 1024;
 
+    /// <summary>Per Phase C C-4 — maximum cumulative
+    /// <see cref="MatchedDeclaration"/> count across the entire cascade for
+    /// one render. With <c>MaxRulesPerStylesheet = 50 000</c>,
+    /// <c>MaxDeclarationsPerRule = 256</c>, and B-1's
+    /// <c>MaxElementCount = 250 000</c>, the upper bound on matched
+    /// declarations was effectively unbounded (every rule could match every
+    /// element). Real-world large docs sit at &lt; 500 000 matched
+    /// declarations; 5 000 000 is generous for Tailwind-heavy docs while
+    /// catching the per-element-explosion + per-rule-explosion compound
+    /// case where each individual cap stays under threshold but their
+    /// product blows the matched table.</summary>
+    internal const int MaxMatchedDeclarationsPerRender = 5_000_000;
+
     private static void CollectFromRules(
         ImmutableArray<CssRule> rules,
         CssStylesheetOrigin origin,
@@ -327,25 +340,49 @@ internal static class CascadeResolver
         HashSet<int> hasContainingSheets,
         ICssDiagnosticsSink? diagnostics)
     {
-        var compiled = CompileSelector(sr.Selector.RawText, diagnostics, sr.Location);
-        if (compiled is not null && compiled.ContainsHas)
-            hasContainingSheets.Add(sheetOrder);
-
-        // Per PR #16 review user-recommendation #3 + Copilot review #6 —
-        // enforce MaxSelectorAlternatives. The cap was declared in Phase B
-        // but never wired up; a single rule with millions of comma-separated
-        // alternatives (each compiled to its own SelectorBytecode) would
-        // amplify the per-element matching loop past the per-rule budget.
-        // Truncate post-compile by rebuilding the SelectorList with only
-        // the first N alternatives — the matching loop iterates the
-        // truncated list directly.
-        if (compiled is not null && compiled.Alternatives.Length > MaxSelectorAlternatives)
+        // Per PR #17 review user-recommendation #7 — pre-compile cap on
+        // top-level comma-separated alternatives. Counting commas in the
+        // raw selector text is much cheaper than letting SelectorCompiler
+        // walk + parse + allocate millions of SelectorBytecodes only to
+        // truncate them afterward. The count is paren/bracket-aware so
+        // commas inside `:is(.a, .b, ...)` aren't counted as top-level
+        // alternatives — that nested set has its own bound (specificity
+        // is a single bytecode field anyway).
+        var rawSelector = sr.Selector.RawText;
+        var topLevelAlternatives = CountTopLevelSelectorAlternatives(rawSelector);
+        var truncatedRaw = rawSelector;
+        var preCompileTruncated = false;
+        if (topLevelAlternatives > MaxSelectorAlternatives)
         {
             diagnostics?.Emit(new CssDiagnostic(
                 CssDiagnosticCodes.CssRuleLimitExceeded001,
-                $"Rule exceeded the {MaxSelectorAlternatives}-selector-alternative cap; excess alternatives dropped.",
+                $"Rule exceeded the {MaxSelectorAlternatives}-selector-alternative cap; truncated before compilation.",
                 CssDiagnosticSeverity.Warning,
                 sr.Location));
+            truncatedRaw = TruncateSelectorAtTopLevelComma(rawSelector, MaxSelectorAlternatives);
+            preCompileTruncated = true;
+        }
+
+        var compiled = CompileSelector(truncatedRaw, diagnostics, sr.Location);
+        if (compiled is not null && compiled.ContainsHas)
+            hasContainingSheets.Add(sheetOrder);
+
+        // Belt-and-suspenders post-compile check — pathological raw text
+        // could still produce > MaxSelectorAlternatives compiled
+        // alternatives if the comma-counter undershoots (it shouldn't,
+        // but the post-compile truncation is cheap insurance against
+        // future selector grammar changes). Skip the diagnostic here
+        // when we already emitted one pre-compile.
+        if (compiled is not null && compiled.Alternatives.Length > MaxSelectorAlternatives)
+        {
+            if (!preCompileTruncated)
+            {
+                diagnostics?.Emit(new CssDiagnostic(
+                    CssDiagnosticCodes.CssRuleLimitExceeded001,
+                    $"Rule exceeded the {MaxSelectorAlternatives}-selector-alternative cap; excess alternatives dropped.",
+                    CssDiagnosticSeverity.Warning,
+                    sr.Location));
+            }
             compiled = new NetPdf.Css.Selectors.SelectorList(
                 ImmutableArray.CreateRange(compiled.Alternatives.Take(MaxSelectorAlternatives)),
                 compiled.SourceText);
@@ -829,6 +866,93 @@ internal static class CascadeResolver
              or "scroll-timeline" or "view-transition"
              or "charset" or "namespace";
 
+    /// <summary>Per PR #17 review user-recommendation #7 — count top-level
+    /// (i.e., not inside <c>:is()</c> / <c>:where()</c> / attribute
+    /// selectors / nested parens / strings) commas in <paramref name="raw"/>.
+    /// The number of selector alternatives is <c>commas + 1</c>. Cheap
+    /// linear scan with depth tracking; runs before
+    /// <see cref="SelectorCompiler.Compile"/> so a millions-alternatives
+    /// rule short-circuits before allocations begin.</summary>
+    private static int CountTopLevelSelectorAlternatives(string raw)
+    {
+        if (string.IsNullOrEmpty(raw)) return 0;
+        var commas = 0;
+        var parenDepth = 0;
+        var bracketDepth = 0;
+        var i = 0;
+        while (i < raw.Length)
+        {
+            var c = raw[i];
+            // String literals — skip to matching quote.
+            if (c == '"' || c == '\'')
+            {
+                var quote = c;
+                i++;
+                while (i < raw.Length && raw[i] != quote)
+                {
+                    if (raw[i] == '\\' && i + 1 < raw.Length) i += 2;
+                    else i++;
+                }
+                if (i < raw.Length) i++; // consume closing quote
+                continue;
+            }
+            if (c == '(') parenDepth++;
+            else if (c == ')') { if (parenDepth > 0) parenDepth--; }
+            else if (c == '[') bracketDepth++;
+            else if (c == ']') { if (bracketDepth > 0) bracketDepth--; }
+            else if (c == ',' && parenDepth == 0 && bracketDepth == 0)
+            {
+                commas++;
+            }
+            i++;
+        }
+        return commas + 1;
+    }
+
+    /// <summary>Truncate <paramref name="raw"/> at the
+    /// <paramref name="maxAlternatives"/>-th top-level comma (keeping
+    /// alternatives 0..maxAlternatives-1). Mirrors
+    /// <see cref="CountTopLevelSelectorAlternatives"/>'s paren/bracket/string
+    /// awareness so we don't truncate inside an <c>:is(...)</c>.</summary>
+    private static string TruncateSelectorAtTopLevelComma(string raw, int maxAlternatives)
+    {
+        if (maxAlternatives <= 0) return string.Empty;
+        var commasSeen = 0;
+        var parenDepth = 0;
+        var bracketDepth = 0;
+        var i = 0;
+        while (i < raw.Length)
+        {
+            var c = raw[i];
+            if (c == '"' || c == '\'')
+            {
+                var quote = c;
+                i++;
+                while (i < raw.Length && raw[i] != quote)
+                {
+                    if (raw[i] == '\\' && i + 1 < raw.Length) i += 2;
+                    else i++;
+                }
+                if (i < raw.Length) i++;
+                continue;
+            }
+            if (c == '(') parenDepth++;
+            else if (c == ')') { if (parenDepth > 0) parenDepth--; }
+            else if (c == '[') bracketDepth++;
+            else if (c == ']') { if (bracketDepth > 0) bracketDepth--; }
+            else if (c == ',' && parenDepth == 0 && bracketDepth == 0)
+            {
+                commasSeen++;
+                if (commasSeen >= maxAlternatives)
+                {
+                    return raw[..i];
+                }
+            }
+            i++;
+        }
+        return raw;
+    }
+
     private static SelectorList? CompileSelector(string raw, ICssDiagnosticsSink? diagnostics, CssSourceLocation loc)
     {
         try
@@ -868,6 +992,7 @@ internal static class CascadeResolver
     /// dominates the per-element cost.</summary>
     private static void WalkElement(IElement element, List<CompiledRule> rules,
         in SelectorBloomFilter ancestorBloom, CascadeResult result,
+        ICssDiagnosticsSink? diagnostics,
         System.Threading.CancellationToken cancellationToken)
     {
         // Per Phase 2 deep review Rec 6 — check at every element so a hostile
@@ -875,12 +1000,19 @@ internal static class CascadeResolver
         // selector match pass before noticing the stage boundary in
         // Phase2Pipeline.
         cancellationToken.ThrowIfCancellationRequested();
+        // Per Phase C C-4 — short-circuit subsequent element walks once the
+        // matched-declaration cap is hit. Walking still descends so cancellation
+        // + structural traversal stay correct, but ApplyRulesToElement skips
+        // the per-rule application work.
         var bloom = ancestorBloom; // value copy — independent from caller's
         AddElementTokens(element, ref bloom);
-        ApplyRulesToElement(element, rules, in bloom, result);
+        if (!result.MatchedLimitReached)
+        {
+            ApplyRulesToElement(element, rules, in bloom, result, diagnostics);
+        }
         foreach (var child in element.Children)
         {
-            WalkElement(child, rules, in bloom, result, cancellationToken);
+            WalkElement(child, rules, in bloom, result, diagnostics, cancellationToken);
         }
     }
 
@@ -895,12 +1027,14 @@ internal static class CascadeResolver
     }
 
     private static void ApplyRulesToElement(IElement element, List<CompiledRule> rules,
-        in SelectorBloomFilter bloom, CascadeResult result)
+        in SelectorBloomFilter bloom, CascadeResult result,
+        ICssDiagnosticsSink? diagnostics)
     {
         foreach (var rule in rules)
         {
             if (rule.Selectors is null) continue;
-            ApplyRuleToElement(rule, element, in bloom, result);
+            if (result.MatchedLimitReached) return;
+            ApplyRuleToElement(rule, element, in bloom, result, diagnostics);
         }
     }
 
@@ -935,7 +1069,8 @@ internal static class CascadeResolver
         CompiledRule rule,
         IElement element,
         in SelectorBloomFilter bloom,
-        CascadeResult result)
+        CascadeResult result,
+        ICssDiagnosticsSink? diagnostics)
     {
         // Best matching alternative per pseudo-element bucket.
         Dictionary<string, SelectorBytecode>? bestPerBucket = null;
@@ -956,7 +1091,7 @@ internal static class CascadeResolver
         if (bestPerBucket is null) return;
         foreach (var winning in bestPerBucket.Values)
         {
-            AddMatched(rule, winning, element, result);
+            AddMatched(rule, winning, element, result, diagnostics);
         }
     }
 
@@ -981,11 +1116,32 @@ internal static class CascadeResolver
         CompiledRule rule,
         SelectorBytecode alt,
         IElement element,
-        CascadeResult result)
+        CascadeResult result,
+        ICssDiagnosticsSink? diagnostics)
     {
+        // Per Phase C C-4 — short-circuit if we've already passed the
+        // matched-declaration cap for this render. The first overflow
+        // emits the one-shot diagnostic; subsequent calls silently skip.
+        if (result.MatchedLimitReached) return;
+
         var target = alt.PseudoElement is null
             ? result.StylesFor(element)
             : result.StylesForPseudo(element, alt.PseudoElement);
+
+        // Reserve budget for this rule's full declaration count up front.
+        // The TryConsume increments the counter; if this call crosses the
+        // cap, emit the diagnostic + skip further matching this render.
+        var beforeFlag = result.MatchedLimitReached;
+        result.TryConsumeMatched(rule.Declarations.Length);
+        if (!beforeFlag && result.MatchedLimitReached)
+        {
+            diagnostics?.Emit(new CssDiagnostic(
+                CssDiagnosticCodes.CssCascadeOverflow001,
+                $"Cascade exceeded the {MaxMatchedDeclarationsPerRender}-matched-declaration cap; remaining selector matches are skipped.",
+                CssDiagnosticSeverity.Warning,
+                CssSourceLocation.Unknown));
+            return;
+        }
 
         for (var i = 0; i < rule.Declarations.Length; i++)
         {
@@ -1009,14 +1165,15 @@ internal static class CascadeResolver
     /// origin/importance bucket per L4 §6.4.3.</summary>
     private static readonly Specificity InlineStyleSpecificity = new(1, 0, 0);
 
-    private static void WalkInlineStyles(IElement element, CascadeResult result, int inlineStylesheetOrder, System.Threading.CancellationToken cancellationToken)
+    private static void WalkInlineStyles(IElement element, CascadeResult result, int inlineStylesheetOrder, ICssDiagnosticsSink? diagnostics, System.Threading.CancellationToken cancellationToken)
     {
-        WalkInlineStylesRecursive(element, result, inlineStylesheetOrder, ruleOrder: 0, cancellationToken);
+        WalkInlineStylesRecursive(element, result, inlineStylesheetOrder, ruleOrder: 0, diagnostics, cancellationToken);
     }
 
-    private static int WalkInlineStylesRecursive(IElement element, CascadeResult result, int inlineStylesheetOrder, int ruleOrder, System.Threading.CancellationToken cancellationToken)
+    private static int WalkInlineStylesRecursive(IElement element, CascadeResult result, int inlineStylesheetOrder, int ruleOrder, ICssDiagnosticsSink? diagnostics, System.Threading.CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (result.MatchedLimitReached) return ruleOrder;
         var styleAttr = element.GetAttribute("style");
         if (!string.IsNullOrEmpty(styleAttr))
         {
@@ -1031,6 +1188,22 @@ internal static class CascadeResolver
                     anglesharpStyle, styleAttr, CssSourceLocation.Unknown);
                 if (!declarations.IsEmpty)
                 {
+                    // Per Phase C C-4 — charge inline-style declarations
+                    // against the per-render cap as well. Inline styles can
+                    // pile thousands of `--p1: red; --p2: red; ...` past the
+                    // declaration parser if the per-rule cap doesn't fire
+                    // (different code path for inline styles).
+                    var beforeFlag = result.MatchedLimitReached;
+                    result.TryConsumeMatched(declarations.Length);
+                    if (!beforeFlag && result.MatchedLimitReached)
+                    {
+                        diagnostics?.Emit(new CssDiagnostic(
+                            CssDiagnosticCodes.CssCascadeOverflow001,
+                            $"Cascade exceeded the {MaxMatchedDeclarationsPerRender}-matched-declaration cap; remaining inline styles are skipped.",
+                            CssDiagnosticSeverity.Warning,
+                            CssSourceLocation.Unknown));
+                        return ruleOrder;
+                    }
                     var target = result.StylesFor(element);
                     for (var i = 0; i < declarations.Length; i++)
                     {
@@ -1052,7 +1225,7 @@ internal static class CascadeResolver
         }
         foreach (var child in element.Children)
         {
-            ruleOrder = WalkInlineStylesRecursive(child, result, inlineStylesheetOrder, ruleOrder, cancellationToken);
+            ruleOrder = WalkInlineStylesRecursive(child, result, inlineStylesheetOrder, ruleOrder, diagnostics, cancellationToken);
         }
         return ruleOrder;
     }

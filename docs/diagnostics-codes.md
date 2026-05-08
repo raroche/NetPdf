@@ -59,6 +59,7 @@ Severity levels:
 | `CSS-VAR-EXPANSION-LIMIT-001` | Warning | A `var()` substitution exceeded a depth, output-length, or per-element cumulative-output budget. Per Phase A A-3. |
 | `CSS-CONTENT-FUNCTION-UNSUPPORTED-001` | Warning | `content` value used a function or keyword the cycle-1 list parser doesn't accept (e.g., `counter()`, `url()`, `open-quote`), or the per-pseudo generated-content output exceeded the 64 KiB cap. Per Phase A A-5. |
 | `CSS-RULE-LIMIT-EXCEEDED-001` | Warning | A stylesheet exceeded one of the per-stylesheet / per-rule DoS caps: rule count (50 000 per sheet), declarations on a single rule (256), or selector alternatives in one rule's selector list (1 024). On rule-count overflow the cascade stops processing further rules; on per-rule overflow the declaration / alternative list is tail-truncated. Per Phase B B-2 (selector-alternative enforcement added in PR #16 follow-up). |
+| `CSS-CASCADE-OVERFLOW-001` | Warning | The cascade exceeded the per-render cumulative-matched-declaration cap (5 000 000). Catches the compound per-rule × per-element explosion that stays under each individual cap but blows the matched-rule table. Subsequent matches are skipped; emitted once per render. Per Phase C C-4. |
 
 ---
 
@@ -136,4 +137,4 @@ Or streamed live via `HtmlPdfOptions.Diagnostics: IDiagnosticsSink`.
 
 ---
 
-Last updated: 2026-05-07 (PR #16 review cycle: added `HTML-EVENT-HANDLER-IGNORED-001`, `HTML-DOM-LIMIT-EXCEEDED-001`, `HTML-STRIP-NOT-STABLE-001`, `HTML-INPUT-TOO-LARGE-001`, `CSS-VAR-EXPANSION-LIMIT-001`, `CSS-CONTENT-FUNCTION-UNSUPPORTED-001`, `CSS-RULE-LIMIT-EXCEEDED-001`).
+Last updated: 2026-05-07 (Phase C: added `CSS-CASCADE-OVERFLOW-001`. Earlier same-day Phase A + B: `HTML-EVENT-HANDLER-IGNORED-001`, `HTML-DOM-LIMIT-EXCEEDED-001`, `HTML-STRIP-NOT-STABLE-001`, `HTML-INPUT-TOO-LARGE-001`, `CSS-VAR-EXPANSION-LIMIT-001`, `CSS-CONTENT-FUNCTION-UNSUPPORTED-001`, `CSS-RULE-LIMIT-EXCEEDED-001`).

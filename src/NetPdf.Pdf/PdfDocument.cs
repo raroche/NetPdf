@@ -350,17 +350,122 @@ internal sealed class PdfDocument
     {
         // The Producer is always emitted (NetPdf identifies itself); other fields are
         // emitted only when set by the caller.
+        // Per Phase C C-3 (PR #17 review user-recommendation #3) — every
+        // author-controlled metadata field flows through
+        // SanitizeMetadataString first (strips C0 / DEL / C1 + caps length),
+        // then EncodeMetadataString picks the right PDF text-string form:
+        //   - ASCII-only sanitized text → PdfLiteralString (denser).
+        //   - Any non-ASCII char in sanitized text → PdfHexString with
+        //     UTF-16BE + BOM (PDF Reference §7.9.2.2 "PDFDocEncoded /
+        //     UTF-16BE text string").
+        // Pre-fix the sanitizer left non-ASCII chars unchanged + handed
+        // them to PdfLiteralString which rejected anything > 0x7E. So a
+        // legitimate Title like "Résumé" threw at Save time. Producer is
+        // library-controlled (always ASCII), so it skips both.
         var info = new PdfDictionary();
         info.Set(PdfNames.Producer, new PdfLiteralString(Producer));
-        if (Title is not null) info.Set(PdfNames.Title, new PdfLiteralString(Title));
-        if (Author is not null) info.Set(PdfNames.Author, new PdfLiteralString(Author));
-        if (Subject is not null) info.Set(PdfNames.Subject, new PdfLiteralString(Subject));
-        if (Keywords is not null) info.Set(PdfNames.Keywords, new PdfLiteralString(Keywords));
-        if (Creator is not null) info.Set(PdfNames.Creator, new PdfLiteralString(Creator));
+        if (Title is not null) info.Set(PdfNames.Title, EncodeMetadataString(SanitizeMetadataString(Title)));
+        if (Author is not null) info.Set(PdfNames.Author, EncodeMetadataString(SanitizeMetadataString(Author)));
+        if (Subject is not null) info.Set(PdfNames.Subject, EncodeMetadataString(SanitizeMetadataString(Subject)));
+        if (Keywords is not null) info.Set(PdfNames.Keywords, EncodeMetadataString(SanitizeMetadataString(Keywords)));
+        if (Creator is not null) info.Set(PdfNames.Creator, EncodeMetadataString(SanitizeMetadataString(Creator)));
         if (CreationDate is { } cd) info.Set(PdfNames.CreationDate, new PdfLiteralString(FormatPdfDate(cd)));
         if (ModDate is { } md) info.Set(PdfNames.ModDate, new PdfLiteralString(FormatPdfDate(md)));
         return info;
     }
+
+    /// <summary>Per PR #17 review user-recommendation #3 — encode a
+    /// sanitized metadata string into the PDF text-string form that
+    /// fits its character set. ASCII (≤ 0x7E) inputs go through
+    /// <see cref="PdfLiteralString"/>; anything else routes to
+    /// <see cref="PdfHexString"/> with UTF-16BE + BOM per ISO 32000-2 §7.9.2.2.
+    /// Both forms render to the same text in PDF viewers; the routing
+    /// is purely a representation decision.</summary>
+    internal static PdfObject EncodeMetadataString(string sanitized)
+    {
+        ArgumentNullException.ThrowIfNull(sanitized);
+        // ASCII fast-path — most production metadata is ASCII (English-only
+        // Title/Author/Subject); avoid the UTF-16BE allocation when we can.
+        for (var i = 0; i < sanitized.Length; i++)
+        {
+            if (sanitized[i] > 0x7E)
+            {
+                return PdfHexString.FromUtf16BeWithBom(sanitized);
+            }
+        }
+        return new PdfLiteralString(sanitized);
+    }
+
+    /// <summary>Per Phase C C-3 — maximum length (UTF-16 chars) of any
+    /// single PDF metadata string. 4 KiB easily holds the longest sane
+    /// document Title / Author / Subject. Beyond that is almost certainly
+    /// an attacker piling kilobytes of poison into a <c>&lt;title&gt;</c>.</summary>
+    internal const int MaxMetadataChars = 4096;
+
+    /// <summary>Per Phase C C-3 — strip C0 (0x00..0x1F, except TAB/CR/LF)
+    /// + DEL (0x7F) + C1 (0x80..0x9F) control characters from
+    /// <paramref name="raw"/>; replace with the Unicode REPLACEMENT
+    /// CHARACTER (U+FFFD). Then cap at <see cref="MaxMetadataChars"/>
+    /// with the HORIZONTAL ELLIPSIS (U+2026). The control character set
+    /// mirrors the CSS-side
+    /// <c>NetPdf.Css.Diagnostics.DiagnosticTextSanitizer.Sanitize</c>
+    /// surface so PDF metadata gets the same hardening Phase A landed on
+    /// CSS diagnostic text.</summary>
+    /// <remarks>
+    /// <para>The PDF Reference §7.9.2 says <c>PdfLiteralString</c> bytes
+    /// can be any byte 0x00..0xFF, but viewers rendering the catalog
+    /// (Adobe Acrobat, Foxit, browsers' built-in viewers) display the
+    /// string as text. Embedded NUL bytes truncate display in some
+    /// viewers, ANSI escapes leak into terminal-style log shippers, and
+    /// some viewers expose Title in window titles + clipboard where
+    /// control characters are unsafe. The Producer field is exempted
+    /// because it's library-controlled.</para>
+    /// <para>Per PR #17 review user-recommendation #3 the sanitizer can
+    /// produce non-ASCII output. Per PR #17 Copilot review #4 the docs
+    /// now match the implementation. The downstream
+    /// <see cref="EncodeMetadataString"/> routes ASCII output through
+    /// <see cref="PdfLiteralString"/> + non-ASCII through
+    /// <see cref="PdfHexString.FromUtf16BeWithBom"/>, so U+FFFD / U+2026
+    /// flow through the hex-string path cleanly without
+    /// <c>PdfLiteralString</c>'s &gt; 0x7E rejection.</para>
+    /// </remarks>
+    internal static string SanitizeMetadataString(string raw)
+    {
+        ArgumentNullException.ThrowIfNull(raw);
+        if (raw.Length == 0) return raw;
+        // Two-pass: count what needs replacement so the no-op fast path
+        // returns the original reference (avoids gratuitous allocations
+        // for the common clean-input case).
+        var dirty = false;
+        for (var i = 0; i < raw.Length; i++)
+        {
+            if (IsForbidden(raw[i])) { dirty = true; break; }
+        }
+        if (!dirty && raw.Length <= MaxMetadataChars) return raw;
+
+        // U+FFFD REPLACEMENT CHARACTER + U+2026 HORIZONTAL ELLIPSIS as
+        // per the documented contract. Both are non-ASCII so the
+        // sanitized output may include them, which is fine: EncodeMetadataString
+        // routes any non-ASCII output through PdfHexString (UTF-16BE + BOM)
+        // rather than PdfLiteralString.
+        var sb = new System.Text.StringBuilder(Math.Min(raw.Length, MaxMetadataChars + 1));
+        for (var i = 0; i < raw.Length && sb.Length < MaxMetadataChars; i++)
+        {
+            var c = raw[i];
+            sb.Append(IsForbidden(c) ? '�' : c);
+        }
+        if (raw.Length > MaxMetadataChars) sb.Append('…');
+        return sb.ToString();
+    }
+
+    private static bool IsForbidden(char c) =>
+        // C0 except TAB (0x09), LF (0x0A), CR (0x0D) which are legitimate
+        // text control chars in PDF strings.
+        (c < 0x20 && c != '\t' && c != '\n' && c != '\r')
+        // DEL.
+        || c == 0x7F
+        // C1.
+        || (c >= 0x80 && c <= 0x9F);
 
     /// <summary>
     /// Format a date per ISO 32000-2:2020 §7.9.4: <c>D:YYYYMMDDHHmmSSOHH'mm'</c>. The

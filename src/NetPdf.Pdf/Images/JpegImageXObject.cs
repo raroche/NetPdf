@@ -36,6 +36,16 @@ internal static class JpegImageXObject
     public static PdfStream Build(byte[] jpegBytes)
     {
         ArgumentNullException.ThrowIfNull(jpegBytes);
+        // Per Phase C C-1 — pre-decode safety gate. Catches oversized inputs,
+        // format-confusion (e.g., a non-JPEG renamed to .jpg), and declared
+        // dimensions past the per-image cap before JpegHeaderParser tries to
+        // read structurally-malformed bytes.
+        var verdict = ImageSafetyValidator.Validate(jpegBytes);
+        if (!verdict.IsSafe)
+        {
+            throw new InvalidOperationException(
+                $"JPEG image rejected by pre-decode safety validator: {verdict.Reason}");
+        }
         var info = JpegHeaderParser.Parse(jpegBytes);
         return Build(jpegBytes, info);
     }

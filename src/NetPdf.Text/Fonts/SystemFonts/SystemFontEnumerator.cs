@@ -96,6 +96,15 @@ internal abstract class SystemFontEnumerator
             // Read once, parse OpenType. For TTC / OTC the parse currently fails (Phase 1
             // does not support collection parsing) — caller swallows the error and skips.
             var bytes = File.ReadAllBytes(filePath);
+            // Per PR #17 review user-recommendation #4 — system fonts are
+            // still an input boundary (user-installed; macOS lets any app
+            // drop a font into ~/Library/Fonts). Run the same C-2
+            // pre-decode safety gate that FontFace.Load uses, so this
+            // production path doesn't bypass the validator. Caller's
+            // try/catch already swallows + skips, so a rejected font
+            // simply doesn't appear in the index.
+            var verdict = FontSafetyValidator.Validate(bytes);
+            if (!verdict.IsSafe) return false;
             var font = OpenTypeFont.Parse(bytes);
             var meta = FontMetadata.Extract(font);
             entry = new SystemFontEntry

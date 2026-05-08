@@ -87,4 +87,16 @@ internal static class CssDiagnosticCodes
     /// Per Phase B B-2 + PR #16 review (selector-alternative enforcement
     /// added in follow-up). Severity: Warning.</summary>
     public const string CssRuleLimitExceeded001 = "CSS-RULE-LIMIT-EXCEEDED-001";
+
+    /// <summary>The cascade exceeded
+    /// <see cref="Cascade.CascadeResolver.MaxMatchedDeclarationsPerRender"/>
+    /// total matched declarations across all elements + pseudo-elements.
+    /// Catches the compound per-rule-vs-per-element explosion: per-stylesheet
+    /// rule cap + per-rule declaration cap can each stay under their
+    /// individual thresholds, but a wide rule applying to a wide element set
+    /// (every rule × every element × every declaration) still blows the
+    /// matched-rule table. The cascade short-circuits subsequent matches
+    /// once the cap is hit; emitted once per render. Per Phase C C-4.
+    /// Severity: Warning.</summary>
+    public const string CssCascadeOverflow001 = "CSS-CASCADE-OVERFLOW-001";
 }

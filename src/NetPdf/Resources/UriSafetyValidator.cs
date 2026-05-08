@@ -177,6 +177,82 @@ public static class UriSafetyValidator
         }
     }
 
+    /// <summary>Per Phase C C-6 — validate an HTTP redirect target. The
+    /// loader calls this for every <c>Location:</c> header before issuing
+    /// the next-hop fetch. Three checks layered on top of
+    /// <see cref="Validate"/>:
+    /// <list type="number">
+    ///   <item><description>The redirect target itself passes scheme + host
+    ///   policy (delegates to <see cref="Validate"/>) — re-checks the IP
+    ///   blocklist on the new host so an open-redirect → SSRF chain
+    ///   (initial URL safe, redirect target on <c>169.254.169.254</c>) is
+    ///   blocked at the moment of redirection.</description></item>
+    ///   <item><description>The hop count is below
+    ///   <see cref="SecurityPolicy.MaxRedirectHops"/>. Each call records
+    ///   one hop; once exhausted, return <see cref="SafetyOutcome.Unsafe"/>
+    ///   with a redirect-chain reason.</description></item>
+    ///   <item><description>Cross-scheme downgrade rejection: <c>https</c>
+    ///   → <c>http</c> redirects are blocked (typical browser behavior +
+    ///   defense against MITM-induced downgrade). Same-scheme +
+    ///   <c>http</c> → <c>https</c> upgrades pass.</description></item>
+    /// </list>
+    /// </summary>
+    public static Verdict ValidateRedirect(Uri origin, Uri redirectTarget, SecurityPolicy policy, int hopsAlreadyFollowed)
+    {
+        ArgumentNullException.ThrowIfNull(origin);
+        ArgumentNullException.ThrowIfNull(redirectTarget);
+        ArgumentNullException.ThrowIfNull(policy);
+
+        if (hopsAlreadyFollowed >= policy.MaxRedirectHops)
+        {
+            return new Verdict(SafetyOutcome.Unsafe,
+                $"redirect chain exceeded the {policy.MaxRedirectHops}-hop cap");
+        }
+
+        // Per PR #17 Copilot review #1 — HTTP Location: headers are often
+        // relative URIs ("/next-page" or "next-page"). Uri.Scheme throws
+        // on relative URIs, so the pre-fix code crashed callers. Reject
+        // with a clear reason; the loader is expected to resolve relative
+        // URIs against the origin URI before calling ValidateRedirect.
+        if (!redirectTarget.IsAbsoluteUri)
+        {
+            return new Verdict(SafetyOutcome.Unsafe,
+                "redirect target is a relative URI; loader must resolve against origin before validating");
+        }
+        if (!origin.IsAbsoluteUri)
+        {
+            return new Verdict(SafetyOutcome.Unsafe,
+                "origin is a relative URI; loader must pass an absolute origin");
+        }
+
+        // Per PR #17 review user-recommendation #6 — redirect targets
+        // for HTTP(S) fetches must stay on HTTP(S). A redirect to data:
+        // (which Validate would accept under default policy) lets a
+        // server slip arbitrary bytes back as if they came from the
+        // origin URL; a redirect to file: would route the loader at the
+        // local filesystem with no base-path check. Reject anything
+        // outside http/https before policy validation.
+        var originScheme = origin.Scheme.ToLowerInvariant();
+        var targetScheme = redirectTarget.Scheme.ToLowerInvariant();
+        if (targetScheme is not ("http" or "https"))
+        {
+            return new Verdict(SafetyOutcome.Unsafe,
+                $"redirect target scheme '{targetScheme}:' is not http(s); resource fetches must stay on the network surface");
+        }
+
+        // Cross-scheme downgrade. Allow same-scheme + http → https upgrades.
+        if (originScheme == "https" && targetScheme == "http")
+        {
+            return new Verdict(SafetyOutcome.Unsafe,
+                "redirect downgrades https → http; rejected to defend against MITM-induced downgrade");
+        }
+
+        // Run the standard policy check on the target. This is where the
+        // open-redirect → SSRF chain gets caught — the target's host is
+        // re-validated against the IP blocklist + AllowedHosts.
+        return Validate(redirectTarget, policy);
+    }
+
     /// <summary>True when <paramref name="ip"/> falls in any of the
     /// well-known SSRF amplifier ranges (loopback, private, link-local,
     /// cloud-metadata, multicast, unspecified). The <paramref name="reason"/>

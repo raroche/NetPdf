@@ -18,6 +18,20 @@ internal static class RasterImageXObject
     /// <summary>Decode + wrap in one step — convenient for byte-stream inputs.</summary>
     public static ImageXObjectResult Build(byte[] imageBytes)
     {
+        ArgumentNullException.ThrowIfNull(imageBytes);
+        // Per PR #17 review user-recommendation #1 — pre-decode safety gate.
+        // The raster path (GIF / WebP / AVIF via Skia / libwebp) was the
+        // original threat surface for the libwebp CVE-2023-4863 class but
+        // the C-1 wireup landed only on JpegImageXObject + PngImageXObject;
+        // RasterImageDecoder.Decode → SKCodec.Create still ran on
+        // unvalidated bytes. Now every raster entry point routes through
+        // ImageSafetyValidator first.
+        var verdict = ImageSafetyValidator.Validate(imageBytes);
+        if (!verdict.IsSafe)
+        {
+            throw new InvalidOperationException(
+                $"Raster image rejected by pre-decode safety validator: {verdict.Reason}");
+        }
         var info = RasterImageDecoder.Decode(imageBytes);
         return Build(info);
     }

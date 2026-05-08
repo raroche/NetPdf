@@ -272,6 +272,22 @@ internal static class Optimizer
             }
 
             // ---- Step 4: regular DP over (b1, b2) pairs. ----
+            // Per Phase 3 Task 4 review fix #1 (invariant strengthening):
+            // for each candidate b1, also consider the OPTION-A case
+            // where committing b1 leaves a fitting tail + no forced
+            // break ahead — in that case b1 alone suffices, no second
+            // break is needed, total cost is just costB1. Without this
+            // check, the DP's myopic 2-page lookahead can pick a 2-break
+            // sequence that ties with a 1-break sequence on pair-cost
+            // but is strictly worse on TOTAL cost (the 1-break sequence
+            // exits early on the next iteration via step 1). The
+            // failing test that surfaced this:
+            // ops = [(200,50), (400,50), (700,50), (1000,50)] on 800px
+            // page — pair (b1=0, b2=3) ties with pair (b1=2, b2=3) at
+            // total 200, but committing b1=2 alone yields cost 0
+            // because the tail [700..1050] fits on page 2.
+            var lastTailEnd = opportunities[n - 1].UsedBlockSize + opportunities[n - 1].ChunkBlockSize;
+
             int bestB1 = -1;
             double bestPairCost = double.PositiveInfinity;
             double bestB1OwnCost = 0;
@@ -290,8 +306,38 @@ internal static class Optimizer
                     lineCountAfterBreak: ComputeLinesAfterBreak(opportunities, b1, widowsRequired),
                     pageStart: pageStart);
 
-                // ---- 2-page lookahead: find the best b2 given b1. ----
                 var nextPageStart = oppB1.UsedBlockSize;
+
+                // ---- Option A (review fix #1 invariant): committing
+                // b1 alone suffices when the tail past b1 fits on the
+                // next page AND no forced break demands another break
+                // beyond b1. Score b1's cost as the TOTAL — no b2 is
+                // needed. This prevents the DP from picking an extra
+                // (rewarded) break that wouldn't strictly be required. ----
+                var tailPastB1Fits = (lastTailEnd - nextPageStart) <= contentBlockSize;
+                var forcedAheadOfB1 = false;
+                for (var k = b1 + 1; k < n; k++)
+                {
+                    if (opportunities[k].ForceBreak) { forcedAheadOfB1 = true; break; }
+                }
+
+                if (tailPastB1Fits && !forcedAheadOfB1)
+                {
+                    // Option A wins for this b1 — committing b1 alone
+                    // is optimal. Skip the b2 lookahead loop entirely
+                    // (a second break would be UNNECESSARY).
+                    if (costB1 < bestPairCost)
+                    {
+                        bestPairCost = costB1;
+                        bestB1 = b1;
+                        bestB1OwnCost = costB1;
+                    }
+                    continue;
+                }
+
+                // ---- Option B: 2-page lookahead — find the best b2
+                // given b1 (the tail past b1 doesn't fit OR a forced
+                // break demands one, so a second break IS needed). ----
                 var b2Max = -1;
                 for (var k = b1 + 1; k < n; k++)
                 {
@@ -299,13 +345,12 @@ internal static class Optimizer
                     b2Max = k;
                 }
 
-                // No b2 candidate exists (b1 is at or near end of input,
-                // or the chunk after b1 already exceeds the next page).
-                // Score b1 alone — but only if a break IS needed
-                // (verified by step 1; if we reached here, a break IS
-                // needed somewhere in the window).
                 if (b2Max < 0)
                 {
+                    // No b2 candidate fits on the next page either, but
+                    // a second break IS needed (Option A didn't apply).
+                    // Last-resort: score b1 alone; the next iteration's
+                    // overflow handler picks up the rest.
                     if (costB1 < bestPairCost)
                     {
                         bestPairCost = costB1;

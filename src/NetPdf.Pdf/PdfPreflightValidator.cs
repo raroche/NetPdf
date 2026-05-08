@@ -40,6 +40,105 @@ internal static class PdfPreflightValidator
         ValidateTrailerRootShape(writer.Trailer, writer.Objects);
         ValidateExplicitIdShape(writer.Trailer);
         ValidateGraph(writer.Objects, writer.Trailer);
+        // Per Phase D D-6 — walk every dictionary in the document graph
+        // looking for active-content keys (/OpenAction, /AA, /JavaScript,
+        // /Launch, /URI, /SubmitForm, /ImportData, /GoToR, /GoToE,
+        // /EmbeddedFile, /Names/EmbeddedFiles). Phase 1's PDF writer never
+        // emits any of these (verified by the Phase B B-6 contract test
+        // over SmokeDocumentFactory output) but as Phase 4 wires
+        // annotations + Phase 5 wires links, an accidental introduction
+        // is a real risk. The preflight catches it BEFORE bytes are
+        // written, in a unit-testable way (negative tests use
+        // constructed PdfDictionary objects).
+        ValidateNoActiveContent(writer.Objects, writer.Trailer);
+    }
+
+    /// <summary>Per Phase D D-6 — walk dictionaries + reject any
+    /// active-content key. Closed denylist; covers the surfaces that
+    /// the major HTML-to-PDF CVE survey calls out (Apryse argument-
+    /// injection RCE via <c>/Launch</c>, generic JS-action surfaces,
+    /// embedded-file egress).</summary>
+    /// <remarks>
+    /// <para>The denylist is keyed on PDF dictionary names. Each
+    /// dictionary is checked for explicit prohibited keys; the
+    /// values themselves are NOT walked further (a benign dictionary
+    /// that happens to contain <c>"OpenAction"</c> as a string value
+    /// inside, e.g., a content-stream comment, is irrelevant — only
+    /// the dictionary KEYS matter for action dispatching).</para>
+    /// <para>Per PR #18 Copilot review #10 — the visited set is
+    /// shared across the whole walk (was per-store-entry + per-trailer,
+    /// causing repeated allocation + redundant traversal of objects
+    /// reachable from multiple roots). Per Copilot review #9 — the
+    /// active-content keys are precomputed as a static
+    /// <see cref="PdfName"/> array (was allocating a new
+    /// <see cref="PdfName"/> per key per dictionary visited).</para>
+    /// </remarks>
+    private static void ValidateNoActiveContent(IndirectObjectStore store, PdfDictionary trailer)
+    {
+        var visited = new HashSet<PdfObject>(ReferenceEqualityComparer.Instance);
+        for (int i = 0; i < store.Count; i++)
+        {
+            VisitDictionariesForActiveContent(store.AllEntries[i].Object!, visited);
+        }
+        VisitDictionariesForActiveContent(trailer, visited);
+    }
+
+    /// <summary>Per Phase D D-6 — names that, as dictionary keys,
+    /// indicate an active-content action or embedded-file surface
+    /// NetPdf v1 must never emit.</summary>
+    private static readonly string[] ActiveContentKeyNames =
+    [
+        "OpenAction",   // catalog action: runs on document open
+        "AA",           // additional actions: focus / blur / open / etc.
+        "JavaScript",   // JS object / action body
+        "JS",           // JS script body inside an action
+        "Launch",       // launches an external program
+        "URI",          // /URI action — external link
+        "SubmitForm",   // posts form data to a URL
+        "ImportData",   // imports form data from a URL
+        "GoToR",        // remote GoTo — fetches a URL
+        "GoToE",        // GoTo embedded — references an embedded file
+        "EmbeddedFile", // embedded file substream
+        "EmbeddedFiles",// /Names entry exposing embedded files
+        "RichMedia",    // RichMedia annotation (Flash / 3D)
+    ];
+
+    /// <summary>Per PR #18 Copilot review #9 — precomputed
+    /// <see cref="PdfName"/> instances for each entry in
+    /// <see cref="ActiveContentKeyNames"/>. Pre-fix every dictionary
+    /// visited allocated 13 fresh <see cref="PdfName"/>s; on a large
+    /// document with hundreds of dictionaries that totaled thousands
+    /// of throwaway allocations during preflight.</summary>
+    private static readonly PdfName[] ActiveContentKeys = BuildActiveContentKeys();
+
+    private static PdfName[] BuildActiveContentKeys()
+    {
+        var arr = new PdfName[ActiveContentKeyNames.Length];
+        for (var i = 0; i < arr.Length; i++) arr[i] = new PdfName(ActiveContentKeyNames[i]);
+        return arr;
+    }
+
+    private static void VisitDictionariesForActiveContent(PdfObject obj, HashSet<PdfObject> visited)
+    {
+        if (obj is PdfIndirectRef) return; // refs are walked at the store level
+        if (!visited.Add(obj)) return;
+        if (obj is PdfDictionary dict)
+        {
+            for (var i = 0; i < ActiveContentKeys.Length; i++)
+            {
+                if (dict.Get(ActiveContentKeys[i]) is not null)
+                {
+                    throw new InvalidOperationException(
+                        $"PdfPreflightValidator: dictionary contains the active-content key '/{ActiveContentKeyNames[i]}', "
+                        + "which NetPdf v1 must never emit. If this is intentional, the writer needs "
+                        + "an explicit allowlist gate (currently no such opt-in exists).");
+                }
+            }
+        }
+        foreach (var child in obj.EnumerateChildren())
+        {
+            VisitDictionariesForActiveContent(child, visited);
+        }
     }
 
     private static void ValidateVersion(string version)

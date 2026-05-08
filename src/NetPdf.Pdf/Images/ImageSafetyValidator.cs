@@ -57,21 +57,39 @@ public static class ImageSafetyValidator
     /// pixel-area worst case (a 32 MiB JPEG can decode to ~50 megapixels).</summary>
     public const int MaxBytes = 32 * 1024 * 1024;
 
-    /// <summary>Maximum width / height (pixels) on either axis. 8 192 covers any
-    /// realistic invoice / report input (an A4 page at 600 DPI is 4 960 × 7 016)
-    /// while keeping the per-axis worst case bounded.</summary>
-    /// <remarks>Per PR #17 review user-recommendation #2 — tightened from 16 384
-    /// to 8 192. The raster fallback path (RasterImageXObject) decodes to RGBA8888,
-    /// then splits into RGB plane + grayscale alpha plane + Flate-compressed buffers
-    /// — at 16 384², peak memory hit ~1.6 GiB across these intermediate buffers.
-    /// 8 192² caps that at ~400 MiB, comfortably fitting most process budgets.</remarks>
+    /// <summary>Maximum width / height (pixels) on either axis for the
+    /// PASSTHROUGH path (JPEG / PNG go through directly to PDF as
+    /// /DCTDecode / /FlateDecode streams; no full RGBA decode in process
+    /// memory). 8 192 covers any realistic invoice / report input (an A4
+    /// page at 600 DPI is 4 960 × 7 016).</summary>
+    /// <remarks>Per PR #17 user-recommendation #2 + Phase D D-4 —
+    /// per-path caps. Passthrough JPEG/PNG only briefly hold the
+    /// encoded bytes; the image is wrapped + emitted to the PDF stream
+    /// without a full RGBA decode buffer. 8 192² is fine for that
+    /// path. The raster path has tighter caps below.</remarks>
     public const int MaxDimension = 8 * 1024;
 
-    /// <summary>Maximum total decoded pixel area. 8 192² = 67 megapixels;
-    /// caps the memory pressure of a decoded RGBA buffer at ≈256 MiB worst case.
-    /// A "1 px × 100 000 000 px" image would slip past <see cref="MaxDimension"/>
-    /// without this cap.</summary>
+    /// <summary>Maximum total decoded pixel area for the passthrough
+    /// path. 8 192² ≈ 67 megapixels. JPEG/PNG passthrough never
+    /// materializes a full RGBA buffer so this is the encoded-image
+    /// bound only.</summary>
     public const long MaxPixelArea = (long)MaxDimension * MaxDimension;
+
+    /// <summary>Per Phase D D-4 — maximum width / height (pixels) on
+    /// either axis for the RASTER path (GIF / WebP /
+    /// <see cref="RasterImageXObject"/> path). Raster decoding goes
+    /// through Skia → RGBA8888 buffer → split into RGB plane + alpha
+    /// plane + per-plane Flate-compressed buffers; peak memory is
+    /// ~5× the encoded RGBA bytes. 4 096² caps the peak around
+    /// 320 MiB worst case, comfortably below the 1 GiB band most
+    /// process budgets allow.</summary>
+    public const int MaxRasterDimension = 4 * 1024;
+
+    /// <summary>Per Phase D D-4 — maximum decoded pixel area for the
+    /// raster path. 4 096² ≈ 16.7 megapixels. Tight enough that even
+    /// the worst-case RGBA + RGB-plane + alpha-plane + Flate-buffer
+    /// combo stays under 320 MiB.</summary>
+    public const long MaxRasterPixelArea = (long)MaxRasterDimension * MaxRasterDimension;
 
     /// <summary>Three-state verdict returned by <see cref="Validate"/>.
     /// Mirror of the validator pattern used by <c>NetPdf.UriSafetyValidator</c>
@@ -190,23 +208,99 @@ public static class ImageSafetyValidator
                 format);
         }
 
-        if (width > MaxDimension || height > MaxDimension)
+        // Per Phase D D-4 — per-path dimension caps. Default split:
+        // JPEG / PNG passthrough = looser cap; GIF / WebP / BMP raster =
+        // tighter cap. AVIF is rejected earlier in this method.
+        // Per PR #18 review #4 — alpha-bearing PNGs are RE-CLASSIFIED
+        // as raster: PngImageXObject's Build path FULLY decodes RGBA
+        // PNGs + splits into RGB plane + grayscale alpha plane + Flate-
+        // compressed buffers (~5× the encoded RGBA bytes peak). An
+        // 8192×8192 RGBA PNG was sneaking past with passthrough caps +
+        // driving > 1 GiB peak allocation. Color-type byte at PNG
+        // file offset 25 (8-byte signature + 4 length + 4 type 'IHDR'
+        // + 4 width + 4 height + 1 bit-depth + 1 color-type)
+        // tells us whether the alpha-split path will fire.
+        bool isAlphaPng = format == ImageFormat.Png && PngHasAlphaSplit(bytes);
+        var (axisCap, areaCap) = format switch
         {
+            ImageFormat.Png when isAlphaPng => (MaxRasterDimension, MaxRasterPixelArea),
+            ImageFormat.Jpeg or ImageFormat.Png => (MaxDimension, MaxPixelArea),
+            ImageFormat.Gif or ImageFormat.WebP or ImageFormat.Bmp =>
+                (MaxRasterDimension, MaxRasterPixelArea),
+            _ => (MaxDimension, MaxPixelArea), // unreachable; keeps compiler happy
+        };
+        if (width > axisCap || height > axisCap)
+        {
+            var pathLabel = isAlphaPng ? $"{format} (alpha-split)" : format.ToString();
             return new ValidationResult(
                 ImageSafetyVerdict.Unsafe,
-                $"declared dimensions ({width} × {height}) exceed the {MaxDimension}-px per-axis cap",
+                $"declared dimensions ({width} × {height}) exceed the {axisCap}-px per-axis cap for {pathLabel}",
                 format);
         }
         var area = (long)width * height;
-        if (area > MaxPixelArea)
+        if (area > areaCap)
         {
+            var pathLabel = isAlphaPng ? $"{format} (alpha-split)" : format.ToString();
             return new ValidationResult(
                 ImageSafetyVerdict.Unsafe,
-                $"declared pixel area ({area}) exceeds the {MaxPixelArea}-pixel cap",
+                $"declared pixel area ({area}) exceeds the {areaCap}-pixel cap for {pathLabel}",
                 format);
         }
 
         return new ValidationResult(ImageSafetyVerdict.Safe, null, format);
+    }
+
+    /// <summary>Per PR #18 review #4 — peek a PNG's IHDR color-type +
+    /// tRNS chunk to decide whether the file routes through the
+    /// alpha-split path. Returns true when:
+    /// <list type="bullet">
+    ///   <item>color-type is 4 (gray + alpha) or 6 (RGBA) — implicit alpha;</item>
+    ///   <item>color-type is 0 (gray), 2 (RGB), or 3 (palette) AND a
+    ///   <c>tRNS</c> chunk follows — explicit alpha overlay.</item>
+    /// </list>
+    /// Returns false for all other PNGs (no alpha → passthrough Flate
+    /// stream is fine).</summary>
+    /// <remarks>The tRNS check walks chunks from offset 8 (post-signature)
+    /// in 1024-byte bound to keep the peek cheap; legitimate PNGs land
+    /// the tRNS within 100 bytes.</remarks>
+    internal static bool PngHasAlphaSplit(ReadOnlySpan<byte> bytes)
+    {
+        // Color-type byte at offset 8 (sig) + 4 (len) + 4 ("IHDR") + 4
+        // (width) + 4 (height) + 1 (bit-depth) = offset 25.
+        if (bytes.Length < 26) return false;
+        var colorType = bytes[25];
+        if (colorType == 4 || colorType == 6) return true; // implicit alpha
+        if (colorType != 0 && colorType != 2 && colorType != 3) return false;
+        // Look for tRNS chunk in the first 1024 bytes after the IHDR.
+        // PNG chunk: 4-byte length BE, 4-byte type, payload, 4-byte CRC.
+        var pos = 8 + 4 + 4 + 13 + 4; // 8 sig + IHDR (4 len + 4 type + 13 payload + 4 crc)
+        var maxScan = Math.Min(bytes.Length, 1024);
+        while (pos + 8 <= maxScan)
+        {
+            var len = ((uint)bytes[pos] << 24) | ((uint)bytes[pos + 1] << 16)
+                | ((uint)bytes[pos + 2] << 8) | bytes[pos + 3];
+            // tRNS = "tRNS" = 0x74 0x52 0x4E 0x53.
+            if (bytes[pos + 4] == 0x74 && bytes[pos + 5] == 0x52
+                && bytes[pos + 6] == 0x4E && bytes[pos + 7] == 0x53)
+            {
+                return true;
+            }
+            // IDAT marks the end of metadata chunks; tRNS would have come
+            // before. Stop scanning once we hit the pixel data.
+            if (bytes[pos + 4] == 0x49 && bytes[pos + 5] == 0x44
+                && bytes[pos + 6] == 0x41 && bytes[pos + 7] == 0x54)
+            {
+                return false;
+            }
+            // Bounded forward step. Cap at maxScan to avoid integer
+            // overflow on a malformed chunk-length.
+            var step = 12L + len; // 4 len + 4 type + len payload + 4 crc
+            if (step <= 0 || step > int.MaxValue) return false;
+            var next = pos + (int)step;
+            if (next <= pos || next > maxScan) return false;
+            pos = next;
+        }
+        return false;
     }
 
     /// <summary>Identify the format from <paramref name="bytes"/>'s leading

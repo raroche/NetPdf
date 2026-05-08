@@ -72,4 +72,45 @@ public sealed class SecurityPolicy
     /// for most document-rendering scenarios out of the box.
     /// </summary>
     public static SecurityPolicy SafeDefault { get; } = new();
+
+    /// <summary>Per Phase D D-2 — strict profile for services that
+    /// accept arbitrary customer HTML (web APIs, multi-tenant
+    /// rendering). Disables every URL-fetching surface:
+    /// <list type="bullet">
+    ///   <item><c>file:</c> — fully off (both flavors). HTML must
+    ///   not be able to read any local file.</item>
+    ///   <item><c>http</c> + <c>https</c> — off. Even with the
+    ///   IP blocklist + AllowedHosts, the safest posture for
+    ///   untrusted input is to block external fetches entirely.</item>
+    ///   <item><c>data:</c> — off. <c>data:text/html</c> + <c>data:image/svg+xml</c>
+    ///   are the standard SSRF/XSS sneak paths in HTML-to-PDF research.</item>
+    ///   <item>Tighter per-render budgets (50 fetches, 20 MiB)
+    ///   so a hostile document can't amplify even within the
+    ///   reduced surface.</item>
+    /// </list>
+    /// API services rendering customer HTML should pin this profile +
+    /// document the explicit-opt-in dance for any deviation.
+    /// Per the research basis (Intigriti SSRF payload list,
+    /// SideChannel converter sandbox guidance, AppSecEngineer
+    /// SSRF mitigations).</summary>
+    public static SecurityPolicy UntrustedHtml { get; } = new()
+    {
+        AllowFileScheme = false,
+        AllowFileSchemeUnderBaseUri = false,
+        AllowHttpScheme = false,
+        AllowHttpsScheme = false,
+        AllowDataUri = false,
+        MaxResourcesPerRender = 50,
+        MaxTotalResourceBytes = 20L * 1024 * 1024,
+        MaxResourceBytes = 5L * 1024 * 1024,
+        ResourceTimeout = TimeSpan.FromSeconds(5),
+    };
+
+    /// <summary>Per Phase D D-2 — trusted-template profile.
+    /// Mirrors <see cref="SafeDefault"/> + adds explicit naming so
+    /// callers' intent is visible at the call site
+    /// (<c>SecurityPolicy.TrustedTemplate</c> reads better than
+    /// <c>SecurityPolicy.SafeDefault</c> when the caller knows the
+    /// HTML source).</summary>
+    public static SecurityPolicy TrustedTemplate { get; } = new();
 }

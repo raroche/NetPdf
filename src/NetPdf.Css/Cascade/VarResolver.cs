@@ -52,7 +52,8 @@ internal static class VarResolver
     public static ResolvedCascadeResult Resolve(
         CascadeResult cascade,
         IDocument document,
-        ICssDiagnosticsSink? diagnostics = null)
+        ICssDiagnosticsSink? diagnostics = null,
+        System.Threading.CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(cascade);
         ArgumentNullException.ThrowIfNull(document);
@@ -61,7 +62,7 @@ internal static class VarResolver
         if (document.DocumentElement is null) return result;
 
         WalkElement(document.DocumentElement, cascade, CustomPropertyTable.Empty,
-            result, diagnostics);
+            result, diagnostics, cancellationToken);
         return result;
     }
 
@@ -70,8 +71,14 @@ internal static class VarResolver
         CascadeResult cascade,
         CustomPropertyTable parentCustomProperties,
         ResolvedCascadeResult result,
-        ICssDiagnosticsSink? diagnostics)
+        ICssDiagnosticsSink? diagnostics,
+        System.Threading.CancellationToken cancellationToken)
     {
+        // Per Phase D D-7 — check at every element so a hostile 100k-element
+        // document with heavy custom-property usage stops promptly instead
+        // of running the full cascade walk before the stage boundary in
+        // Phase2Pipeline notices the cancellation.
+        cancellationToken.ThrowIfCancellationRequested();
         var matched = cascade.TryGetStylesFor(element);
         // Build this element's effective custom-property table on top of the parent's
         // chain. Even when the element has no matched declarations, we still need a
@@ -123,6 +130,10 @@ internal static class VarResolver
         foreach (var pair in cascade.StyledPseudoElements)
         {
             if (!ReferenceEquals(pair.Element, element)) continue;
+            // Per Phase D D-7 — check between pseudos too. An element with
+            // hundreds of styled pseudo-elements (cycle-2 fragment pseudos)
+            // could process for seconds before WalkElement returns.
+            cancellationToken.ThrowIfCancellationRequested();
             var pseudoMatched = cascade.TryGetStylesForPseudo(pair.Element, pair.Pseudo);
             if (pseudoMatched is null) continue;
             var pseudoTable = new CustomPropertyTable(ownTable);
@@ -135,7 +146,7 @@ internal static class VarResolver
 
         foreach (var child in element.Children)
         {
-            WalkElement(child, cascade, ownTable, result, diagnostics);
+            WalkElement(child, cascade, ownTable, result, diagnostics, cancellationToken);
         }
     }
 

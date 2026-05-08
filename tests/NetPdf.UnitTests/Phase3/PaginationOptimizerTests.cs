@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using NetPdf.Paginate;
 using Xunit;
 
@@ -1374,5 +1375,196 @@ public sealed class PaginationOptimizerTests
         Assert.Equal(1, layout.ReadCounter("page"));
         // Speculative ctx is left alone (caller-discarded; its mutated
         // state is irrelevant to layout going forward).
+    }
+
+    // ====================================================================
+    //  Post-Task-7 review (recommendation P2 #4) — Optimizer cancellation /
+    //  budget timing. Pre-fix Optimize validated every opportunity BEFORE
+    //  applying MaxCandidatesBeforeFallback (so a 10k-element pre-cancelled
+    //  input would still walk all 10k validations); Greedy didn't accept
+    //  a CancellationToken at all. Post-fix: budget cap precedes per-
+    //  opportunity validation; both validation + greedy fallback poll
+    //  the token at every 64-opportunity boundary.
+    // ====================================================================
+
+    [Fact]
+    public void PostTask7_optimize_pre_cancelled_token_throws_at_method_entry_for_over_budget_input()
+    {
+        // Per Copilot inline review — Optimize calls
+        // ThrowIfCancellationRequested at method entry, so a
+        // pre-cancelled token throws BEFORE either the validation loop
+        // or the budget cap is reached. This test pins that
+        // entry-check regression guard for over-budget inputs;
+        // PostTask7_optimize_cancellation_during_greedy_fallback below
+        // exercises the new in-loop polling path.
+        var n = Optimizer.MaxCandidatesBeforeFallback + 1;
+        var opps = new List<BreakOpportunity>(n);
+        for (var i = 0; i < n; i++)
+        {
+            opps.Add(BreakOpportunity.Block(usedBlockSize: i * 10.0, chunkBlockSize: 10));
+        }
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        Assert.Throws<OperationCanceledException>(() =>
+            Optimizer.Optimize(
+                opps, contentBlockSize: 800, orphansRequired: 2, widowsRequired: 2,
+                cancellationToken: cts.Token));
+    }
+
+    [Fact]
+    public void PostTask7_optimize_pre_cancelled_token_throws_at_method_entry_under_budget()
+    {
+        // Pre-cancelled token throws at method entry (regression guard
+        // for the entry-check). The new in-loop polling is exercised
+        // by PostTask7_optimize_cancellation_during_validation below.
+        var n = 256;
+        var opps = new List<BreakOpportunity>(n);
+        for (var i = 0; i < n; i++)
+        {
+            opps.Add(BreakOpportunity.Block(usedBlockSize: i * 10.0, chunkBlockSize: 10));
+        }
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        Assert.Throws<OperationCanceledException>(() =>
+            Optimizer.Optimize(
+                opps, contentBlockSize: 800, orphansRequired: 2, widowsRequired: 2,
+                cancellationToken: cts.Token));
+    }
+
+    [Fact]
+    public void PostTask7_optimize_uncancelled_over_budget_input_falls_back_to_greedy_without_throwing()
+    {
+        // Sanity: the budget-first reorder didn't break the fallback
+        // semantics. An over-budget input + uncancelled token should
+        // still succeed via the greedy path (FellBackToGreedy = true).
+        var n = Optimizer.MaxCandidatesBeforeFallback + 1;
+        var opps = new List<BreakOpportunity>(n);
+        for (var i = 0; i < n; i++)
+        {
+            opps.Add(BreakOpportunity.Block(usedBlockSize: i * 10.0, chunkBlockSize: 10));
+        }
+        var result = Optimizer.Optimize(
+            opps, contentBlockSize: 800, orphansRequired: 2, widowsRequired: 2,
+            cancellationToken: CancellationToken.None);
+        Assert.True(result.FellBackToGreedy);
+        Assert.NotNull(result.FallbackReason);
+        Assert.Contains("greedy fallback", result.FallbackReason!,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void PostTask7_optimize_cancellation_during_validation_under_budget()
+    {
+        // Per Copilot inline review — exercise the NEW in-loop polling
+        // (not the entry-check). Use an IReadOnlyList wrapper that
+        // cancels its CTS when the optimizer's validation loop accesses
+        // the Nth element. The 64-boundary CT poll inside the validation
+        // loop must catch the cancellation + throw.
+        //
+        // Setup: 256 elements (under MaxCandidatesBeforeFallback so the
+        // DP path runs the validation loop). Cancel on access #100.
+        // The validation loop accesses opportunities[i] sequentially;
+        // after access 100 (which happens during EnsureValid for
+        // opportunities[99]), the CTS is cancelled. The CT poll fires
+        // at i=128 (next 64-boundary after 99) and throws.
+        using var cts = new CancellationTokenSource();
+        var inner = new List<BreakOpportunity>(256);
+        for (var i = 0; i < 256; i++)
+        {
+            inner.Add(BreakOpportunity.Block(usedBlockSize: i * 10.0, chunkBlockSize: 10));
+        }
+        var cancelOnAccess = new CancelOnNthAccessList(inner, cts, cancelAfterAccesses: 100);
+
+        Assert.Throws<OperationCanceledException>(() =>
+            Optimizer.Optimize(
+                cancelOnAccess, contentBlockSize: 800, orphansRequired: 2, widowsRequired: 2,
+                cancellationToken: cts.Token));
+        // Verify cancellation actually happened MID-EXECUTION (access
+        // count > 100), not at method entry where access count would
+        // still be 0.
+        Assert.True(cancelOnAccess.AccessCount > 100,
+            $"Expected cancellation during validation (access count > 100), got {cancelOnAccess.AccessCount}");
+    }
+
+    [Fact]
+    public void PostTask7_optimize_cancellation_during_greedy_fallback_over_budget()
+    {
+        // Exercise the NEW CancellationToken plumbing into Greedy.
+        // Pre-fix Greedy did not accept a CT and the over-budget path
+        // could burn CPU on a cancelled token. Post-fix: the CT is
+        // threaded into Greedy + polled at every 64-element boundary.
+        //
+        // Setup: over-budget input (16385 elements) + cancellation on
+        // access #100 (which lands inside Greedy's iteration since the
+        // DP path is bypassed by the budget cap). Greedy's 64-boundary
+        // poll catches the cancellation + throws.
+        using var cts = new CancellationTokenSource();
+        var n = Optimizer.MaxCandidatesBeforeFallback + 1;
+        var inner = new List<BreakOpportunity>(n);
+        for (var i = 0; i < n; i++)
+        {
+            inner.Add(BreakOpportunity.Block(usedBlockSize: i * 10.0, chunkBlockSize: 10));
+        }
+        var cancelOnAccess = new CancelOnNthAccessList(inner, cts, cancelAfterAccesses: 100);
+
+        Assert.Throws<OperationCanceledException>(() =>
+            Optimizer.Optimize(
+                cancelOnAccess, contentBlockSize: 800, orphansRequired: 2, widowsRequired: 2,
+                cancellationToken: cts.Token));
+        // Verify cancellation happened mid-fallback (access count > 100),
+        // not at method entry.
+        Assert.True(cancelOnAccess.AccessCount > 100,
+            $"Expected cancellation during greedy fallback (access count > 100), got {cancelOnAccess.AccessCount}");
+    }
+
+    /// <summary>Per post-Task-7 review (Copilot inline) — IReadOnlyList
+    /// wrapper that triggers a CancellationTokenSource on the Nth
+    /// indexer access. Lets unit tests exercise the optimizer's
+    /// IN-LOOP cancellation polling (not just the method-entry check)
+    /// without timing-based flakiness.</summary>
+    private sealed class CancelOnNthAccessList : IReadOnlyList<BreakOpportunity>
+    {
+        private readonly IReadOnlyList<BreakOpportunity> _inner;
+        private readonly CancellationTokenSource _cts;
+        private readonly int _cancelAfterAccesses;
+        private int _accessCount;
+
+        public CancelOnNthAccessList(
+            IReadOnlyList<BreakOpportunity> inner,
+            CancellationTokenSource cts,
+            int cancelAfterAccesses)
+        {
+            _inner = inner;
+            _cts = cts;
+            _cancelAfterAccesses = cancelAfterAccesses;
+        }
+
+        public int AccessCount => Volatile.Read(ref _accessCount);
+
+        public BreakOpportunity this[int index]
+        {
+            get
+            {
+                var c = Interlocked.Increment(ref _accessCount);
+                if (c == _cancelAfterAccesses)
+                {
+                    _cts.Cancel();
+                }
+                return _inner[index];
+            }
+        }
+
+        public int Count => _inner.Count;
+
+        public IEnumerator<BreakOpportunity> GetEnumerator()
+        {
+            for (var i = 0; i < _inner.Count; i++)
+            {
+                yield return this[i];
+            }
+        }
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator()
+            => GetEnumerator();
     }
 }

@@ -126,6 +126,22 @@ internal sealed class LayoutRetryCoordinator
         ArgumentNullException.ThrowIfNull(fragmentainer);
         ArgumentNullException.ThrowIfNull(resolver);
 
+        // Per post-Task-7 review (recommendation P1 #2) — thread the
+        // coordinator's diagnostic sink into the layout context so the
+        // layouter's forced-overflow path emits via the same sink.
+        // Pre-fix, the coordinator's sink + each layouter's sink were
+        // wired separately; a composition root that wired only the
+        // coordinator could miss PAGINATION-FORCED-OVERFLOW-001 from
+        // a layouter's Strict-attempt forward-progress path.
+        //
+        // Only sets layout.Diagnostics when it's null on entry —
+        // respects the caller's choice to override (e.g., a test
+        // wrapping with a recording sink).
+        if (Diagnostics is not null && layout.Diagnostics is null)
+        {
+            layout.Diagnostics = Diagnostics;
+        }
+
         // Capture the original page index for diagnostic messaging —
         // RestoreInto on a partially-captured checkpoint can reset
         // PageIndex to 0, which would mislead the consumer about

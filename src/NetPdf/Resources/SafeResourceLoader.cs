@@ -60,8 +60,59 @@ public sealed class SafeResourceLoader
     public SafeResourceLoader(IResourceLoader? inner, ResourceFetchContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
+        // Per post-Task-7 review (recommendation P1 #1) — when the
+        // inner loader is a SafeHttpResourceLoader, both this wrapper
+        // AND the inner loader make policy-dependent decisions
+        // (scheme / IP / AllowedHosts at the wrapper layer; redirect
+        // hops / per-resource bytes inside the loader). If the two
+        // policies diverge, redirects / AllowedHosts could be checked
+        // against a different rule set than the initial URI — a
+        // silent security-correctness gap.
+        //
+        // Reject the misconfig fail-fast at construction. The factory
+        // CreateWithSafeHttp wires both with the same policy.
+        // ReferenceEquals (not value equality) is intentional: callers
+        // that genuinely want to share a policy SHOULD share the
+        // instance; constructing two distinct SecurityPolicy objects
+        // with identical fields is almost always an oversight.
+        if (inner is SafeHttpResourceLoader safeHttp
+            && !ReferenceEquals(safeHttp.Policy, context.Policy))
+        {
+            throw new ArgumentException(
+                "SafeHttpResourceLoader's SecurityPolicy must be the same "
+                + "instance as ResourceFetchContext.Policy. Pre-fix the two "
+                + "could diverge silently — the wrapper would validate "
+                + "scheme / IP / AllowedHosts against context.Policy while "
+                + "the loader validated redirects + per-resource-bytes "
+                + "against its own policy. Use "
+                + "SafeResourceLoader.CreateWithSafeHttp(context) to "
+                + "construct both with the context's policy.",
+                nameof(inner));
+        }
         _inner = inner; // null is valid — see class docs
         _context = context;
+    }
+
+    /// <summary>Per post-Task-7 review (recommendation P1 #1) — factory
+    /// that constructs a <see cref="SafeHttpResourceLoader"/> using the
+    /// <paramref name="context"/>'s <see cref="SecurityPolicy"/> + wraps
+    /// it in a <see cref="SafeResourceLoader"/> bound to the same
+    /// context. Single source of truth for the policy across both
+    /// layers; eliminates the divergence risk entirely.
+    ///
+    /// <para>The returned wrapper does NOT take ownership of the
+    /// returned HTTP loader's lifetime. Callers who construct via this
+    /// factory should track the underlying loader separately if they
+    /// need <see cref="IDisposable.Dispose"/> on shutdown — typically
+    /// by reading the <c>UnderlyingHttpLoader</c> property off the
+    /// returned <see cref="SafeResourceLoaderWithHttp"/> bundle. (For
+    /// most v1 use cases the loader lives for the process lifetime.)</para></summary>
+    public static SafeResourceLoaderWithHttp CreateWithSafeHttp(ResourceFetchContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        var http = new SafeHttpResourceLoader(context.Policy);
+        var wrapper = new SafeResourceLoader(http, context);
+        return new SafeResourceLoaderWithHttp(wrapper, http);
     }
 
     /// <summary>Fetch a resource with all the Phase D defenses applied.
@@ -458,6 +509,33 @@ public sealed class SafeResourceLoader
         if (message.Length > maxLen) sb.Append("...");
         return sb.ToString();
     }
+}
+
+/// <summary>Per post-Task-7 review (recommendation P1 #1) — bundle
+/// returned by <see cref="SafeResourceLoader.CreateWithSafeHttp"/>.
+/// Holds the constructed wrapper + the underlying HTTP loader so the
+/// caller can dispose the loader at shutdown without losing the
+/// wrapper's reference.</summary>
+public sealed class SafeResourceLoaderWithHttp : IDisposable
+{
+    /// <summary>The wrapper. Pass this to <c>HtmlPdfOptions.ResourceLoader</c>
+    /// + every pipeline-internal fetch routes through here.</summary>
+    public SafeResourceLoader Wrapper { get; }
+
+    /// <summary>The underlying HTTP loader. Exposed so the caller
+    /// can <see cref="IDisposable.Dispose"/> it at shutdown — the
+    /// wrapper does NOT take ownership of the loader's lifecycle.</summary>
+    public SafeHttpResourceLoader UnderlyingHttpLoader { get; }
+
+    internal SafeResourceLoaderWithHttp(SafeResourceLoader wrapper, SafeHttpResourceLoader http)
+    {
+        Wrapper = wrapper;
+        UnderlyingHttpLoader = http;
+    }
+
+    /// <summary>Disposes the underlying HTTP loader. The wrapper has
+    /// no native resources of its own — only the loader's HttpClient.</summary>
+    public void Dispose() => UnderlyingHttpLoader.Dispose();
 }
 
 /// <summary>Result of a <see cref="SafeResourceLoader.FetchAsync"/>.

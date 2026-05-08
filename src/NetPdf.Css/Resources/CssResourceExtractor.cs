@@ -180,22 +180,68 @@ internal static class CssResourceExtractor
     /// <c>background-image: image-set("https://attacker/a.png" 1x)</c>
     /// would not be reported. The fix tracks whether we're inside one
     /// of these functions + treats string literals there as URLs.</para>
+    ///
+    /// <para><b>Per post-Task-7 review — nested non-resource functions.</b>
+    /// CSS Images L4 §6 also allows resource lists to contain
+    /// <i>non-resource</i> helper functions like <c>type("image/png")</c>
+    /// or <c>format("avif")</c>. Pre-fix the parser:
+    /// <list type="bullet">
+    ///   <item>Treated string args of those helpers as URLs (so
+    ///   <c>image-set("a.png" 1x, type("image/png"))</c> would emit
+    ///   <c>"image/png"</c> as a phantom URL).</item>
+    ///   <item>Decremented the resource-fn depth when seeing the
+    ///   helper's closing <c>)</c>, prematurely exiting the
+    ///   <c>image-set</c> context (so legitimate strings AFTER the
+    ///   helper would not be captured).</item>
+    /// </list>
+    /// The fix tracks an inner non-resource paren depth separately
+    /// from the resource-fn depth: only strings at the IMMEDIATE
+    /// level of a resource fn (innerNonResourceDepth == 0) count as
+    /// URLs, and the closing <c>)</c> of a helper decrements the
+    /// inner depth, leaving the resource-fn depth intact. Nested
+    /// resource fns (<c>image-set(image-set("nested.png" 1x) 2x)</c>)
+    /// are unaffected — the inner image-set still goes through
+    /// <see cref="TryMatchResourceFunctionStart"/>.</para>
     /// </summary>
     public static IReadOnlyList<string> EnumerateUrls(string value)
     {
         ArgumentNullException.ThrowIfNull(value);
         if (value.Length < 5) return Array.Empty<string>(); // shortest "url()"
         var results = new List<string>(2);
-        // Track resource-function nesting depth. > 0 means we're inside
-        // image-set() / cross-fade() / image() and string literals are
-        // URL-bearing rather than skip-only.
-        var resourceFnDepth = 0;
+        // Per post-Task-7 review (Copilot inline) — track helper-paren
+        // depth PER resource-fn level, not as a single shared counter.
+        // The pre-fix single-counter design got the wrong answer for
+        // a resource fn nested inside a helper, e.g.,
+        // `image-set(type(image-set("a.png" 1x)), "b.png" 2x)`:
+        //   - When the inner image-set was entered, the outer's helper-
+        //     depth (incremented by `type(`) was preserved, so "a.png"
+        //     looked like it was inside a helper + was NOT captured.
+        //   - Worse, the inner image-set's closing `)` decremented the
+        //     shared helper-counter instead of the resource-fn counter,
+        //     leaving subsequent state inconsistent.
+        //
+        // Stack-based design: each entry in `helperDepths` represents
+        // ONE active resource-fn level. The TOP entry is the helper-
+        // paren depth INSIDE the innermost active resource fn. When
+        // we enter a new resource fn (nested or top-level), we push 0
+        // (helper depth resets for the new level). When we close a
+        // resource fn (top entry's helper depth is 0 + we see `)`), we
+        // pop. Helper `(` increments the top; helper `)` decrements
+        // the top.
+        //
+        // Strings count as URLs iff:
+        //   helperDepths.Count > 0   (inside SOME resource fn)
+        //   AND helperDepths[^1] == 0 (at IMMEDIATE level of innermost
+        //                              resource fn — not nested in a
+        //                              helper)
+        var helperDepths = new List<int>(2);
         var i = 0;
         while (i < value.Length)
         {
             var c = value[i];
-            // CSS string literal handling — when inside a resource fn,
-            // capture it as a URL; otherwise skip it entirely.
+            // CSS string literal handling — when inside a resource fn
+            // AT THE IMMEDIATE LEVEL (not nested in a helper), capture
+            // it as a URL; otherwise skip it entirely.
             if (c == '"' || c == '\'')
             {
                 var quote = c;
@@ -206,7 +252,9 @@ internal static class CssResourceExtractor
                     if (value[i] == '\\' && i + 1 < value.Length) i += 2;
                     else i++;
                 }
-                if (resourceFnDepth > 0 && i <= value.Length)
+                if (helperDepths.Count > 0
+                    && helperDepths[^1] == 0
+                    && i <= value.Length)
                 {
                     var url = value[stringStart..Math.Min(i, value.Length)];
                     if (!string.IsNullOrEmpty(url)) results.Add(url);
@@ -214,7 +262,9 @@ internal static class CssResourceExtractor
                 if (i < value.Length) i++;
                 continue;
             }
-            // Match url( case-insensitively.
+            // Match url( case-insensitively. url() is captured regardless
+            // of whether we're inside a helper (its semantics are
+            // unambiguous + matches the CSS Images L4 §6 grammar).
             if (TryMatchKeywordOpenParen(value, i, "url"))
             {
                 if (i > 0 && IsIdentContinue(value[i - 1])) { i++; continue; }
@@ -233,15 +283,49 @@ internal static class CssResourceExtractor
             // additional treatment.
             if (TryMatchResourceFunctionStart(value, i, out var consumed))
             {
-                resourceFnDepth++;
+                // Push a new resource-fn level with helper-depth 0.
+                // Per Copilot review — even when nested INSIDE a
+                // helper, the new resource fn's body starts fresh at
+                // helper-depth 0. The outer helper-depth is preserved
+                // on the lower stack entry + restored when this fn
+                // pops.
+                helperDepths.Add(0);
                 i += consumed;
                 continue;
             }
-            if (resourceFnDepth > 0 && c == ')')
+            // Inside a resource fn (any level)?
+            if (helperDepths.Count > 0)
             {
-                resourceFnDepth--;
-                i++;
-                continue;
+                if (c == '(')
+                {
+                    // Some non-resource function opens (type, format,
+                    // calc, etc.). Increment the INNERMOST resource
+                    // fn's helper-depth so its strings + closing `)`
+                    // don't pollute outer state.
+                    helperDepths[^1]++;
+                    i++;
+                    continue;
+                }
+                if (c == ')')
+                {
+                    if (helperDepths[^1] > 0)
+                    {
+                        // Closing a helper inside the innermost
+                        // resource fn. Helper-depth at this level
+                        // decrements; the resource-fn level itself
+                        // stays.
+                        helperDepths[^1]--;
+                    }
+                    else
+                    {
+                        // Closing the innermost resource fn itself.
+                        // Pop the level — outer level (if any) is
+                        // restored as the new top.
+                        helperDepths.RemoveAt(helperDepths.Count - 1);
+                    }
+                    i++;
+                    continue;
+                }
             }
             i++;
         }

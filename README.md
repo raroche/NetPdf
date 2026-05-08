@@ -204,8 +204,9 @@ container / process boundary:
   (`/OpenAction`, `/AA`, `/JavaScript`, `/Launch`, `/URI`,
   `/SubmitForm`, `/ImportData`, `/GoToR`, `/GoToE`, `/EmbeddedFile`,
   `/EmbeddedFiles`, `/RichMedia`) before bytes are written. There is no
-  opt-in flag for these in v1. If you intentionally need link
-  annotations, request feature flag `Features.LinkAnnotations` (cycle 2).
+  opt-in flag for these in v1. Link annotations + `/URI` actions are on
+  the post-v1 roadmap; the explicit opt-in API will be designed when
+  that work lands and the contract is stable.
 - Set `HtmlPdfOptions.Title` / `Author` / `Subject` to constants you
   control, not to attacker-supplied template content. NetPdf
   sanitizes these (Phase C C-3) but a constant is one less surface to

@@ -141,14 +141,28 @@ public static class FontSafetyValidator
     /// <summary>Per Phase D D-5 — sfnt directory walk. Beyond the header
     /// sanity (numTables + directory bounds), this validates EVERY table
     /// record's offset+length lies within the file + rejects any font
-    /// that uses one of the danger-class tables (<c>SVG </c>, <c>sbix</c>,
-    /// <c>CBDT</c>, <c>CBLC</c>, <c>EBDT</c>, <c>EBLC</c>) NetPdf v1
-    /// doesn't render. SVG-in-OpenType has been a real attack surface
-    /// (parsers process SVG payloads as graphics); bitmap glyph tables
-    /// route through different rendering code we don't own. Rejecting
-    /// them upfront keeps the attack surface bounded; a font with these
-    /// tables alongside <c>glyf</c>/<c>CFF</c> will still render via
-    /// the supported tables in a future relaxation.
+    /// that uses one of the danger-class tables NetPdf v1 doesn't
+    /// render. The exact denylist enforced by <see cref="IsDangerousTableTag"/>
+    /// is: <c>SVG </c> (SVG-in-OpenType), <c>sbix</c> (Apple bitmap),
+    /// <c>CBDT</c> + <c>CBLC</c> (Google color bitmap data + location),
+    /// <c>EBDT</c> + <c>EBLC</c> (embedded bitmap data + location). SVG-
+    /// in-OpenType has been a real attack surface (parsers process SVG
+    /// payloads as graphics); bitmap glyph tables route through different
+    /// rendering code we don't own. Rejecting them upfront keeps the
+    /// attack surface bounded; a font with these tables alongside
+    /// <c>glyf</c>/<c>CFF</c> will still render via the supported tables
+    /// in a future relaxation.
+    ///
+    /// <para><b>Per PR #18 Copilot review #7 — table list aligned.</b>
+    /// An earlier docstring revision listed <c>COLR</c>/<c>CPAL</c> as
+    /// part of the denylist; those are color-glyph palette tables that
+    /// NetPdf v1 ALSO doesn't render but the actual enforcement only
+    /// covers the bitmap + SVG surfaces above. Decision: keep COLR/CPAL
+    /// off the denylist for now (they're palette metadata, not embedded
+    /// payloads — much smaller attack surface than SVG / bitmap glyph
+    /// tables), and clarify the doc to match what's enforced. If a
+    /// future review wants COLR/CPAL added too, both the doc + the
+    /// <see cref="IsDangerousTableTag"/> body should be updated together.</para>
     ///
     /// <para><b>Per PR #18 review #9 — public for post-decompression
     /// re-validation.</b> WOFF / WOFF2 wrap an sfnt + apply zlib /
@@ -360,6 +374,19 @@ public static class FontSafetyValidator
             return new ValidationResult(
                 FontSafetyVerdict.Unsafe,
                 $"WOFF2 declares {numTables} tables; expected 1..{MaxTableCount}",
+                FontFormat.Woff2);
+        }
+        // Per PR #18 Copilot review #8 — WOFF2 reserved field (bytes
+        // 14..15) must be zero per W3C WOFF2 §4. ValidateWoffHeader
+        // already enforces this for WOFF; the WOFF2 path skipped it.
+        // Non-zero reserved bytes are a malformed-wrapper signal and
+        // a possible amplifier for downstream parser confusion;
+        // reject up-front to match WOFF's behavior + the spec.
+        if (bytes[14] != 0 || bytes[15] != 0)
+        {
+            return new ValidationResult(
+                FontSafetyVerdict.Unsafe,
+                "WOFF2 reserved field is non-zero",
                 FontFormat.Woff2);
         }
         return new ValidationResult(FontSafetyVerdict.Safe, null, FontFormat.Woff2);

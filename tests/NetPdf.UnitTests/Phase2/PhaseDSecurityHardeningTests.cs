@@ -847,4 +847,91 @@ public sealed class PhaseDSecurityHardeningTests
             System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public);
         Assert.NotNull(method);
     }
+
+    // --- PR #18 Copilot review fixes ----------------------------------------
+
+    // Copilot #1: Reject relative URIs explicitly (don't let Validate throw).
+    [Fact]
+    public async Task DCopilot1_relative_uri_returns_typed_failure()
+    {
+        var ctx = new ResourceFetchContext(SecurityPolicy.SafeDefault, baseUri: null, CancellationToken.None);
+        var loader = new SafeResourceLoader(inner: null, ctx);
+        var relative = new Uri("../foo.png", UriKind.Relative);
+        var result = await loader.FetchAsync(relative, ResourceKind.Image);
+        Assert.False(result.Success);
+        Assert.Contains("relative URI", result.Failure!.Reason, StringComparison.Ordinal);
+    }
+
+    // Copilot #2: Empty content from loader = "not found" (per IResourceLoader contract).
+    [Fact]
+    public async Task DCopilot2_empty_content_returns_not_found_failure()
+    {
+        var emptyLoader = new EmptyContentLoader();
+        var policy = new SecurityPolicy { AllowHttpsScheme = true };
+        var ctx = new ResourceFetchContext(policy, baseUri: null, CancellationToken.None);
+        var loader = new SafeResourceLoader(emptyLoader, ctx);
+        var result = await loader.FetchAsync(new Uri("https://example.com/x"), ResourceKind.Image);
+        Assert.False(result.Success);
+        Assert.Contains("not found", result.Failure!.Reason, StringComparison.Ordinal);
+    }
+
+    private sealed class EmptyContentLoader : IResourceLoader
+    {
+        public ValueTask<ResourceResponse> LoadAsync(Uri uri, ResourceKind kind, CancellationToken ct) =>
+            ValueTask.FromResult(new ResourceResponse { Content = ReadOnlyMemory<byte>.Empty });
+    }
+
+    // Copilot #3: Slot reservation moved AFTER URI safety/base-path checks
+    // — fast-rejected fetches (e.g., dangerous IP) must NOT consume a slot,
+    // so an attacker can't probe to exhaust the budget.
+    [Fact]
+    public async Task DCopilot3_uri_safety_rejection_does_not_consume_budget_slot()
+    {
+        var sentinel = new InvocationCountingLoader();
+        var policy = new SecurityPolicy { AllowHttpsScheme = true, MaxResourcesPerRender = 1 };
+        var ctx = new ResourceFetchContext(policy, baseUri: null, CancellationToken.None);
+        var loader = new SafeResourceLoader(sentinel, ctx);
+        // First call: dangerous IP, blocked by URI safety. Should NOT
+        // consume a slot.
+        var blocked = await loader.FetchAsync(new Uri("https://10.0.0.1/x"), ResourceKind.Image);
+        Assert.False(blocked.Success);
+        Assert.Equal(0, ctx.FetchedCount);
+        // Second call: safe URI. Should still succeed since the budget
+        // wasn't consumed by the rejected call.
+        var ok = await loader.FetchAsync(new Uri("https://example.com/x"), ResourceKind.Image);
+        Assert.True(ok.Success);
+        Assert.Equal(1, ctx.FetchedCount);
+    }
+
+    // Copilot #8: WOFF2 reserved field validated.
+    [Fact]
+    public void DCopilot8_woff2_non_zero_reserved_field_rejected()
+    {
+        var bytes = new byte[48];
+        bytes[0] = 0x77; bytes[1] = 0x4F; bytes[2] = 0x46; bytes[3] = 0x32; // wOF2
+        // Flavor 0x00010000 (TTF).
+        bytes[4] = 0x00; bytes[5] = 0x01; bytes[6] = 0x00; bytes[7] = 0x00;
+        // Length = 48.
+        bytes[8] = 0; bytes[9] = 0; bytes[10] = 0; bytes[11] = 48;
+        // numTables = 1.
+        bytes[12] = 0; bytes[13] = 1;
+        // Reserved bytes (14..15) — non-zero → rejection.
+        bytes[14] = 0xFF; bytes[15] = 0xAB;
+        var result = FontSafetyValidator.Validate(bytes);
+        Assert.False(result.IsSafe);
+        Assert.Contains("WOFF2 reserved field is non-zero", result.Reason!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DCopilot8_woff2_zero_reserved_field_accepted()
+    {
+        var bytes = new byte[48];
+        bytes[0] = 0x77; bytes[1] = 0x4F; bytes[2] = 0x46; bytes[3] = 0x32;
+        bytes[4] = 0x00; bytes[5] = 0x01; bytes[6] = 0x00; bytes[7] = 0x00;
+        bytes[8] = 0; bytes[9] = 0; bytes[10] = 0; bytes[11] = 48;
+        bytes[12] = 0; bytes[13] = 1;
+        // Reserved bytes left at 0.
+        var result = FontSafetyValidator.Validate(bytes);
+        Assert.True(result.IsSafe, result.Reason);
+    }
 }

@@ -66,13 +66,29 @@ public sealed class SafeResourceLoader
 
     /// <summary>Fetch a resource with all the Phase D defenses applied.
     /// Returns the loaded bytes on success; a <see cref="ResourceFailure"/>
-    /// shape on rejection. The fetch is still counted against the
-    /// per-render budget on rejection so an attacker can't probe the
-    /// allowlist without paying.</summary>
+    /// shape on rejection. Slot reservation happens AFTER the URI safety
+    /// + base-path checks so a fast-rejected fetch doesn't consume a
+    /// budget slot — an attacker could otherwise probe the allowlist by
+    /// firing N+1 obviously-invalid URIs to lock out legitimate fetches.
+    /// </summary>
     public async ValueTask<SafeResourceResult> FetchAsync(Uri uri, ResourceKind kind)
     {
         ArgumentNullException.ThrowIfNull(uri);
         _context.CancellationToken.ThrowIfCancellationRequested();
+
+        // Per PR #18 Copilot review #1 — relative URIs would throw on
+        // .Scheme access inside UriSafetyValidator.Validate. Reject
+        // explicitly + return a typed failure rather than letting
+        // System.InvalidOperationException escape the wrapper. This
+        // mirrors the loader's "every error is a typed failure"
+        // contract from review #7. If the caller wanted relative-to-
+        // BaseUri resolution, they can do that at their layer; the
+        // wrapper sees only absolute URIs.
+        if (!uri.IsAbsoluteUri)
+        {
+            return SafeResourceResult.Failed(uri, kind,
+                "relative URI; SafeResourceLoader requires an absolute URI (resolve against HtmlPdfOptions.BaseUri at the caller)");
+        }
 
         // 1. URI safety check (scheme + IP blocklist + AllowedHosts).
         var uriVerdict = UriSafetyValidator.Validate(uri, _context.Policy);
@@ -91,9 +107,16 @@ public sealed class SafeResourceLoader
             }
         }
 
-        // 3. Reserve a budget slot. Per-resource bytes-budget will be
-        // charged post-fetch via TryAddBytes (we don't know the byte
-        // count yet).
+        // 3. Reserve a budget slot AFTER the URI / base-path checks.
+        // Per PR #18 Copilot review #3 — pre-fix the docstring claimed
+        // rejected fetches consumed a slot, but the implementation
+        // returned without consuming one. The behavior was correct:
+        // the wrapper should NOT charge fetches that fail policy
+        // checks (otherwise an attacker could exhaust the budget by
+        // probing). Doc updated to match.
+        // Per-resource bytes-budget is charged post-fetch via
+        // TryAddBytes (the byte count is unknown until the loader
+        // returns).
         var slotReason = _context.TryReserveSlot();
         if (slotReason is not null)
         {
@@ -175,6 +198,20 @@ public sealed class SafeResourceLoader
         {
             return SafeResourceResult.Failed(uri, kind,
                 $"loader web error: {SanitizeExceptionMessage(ex.Message)}");
+        }
+
+        // Per PR #18 Copilot review #2 — IResourceLoader's contract
+        // (per ResourceResponse's docstring) is that an empty Content
+        // means "the resource was not found". Pre-fix this code
+        // surfaced empty bytes as a successful Loaded result, which
+        // pushed empty buffers into downstream image / font decoders
+        // (which then either crashed or silently produced blank
+        // output). Surface the not-found case as a typed failure so
+        // the caller sees one clear "resource missing" diagnostic.
+        if (response.Content.Length == 0)
+        {
+            return SafeResourceResult.Failed(uri, kind,
+                "loader returned empty content (per IResourceLoader contract: not found)");
         }
 
         // 6. Per-resource size cap.

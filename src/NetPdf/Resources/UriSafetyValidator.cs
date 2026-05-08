@@ -177,6 +177,53 @@ public static class UriSafetyValidator
         }
     }
 
+    /// <summary>Per Phase C C-6 — validate an HTTP redirect target. The
+    /// loader calls this for every <c>Location:</c> header before issuing
+    /// the next-hop fetch. Three checks layered on top of
+    /// <see cref="Validate"/>:
+    /// <list type="number">
+    ///   <item><description>The redirect target itself passes scheme + host
+    ///   policy (delegates to <see cref="Validate"/>) — re-checks the IP
+    ///   blocklist on the new host so an open-redirect → SSRF chain
+    ///   (initial URL safe, redirect target on <c>169.254.169.254</c>) is
+    ///   blocked at the moment of redirection.</description></item>
+    ///   <item><description>The hop count is below
+    ///   <see cref="SecurityPolicy.MaxRedirectHops"/>. Each call records
+    ///   one hop; once exhausted, return <see cref="SafetyOutcome.Unsafe"/>
+    ///   with a redirect-chain reason.</description></item>
+    ///   <item><description>Cross-scheme downgrade rejection: <c>https</c>
+    ///   → <c>http</c> redirects are blocked (typical browser behavior +
+    ///   defense against MITM-induced downgrade). Same-scheme +
+    ///   <c>http</c> → <c>https</c> upgrades pass.</description></item>
+    /// </list>
+    /// </summary>
+    public static Verdict ValidateRedirect(Uri origin, Uri redirectTarget, SecurityPolicy policy, int hopsAlreadyFollowed)
+    {
+        ArgumentNullException.ThrowIfNull(origin);
+        ArgumentNullException.ThrowIfNull(redirectTarget);
+        ArgumentNullException.ThrowIfNull(policy);
+
+        if (hopsAlreadyFollowed >= policy.MaxRedirectHops)
+        {
+            return new Verdict(SafetyOutcome.Unsafe,
+                $"redirect chain exceeded the {policy.MaxRedirectHops}-hop cap");
+        }
+
+        // Cross-scheme downgrade. Allow same-scheme + http → https upgrades.
+        var originScheme = origin.Scheme.ToLowerInvariant();
+        var targetScheme = redirectTarget.Scheme.ToLowerInvariant();
+        if (originScheme == "https" && targetScheme == "http")
+        {
+            return new Verdict(SafetyOutcome.Unsafe,
+                "redirect downgrades https → http; rejected to defend against MITM-induced downgrade");
+        }
+
+        // Run the standard policy check on the target. This is where the
+        // open-redirect → SSRF chain gets caught — the target's host is
+        // re-validated against the IP blocklist + AllowedHosts.
+        return Validate(redirectTarget, policy);
+    }
+
     /// <summary>True when <paramref name="ip"/> falls in any of the
     /// well-known SSRF amplifier ranges (loopback, private, link-local,
     /// cloud-metadata, multicast, unspecified). The <paramref name="reason"/>

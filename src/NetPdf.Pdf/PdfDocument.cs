@@ -350,17 +350,89 @@ internal sealed class PdfDocument
     {
         // The Producer is always emitted (NetPdf identifies itself); other fields are
         // emitted only when set by the caller.
+        // Per Phase C C-3 — every author-controlled metadata field flows
+        // through SanitizeMetadataString before reaching PdfLiteralString.
+        // Strips C0 (0x00..0x1F except TAB / CR / LF) + DEL (0x7F) + C1
+        // (0x80..0x9F) which are valid Unicode but problematic in PDF
+        // viewers' bookmarks / window titles / PDF/UA accessibility text;
+        // also caps total length at MaxMetadataChars to bound the
+        // attacker-controlled <title> reaching /Title from blowing the
+        // catalog dict's size budget.
+        // Producer is library-controlled, not author-controlled, so it
+        // skips sanitization to avoid hiding a real bug in NetPdf itself.
         var info = new PdfDictionary();
         info.Set(PdfNames.Producer, new PdfLiteralString(Producer));
-        if (Title is not null) info.Set(PdfNames.Title, new PdfLiteralString(Title));
-        if (Author is not null) info.Set(PdfNames.Author, new PdfLiteralString(Author));
-        if (Subject is not null) info.Set(PdfNames.Subject, new PdfLiteralString(Subject));
-        if (Keywords is not null) info.Set(PdfNames.Keywords, new PdfLiteralString(Keywords));
-        if (Creator is not null) info.Set(PdfNames.Creator, new PdfLiteralString(Creator));
+        if (Title is not null) info.Set(PdfNames.Title, new PdfLiteralString(SanitizeMetadataString(Title)));
+        if (Author is not null) info.Set(PdfNames.Author, new PdfLiteralString(SanitizeMetadataString(Author)));
+        if (Subject is not null) info.Set(PdfNames.Subject, new PdfLiteralString(SanitizeMetadataString(Subject)));
+        if (Keywords is not null) info.Set(PdfNames.Keywords, new PdfLiteralString(SanitizeMetadataString(Keywords)));
+        if (Creator is not null) info.Set(PdfNames.Creator, new PdfLiteralString(SanitizeMetadataString(Creator)));
         if (CreationDate is { } cd) info.Set(PdfNames.CreationDate, new PdfLiteralString(FormatPdfDate(cd)));
         if (ModDate is { } md) info.Set(PdfNames.ModDate, new PdfLiteralString(FormatPdfDate(md)));
         return info;
     }
+
+    /// <summary>Per Phase C C-3 — maximum length (UTF-16 chars) of any
+    /// single PDF metadata string. 4 KiB easily holds the longest sane
+    /// document Title / Author / Subject. Beyond that is almost certainly
+    /// an attacker piling kilobytes of poison into a <c>&lt;title&gt;</c>.</summary>
+    internal const int MaxMetadataChars = 4096;
+
+    /// <summary>Per Phase C C-3 — strip C0 (0x00..0x1F, except TAB/CR/LF)
+    /// + DEL (0x7F) + C1 (0x80..0x9F) control characters from
+    /// <paramref name="raw"/>; replace with U+FFFD. Then cap at
+    /// <see cref="MaxMetadataChars"/> with U+2026 ellipsis. The control
+    /// character set mirrors the CSS-side
+    /// <c>NetPdf.Css.Diagnostics.DiagnosticTextSanitizer.Sanitize</c>
+    /// surface so PDF metadata gets the same hardening Phase A landed on
+    /// CSS diagnostic text.</summary>
+    /// <remarks>
+    /// <para>The PDF Reference §7.9.2 says <c>PdfLiteralString</c> bytes
+    /// can be any byte 0x00..0xFF, but viewers rendering the catalog
+    /// (Adobe Acrobat, Foxit, browsers' built-in viewers) display the
+    /// string as text. Embedded NUL bytes truncate display in some
+    /// viewers, ANSI escapes leak into terminal-style log shippers, and
+    /// some viewers expose Title in window titles + clipboard where
+    /// control characters are unsafe. The Producer field is exempted
+    /// because it's library-controlled.</para>
+    /// </remarks>
+    internal static string SanitizeMetadataString(string raw)
+    {
+        ArgumentNullException.ThrowIfNull(raw);
+        if (raw.Length == 0) return raw;
+        // Two-pass: count what needs replacement so the no-op fast path
+        // returns the original reference (avoids gratuitous allocations
+        // for the common clean-input case).
+        var dirty = false;
+        for (var i = 0; i < raw.Length; i++)
+        {
+            if (IsForbidden(raw[i])) { dirty = true; break; }
+        }
+        if (!dirty && raw.Length <= MaxMetadataChars) return raw;
+
+        // ASCII '?' (0x3F) replacement + ASCII "..." (3 dots) truncation
+        // marker. PdfLiteralString rejects non-ASCII (> 0x7E) at
+        // construction; using ASCII-safe replacements keeps the sanitizer
+        // compatible with the existing caller contract. The U+FFFD /
+        // U+2026 sentinels preferred elsewhere in NetPdf would throw.
+        var sb = new System.Text.StringBuilder(Math.Min(raw.Length, MaxMetadataChars + 3));
+        for (var i = 0; i < raw.Length && sb.Length < MaxMetadataChars; i++)
+        {
+            var c = raw[i];
+            sb.Append(IsForbidden(c) ? '?' : c);
+        }
+        if (raw.Length > MaxMetadataChars) sb.Append("...");
+        return sb.ToString();
+    }
+
+    private static bool IsForbidden(char c) =>
+        // C0 except TAB (0x09), LF (0x0A), CR (0x0D) which are legitimate
+        // text control chars in PDF strings.
+        (c < 0x20 && c != '\t' && c != '\n' && c != '\r')
+        // DEL.
+        || c == 0x7F
+        // C1.
+        || (c >= 0x80 && c <= 0x9F);
 
     /// <summary>
     /// Format a date per ISO 32000-2:2020 §7.9.4: <c>D:YYYYMMDDHHmmSSOHH'mm'</c>. The

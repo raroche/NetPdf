@@ -67,4 +67,37 @@ internal sealed class CascadeResult
 
     /// <summary>Total pseudo-element rule sets.</summary>
     public int PseudoElementCount => _pseudoStyles.Count;
+
+    /// <summary>Per Phase C C-4 — running cumulative count of
+    /// <see cref="MatchedDeclaration"/> entries added across all
+    /// host-element + pseudo-element rule sets in this render. Compared
+    /// against <see cref="CascadeResolver.MaxMatchedDeclarationsPerRender"/>
+    /// in <see cref="CascadeResolver.AddMatched"/> + the inline-style walk
+    /// to bound the per-render memory pressure when both per-rule + per-
+    /// element caps stay individually under threshold but their product
+    /// would blow the matched table.</summary>
+    public int TotalMatchedDeclarationCount { get; private set; }
+
+    /// <summary>Per Phase C C-4 — once this flag flips, every subsequent
+    /// <see cref="CascadeResolver.AddMatched"/> call short-circuits before
+    /// emitting more <see cref="MatchedDeclaration"/> entries. The single
+    /// <c>CSS-CASCADE-OVERFLOW-001</c> diagnostic is emitted at the
+    /// transition; subsequent attempts silently skip.</summary>
+    public bool MatchedLimitReached { get; private set; }
+
+    /// <summary>Add <paramref name="count"/> to the cumulative tracker.
+    /// Returns <see langword="true"/> when the cap is hit on this call
+    /// (caller emits the one-shot diagnostic + any subsequent calls go
+    /// through but the matched-rule-sets simply aren't written to).</summary>
+    internal bool TryConsumeMatched(int count)
+    {
+        if (MatchedLimitReached) return false;
+        TotalMatchedDeclarationCount += count;
+        if (TotalMatchedDeclarationCount > CascadeResolver.MaxMatchedDeclarationsPerRender)
+        {
+            MatchedLimitReached = true;
+            return true; // first overflow — caller should emit + continue
+        }
+        return true;
+    }
 }

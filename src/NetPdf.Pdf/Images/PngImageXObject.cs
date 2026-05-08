@@ -41,6 +41,16 @@ internal static class PngImageXObject
     public static ImageXObjectResult Build(byte[] pngBytes)
     {
         ArgumentNullException.ThrowIfNull(pngBytes);
+        // Per Phase C C-1 — pre-decode safety gate. Catches oversized inputs,
+        // format-confusion (e.g., a non-PNG renamed to .png), and declared
+        // dimensions past the per-image cap before PngHeaderParser walks
+        // chunks of structurally-malformed bytes.
+        var verdict = ImageSafetyValidator.Validate(pngBytes);
+        if (!verdict.IsSafe)
+        {
+            throw new InvalidOperationException(
+                $"PNG image rejected by pre-decode safety validator: {verdict.Reason}");
+        }
         var info = PngHeaderParser.Parse(pngBytes);
         return Build(info);
     }

@@ -103,7 +103,7 @@ internal static class CascadeResolver
         if (document.DocumentElement is null) return result;
 
         var rootBloom = default(SelectorBloomFilter);
-        WalkElement(document.DocumentElement, compiledRules, in rootBloom, result, cancellationToken);
+        WalkElement(document.DocumentElement, compiledRules, in rootBloom, result, diagnostics, cancellationToken);
 
         // Inline styles enter as a virtual stylesheet with stylesheet-order pinned ABOVE
         // the maximum real stylesheet order so the source-order tie-break (when two
@@ -111,7 +111,7 @@ internal static class CascadeResolver
         // last. The IsInlineStyle flag is what makes them beat selectors of any
         // specificity per L4 §6.4.3 — independent of the source-order pinning.
         var inlineStylesheetOrder = maxSheetOrder + 1;
-        WalkInlineStyles(document.DocumentElement, result, inlineStylesheetOrder, cancellationToken);
+        WalkInlineStyles(document.DocumentElement, result, inlineStylesheetOrder, diagnostics, cancellationToken);
 
         return result;
     }
@@ -239,6 +239,19 @@ internal static class CascadeResolver
     /// shorthand); 1024 is the wide cap that catches doc-bombing without
     /// rejecting legitimate megalists.</summary>
     internal const int MaxSelectorAlternatives = 1024;
+
+    /// <summary>Per Phase C C-4 — maximum cumulative
+    /// <see cref="MatchedDeclaration"/> count across the entire cascade for
+    /// one render. With <c>MaxRulesPerStylesheet = 50 000</c>,
+    /// <c>MaxDeclarationsPerRule = 256</c>, and B-1's
+    /// <c>MaxElementCount = 250 000</c>, the upper bound on matched
+    /// declarations was effectively unbounded (every rule could match every
+    /// element). Real-world large docs sit at &lt; 500 000 matched
+    /// declarations; 5 000 000 is generous for Tailwind-heavy docs while
+    /// catching the per-element-explosion + per-rule-explosion compound
+    /// case where each individual cap stays under threshold but their
+    /// product blows the matched table.</summary>
+    internal const int MaxMatchedDeclarationsPerRender = 5_000_000;
 
     private static void CollectFromRules(
         ImmutableArray<CssRule> rules,
@@ -868,6 +881,7 @@ internal static class CascadeResolver
     /// dominates the per-element cost.</summary>
     private static void WalkElement(IElement element, List<CompiledRule> rules,
         in SelectorBloomFilter ancestorBloom, CascadeResult result,
+        ICssDiagnosticsSink? diagnostics,
         System.Threading.CancellationToken cancellationToken)
     {
         // Per Phase 2 deep review Rec 6 — check at every element so a hostile
@@ -875,12 +889,19 @@ internal static class CascadeResolver
         // selector match pass before noticing the stage boundary in
         // Phase2Pipeline.
         cancellationToken.ThrowIfCancellationRequested();
+        // Per Phase C C-4 — short-circuit subsequent element walks once the
+        // matched-declaration cap is hit. Walking still descends so cancellation
+        // + structural traversal stay correct, but ApplyRulesToElement skips
+        // the per-rule application work.
         var bloom = ancestorBloom; // value copy — independent from caller's
         AddElementTokens(element, ref bloom);
-        ApplyRulesToElement(element, rules, in bloom, result);
+        if (!result.MatchedLimitReached)
+        {
+            ApplyRulesToElement(element, rules, in bloom, result, diagnostics);
+        }
         foreach (var child in element.Children)
         {
-            WalkElement(child, rules, in bloom, result, cancellationToken);
+            WalkElement(child, rules, in bloom, result, diagnostics, cancellationToken);
         }
     }
 
@@ -895,12 +916,14 @@ internal static class CascadeResolver
     }
 
     private static void ApplyRulesToElement(IElement element, List<CompiledRule> rules,
-        in SelectorBloomFilter bloom, CascadeResult result)
+        in SelectorBloomFilter bloom, CascadeResult result,
+        ICssDiagnosticsSink? diagnostics)
     {
         foreach (var rule in rules)
         {
             if (rule.Selectors is null) continue;
-            ApplyRuleToElement(rule, element, in bloom, result);
+            if (result.MatchedLimitReached) return;
+            ApplyRuleToElement(rule, element, in bloom, result, diagnostics);
         }
     }
 
@@ -935,7 +958,8 @@ internal static class CascadeResolver
         CompiledRule rule,
         IElement element,
         in SelectorBloomFilter bloom,
-        CascadeResult result)
+        CascadeResult result,
+        ICssDiagnosticsSink? diagnostics)
     {
         // Best matching alternative per pseudo-element bucket.
         Dictionary<string, SelectorBytecode>? bestPerBucket = null;
@@ -956,7 +980,7 @@ internal static class CascadeResolver
         if (bestPerBucket is null) return;
         foreach (var winning in bestPerBucket.Values)
         {
-            AddMatched(rule, winning, element, result);
+            AddMatched(rule, winning, element, result, diagnostics);
         }
     }
 
@@ -981,11 +1005,32 @@ internal static class CascadeResolver
         CompiledRule rule,
         SelectorBytecode alt,
         IElement element,
-        CascadeResult result)
+        CascadeResult result,
+        ICssDiagnosticsSink? diagnostics)
     {
+        // Per Phase C C-4 — short-circuit if we've already passed the
+        // matched-declaration cap for this render. The first overflow
+        // emits the one-shot diagnostic; subsequent calls silently skip.
+        if (result.MatchedLimitReached) return;
+
         var target = alt.PseudoElement is null
             ? result.StylesFor(element)
             : result.StylesForPseudo(element, alt.PseudoElement);
+
+        // Reserve budget for this rule's full declaration count up front.
+        // The TryConsume increments the counter; if this call crosses the
+        // cap, emit the diagnostic + skip further matching this render.
+        var beforeFlag = result.MatchedLimitReached;
+        result.TryConsumeMatched(rule.Declarations.Length);
+        if (!beforeFlag && result.MatchedLimitReached)
+        {
+            diagnostics?.Emit(new CssDiagnostic(
+                CssDiagnosticCodes.CssCascadeOverflow001,
+                $"Cascade exceeded the {MaxMatchedDeclarationsPerRender}-matched-declaration cap; remaining selector matches are skipped.",
+                CssDiagnosticSeverity.Warning,
+                CssSourceLocation.Unknown));
+            return;
+        }
 
         for (var i = 0; i < rule.Declarations.Length; i++)
         {
@@ -1009,14 +1054,15 @@ internal static class CascadeResolver
     /// origin/importance bucket per L4 §6.4.3.</summary>
     private static readonly Specificity InlineStyleSpecificity = new(1, 0, 0);
 
-    private static void WalkInlineStyles(IElement element, CascadeResult result, int inlineStylesheetOrder, System.Threading.CancellationToken cancellationToken)
+    private static void WalkInlineStyles(IElement element, CascadeResult result, int inlineStylesheetOrder, ICssDiagnosticsSink? diagnostics, System.Threading.CancellationToken cancellationToken)
     {
-        WalkInlineStylesRecursive(element, result, inlineStylesheetOrder, ruleOrder: 0, cancellationToken);
+        WalkInlineStylesRecursive(element, result, inlineStylesheetOrder, ruleOrder: 0, diagnostics, cancellationToken);
     }
 
-    private static int WalkInlineStylesRecursive(IElement element, CascadeResult result, int inlineStylesheetOrder, int ruleOrder, System.Threading.CancellationToken cancellationToken)
+    private static int WalkInlineStylesRecursive(IElement element, CascadeResult result, int inlineStylesheetOrder, int ruleOrder, ICssDiagnosticsSink? diagnostics, System.Threading.CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
+        if (result.MatchedLimitReached) return ruleOrder;
         var styleAttr = element.GetAttribute("style");
         if (!string.IsNullOrEmpty(styleAttr))
         {
@@ -1031,6 +1077,22 @@ internal static class CascadeResolver
                     anglesharpStyle, styleAttr, CssSourceLocation.Unknown);
                 if (!declarations.IsEmpty)
                 {
+                    // Per Phase C C-4 — charge inline-style declarations
+                    // against the per-render cap as well. Inline styles can
+                    // pile thousands of `--p1: red; --p2: red; ...` past the
+                    // declaration parser if the per-rule cap doesn't fire
+                    // (different code path for inline styles).
+                    var beforeFlag = result.MatchedLimitReached;
+                    result.TryConsumeMatched(declarations.Length);
+                    if (!beforeFlag && result.MatchedLimitReached)
+                    {
+                        diagnostics?.Emit(new CssDiagnostic(
+                            CssDiagnosticCodes.CssCascadeOverflow001,
+                            $"Cascade exceeded the {MaxMatchedDeclarationsPerRender}-matched-declaration cap; remaining inline styles are skipped.",
+                            CssDiagnosticSeverity.Warning,
+                            CssSourceLocation.Unknown));
+                        return ruleOrder;
+                    }
                     var target = result.StylesFor(element);
                     for (var i = 0; i < declarations.Length; i++)
                     {
@@ -1052,7 +1114,7 @@ internal static class CascadeResolver
         }
         foreach (var child in element.Children)
         {
-            ruleOrder = WalkInlineStylesRecursive(child, result, inlineStylesheetOrder, ruleOrder, cancellationToken);
+            ruleOrder = WalkInlineStylesRecursive(child, result, inlineStylesheetOrder, ruleOrder, diagnostics, cancellationToken);
         }
         return ruleOrder;
     }

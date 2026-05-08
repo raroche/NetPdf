@@ -72,6 +72,16 @@ internal sealed class FontFace : IDisposable
     /// </summary>
     public static FontFace Load(ReadOnlyMemory<byte> fontBytes, string source)
     {
+        // Per Phase C C-2 — pre-decode safety gate. Catches non-fonts (e.g.,
+        // a binary blob renamed to .ttf), oversized inputs, sfnt headers
+        // that declare millions of tables, and the SVG-only-OpenType
+        // surface before HarfBuzz / OpenTypeFont.Parse run on the bytes.
+        var verdict = FontSafetyValidator.Validate(fontBytes.Span);
+        if (!verdict.IsSafe)
+        {
+            throw new InvalidOperationException(
+                $"Font '{source}' rejected by pre-decode safety validator: {verdict.Reason}");
+        }
         var font = OpenTypeFont.Parse(fontBytes);
         var metadata = FontMetadata.Extract(font);
         return new FontFace(font, metadata, source);

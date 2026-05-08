@@ -184,6 +184,19 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // emission.
         var emittedThisAttempt = 0;
 
+        // Per Phase 3 Task 7 cycle 2 + CSS 2.1 §8.3.1 — adjacent-
+        // sibling vertical margin collapsing. Track the prior block's
+        // margin-end so the next block's margin-start can collapse
+        // with it via MarginCollapse.Collapse. The collapse chain
+        // resets at page boundary: when this method is re-entered
+        // with an incoming continuation on a fresh page,
+        // prevBlockMarginEnd starts at 0 + isFirstBlockOnPage = true,
+        // so the first block's marginStart is honored without
+        // collapsing across the page break (per CSS Fragmentation
+        // L3 §6.1).
+        var prevBlockMarginEnd = 0.0;
+        var isFirstBlockOnPage = true;
+
         for (var childIdx = startChildIdx; childIdx < _rootBox.Children.Count; childIdx++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -207,23 +220,60 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             var marginInlineEnd = child.Style.ReadLengthPxOrZero(PropertyId.MarginRight);
 
             // Per PR #22 review fix #3 + Copilot #2 — BoxFragment is
-            // the BORDER box on both axes. Compute both:
-            // - marginBoxBlockSize: drives pagination accounting
-            //   (cursor advance + fit-check).
-            // - borderBoxBlockSize: stored on the fragment for the
-            //   painter.
+            // the BORDER box on both axes.
             var borderBoxBlockSize = borderStart + paddingStart + contentBlock
                 + paddingEnd + borderEnd;
-            var marginBoxBlockSize = marginStart + borderBoxBlockSize + marginEnd;
 
             var borderBoxInlineSize = fragmentainer.ContentInlineSize
                 - marginInlineStart - marginInlineEnd;
 
+            // Per Phase 3 Task 7 cycle 2 + CSS 2.1 §8.3.1 — adjacent-
+            // sibling margin collapse.
+            //
+            // `effectiveTopGap` = the actual top gap between this
+            // block's border-box top edge + the BFC's prior content:
+            //   - First block on the page → marginStart (no prior
+            //     block to collapse with; page boundary is a hard
+            //     barrier per CSS Fragmentation L3 §6.1).
+            //   - Subsequent blocks → MarginCollapse.Collapse(
+            //     prevBlockMarginEnd, marginStart) per §8.3.1.
+            //
+            // `topShift` = the offset from the current
+            // fragmentainer.UsedBlockSize (which ALREADY includes
+            // prevBlockMarginEnd from the prior block's emission)
+            // to this block's border-box top edge:
+            //   - First block: topShift = marginStart.
+            //   - Subsequent: topShift = effectiveTopGap -
+            //     prevBlockMarginEnd (subtract because the prior
+            //     bottom margin was already added; replace it with
+            //     the collapsed gap). Can be negative when collapse
+            //     reduces the total spacing.
+            double effectiveTopGap;
+            double topShift;
+            if (isFirstBlockOnPage)
+            {
+                effectiveTopGap = marginStart;
+                topShift = marginStart;
+            }
+            else
+            {
+                effectiveTopGap = MarginCollapse.Collapse(prevBlockMarginEnd, marginStart);
+                topShift = effectiveTopGap - prevBlockMarginEnd;
+            }
+
+            // Margin-box block size of the current block (the cursor
+            // advance from the prior block's border-box bottom edge
+            // to this block's margin-end edge). For the first block
+            // it includes the full marginStart; for subsequent blocks
+            // it includes the collapsed gap MINUS the part already
+            // consumed in prevBlockMarginEnd (= topShift). Drives the
+            // resolver's fit-check.
+            var marginBoxBlockSize = topShift + borderBoxBlockSize + marginEnd;
+
             // Per PR #22 review fix #6 — clamp ChunkBlockSize to
             // non-negative for BreakOpportunity.EnsureValid. Negative
-            // margin-box sizes are valid (CSS allows negative margins
-            // that visually overlap), but the BreakOpportunity's fit-
-            // measure can't be negative.
+            // values are valid for the cursor (negative margins move
+            // backward) but the fit-check measure can't be negative.
             var chunkForBreakCheck = Math.Max(0, marginBoxBlockSize);
 
             // Per PR #22 review fix #2 — capture a checkpoint at the
@@ -281,15 +331,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 {
                     // Forced overflow: the block is taller than the
                     // fragmentainer — committing it anyway lets
-                    // pagination make progress. The
-                    // LayoutRetryCoordinator emits
-                    // PAGINATION-FORCED-OVERFLOW-001 when the
-                    // LastResort attempt fires; the cost we attribute
-                    // here reflects the overflow.
+                    // pagination make progress.
+                    // Per cycle 2: this is necessarily the first
+                    // block on the page → topShift = effectiveTopGap
+                    // = marginStart; no collapse-arithmetic needed.
                     _sink.Emit(new BoxFragment(
                         Box: child,
                         InlineOffset: marginInlineStart,
-                        BlockOffset: fragmentainer.UsedBlockSize + marginStart,
+                        BlockOffset: fragmentainer.UsedBlockSize + topShift,
                         InlineSize: borderBoxInlineSize,
                         BlockSize: borderBoxBlockSize));
                     fragmentainer.UsedBlockSize += marginBoxBlockSize;
@@ -318,17 +367,25 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     cost: decision.Cost);
             }
 
-            // BreakAction.Continue — emit the fragment + advance.
-            // Per PR #22 review fix #3 — store BORDER box dimensions;
-            // advance cursor by margin-box extent.
+            // BreakAction.Continue — emit + advance cursor.
+            // Per PR #22 review fix #3 — fragment stores BORDER box
+            // dimensions. Per Phase 3 Task 7 cycle 2 — topShift
+            // already accounts for adjacent-sibling margin collapse:
+            //   blockOffset = UsedBlockSize + topShift  (border-box top edge)
+            //   new UsedBlockSize = blockOffset + borderBoxBlockSize + marginEnd
+            // Equivalent: UsedBlockSize += marginBoxBlockSize
+            // (since marginBoxBlockSize = topShift + borderBox + marginEnd).
+            var blockOffset = fragmentainer.UsedBlockSize + topShift;
             _sink.Emit(new BoxFragment(
                 Box: child,
                 InlineOffset: marginInlineStart,
-                BlockOffset: fragmentainer.UsedBlockSize + marginStart,
+                BlockOffset: blockOffset,
                 InlineSize: borderBoxInlineSize,
                 BlockSize: borderBoxBlockSize));
 
             fragmentainer.UsedBlockSize += marginBoxBlockSize;
+            prevBlockMarginEnd = marginEnd;
+            isFirstBlockOnPage = false;
             emittedThisAttempt++;
         }
 

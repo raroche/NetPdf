@@ -95,12 +95,19 @@ public sealed class BlockLayouterTests
     // --- Multi-block stacking ----------------------------------------
 
     [Fact]
-    public void Layouter_stacks_multiple_blocks_with_margin_box_advance()
+    public void Layouter_stacks_multiple_blocks_with_collapse()
     {
-        // Two block children with explicit margins.
-        // Block 0: marginTop=10, height=200, marginBottom=10 → border-box=200, margin-box advance=220
-        // Block 1: marginTop=5, height=150, marginBottom=5 → border-box=150, margin-box advance=160
-        // Expected: block 0 BlockOffset=10, BlockSize=200; block 1 BlockOffset=230 (220 + 10), BlockSize=150
+        // Two block children with explicit margins. Per Phase 3 Task 7
+        // cycle 2 + CSS 2.1 §8.3.1 — adjacent vertical margins collapse:
+        //   Block 0: marginBottom=10
+        //   Block 1: marginTop=5
+        //   Collapsed gap between them = max(10, 5) = 10 (NOT 15)
+        //
+        // Block 0: BlockOffset=10 (marginTop), BlockSize=200 (border-box),
+        //          cursor advances 10+200+10 = 220
+        // Block 1: collapsedGap = max(10, 5) = 10; topShift = 10 - 10 = 0
+        //          (the 10 was already in the cursor as block 0's marginBottom).
+        //          BlockOffset = 220 + 0 = 220, BlockSize = 150.
         var sink = new RecordingFragmentSink();
         var (root, _) = BuildTree(
             (height: 200, marginTop: 10, marginBottom: 10),
@@ -121,8 +128,10 @@ public sealed class BlockLayouterTests
         Assert.Equal(10, sink.Fragments[0].BlockOffset);
         Assert.Equal(200, sink.Fragments[0].BlockSize);
 
-        // Block 1: BlockOffset = previous-cursor (220) + marginTop (5) = 225, BlockSize=150.
-        Assert.Equal(225, sink.Fragments[1].BlockOffset);
+        // Block 1: cursor after block 0 = 220 (= 10+200+10, including
+        // bottom margin). Collapse: max(10, 5) = 10; topShift = 0.
+        // BlockOffset = 220, BlockSize = 150.
+        Assert.Equal(220, sink.Fragments[1].BlockOffset);
         Assert.Equal(150, sink.Fragments[1].BlockSize);
     }
 
@@ -153,8 +162,11 @@ public sealed class BlockLayouterTests
         var blockCont = Assert.IsType<BlockContinuation>(result.Continuation);
         Assert.Equal(2, blockCont.ResumeAtChild);
         // ConsumedBlockSize = cumulative across pages (Copilot #1).
-        // Prior pages: 0 (this is page 1). Current attempt: 500.
-        Assert.Equal(500, blockCont.ConsumedBlockSize);
+        // Prior pages: 0 (this is page 1). Current attempt with cycle-2
+        // margin collapse: block 0 cursor=250 (10+230+10); block 1
+        // collapses (10, 10)→10, topShift=0, advance=240 (0+230+10).
+        // Total = 250+240 = 490 (NOT 500 — saved 10 from collapse).
+        Assert.Equal(490, blockCont.ConsumedBlockSize);
     }
 
     [Fact]
@@ -610,11 +622,158 @@ public sealed class BlockLayouterTests
         // Cycle 1 emits only div; cycle 2 wires recursion.
     }
 
-    [Fact(Skip = "Phase 3 Task 7 cycle 2 — margin collapsing per CSS 2.1 §8.3.1. "
-        + "Adjacent vertical margins collapse to the larger of the two; cycle 1 sums them.")]
-    public void Cycle2_Layouter_collapses_adjacent_margins()
+    // ====================================================================
+    //  Cycle 2 — adjacent-sibling margin collapse (CSS 2.1 §8.3.1)
+    // ====================================================================
+
+    [Fact]
+    public void Cycle2_collapses_adjacent_positive_margins_to_max()
     {
-        // Block 1 marginBottom=20 + Block 2 marginTop=10 → collapsed gap=20, not 30.
+        // CSS 2.1 §8.3.1 — when both margins are positive, the
+        // collapsed value = max(m1, m2). Pre-cycle-2 the layouter
+        // summed them.
+        var sink = new RecordingFragmentSink();
+        var (root, _) = BuildTree(
+            (height: 100, marginTop: 0, marginBottom: 20),  // bottom=20
+            (height: 100, marginTop: 10, marginBottom: 0)); // top=10 → collapse to max(20,10)=20
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // Block 0: BlockOffset=0 (marginTop=0), BlockSize=100. Cursor=120.
+        Assert.Equal(0, sink.Fragments[0].BlockOffset);
+        // Block 1: collapse(20, 10) = 20; topShift = 20 - 20 = 0.
+        // BlockOffset = 120 + 0 = 120 (NOT 130 like pre-cycle-2 sum).
+        Assert.Equal(120, sink.Fragments[1].BlockOffset);
+    }
+
+    [Fact]
+    public void Cycle2_collapses_mixed_sign_margins_to_difference()
+    {
+        // CSS 2.1 §8.3.1 — mixed positive + negative: result = positive
+        // - |negative|. Example: marginBottom=20 + marginTop=-5 →
+        // collapsed = 20 - 5 = 15.
+        var sink = new RecordingFragmentSink();
+        var (root, _) = BuildTree(
+            (height: 100, marginTop: 0, marginBottom: 20),
+            (height: 100, marginTop: -5, marginBottom: 0));
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // Block 0: BlockOffset=0, BlockSize=100. Cursor=120.
+        // Block 1: collapse(20, -5) = 20 - 5 = 15. topShift = 15 - 20 = -5.
+        // BlockOffset = 120 + (-5) = 115.
+        Assert.Equal(115, sink.Fragments[1].BlockOffset);
+    }
+
+    [Fact]
+    public void Cycle2_collapses_both_negative_margins_to_most_negative()
+    {
+        // CSS 2.1 §8.3.1 — both negative: result = -max(|m1|, |m2|).
+        // Example: marginBottom=-10 + marginTop=-20 → collapsed = -20.
+        var sink = new RecordingFragmentSink();
+        var (root, _) = BuildTree(
+            (height: 100, marginTop: 0, marginBottom: -10),
+            (height: 100, marginTop: -20, marginBottom: 0));
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // Block 0: BlockOffset=0, BlockSize=100, marginBottom=-10. Cursor=90 (0+100-10).
+        Assert.Equal(0, sink.Fragments[0].BlockOffset);
+        // Block 1: collapse(-10, -20) = -20. topShift = -20 - (-10) = -10.
+        // BlockOffset = 90 + (-10) = 80.
+        Assert.Equal(80, sink.Fragments[1].BlockOffset);
+    }
+
+    [Fact]
+    public void Cycle2_collapse_chain_across_three_blocks()
+    {
+        // 3 blocks; verify collapse applies between EACH adjacent pair.
+        // m1.bottom=10, m2.top=20 → max(10,20)=20
+        // m2.bottom=15, m3.top=5 → max(15,5)=15
+        var sink = new RecordingFragmentSink();
+        var (root, _) = BuildTree(
+            (height: 100, marginTop: 0, marginBottom: 10),
+            (height: 100, marginTop: 20, marginBottom: 15),
+            (height: 100, marginTop: 5, marginBottom: 0));
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(3, sink.Fragments.Count);
+        // Block 0: BlockOffset=0. Cursor=110.
+        Assert.Equal(0, sink.Fragments[0].BlockOffset);
+        // Block 1: collapse(10, 20) = 20. topShift = 20-10 = 10. BlockOffset = 110+10 = 120.
+        Assert.Equal(120, sink.Fragments[1].BlockOffset);
+        // After block 1: cursor = 120+100+15 = 235.
+        // Block 2: collapse(15, 5) = 15. topShift = 15-15 = 0. BlockOffset = 235+0 = 235.
+        Assert.Equal(235, sink.Fragments[2].BlockOffset);
+    }
+
+    [Fact]
+    public void Cycle2_first_block_on_page_has_full_margin_top_no_collapse_across_page()
+    {
+        // CSS Fragmentation L3 §6.1 — margins meeting at a fragmentainer
+        // boundary do NOT collapse. The layouter resets the collapse
+        // chain on each page entry: the first block on a fresh page
+        // applies its FULL marginTop, regardless of the prior page's
+        // last-block marginBottom.
+        var sink = new RecordingFragmentSink();
+        var (root, _) = BuildTree(
+            (height: 100, marginTop: 0, marginBottom: 50),  // page 1 last block (hypothetical)
+            (height: 100, marginTop: 30, marginBottom: 0)); // page 2 first block
+
+        // Resume on page 2: first-block-on-page semantics apply.
+        var continuation = new BlockContinuation(ResumeAtChild: 1, ConsumedBlockSize: 150);
+        using var layouter = new BlockLayouter(root, sink, continuation);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // Page 2's first block: full marginTop=30 applied. BlockOffset = 30.
+        Assert.Single(sink.Fragments);
+        Assert.Equal(30, sink.Fragments[0].BlockOffset);
+    }
+
+    [Fact]
+    public void Cycle2_collapse_does_not_apply_to_first_block_on_page()
+    {
+        // Single-block input: first-block-on-page → full marginTop.
+        // (Sanity check that the cycle-2 path doesn't accidentally
+        // collapse with a phantom prior block.)
+        var sink = new RecordingFragmentSink();
+        var (root, _) = BuildTree(
+            (height: 100, marginTop: 25, marginBottom: 0));
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // First block: marginTop=25 fully applied. BlockOffset=25.
+        Assert.Equal(25, sink.Fragments[0].BlockOffset);
     }
 
     [Fact(Skip = "Phase 3 Task 7 cycle 3 — vertical writing-mode support. "

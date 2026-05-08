@@ -12,7 +12,7 @@ namespace NetPdf.Paginate.Diagnostics;
 /// <c>docs/diagnostics-codes.md</c>; the diagnostic-codes parity tests
 /// verify the two sides agree.
 ///
-/// <para>Same pattern as <see cref="NetPdf.Css.Diagnostics.CssDiagnosticCodes"/>
+/// <para>Same pattern as <c>NetPdf.Css.Diagnostics.CssDiagnosticCodes</c>
 /// — internal-to-the-pipeline string-constant mirror of the public
 /// facade's diagnostic codes.</para>
 /// </summary>

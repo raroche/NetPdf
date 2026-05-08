@@ -12,7 +12,7 @@ namespace NetPdf.Paginate.Diagnostics;
 /// <c>HtmlPdf</c> entry point converts each <see cref="PaginateDiagnostic"/>
 /// to its public <c>Diagnostic</c> shape at the boundary.
 ///
-/// <para>Same pattern as <see cref="NetPdf.Css.Diagnostics.CssDiagnostic"/>
+/// <para>Same pattern as <c>NetPdf.Css.Diagnostics.CssDiagnostic</c>
 /// — internal-to-the-pipeline diagnostic types that the facade adapts
 /// at the boundary. Keeps <c>NetPdf.Paginate</c>'s dependency direction
 /// clean.</para>

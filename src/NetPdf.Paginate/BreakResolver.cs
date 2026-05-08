@@ -49,19 +49,14 @@ internal sealed class BreakResolver : IBreakResolver
     /// recent registered checkpoint. When a new checkpoint registers,
     /// the prior one is returned to <see cref="LayoutCheckpointPool"/>
     /// so the bounded retry loop's checkpoint allocation amortizes
-    /// across attempts. Pre-fix the stub appended into a <c>List</c>
-    /// without ever returning to the pool — once layouters started
-    /// registering checkpoints (Phase 3 Task 4+) memory would grow
-    /// without bound + defeat the pool entirely.
+    /// across attempts.
     ///
-    /// <para>The DP optimizer (Task 4) replaces this single-slot
-    /// strategy with a frontier-aware version that returns
-    /// checkpoints to the pool as the rewind frontier passes them;
-    /// until then, single-slot is correct for the stub's greedy
-    /// behavior (rewind isn't emitted, so prior checkpoints are
-    /// always reachable-only-by-the-most-recent registration).</para>
-    /// </summary>
-    private LayoutCheckpoint? _lastCheckpoint;
+    /// <para>Per Phase 3 Task 4 review fix #7 — stores the full
+    /// <see cref="CheckpointLease"/> (not just the bare checkpoint)
+    /// so the resolver-internal Return correctly presents the
+    /// lease's token, letting the pool reject stale-after-rerent
+    /// races on the prior checkpoint.</para></summary>
+    private CheckpointLease _lastLease;
 
     public BreakResolver() : this(orphansRequired: 2, widowsRequired: 2) { }
 
@@ -115,7 +110,14 @@ internal sealed class BreakResolver : IBreakResolver
     /// optimizing resolver uses on budget-exceeded windows). The
     /// result's <see cref="OptimizerResult.FellBackToGreedy"/> is
     /// <see langword="false"/> here — this resolver IS greedy by
-    /// design, not falling back from anything.</remarks>
+    /// design, not falling back from anything.
+    ///
+    /// <para>Per Phase 3 Task 4 Copilot review #5 — also commits a
+    /// break + applies the overflow penalty when
+    /// <see cref="BreakOpportunity.ChunkBlockSize"/> exceeds the
+    /// fragmentainer extent (a chunk taller than a page can't fit on
+    /// any page; the cost must reflect the overflow even when the
+    /// current page hasn't yet exceeded its capacity).</para></remarks>
     public OptimizerResult ResolveBreaks(
         IReadOnlyList<BreakOpportunity> opportunities, FragmentainerContext ctx)
     {
@@ -138,12 +140,15 @@ internal sealed class BreakResolver : IBreakResolver
 
             var pageSoFar = opp.UsedBlockSize - pageStart;
             var wouldOverflow = (pageSoFar + opp.ChunkBlockSize) > ctx.BlockSize;
+            // Per Copilot review #5 — single-chunk-too-tall case.
+            var chunkTooTall = opp.ChunkBlockSize > ctx.BlockSize;
 
-            if (opp.ForceBreak || wouldOverflow)
+            if (opp.ForceBreak || wouldOverflow || chunkTooTall)
             {
                 var cost = CostModel.Score(
                     opp, ctx.BlockSize, OrphansRequired, WidowsRequired,
-                    lineCountAfterBreak: WidowsRequired);
+                    lineCountAfterBreak: WidowsRequired,
+                    pageStart: pageStart);
                 if (pageSoFar > ctx.BlockSize)
                 {
                     cost += CostModel.BreakInsideAvoidViolation;
@@ -159,22 +164,24 @@ internal sealed class BreakResolver : IBreakResolver
     }
 
     /// <inheritdoc />
-    public void RegisterCheckpoint(LayoutCheckpoint checkpoint)
+    public void RegisterCheckpoint(CheckpointLease lease)
     {
-        ArgumentNullException.ThrowIfNull(checkpoint);
-        // Per PR #19 review #1 — return the prior checkpoint to the
-        // pool before overwriting. The IBreakResolver contract says
-        // the resolver returns checkpoints to LayoutCheckpointPool
-        // once the rewind frontier passes; for the stub, "passes" =
-        // "a newer checkpoint is registered" (greedy never rewinds,
-        // so prior checkpoints are unreachable once superseded).
-        if (_lastCheckpoint is not null && !ReferenceEquals(_lastCheckpoint, checkpoint))
+        ArgumentNullException.ThrowIfNull(lease.Checkpoint);
+        // Per PR #19 review #1 + Phase 3 Task 4 review fix #7 —
+        // return the prior lease to the pool before overwriting. The
+        // pool's lease-token CAS detects + rejects stale Returns, so
+        // even if the prior checkpoint was returned earlier through
+        // some other path the Return here is safe. Self-register
+        // (the same lease registered twice) is a no-op so the still-
+        // held lease keeps its rental.
+        if (_lastLease.Checkpoint is not null
+            && !ReferenceEquals(_lastLease.Checkpoint, lease.Checkpoint))
         {
-            LayoutCheckpointPool.Return(_lastCheckpoint);
+            LayoutCheckpointPool.Return(_lastLease);
         }
-        _lastCheckpoint = checkpoint;
+        _lastLease = lease;
     }
 
     /// <inheritdoc />
-    public LayoutCheckpoint? GetLastCheckpoint() => _lastCheckpoint;
+    public LayoutCheckpoint? GetLastCheckpoint() => _lastLease.Checkpoint;
 }

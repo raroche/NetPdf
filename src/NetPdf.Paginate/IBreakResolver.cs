@@ -30,13 +30,35 @@ namespace NetPdf.Paginate;
 /// unknown total height) call <see cref="ConsiderBreakAt"/> per
 /// candidate; that path is greedy regardless of resolver. The two
 /// paths are complementary, not exclusive.</para>
+///
+/// <para><b>UsedBlockSize coordinate space</b> — per Phase 3 Task 4
+/// review fix #2 + Copilot review #8, opportunities passed in two
+/// different shapes depending on which method consumes them:</para>
+/// <list type="bullet">
+///   <item><b><see cref="ConsiderBreakAt"/> (streaming).</b>
+///   <see cref="BreakOpportunity.UsedBlockSize"/> is the live
+///   <i>per-fragmentainer</i> cumulative block-axis size at the moment
+///   the candidate was offered. Resets to 0 at each page break.
+///   Matches the original CSS-px-from-page-top semantics.</item>
+///   <item><b><see cref="ResolveBreaks"/> (batched).</b>
+///   <see cref="BreakOpportunity.UsedBlockSize"/> is
+///   <i>cumulative-across-the-window</i> — monotonically non-decreasing
+///   so the DP can subtract <c>pageStart</c> to recover per-page
+///   measurements. The optimizer hands the page-relative value into
+///   <see cref="CostModel.Score"/> via the <c>pageStart</c> argument
+///   so trailing-blank scoring stays correct on pages 2+.</item>
+/// </list>
+/// <para>The two coordinate spaces coincide on the first page. The
+/// distinction matters only when batching across multiple pages.</para>
 /// </summary>
 internal interface IBreakResolver
 {
     /// <summary>Ask the resolver what to do at the current candidate
     /// break point. The layouter passes the per-page context (so the
     /// resolver sees <see cref="FragmentainerContext.RemainingBlockSize"/>)
-    /// + a <see cref="BreakOpportunity"/> describing the candidate.</summary>
+    /// + a <see cref="BreakOpportunity"/> describing the candidate.
+    /// <see cref="BreakOpportunity.UsedBlockSize"/> is per-fragmentainer
+    /// in this path (see class XML doc).</summary>
     BreakDecision ConsiderBreakAt(BreakOpportunity opportunity, FragmentainerContext ctx);
 
     /// <summary>Per Phase 3 Task 4 — batched cost minimization across
@@ -47,25 +69,49 @@ internal interface IBreakResolver
     /// flag is set so the caller can emit
     /// <c>PAGINATION-OPTIMIZER-FALLBACK-001</c>).
     ///
-    /// <para>Per the contract on
-    /// <see cref="Optimizer.Optimize"/>, the input opportunities'
-    /// <see cref="BreakOpportunity.UsedBlockSize"/> values must be
-    /// monotonically non-decreasing. The returned indices are into
-    /// <paramref name="opportunities"/>; an empty list means "no
-    /// breaks needed for this window".</para></summary>
+    /// <para><b>Coordinate-space contract.</b> Per Phase 3 Task 4
+    /// review fix #2 + Copilot #8, this method requires
+    /// <see cref="BreakOpportunity.UsedBlockSize"/> values to be
+    /// <i>monotonically non-decreasing across the window</i> — i.e.,
+    /// cumulative as if no breaks were committed. The optimizer
+    /// recovers per-page measurements by subtracting the running
+    /// <c>pageStart</c> (the cumulative position of the most recent
+    /// committed break, or 0 for the first page). This matches the
+    /// Knuth-Plass DP's natural framing where line widths feed the
+    /// DP cumulatively + the optimizer chooses where to break.</para>
+    ///
+    /// <para>The returned <see cref="OptimizerResult.BreakIndices"/>
+    /// are indices into <paramref name="opportunities"/>; an empty
+    /// list means "no breaks needed for this window — the entire
+    /// candidate range fits on a single fragmentainer + no forced
+    /// break demands one" (per Phase 3 Task 4 review fix #1 +
+    /// Copilot #2).</para></summary>
     OptimizerResult ResolveBreaks(
         IReadOnlyList<BreakOpportunity> opportunities, FragmentainerContext ctx);
 
     /// <summary>Register a checkpoint that the resolver may name in a
-    /// subsequent <see cref="BreakAction.Rewind"/> decision. The
-    /// caller (typically <c>BlockLayouter</c>) snapshots its mutable
-    /// state into the checkpoint + hands it to the resolver; the
-    /// resolver returns the checkpoint to the pool when the rewind
-    /// frontier passes the registration point.</summary>
-    void RegisterCheckpoint(LayoutCheckpoint checkpoint);
+    /// subsequent <see cref="BreakAction.Rewind"/> decision. Per
+    /// Phase 3 Task 4 review fix #7 — takes a
+    /// <see cref="CheckpointLease"/> rather than a raw checkpoint;
+    /// the resolver internally returns the prior lease (if any) to
+    /// the pool when a new one is registered, using the saved token
+    /// to reject stale-after-rerent races.
+    ///
+    /// <para>The caller (typically <c>BlockLayouter</c>) rents a
+    /// checkpoint via <see cref="LayoutCheckpointPool.Rent"/>, calls
+    /// <see cref="LayoutCheckpoint.Capture"/>, and hands the lease
+    /// to this method. The resolver's internal storage of the lease
+    /// keeps the rental alive until either (a) a new checkpoint is
+    /// registered (the prior is returned), or (b) the resolver is
+    /// disposed / discarded (no automatic return — the caller is
+    /// expected to drive the rewind frontier explicitly).</para></summary>
+    void RegisterCheckpoint(CheckpointLease lease);
 
     /// <summary>Return the most recently registered checkpoint, or
     /// <see langword="null"/> when none exists. Used by the layouter's
-    /// rewind handler to resume from a known-good state.</summary>
+    /// rewind handler to resume from a known-good state. Returns the
+    /// underlying <see cref="LayoutCheckpoint"/> only — the lease
+    /// token stays inside the resolver so callers can't accidentally
+    /// double-Return through this read path.</summary>
     LayoutCheckpoint? GetLastCheckpoint();
 }

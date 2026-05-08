@@ -82,10 +82,7 @@ internal static class CostModel
     /// opportunity's <see cref="BreakOpportunity.UsedBlockSize"/>
     /// snapshot, NOT a separate "current used size" parameter. This
     /// lets the bounded DP optimizer score historical candidates
-    /// after the layouter has moved past them; pre-fix, the
-    /// resolver passed live <c>FragmentainerContext.UsedBlockSize</c>
-    /// which was a live-state dependency that broke deferred
-    /// candidate evaluation.</para>
+    /// after the layouter has moved past them.</para>
     ///
     /// <para>Per Phase 3 review fix #5 — wires the previously-dead
     /// <see cref="StrandedHeading"/> + <see cref="FlexOrGridLineSplit"/>
@@ -96,6 +93,33 @@ internal static class CostModel
     /// <para>Per Phase 3 review fix #8 — geometry inputs are validated
     /// before any cost arithmetic. NaN / non-positive content area
     /// silently corrupts the optimizer's candidate ranking.</para>
+    ///
+    /// <para>Per Phase 3 Task 4 review fix #2 + Copilot reviews #1
+    /// + #8 — <paramref name="pageStart"/> parameter (default 0) is
+    /// the cumulative position at which the current page begins.
+    /// In the streaming
+    /// <see cref="IBreakResolver.ConsiderBreakAt"/> path
+    /// <see cref="BreakOpportunity.UsedBlockSize"/> is already
+    /// per-fragmentainer (resets at page break) so callers leave
+    /// <paramref name="pageStart"/> at 0. In the batched
+    /// <see cref="IBreakResolver.ResolveBreaks"/> path, the optimizer
+    /// passes the cumulative position of the most recent committed
+    /// break, so per-page measurements (used for the trailing-blank
+    /// ratio + the chunk-overflow check) recover correctly. Without
+    /// this parameter, batched scoring on pages 2+ would compute a
+    /// negative blank ratio (the cumulative <see cref="BreakOpportunity.UsedBlockSize"/>
+    /// would exceed <paramref name="contentBlockSize"/>) + miss the
+    /// trailing-blank penalty entirely.</para>
+    ///
+    /// <para>Per Phase 3 Task 4 Copilot reviews #3, #4, #5 — when
+    /// <see cref="BreakOpportunity.ChunkBlockSize"/> exceeds
+    /// <paramref name="contentBlockSize"/> the cost picks up a
+    /// <see cref="BreakInsideAvoidViolation"/> penalty regardless of
+    /// the chosen break position. Such a chunk cannot fit on any
+    /// fragmentainer; the DP can't avoid the overflow by shifting
+    /// breaks. Surfacing the penalty in the cost lets the layouter
+    /// emit <c>PAGINATION-FORCED-OVERFLOW-001</c> when the chosen
+    /// break sequence accumulates a cost above the threshold.</para>
     /// </summary>
     /// <param name="opportunity">The candidate break's classification +
     /// metadata.</param>
@@ -107,12 +131,16 @@ internal static class CostModel
     /// usually 2.</param>
     /// <param name="lineCountAfterBreak">Lines emitted on the next
     /// page from the same paragraph; drives the widow penalty.</param>
+    /// <param name="pageStart">Cumulative position (CSS px) at which
+    /// the current page begins. Defaults to 0 for the streaming /
+    /// per-fragmentainer caller (see XML doc).</param>
     public static double Score(
         BreakOpportunity opportunity,
         double contentBlockSize,
         int orphansRequired,
         int widowsRequired,
-        int lineCountAfterBreak)
+        int lineCountAfterBreak,
+        double pageStart = 0)
     {
         // Per Phase 3 review fix #8 — guard against NaN / non-positive
         // geometry before any arithmetic.
@@ -126,6 +154,17 @@ internal static class CostModel
             throw new ArgumentOutOfRangeException(nameof(widowsRequired));
         if (lineCountAfterBreak < 0)
             throw new ArgumentOutOfRangeException(nameof(lineCountAfterBreak));
+        // Per Phase 3 Task 4 review fix #2 — pageStart must be finite +
+        // non-negative + not in the future of the opportunity's
+        // UsedBlockSize. (A pageStart past the opportunity would imply
+        // we're scoring an opportunity from a previous page, which is
+        // a caller bug.)
+        if (!double.IsFinite(pageStart) || pageStart < 0)
+            throw new ArgumentOutOfRangeException(nameof(pageStart),
+                $"pageStart must be finite + non-negative; got {pageStart}");
+        if (pageStart > opportunity.UsedBlockSize)
+            throw new ArgumentOutOfRangeException(nameof(pageStart),
+                $"pageStart ({pageStart}) cannot exceed opportunity.UsedBlockSize ({opportunity.UsedBlockSize})");
 
         // Per Phase 3 review fix #3 — author-forced breaks zero out
         // the cost. The optimizer MUST emit them regardless of
@@ -135,6 +174,16 @@ internal static class CostModel
         double cost = 0;
 
         if (opportunity.AvoidBreak)
+        {
+            cost += BreakInsideAvoidViolation;
+        }
+
+        // Per Phase 3 Task 4 Copilot reviews #3, #4, #5 — chunks taller
+        // than the fragmentainer can't fit on any page. The DP can't
+        // avoid the overflow by choosing a different break; signal it
+        // via the cost so the integrating layouter emits
+        // PAGINATION-FORCED-OVERFLOW-001.
+        if (opportunity.ChunkBlockSize > contentBlockSize)
         {
             cost += BreakInsideAvoidViolation;
         }
@@ -173,13 +222,13 @@ internal static class CostModel
             cost += FlexOrGridLineSplit;
         }
 
-        // Large trailing blank — applies regardless of class. Costly
-        // when the page is mostly empty + the chunk would have fit on
-        // the same page anyway.
-        // Per Phase 3 review fix #4 — uses opportunity.UsedBlockSize
-        // (the snapshot taken when the candidate was offered), not a
-        // separate live "current" value.
-        var blankRatio = (contentBlockSize - opportunity.UsedBlockSize) / contentBlockSize;
+        // Per Phase 3 Task 4 review fix #2 + Copilot reviews #1, #8 —
+        // page-local trailing-blank ratio. Compute against
+        // (UsedBlockSize - pageStart) so the optimizer's batched mode
+        // (where UsedBlockSize is cumulative-across-window) gets
+        // correct per-page measurements on pages 2+.
+        var pageLocalUsed = opportunity.UsedBlockSize - pageStart;
+        var blankRatio = (contentBlockSize - pageLocalUsed) / contentBlockSize;
         if (blankRatio > LargeBlankTrailingThreshold)
         {
             cost += LargeBlankTrailingArea;

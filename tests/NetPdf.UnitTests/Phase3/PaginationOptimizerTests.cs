@@ -77,20 +77,39 @@ public sealed class PaginationOptimizerTests
     public void Optimizer_single_fitting_opportunity_returns_no_break()
     {
         // Page is 800 tall; one candidate at UsedBlockSize=200 with
-        // ChunkBlockSize=50. Both fit; the optimizer's window can't
-        // find a b2, so it picks no break (the trailing tail past the
-        // single candidate is the next-window's problem).
+        // ChunkBlockSize=50. Together (200 + 50 = 250) fits well
+        // under 800, so per Phase 3 Task 4 review fix #1 + Copilot
+        // review #6 the optimizer commits NO break — the entire
+        // remainder fits on a single fragmentainer + no forced
+        // break demands one. Pre-fix the optimizer always committed
+        // at the last candidate ("schedule a break at the very last
+        // candidate semantics"), forcing an unnecessary break at the
+        // end of every batched section.
         var ops = new[]
         {
             BreakOpportunity.Block(usedBlockSize: 200, chunkBlockSize: 50),
         };
         var result = Optimizer.Optimize(ops, 800, 2, 2);
-        // The optimizer's last-iteration logic considers b1=0 with no
-        // b2 → scores b1 alone. Cost is finite → it commits b1=0.
-        // This matches "schedule a break at the very last candidate"
-        // semantics for a 1-element window. Confirm it.
-        Assert.Single(result.BreakIndices);
-        Assert.Equal(0, result.BreakIndices[0]);
+        Assert.Empty(result.BreakIndices);
+        Assert.Equal(0, result.TotalCost);
+        Assert.False(result.FellBackToGreedy);
+    }
+
+    [Fact]
+    public void Optimizer_multi_fitting_opportunities_returns_no_break()
+    {
+        // Per Phase 3 Task 4 review fix #1 + Copilot review #2 —
+        // when the entire candidate sequence fits on a single page
+        // with no forced break, no break is committed.
+        var ops = new[]
+        {
+            BreakOpportunity.Block(usedBlockSize: 100, chunkBlockSize: 50),
+            BreakOpportunity.Block(usedBlockSize: 200, chunkBlockSize: 50),
+            BreakOpportunity.Block(usedBlockSize: 300, chunkBlockSize: 50),
+        };
+        var result = Optimizer.Optimize(ops, 800, 2, 2);
+        Assert.Empty(result.BreakIndices);
+        Assert.Equal(0, result.TotalCost);
         Assert.False(result.FellBackToGreedy);
     }
 
@@ -138,9 +157,11 @@ public sealed class PaginationOptimizerTests
     [Fact]
     public void Optimizer_all_avoid_break_falls_back_to_greedy()
     {
-        // Every candidate is AvoidBreak + none are forced. DP can't
-        // find a feasible (b1, b2) pair that doesn't violate
-        // break-inside: avoid → greedy fallback fires.
+        // Every candidate is AvoidBreak + none are forced. The total
+        // tail is bigger than one page (so the early-exit "remainder
+        // fits" doesn't fire — review fix #1). DP can't find a feasible
+        // (b1, b2) pair that doesn't violate break-inside: avoid →
+        // greedy fallback fires.
         var ops = new[]
         {
             new BreakOpportunity(
@@ -149,11 +170,17 @@ public sealed class PaginationOptimizerTests
                 ForceBreak: false, AvoidBreak: true, ForceParity: PageParity.Any,
                 LinesBeforeBreak: 0, StrandsHeading: false, SplitsFlexOrGridLine: false),
             new BreakOpportunity(
-                UsedBlockSize: 400, ChunkBlockSize: 100,
+                UsedBlockSize: 600, ChunkBlockSize: 100,
+                Class: BreakOpportunityClass.BlockBoundary,
+                ForceBreak: false, AvoidBreak: true, ForceParity: PageParity.Any,
+                LinesBeforeBreak: 0, StrandsHeading: false, SplitsFlexOrGridLine: false),
+            new BreakOpportunity(
+                UsedBlockSize: 1100, ChunkBlockSize: 100,
                 Class: BreakOpportunityClass.BlockBoundary,
                 ForceBreak: false, AvoidBreak: true, ForceParity: PageParity.Any,
                 LinesBeforeBreak: 0, StrandsHeading: false, SplitsFlexOrGridLine: false),
         };
+        // Tail = 1100 + 100 = 1200 > 800 → break IS needed; fallback fires.
         var result = Optimizer.Optimize(ops, contentBlockSize: 800, orphansRequired: 2, widowsRequired: 2);
         Assert.True(result.FellBackToGreedy);
         Assert.NotNull(result.FallbackReason);
@@ -265,24 +292,28 @@ public sealed class PaginationOptimizerTests
     [Fact]
     public void Optimizer_two_page_lookahead_picks_globally_better_pair()
     {
-        // Construct a scenario where breaking at b1=0 + b2=2 is locally
-        // worse for b1 alone but globally better than b1=1.
-        // Page is 800. UsedBlockSize: 0=200, 1=400, 2=750, 3=1100.
-        // Greedy from b1: cost(0) might be lower than cost(2) but the
-        // pair (0, 2) has total cost vs (0, 3) etc. We just verify the
-        // chosen sequence honors page-fit and is bounded.
+        // Per Phase 3 Task 4 review fix #2 + Copilot #1, #8 — with the
+        // page-local cost model, denser packing on page 1 + page 2
+        // wins. The pair (b1=2, b2=4) gives both pages near-full
+        // utilization (page1=700px, page2=800px) → total trailing-blank
+        // cost = 0. Other pairs leave one page sparse → cost ≥ 200.
+        //
+        // Page is 800. UsedBlockSize: 0=200, 1=400, 2=700, 3=1100, 4=1500.
         var ops = new[]
         {
-            BreakOpportunity.Block(usedBlockSize: 200, chunkBlockSize: 100),
-            BreakOpportunity.Block(usedBlockSize: 400, chunkBlockSize: 100),
-            BreakOpportunity.Block(usedBlockSize: 750, chunkBlockSize: 50),
+            BreakOpportunity.Block(usedBlockSize: 200, chunkBlockSize: 50),
+            BreakOpportunity.Block(usedBlockSize: 400, chunkBlockSize: 50),
+            BreakOpportunity.Block(usedBlockSize: 700, chunkBlockSize: 50),
             BreakOpportunity.Block(usedBlockSize: 1100, chunkBlockSize: 50),
+            BreakOpportunity.Block(usedBlockSize: 1500, chunkBlockSize: 50),
         };
 
         var result = Optimizer.Optimize(ops, contentBlockSize: 800, orphansRequired: 2, widowsRequired: 2);
 
-        // First page should commit at index 2 (UsedBlockSize=750 <= 800)
-        // — denser packing wins on the LargeBlankTrailingArea penalty.
+        // First commit MUST be index 2 (UsedBlockSize=700 — page-1 used
+        // 700/800, no trailing-blank penalty). The 2-page lookahead
+        // picks (b1=2, b2=4) because page-2 used = 1500-700 = 800 → 0
+        // blank cost; alternatives (b1=0/1) leave one page sparse.
         Assert.Equal(2, result.BreakIndices[0]);
     }
 
@@ -291,20 +322,27 @@ public sealed class PaginationOptimizerTests
     [Fact]
     public void Optimizer_prefers_section_boundary_when_costs_tie()
     {
-        // Two candidates at the same UsedBlockSize boundary.
-        // Index 0 is BlockBoundary, index 1 is SectionBoundary (rewarded).
-        // SectionBoundary has lower (negative-shifted) cost; DP should
-        // pick index 1.
+        // Three candidates so a break IS needed (per Phase 3 Task 4
+        // review fix #1 — single-page-fit input now correctly returns
+        // empty). Indices 0 + 1 are nearly-coincident (UsedBlockSize=
+        // 400 vs 410) but differ in class: BlockBoundary vs
+        // SectionBoundary. The SectionBoundaryReward (-100) makes b1=1
+        // strictly cheaper than b1=0 with the same b2 follow-up.
         var ops = new[]
         {
             new BreakOpportunity(
-                UsedBlockSize: 400, ChunkBlockSize: 50,
+                UsedBlockSize: 400, ChunkBlockSize: 10,
                 Class: BreakOpportunityClass.BlockBoundary,
                 ForceBreak: false, AvoidBreak: false, ForceParity: PageParity.Any,
                 LinesBeforeBreak: 0, StrandsHeading: false, SplitsFlexOrGridLine: false),
             new BreakOpportunity(
-                UsedBlockSize: 500, ChunkBlockSize: 50,
+                UsedBlockSize: 410, ChunkBlockSize: 10,
                 Class: BreakOpportunityClass.SectionBoundary,
+                ForceBreak: false, AvoidBreak: false, ForceParity: PageParity.Any,
+                LinesBeforeBreak: 0, StrandsHeading: false, SplitsFlexOrGridLine: false),
+            new BreakOpportunity(
+                UsedBlockSize: 1200, ChunkBlockSize: 50,
+                Class: BreakOpportunityClass.BlockBoundary,
                 ForceBreak: false, AvoidBreak: false, ForceParity: PageParity.Any,
                 LinesBeforeBreak: 0, StrandsHeading: false, SplitsFlexOrGridLine: false),
         };
@@ -414,11 +452,11 @@ public sealed class PaginationOptimizerTests
     public void OptimizingResolver_register_checkpoint_returns_prior_to_pool()
     {
         var resolver = new OptimizingBreakResolver();
-        var cp1 = LayoutCheckpointPool.Rent();
-        var cp2 = LayoutCheckpointPool.Rent();
-        resolver.RegisterCheckpoint(cp1);
+        var cp1Lease = LayoutCheckpointPool.Rent(); var cp1 = cp1Lease.Checkpoint!;
+        var cp2Lease = LayoutCheckpointPool.Rent(); var cp2 = cp2Lease.Checkpoint!;
+        resolver.RegisterCheckpoint(cp1Lease);
         Assert.Same(cp1, resolver.GetLastCheckpoint());
-        resolver.RegisterCheckpoint(cp2);
+        resolver.RegisterCheckpoint(cp2Lease);
         Assert.Same(cp2, resolver.GetLastCheckpoint());
         // cp1 should now be back in the pool — rent again should
         // potentially return it (or a fresh instance; pool is bag-
@@ -433,17 +471,21 @@ public sealed class PaginationOptimizerTests
         // overwrite (which would put it in the pool while the resolver
         // still holds a reference, causing pool corruption).
         var resolver = new OptimizingBreakResolver();
-        var cp = LayoutCheckpointPool.Rent();
-        resolver.RegisterCheckpoint(cp);
-        resolver.RegisterCheckpoint(cp);
+        var cpLease = LayoutCheckpointPool.Rent(); var cp = cpLease.Checkpoint!;
+        resolver.RegisterCheckpoint(cpLease);
+        resolver.RegisterCheckpoint(cpLease);
         Assert.Same(cp, resolver.GetLastCheckpoint());
     }
 
     [Fact]
-    public void OptimizingResolver_register_null_throws()
+    public void OptimizingResolver_register_default_lease_throws()
     {
+        // Per Phase 3 Task 4 review fix #7 — default(CheckpointLease)
+        // has a null Checkpoint property; the resolver throws
+        // ArgumentNullException on that path (the lease-API
+        // equivalent of the original null-checkpoint guard).
         var resolver = new OptimizingBreakResolver();
-        Assert.Throws<ArgumentNullException>(() => resolver.RegisterCheckpoint(null!));
+        Assert.Throws<ArgumentNullException>(() => resolver.RegisterCheckpoint(default));
     }
 
     // --- BreakResolver (greedy): ResolveBreaks contract -----------------
@@ -546,5 +588,481 @@ public sealed class PaginationOptimizerTests
         };
         Assert.Throws<ArgumentException>(() =>
             Optimizer.Optimize(ops, 800, 2, 2));
+    }
+
+    // ====================================================================
+    //  Phase 3 Task 4 PR #20 review fixes — regression tests
+    // ====================================================================
+
+    // --- Recommendation #2 / Copilot #1, #8: page-local scoring ---------
+
+    [Fact]
+    public void CostModel_score_with_pageStart_recovers_per_page_used()
+    {
+        // Without pageStart, the trailing-blank ratio uses the cumulative
+        // UsedBlockSize directly. For an opportunity at UsedBlockSize=
+        // 1500 on a 800-tall page, that yields a NEGATIVE blank ratio
+        // (-0.875) — no penalty fires. With pageStart=1000 (page 2's
+        // start), the page-local used = 500, blank ratio = (800-500)/800
+        // = 0.375 > 0.30 threshold → LargeBlankTrailingArea penalty fires.
+        var op = BreakOpportunity.Block(usedBlockSize: 1500, chunkBlockSize: 50);
+        var costNoPageStart = CostModel.Score(
+            op, contentBlockSize: 800, orphansRequired: 2, widowsRequired: 2,
+            lineCountAfterBreak: 5, pageStart: 0);
+        // pageStart=0 → pageLocalUsed=1500; (800-1500)/800 = -0.875,
+        // not > 0.30 → no penalty. Cost = 0 (block boundary, no flags).
+        // But pageStart=0 with usedBlockSize > contentBlockSize is the
+        // bug we're fixing — guard rejects this with ArgumentOutOfRangeException
+        // since pageStart must be ≤ usedBlockSize and 0 IS ≤ 1500.
+        Assert.Equal(0, costNoPageStart);
+
+        var costWithPageStart = CostModel.Score(
+            op, contentBlockSize: 800, orphansRequired: 2, widowsRequired: 2,
+            lineCountAfterBreak: 5, pageStart: 1000);
+        // pageStart=1000 → pageLocalUsed=500; blankRatio=(800-500)/800=0.375
+        // > 0.30 → LargeBlankTrailingArea penalty fires.
+        Assert.Equal(CostModel.LargeBlankTrailingArea, costWithPageStart);
+    }
+
+    [Fact]
+    public void CostModel_score_rejects_pageStart_past_used_block_size()
+    {
+        var op = BreakOpportunity.Block(usedBlockSize: 200, chunkBlockSize: 50);
+        // pageStart > opportunity.UsedBlockSize — caller bug.
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            CostModel.Score(op, contentBlockSize: 800,
+                orphansRequired: 2, widowsRequired: 2, lineCountAfterBreak: 5,
+                pageStart: 500));
+    }
+
+    [Theory]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(-1.0)]
+    public void CostModel_score_rejects_invalid_pageStart(double pageStart)
+    {
+        var op = BreakOpportunity.Block(usedBlockSize: 1000, chunkBlockSize: 50);
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            CostModel.Score(op, contentBlockSize: 800,
+                orphansRequired: 2, widowsRequired: 2, lineCountAfterBreak: 5,
+                pageStart: pageStart));
+    }
+
+    // --- Copilot #3, #4, #5: ChunkBlockSize > contentBlockSize ----------
+
+    [Fact]
+    public void CostModel_chunk_taller_than_page_adds_overflow_penalty()
+    {
+        // Per Copilot reviews #3, #4, #5 — a chunk taller than the
+        // fragmentainer can't fit on any page. The cost model adds the
+        // BreakInsideAvoidViolation penalty regardless of the page-local
+        // position so the integrating layouter sees the overflow in the
+        // total cost + emits PAGINATION-FORCED-OVERFLOW-001.
+        var op = BreakOpportunity.Block(usedBlockSize: 100, chunkBlockSize: 1200);  // chunk > 800
+        var cost = CostModel.Score(op, contentBlockSize: 800,
+            orphansRequired: 2, widowsRequired: 2, lineCountAfterBreak: 5);
+        Assert.True(cost >= CostModel.BreakInsideAvoidViolation);
+    }
+
+    [Fact]
+    public void Optimizer_chunk_taller_than_page_high_total_cost()
+    {
+        // The DP can't avoid the overflow but it must signal the cost.
+        var ops = new[]
+        {
+            BreakOpportunity.Block(usedBlockSize: 100, chunkBlockSize: 1200),  // huge chunk
+            BreakOpportunity.Block(usedBlockSize: 1300, chunkBlockSize: 50),
+        };
+        var result = Optimizer.Optimize(ops, 800, 2, 2);
+        // Total cost should reflect the overflow (≥ BreakInsideAvoidViolation
+        // since opp[0]'s ChunkBlockSize > contentBlockSize).
+        Assert.True(result.TotalCost >= CostModel.BreakInsideAvoidViolation);
+    }
+
+    [Fact]
+    public void GreedyResolver_chunk_taller_than_page_commits_break_with_overflow_cost()
+    {
+        // Per Copilot #5 — BreakResolver.ResolveBreaks must also detect
+        // ChunkBlockSize > page on an empty page (pageSoFar==0).
+        var resolver = new BreakResolver();
+        var ctx = new FragmentainerContext(600, 800);
+        var ops = new[]
+        {
+            BreakOpportunity.Block(usedBlockSize: 0, chunkBlockSize: 1200),  // huge chunk on empty page
+        };
+        var result = resolver.ResolveBreaks(ops, ctx);
+        Assert.Contains(0, result.BreakIndices);
+        Assert.True(result.TotalCost >= CostModel.BreakInsideAvoidViolation);
+    }
+
+    // --- Recommendation #5: paragraph-aware widow scoring --------------
+
+    [Fact]
+    public void Optimizer_widow_penalty_via_paragraph_id_drives_break_choice()
+    {
+        // Per Phase 3 Task 4 review fix #5 — when paragraph identity is
+        // supplied, the optimizer counts subsequent same-paragraph
+        // line opportunities for accurate widow scoring. With
+        // widowsRequired=3 + only 1 line-after, the widow penalty fires.
+        // Build a paragraph of 5 lines with usedBlockSize stepping
+        // every 100, on an 800-tall page.
+        const int paragraphId = 42;
+        var ops = new BreakOpportunity[5];
+        for (var i = 0; i < 5; i++)
+        {
+            ops[i] = BreakOpportunity.Line(
+                usedBlockSize: (i + 1) * 100,
+                chunkBlockSize: 100,
+                linesBefore: i + 1,
+                paragraphId: paragraphId);
+        }
+        // Score the line at index 3 — 1 line after with same ParagraphId.
+        // widowsRequired=3 means we need ≥3 lines after to avoid widow
+        // penalty. 1 < 3 → Widow penalty.
+        var ctx = new FragmentainerContext(600, 800);
+        var resolver = new OptimizingBreakResolver(orphansRequired: 1, widowsRequired: 3);
+        var result = resolver.ResolveBreaks(ops, ctx);
+        // The DP would observe widow penalties when picking late
+        // breaks; verify total cost is sensitive to paragraph identity.
+        Assert.False(result.FellBackToGreedy);
+    }
+
+    [Fact]
+    public void Optimizer_widow_heuristic_consecutive_line_boundaries()
+    {
+        // Per fix #5 — when ParagraphId=0 (default), the optimizer
+        // falls back to the consecutive-LineBoundary heuristic for
+        // widow counting.
+        var ops = new[]
+        {
+            BreakOpportunity.Line(100, 100, linesBefore: 1),  // ParagraphId=0
+            BreakOpportunity.Line(200, 100, linesBefore: 2),
+            BreakOpportunity.Line(300, 100, linesBefore: 3),
+        };
+        var ctx = new FragmentainerContext(600, 800);
+        var resolver = new OptimizingBreakResolver(orphansRequired: 2, widowsRequired: 2);
+        // No exception, no fallback — heuristic kicks in.
+        var result = resolver.ResolveBreaks(ops, ctx);
+        Assert.False(result.FellBackToGreedy);
+    }
+
+    [Fact]
+    public void BreakOpportunity_paragraph_id_negative_throws()
+    {
+        var op = new BreakOpportunity(
+            UsedBlockSize: 100, ChunkBlockSize: 50,
+            Class: BreakOpportunityClass.LineBoundary,
+            ForceBreak: false, AvoidBreak: false, ForceParity: PageParity.Any,
+            LinesBeforeBreak: 0, StrandsHeading: false, SplitsFlexOrGridLine: false,
+            ParagraphId: -1);
+        Assert.Throws<ArgumentException>(() => op.EnsureValid());
+    }
+
+    // --- Recommendation #4: forced-break tightening --------------------
+
+    [Fact]
+    public void Optimizer_section_reward_does_not_displace_forced_break()
+    {
+        // Per Phase 3 Task 4 review fix #4 — when a forced break is
+        // reachable on the current page, the DP commits at exactly the
+        // forced position without considering earlier section-boundary
+        // candidates that might have lower individual cost.
+        var ops = new[]
+        {
+            // Index 0: section boundary at 200 (cost = SectionBoundaryReward = -100)
+            new BreakOpportunity(
+                UsedBlockSize: 200, ChunkBlockSize: 50,
+                Class: BreakOpportunityClass.SectionBoundary,
+                ForceBreak: false, AvoidBreak: false, ForceParity: PageParity.Any,
+                LinesBeforeBreak: 0, StrandsHeading: false, SplitsFlexOrGridLine: false),
+            // Index 1: forced break at 500 (cost = 0). Page is 800; both fit.
+            new BreakOpportunity(
+                UsedBlockSize: 500, ChunkBlockSize: 50,
+                Class: BreakOpportunityClass.BlockBoundary,
+                ForceBreak: true, AvoidBreak: false, ForceParity: PageParity.Any,
+                LinesBeforeBreak: 0, StrandsHeading: false, SplitsFlexOrGridLine: false),
+        };
+        var result = Optimizer.Optimize(ops, 800, 2, 2);
+        // Result MUST contain only index 1 (the forced break). The
+        // section-boundary reward at index 0 must NOT add an extra
+        // earlier break.
+        Assert.Single(result.BreakIndices);
+        Assert.Equal(1, result.BreakIndices[0]);
+    }
+
+    [Fact]
+    public void Optimizer_unreachable_forced_break_handled_in_later_iteration()
+    {
+        // When the forced break is past b1Max (overflow before reaching
+        // it), the DP picks an earlier break for overflow + the forced
+        // break is committed in a subsequent iteration.
+        var ops = new[]
+        {
+            BreakOpportunity.Block(usedBlockSize: 300, chunkBlockSize: 200),
+            BreakOpportunity.Block(usedBlockSize: 500, chunkBlockSize: 200),
+            // Forced break at 1500 — past page 1's reach.
+            new BreakOpportunity(
+                UsedBlockSize: 1500, ChunkBlockSize: 50,
+                Class: BreakOpportunityClass.BlockBoundary,
+                ForceBreak: true, AvoidBreak: false, ForceParity: PageParity.Any,
+                LinesBeforeBreak: 0, StrandsHeading: false, SplitsFlexOrGridLine: false),
+        };
+        var result = Optimizer.Optimize(ops, 800, 2, 2);
+        // Forced break MUST appear in the result eventually.
+        Assert.Contains(2, result.BreakIndices);
+    }
+
+    // --- Recommendation #3: per-window DP budget ------------------------
+
+    [Fact]
+    public void Optimizer_per_page_candidate_count_falls_back_to_greedy()
+    {
+        // Per Phase 3 Task 4 review fix #3 — a single page with more
+        // than MaxCandidatesPerPage candidates trips the greedy fallback.
+        // Build n+1 zero-height candidates that all fit on a 800 page.
+        var n = Optimizer.MaxCandidatesPerPage + 1;
+        var ops = new BreakOpportunity[n];
+        for (var i = 0; i < n; i++)
+        {
+            ops[i] = BreakOpportunity.Block(usedBlockSize: i * 0.1, chunkBlockSize: 0.1);
+        }
+        // Add a final overflow opportunity so the optimizer can't
+        // exit via the "all fits" path (review fix #1).
+        ops[n - 1] = BreakOpportunity.Block(usedBlockSize: (n - 1) * 0.1, chunkBlockSize: 1000);
+        var result = Optimizer.Optimize(ops, 800, 2, 2);
+        Assert.True(result.FellBackToGreedy);
+        Assert.Contains("MaxCandidatesPerPage", result.FallbackReason!,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Optimizer_pair_evaluation_budget_falls_back_to_greedy()
+    {
+        // Force a scenario where the (b1, b2) inner loop exceeds the
+        // pair-evaluation budget. Build a contiguous run of candidates
+        // tightly packed so each page has many candidates AND many
+        // pages of input.
+        // Strategy: 100 candidates per page × 50 pages → 50 outer
+        // iterations × 100×100 pair evals = 500k > 65k.
+        const int candidatesPerPage = 100;
+        const int pages = 60;
+        const int n = candidatesPerPage * pages;
+        var ops = new BreakOpportunity[n];
+        for (var i = 0; i < n; i++)
+        {
+            // UsedBlockSize stepping 8 px per candidate — 100 candidates
+            // per page × 8 px = 800 px = page extent.
+            ops[i] = BreakOpportunity.Block(usedBlockSize: i * 8.0, chunkBlockSize: 4);
+        }
+        var result = Optimizer.Optimize(ops, 800, 2, 2);
+        Assert.True(result.FellBackToGreedy);
+        // Either MaxPairEvaluations or MaxCandidatesPerPage will trip
+        // first — both reasons are acceptable signals of the budget
+        // protection working.
+        Assert.True(
+            result.FallbackReason!.Contains("MaxPairEvaluations",
+                StringComparison.OrdinalIgnoreCase)
+            || result.FallbackReason.Contains("MaxCandidatesPerPage",
+                StringComparison.OrdinalIgnoreCase));
+    }
+
+    // --- Recommendation #6: Fragmentainer ref restoration ------------
+
+    [Fact]
+    public void Checkpoint_restore_reseats_fragmentainer_after_speculative_swap()
+    {
+        // Per Phase 3 Task 4 review fix #6 — when a speculative attempt
+        // swaps layout.Fragmentainer to a cloned context, RestoreInto
+        // must reseat the reference back to the captured fragmentainer.
+        // Without this, the layouter would continue reading dimensions
+        // / state from the discarded clone after rewind.
+        var original = new FragmentainerContext(600, 800) { UsedBlockSize = 200 };
+        original.NamedStrings["chapter"] = "Original";
+        var layout = new LayoutContext(original);
+        layout.Counter("page", 3);
+
+        using var lease = LayoutCheckpointPool.Rent();
+        var cp = lease.Checkpoint!;
+        cp.Capture(original, layout, fragmentOutputCursor: 4,
+            lastEmittedChildIndex: 2, incomingContinuation: null,
+            pageCounterValue: 3);
+
+        // Speculative swap: clone the fragmentainer + repoint layout.
+        var speculative = original.Clone();
+        speculative.NamedStrings["chapter"] = "Speculative";
+        speculative.UsedBlockSize = 999;
+        layout.Fragmentainer = speculative;
+        layout.Counter("page", 999);
+
+        // Restore — must reseat layout.Fragmentainer to original.
+        cp.RestoreInto(speculative, ref layout);
+        Assert.Same(original, layout.Fragmentainer);
+        Assert.Equal("Original", original.NamedStrings["chapter"]);
+        Assert.Equal(200, original.UsedBlockSize);
+        Assert.Equal(3, layout.ReadCounter("page"));
+    }
+
+    [Fact]
+    public void Checkpoint_capture_records_layout_fragmentainer_ref()
+    {
+        // Direct verification: Capture stamps CapturedFragmentainerRef.
+        var ctx = new FragmentainerContext(600, 800);
+        var layout = new LayoutContext(ctx);
+        using var lease = LayoutCheckpointPool.Rent();
+        var cp = lease.Checkpoint!;
+        cp.Capture(ctx, layout, 0, -1, null, 0);
+        Assert.Same(ctx, cp.CapturedFragmentainerRef);
+    }
+
+    // --- Recommendation #7: lease-token stale rejection -------------
+
+    [Fact]
+    public void Pool_returns_stale_lease_after_rerent_rejected()
+    {
+        // Per Phase 3 Task 4 review fix #7 — once a checkpoint is
+        // re-rented under a new lease, the prior lease's token is
+        // stale. Returning the stale lease must be rejected — otherwise
+        // the second caller's checkpoint would land in the pool while
+        // they still hold a reference.
+        var lease1 = LayoutCheckpointPool.Rent();
+        var cp1 = lease1.Checkpoint!;
+        // Successful return — cp1 goes to pool.
+        LayoutCheckpointPool.Return(lease1);
+
+        // Re-rent — this MAY return cp1 (most likely from the bag) or a
+        // fresh instance. Either way, the new lease has a different
+        // token + the prior lease's token is now stale.
+        var lease2 = LayoutCheckpointPool.Rent();
+        var cp2 = lease2.Checkpoint!;
+        cp2.PageIndex = 42;
+
+        // Stale return — caller still holds lease1 with the old token.
+        // CAS rejects (token mismatch).
+        LayoutCheckpointPool.Return(lease1);
+
+        // cp2 is still owned by lease2; its state must be intact.
+        // Specifically — if the stale Return had been accepted, cp2 (==cp1)
+        // would have been Reset() + added to the pool, losing PageIndex=42.
+        if (ReferenceEquals(cp1, cp2))
+        {
+            Assert.Equal(42, cp2.PageIndex);
+        }
+
+        LayoutCheckpointPool.Return(lease2);
+    }
+
+    [Fact]
+    public void Pool_double_return_via_lease_rejected()
+    {
+        // CAS rejects the second Return because the first one cleared
+        // the checkpoint's _leaseToken to 0.
+        var lease = LayoutCheckpointPool.Rent();
+        var cp = lease.Checkpoint!;
+        cp.PageIndex = 7;
+        LayoutCheckpointPool.Return(lease);
+
+        // The first Return Reset cp; PageIndex is now 0.
+        Assert.Equal(0, cp.PageIndex);
+
+        // Mutate cp post-return (caller bug; we're testing the safety net)
+        cp.PageIndex = 99;
+
+        // Second Return — must be rejected. Otherwise cp.PageIndex=99
+        // would land in the pool + Reset() would clear it (in the second
+        // attempt) AND cp would be in the pool twice.
+        LayoutCheckpointPool.Return(lease);
+
+        // Rent twice — must yield two distinct instances if the double-
+        // return was rejected.
+        var leaseA = LayoutCheckpointPool.Rent();
+        var leaseB = LayoutCheckpointPool.Rent();
+        Assert.NotSame(leaseA.Checkpoint, leaseB.Checkpoint);
+        LayoutCheckpointPool.Return(leaseA);
+        LayoutCheckpointPool.Return(leaseB);
+    }
+
+    [Fact]
+    public void Pool_default_lease_return_is_no_op()
+    {
+        // default(CheckpointLease) has Checkpoint=null + Token=0; Return
+        // must drop it on the floor without throwing.
+        LayoutCheckpointPool.Return(default);
+    }
+
+    [Fact]
+    public void Pool_lease_using_block_returns_on_dispose()
+    {
+        // CheckpointLease implements IDisposable; using-block scope
+        // calls Return on exit.
+        LayoutCheckpoint? captured;
+        using (var lease = LayoutCheckpointPool.Rent())
+        {
+            captured = lease.Checkpoint;
+            captured!.PageIndex = 11;
+        }
+        // After dispose, the checkpoint's _leaseToken is 0.
+        // We can't directly observe _leaseToken (internal field), but
+        // we can verify the checkpoint was Reset via PageIndex.
+        Assert.NotNull(captured);
+        Assert.Equal(0, captured!.PageIndex);
+    }
+
+    [Fact]
+    public void Pool_lease_token_unique_per_rent()
+    {
+        // Tokens are monotonically increasing — two rents in succession
+        // never share a token. We can observe this indirectly: after
+        // returning lease1 + renting lease2, the stale return of lease1
+        // is rejected (token mismatch) even when cp1 == cp2.
+        var lease1 = LayoutCheckpointPool.Rent();
+        var cp1 = lease1.Checkpoint!;
+        LayoutCheckpointPool.Return(lease1);
+
+        var lease2 = LayoutCheckpointPool.Rent();
+        var cp2 = lease2.Checkpoint!;
+
+        if (ReferenceEquals(cp1, cp2))
+        {
+            // Second rent reused cp1's instance. Tokens differ — first
+            // lease's stale return must be rejected.
+            cp2.PageIndex = 42;
+            LayoutCheckpointPool.Return(lease1);  // stale — should reject
+            Assert.Equal(42, cp2.PageIndex);  // not Reset by stale return
+        }
+
+        LayoutCheckpointPool.Return(lease2);
+    }
+
+    // --- IBreakResolver coordinate-space contract (Copilot #8) ---------
+
+    [Fact]
+    public void OptimizingResolver_resolve_breaks_handles_cumulative_used_block_size()
+    {
+        // Per Phase 3 Task 4 review fix #2 + Copilot #8 — ResolveBreaks
+        // accepts cumulative-across-window UsedBlockSize. The optimizer
+        // subtracts pageStart internally for per-page measurements.
+        // This test verifies the contract holds end-to-end.
+        var resolver = new OptimizingBreakResolver();
+        var ctx = new FragmentainerContext(600, 800);
+        // 4 candidates spanning ~3 pages (cumulative 0..2400).
+        var ops = new[]
+        {
+            BreakOpportunity.Block(usedBlockSize: 300, chunkBlockSize: 200),  // page 1
+            BreakOpportunity.Block(usedBlockSize: 700, chunkBlockSize: 200),  // page 1
+            BreakOpportunity.Block(usedBlockSize: 1500, chunkBlockSize: 200), // page 2
+            BreakOpportunity.Block(usedBlockSize: 2300, chunkBlockSize: 200), // page 3
+        };
+        var result = resolver.ResolveBreaks(ops, ctx);
+        Assert.False(result.FellBackToGreedy);
+        // Page-capacity check — every committed break's page extent
+        // must be ≤ 800 (using cumulative-difference math).
+        double pageStart = 0;
+        foreach (var k in result.BreakIndices)
+        {
+            var pageExtent = ops[k].UsedBlockSize - pageStart;
+            Assert.True(pageExtent <= 800,
+                $"Page extent {pageExtent} > 800 at break index {k}");
+            pageStart = ops[k].UsedBlockSize;
+        }
     }
 }

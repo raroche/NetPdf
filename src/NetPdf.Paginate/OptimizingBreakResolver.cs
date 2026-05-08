@@ -58,13 +58,14 @@ internal sealed class OptimizingBreakResolver : IBreakResolver
     /// CSS Fragmentation L3 §4.2.</summary>
     public int WidowsRequired { get; }
 
-    /// <summary>Per PR #19 review #1 — same single-slot checkpoint
-    /// strategy as the greedy stub. The DP optimizer's bounded retry
-    /// loop (Task 5) replaces this with a frontier-aware version that
-    /// can retain multiple checkpoints; until then, single-slot is
-    /// correct for the windowed batched flow (the resolver's caller
-    /// re-registers a fresh checkpoint at the start of each window).</summary>
-    private LayoutCheckpoint? _lastCheckpoint;
+    /// <summary>Per PR #19 review #1 + Phase 3 Task 4 review fix #7 —
+    /// stores the full <see cref="CheckpointLease"/> (not just the
+    /// bare checkpoint) so the resolver-internal Return correctly
+    /// presents the lease's token, letting the pool reject
+    /// stale-after-rerent races. Same single-slot strategy as the
+    /// greedy stub for now; Task 5's bounded retry loop will replace
+    /// with a frontier-aware version that retains multiple leases.</summary>
+    private CheckpointLease _lastLease;
 
     /// <summary>Per Phase 3 Task 4 — count of times <see cref="ResolveBreaks"/>
     /// fell through to greedy on this resolver instance. Test-only
@@ -141,16 +142,21 @@ internal sealed class OptimizingBreakResolver : IBreakResolver
     }
 
     /// <inheritdoc />
-    public void RegisterCheckpoint(LayoutCheckpoint checkpoint)
+    public void RegisterCheckpoint(CheckpointLease lease)
     {
-        ArgumentNullException.ThrowIfNull(checkpoint);
-        if (_lastCheckpoint is not null && !ReferenceEquals(_lastCheckpoint, checkpoint))
+        ArgumentNullException.ThrowIfNull(lease.Checkpoint);
+        // Per Phase 3 Task 4 review fix #7 — return the prior lease to
+        // the pool. The pool's CAS rejects stale-after-rerent so the
+        // Return here is safe even if the prior checkpoint was
+        // already cycled through a different path.
+        if (_lastLease.Checkpoint is not null
+            && !ReferenceEquals(_lastLease.Checkpoint, lease.Checkpoint))
         {
-            LayoutCheckpointPool.Return(_lastCheckpoint);
+            LayoutCheckpointPool.Return(_lastLease);
         }
-        _lastCheckpoint = checkpoint;
+        _lastLease = lease;
     }
 
     /// <inheritdoc />
-    public LayoutCheckpoint? GetLastCheckpoint() => _lastCheckpoint;
+    public LayoutCheckpoint? GetLastCheckpoint() => _lastLease.Checkpoint;
 }

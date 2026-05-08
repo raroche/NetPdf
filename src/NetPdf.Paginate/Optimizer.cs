@@ -14,43 +14,59 @@ namespace NetPdf.Paginate;
 /// should fire to minimize total <see cref="CostModel"/> cost.
 ///
 /// <para><b>Algorithm.</b> Sliding-window DP. For each "current page"
-/// state (anchored at <c>pageStart</c>), the optimizer enumerates:</para>
-/// <list type="bullet">
-///   <item>All candidates <c>b1</c> that could end the current page
-///   (i.e., <c>opportunities[b1].UsedBlockSize - pageStart &lt;= contentBlockSize</c>).</item>
-///   <item>For each <c>b1</c>, all candidates <c>b2</c> that could end
-///   the next page given the b1 choice
-///   (<c>opportunities[b2].UsedBlockSize - opportunities[b1].UsedBlockSize &lt;= contentBlockSize</c>).</item>
-///   <item>The <c>(b1, b2)</c> pair minimizing
-///   <c>Score(b1) + Score(b2)</c> wins. Only <c>b1</c> commits;
-///   the optimizer slides forward + re-evaluates from <c>pageStart =
+/// state (anchored at <c>pageStart</c>):</para>
+/// <list type="number">
+///   <item>If the remaining tail (from pageStart to end-of-window)
+///   fits on a single fragmentainer AND no forced break lies ahead,
+///   <i>commit no break</i> + exit. Per Phase 3 Task 4 review fix #1
+///   + Copilot review #2 — without this, every non-empty input would
+///   pick up at least one break index even when no break is needed.</item>
+///   <item>If a forced break (<see cref="BreakOpportunity.ForceBreak"/>)
+///   is reachable on the current page, commit it directly without
+///   running the (b1, b2) DP. Per Phase 3 Task 4 review fix #4 —
+///   author-chosen break points are strong signals; section-boundary
+///   rewards must not insert extra breaks earlier on the same page.</item>
+///   <item>Otherwise enumerate <c>(b1, b2)</c> candidate pairs where
+///   <c>b1</c> ends the current page + <c>b2</c> ends the next; pick
+///   the pair minimizing <c>Score(b1) + Score(b2)</c>; commit only
+///   <c>b1</c> + slide forward to <c>pageStart =
 ///   opportunities[b1].UsedBlockSize</c>.</item>
 /// </list>
 ///
-/// <para><b>Why slide rather than commit both.</b> Per the Phase 3 plan
-/// §"DP optimizer worst case" — committing 2-page decisions atomically
-/// would let early choices propagate suboptimally when later context
-/// (a forced break on page 3, an avoid-break region revealed on page 4)
-/// would have changed the page-1 decision. Sliding window with single-
-/// page commits accepts a bounded amount of "look ahead but commit one"
-/// suboptimality in exchange for stable forward progress — a property
-/// the bounded retry loop (Task 5) leans on.</para>
+/// <para>Per Phase 3 Task 4 review fix #2 + Copilot reviews #1, #8 —
+/// the optimizer feeds <c>pageStart</c> into <see cref="CostModel.Score"/>
+/// so per-page measurements (the trailing-blank ratio in particular)
+/// recover correctly across multi-page windows. Without this, scoring
+/// on pages 2+ would compute a negative blank ratio (because
+/// <see cref="BreakOpportunity.UsedBlockSize"/> is cumulative-across-window
+/// in the batched path) + miss the trailing-blank penalty entirely.</para>
+///
+/// <para><b>Why slide rather than commit both.</b> Per the Phase 3
+/// plan §"DP optimizer worst case" — committing 2-page decisions
+/// atomically would let early choices propagate suboptimally when
+/// later context (a forced break on page 3, an avoid-break region on
+/// page 4) would have changed the page-1 decision. Sliding window
+/// with single-page commits accepts a bounded amount of "look ahead
+/// but commit one" suboptimality in exchange for stable forward
+/// progress.</para>
 ///
 /// <para><b>Runtime.</b> O(n × k²) where n = candidate count and k =
-/// candidates-per-page. For typical documents (10-50 lines per page),
-/// k ≈ 50 and the inner loop's 2500 ops × n total = ~2.5M ops per 1000
-/// candidates. Well within the Phase 3 perf gate (3-page invoice ≤ 200
-/// ms p50). The <see cref="MaxCandidatesBeforeFallback"/> budget cap
-/// hard-limits worst-case n.</para>
+/// candidates-per-page. Per Phase 3 Task 4 review fix #3 — both
+/// <see cref="MaxCandidatesBeforeFallback"/> (whole-window cap),
+/// <see cref="MaxCandidatesPerPage"/> (per-page cap), and
+/// <see cref="MaxPairEvaluations"/> (cumulative pair-eval budget)
+/// trip the greedy fallback when exceeded. The combination prevents
+/// pathological dense-page inputs (1000 zero-height candidates on
+/// one page) from costing O(1M) pair evaluations in a single outer
+/// iteration.</para>
 ///
-/// <para><b>Forced + avoid metadata.</b> Per CSS Fragmentation L3 §3.1
-/// + Phase 3 review fix #3:</para>
+/// <para><b>Forced + avoid metadata.</b> Per CSS Fragmentation L3
+/// §3.1 + Phase 3 review fix #3:</para>
 /// <list type="bullet">
-///   <item><see cref="BreakOpportunity.ForceBreak"/> — when an
-///   opportunity inside the current page's window has this set, the DP
-///   restricts <c>b1</c> to be at-or-before the forced break. The
-///   forced break MUST be selected (its cost is 0 per
-///   <see cref="CostModel.Score"/>).</item>
+///   <item><see cref="BreakOpportunity.ForceBreak"/> — the earliest
+///   reachable forced break on the current page is committed
+///   directly (review fix #4); a forced break beyond the current
+///   page's reach is handled in a subsequent iteration.</item>
 ///   <item><see cref="BreakOpportunity.AvoidBreak"/> — DP rejects this
 ///   candidate as <c>b1</c> / <c>b2</c> unless it's also the forced
 ///   break (forced wins). When every candidate in the window is
@@ -59,39 +75,61 @@ namespace NetPdf.Paginate;
 ///   <see cref="OptimizerResult.FellBackToGreedy"/> flag.</item>
 /// </list>
 ///
-/// <para><b>Page parity (<see cref="PageParity"/>).</b> NOT enforced by
-/// the optimizer in v1; the layouter is responsible for inserting
+/// <para><b>Widow scoring.</b> Per Phase 3 Task 4 review fix #5 —
+/// the optimizer counts subsequent line boundaries that would land on
+/// the next page (in the same paragraph) using
+/// <see cref="BreakOpportunity.ParagraphId"/>. Layouters that supply
+/// stable paragraph identifiers get accurate widow penalties; those
+/// that leave <see cref="BreakOpportunity.ParagraphId"/> at 0 fall
+/// back to a heuristic counting consecutive
+/// <see cref="BreakOpportunityClass.LineBoundary"/> opportunities
+/// until a different class appears. Both branches feed
+/// <see cref="CostModel.Score"/>'s <c>lineCountAfterBreak</c>
+/// argument so the widow check fires correctly.</para>
+///
+/// <para><b>Page parity (<see cref="PageParity"/>).</b> NOT enforced
+/// by the optimizer in v1; the layouter is responsible for inserting
 /// blank fragmentainers post-DP to satisfy
-/// <c>break-before: left/right/recto/verso</c> per CSS Page L3 §3.4.1.
-/// Future work (Phase 3 follow-up) may push parity into the DP if
-/// real corpus shows it matters.</para>
+/// <c>break-before: left/right/recto/verso</c> per CSS Page L3 §3.4.1.</para>
 /// </summary>
 internal static class Optimizer
 {
     /// <summary>Per Phase 3 plan §"DP optimizer worst case" — keep
     /// lookahead at 2 pages. Higher values quickly explode runtime
-    /// (the per-state inner loop is O(k²); a 3-page lookahead would
-    /// require O(k³) per state). The plan explicitly forbids tuning
-    /// this above 2.</summary>
+    /// (per-state work is O(k²); a 3-page lookahead would require
+    /// O(k³) per state). The plan explicitly forbids tuning this
+    /// above 2.</summary>
     public const int LookaheadPages = 2;
 
-    /// <summary>Per Phase 3 plan — soft cap on candidate-set size
-    /// before falling back to greedy. 16k candidates would already
+    /// <summary>Per Phase 3 plan — soft cap on whole-window candidate
+    /// count before falling back to greedy. 16k candidates already
     /// constitute a multi-hundred-page document with one candidate
-    /// per line. The fallback emits
-    /// <c>PAGINATION-OPTIMIZER-FALLBACK-001</c> via
-    /// <see cref="OptimizerResult.FellBackToGreedy"/>.</summary>
+    /// per line.</summary>
     public const int MaxCandidatesBeforeFallback = 16_384;
+
+    /// <summary>Per Phase 3 Task 4 review fix #3 — per-page candidate
+    /// cap. A single page with more than this many in-page candidates
+    /// trips the greedy fallback. 256 is generous (a typical page
+    /// has 30-50 lines); the cap protects against pathological inputs
+    /// where many zero-height chunks pile onto one page.</summary>
+    public const int MaxCandidatesPerPage = 256;
+
+    /// <summary>Per Phase 3 Task 4 review fix #3 — cumulative
+    /// pair-evaluation budget across the whole optimization run. Each
+    /// (b1, b2) inner-loop iteration counts as one. 65k caps the
+    /// total work at well under the perf gate's 200ms p50 budget for
+    /// realistic documents.</summary>
+    public const int MaxPairEvaluations = 65_536;
 
     /// <summary>Run the bounded DP optimizer over
     /// <paramref name="opportunities"/> + return the chosen break
     /// indices. See class XML doc for algorithm + invariants.</summary>
     /// <param name="opportunities">Candidate break points in document
-    /// order. The <see cref="BreakOpportunity.UsedBlockSize"/> values
-    /// MUST be monotonically non-decreasing — they represent
-    /// cumulative block-axis position assuming no breaks fire. Pass
-    /// per-fragmentainer-relative values when batching across pages
-    /// is undesirable; the optimizer will reset per chosen break.</param>
+    /// order. <see cref="BreakOpportunity.UsedBlockSize"/> values must
+    /// be cumulative-across-window + monotonically non-decreasing —
+    /// per the
+    /// <see cref="IBreakResolver.ResolveBreaks"/> coordinate-space
+    /// contract.</param>
     /// <param name="contentBlockSize">Fragmentainer block-axis extent
     /// (CSS px). Must be finite + positive.</param>
     /// <param name="orphansRequired">Author's <c>orphans</c> property
@@ -127,10 +165,7 @@ internal static class Optimizer
             opportunities[i].EnsureValid();
         }
 
-        // Budget cap — fall back to greedy when the candidate set
-        // exceeds what the bounded DP can usefully optimize. The
-        // diagnostic emission lives at the layouter level; we just
-        // flag it on the result.
+        // Whole-window budget cap.
         if (n > MaxCandidatesBeforeFallback)
         {
             return Greedy(opportunities, contentBlockSize, orphansRequired, widowsRequired,
@@ -157,25 +192,76 @@ internal static class Optimizer
         double totalCost = 0;
         double pageStart = 0;
         var i2 = 0;
+        var pairEvalsUsed = 0;
 
         while (i2 < n)
         {
-            // Find the inclusive range of b1 candidates: opportunities[i2..b1Max]
-            // such that the page (pageStart, b1] fits on one fragmentainer.
+            // ---- Step 1 (review fix #1 + Copilot #2): early exit
+            // when the remainder fits + no forced break ahead. ----
+            var tailEnd = opportunities[n - 1].UsedBlockSize + opportunities[n - 1].ChunkBlockSize;
+            var tailFitsOnePage = (tailEnd - pageStart) <= contentBlockSize;
+            var firstForceIdx = -1;
+            for (var k = i2; k < n; k++)
+            {
+                if (opportunities[k].ForceBreak)
+                {
+                    firstForceIdx = k;
+                    break;
+                }
+            }
+            if (firstForceIdx < 0 && tailFitsOnePage)
+            {
+                // No more breaks needed for this window. The trailing
+                // tail past the most recent committed break (or from
+                // the start of input if none) fits on a single page.
+                break;
+            }
+
+            // ---- Find b1 range: opportunities[i2..b1Max] where
+            // page (pageStart, b1] fits on one fragmentainer. ----
             var b1Max = -1;
+            var inPageCount = 0;
             for (var k = i2; k < n; k++)
             {
                 if (opportunities[k].UsedBlockSize - pageStart > contentBlockSize) break;
                 b1Max = k;
+                inPageCount++;
             }
 
-            // Overflow handling — even the first candidate (i2) doesn't
-            // fit on the current page. This means a single chunk
-            // exceeded the fragmentainer's block extent. Last-resort:
-            // commit a break at i2 with the overflow penalty.
-            // Diagnostic PAGINATION-FORCED-OVERFLOW-001 is the
-            // layouter's job (Task 5+); the DP just expresses the
-            // penalty in the cost.
+            // Per review fix #3 — per-page cap. Pathological inputs
+            // (many zero-height candidates on one page) trip the
+            // greedy fallback rather than blowing the O(k²) inner
+            // loop budget.
+            if (inPageCount > MaxCandidatesPerPage)
+            {
+                return Greedy(opportunities, contentBlockSize, orphansRequired, widowsRequired,
+                    fallbackReason:
+                        $"Per-page candidate count {inPageCount} exceeds MaxCandidatesPerPage="
+                        + $"{MaxCandidatesPerPage}; greedy fallback.");
+            }
+
+            // ---- Step 2 (review fix #4): if a forced break is
+            // REACHABLE on the current page, commit it directly. The
+            // (b1, b2) optimizer is skipped — author's choice wins. ----
+            if (firstForceIdx >= 0 && firstForceIdx <= b1Max)
+            {
+                var forcedOpp = opportunities[firstForceIdx];
+                // Score is 0 for ForceBreak per CostModel, but call
+                // through the full path for consistency + future
+                // hooks.
+                totalCost += CostModel.Score(
+                    forcedOpp, contentBlockSize, orphansRequired, widowsRequired,
+                    lineCountAfterBreak: ComputeLinesAfterBreak(opportunities, firstForceIdx, widowsRequired),
+                    pageStart: pageStart);
+                breaks.Add(firstForceIdx);
+                pageStart = forcedOpp.UsedBlockSize;
+                i2 = firstForceIdx + 1;
+                continue;
+            }
+
+            // ---- Step 3: overflow handling — even the first
+            // candidate at i2 doesn't fit. Last-resort commit at i2
+            // with the BreakInsideAvoidViolation cost. ----
             if (b1Max < 0)
             {
                 breaks.Add(i2);
@@ -185,53 +271,39 @@ internal static class Optimizer
                 continue;
             }
 
-            // Forced-break detection — if a ForceBreak opportunity is
-            // inside [i2..b1Max], b1 MUST be at-or-before that index.
-            // (The DP cannot skip a forced break.)
-            var b1ForceCap = b1Max;
-            for (var k = i2; k <= b1Max; k++)
-            {
-                if (opportunities[k].ForceBreak)
-                {
-                    b1ForceCap = k;
-                    break;
-                }
-            }
-
+            // ---- Step 4: regular DP over (b1, b2) pairs. ----
             int bestB1 = -1;
             double bestPairCost = double.PositiveInfinity;
-            // Track the best b1's standalone cost so we can attribute
-            // it to totalCost (b2's cost re-evaluates next iteration).
             double bestB1OwnCost = 0;
 
-            for (var b1 = i2; b1 <= b1ForceCap; b1++)
+            for (var b1 = i2; b1 <= b1Max; b1++)
             {
                 var oppB1 = opportunities[b1];
 
-                // Skip avoid-break candidates UNLESS they're also the
-                // forced break (forced wins per Fragmentation L3 §3.1).
-                if (oppB1.AvoidBreak && !oppB1.ForceBreak) continue;
+                // Skip avoid-break candidates — DP can't pick them
+                // unless every alternative is also avoid (handled by
+                // the no-feasible-pair fallback below).
+                if (oppB1.AvoidBreak) continue;
 
                 var costB1 = CostModel.Score(
                     oppB1, contentBlockSize, orphansRequired, widowsRequired,
-                    // Stub: assume widows is satisfied. A future
-                    // refinement could plumb paragraph identity into
-                    // BreakOpportunity for precise widow counting.
-                    lineCountAfterBreak: widowsRequired);
+                    lineCountAfterBreak: ComputeLinesAfterBreak(opportunities, b1, widowsRequired),
+                    pageStart: pageStart);
 
-                // ---- 2-page lookahead: find the best b2 given b1 ----
-                // Range: opportunities[b1+1..b2Max] where the page
-                // (b1, b2] fits.
+                // ---- 2-page lookahead: find the best b2 given b1. ----
+                var nextPageStart = oppB1.UsedBlockSize;
                 var b2Max = -1;
                 for (var k = b1 + 1; k < n; k++)
                 {
-                    if (opportunities[k].UsedBlockSize - oppB1.UsedBlockSize > contentBlockSize) break;
+                    if (opportunities[k].UsedBlockSize - nextPageStart > contentBlockSize) break;
                     b2Max = k;
                 }
 
-                // No valid b2 (b1 is at or near the end of the input).
-                // Score b1 alone — the trailing tail past b1 is the
-                // caller's next-window problem.
+                // No b2 candidate exists (b1 is at or near end of input,
+                // or the chunk after b1 already exceeds the next page).
+                // Score b1 alone — but only if a break IS needed
+                // (verified by step 1; if we reached here, a break IS
+                // needed somewhere in the window).
                 if (b2Max < 0)
                 {
                     if (costB1 < bestPairCost)
@@ -243,24 +315,23 @@ internal static class Optimizer
                     continue;
                 }
 
-                var b2ForceCap = b2Max;
-                for (var k = b1 + 1; k <= b2Max; k++)
+                for (var b2 = b1 + 1; b2 <= b2Max; b2++)
                 {
-                    if (opportunities[k].ForceBreak)
+                    pairEvalsUsed++;
+                    if (pairEvalsUsed > MaxPairEvaluations)
                     {
-                        b2ForceCap = k;
-                        break;
+                        return Greedy(opportunities, contentBlockSize, orphansRequired, widowsRequired,
+                            fallbackReason:
+                                $"DP exceeded MaxPairEvaluations={MaxPairEvaluations}; greedy fallback.");
                     }
-                }
 
-                for (var b2 = b1 + 1; b2 <= b2ForceCap; b2++)
-                {
                     var oppB2 = opportunities[b2];
-                    if (oppB2.AvoidBreak && !oppB2.ForceBreak) continue;
+                    if (oppB2.AvoidBreak) continue;
 
                     var costB2 = CostModel.Score(
                         oppB2, contentBlockSize, orphansRequired, widowsRequired,
-                        lineCountAfterBreak: widowsRequired);
+                        lineCountAfterBreak: ComputeLinesAfterBreak(opportunities, b2, widowsRequired),
+                        pageStart: nextPageStart);
 
                     var pair = costB1 + costB2;
                     if (pair < bestPairCost)
@@ -274,11 +345,10 @@ internal static class Optimizer
 
             if (bestB1 < 0)
             {
-                // No feasible (b1, b2) pair found within the lookahead
-                // window — every candidate inside [i2..b1ForceCap] was
-                // an avoid-break (and not also a forced break). Fall
-                // back to greedy from here for the caller's window;
-                // the caller emits the diagnostic.
+                // No feasible (b1, b2) pair found — every candidate
+                // in the page's window was avoid-break (and not
+                // forced). Fall back to greedy for the rest of the
+                // window; the caller emits the diagnostic.
                 return Greedy(opportunities, contentBlockSize, orphansRequired, widowsRequired,
                     fallbackReason:
                         $"DP could not find a feasible (b1, b2) pair starting at index {i2}: "
@@ -294,13 +364,91 @@ internal static class Optimizer
         return new OptimizerResult(breaks, totalCost, FellBackToGreedy: false, FallbackReason: null);
     }
 
+    /// <summary>Per Phase 3 Task 4 review fix #5 — count line
+    /// boundaries after <paramref name="idx"/> that would land on the
+    /// next page (in the same paragraph). Drives the
+    /// <see cref="CostModel.Widow"/> penalty.
+    ///
+    /// <para><b>Algorithm.</b> Two cases:</para>
+    /// <list type="bullet">
+    ///   <item>Source candidate is not a line boundary → return
+    ///   <paramref name="widowsRequired"/> so the widow check passes
+    ///   trivially (widows only matter at line boundaries inside an
+    ///   inline formatting context).</item>
+    ///   <item>Source candidate has a non-zero
+    ///   <see cref="BreakOpportunity.ParagraphId"/> → count subsequent
+    ///   opportunities that share the same id. Stops at the first
+    ///   non-matching id (cross-paragraph) or any forced break.</item>
+    ///   <item>Source candidate has <see cref="BreakOpportunity.ParagraphId"/>
+    ///   = 0 (paragraph identity not supplied) → fall back to a
+    ///   heuristic counting consecutive
+    ///   <see cref="BreakOpportunityClass.LineBoundary"/> opportunities
+    ///   until a non-line / different-class candidate appears.</item>
+    /// </list>
+    /// <para>Caps at <paramref name="widowsRequired"/> + 1 — once we
+    /// know the count meets the requirement, exact value past that
+    /// doesn't change the cost.</para>
+    /// </summary>
+    private static int ComputeLinesAfterBreak(
+        IReadOnlyList<BreakOpportunity> opportunities, int idx, int widowsRequired)
+    {
+        var src = opportunities[idx];
+        if (src.Class != BreakOpportunityClass.LineBoundary)
+        {
+            // Not a paragraph break — widow check doesn't apply.
+            // Return widowsRequired to suppress the penalty.
+            return widowsRequired;
+        }
+
+        var cap = widowsRequired + 1;
+        var lines = 0;
+
+        if (src.ParagraphId > 0)
+        {
+            // Per fix #5 — paragraph-identity-aware counting.
+            for (var k = idx + 1; k < opportunities.Count && lines < cap; k++)
+            {
+                var next = opportunities[k];
+                if (next.ForceBreak) break;
+                if (next.Class != BreakOpportunityClass.LineBoundary) break;
+                if (next.ParagraphId != src.ParagraphId) break;
+                lines++;
+            }
+        }
+        else
+        {
+            // Heuristic — consecutive LineBoundary opportunities.
+            // Same-paragraph approximation when the layouter doesn't
+            // supply ParagraphId.
+            for (var k = idx + 1; k < opportunities.Count && lines < cap; k++)
+            {
+                var next = opportunities[k];
+                if (next.ForceBreak) break;
+                if (next.Class != BreakOpportunityClass.LineBoundary) break;
+                lines++;
+            }
+        }
+
+        return lines;
+    }
+
     /// <summary>Per Phase 3 plan + class XML doc — last-resort greedy
     /// pass when the DP can't / shouldn't run. Walks the candidate
     /// list once + commits a break whenever the next chunk would
     /// overflow OR a <see cref="BreakOpportunity.ForceBreak"/> demands
-    /// it. <see cref="OptimizerResult.FellBackToGreedy"/> is set on
+    /// it.
+    ///
+    /// <para>Per Phase 3 Task 4 Copilot reviews #3, #4 — also commits
+    /// a break + applies the overflow penalty when
+    /// <see cref="BreakOpportunity.ChunkBlockSize"/> exceeds
+    /// <paramref name="contentBlockSize"/> (a chunk taller than a
+    /// fragmentainer can't fit on any page; the greedy resolver must
+    /// at least signal the overflow in the cost).</para>
+    ///
+    /// <para><see cref="OptimizerResult.FellBackToGreedy"/> is set on
     /// the returned result so the caller can emit
-    /// <c>PAGINATION-OPTIMIZER-FALLBACK-001</c>.</summary>
+    /// <c>PAGINATION-OPTIMIZER-FALLBACK-001</c>.</para>
+    /// </summary>
     private static OptimizerResult Greedy(
         IReadOnlyList<BreakOpportunity> opportunities,
         double contentBlockSize,
@@ -317,21 +465,19 @@ internal static class Optimizer
             var opp = opportunities[i];
             opp.EnsureValid();
 
-            // Block-axis extent the chunk after this opportunity
-            // would consume on the current page if we DON'T break.
             var pageSoFar = opp.UsedBlockSize - pageStart;
             var wouldOverflow = (pageSoFar + opp.ChunkBlockSize) > contentBlockSize;
+            // Per Copilot reviews #3, #4 — single-chunk-too-tall case.
+            var chunkTooTall = opp.ChunkBlockSize > contentBlockSize;
 
-            if (opp.ForceBreak || wouldOverflow)
+            if (opp.ForceBreak || wouldOverflow || chunkTooTall)
             {
                 var cost = CostModel.Score(
                     opp, contentBlockSize, orphansRequired, widowsRequired,
-                    lineCountAfterBreak: widowsRequired);
-                // Greedy includes the overflow penalty when the chunk
-                // itself doesn't fit. Per CSS Fragmentation L3 §3.2
-                // last-resort path; the layouter emits
-                // PAGINATION-FORCED-OVERFLOW-001 separately when the
-                // committed page actually overflows.
+                    lineCountAfterBreak: ComputeLinesAfterBreak(opportunities, i, widowsRequired),
+                    pageStart: pageStart);
+                // Per Copilot review #3 — explicit overflow penalty
+                // when the page itself overflowed (not just the chunk).
                 if (pageSoFar > contentBlockSize)
                 {
                     cost += CostModel.BreakInsideAvoidViolation;

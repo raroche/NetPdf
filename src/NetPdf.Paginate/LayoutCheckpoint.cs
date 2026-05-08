@@ -1,8 +1,10 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.Threading;
 
 namespace NetPdf.Paginate;
 
@@ -37,6 +39,17 @@ namespace NetPdf.Paginate;
 ///   <see cref="AvailableInlineSize"/> + <see cref="AvailableBlockSize"/>
 ///   — layout context geometry that might have been mutated by the
 ///   failed attempt.</item>
+///   <item>Per Phase 3 Task 4 review fix #6 —
+///   <see cref="CapturedFragmentainerRef"/> snapshots
+///   <see cref="LayoutContext.Fragmentainer"/> at capture time so a
+///   speculative attempt that swapped to a cloned fragmentainer
+///   (e.g., laying out into <c>ctx2 = ctx1.Clone()</c> to test the
+///   next-page hypothesis) is reseated back to the original on
+///   rewind. Without this, <c>RestoreInto</c> would restore mutable
+///   field values to whatever fragmentainer happens to be active at
+///   restore time, but <c>layout.Fragmentainer</c> would still point
+///   at the speculative clone — leaving subsequent layout reading
+///   the wrong content-area dimensions.</item>
 ///   <item><see cref="FloatManagerStateSnapshot"/> — placeholder for
 ///   the Phase 3 Task 8 float manager state.</item>
 ///   <item><see cref="FragmentOutputCursor"/> — index into the
@@ -102,6 +115,20 @@ internal sealed class LayoutCheckpoint
     /// extent (CSS px) at checkpoint.</summary>
     public double AvailableBlockSize;
 
+    /// <summary>Per Phase 3 Task 4 review fix #6 — reference snapshot
+    /// of <see cref="LayoutContext.Fragmentainer"/> at capture time.
+    /// <see cref="RestoreInto"/> reseats <c>layout.Fragmentainer</c>
+    /// to this value so a speculative attempt that swapped the
+    /// fragmentainer (laying out into a cloned context to test a
+    /// next-page hypothesis) is undone on rewind. Distinct from the
+    /// <c>fragmentainer</c> parameter passed to
+    /// <see cref="Capture"/> / <see cref="RestoreInto"/> — that
+    /// parameter is the <i>currently-active</i> fragmentainer; this
+    /// field is the one <c>layout.Fragmentainer</c> referenced when
+    /// the checkpoint was taken. In normal use they are the same;
+    /// they diverge only during speculative swap.</summary>
+    public FragmentainerContext? CapturedFragmentainerRef;
+
     /// <summary>Per Phase 3 review fix #1 — opaque snapshot of the
     /// float manager state (Phase 3 Task 8 fills this in).</summary>
     public object? FloatManagerStateSnapshot;
@@ -112,13 +139,34 @@ internal sealed class LayoutCheckpoint
     /// re-attempt produces a consistent fragment sequence.</summary>
     public int FragmentOutputCursor;
 
+    /// <summary>Per Phase 3 Task 4 review fix #7 — lease token stamped
+    /// at <see cref="LayoutCheckpointPool.Rent"/> time + cleared by
+    /// <see cref="LayoutCheckpointPool.Return"/> via atomic CAS. A
+    /// non-zero value indicates "currently rented under this lease";
+    /// 0 indicates "in pool / available". Stale-after-rerent returns
+    /// (a caller holds a reference past their own Return + the
+    /// instance has been re-rented under a new lease) are rejected
+    /// because the caller's saved token won't match the new value.
+    /// <see langword="long"/> + <see cref="Interlocked.CompareExchange(ref long, long, long)"/>
+    /// chosen so the read-compare-write is atomic; without that, two
+    /// concurrent Returns of the same checkpoint could both succeed
+    /// + add the instance to the pool twice.</summary>
+    internal long _leaseToken;
+
     /// <summary>Per Phase 3 review fix #1 — capture all rewindable
     /// state in one atomic operation. Layouters call this at
     /// candidate-break points BEFORE attempting the speculative
     /// layout that might be rolled back. Pass the live
     /// <see cref="FragmentainerContext"/> + <see cref="LayoutContext"/>
     /// + the fragment-list cursor; this populates every snapshot
-    /// field.</summary>
+    /// field.
+    ///
+    /// <para>Per Phase 3 Task 4 review fix #6 — also snapshots
+    /// <c>layout.Fragmentainer</c> into <see cref="CapturedFragmentainerRef"/>.
+    /// In typical use this equals the <paramref name="fragmentainer"/>
+    /// parameter, but during speculative layout the two can diverge.
+    /// <see cref="RestoreInto"/> reseats <c>layout.Fragmentainer</c>
+    /// to the captured ref so the swap is undone on rewind.</para></summary>
     public void Capture(
         FragmentainerContext fragmentainer,
         in LayoutContext layout,
@@ -164,6 +212,9 @@ internal sealed class LayoutCheckpoint
         IsRtl = layout.IsRtl;
         AvailableInlineSize = layout.AvailableInlineSize;
         AvailableBlockSize = layout.AvailableBlockSize;
+        // Per Phase 3 Task 4 review fix #6 — capture layout.Fragmentainer
+        // so a speculative swap can be undone.
+        CapturedFragmentainerRef = layout.Fragmentainer;
         FloatManagerStateSnapshot = fragmentainer.FloatManagerState;
         FragmentOutputCursor = fragmentOutputCursor;
     }
@@ -172,23 +223,40 @@ internal sealed class LayoutCheckpoint
     /// field to the corresponding live state. Inverse of
     /// <see cref="Capture"/>; the layouter calls this on rewind +
     /// then re-runs the failed attempt with whatever new strategy
-    /// the optimizer suggested.</summary>
+    /// the optimizer suggested.
+    ///
+    /// <para>Per Phase 3 Task 4 review fix #6 — when
+    /// <see cref="CapturedFragmentainerRef"/> is non-<see langword="null"/>,
+    /// the captured state is restored TO that fragmentainer (not the
+    /// <paramref name="fragmentainer"/> parameter), and
+    /// <c>layout.Fragmentainer</c> is reseated to point back at it.
+    /// This undoes any speculative swap. The
+    /// <paramref name="fragmentainer"/> parameter is treated as a
+    /// fallback for checkpoints that pre-date the capture-fragmentainer
+    /// fix (defensively — should not occur in production).</para></summary>
     public void RestoreInto(FragmentainerContext fragmentainer, ref LayoutContext layout)
     {
-        fragmentainer.PageIndex = PageIndex;
-        fragmentainer.UsedBlockSize = UsedBlockSize;
-        fragmentainer.NamedStrings.Clear();
+        // Per Phase 3 Task 4 review fix #6 — prefer the captured
+        // fragmentainer ref so a speculative swap undoes correctly.
+        var target = CapturedFragmentainerRef ?? fragmentainer;
+
+        target.PageIndex = PageIndex;
+        target.UsedBlockSize = UsedBlockSize;
+        target.NamedStrings.Clear();
         if (NamedStringsSnapshot is not null)
         {
             foreach (var kvp in NamedStringsSnapshot)
-                fragmentainer.NamedStrings[kvp.Key] = kvp.Value;
+                target.NamedStrings[kvp.Key] = kvp.Value;
         }
-        fragmentainer.FloatManagerState = FloatManagerStateSnapshot;
+        target.FloatManagerState = FloatManagerStateSnapshot;
 
         layout.WritingMode = WritingMode;
         layout.IsRtl = IsRtl;
         layout.AvailableInlineSize = AvailableInlineSize;
         layout.AvailableBlockSize = AvailableBlockSize;
+        // Reseat layout.Fragmentainer to the captured one so a
+        // speculative swap is undone.
+        layout.Fragmentainer = target;
         layout.RestoreCounters(CountersSnapshot);
     }
 
@@ -198,7 +266,14 @@ internal sealed class LayoutCheckpoint
     /// (<see cref="IncomingContinuation"/>, snapshot dictionaries,
     /// <see cref="FloatManagerStateSnapshot"/>) are nulled / cleared
     /// so the GC can reclaim referenced graphs while the checkpoint
-    /// sits in the pool.</summary>
+    /// sits in the pool.
+    ///
+    /// <para>Per Phase 3 Task 4 review fix #7 — does NOT touch
+    /// <see cref="_leaseToken"/>. Lease-token lifecycle is owned by
+    /// <see cref="LayoutCheckpointPool.Rent"/> +
+    /// <see cref="LayoutCheckpointPool.Return"/> via atomic CAS;
+    /// having Reset clear it would race against concurrent Return
+    /// calls.</para></summary>
     internal void Reset()
     {
         PageIndex = 0;
@@ -217,9 +292,70 @@ internal sealed class LayoutCheckpoint
         IsRtl = false;
         AvailableInlineSize = 0;
         AvailableBlockSize = 0;
+        CapturedFragmentainerRef = null;
         FloatManagerStateSnapshot = null;
         FragmentOutputCursor = 0;
+        // Per fix #7 — _leaseToken intentionally NOT touched here.
     }
+}
+
+/// <summary>
+/// Per Phase 3 Task 4 review fix #7 — typed lease handle for a
+/// <see cref="LayoutCheckpoint"/> rented from
+/// <see cref="LayoutCheckpointPool"/>. Wraps the checkpoint reference
+/// + the unique <see cref="LayoutCheckpoint._leaseToken"/> stamped at
+/// rent time; <see cref="Return"/> presents the token back to the
+/// pool, which uses an atomic CAS to reject:
+/// <list type="bullet">
+///   <item><b>Immediate double-return.</b> A caller calling
+///   <see cref="Return"/> twice — the second call's token won't match
+///   (the first call cleared the checkpoint's stored token).</item>
+///   <item><b>Stale-after-rerent.</b> A caller holding a reference
+///   past their own Return + the checkpoint has been re-rented to a
+///   different caller. The stale lease's token won't match the new
+///   token stamped by the second rent, so a stale Return is a no-op.</item>
+/// </list>
+///
+/// <para>The pre-fix design used a <c>ConcurrentDictionary&lt;LayoutCheckpoint, byte&gt; _inPool</c>
+/// to detect immediate double-return only — it could not distinguish
+/// "this checkpoint is in the pool" from "this checkpoint was rented
+/// + has now been re-rented under a different lease". The lease-token
+/// design subsumes both cases, so the in-pool dictionary is dropped
+/// in favor of a single atomic counter + CAS check.</para>
+///
+/// <para><b>Disposal.</b> Implements <see cref="IDisposable"/> so
+/// <c>using var lease = LayoutCheckpointPool.Rent();</c> is a valid
+/// scope. <c>Dispose</c> is equivalent to <see cref="Return"/>;
+/// double-dispose is a no-op (CAS rejects the second Return).</para>
+/// </summary>
+internal readonly struct CheckpointLease : IDisposable
+{
+    /// <summary>The leased <see cref="LayoutCheckpoint"/> instance.
+    /// <see langword="null"/> only on the default-struct value
+    /// (which represents "no lease held"). Production code receives
+    /// non-null leases from <see cref="LayoutCheckpointPool.Rent"/>.</summary>
+    public LayoutCheckpoint? Checkpoint { get; }
+
+    /// <summary>The unique lease token stamped at rent time.
+    /// 0 on the default-struct value. Internal — callers don't read
+    /// the token directly; <see cref="Return"/> handles the
+    /// presentation.</summary>
+    internal long Token { get; }
+
+    internal CheckpointLease(LayoutCheckpoint checkpoint, long token)
+    {
+        Checkpoint = checkpoint;
+        Token = token;
+    }
+
+    /// <summary>Return the leased checkpoint to the pool.
+    /// Idempotent — double-Return is rejected via the lease-token CAS.
+    /// No-op when this is a default-struct value (no lease held).</summary>
+    public void Return() => LayoutCheckpointPool.Return(this);
+
+    /// <summary>Equivalent to <see cref="Return"/>; supports
+    /// <c>using</c>-block syntax.</summary>
+    public void Dispose() => Return();
 }
 
 /// <summary>
@@ -228,11 +364,13 @@ internal sealed class LayoutCheckpoint
 /// with a soft cap so high-churn rendering doesn't consume unbounded
 /// memory.
 ///
-/// <para>Per Phase 3 review fix #6 — <see cref="Return"/> guards
-/// against double-return aliasing: a stamped sentinel + a reference
-/// hash check prevents the same instance from being added twice +
-/// rented concurrently by two callers (which would let them step on
-/// each other's state).</para>
+/// <para>Per Phase 3 Task 4 review fix #7 — <see cref="Rent"/> stamps
+/// a unique lease token onto each checkpoint; <see cref="Return"/>
+/// uses an atomic CAS on that token to reject double-return AND
+/// stale-after-rerent. The pre-fix design (a separate
+/// <see cref="ConcurrentDictionary{TKey, TValue}"/> tracking "what's
+/// in the pool") only caught immediate double-return; lease tokens
+/// subsume both cases with a single atomic field.</para>
 /// </summary>
 internal static class LayoutCheckpointPool
 {
@@ -240,45 +378,82 @@ internal static class LayoutCheckpointPool
 
     private static readonly ConcurrentBag<LayoutCheckpoint> _pool = new();
 
-    /// <summary>Per Phase 3 review fix #6 — set of instances currently
-    /// in the pool, keyed by reference identity. Used to reject
-    /// double-Return calls before the second add corrupts the pool.</summary>
-    private static readonly ConcurrentDictionary<LayoutCheckpoint, byte> _inPool = new();
+    /// <summary>Per Phase 3 Task 4 review fix #7 — monotonically
+    /// increasing counter. Each <see cref="Rent"/> increments + stamps
+    /// the new value onto the rented checkpoint. <see cref="Interlocked.Increment(ref long)"/>
+    /// guarantees uniqueness across threads. <see cref="long"/> chosen
+    /// over <see cref="int"/> so wraparound is not a practical concern
+    /// (would require ~9.2 × 10^18 rents).</summary>
+    private static long _nextLeaseToken;
 
-    /// <summary>Rent a checkpoint; reset to neutral on the way out.</summary>
-    public static LayoutCheckpoint Rent()
+    /// <summary>Rent a checkpoint; reset to neutral on the way out.
+    /// Returns a <see cref="CheckpointLease"/> that wraps the
+    /// checkpoint + the lease token; the caller must call
+    /// <see cref="CheckpointLease.Return"/> (or use a <c>using</c>
+    /// block) when finished. Concurrency-safe: the bag's
+    /// <see cref="ConcurrentBag{T}.TryTake"/> is atomic, and
+    /// the lease-token stamp uses
+    /// <see cref="Interlocked.Increment(ref long)"/> so two concurrent
+    /// rents always get distinct tokens even if they receive
+    /// freshly-allocated instances.</summary>
+    public static CheckpointLease Rent()
     {
+        var token = Interlocked.Increment(ref _nextLeaseToken);
         if (_pool.TryTake(out var cp))
         {
-            _inPool.TryRemove(cp, out _);
             cp.Reset();
-            return cp;
+            cp._leaseToken = token;
+            return new CheckpointLease(cp, token);
         }
-        return new LayoutCheckpoint();
+        var fresh = new LayoutCheckpoint { _leaseToken = token };
+        return new CheckpointLease(fresh, token);
     }
 
-    /// <summary>Return a checkpoint to the pool. Drops on the floor
-    /// when:
+    /// <summary>Return a leased checkpoint to the pool. Drops on the
+    /// floor when:
     /// <list type="bullet">
-    ///   <item><paramref name="cp"/> is null (idempotent).</item>
-    ///   <item>The pool is at capacity (GC reclaims the instance).</item>
-    ///   <item>The instance is already in the pool (double-return —
-    ///   per Phase 3 review fix #6, accepting the duplicate would
-    ///   alias two rentals of the same backing instance + corrupt
-    ///   their state).</item>
+    ///   <item>The lease's <see cref="CheckpointLease.Checkpoint"/> is
+    ///   <see langword="null"/> (default-struct value).</item>
+    ///   <item>The lease's token doesn't match the checkpoint's
+    ///   currently-stamped token (immediate double-return OR
+    ///   stale-after-rerent — per Phase 3 Task 4 review fix #7).</item>
+    ///   <item>The pool is at capacity (GC reclaims the instance;
+    ///   the token IS still cleared so subsequent stale Returns
+    ///   correctly no-op).</item>
     /// </list>
+    ///
+    /// <para>The atomic CAS on <see cref="LayoutCheckpoint._leaseToken"/>
+    /// is the linearization point — exactly one Return wins ownership
+    /// of zeroing the token, even when multiple threads concurrently
+    /// hold the same (valid) lease. Without the CAS, two threads with
+    /// the same lease could both clear the token + both add the
+    /// checkpoint to the bag, causing a future Rent to hand out the
+    /// same instance to two different callers.</para>
     /// </summary>
-    public static void Return(LayoutCheckpoint? cp)
+    public static void Return(CheckpointLease lease)
     {
+        var cp = lease.Checkpoint;
         if (cp is null) return;
-        if (_pool.Count >= MaxPoolSize) return;
-        // Reject double-return — accepting would let two concurrent
-        // Rent() calls hand out the same instance to different callers.
-        if (!_inPool.TryAdd(cp, 0)) return;
-        // Clear large refs BEFORE the instance becomes pool-eligible.
-        // A subsequent Rent will Reset() it again, but the early clear
-        // ensures GC can reclaim large referenced graphs while the
-        // checkpoint sits idle.
+        var expected = lease.Token;
+
+        // Atomic CAS: only the holder of the matching token can clear
+        // it. A stale lease (token != current) returns the current
+        // value (which !=expected), so the if-branch rejects without
+        // mutation.
+        if (Interlocked.CompareExchange(ref cp._leaseToken, 0, expected) != expected)
+        {
+            return;
+        }
+
+        // From here, this thread has exclusive ownership of pooling cp.
+        if (_pool.Count >= MaxPoolSize)
+        {
+            // Pool full — discard. cp's _leaseToken is already 0
+            // (the CAS succeeded), so any future stale Return is a
+            // no-op + cp is GC-eligible.
+            return;
+        }
+
         cp.Reset();
         _pool.Add(cp);
     }

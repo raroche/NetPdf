@@ -1,6 +1,7 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System;
 using System.Collections.Generic;
 
 namespace NetPdf.Paginate;
@@ -8,18 +9,26 @@ namespace NetPdf.Paginate;
 /// <summary>
 /// Per Phase 3 plan — per-page mutable state. One instance lives per
 /// page (fragmentainer in CSS Fragmentation L3 terms); the layouter
-/// reads + updates <see cref="UsedHeight"/> as it places content,
-/// consults <see cref="RemainingHeight"/> to decide whether the next
+/// reads + updates <see cref="UsedBlockSize"/> as it places content,
+/// consults <see cref="RemainingBlockSize"/> to decide whether the next
 /// box fits, and increments <see cref="PageIndex"/> when emitting a
 /// page break.
+///
+/// <para><b>Block-axis vs height.</b> Per Phase 3 review fix #2 +
+/// CSS Logical Properties L1 + CSS Writing Modes L3 §3, fragmentation
+/// always happens along the BLOCK axis. In <c>horizontal-tb</c> the
+/// block axis IS height; in <c>vertical-rl</c> / <c>vertical-lr</c>
+/// the block axis is along the X axis (width). Naming the fields
+/// <c>UsedBlockSize</c> / <c>BlockSize</c> instead of
+/// <c>UsedHeight</c> / <c>ContentAreaHeight</c> keeps the API
+/// writing-mode-agnostic + spec-aligned.
+/// <see cref="ContentInlineSize"/> tracks the orthogonal
+/// (cross-fragmentation) dimension.</para>
 ///
 /// <para>Per CSS Page L3 §3, the fragmentainer is the page's
 /// content area: page box minus the four page margins (which host
 /// the 16 page-margin boxes — those have their OWN
-/// <see cref="FragmentainerContext"/>). The
-/// <see cref="ContentAreaWidth"/> / <see cref="ContentAreaHeight"/>
-/// fields capture this rect; the layouter never reads the outer
-/// page box from here.</para>
+/// <see cref="FragmentainerContext"/>).</para>
 ///
 /// <para>State that's per-DOCUMENT (not per-page) lives in
 /// <see cref="LayoutContext"/> instead — counters, named-strings
@@ -40,24 +49,27 @@ internal sealed class FragmentainerContext
     /// in advance.</summary>
     public int TotalPages { get; set; }
 
-    /// <summary>Page content-area width (CSS px). The fragmentainer's
-    /// horizontal extent — page width minus left + right margins.</summary>
-    public double ContentAreaWidth { get; init; }
+    /// <summary>Page content-area extent in the INLINE axis (CSS px).
+    /// In <c>horizontal-tb</c> this is the page width; in
+    /// <c>vertical-rl/lr</c> it's the page height. The orthogonal
+    /// dimension to <see cref="BlockSize"/>.</summary>
+    public double ContentInlineSize { get; init; }
 
-    /// <summary>Page content-area height (CSS px). The fragmentainer's
-    /// vertical extent — page height minus top + bottom margins.</summary>
-    public double ContentAreaHeight { get; init; }
+    /// <summary>Page content-area extent in the BLOCK axis (CSS px).
+    /// In <c>horizontal-tb</c> this is the page height; in
+    /// <c>vertical-rl/lr</c> it's the page width. Fragmentation
+    /// happens along this axis.</summary>
+    public double BlockSize { get; init; }
 
-    /// <summary>Cumulative height (CSS px) used by emitted content on
-    /// this page. Updated by the layouter as it emits each block /
-    /// line / row. Always &lt;= <see cref="ContentAreaHeight"/> +
-    /// per-element overflow tolerance.</summary>
-    public double UsedHeight { get; set; }
+    /// <summary>Cumulative size (CSS px) used along the block axis by
+    /// emitted content on this page. Updated by the layouter as it
+    /// emits each block / line / row.</summary>
+    public double UsedBlockSize { get; set; }
 
-    /// <summary>Convenience: how much vertical space remains on this
-    /// page. Compared against the next chunk's height to decide
+    /// <summary>Convenience: how much block-axis space remains on this
+    /// page. Compared against the next chunk's block size to decide
     /// whether to break.</summary>
-    public double RemainingHeight => ContentAreaHeight - UsedHeight;
+    public double RemainingBlockSize => BlockSize - UsedBlockSize;
 
     /// <summary>Per Phase 3 plan §"Page-margin boxes &amp; running
     /// elements" — named strings set by <c>string-set: name content</c>
@@ -79,25 +91,34 @@ internal sealed class FragmentainerContext
     /// <summary>Construct a new context for a fresh page. Use
     /// <see cref="Clone"/> when transitioning to the next page in a
     /// document so name-string + counter state carries forward.</summary>
-    public FragmentainerContext(double contentAreaWidth, double contentAreaHeight)
+    /// <remarks>Per Phase 3 review fix #8 — both extents must be
+    /// finite + positive. NaN / non-positive dimensions would silently
+    /// corrupt every downstream cost calculation.</remarks>
+    public FragmentainerContext(double contentInlineSize, double blockSize)
     {
-        ContentAreaWidth = contentAreaWidth;
-        ContentAreaHeight = contentAreaHeight;
+        if (!double.IsFinite(contentInlineSize) || contentInlineSize <= 0)
+            throw new ArgumentOutOfRangeException(nameof(contentInlineSize),
+                $"contentInlineSize must be finite + positive; got {contentInlineSize}");
+        if (!double.IsFinite(blockSize) || blockSize <= 0)
+            throw new ArgumentOutOfRangeException(nameof(blockSize),
+                $"blockSize must be finite + positive; got {blockSize}");
+        ContentInlineSize = contentInlineSize;
+        BlockSize = blockSize;
     }
 
     /// <summary>Allocate a fresh context for the next page in the
     /// document. Page index advances by one;
-    /// <see cref="UsedHeight"/> resets to zero; named-string state +
+    /// <see cref="UsedBlockSize"/> resets to zero; named-string state +
     /// page-content-area dimensions carry forward (page sizing per
     /// @page :first / :left / :right is the layouter's job — this
     /// helper assumes the same content-area as the current page).</summary>
     public FragmentainerContext Clone()
     {
-        var next = new FragmentainerContext(ContentAreaWidth, ContentAreaHeight)
+        var next = new FragmentainerContext(ContentInlineSize, BlockSize)
         {
             PageIndex = PageIndex + 1,
             TotalPages = TotalPages,
-            UsedHeight = 0,
+            UsedBlockSize = 0,
         };
         foreach (var kvp in NamedStrings) next.NamedStrings[kvp.Key] = kvp.Value;
         return next;

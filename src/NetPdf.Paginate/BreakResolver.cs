@@ -9,8 +9,9 @@ namespace NetPdf.Paginate;
 /// Per Phase 3 plan §"Build the paginator first" — Task 1 stub
 /// implementation of <see cref="IBreakResolver"/>. Greedy: always
 /// returns <see cref="BreakAction.Continue"/> when the next chunk
-/// fits, <see cref="BreakAction.BreakHere"/> when it doesn't, never
-/// emits a <see cref="BreakAction.Rewind"/>.
+/// fits, <see cref="BreakAction.BreakHere"/> when it doesn't, plus
+/// honors author-forced breaks (<see cref="BreakOpportunity.ForceBreak"/>)
+/// even when the chunk would fit.
 ///
 /// <para>The bounded DP optimizer (Phase 3 Task 4) replaces this
 /// implementation with one that minimizes total cost across a
@@ -25,11 +26,12 @@ namespace NetPdf.Paginate;
 ///
 /// <para><b>Cost model integration.</b> Even the stub consults
 /// <see cref="CostModel.Score"/> to populate
-/// <see cref="BreakDecision.Cost"/>. The cost goes unused by the stub
-/// (it always picks Continue / BreakHere based on geometry, not cost)
-/// but tests can pin the score independently of the action choice,
-/// + the optimizer-replacement (Task 4) inherits a working scoring
-/// path.</para>
+/// <see cref="BreakDecision.Cost"/>. Per Phase 3 review fix #4 the
+/// score is computed against the opportunity's
+/// <see cref="BreakOpportunity.UsedBlockSize"/> snapshot (not the
+/// live fragmentainer state), so deferred candidate evaluation by
+/// the eventual DP optimizer (Task 4) doesn't re-introduce a
+/// live-state dependency.</para>
 /// </summary>
 internal sealed class BreakResolver : IBreakResolver
 {
@@ -59,10 +61,10 @@ internal sealed class BreakResolver : IBreakResolver
     /// <inheritdoc />
     public BreakDecision ConsiderBreakAt(BreakOpportunity opportunity, FragmentainerContext ctx)
     {
+        ArgumentNullException.ThrowIfNull(ctx);
         var cost = CostModel.Score(
             opportunity,
-            usedHeight: ctx.UsedHeight,
-            contentAreaHeight: ctx.ContentAreaHeight,
+            contentBlockSize: ctx.BlockSize,
             orphansRequired: OrphansRequired,
             widowsRequired: WidowsRequired,
             // Stub doesn't know the next-page line count yet; assume
@@ -70,8 +72,17 @@ internal sealed class BreakResolver : IBreakResolver
             // (Task 4) plumbs lookahead into this argument.
             lineCountAfterBreak: WidowsRequired);
 
+        // Per Phase 3 review fix #3 — author-forced break wins
+        // regardless of whether the chunk would fit. The cost model
+        // returns 0 for ForceBreak, but the action MUST be BreakHere
+        // not Continue.
+        if (opportunity.ForceBreak)
+        {
+            return new BreakDecision(BreakAction.BreakHere, cost, RewindTo: null);
+        }
+
         // Trivial fit: next chunk fits on the current page → continue.
-        if (opportunity.ChunkHeight <= ctx.RemainingHeight)
+        if (opportunity.ChunkBlockSize <= ctx.RemainingBlockSize)
         {
             return new BreakDecision(BreakAction.Continue, cost, RewindTo: null);
         }

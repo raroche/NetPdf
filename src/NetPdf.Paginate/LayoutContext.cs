@@ -14,6 +14,14 @@ namespace NetPdf.Paginate;
 /// last-write tracking, the containing-block stack, the active writing
 /// mode + bidi resolution baseline.
 ///
+/// <para><b>Block-axis naming.</b> Per Phase 3 review fix #2 + CSS
+/// Logical Properties L1, dimensions use the
+/// <c>AvailableInlineSize</c> / <c>AvailableBlockSize</c> nomenclature
+/// rather than width / height. In <c>horizontal-tb</c> the inline
+/// axis is horizontal + the block axis is vertical; in <c>vertical-rl/lr</c>
+/// the axes flip. Layouters that consume this context don't need to
+/// branch on writing mode for routine sizing.</para>
+///
 /// <para><b>ref struct.</b> The Phase 3 plan calls for
 /// <c>LayoutContext ref struct</c> so the containing-block stack +
 /// per-call mutation stay on the layouter's call stack with zero
@@ -21,25 +29,21 @@ namespace NetPdf.Paginate;
 /// minimal; mutable backing collections (the counter map + named
 /// strings registry) are heap objects referenced through this
 /// struct, which is fine — only the struct itself is non-allocatable.</para>
-///
-/// <para><b>What's NOT here.</b> Box-tree references, the cascade
-/// result, the ComputedStyle pool — those live in the layouter's
-/// regular parameters since they don't mutate during layout.</para>
 /// </summary>
 internal ref struct LayoutContext
 {
-    /// <summary>Available width (CSS px) for the box currently being
-    /// laid out. Equal to its containing-block width minus padding +
-    /// border on the inline axis. Updated on each containing-block
-    /// push / pop.</summary>
-    public double AvailableWidth;
+    /// <summary>Available inline-axis extent (CSS px) for the box
+    /// currently being laid out. In <c>horizontal-tb</c> this is the
+    /// containing-block width; in <c>vertical-rl/lr</c> it's the
+    /// containing-block height.</summary>
+    public double AvailableInlineSize;
 
-    /// <summary>Available height (CSS px) — typically the
-    /// fragmentainer's <see cref="FragmentainerContext.RemainingHeight"/>
-    /// when the layouter is filling a page. <c>double.PositiveInfinity</c>
-    /// when the height is intrinsic (e.g., a flex / grid container in
-    /// a min/max-content sizing pass).</summary>
-    public double AvailableHeight;
+    /// <summary>Available block-axis extent (CSS px) — the
+    /// fragmentation-axis space available for the box. Typically
+    /// <see cref="FragmentainerContext.RemainingBlockSize"/> when
+    /// filling a page; <c>double.PositiveInfinity</c> when intrinsic
+    /// (a flex / grid container in min/max-content sizing).</summary>
+    public double AvailableBlockSize;
 
     /// <summary>Current writing mode. Mutates only at writing-mode
     /// boundaries (e.g., a child with <c>writing-mode: vertical-rl</c>
@@ -72,8 +76,8 @@ internal ref struct LayoutContext
     public LayoutContext(FragmentainerContext fragmentainer)
     {
         ArgumentNullException.ThrowIfNull(fragmentainer);
-        AvailableWidth = fragmentainer.ContentAreaWidth;
-        AvailableHeight = fragmentainer.ContentAreaHeight;
+        AvailableInlineSize = fragmentainer.ContentInlineSize;
+        AvailableBlockSize = fragmentainer.BlockSize;
         WritingMode = WritingMode.HorizontalTb;
         IsRtl = false;
         Fragmentainer = fragmentainer;
@@ -109,5 +113,29 @@ internal ref struct LayoutContext
         var next = current + delta;
         Counter(counterName, next);
         return next;
+    }
+
+    /// <summary>Per Phase 3 review fix #1 — read-only access to the
+    /// underlying counter table for <see cref="LayoutCheckpoint.Capture"/>.
+    /// Returns <see langword="null"/> when no counters have been
+    /// touched (the lazy-alloc state). The caller MUST NOT mutate
+    /// the returned dictionary; it's the live backing store.</summary>
+    internal IReadOnlyDictionary<string, int>? PeekCounters() => _counters;
+
+    /// <summary>Per Phase 3 review fix #1 — restore the counter table
+    /// from a <see cref="LayoutCheckpoint"/> snapshot. Pass
+    /// <see langword="null"/> to reset to the lazy-alloc-not-yet
+    /// state. The implementation copies into the existing dict where
+    /// possible to keep allocation pressure low across rewinds.</summary>
+    internal void RestoreCounters(Dictionary<string, int>? snapshot)
+    {
+        if (snapshot is null || snapshot.Count == 0)
+        {
+            _counters?.Clear();
+            return;
+        }
+        _counters ??= new Dictionary<string, int>(snapshot.Count, StringComparer.Ordinal);
+        _counters.Clear();
+        foreach (var kvp in snapshot) _counters[kvp.Key] = kvp.Value;
     }
 }

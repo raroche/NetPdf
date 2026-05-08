@@ -15,50 +15,79 @@ namespace NetPdf.Paginate;
 ///   <item><see cref="InlineContinuation"/> — inline run/cluster split
 ///   inside a line.</item>
 ///   <item><see cref="TableContinuation"/> — table split between rows
-///   (with thead / tfoot repetition).</item>
+///   (with thead / tfoot repetition + cached column layout).</item>
 ///   <item><see cref="FlexContinuation"/> — multi-line flex container
-///   split between flex lines.</item>
+///   split between flex lines (with cross-fragment baseline state).</item>
 ///   <item><see cref="GridContinuation"/> — grid container split between
-///   grid rows.</item>
+///   grid rows (with track-sizing cache).</item>
 /// </list>
 ///
 /// <para>Continuations are immutable + pooled where lifetime allows.
 /// The layouter that produces a continuation is the one that consumes
 /// it on the next-page pass — the type discriminates the resume strategy.</para>
+///
+/// <para><b>Per Phase 3 review fix #7</b> — continuations carry an
+/// optional <c>LayouterState</c> field of an opaque
+/// <see cref="object"/> type. Layouters that need to hand state across
+/// the page boundary (table column-layout cache; flex baseline state;
+/// grid track-sizing cache; inline shaping cache) stash a layouter-
+/// private record there + cast it back on resume. This avoids burning
+/// a per-layouter sealed subtype every time a new piece of cached
+/// state is needed; per the plan, "the type discriminates the resume
+/// strategy" — <i>what's</i> handed across is up to that layouter.</para>
 /// </summary>
 internal abstract record LayoutContinuation;
 
 /// <summary>Block container split between children. Resume at child
-/// <paramref name="ResumeAtChild"/> with <paramref name="ConsumedHeight"/>
-/// already emitted on prior pages.</summary>
+/// <paramref name="ResumeAtChild"/> with <paramref name="ConsumedBlockSize"/>
+/// already emitted on prior pages.
+/// <paramref name="LayouterState"/> per Phase 3 review fix #7 — opaque
+/// layouter-owned state (e.g., margin-collapsing summary state).</summary>
 internal sealed record BlockContinuation(
     int ResumeAtChild,
-    double ConsumedHeight) : LayoutContinuation;
+    double ConsumedBlockSize,
+    object? LayouterState = null) : LayoutContinuation;
 
 /// <summary>Inline run / cluster split inside a line. Resume at run
 /// <paramref name="RunIndex"/>, glyph cluster
-/// <paramref name="ClusterIndex"/>.</summary>
+/// <paramref name="ClusterIndex"/>.
+/// <paramref name="LayouterState"/> per Phase 3 review fix #7 — opaque
+/// state (e.g., the in-progress shaped run buffer that needs to be
+/// carried into the next-page line builder).</summary>
 internal sealed record InlineContinuation(
     int RunIndex,
-    int ClusterIndex) : LayoutContinuation;
+    int ClusterIndex,
+    object? LayouterState = null) : LayoutContinuation;
 
 /// <summary>Table split between rows. <paramref name="RepeatHead"/> +
 /// <paramref name="RepeatFoot"/> control whether <c>&lt;thead&gt;</c> /
 /// <c>&lt;tfoot&gt;</c> are re-emitted on the new page.
-/// <paramref name="NextRowIndex"/> identifies the next row to lay out.</summary>
+/// <paramref name="NextRowIndex"/> identifies the next row to lay out.
+/// <paramref name="ColumnLayoutCache"/> per Phase 3 plan + review fix #7
+/// — opaque cache of the table's resolved column widths so the next-
+/// page resume doesn't re-run the auto-layout pass.</summary>
 internal sealed record TableContinuation(
     bool RepeatHead,
     bool RepeatFoot,
-    int NextRowIndex) : LayoutContinuation;
+    int NextRowIndex,
+    object? ColumnLayoutCache = null) : LayoutContinuation;
 
-/// <summary>Multi-line flex container split between flex lines. Carries
-/// the cross-axis baseline state so the next-page resume can keep
-/// alignment consistent with the on-page lines.</summary>
+/// <summary>Multi-line flex container split between flex lines.
+/// <paramref name="LineIndex"/> identifies the next flex line to
+/// emit. <paramref name="BaselineState"/> per Phase 3 plan §"Flex
+/// baseline alignment across fragments" + review fix #7 — opaque
+/// cross-fragment baseline snapshot so a flex line that splits across
+/// pages keeps its baseline alignment.</summary>
 internal sealed record FlexContinuation(
-    int LineIndex) : LayoutContinuation;
+    int LineIndex,
+    object? BaselineState = null) : LayoutContinuation;
 
-/// <summary>Grid container split between grid rows. Track-sizing cache
-/// is recomputed on resume per the Phase 3 plan; <paramref name="RowIndex"/>
-/// identifies the next row.</summary>
+/// <summary>Grid container split between grid rows.
+/// <paramref name="RowIndex"/> identifies the next grid row to emit.
+/// <paramref name="TrackSizingCache"/> per Phase 3 plan + review fix #7
+/// — opaque snapshot of the resolved track-sizing pass so the next-
+/// page resume skips the (expensive) two-pass intrinsic + flex-track
+/// distribution.</summary>
 internal sealed record GridContinuation(
-    int RowIndex) : LayoutContinuation;
+    int RowIndex,
+    object? TrackSizingCache = null) : LayoutContinuation;

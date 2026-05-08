@@ -22,7 +22,7 @@ internal interface IBreakResolver
 {
     /// <summary>Ask the resolver what to do at the current candidate
     /// break point. The layouter passes the per-page context (so the
-    /// resolver sees <see cref="FragmentainerContext.RemainingHeight"/>)
+    /// resolver sees <see cref="FragmentainerContext.RemainingBlockSize"/>)
     /// + a <see cref="BreakOpportunity"/> describing the candidate.</summary>
     BreakDecision ConsiderBreakAt(BreakOpportunity opportunity, FragmentainerContext ctx);
 

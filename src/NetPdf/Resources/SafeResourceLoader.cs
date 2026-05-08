@@ -125,6 +125,57 @@ public sealed class SafeResourceLoader
             return SafeResourceResult.Failed(uri, kind,
                 $"loader timeout ({_context.Policy.ResourceTimeout.TotalSeconds}s)");
         }
+        catch (OperationCanceledException) when (_context.CancellationToken.IsCancellationRequested)
+        {
+            // Caller cancellation — propagate up the stack so the
+            // pipeline halts. NEVER swallow caller cancellation.
+            throw;
+        }
+        // Per PR #18 review #7 — trap expected loader / I/O exceptions
+        // so a misbehaving user loader can't crash the whole render.
+        // For untrusted-HTML pipelines, attacker-controlled URLs +
+        // attacker-controlled response behavior should land as
+        // SafeResourceResult.Failed (degraded render with a diagnostic),
+        // not as a thrown exception that aborts the conversion. The
+        // catch list covers the standard HTTP / I/O / format-error
+        // surfaces a real loader emits; everything else (e.g.,
+        // OutOfMemoryException, thread abort, AccessViolationException)
+        // bubbles up.
+        catch (System.Net.Http.HttpRequestException ex)
+        {
+            return SafeResourceResult.Failed(uri, kind,
+                $"loader HTTP error: {SanitizeExceptionMessage(ex.Message)}");
+        }
+        catch (System.IO.IOException ex)
+        {
+            return SafeResourceResult.Failed(uri, kind,
+                $"loader I/O error: {SanitizeExceptionMessage(ex.Message)}");
+        }
+        catch (System.IO.InvalidDataException ex)
+        {
+            return SafeResourceResult.Failed(uri, kind,
+                $"loader returned invalid data: {SanitizeExceptionMessage(ex.Message)}");
+        }
+        catch (UriFormatException ex)
+        {
+            return SafeResourceResult.Failed(uri, kind,
+                $"loader URI format error: {SanitizeExceptionMessage(ex.Message)}");
+        }
+        catch (TimeoutException ex)
+        {
+            return SafeResourceResult.Failed(uri, kind,
+                $"loader timeout: {SanitizeExceptionMessage(ex.Message)}");
+        }
+        catch (System.Net.Sockets.SocketException ex)
+        {
+            return SafeResourceResult.Failed(uri, kind,
+                $"loader socket error: {SanitizeExceptionMessage(ex.Message)}");
+        }
+        catch (System.Net.WebException ex)
+        {
+            return SafeResourceResult.Failed(uri, kind,
+                $"loader web error: {SanitizeExceptionMessage(ex.Message)}");
+        }
 
         // 6. Per-resource size cap.
         if (response.Content.Length > _context.Policy.MaxResourceBytes)
@@ -160,7 +211,22 @@ public sealed class SafeResourceLoader
     /// → SSRF" + "image-as-stylesheet" classes of polyglot attacks.
     /// Returns true when MIME is null/empty (some sources lack
     /// Content-Type; the kind-specific decoder still validates magic
-    /// bytes).</summary>
+    /// bytes).
+    ///
+    /// <para><b>Per PR #18 review #2 — SVG removed from the image
+    /// allowlist.</b> SVG is XML, not a magic-byte image format
+    /// <see cref="NetPdf.Pdf.Images.ImageSafetyValidator"/> can validate;
+    /// it can also carry script (<c>&lt;script&gt;</c>), event handlers
+    /// (<c>onload</c>), animation that mutates href / src to dangerous
+    /// schemes (Phase B B-5 strips inline SVG only), external references
+    /// (<c>&lt;use href&gt;</c>, <c>&lt;image href&gt;</c>), and XML
+    /// parser exposure. Once Phase 5 wires resource loading, an
+    /// <c>&lt;img src="evil.svg"&gt;</c> referencing a fetched SVG would
+    /// land in the rendering pipeline without a dedicated sanitizer.
+    /// SVG support requires its own pipeline (parse → sanitize → re-emit
+    /// as a sanitized SVG, OR rasterize to PNG before insertion); until
+    /// that lands as a separate task, <c>image/svg+xml</c> is rejected
+    /// at the MIME gate so the attack surface stays bounded.</para></summary>
     internal static bool IsMimeAllowedForKind(string mime, ResourceKind kind)
     {
         if (string.IsNullOrEmpty(mime)) return true;
@@ -169,8 +235,12 @@ public sealed class SafeResourceLoader
         var bare = (semi < 0 ? mime : mime[..semi]).Trim().ToLowerInvariant();
         return kind switch
         {
+            // Per PR #18 review #2 — image/svg+xml DELIBERATELY OMITTED
+            // until a static-SVG sanitizer/renderer pipeline owns
+            // external SVG. Phase 5 must add explicit SVG handling
+            // (parse + sanitize + safe-rasterize) before re-enabling.
             ResourceKind.Image => bare is "image/png" or "image/jpeg" or "image/gif"
-                or "image/webp" or "image/bmp" or "image/svg+xml",
+                or "image/webp" or "image/bmp",
             // Fonts: standard application/font-* + font/* per RFC 8081 +
             // legacy MIME types still common in the wild.
             ResourceKind.Font => bare is "font/ttf" or "font/otf" or "font/woff"
@@ -184,9 +254,29 @@ public sealed class SafeResourceLoader
     }
 
     /// <summary>Verify the file: URI's resolved path lies under
-    /// <paramref name="baseUri"/>'s directory subtree, after
-    /// canonicalization. Defends against <c>../../etc/passwd</c>
-    /// path-traversal attacks. Per Phase D D-1.</summary>
+    /// <paramref name="baseUri"/>'s directory subtree, after both
+    /// lexical canonicalization (<c>../</c> traversal) AND symlink
+    /// resolution. Defends against <c>../../etc/passwd</c> + symlink-
+    /// based escapes (a symlink inside the template directory pointing
+    /// to <c>/etc</c> would have passed the lexical-only check pre-fix).
+    /// Per Phase D D-1 + PR #18 review #5.</summary>
+    /// <remarks>
+    /// <para>Symlink defense: <c>System.IO.Path.GetFullPath</c>
+    /// only canonicalizes lexical traversal (<c>foo/../bar</c> →
+    /// <c>bar</c>). On Linux + macOS, <c>/docs/secrets</c> can be a
+    /// symlink to <c>/etc/passwd</c>; <c>GetFullPath</c> returns
+    /// <c>/docs/secrets</c> unchanged + the prefix check passes
+    /// (it IS under <c>/docs/</c>). The fix uses
+    /// <c>System.IO.File.ResolveLinkTarget</c> with
+    /// <c>returnFinalTarget: true</c> to walk the symlink chain to its
+    /// real target, then re-validates the prefix. Returns false if the
+    /// resolved target leaves the base subtree.</para>
+    /// <para>Path comparison: <see cref="StringComparison.Ordinal"/> on
+    /// POSIX file systems (case-sensitive) +
+    /// <see cref="StringComparison.OrdinalIgnoreCase"/> on Windows
+    /// (typically case-insensitive). Selected via
+    /// <see cref="OperatingSystem.IsWindows"/>.</para>
+    /// </remarks>
     internal static bool IsFileUriUnderBaseUri(Uri uri, Uri? baseUri, out string reason)
     {
         if (baseUri is null || !baseUri.IsFile)
@@ -205,11 +295,37 @@ public sealed class SafeResourceLoader
             // /foo-bar/secret.txt (prefix collision without separator).
             var sep = System.IO.Path.DirectorySeparatorChar;
             if (!baseDir.EndsWith(sep)) baseDir += sep;
-            if (!requestedPath.StartsWith(baseDir, StringComparison.Ordinal))
+
+            // Per PR #18 review #5 — pick comparer per OS. Windows file
+            // systems are typically case-insensitive (NTFS, FAT); POSIX
+            // is case-sensitive. Match the OS to avoid both false
+            // positives (Linux: /Foo vs /foo) and false negatives
+            // (Windows: /Docs/ vs /docs/).
+            var pathComparison = OperatingSystem.IsWindows()
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal;
+
+            // Lexical check first — cheap rejection before disk I/O.
+            if (!requestedPath.StartsWith(baseDir, pathComparison))
             {
                 reason = $"resolved path '{requestedPath}' is not under base directory '{baseDir}'";
                 return false;
             }
+
+            // Per PR #18 review #5 — symlink resolution. Resolve every
+            // link in the requested path to its real target, then
+            // re-validate against baseDir. If the real target lies
+            // outside the base subtree (the symlink-escape attack),
+            // reject. ResolveLinkTarget returns null when the path is
+            // not a link; falls through with the lexical path
+            // accepted.
+            var realPath = ResolveSymlinkChain(requestedPath);
+            if (!realPath.StartsWith(baseDir, pathComparison))
+            {
+                reason = $"resolved path '{requestedPath}' resolves through a symlink to '{realPath}', which is not under base directory '{baseDir}'";
+                return false;
+            }
+
             reason = string.Empty;
             return true;
         }
@@ -218,6 +334,92 @@ public sealed class SafeResourceLoader
             reason = $"path canonicalization failed: {ex.Message}";
             return false;
         }
+    }
+
+    /// <summary>Per PR #18 review #5 — resolve every symlink in
+    /// <paramref name="path"/> to its real target. Returns the
+    /// canonical path with all symlinks resolved.
+    /// <see cref="System.IO.File.ResolveLinkTarget"/> with
+    /// <c>returnFinalTarget: true</c> walks an entire link chain in
+    /// one call; if the path doesn't exist OR isn't a link, returns
+    /// the input unchanged.</summary>
+    private static string ResolveSymlinkChain(string path)
+    {
+        // Build piece-by-piece so a symlink in the middle of the path
+        // (e.g., /docs/secrets/index.html where /docs/secrets is a
+        // symlink) is resolved too. ResolveLinkTarget on the leaf
+        // alone would miss intermediate symlinks.
+        try
+        {
+            // FileSystemInfo.LinkTarget / ResolveLinkTarget(true)
+            // walks the chain on .NET 6+. Build the path one segment
+            // at a time so any intermediate symlinked directory is
+            // also resolved.
+            var sep = System.IO.Path.DirectorySeparatorChar;
+            var altSep = System.IO.Path.AltDirectorySeparatorChar;
+            var parts = path.Split(new[] { sep, altSep }, StringSplitOptions.RemoveEmptyEntries);
+            // Preserve the leading slash on POSIX.
+            var current = path.StartsWith(sep) || path.StartsWith(altSep)
+                ? sep.ToString()
+                : string.Empty;
+            for (var i = 0; i < parts.Length; i++)
+            {
+                current = System.IO.Path.Combine(current, parts[i]);
+                // Resolve the current prefix if it's a symlink.
+                System.IO.FileSystemInfo? info = i == parts.Length - 1
+                    ? new System.IO.FileInfo(current)
+                    : new System.IO.DirectoryInfo(current);
+                if (info.Exists)
+                {
+                    var resolved = info.ResolveLinkTarget(returnFinalTarget: true);
+                    if (resolved is not null)
+                    {
+                        // Replace current with the resolved real path.
+                        // FullName gives the absolute resolved path.
+                        current = resolved.FullName;
+                    }
+                }
+            }
+            return System.IO.Path.GetFullPath(current);
+        }
+        catch
+        {
+            // Any I/O failure during link resolution → fall back to
+            // lexical path. The caller's prefix check still applied;
+            // we just couldn't deepen the validation.
+            return path;
+        }
+    }
+
+    /// <summary>Per PR #18 review #7 — sanitize exception messages
+    /// before they reach the diagnostic. Loader exceptions can carry
+    /// attacker-supplied URL fragments / response bodies in their
+    /// messages; without a strip step those land in
+    /// <see cref="ResourceFailure.Reason"/> + then in caller logs +
+    /// observability tools (the same ANSI-injection / log-poisoning
+    /// surface Phase A A-6 closed for CSS diagnostics). Strip C0
+    /// (except TAB / LF / CR) + DEL + C1 + cap at 200 chars.</summary>
+    private static string SanitizeExceptionMessage(string? message)
+    {
+        if (string.IsNullOrEmpty(message)) return "(no message)";
+        const int maxLen = 200;
+        var sb = new System.Text.StringBuilder(Math.Min(message.Length, maxLen + 1));
+        for (var i = 0; i < message.Length && sb.Length < maxLen; i++)
+        {
+            var c = message[i];
+            if ((c < 0x20 && c != '\t' && c != '\n' && c != '\r') // C0 except TAB/LF/CR
+                || c == 0x7F                                       // DEL
+                || (c >= 0x80 && c <= 0x9F))                       // C1
+            {
+                sb.Append('?');
+            }
+            else
+            {
+                sb.Append(c);
+            }
+        }
+        if (message.Length > maxLen) sb.Append("...");
+        return sb.ToString();
     }
 }
 

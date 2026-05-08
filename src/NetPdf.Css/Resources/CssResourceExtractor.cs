@@ -79,6 +79,45 @@ internal static class CssResourceExtractor
         return results;
     }
 
+    /// <summary>Per PR #18 review #3 — extract URLs from an
+    /// <c>@font-face</c> rule's <c>src</c> declaration. <c>src</c> in
+    /// other contexts is not URL-bearing, so the regular
+    /// <see cref="ExtractFromDeclaration"/> path doesn't classify it —
+    /// callers walking <c>@font-face</c> AST nodes use this method to
+    /// emit <see cref="CssResourceKind.Font"/> references.
+    ///
+    /// <para>The CSS Fonts L4 §3.1 grammar for <c>@font-face src</c> is
+    /// a comma-separated list where each entry is either
+    /// <c>url(URL) format(...)</c> (with an optional format hint) or
+    /// <c>local(...)</c> (system-font reference, NOT a fetch sink).
+    /// This method extracts every <c>url()</c> + drops the
+    /// <c>format()</c> hint + ignores <c>local()</c>. Multiple <c>url()</c>
+    /// entries are kept in source order (the loader picks the first
+    /// successful fetch per fallback semantics).</para>
+    ///
+    /// <para>This is the attack surface that drove DomPDF RCE-style
+    /// remote-font issues — without explicit extraction, a Phase 5
+    /// font loader could miss <c>@font-face { src: url(...) }</c>
+    /// entirely.</para>
+    /// </summary>
+    public static IReadOnlyList<CssResourceReference> ExtractFromFontFaceSrc(
+        string srcValue, CssSourceLocation location)
+    {
+        ArgumentNullException.ThrowIfNull(srcValue);
+        // Reuse EnumerateUrls — it already handles url() with quote-aware
+        // string skipping. local(...) entries don't begin with url(, so
+        // they don't match the prefix; format() hints sit between
+        // url() entries + don't match either.
+        var urls = EnumerateUrls(srcValue);
+        if (urls.Count == 0) return Array.Empty<CssResourceReference>();
+        var results = new List<CssResourceReference>(urls.Count);
+        foreach (var url in urls)
+        {
+            results.Add(new CssResourceReference(url, CssResourceKind.Font, location));
+        }
+        return results;
+    }
+
     /// <summary>Extract <c>@import</c> URL — both <c>@import url(...)</c>
     /// + the bare <c>@import "..."</c> string form.</summary>
     public static CssResourceReference? ExtractFromImport(string importPrelude, CssSourceLocation location)
@@ -123,47 +162,62 @@ internal static class CssResourceExtractor
     }
 
     /// <summary>Walk <paramref name="value"/> + collect each
-    /// <c>url(...)</c> token's URL text. Quote-aware (skips
-    /// CSS strings) so <c>content: "url(notafetch)"</c> doesn't yield
-    /// a fake URL. Handles bare + quoted url tokens. Does not decode
-    /// CSS escapes — the URL parser at the loader does that.</summary>
+    /// <c>url(...)</c> token's URL text PLUS every string-form URL inside
+    /// resource-bearing functions (<c>image-set()</c>, <c>cross-fade()</c>,
+    /// <c>image()</c>). Quote-aware (skips CSS strings OUTSIDE those
+    /// functions) so <c>content: "url(notafetch)"</c> doesn't yield a
+    /// fake URL, but <c>background-image: image-set("a.png" 1x)</c> still
+    /// extracts <c>"a.png"</c>. Handles bare + quoted url tokens. Does
+    /// not decode CSS escapes — the URL parser at the loader does that.
+    ///
+    /// <para><b>Per PR #18 review #8 — function-aware string
+    /// extraction.</b> CSS Images L4 §6 specifies <c>image-set()</c> +
+    /// <c>cross-fade()</c> + <c>image()</c> as resource-list functions
+    /// that accept either <c>url(...)</c> tokens OR string literals
+    /// (<c>"path"</c>) as URL entries. The pre-fix string-skip logic
+    /// missed every string-form URL inside these functions, leaving an
+    /// extractor-bypass class:
+    /// <c>background-image: image-set("https://attacker/a.png" 1x)</c>
+    /// would not be reported. The fix tracks whether we're inside one
+    /// of these functions + treats string literals there as URLs.</para>
+    /// </summary>
     public static IReadOnlyList<string> EnumerateUrls(string value)
     {
         ArgumentNullException.ThrowIfNull(value);
         if (value.Length < 5) return Array.Empty<string>(); // shortest "url()"
         var results = new List<string>(2);
+        // Track resource-function nesting depth. > 0 means we're inside
+        // image-set() / cross-fade() / image() and string literals are
+        // URL-bearing rather than skip-only.
+        var resourceFnDepth = 0;
         var i = 0;
         while (i < value.Length)
         {
             var c = value[i];
-            // Skip CSS string literals.
+            // CSS string literal handling — when inside a resource fn,
+            // capture it as a URL; otherwise skip it entirely.
             if (c == '"' || c == '\'')
             {
                 var quote = c;
                 i++;
+                var stringStart = i;
                 while (i < value.Length && value[i] != quote)
                 {
                     if (value[i] == '\\' && i + 1 < value.Length) i += 2;
                     else i++;
                 }
+                if (resourceFnDepth > 0 && i <= value.Length)
+                {
+                    var url = value[stringStart..Math.Min(i, value.Length)];
+                    if (!string.IsNullOrEmpty(url)) results.Add(url);
+                }
                 if (i < value.Length) i++;
                 continue;
             }
             // Match url( case-insensitively.
-            if (i + 4 <= value.Length
-                && (value[i] == 'u' || value[i] == 'U')
-                && (value[i + 1] == 'r' || value[i + 1] == 'R')
-                && (value[i + 2] == 'l' || value[i + 2] == 'L')
-                && value[i + 3] == '(')
+            if (TryMatchKeywordOpenParen(value, i, "url"))
             {
-                // Token boundary check — preceded by start-of-string /
-                // whitespace / comma / operator, not by an ident-continue
-                // that would make this a different function (`myurl(...)`).
-                if (i > 0 && IsIdentContinue(value[i - 1]))
-                {
-                    i++;
-                    continue;
-                }
+                if (i > 0 && IsIdentContinue(value[i - 1])) { i++; continue; }
                 var bodyStart = i + 4;
                 var bodyEnd = FindMatchingCloseParen(value, bodyStart);
                 if (bodyEnd < 0) break;
@@ -172,9 +226,86 @@ internal static class CssResourceExtractor
                 i = bodyEnd + 1;
                 continue;
             }
+            // Per PR #18 review #8 — track entry / exit of the three
+            // resource-list functions. We don't recurse into a separate
+            // routine because url() inside these functions still needs
+            // the same regular extraction; only string literals get
+            // additional treatment.
+            if (TryMatchResourceFunctionStart(value, i, out var consumed))
+            {
+                resourceFnDepth++;
+                i += consumed;
+                continue;
+            }
+            if (resourceFnDepth > 0 && c == ')')
+            {
+                resourceFnDepth--;
+                i++;
+                continue;
+            }
             i++;
         }
         return results;
+    }
+
+    /// <summary>Per PR #18 review #8 — true when <paramref name="value"/>
+    /// at <paramref name="pos"/> begins one of the resource-list
+    /// functions: <c>image-set(</c>, <c>cross-fade(</c>, or <c>image(</c>.
+    /// Sets <paramref name="consumed"/> to the number of chars that
+    /// matched (function name + opening paren) on success.</summary>
+    private static bool TryMatchResourceFunctionStart(string value, int pos, out int consumed)
+    {
+        consumed = 0;
+        // image-set( — 10 chars
+        if (TryMatchKeywordOpenParen(value, pos, "image-set"))
+        {
+            if (pos > 0 && IsIdentContinue(value[pos - 1])) return false;
+            consumed = "image-set(".Length;
+            return true;
+        }
+        // cross-fade(
+        if (TryMatchKeywordOpenParen(value, pos, "cross-fade"))
+        {
+            if (pos > 0 && IsIdentContinue(value[pos - 1])) return false;
+            consumed = "cross-fade(".Length;
+            return true;
+        }
+        // image( — must NOT also match image-set; check image- first
+        // and exit early. Actually image( matches "image(" — image-set(
+        // would match image( as a prefix, so we need to disambiguate.
+        // Fix: check the char AFTER "image" — if it's '-', it's
+        // image-set/image-rendering/etc., not bare image(.
+        if (pos + 6 <= value.Length
+            && (value[pos] == 'i' || value[pos] == 'I')
+            && (value[pos + 1] == 'm' || value[pos + 1] == 'M')
+            && (value[pos + 2] == 'a' || value[pos + 2] == 'A')
+            && (value[pos + 3] == 'g' || value[pos + 3] == 'G')
+            && (value[pos + 4] == 'e' || value[pos + 4] == 'E')
+            && value[pos + 5] == '(')
+        {
+            if (pos > 0 && IsIdentContinue(value[pos - 1])) return false;
+            consumed = "image(".Length;
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>Match <paramref name="keyword"/> followed by <c>(</c>
+    /// at <paramref name="pos"/>, ASCII case-insensitive.</summary>
+    private static bool TryMatchKeywordOpenParen(string value, int pos, string keyword)
+    {
+        var len = keyword.Length;
+        if (pos + len + 1 > value.Length) return false;
+        for (var k = 0; k < len; k++)
+        {
+            var a = value[pos + k];
+            var b = keyword[k];
+            if (a == b) continue;
+            if (a is >= 'A' and <= 'Z') a = (char)(a + 32);
+            if (b is >= 'A' and <= 'Z') b = (char)(b + 32);
+            if (a != b) return false;
+        }
+        return value[pos + len] == '(';
     }
 
     private static int FindMatchingCloseParen(string value, int start)

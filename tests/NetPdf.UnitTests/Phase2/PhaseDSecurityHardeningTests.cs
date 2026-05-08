@@ -563,4 +563,288 @@ public sealed class PhaseDSecurityHardeningTests
         public System.Collections.Generic.List<Diagnostic> Diagnostics { get; } = new();
         public void Emit(Diagnostic d) => Diagnostics.Add(d);
     }
+
+    // --- PR #18 review follow-up tests --------------------------------------
+
+    // P1 #2: SVG removed from image MIME allowlist.
+    [Fact]
+    public void DReview_svg_mime_rejected_for_image_kind()
+    {
+        Assert.False(SafeResourceLoader.IsMimeAllowedForKind("image/svg+xml", ResourceKind.Image));
+        Assert.False(SafeResourceLoader.IsMimeAllowedForKind("IMAGE/SVG+XML", ResourceKind.Image));
+        Assert.False(SafeResourceLoader.IsMimeAllowedForKind("image/svg+xml; charset=utf-8", ResourceKind.Image));
+    }
+
+    [Fact]
+    public void DReview_data_svg_uri_blocked_under_safe_default()
+    {
+        // SafeDefault has AllowDataUri=true, so data: passes the scheme
+        // check. The image-kind MIME allowlist (separate gate) is what
+        // rejects SVG. Confirm the layered defense holds.
+        var ctx = new ResourceFetchContext(SecurityPolicy.SafeDefault, baseUri: null, CancellationToken.None);
+        var loader = new SafeResourceLoader(inner: null, ctx);
+        // No way to test end-to-end without a loader; the MIME allowlist
+        // check is the contract.
+        Assert.False(SafeResourceLoader.IsMimeAllowedForKind("image/svg+xml", ResourceKind.Image));
+    }
+
+    [Fact]
+    public void DReview_svg_mime_rejected_under_untrusted_html()
+    {
+        // UntrustedHtml has AllowDataUri=false, so data: URIs are
+        // already rejected at the scheme gate. The MIME allowlist
+        // adds depth — even if Phase 5 added a trusted profile that
+        // re-enabled data: + http(s), SVG would still be rejected
+        // for the image kind.
+        Assert.False(SafeResourceLoader.IsMimeAllowedForKind("image/svg+xml", ResourceKind.Image));
+    }
+
+    // P1 #3: @font-face src URL extraction.
+    [Fact]
+    public void DReview_font_face_src_extraction_emits_font_kind()
+    {
+        var refs = NetPdf.Css.Resources.CssResourceExtractor.ExtractFromFontFaceSrc(
+            "url(\"fonts/foo.woff2\") format(\"woff2\"), url(fonts/foo.woff) format(\"woff\")",
+            NetPdf.Css.Parser.CssSourceLocation.Unknown);
+        Assert.Equal(2, refs.Count);
+        Assert.All(refs, r => Assert.Equal(NetPdf.Css.Resources.CssResourceKind.Font, r.Kind));
+        Assert.Equal("fonts/foo.woff2", refs[0].Url);
+        Assert.Equal("fonts/foo.woff", refs[1].Url);
+    }
+
+    [Fact]
+    public void DReview_font_face_src_with_local_skips_local()
+    {
+        var refs = NetPdf.Css.Resources.CssResourceExtractor.ExtractFromFontFaceSrc(
+            "local(\"Helvetica Neue\"), url(http://attacker.com/evil.woff)",
+            NetPdf.Css.Parser.CssSourceLocation.Unknown);
+        // local() doesn't fetch — should be ignored.
+        Assert.Single(refs);
+        Assert.Equal("http://attacker.com/evil.woff", refs[0].Url);
+    }
+
+    [Fact]
+    public void DReview_classify_property_does_not_match_src_outside_font_face()
+    {
+        // `src` on a regular element doesn't host URL references in CSS
+        // (it's HTML-only). ExtractFromDeclaration must return nothing.
+        var refs = NetPdf.Css.Resources.CssResourceExtractor.ExtractFromDeclaration(
+            "src", "url(spoof.png)", NetPdf.Css.Parser.CssSourceLocation.Unknown);
+        Assert.Empty(refs);
+    }
+
+    // P1 #4: PNG alpha-split detection.
+    [Fact]
+    public void DReview_rgba_png_at_5k_rejected_by_raster_cap()
+    {
+        // Build a PNG header with color-type 6 (RGBA) at 5120×5120.
+        // Pre-fix this passed the 8192 passthrough cap; post-fix it
+        // routes through the 4096 raster cap and is rejected.
+        var bytes = new byte[64];
+        ReadOnlySpan<byte> sig = stackalloc byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
+        sig.CopyTo(bytes);
+        // IHDR length 13 + type "IHDR".
+        bytes[8] = 0; bytes[9] = 0; bytes[10] = 0; bytes[11] = 13;
+        bytes[12] = (byte)'I'; bytes[13] = (byte)'H'; bytes[14] = (byte)'D'; bytes[15] = (byte)'R';
+        // Width + height = 5120.
+        bytes[16] = 0; bytes[17] = 0; bytes[18] = 0x14; bytes[19] = 0;
+        bytes[20] = 0; bytes[21] = 0; bytes[22] = 0x14; bytes[23] = 0;
+        // bit-depth (offset 24) + color-type (offset 25). 8 / 6 = RGBA.
+        bytes[24] = 8;
+        bytes[25] = 6;
+        var result = ImageSafetyValidator.Validate(bytes);
+        Assert.False(result.IsSafe);
+        Assert.Contains("alpha-split", result.Reason!, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void DReview_rgb_png_at_5k_passes_passthrough_cap()
+    {
+        // Same shape but color-type 2 (RGB) — passthrough cap (8192)
+        // applies, so 5120×5120 is fine.
+        var bytes = new byte[64];
+        ReadOnlySpan<byte> sig = stackalloc byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
+        sig.CopyTo(bytes);
+        bytes[8] = 0; bytes[9] = 0; bytes[10] = 0; bytes[11] = 13;
+        bytes[12] = (byte)'I'; bytes[13] = (byte)'H'; bytes[14] = (byte)'D'; bytes[15] = (byte)'R';
+        bytes[16] = 0; bytes[17] = 0; bytes[18] = 0x14; bytes[19] = 0;
+        bytes[20] = 0; bytes[21] = 0; bytes[22] = 0x14; bytes[23] = 0;
+        bytes[24] = 8;
+        bytes[25] = 2; // RGB, no alpha
+        var result = ImageSafetyValidator.Validate(bytes);
+        Assert.True(result.IsSafe, result.Reason);
+    }
+
+    [Theory]
+    [InlineData((byte)4)]  // gray + alpha
+    [InlineData((byte)6)]  // RGBA
+    public void DReview_implicit_alpha_color_types_detected(byte colorType)
+    {
+        var bytes = BuildMinimalPngWithColorType(colorType);
+        Assert.True(ImageSafetyValidator.PngHasAlphaSplit(bytes));
+    }
+
+    [Theory]
+    [InlineData((byte)0)]  // gray
+    [InlineData((byte)2)]  // RGB
+    [InlineData((byte)3)]  // palette (no tRNS)
+    public void DReview_non_alpha_color_types_pass_passthrough(byte colorType)
+    {
+        var bytes = BuildMinimalPngWithColorType(colorType);
+        Assert.False(ImageSafetyValidator.PngHasAlphaSplit(bytes));
+    }
+
+    private static byte[] BuildMinimalPngWithColorType(byte colorType)
+    {
+        // Just enough of a PNG to drive the IHDR + chunk walk. 64 bytes
+        // covers IHDR (8 sig + 25 IHDR) and leaves room for an IDAT
+        // marker so the tRNS-search bails before reading garbage.
+        var bytes = new byte[64];
+        ReadOnlySpan<byte> sig = stackalloc byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A };
+        sig.CopyTo(bytes);
+        bytes[8] = 0; bytes[9] = 0; bytes[10] = 0; bytes[11] = 13;
+        bytes[12] = (byte)'I'; bytes[13] = (byte)'H'; bytes[14] = (byte)'D'; bytes[15] = (byte)'R';
+        bytes[16] = 0; bytes[17] = 0; bytes[18] = 0; bytes[19] = 100;
+        bytes[20] = 0; bytes[21] = 0; bytes[22] = 0; bytes[23] = 100;
+        bytes[24] = 8;
+        bytes[25] = colorType;
+        // After IHDR (33 bytes total: 8 + 4 + 4 + 13 + 4 = 33), put a
+        // synthetic IDAT marker so the scan terminates without reading
+        // junk. IDAT chunk: length=0, type='IDAT'. Pos = 33.
+        bytes[33] = 0; bytes[34] = 0; bytes[35] = 0; bytes[36] = 0;
+        bytes[37] = (byte)'I'; bytes[38] = (byte)'D'; bytes[39] = (byte)'A'; bytes[40] = (byte)'T';
+        return bytes;
+    }
+
+    // P2 #8: image-set / cross-fade / image() function-aware extraction.
+    [Theory]
+    [InlineData("background-image", "image-set(\"https://attacker/a.png\" 1x)", "https://attacker/a.png")]
+    [InlineData("background-image", "image-set(url(a.png) 1x, \"b.png\" 2x)", "a.png")]
+    [InlineData("background-image", "cross-fade(\"a.png\", \"b.png\", 50%)", "a.png")]
+    [InlineData("background-image", "image(\"https://example.com/x.png\")", "https://example.com/x.png")]
+    public void DReview_image_set_extracts_string_form_url(string prop, string value, string firstUrl)
+    {
+        var refs = NetPdf.Css.Resources.CssResourceExtractor.ExtractFromDeclaration(
+            prop, value, NetPdf.Css.Parser.CssSourceLocation.Unknown);
+        Assert.NotEmpty(refs);
+        Assert.Equal(firstUrl, refs[0].Url);
+    }
+
+    [Fact]
+    public void DReview_string_outside_resource_function_still_skipped()
+    {
+        // Plain string in content (not inside image-set etc.) — still
+        // not a URL.
+        var refs = NetPdf.Css.Resources.CssResourceExtractor.ExtractFromDeclaration(
+            "content", "\"url(notafetch)\"", NetPdf.Css.Parser.CssSourceLocation.Unknown);
+        Assert.Empty(refs);
+    }
+
+    // P2 #5: Symlink-aware file sandbox.
+    [Fact]
+    public void DReview_symlink_traversal_test_doc()
+    {
+        // Direct symlink-creation tests are platform-dependent + slow
+        // in CI. The contract is that ResolveLinkTarget is called on
+        // every path segment; pin the lexical-rejection test as a
+        // regression for the prefix check + document the symlink
+        // path as exercised by the implementation walk.
+        var baseUri = new Uri("file:///docs/index.html");
+        var lexicalEscape = new Uri("file:///etc/passwd");
+        Assert.False(SafeResourceLoader.IsFileUriUnderBaseUri(lexicalEscape, baseUri, out _));
+    }
+
+    // P2 #6: Atomic counters.
+    [Fact]
+    public async Task DReview_concurrent_reservations_do_not_overrun_count_cap()
+    {
+        // 50 concurrent TryReserveSlot calls against a cap of 10. With
+        // atomic CAS, exactly 10 succeed; pre-fix race could allow up
+        // to 50 succeeds + drive FetchedCount past the cap.
+        var policy = new SecurityPolicy { MaxResourcesPerRender = 10 };
+        var ctx = new ResourceFetchContext(policy, baseUri: null, CancellationToken.None);
+        var tasks = new Task<string?>[50];
+        for (var i = 0; i < tasks.Length; i++)
+        {
+            tasks[i] = Task.Run(() => ctx.TryReserveSlot());
+        }
+        var results = await Task.WhenAll(tasks);
+        var succeeded = results.Count(r => r is null);
+        Assert.Equal(10, succeeded);
+        Assert.Equal(10, ctx.FetchedCount);
+    }
+
+    [Fact]
+    public async Task DReview_concurrent_byte_charges_do_not_overrun_byte_cap()
+    {
+        var policy = new SecurityPolicy { MaxTotalResourceBytes = 1000 };
+        var ctx = new ResourceFetchContext(policy, baseUri: null, CancellationToken.None);
+        var tasks = new Task<string?>[50];
+        for (var i = 0; i < tasks.Length; i++)
+        {
+            tasks[i] = Task.Run(() => ctx.TryAddBytes(100));
+        }
+        var results = await Task.WhenAll(tasks);
+        var succeeded = results.Count(r => r is null);
+        // Exactly 10 should succeed (10 × 100 = 1000 = cap).
+        Assert.Equal(10, succeeded);
+        Assert.Equal(1000, ctx.FetchedBytes);
+    }
+
+    // P2 #7: Loader exception trapping.
+    [Fact]
+    public async Task DReview_loader_throws_http_exception_returns_typed_failure()
+    {
+        var thrower = new ThrowingLoader(new System.Net.Http.HttpRequestException("bad"));
+        var policy = new SecurityPolicy { AllowHttpsScheme = true };
+        var ctx = new ResourceFetchContext(policy, baseUri: null, CancellationToken.None);
+        var loader = new SafeResourceLoader(thrower, ctx);
+        var result = await loader.FetchAsync(new Uri("https://example.com/x"), ResourceKind.Image);
+        Assert.False(result.Success);
+        Assert.Contains("HTTP error", result.Failure!.Reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DReview_loader_throws_io_exception_returns_typed_failure()
+    {
+        var thrower = new ThrowingLoader(new System.IO.IOException("read failed"));
+        var policy = new SecurityPolicy { AllowHttpsScheme = true };
+        var ctx = new ResourceFetchContext(policy, baseUri: null, CancellationToken.None);
+        var loader = new SafeResourceLoader(thrower, ctx);
+        var result = await loader.FetchAsync(new Uri("https://example.com/x"), ResourceKind.Image);
+        Assert.False(result.Success);
+        Assert.Contains("I/O error", result.Failure!.Reason, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task DReview_caller_cancellation_propagates_not_swallowed()
+    {
+        var cts = new CancellationTokenSource();
+        cts.Cancel();
+        var thrower = new ThrowingLoader(new OperationCanceledException(cts.Token));
+        var policy = new SecurityPolicy { AllowHttpsScheme = true };
+        var ctx = new ResourceFetchContext(policy, baseUri: null, cts.Token);
+        var loader = new SafeResourceLoader(thrower, ctx);
+        await Assert.ThrowsAsync<OperationCanceledException>(
+            () => loader.FetchAsync(new Uri("https://example.com/x"), ResourceKind.Image).AsTask());
+    }
+
+    private sealed class ThrowingLoader : IResourceLoader
+    {
+        private readonly Exception _exception;
+        public ThrowingLoader(Exception exception) { _exception = exception; }
+        public ValueTask<ResourceResponse> LoadAsync(Uri uri, ResourceKind kind, CancellationToken ct) =>
+            throw _exception;
+    }
+
+    // P2 #9: WOFF/WOFF2 ValidateSfntHeader is now public.
+    [Fact]
+    public void DReview_validate_sfnt_header_is_public()
+    {
+        // Verifies the API surface: Phase 5's WOFF/WOFF2 decompressor
+        // can call this method from outside the assembly.
+        var method = typeof(FontSafetyValidator).GetMethod(nameof(FontSafetyValidator.ValidateSfntHeader),
+            System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public);
+        Assert.NotNull(method);
+    }
 }

@@ -142,14 +142,27 @@ public static class FontSafetyValidator
     /// sanity (numTables + directory bounds), this validates EVERY table
     /// record's offset+length lies within the file + rejects any font
     /// that uses one of the danger-class tables (<c>SVG </c>, <c>sbix</c>,
-    /// <c>CBDT</c>, <c>CBLC</c>, <c>COLR</c>, <c>CPAL</c>) NetPdf v1
+    /// <c>CBDT</c>, <c>CBLC</c>, <c>EBDT</c>, <c>EBLC</c>) NetPdf v1
     /// doesn't render. SVG-in-OpenType has been a real attack surface
     /// (parsers process SVG payloads as graphics); bitmap glyph tables
     /// route through different rendering code we don't own. Rejecting
     /// them upfront keeps the attack surface bounded; a font with these
     /// tables alongside <c>glyf</c>/<c>CFF</c> will still render via
-    /// the supported tables in a future relaxation.</summary>
-    internal static ValidationResult ValidateSfntHeader(ReadOnlySpan<byte> fontBytes, FontFormat format)
+    /// the supported tables in a future relaxation.
+    ///
+    /// <para><b>Per PR #18 review #9 — public for post-decompression
+    /// re-validation.</b> WOFF / WOFF2 wrap an sfnt + apply zlib /
+    /// Brotli compression to the table data. The pre-decompression
+    /// validators (<see cref="ValidateWoffHeader"/> /
+    /// <see cref="ValidateWoff2Header"/>) only see the wrapper, not the
+    /// decoded sfnt directory. Phase 5's WOFF/WOFF2 decoder MUST call
+    /// this method on the reconstructed sfnt bytes BEFORE handing them
+    /// to <c>OpenTypeFont.Parse</c> / HarfBuzz — without that, a
+    /// wrapped font with a <c>SVG </c> table sneaks past the table-tag
+    /// denylist. Made <c>public</c> (was internal) so Phase 5 can
+    /// invoke it from the decompressor without a back-channel.</para>
+    /// </summary>
+    public static ValidationResult ValidateSfntHeader(ReadOnlySpan<byte> fontBytes, FontFormat format)
     {
         // sfnt header: uint32 sfntVersion, uint16 numTables, uint16 searchRange,
         // uint16 entrySelector, uint16 rangeShift. All BE.

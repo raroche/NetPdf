@@ -1,6 +1,9 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System;
+using System.Collections.Generic;
+
 namespace NetPdf.Paginate;
 
 /// <summary>
@@ -101,6 +104,58 @@ internal sealed class BreakResolver : IBreakResolver
         // The Task 4 optimizer replaces this with cost-minimizing
         // candidate selection.
         return new BreakDecision(BreakAction.BreakHere, cost, RewindTo: null);
+    }
+
+    /// <inheritdoc />
+    /// <remarks>Per Phase 3 Task 4 — the greedy resolver implements
+    /// <see cref="ResolveBreaks"/> by walking the candidate list once
+    /// + committing a break when the chunk overflows OR a forced
+    /// break demands it. Identical algorithm to
+    /// <see cref="Optimizer"/>'s greedy fallback path (which the
+    /// optimizing resolver uses on budget-exceeded windows). The
+    /// result's <see cref="OptimizerResult.FellBackToGreedy"/> is
+    /// <see langword="false"/> here — this resolver IS greedy by
+    /// design, not falling back from anything.</remarks>
+    public OptimizerResult ResolveBreaks(
+        IReadOnlyList<BreakOpportunity> opportunities, FragmentainerContext ctx)
+    {
+        ArgumentNullException.ThrowIfNull(opportunities);
+        ArgumentNullException.ThrowIfNull(ctx);
+
+        if (opportunities.Count == 0)
+        {
+            return OptimizerResult.Empty;
+        }
+
+        var breaks = new List<int>(capacity: Math.Min(64, opportunities.Count));
+        double totalCost = 0;
+        double pageStart = 0;
+
+        for (var i = 0; i < opportunities.Count; i++)
+        {
+            var opp = opportunities[i];
+            opp.EnsureValid();
+
+            var pageSoFar = opp.UsedBlockSize - pageStart;
+            var wouldOverflow = (pageSoFar + opp.ChunkBlockSize) > ctx.BlockSize;
+
+            if (opp.ForceBreak || wouldOverflow)
+            {
+                var cost = CostModel.Score(
+                    opp, ctx.BlockSize, OrphansRequired, WidowsRequired,
+                    lineCountAfterBreak: WidowsRequired);
+                if (pageSoFar > ctx.BlockSize)
+                {
+                    cost += CostModel.BreakInsideAvoidViolation;
+                }
+                breaks.Add(i);
+                totalCost += cost;
+                pageStart = opp.UsedBlockSize;
+            }
+        }
+
+        return new OptimizerResult(breaks, totalCost,
+            FellBackToGreedy: false, FallbackReason: null);
     }
 
     /// <inheritdoc />

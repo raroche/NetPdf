@@ -1,7 +1,9 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System;
 using System.Collections.Generic;
+using System.Threading;
 
 namespace NetPdf.Paginate;
 
@@ -51,7 +53,7 @@ namespace NetPdf.Paginate;
 /// <para>The two coordinate spaces coincide on the first page. The
 /// distinction matters only when batching across multiple pages.</para>
 /// </summary>
-internal interface IBreakResolver
+internal interface IBreakResolver : IDisposable
 {
     /// <summary>Ask the resolver what to do at the current candidate
     /// break point. The layouter passes the per-page context (so the
@@ -86,8 +88,18 @@ internal interface IBreakResolver
     /// candidate range fits on a single fragmentainer + no forced
     /// break demands one" (per Phase 3 Task 4 review fix #1 +
     /// Copilot #2).</para></summary>
+    /// <remarks>Per PR #24 review pass — accepts a
+    /// <see cref="CancellationToken"/> so batched candidate windows
+    /// (inline / table / flex / grid layouters that pre-compute
+    /// hundreds-to-thousands of opportunities) can be cancelled mid-
+    /// optimization. Attempt-level cancellation in
+    /// <see cref="LayoutRetryCoordinator.Run"/> isn't sufficient on
+    /// its own — a single <c>ResolveBreaks</c> call on a
+    /// pathological input can run for seconds.</remarks>
     OptimizerResult ResolveBreaks(
-        IReadOnlyList<BreakOpportunity> opportunities, FragmentainerContext ctx);
+        IReadOnlyList<BreakOpportunity> opportunities,
+        FragmentainerContext ctx,
+        CancellationToken cancellationToken = default);
 
     /// <summary>Register a checkpoint that the resolver may name in a
     /// subsequent <see cref="BreakAction.Rewind"/> decision. Per
@@ -114,4 +126,13 @@ internal interface IBreakResolver
     /// token stays inside the resolver so callers can't accidentally
     /// double-Return through this read path.</summary>
     LayoutCheckpoint? GetLastCheckpoint();
+
+    // Per Phase 3 Task 5 PR #21 review fix #4 — Dispose is inherited
+    // from IDisposable. Implementations release the final held
+    // checkpoint lease so the last registered checkpoint doesn't pin
+    // its referenced graphs (continuation, named-strings snapshot,
+    // float state) past the render. Pre-fix the resolver held its
+    // final checkpoint forever — leaking one checkpoint per render.
+    // Dispose must be idempotent: a second call after the first is
+    // a no-op (default-struct lease has null Checkpoint).
 }

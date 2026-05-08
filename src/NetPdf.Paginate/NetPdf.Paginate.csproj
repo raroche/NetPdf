@@ -7,12 +7,25 @@
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
-  <ItemGroup>
-    <ProjectReference Include="..\NetPdf.Layout\NetPdf.Layout.csproj" />
-  </ItemGroup>
+  <!-- Per Phase 3 Task 7 — Paginate hosts the layouter-facing interfaces
+       (ILayouter, LayoutCheckpoint, LayoutContinuation, LayoutContext,
+       IBreakResolver). NetPdf.Layout REFERENCES this assembly so its
+       layouters can implement ILayouter. The reverse direction would
+       create a dependency cycle. NetPdf.Paginate is therefore a true
+       leaf node — it has ZERO project references.
 
+       The diagnostic-codes parity check (PaginateDiagnosticCodes vs
+       NetPdf.DiagnosticCodes) is enforced at TEST time by
+       NetPdf.UnitTests, which references both assemblies. There is
+       no build-time dependency from Paginate to NetPdf.
+
+       Pre-Task-7 the project reference ran NetPdf.Paginate -> NetPdf.Layout,
+       but Paginate never actually used any Layout types — the reference
+       was dead. Flipping it lets Tasks 7+ build layouters in NetPdf.Layout
+       without circular-dependency surgery. -->
   <ItemGroup>
     <InternalsVisibleTo Include="NetPdf" />
+    <InternalsVisibleTo Include="NetPdf.Layout" />
     <InternalsVisibleTo Include="NetPdf.Paint" />
     <InternalsVisibleTo Include="NetPdf.UnitTests" />
     <InternalsVisibleTo Include="NetPdf.PaginationGolden" />

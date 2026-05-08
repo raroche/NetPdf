@@ -819,14 +819,58 @@ public sealed class PhaseDSecurityHardeningTests
     {
         // Pathological but legal — image-set inside cross-fade. Both
         // are resource-list functions, so strings at either level are
-        // URLs. The fix must not break this: nested resource-fn
-        // depths still count as resource-fn level (innerNonResourceDepth
-        // stays at 0 because the inner is opened via
-        // TryMatchResourceFunctionStart, not as a non-resource paren).
+        // URLs. The fix must not break this: nested resource-fn levels
+        // still count as resource-fn level (the per-level helper-depth
+        // stack pushes a new 0 entry on each resource-fn entry, so
+        // strings at that new level are captured).
         var refs = NetPdf.Css.Resources.CssResourceExtractor.ExtractFromDeclaration(
             "background-image",
             "cross-fade(image-set(\"a.png\" 1x), \"b.png\", 50%)",
             NetPdf.Css.Parser.CssSourceLocation.Unknown);
+        Assert.Equal(2, refs.Count);
+        Assert.Equal("a.png", refs[0].Url);
+        Assert.Equal("b.png", refs[1].Url);
+    }
+
+    [Fact]
+    public void PostTask7_resource_fn_nested_inside_helper_extracts_strings_correctly()
+    {
+        // Per Copilot inline review — the pre-fix single-counter design
+        // got the wrong answer when a resource fn appeared INSIDE a
+        // helper:
+        //   image-set(type(image-set("a.png" 1x)), "b.png" 2x)
+        //
+        // Pre-fix walk:
+        //   - outer image-set( → resourceFnDepth=1
+        //   - type(            → innerNonResourceDepth=1
+        //   - inner image-set( → resourceFnDepth=2 (helper-depth NOT
+        //                        reset → still 1)
+        //   - "a.png"          → innerNonResourceDepth=1 → NOT captured
+        //                        (incorrect — image-set IS a resource
+        //                        fn even when nested in a helper)
+        //   - ) of inner       → innerNonResourceDepth=0 (decrements
+        //                        WRONG counter — should be the inner
+        //                        image-set's level popping)
+        //   - ) of type        → resourceFnDepth=1 (innerNonResourceDepth
+        //                        was already 0 → decrements wrong field)
+        //   - "b.png"          → captured (lucky — state happened to
+        //                        end up consistent)
+        //   - ) of outer       → resourceFnDepth=0
+        //
+        // Post-fix per-level stack:
+        //   - outer image-set( → helperDepths=[0]
+        //   - type(            → helperDepths=[1]  (helper inside outer)
+        //   - inner image-set( → helperDepths=[1, 0]  (push fresh level)
+        //   - "a.png"          → top=0 → captured ✓
+        //   - ) of inner       → top=0, popped → helperDepths=[1]
+        //   - ) of type        → top=1>0, decrement → helperDepths=[0]
+        //   - "b.png"          → top=0 → captured ✓
+        //   - ) of outer       → top=0, popped → helperDepths=[]
+        var refs = NetPdf.Css.Resources.CssResourceExtractor.ExtractFromDeclaration(
+            "background-image",
+            "image-set(type(image-set(\"a.png\" 1x)), \"b.png\" 2x)",
+            NetPdf.Css.Parser.CssSourceLocation.Unknown);
+        // Both URLs captured. Pre-fix would have missed "a.png".
         Assert.Equal(2, refs.Count);
         Assert.Equal("a.png", refs[0].Url);
         Assert.Equal("b.png", refs[1].Url);

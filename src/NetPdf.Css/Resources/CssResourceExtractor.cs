@@ -208,16 +208,33 @@ internal static class CssResourceExtractor
         ArgumentNullException.ThrowIfNull(value);
         if (value.Length < 5) return Array.Empty<string>(); // shortest "url()"
         var results = new List<string>(2);
-        // Track resource-function nesting depth. > 0 means we're inside
-        // image-set() / cross-fade() / image() and string literals are
-        // URL-bearing rather than skip-only.
-        var resourceFnDepth = 0;
-        // Per post-Task-7 review — track non-resource paren nesting
-        // INSIDE the current resource fn body. While > 0 we're inside
-        // a helper like type() or format(); strings are NOT URLs
-        // and the helper's closing ) decrements this counter, NOT
-        // the resource-fn depth.
-        var innerNonResourceDepth = 0;
+        // Per post-Task-7 review (Copilot inline) — track helper-paren
+        // depth PER resource-fn level, not as a single shared counter.
+        // The pre-fix single-counter design got the wrong answer for
+        // a resource fn nested inside a helper, e.g.,
+        // `image-set(type(image-set("a.png" 1x)), "b.png" 2x)`:
+        //   - When the inner image-set was entered, the outer's helper-
+        //     depth (incremented by `type(`) was preserved, so "a.png"
+        //     looked like it was inside a helper + was NOT captured.
+        //   - Worse, the inner image-set's closing `)` decremented the
+        //     shared helper-counter instead of the resource-fn counter,
+        //     leaving subsequent state inconsistent.
+        //
+        // Stack-based design: each entry in `helperDepths` represents
+        // ONE active resource-fn level. The TOP entry is the helper-
+        // paren depth INSIDE the innermost active resource fn. When
+        // we enter a new resource fn (nested or top-level), we push 0
+        // (helper depth resets for the new level). When we close a
+        // resource fn (top entry's helper depth is 0 + we see `)`), we
+        // pop. Helper `(` increments the top; helper `)` decrements
+        // the top.
+        //
+        // Strings count as URLs iff:
+        //   helperDepths.Count > 0   (inside SOME resource fn)
+        //   AND helperDepths[^1] == 0 (at IMMEDIATE level of innermost
+        //                              resource fn — not nested in a
+        //                              helper)
+        var helperDepths = new List<int>(2);
         var i = 0;
         while (i < value.Length)
         {
@@ -235,8 +252,8 @@ internal static class CssResourceExtractor
                     if (value[i] == '\\' && i + 1 < value.Length) i += 2;
                     else i++;
                 }
-                if (resourceFnDepth > 0
-                    && innerNonResourceDepth == 0
+                if (helperDepths.Count > 0
+                    && helperDepths[^1] == 0
                     && i <= value.Length)
                 {
                     var url = value[stringStart..Math.Min(i, value.Length)];
@@ -266,44 +283,45 @@ internal static class CssResourceExtractor
             // additional treatment.
             if (TryMatchResourceFunctionStart(value, i, out var consumed))
             {
-                resourceFnDepth++;
-                // Reset inner-non-resource depth — the new resource-fn
-                // body starts fresh at depth 0.
-                // (Nested non-resource depth is per-resource-fn — when
-                // we re-enter the outer fn after the inner closes, the
-                // outer's inner depth is whatever it was before. We
-                // track this implicitly via the close-paren branch
-                // below, which decrements innerNonResourceDepth before
-                // resourceFnDepth.)
+                // Push a new resource-fn level with helper-depth 0.
+                // Per Copilot review — even when nested INSIDE a
+                // helper, the new resource fn's body starts fresh at
+                // helper-depth 0. The outer helper-depth is preserved
+                // on the lower stack entry + restored when this fn
+                // pops.
+                helperDepths.Add(0);
                 i += consumed;
                 continue;
             }
-            // Inside a resource fn: track nested non-resource ( and ).
-            if (resourceFnDepth > 0)
+            // Inside a resource fn (any level)?
+            if (helperDepths.Count > 0)
             {
                 if (c == '(')
                 {
-                    // Some non-resource function opens. Could be type(),
-                    // format(), calc(), etc. Track its nesting so its
-                    // strings + closing ) don't pollute the outer
-                    // resource-fn state.
-                    innerNonResourceDepth++;
+                    // Some non-resource function opens (type, format,
+                    // calc, etc.). Increment the INNERMOST resource
+                    // fn's helper-depth so its strings + closing `)`
+                    // don't pollute outer state.
+                    helperDepths[^1]++;
                     i++;
                     continue;
                 }
                 if (c == ')')
                 {
-                    if (innerNonResourceDepth > 0)
+                    if (helperDepths[^1] > 0)
                     {
-                        // Closing a helper inside the resource fn.
-                        // Resource-fn depth STAYS — we're still
-                        // collecting from its body.
-                        innerNonResourceDepth--;
+                        // Closing a helper inside the innermost
+                        // resource fn. Helper-depth at this level
+                        // decrements; the resource-fn level itself
+                        // stays.
+                        helperDepths[^1]--;
                     }
                     else
                     {
-                        // Closing the resource fn itself.
-                        resourceFnDepth--;
+                        // Closing the innermost resource fn itself.
+                        // Pop the level — outer level (if any) is
+                        // restored as the new top.
+                        helperDepths.RemoveAt(helperDepths.Count - 1);
                     }
                     i++;
                     continue;

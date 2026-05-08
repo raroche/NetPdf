@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Threading;
 
 namespace NetPdf.Paginate;
 
@@ -87,8 +88,18 @@ internal interface IBreakResolver : IDisposable
     /// candidate range fits on a single fragmentainer + no forced
     /// break demands one" (per Phase 3 Task 4 review fix #1 +
     /// Copilot #2).</para></summary>
+    /// <remarks>Per PR #24 review pass — accepts a
+    /// <see cref="CancellationToken"/> so batched candidate windows
+    /// (inline / table / flex / grid layouters that pre-compute
+    /// hundreds-to-thousands of opportunities) can be cancelled mid-
+    /// optimization. Attempt-level cancellation in
+    /// <see cref="LayoutRetryCoordinator.Run"/> isn't sufficient on
+    /// its own — a single <c>ResolveBreaks</c> call on a
+    /// pathological input can run for seconds.</remarks>
     OptimizerResult ResolveBreaks(
-        IReadOnlyList<BreakOpportunity> opportunities, FragmentainerContext ctx);
+        IReadOnlyList<BreakOpportunity> opportunities,
+        FragmentainerContext ctx,
+        CancellationToken cancellationToken = default);
 
     /// <summary>Register a checkpoint that the resolver may name in a
     /// subsequent <see cref="BreakAction.Rewind"/> decision. Per

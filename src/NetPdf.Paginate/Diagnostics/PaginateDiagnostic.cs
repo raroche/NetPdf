@@ -15,7 +15,10 @@ namespace NetPdf.Paginate.Diagnostics;
 /// <para>Same pattern as <c>NetPdf.Css.Diagnostics.CssDiagnostic</c>
 /// — internal-to-the-pipeline diagnostic types that the facade adapts
 /// at the boundary. Keeps <c>NetPdf.Paginate</c>'s dependency direction
-/// clean.</para>
+/// clean. Per PR #24 review pass (P0 defensive) — XML doc kept as
+/// plain <c>...</c> text rather than cross-assembly cref so the doc
+/// resolves regardless of whether NetPdf.Paginate has a transitive
+/// reference to NetPdf.Css.</para>
 /// </summary>
 /// <param name="Code">Stable diagnostic code from
 /// <see cref="PaginateDiagnosticCodes"/>; mirrors the public

@@ -11,7 +11,10 @@ namespace NetPdf.Paginate.Diagnostics;
 ///
 /// <para>Same pattern as
 /// <c>NetPdf.Css.Diagnostics.ICssDiagnosticsSink</c> — an
-/// internal-to-the-pipeline interface that the public facade adapts.</para>
+/// internal-to-the-pipeline interface that the public facade adapts.
+/// Per PR #24 review pass (P0 defensive) — XML doc kept as plain
+/// text rather than cross-assembly cref so the doc resolves
+/// regardless of NetPdf.Paginate's transitive references.</para>
 ///
 /// <para><b>Thread safety.</b> Implementations should be thread-safe;
 /// pagination may emit diagnostics from background threads (e.g.,
@@ -21,6 +24,16 @@ namespace NetPdf.Paginate.Diagnostics;
 internal interface IPaginateDiagnosticsSink
 {
     /// <summary>Emit a single diagnostic. Implementations MUST NOT
-    /// throw; if buffering is necessary, swallow + log internally.</summary>
+    /// throw; if buffering is necessary, swallow + log internally.
+    ///
+    /// <para>Per PR #24 review pass — emission sites in the pagination
+    /// pipeline (<see cref="LayoutRetryCoordinator"/> +
+    /// <see cref="OptimizingBreakResolver"/>) wrap the call in
+    /// try/catch defensively. A misbehaving sink (one that violates
+    /// the no-throw contract) cannot take down the layout pipeline;
+    /// the exception is dropped on the floor + the layouter's retry
+    /// state stays consistent. Tests with a recording sink rely on
+    /// the no-throw contract; tests with a throwing sink verify the
+    /// pipeline survives.</para></summary>
     void Emit(PaginateDiagnostic diagnostic);
 }

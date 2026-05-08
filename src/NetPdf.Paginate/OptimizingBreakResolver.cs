@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using NetPdf.Paginate.Diagnostics;
 
 namespace NetPdf.Paginate;
@@ -148,7 +149,9 @@ internal sealed class OptimizingBreakResolver : IBreakResolver
     ///   vs no-feasible-pair root causes.</item>
     /// </list></remarks>
     public OptimizerResult ResolveBreaks(
-        IReadOnlyList<BreakOpportunity> opportunities, FragmentainerContext ctx)
+        IReadOnlyList<BreakOpportunity> opportunities,
+        FragmentainerContext ctx,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(opportunities);
         ArgumentNullException.ThrowIfNull(ctx);
@@ -157,15 +160,21 @@ internal sealed class OptimizingBreakResolver : IBreakResolver
             opportunities,
             contentBlockSize: ctx.BlockSize,
             orphansRequired: OrphansRequired,
-            widowsRequired: WidowsRequired);
+            widowsRequired: WidowsRequired,
+            cancellationToken: cancellationToken);
 
         if (result.FellBackToGreedy)
         {
             FallbackCount++;
-            // Per PR #21 review fix #5 — emit the diagnostic so it
-            // can't be silently dropped by future layouters that forget
-            // to inspect FellBackToGreedy.
-            Diagnostics?.Emit(new PaginateDiagnostic(
+            // Per PR #21 review fix #5 + PR #24 review pass — emit the
+            // diagnostic guarded against sink throws. The
+            // IPaginateDiagnosticsSink contract says Emit MUST NOT
+            // throw, but a misbehaving sink shouldn't be able to take
+            // down the layout pipeline. Catch + drop on the floor;
+            // the FallbackCount is still incremented so observability
+            // tools that check the resolver instance can detect the
+            // condition.
+            SafeEmit(Diagnostics, new PaginateDiagnostic(
                 PaginateDiagnosticCodes.PaginationOptimizerFallback001,
                 $"Optimizer fell back to greedy: {result.FallbackReason ?? "<no reason given>"}",
                 PaginateDiagnosticSeverity.Info));
@@ -204,5 +213,26 @@ internal sealed class OptimizingBreakResolver : IBreakResolver
             LayoutCheckpointPool.Return(_lastLease);
             _lastLease = default;
         }
+    }
+
+    /// <summary>Per PR #24 review pass — guarded diagnostic emission.
+    /// The <see cref="IPaginateDiagnosticsSink"/> contract says
+    /// implementations MUST NOT throw, but a misbehaving sink (e.g.,
+    /// a hostile host adapter) shouldn't be able to take down the
+    /// layout pipeline. Wraps <see cref="IPaginateDiagnosticsSink.Emit"/>
+    /// in try/catch + drops the exception on the floor — the
+    /// fallback count is still incremented at the call site so
+    /// observability tools can detect the condition without parsing
+    /// diagnostics.
+    ///
+    /// <para>Catches all exceptions deliberately. The alternative —
+    /// letting a sink throw bubble up — would corrupt the layouter's
+    /// retry state (Capture / Register lifecycle) without any
+    /// recovery path.</para></summary>
+    internal static void SafeEmit(IPaginateDiagnosticsSink? sink, PaginateDiagnostic diagnostic)
+    {
+        if (sink is null) return;
+        try { sink.Emit(diagnostic); }
+        catch { /* contract violation by sink — drop on floor */ }
     }
 }

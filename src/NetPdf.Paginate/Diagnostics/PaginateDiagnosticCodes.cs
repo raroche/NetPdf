@@ -14,7 +14,8 @@ namespace NetPdf.Paginate.Diagnostics;
 ///
 /// <para>Same pattern as <c>NetPdf.Css.Diagnostics.CssDiagnosticCodes</c>
 /// — internal-to-the-pipeline string-constant mirror of the public
-/// facade's diagnostic codes.</para>
+/// facade's diagnostic codes. Per PR #24 review pass (P0 defensive)
+/// — kept as plain text rather than cross-assembly cref.</para>
 /// </summary>
 internal static class PaginateDiagnosticCodes
 {

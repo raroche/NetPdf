@@ -43,12 +43,48 @@ namespace NetPdf;
 /// </summary>
 public static class UriSafetyValidator
 {
+    /// <summary>Per PR #16 review user-recommendation #5 + Copilot review #8 —
+    /// the result of <see cref="Validate"/> is no longer a binary
+    /// safe/unsafe split. <c>file:</c> URIs under the <c>AllowFileSchemeUnderBaseUri</c>
+    /// default need a base-path check that this validator does not perform
+    /// (it has no <c>BaseUri</c> in scope), and treating the
+    /// scheme-allowlist verdict as a complete answer led to easy misuse.
+    /// The three-state <see cref="SafetyOutcome"/> makes the contract
+    /// explicit at the call site.</summary>
+    public enum SafetyOutcome
+    {
+        /// <summary>Scheme + host both pass policy. The loader may proceed
+        /// with the fetch.</summary>
+        Safe = 0,
+        /// <summary>Scheme or host violates policy. The loader must reject
+        /// the fetch + emit <c>RES-SECURITY-DENIED-001</c>.</summary>
+        Unsafe = 1,
+        /// <summary>Scheme is allowed but a follow-up check is required
+        /// before the fetch is safe. For <c>file:</c> URIs this means the
+        /// loader must verify the resolved path lies under
+        /// <c>HtmlPdfOptions.BaseUri</c>'s directory subtree (the
+        /// <c>AllowFileSchemeUnderBaseUri</c> contract). The validator
+        /// cannot perform this check itself because it does not know the
+        /// active <c>BaseUri</c>.</summary>
+        RequiresBasePathCheck = 2,
+    }
+
     /// <summary>Result of a validation check.</summary>
-    /// <param name="IsSafe"><see langword="true"/> when the URI passes both
-    /// scheme + host policy checks.</param>
-    /// <param name="Reason">When unsafe, a human-readable reason suitable for
-    /// inclusion in a diagnostic message. <see langword="null"/> when safe.</param>
-    public readonly record struct Verdict(bool IsSafe, string? Reason);
+    /// <param name="Outcome">The three-state safety verdict.</param>
+    /// <param name="Reason">When <see cref="Outcome"/> is
+    /// <see cref="SafetyOutcome.Unsafe"/>, a human-readable reason
+    /// suitable for diagnostic emission. For
+    /// <see cref="SafetyOutcome.RequiresBasePathCheck"/>, names the
+    /// follow-up check the loader must perform. <see langword="null"/>
+    /// when <see cref="Outcome"/> is <see cref="SafetyOutcome.Safe"/>.</param>
+    public readonly record struct Verdict(SafetyOutcome Outcome, string? Reason)
+    {
+        /// <summary>Convenience: <see langword="true"/> only when
+        /// <see cref="Outcome"/> is <see cref="SafetyOutcome.Safe"/>.
+        /// Callers that need the three-state distinction should switch
+        /// on <see cref="Outcome"/> directly.</summary>
+        public bool IsSafe => Outcome == SafetyOutcome.Safe;
+    }
 
     /// <summary>Validate <paramref name="uri"/>'s scheme + host against
     /// <paramref name="policy"/>. For host validation, the URI host is parsed
@@ -61,28 +97,41 @@ public static class UriSafetyValidator
         ArgumentNullException.ThrowIfNull(policy);
 
         var schemeVerdict = ValidateScheme(uri, policy);
-        if (!schemeVerdict.IsSafe) return schemeVerdict;
+        if (schemeVerdict.Outcome != SafetyOutcome.Safe) return schemeVerdict;
 
-        // For HTTP(S), if the host parses as an IP literal, run the blocklist
-        // check now. Symbolic hosts defer to post-DNS validation.
-        if (uri.HostNameType is UriHostNameType.IPv4 or UriHostNameType.IPv6)
+        // Per PR #16 Copilot review #8 — IP blocklist + AllowedHosts apply
+        // ONLY to fetch-routing schemes (http, https). For file: + data:
+        // schemes the host portion either doesn't exist (data:) or is
+        // not network-routed (file://localhost/etc/x is a path semantic,
+        // not a network host). Applying the blocklist there yielded
+        // surprising rejections for legitimate inputs.
+        var scheme = uri.Scheme.ToLowerInvariant();
+        if (scheme is "http" or "https")
         {
-            if (IPAddress.TryParse(uri.Host, out var ip) && IsBlockedIp(ip, out var why))
+            // For HTTP(S), if the host parses as an IP literal, run the
+            // blocklist check now. Symbolic hosts defer to post-DNS
+            // validation.
+            if (uri.HostNameType is UriHostNameType.IPv4 or UriHostNameType.IPv6)
             {
-                return new Verdict(false, $"host '{uri.Host}' is in the {why} blocklist");
+                if (IPAddress.TryParse(uri.Host, out var ip) && IsBlockedIp(ip, out var why))
+                {
+                    return new Verdict(SafetyOutcome.Unsafe,
+                        $"host '{uri.Host}' is in the {why} blocklist");
+                }
+            }
+
+            // Host allowlist (when configured). Wildcards: leading "*." matches
+            // any single subdomain. The check is case-insensitive per host
+            // grammar.
+            if (policy.AllowedHosts is { Count: > 0 } allowedHosts
+                && !MatchesAllowedHost(uri.Host, allowedHosts))
+            {
+                return new Verdict(SafetyOutcome.Unsafe,
+                    $"host '{uri.Host}' is not in the allowed-host list");
             }
         }
 
-        // Host allowlist (when configured). Wildcards: leading "*." matches
-        // any single subdomain. The check is case-insensitive per host
-        // grammar.
-        if (policy.AllowedHosts is { Count: > 0 } allowedHosts
-            && !MatchesAllowedHost(uri.Host, allowedHosts))
-        {
-            return new Verdict(false, $"host '{uri.Host}' is not in the allowed-host list");
-        }
-
-        return new Verdict(true, null);
+        return schemeVerdict;
     }
 
     /// <summary>Scheme-only check (no host inspection). Useful when the caller
@@ -97,29 +146,34 @@ public static class UriSafetyValidator
         {
             case "http":
                 return policy.AllowHttpScheme
-                    ? new Verdict(true, null)
-                    : new Verdict(false, "http: scheme is disabled by SecurityPolicy");
+                    ? new Verdict(SafetyOutcome.Safe, null)
+                    : new Verdict(SafetyOutcome.Unsafe, "http: scheme is disabled by SecurityPolicy");
             case "https":
                 return policy.AllowHttpsScheme
-                    ? new Verdict(true, null)
-                    : new Verdict(false, "https: scheme is disabled by SecurityPolicy");
+                    ? new Verdict(SafetyOutcome.Safe, null)
+                    : new Verdict(SafetyOutcome.Unsafe, "https: scheme is disabled by SecurityPolicy");
             case "file":
-                if (policy.AllowFileScheme) return new Verdict(true, null);
+                if (policy.AllowFileScheme)
+                    return new Verdict(SafetyOutcome.Safe, null);
                 if (policy.AllowFileSchemeUnderBaseUri)
                 {
-                    // Under-baseuri matching is the loader's responsibility
-                    // — it has the BaseUri, this validator does not. Returning
-                    // safe here is OK; the loader's path-prefix check is the
-                    // actual gate.
-                    return new Verdict(true, null);
+                    // Per PR #16 review user-recommendation #5 — the under-baseuri
+                    // gate IS the actual safety check, but the validator can't
+                    // perform it (no BaseUri in scope). Return the new
+                    // RequiresBasePathCheck outcome so the caller knows it
+                    // MUST perform the path-prefix check before the fetch is
+                    // safe. The previous Verdict(true) result was easy to
+                    // misuse as a complete verdict.
+                    return new Verdict(SafetyOutcome.RequiresBasePathCheck,
+                        "file: requires loader to verify the resolved path is under HtmlPdfOptions.BaseUri's subtree");
                 }
-                return new Verdict(false, "file: scheme is disabled by SecurityPolicy");
+                return new Verdict(SafetyOutcome.Unsafe, "file: scheme is disabled by SecurityPolicy");
             case "data":
                 return policy.AllowDataUri
-                    ? new Verdict(true, null)
-                    : new Verdict(false, "data: URIs are disabled by SecurityPolicy");
+                    ? new Verdict(SafetyOutcome.Safe, null)
+                    : new Verdict(SafetyOutcome.Unsafe, "data: URIs are disabled by SecurityPolicy");
             default:
-                return new Verdict(false, $"scheme '{uri.Scheme}:' is not in the allowed set");
+                return new Verdict(SafetyOutcome.Unsafe, $"scheme '{uri.Scheme}:' is not in the allowed set");
         }
     }
 

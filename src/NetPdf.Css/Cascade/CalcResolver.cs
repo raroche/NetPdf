@@ -91,26 +91,48 @@ internal static class CalcResolver
             if (TryReadFunctionStart(rawValue, pos, out var fnName, out var bodyStart))
             {
                 var bodyEnd = FindMatchingCloseParen(rawValue, bodyStart);
-                if (bodyEnd < 0)
-                {
-                    // Unterminated — pass through verbatim.
-                    output.Append(rawValue, pos, rawValue.Length - pos);
-                    return output.ToString();
-                }
-                var body = rawValue[bodyStart..bodyEnd];
-                // Per Phase B B-3 — body-length cap. Emit one diagnostic +
-                // pass through verbatim (downstream layout treats unreduced
-                // calc() as invalid-at-computed-value-time per spec).
-                if (body.Length > MaxBodyLength)
+
+                // Per Phase B B-3 + PR #16 review user-recommendation #6 +
+                // Copilot review #7 — check the body LENGTH (not the sliced
+                // body string) before deciding whether to allocate. Two
+                // overflow paths lead here:
+                //   (a) bodyEnd >= 0 (terminated): body length =
+                //       bodyEnd - bodyStart. Pre-cap check avoids slicing
+                //       megabytes of substring before rejecting.
+                //   (b) bodyEnd < 0 (unterminated): body extends to end of
+                //       input. The original code passed unterminated bodies
+                //       through verbatim WITHOUT the cap, so a hostile
+                //       `calc(<5 MiB tail>` slipped through. Treat
+                //       unterminated as "if remainder > MaxBodyLength,
+                //       emit the cap diagnostic too" before passing through.
+                var bodyLength = (bodyEnd < 0)
+                    ? rawValue.Length - bodyStart
+                    : bodyEnd - bodyStart;
+                if (bodyLength > MaxBodyLength)
                 {
                     diagnostics?.Emit(new CssDiagnostic(
                         CssDiagnosticCodes.CssCalcInvalid001,
                         $"{fnName}() body exceeded the {MaxBodyLength}-char cap; expression preserved verbatim and treated as invalid at computed-value time.",
                         CssDiagnosticSeverity.Warning, location));
+                    if (bodyEnd < 0)
+                    {
+                        output.Append(rawValue, pos, rawValue.Length - pos);
+                        return output.ToString();
+                    }
                     output.Append(rawValue, pos, bodyEnd - pos + 1);
                     pos = bodyEnd + 1;
                     continue;
                 }
+
+                if (bodyEnd < 0)
+                {
+                    // Unterminated + within cap — pass through verbatim. The
+                    // CSS parser would have rejected the whole declaration
+                    // up-stream anyway; this branch is defensive.
+                    output.Append(rawValue, pos, rawValue.Length - pos);
+                    return output.ToString();
+                }
+                var body = rawValue[bodyStart..bodyEnd];
                 var reduced = TryReduceFunction(fnName, body, diagnostics, location);
                 if (reduced.HasValue)
                 {

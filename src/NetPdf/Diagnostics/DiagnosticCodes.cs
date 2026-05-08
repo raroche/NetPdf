@@ -61,10 +61,23 @@ internal static class DiagnosticCodes
     /// re-introducing stripped script / javascript-URL / event-handler
     /// content) failed to converge after the maximum iteration cap.
     /// Dangerous content may still be present in the DOM. The diagnostic
-    /// names the unstable element kind so the author can investigate.
+    /// message names the surviving kind(s) — <c>&lt;script&gt;</c>,
+    /// <c>on*</c> event handler, or <c>javascript:</c>/<c>vbscript:</c>/<c>data:</c>
+    /// URL — so the author can investigate.
     /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
     /// </summary>
     public const string HtmlStripNotStable001 = "HTML-STRIP-NOT-STABLE-001";
+
+    /// <summary>
+    /// The HTML input length exceeded the per-document character cap
+    /// (<see cref="HtmlParsingHost.MaxInputLength"/>). The parse is
+    /// rejected before AngleSharp materializes the tree — defends against
+    /// "1 GiB single-string" attacks where post-parse caps would only
+    /// fire after the parser had already consumed memory + CPU on the
+    /// full input. Per Phase B B-1 follow-up (PR #16 review).
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string HtmlInputTooLarge001 = "HTML-INPUT-TOO-LARGE-001";
 
     // endregion HTML-*
 

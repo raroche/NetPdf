@@ -120,6 +120,27 @@ internal sealed class HtmlParsingHost
         ArgumentNullException.ThrowIfNull(options);
         ct.ThrowIfCancellationRequested();
 
+        // Per PR #16 review user-recommendation #1 — pre-parse input length
+        // cap. EnforceDomSizeCaps runs AFTER AngleSharp materializes the
+        // entire DOM, so an attacker who feeds a 1 GiB HTML string still
+        // pays parser CPU + heap for the full tree before per-element
+        // truncation begins. Capping the input string up-front bounds that
+        // worst case at MaxInputLength characters (32 MiB). Treated as a
+        // hard reject rather than truncate: a half-parsed document is
+        // worse than a clear failure (truncation can split open tags + the
+        // DOM caps then can't tell the difference between "intentional
+        // partial" and "attack").
+        if (html.Length > MaxInputLength)
+        {
+            options.Diagnostics?.Emit(new Diagnostic(
+                DiagnosticCodes.HtmlInputTooLarge001,
+                $"HTML input length {html.Length} exceeds the {MaxInputLength}-character cap; the document was rejected before parsing.",
+                DiagnosticSeverity.Warning,
+                SourceLocation.Unknown));
+            throw new System.IO.InvalidDataException(
+                $"HTML input length {html.Length} exceeds the {MaxInputLength}-character cap.");
+        }
+
         var context = BrowsingContext.New(_configuration);
         var address = options.BaseUri?.AbsoluteUri ?? "about:blank";
 
@@ -153,11 +174,17 @@ internal sealed class HtmlParsingHost
             StripScripts(document, sink, sourceFile);
             StripJavaScriptUrls(document, sink, sourceFile);
             StripEventHandlerAttributes(document, sink, sourceFile);
-            if (!HasDangerousContent(document)) return;
+            if (!HasDangerousContent(document, out _)) return;
         }
+        // Per PR #16 Copilot review #9 — name the surviving kind(s) so the
+        // diagnostic is actionable. The doc-comment on
+        // HTML-STRIP-NOT-STABLE-001 promised this; the original message
+        // didn't deliver it. Probe ONCE here so callers see what didn't
+        // converge without us re-iterating the DOM in HasDangerousContent.
+        HasDangerousContent(document, out var survivingKinds);
         sink?.Emit(new Diagnostic(
             DiagnosticCodes.HtmlStripNotStable001,
-            $"Iterative HTML strip did not converge after {MaxStripIterations} passes; dangerous content may remain in the DOM.",
+            $"Iterative HTML strip did not converge after {MaxStripIterations} passes; surviving dangerous content: {survivingKinds}.",
             DiagnosticSeverity.Warning,
             SourceLocation.Unknown));
     }
@@ -174,15 +201,24 @@ internal sealed class HtmlParsingHost
     /// URL attributes, or <c>on*</c> event-handler attributes after the
     /// most recent strip pass. Fast path: walk the document once + check
     /// element name / attribute names against the strip predicates.</summary>
-    private static bool HasDangerousContent(IDocument document)
+    /// <param name="document">The document to inspect.</param>
+    /// <param name="survivingKinds">Comma-separated list of the kinds that
+    /// survived (e.g., <c>"script,onclick,javascript-url"</c>) — empty
+    /// when the document is clean. Lets the caller emit an actionable
+    /// diagnostic per PR #16 Copilot review #9 without re-walking.</param>
+    private static bool HasDangerousContent(IDocument document, out string survivingKinds)
     {
+        survivingKinds = string.Empty;
         if (document.DocumentElement is null) return false;
+        var hasScript = false;
+        var hasOnHandler = false;
+        var hasDangerousUrl = false;
         foreach (var el in document.All)
         {
             if (el is null) continue;
             // <script> elements (any namespace).
             if (string.Equals(el.LocalName, "script", System.StringComparison.OrdinalIgnoreCase))
-                return true;
+                hasScript = true;
             foreach (var attr in el.Attributes)
             {
                 if (attr is null) continue;
@@ -191,16 +227,24 @@ internal sealed class HtmlParsingHost
                     && (name[0] == 'o' || name[0] == 'O')
                     && (name[1] == 'n' || name[1] == 'N'))
                 {
-                    return true; // surviving on* event handler
+                    hasOnHandler = true;
                 }
                 // Surviving javascript: / vbscript: / data: URL on a known
                 // url-bearing attribute name. The strip walk covers many
                 // attributes by selector; this check is a safety net.
                 if (IsKnownUrlAttribute(name) && IsDangerousUrl(attr.Value))
-                    return true;
+                    hasDangerousUrl = true;
             }
+            // Short-circuit when all three are flipped — nothing more to learn.
+            if (hasScript && hasOnHandler && hasDangerousUrl) break;
         }
-        return false;
+        if (!hasScript && !hasOnHandler && !hasDangerousUrl) return false;
+        var parts = new System.Collections.Generic.List<string>(3);
+        if (hasScript) parts.Add("<script>");
+        if (hasOnHandler) parts.Add("on* event handler");
+        if (hasDangerousUrl) parts.Add("javascript:/vbscript:/data: URL");
+        survivingKinds = string.Join(", ", parts);
+        return true;
     }
 
     /// <summary>Per Phase B B-4 — attribute names recognized as URL-bearing
@@ -378,11 +422,17 @@ internal sealed class HtmlParsingHost
             // <animateMotion>. If attributeName is URL-bearing AND any of
             // to/from/values contains a dangerous scheme, drop the entire
             // animation — there's no safe partial recovery.
+            // Per PR #16 Copilot review #5 + user-recommendation #2 —
+            // attributeName carries qualified names too: SVG animation
+            // commonly targets `xlink:href`. Strip the prefix before the
+            // URL-attribute lookup so `<animate attributeName="xlink:href"
+            // to="javascript:...">` doesn't slip past the local-name check.
             if (IsSvgAnimationElement(element.LocalName))
             {
                 var attributeName = element.GetAttribute("attributeName");
                 if (attributeName is null) continue;
-                if (!IsKnownUrlAttribute(attributeName)) continue;
+                var localTarget = StripNamespacePrefix(attributeName);
+                if (!IsKnownUrlAttribute(localTarget)) continue;
 
                 if (HasDangerousAnimationValue(element))
                 {
@@ -395,6 +445,18 @@ internal sealed class HtmlParsingHost
                 }
             }
         }
+    }
+
+    /// <summary>Per PR #16 Copilot review #5 — strip a leading namespace
+    /// prefix (everything up to and including the first <c>:</c>) from a
+    /// qualified attribute name. <c>xlink:href</c> → <c>href</c>;
+    /// <c>href</c> → <c>href</c> (unchanged when no prefix). Returns the
+    /// local-name fragment so URL-attribute lookups work uniformly across
+    /// HTML + SVG + qualified attribute references.</summary>
+    private static string StripNamespacePrefix(string qualifiedName)
+    {
+        var colon = qualifiedName.IndexOf(':');
+        return colon < 0 ? qualifiedName : qualifiedName[(colon + 1)..];
     }
 
     /// <summary>True for the four SVG animation elements that can set an
@@ -567,6 +629,15 @@ internal sealed class HtmlParsingHost
 
     // ----- Phase B B-1: DOM size caps -------------------------------------
 
+    /// <summary>Per PR #16 review user-recommendation #1 — maximum HTML input
+    /// length (UTF-16 chars). Defends against the "1 GiB single-string"
+    /// attack: <see cref="EnforceDomSizeCaps"/> can only run after AngleSharp
+    /// has already parsed the tree, so a hostile input is bounded only by
+    /// the parser's intermediate storage cost without an up-front cap. 32 MiB
+    /// (16 M chars × 2 bytes/char) is generous for any real document — the
+    /// largest invoices in the corpus are &lt; 200 KiB.</summary>
+    internal const int MaxInputLength = 16 * 1024 * 1024;
+
     /// <summary>Maximum total number of <see cref="IElement"/> nodes in the
     /// post-strip document. Real-world large invoices / reports have a few
     /// thousand elements; 250k is a wide allowance that still cuts off
@@ -648,9 +719,45 @@ internal sealed class HtmlParsingHost
             EnforceAttributeCaps(element, EmitOnce);
             EnforceChildTextLengths(element, EmitOnce);
 
-            // Snapshot children before push — Remove() mutates the parent's
-            // child collection. Push in reverse so traversal is left-to-right
-            // (depth-first pre-order).
+            // Per PR #16 Copilot review #1 — bound the children-snapshot to
+            // the remaining element budget. Without this, a wide
+            // <body>{1M children} parents into a 1M-entry IElement[] before
+            // the per-pop MaxElementCount check fires. Compute the budget
+            // up-front; only materialize that many children + delete the
+            // rest in place. The Length lookup on Children is O(1) on
+            // AngleSharp's child collection.
+            var childCount = element.Children.Length;
+            var remainingBudget = MaxElementCount - elementCount;
+            if (remainingBudget <= 0)
+            {
+                // Already at the cap. Drop every child of this element + emit
+                // the count diagnostic if not yet emitted.
+                EmitOnce("count",
+                    $"DOM element count exceeded the {MaxElementCount} cap; remaining elements were dropped.",
+                    element);
+                while (element.FirstElementChild is { } first) first.Remove();
+                continue;
+            }
+            if (childCount > remainingBudget)
+            {
+                EmitOnce("count",
+                    $"DOM element count exceeded the {MaxElementCount} cap; remaining elements were dropped.",
+                    element);
+                // Drop the doomed tail in place (using FirstElementChild +
+                // sibling traversal would force iteration to advance past
+                // the budget — using LastElementChild + Remove drops them
+                // back-to-front in O(doomed) without creating a tail array).
+                while (element.Children.Length > remainingBudget)
+                {
+                    element.LastElementChild!.Remove();
+                }
+                childCount = remainingBudget;
+            }
+
+            // Now snapshot the (bounded) child set + push for traversal.
+            // Push in reverse so depth-first pre-order traversal stays
+            // left-to-right when popping.
+            if (childCount == 0) continue;
             var children = element.Children.ToArray();
             for (var i = children.Length - 1; i >= 0; i--)
             {
@@ -663,6 +770,16 @@ internal sealed class HtmlParsingHost
     /// clamp any over-long attribute value to <see cref="MaxAttributeValueLength"/>
     /// chars (with U+2026 ellipsis). Emits at most one diagnostic per
     /// violation kind.</summary>
+    /// <remarks>
+    /// Per PR #16 Copilot review #3 + #4 — the
+    /// <c>(namespaceUri, localName)</c> overloads of
+    /// <c>IElement.RemoveAttribute</c> + <c>IElement.SetAttribute</c>
+    /// expect a LOCAL name (e.g., <c>href</c>), not the qualified form
+    /// (<c>xlink:href</c>) that <see cref="IAttr.Name"/> returns for
+    /// namespaced attributes. Pass <see cref="IAttr.LocalName"/> instead.
+    /// For non-namespaced attributes <c>NamespaceUri</c> is <see langword="null"/>;
+    /// the no-namespace overload then handles those correctly.
+    /// </remarks>
     private static void EnforceAttributeCaps(IElement element, System.Action<string, string, INode?> emitOnce)
     {
         // Snapshot the attribute names; the live attribute collection
@@ -675,7 +792,7 @@ internal sealed class HtmlParsingHost
                 element);
             for (var i = MaxAttributesPerElement; i < attrSnapshot.Length; i++)
             {
-                element.RemoveAttribute(attrSnapshot[i]!.NamespaceUri, attrSnapshot[i]!.Name);
+                RemoveAttributeNamespaceAware(element, attrSnapshot[i]!);
             }
             attrSnapshot = element.Attributes.Where(a => a is not null).ToArray();
         }
@@ -691,7 +808,43 @@ internal sealed class HtmlParsingHost
             // U+2026 sentinel marks the truncation point; downstream code
             // that decodes the value (e.g., url() / srcset) will simply fail
             // to resolve — better than processing megabytes of attacker text.
-            element.SetAttribute(attr.NamespaceUri, attr.Name, value[..MaxAttributeValueLength] + "…");
+            SetAttributeNamespaceAware(element, attr,
+                value[..MaxAttributeValueLength] + "…");
+        }
+    }
+
+    /// <summary>Namespace-aware attribute removal. <see cref="IAttr.NamespaceUri"/>
+    /// is <see langword="null"/> for plain HTML attributes (<c>href</c>,
+    /// <c>class</c>) and a real URI for namespaced attributes
+    /// (<c>xlink:href</c> → <c>http://www.w3.org/1999/xlink</c>). Picks the
+    /// matching <c>IElement.RemoveAttribute</c> overload so the right
+    /// attribute drops in either case.</summary>
+    private static void RemoveAttributeNamespaceAware(IElement element, IAttr attr)
+    {
+        if (string.IsNullOrEmpty(attr.NamespaceUri))
+        {
+            element.RemoveAttribute(attr.Name);
+        }
+        else
+        {
+            element.RemoveAttribute(attr.NamespaceUri, attr.LocalName);
+        }
+    }
+
+    /// <summary>Namespace-aware attribute set. Mirrors
+    /// <see cref="RemoveAttributeNamespaceAware"/> — pick the local-name
+    /// overload for namespaced attributes so we don't end up with two
+    /// attributes (the original <c>xlink:href</c> + a freshly-created
+    /// <c>xlink:href</c> in the no-namespace bucket).</summary>
+    private static void SetAttributeNamespaceAware(IElement element, IAttr attr, string newValue)
+    {
+        if (string.IsNullOrEmpty(attr.NamespaceUri))
+        {
+            element.SetAttribute(attr.Name, newValue);
+        }
+        else
+        {
+            element.SetAttribute(attr.NamespaceUri, attr.LocalName, newValue);
         }
     }
 
@@ -699,6 +852,12 @@ internal sealed class HtmlParsingHost
     /// content exceeds <see cref="MaxTextContentLength"/>. Element children
     /// are not visited here — the depth-first walk in
     /// <see cref="EnforceDomSizeCaps"/> visits them on their own.</summary>
+    /// <remarks>Per PR #16 Copilot review #2 — clamped values include the
+    /// U+2026 ellipsis sentinel to match the contract documented on
+    /// <c>HTML-DOM-LIMIT-EXCEEDED-001</c> + the parallel attribute-value
+    /// clamp in <see cref="EnforceAttributeCaps"/>. Lets a downstream reader
+    /// know visually that the content was cut off rather than naturally
+    /// short.</remarks>
     private static void EnforceChildTextLengths(IElement element, System.Action<string, string, INode?> emitOnce)
     {
         foreach (var child in element.ChildNodes)
@@ -709,7 +868,7 @@ internal sealed class HtmlParsingHost
             emitOnce("text-length",
                 $"A text node exceeded the {MaxTextContentLength / (1024 * 1024)} MiB cap; content clamped.",
                 element);
-            text.Data = data[..MaxTextContentLength];
+            text.Data = data[..MaxTextContentLength] + "…";
         }
     }
 

@@ -190,4 +190,31 @@ internal static class DiagnosticCodes
     public const string CssPseudoSuppressedOnReplaced001 = "CSS-PSEUDO-SUPPRESSED-ON-REPLACED-001";
 
     // endregion CSS-*
+
+    // region PAGINATION-*
+
+    /// <summary>
+    /// The bounded DP optimizer in <c>NetPdf.Paginate</c> exceeded its
+    /// time / candidate-set budget for the document under layout, and the
+    /// paginator fell back to greedy pagination (take each break-point as
+    /// it arrives, no lookahead). The PDF still emits cleanly; layout
+    /// quality is the same as a non-optimizing renderer (typically just
+    /// "fine" — orphan / widow / heading-stranding penalties are not
+    /// minimized for this document). Per Phase 3 §pagination.
+    /// Severity: <see cref="DiagnosticSeverity.Info"/>.
+    /// </summary>
+    public const string PaginationOptimizerFallback001 = "PAGINATION-OPTIMIZER-FALLBACK-001";
+
+    /// <summary>
+    /// A region marked <c>break-inside: avoid</c> (or otherwise un-splittable
+    /// per the cost model) is taller than a single fragmentainer (page) and
+    /// had to be split anyway. The first piece occupies the remainder of
+    /// the current page; the rest cascades onto subsequent pages. PDF
+    /// renders correctly but the author's break constraint was violated.
+    /// Per Phase 3 §pagination + CSS Fragmentation L3 §3.2 last-resort
+    /// fallback. Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string PaginationForcedOverflow001 = "PAGINATION-FORCED-OVERFLOW-001";
+
+    // endregion PAGINATION-*
 }

@@ -99,8 +99,8 @@ Severity levels:
 
 | Code | Severity | Meaning |
 |---|---|---|
-| `PAGINATION-OPTIMIZER-FALLBACK-001` | Info | The DP optimizer exceeded its time budget on a long document; greedy pagination used. |
-| `PAGINATION-FORCED-OVERFLOW-001` | Warning | A `break-inside: avoid` region was larger than a single page; forced to break despite the rule. |
+| `PAGINATION-OPTIMIZER-FALLBACK-001` | Info | The bounded DP optimizer exceeded its time / candidate-set budget on a long document; greedy pagination (no lookahead) used. PDF still emits cleanly; layout quality is the same as a non-optimizing renderer. Per Phase 3 §pagination. |
+| `PAGINATION-FORCED-OVERFLOW-001` | Warning | A region marked `break-inside: avoid` (or otherwise un-splittable per the cost model) was taller than a single fragmentainer; forced to split anyway. The first piece occupies the remainder of the current page; the rest cascades onto subsequent pages. PDF renders correctly but the author's break constraint was violated. Per CSS Fragmentation L3 §3.2 last-resort fallback. |
 
 ---
 
@@ -137,4 +137,4 @@ Or streamed live via `HtmlPdfOptions.Diagnostics: IDiagnosticsSink`.
 
 ---
 
-Last updated: 2026-05-07 (Phase C: added `CSS-CASCADE-OVERFLOW-001`. Earlier same-day Phase A + B: `HTML-EVENT-HANDLER-IGNORED-001`, `HTML-DOM-LIMIT-EXCEEDED-001`, `HTML-STRIP-NOT-STABLE-001`, `HTML-INPUT-TOO-LARGE-001`, `CSS-VAR-EXPANSION-LIMIT-001`, `CSS-CONTENT-FUNCTION-UNSUPPORTED-001`, `CSS-RULE-LIMIT-EXCEEDED-001`).
+Last updated: 2026-05-08 (Phase 3 Task 1: hardened the `PAGINATION-OPTIMIZER-FALLBACK-001` + `PAGINATION-FORCED-OVERFLOW-001` descriptions when the pagination foundation landed). Earlier 2026-05-07 (Phase C: added `CSS-CASCADE-OVERFLOW-001`; Phases A + B added `HTML-EVENT-HANDLER-IGNORED-001`, `HTML-DOM-LIMIT-EXCEEDED-001`, `HTML-STRIP-NOT-STABLE-001`, `HTML-INPUT-TOO-LARGE-001`, `CSS-VAR-EXPANSION-LIMIT-001`, `CSS-CONTENT-FUNCTION-UNSUPPORTED-001`, `CSS-RULE-LIMIT-EXCEEDED-001`).

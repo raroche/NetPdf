@@ -1,7 +1,9 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System;
 using System.Runtime.InteropServices;
+using System.Threading;
 using HarfBuzzSharp;
 using HbBuffer = HarfBuzzSharp.Buffer;
 using HbDirection = HarfBuzzSharp.Direction;
@@ -12,7 +14,8 @@ namespace NetPdf.Text.Shaping;
 /// Wraps HarfBuzzSharp into a small, idiomatic .NET shaping API. Holds an
 /// <see cref="HarfBuzzSharp.Blob"/> over the source font bytes, an
 /// <see cref="HarfBuzzSharp.Face"/>, and a <see cref="HarfBuzzSharp.Font"/> at a fixed
-/// size — call <see cref="Shape"/> any number of times against this single shaper.
+/// size — call <see cref="Shape(System.ReadOnlySpan{char}, ShapingDirection, string, string)"/>
+/// any number of times against this single shaper.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -21,7 +24,8 @@ namespace NetPdf.Text.Shaping;
 /// pattern so a malformed font that fails after the byte array is pinned does not leak
 /// the handle or any native resources. Callers must dispose the shaper. Per-shape
 /// <see cref="HarfBuzzSharp.Buffer"/>s are constructed and disposed inside
-/// <see cref="Shape"/>, so concurrent shape calls against one shaper are safe — HarfBuzz
+/// <see cref="Shape(System.ReadOnlySpan{char}, ShapingDirection, string, string)"/>,
+/// so concurrent shape calls against one shaper are safe — HarfBuzz
 /// documents Face / Font as thread-safe for read-only use.
 /// </para>
 /// <para>
@@ -155,6 +159,45 @@ internal sealed class HbShaper : IDisposable
         ShapingDirection direction,
         string scriptIso15924,
         string language)
+        => Shape(utf16Text, itemOffset: 0, itemLength: utf16Text.Length,
+            direction, scriptIso15924, language, cancellationToken: default);
+
+    /// <summary>
+    /// Per Phase 3 Task 9 cycle 2 review — full-buffer shaping with
+    /// item-offset / item-length so cluster indices stay concat-buffer
+    /// relative + cross-source-boundary contextual shaping (Arabic
+    /// joining, complex-script reordering across <c>TextRun</c>
+    /// boundaries) can use surrounding context.
+    /// </summary>
+    /// <param name="utf16Text">The full UTF-16 text. Cluster indices
+    /// returned by HarfBuzz are offsets into this buffer (per
+    /// <c>hb_buffer_add_utf16</c>'s contract).</param>
+    /// <param name="itemOffset">Start of the shaping item in
+    /// <paramref name="utf16Text"/>. HarfBuzz uses chars before
+    /// <paramref name="itemOffset"/> as left context (for joining
+    /// scripts that look back), without producing glyphs for them.</param>
+    /// <param name="itemLength">Length of the shaping item in code
+    /// units. HarfBuzz uses chars after <c>itemOffset+itemLength</c>
+    /// as right context.</param>
+    /// <param name="direction">Writing direction of the run.</param>
+    /// <param name="scriptIso15924">4-letter ISO 15924 script tag
+    /// (e.g. <c>"Latn"</c>, <c>"Arab"</c>, <c>"Hani"</c>). Required
+    /// — the wrapper deliberately does not auto-guess because silent
+    /// Latin-bias defaults break browser-fidelity shaping for non-Latin
+    /// scripts.</param>
+    /// <param name="language">BCP 47 language tag. Required for the
+    /// same reason as <paramref name="scriptIso15924"/>.</param>
+    /// <param name="cancellationToken">Honored before the HarfBuzz
+    /// shape call (the native call itself is microseconds; cancellation
+    /// is most useful when callers loop over many ItemizedRuns).</param>
+    public ShapedGlyph[] Shape(
+        ReadOnlySpan<char> utf16Text,
+        int itemOffset,
+        int itemLength,
+        ShapingDirection direction,
+        string scriptIso15924,
+        string language,
+        CancellationToken cancellationToken = default)
     {
         ThrowIfDisposed();
         if (string.IsNullOrEmpty(scriptIso15924))
@@ -169,10 +212,27 @@ internal sealed class HbShaper : IDisposable
                 "HbShaper: language must be a non-empty BCP 47 tag (e.g. \"en\", \"ar\").",
                 nameof(language));
         }
-        if (utf16Text.IsEmpty)
+        if (itemOffset < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(itemOffset),
+                itemOffset, "HbShaper: itemOffset must be ≥ 0.");
+        }
+        if (itemLength < 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(itemLength),
+                itemLength, "HbShaper: itemLength must be ≥ 0.");
+        }
+        if ((long)itemOffset + itemLength > utf16Text.Length)
+        {
+            throw new ArgumentOutOfRangeException(nameof(itemLength),
+                $"HbShaper: itemOffset({itemOffset}) + itemLength({itemLength}) exceeds buffer length({utf16Text.Length}).");
+        }
+        if (itemLength == 0 || utf16Text.IsEmpty)
         {
             return Array.Empty<ShapedGlyph>();
         }
+
+        cancellationToken.ThrowIfCancellationRequested();
 
         using var buffer = new HbBuffer
         {
@@ -181,7 +241,11 @@ internal sealed class HbShaper : IDisposable
             // historical Pango-compatible default.
             ClusterLevel = ClusterLevel.MonotoneCharacters,
         };
-        buffer.AddUtf16(utf16Text);
+        // Pass the FULL buffer + (itemOffset, itemLength) so HarfBuzz
+        // sees left/right context — required for cross-source-boundary
+        // contextual shaping (Arabic joining across TextRuns, etc.) +
+        // returned cluster indices are concat-buffer relative.
+        buffer.AddUtf16(utf16Text, itemOffset, itemLength);
         buffer.Direction = ConvertDirection(direction);
         buffer.Script = Script.Parse(scriptIso15924);
         buffer.Language = new Language(language);

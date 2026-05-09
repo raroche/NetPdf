@@ -36,10 +36,12 @@ namespace NetPdf.Layout.Inline;
 /// when the source run is empty or contains only zero-advance
 /// codepoints (e.g., joiners).</param>
 /// <param name="TotalAdvance">Sum of <c>XAdvance</c> across
-/// <see cref="Glyphs"/> in CSS px. Always non-negative — HarfBuzz's
-/// XAdvance is always positive even for RTL (the visual direction
-/// is encoded by the painter's pen-position arithmetic, not by the
-/// advance sign).</param>
+/// <see cref="Glyphs"/> in CSS px. Typically non-negative for normal
+/// fonts — HarfBuzz's GPOS table can in principle emit negative
+/// XAdvance (kerning corrections, marks), but well-formed fonts
+/// produce a non-negative cumulative advance for a complete cluster
+/// run. Cycle 3's wrap pass treats this as the run's inline-axis
+/// length without enforcing a sign invariant on the wrapper itself.</param>
 internal readonly record struct ShapedRun(
     ItemizedRun Source,
     ShapedGlyph[] Glyphs,

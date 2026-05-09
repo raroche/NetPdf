@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using NetPdf.Css.ComputedValues;
 using NetPdf.Layout.Inline;
 using NetPdf.Text.Bidi;
@@ -12,11 +13,15 @@ using Xunit;
 
 namespace NetPdf.UnitTests.Phase3;
 
-/// <summary>Per Phase 3 Task 9 cycle 2 — tests for
-/// <see cref="LineBuilder.Shape"/>. Cycle 2 covers the shaping
-/// integration: HbShaper invocation per ItemizedRun, total-advance
-/// computation, source-style routing, + argument validation. Cycle
-/// 3 will add line-break + wrap tests that build on this output.
+/// <summary>Per Phase 3 Task 9 cycle 2 + post-cycle-2 review fixes —
+/// tests for <see cref="LineBuilder.Shape"/>. Cycle 2 covers the
+/// shaping integration: HbShaper invocation per ItemizedRun, total-
+/// advance computation, source-style routing, argument validation.
+/// Post-review additions cover (a) explicit script/language metadata
+/// (no more silent Latn/en defaults), (b) input-range validation
+/// (SourceTextRunIndex + Utf16Start/Length bounds), (c) full-buffer
+/// shaping with concat-buffer-relative cluster indices, and (d)
+/// CancellationToken cooperation between runs.
 ///
 /// <para>Note: <see cref="HbShaper"/> is sealed so this test can't
 /// intercept its <c>Shape</c> call to assert the script/language/
@@ -25,6 +30,9 @@ namespace NetPdf.UnitTests.Phase3;
 /// can be exercised end-to-end with real glyph outputs.</para></summary>
 public class LineBuilderShapingTests
 {
+    private const string LatnScript = "Latn";
+    private const string EnLang = "en";
+
     // --- Empty / null inputs -------------------------------------
 
     [Fact]
@@ -34,7 +42,9 @@ public class LineBuilderShapingTests
         var result = LineBuilder.Shape(
             sourceTextRuns: Array.Empty<TextRun>(),
             itemizedRuns: Array.Empty<ItemizedRun>(),
-            resolver: resolver);
+            resolver: resolver,
+            scriptIso15924: LatnScript,
+            language: EnLang);
         Assert.Empty(result);
     }
 
@@ -43,7 +53,8 @@ public class LineBuilderShapingTests
     {
         using var resolver = new TestShaperResolver();
         Assert.Throws<ArgumentNullException>(() =>
-            LineBuilder.Shape(null!, Array.Empty<ItemizedRun>(), resolver));
+            LineBuilder.Shape(null!, Array.Empty<ItemizedRun>(), resolver,
+                LatnScript, EnLang));
     }
 
     [Fact]
@@ -51,14 +62,16 @@ public class LineBuilderShapingTests
     {
         using var resolver = new TestShaperResolver();
         Assert.Throws<ArgumentNullException>(() =>
-            LineBuilder.Shape(Array.Empty<TextRun>(), null!, resolver));
+            LineBuilder.Shape(Array.Empty<TextRun>(), null!, resolver,
+                LatnScript, EnLang));
     }
 
     [Fact]
     public void Shape_null_resolver_throws()
     {
         Assert.Throws<ArgumentNullException>(() =>
-            LineBuilder.Shape(Array.Empty<TextRun>(), Array.Empty<ItemizedRun>(), null!));
+            LineBuilder.Shape(Array.Empty<TextRun>(), Array.Empty<ItemizedRun>(),
+                null!, LatnScript, EnLang));
     }
 
     [Fact]
@@ -67,7 +80,7 @@ public class LineBuilderShapingTests
         using var resolver = new TestShaperResolver();
         Assert.Throws<ArgumentNullException>(() =>
             LineBuilder.Shape(Array.Empty<TextRun>(), Array.Empty<ItemizedRun>(),
-                resolver, scriptIso15924: null!));
+                resolver, scriptIso15924: null!, language: EnLang));
     }
 
     [Fact]
@@ -76,7 +89,7 @@ public class LineBuilderShapingTests
         using var resolver = new TestShaperResolver();
         Assert.Throws<ArgumentNullException>(() =>
             LineBuilder.Shape(Array.Empty<TextRun>(), Array.Empty<ItemizedRun>(),
-                resolver, language: null!));
+                resolver, scriptIso15924: LatnScript, language: null!));
     }
 
     // --- LTR shaping roundtrip -----------------------------------
@@ -92,7 +105,7 @@ public class LineBuilderShapingTests
             new("AAA", MakeStyle()),
         };
         var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
-        var result = LineBuilder.Shape(sourceRuns, itemized, resolver);
+        var result = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
 
         Assert.Single(result);
         var shaped = result[0];
@@ -116,7 +129,7 @@ public class LineBuilderShapingTests
             new("AAAAA", MakeStyle()),
         };
         var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
-        var result = LineBuilder.Shape(sourceRuns, itemized, resolver);
+        var result = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
 
         var shaped = result[0];
         double summedAdvance = 0;
@@ -136,7 +149,7 @@ public class LineBuilderShapingTests
             new("BB", MakeStyle()),
         };
         var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
-        var result = LineBuilder.Shape(sourceRuns, itemized, resolver);
+        var result = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
 
         Assert.Equal(itemized.Length, result.Length);
         for (var i = 0; i < itemized.Length; i++)
@@ -158,7 +171,7 @@ public class LineBuilderShapingTests
             new("AAA", MakeStyle()),
         };
         var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
-        var result = LineBuilder.Shape(sourceRuns, itemized, resolver);
+        var result = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
 
         Assert.Equal(3, result.Length);
         Assert.Single(result[0].Glyphs);
@@ -180,12 +193,112 @@ public class LineBuilderShapingTests
             new("AA", MakeStyle()),
         };
         var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
-        var result = LineBuilder.Shape(sourceRuns, itemized, resolver);
+        var result = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
 
         Assert.Equal(0, result[0].Source.Utf16Start);
         Assert.Equal(2, result[1].Source.Utf16Start);
         Assert.Equal(2, result[0].Source.Utf16Length);
         Assert.Equal(2, result[1].Source.Utf16Length);
+    }
+
+    // --- Full-buffer shaping: cluster indices are concat-relative
+
+    [Fact]
+    public void Shape_glyph_cluster_indices_are_concat_buffer_relative_for_multi_run()
+    {
+        // Per the post-cycle-2 review fix — Shape now passes the FULL
+        // concat buffer to HbShaper with (itemOffset, itemLength) so
+        // cluster indices stay concat-relative across source-run
+        // boundaries. Expected: run 0's cluster ∈ [0,2), run 1's
+        // cluster ∈ [2,4) since run 1 starts at concat offset 2.
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun>
+        {
+            new("AA", MakeStyle()),
+            new("AA", MakeStyle()),
+        };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
+        var result = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
+
+        Assert.Equal(2, result.Length);
+        // Run 0: clusters in [0, 2).
+        foreach (var g in result[0].Glyphs)
+        {
+            Assert.InRange(g.Cluster, 0, 1);
+        }
+        // Run 1: clusters in [2, 4) — concat-buffer relative, NOT
+        // run-local (which would have produced [0, 2)).
+        foreach (var g in result[1].Glyphs)
+        {
+            Assert.InRange(g.Cluster, 2, 3);
+        }
+    }
+
+    // --- Range validation (post-review additions) ----------------
+
+    [Fact]
+    public void Shape_throws_when_SourceTextRunIndex_out_of_range()
+    {
+        // Mismatched lists — itemized run claims SourceTextRunIndex=5
+        // but sourceTextRuns only has 1 entry. Should throw
+        // ArgumentException with a clear message, not
+        // IndexOutOfRangeException.
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("AA", MakeStyle()) };
+        var bogusItemized = new[]
+        {
+            new ItemizedRun(Utf16Start: 0, Utf16Length: 2, BidiLevel: 0, SourceTextRunIndex: 5),
+        };
+        var ex = Assert.Throws<ArgumentException>(() =>
+            LineBuilder.Shape(sourceRuns, bogusItemized, resolver, LatnScript, EnLang));
+        Assert.Contains("SourceTextRunIndex", ex.Message);
+    }
+
+    [Fact]
+    public void Shape_throws_when_Utf16Start_negative()
+    {
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("AA", MakeStyle()) };
+        var bogusItemized = new[]
+        {
+            new ItemizedRun(Utf16Start: -1, Utf16Length: 2, BidiLevel: 0, SourceTextRunIndex: 0),
+        };
+        var ex = Assert.Throws<ArgumentException>(() =>
+            LineBuilder.Shape(sourceRuns, bogusItemized, resolver, LatnScript, EnLang));
+        Assert.Contains("Utf16Start", ex.Message);
+    }
+
+    [Fact]
+    public void Shape_throws_when_Utf16_range_extends_past_concat_length()
+    {
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("AA", MakeStyle()) };
+        // concat length is 2; this run claims [0, 100) which overflows.
+        var bogusItemized = new[]
+        {
+            new ItemizedRun(Utf16Start: 0, Utf16Length: 100, BidiLevel: 0, SourceTextRunIndex: 0),
+        };
+        var ex = Assert.Throws<ArgumentException>(() =>
+            LineBuilder.Shape(sourceRuns, bogusItemized, resolver, LatnScript, EnLang));
+        Assert.Contains("Utf16Length", ex.Message);
+    }
+
+    // --- CancellationToken (post-review addition) ----------------
+
+    [Fact]
+    public void Shape_observes_cancelled_token_before_first_run()
+    {
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun>
+        {
+            new("AAA", MakeStyle()),
+            new("BBB", MakeStyle()),
+        };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        Assert.Throws<OperationCanceledException>(() =>
+            LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang, cts.Token));
     }
 
     // --- Resolver invoked per run --------------------------------
@@ -202,7 +315,7 @@ public class LineBuilderShapingTests
         var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
         Assert.Equal(2, itemized.Length);
 
-        LineBuilder.Shape(sourceRuns, itemized, resolver);
+        LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
         Assert.Equal(2, resolver.ResolveCallCount);
     }
 
@@ -223,7 +336,7 @@ public class LineBuilderShapingTests
         var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
         Assert.Equal(2, itemized.Length);
 
-        LineBuilder.Shape(sourceRuns, itemized, resolver);
+        LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
 
         Assert.Equal(2, resolver.RecordedStyles.Count);
         Assert.Same(style1, resolver.RecordedStyles[0]);

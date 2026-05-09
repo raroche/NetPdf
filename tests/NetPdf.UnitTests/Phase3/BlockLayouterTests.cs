@@ -2318,6 +2318,378 @@ public sealed class BlockLayouterTests
     }
 
     // ====================================================================
+    //  Phase 3 Task 8 cycle 1 — FloatManager integration
+    // ====================================================================
+
+    [Fact]
+    public void Task8_left_float_emits_at_inline_start_of_containing_block()
+    {
+        // CSS: `<div style="float:left; width:100; height:80"></div>`
+        // → fragment at InlineOffset=0, BlockOffset=0, InlineSize=100,
+        //   BlockSize=80.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var floatStyle = MakeStyle();
+        SetKeyword(floatStyle, PropertyId.Float, keywordIndex: 1);  // left
+        SetLengthPx(floatStyle, PropertyId.Width, 100);
+        SetLengthPx(floatStyle, PropertyId.Height, 80);
+        var floatBox = Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement());
+        root.AppendChild(floatBox);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Single(sink.Fragments);
+        Assert.Equal(0, sink.Fragments[0].InlineOffset);
+        Assert.Equal(0, sink.Fragments[0].BlockOffset);
+        Assert.Equal(100, sink.Fragments[0].InlineSize);
+        Assert.Equal(80, sink.Fragments[0].BlockSize);
+    }
+
+    [Fact]
+    public void Task8_right_float_emits_at_inline_end_minus_size()
+    {
+        // CSS: `<div style="float:right; width:100; height:50"></div>`
+        // → fragment at InlineOffset=500 (= 600 - 100).
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var floatStyle = MakeStyle();
+        SetKeyword(floatStyle, PropertyId.Float, keywordIndex: 2);  // right
+        SetLengthPx(floatStyle, PropertyId.Width, 100);
+        SetLengthPx(floatStyle, PropertyId.Height, 50);
+        var floatBox = Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement());
+        root.AppendChild(floatBox);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Single(sink.Fragments);
+        Assert.Equal(500, sink.Fragments[0].InlineOffset);
+    }
+
+    [Fact]
+    public void Task8_float_does_not_advance_in_flow_cursor()
+    {
+        // Tree: float (h=80), block (h=100).
+        // Cycle 1 MVP: float is out-of-flow, so the in-flow block
+        // emits at offset 0 (NOT 80). Cycle 2 will reduce inline-size
+        // to flow around the float.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var floatStyle = MakeStyle();
+        SetKeyword(floatStyle, PropertyId.Float, 1);  // left
+        SetLengthPx(floatStyle, PropertyId.Width, 100);
+        SetLengthPx(floatStyle, PropertyId.Height, 80);
+        var floatBox = Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement());
+        root.AppendChild(floatBox);
+
+        var blockStyle = MakeStyle();
+        SetLengthPx(blockStyle, PropertyId.Height, 100);
+        var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+        root.AppendChild(block);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(2, sink.Fragments.Count);
+        Assert.Same(floatBox, sink.Fragments[0].Box);
+        Assert.Same(block, sink.Fragments[1].Box);
+        // Float at y=0 (out-of-flow); block ALSO at y=0 (cycle 1 MVP —
+        // floats overlap in-flow content visually).
+        Assert.Equal(0, sink.Fragments[0].BlockOffset);
+        Assert.Equal(0, sink.Fragments[1].BlockOffset);
+    }
+
+    [Fact]
+    public void Task8_clear_left_advances_block_past_left_float()
+    {
+        // Tree: float (h=80, float:left), block (h=100, clear:left).
+        // Cycle 1: clear:left advances block past float's bottom (80).
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var floatStyle = MakeStyle();
+        SetKeyword(floatStyle, PropertyId.Float, 1);  // left
+        SetLengthPx(floatStyle, PropertyId.Width, 100);
+        SetLengthPx(floatStyle, PropertyId.Height, 80);
+        var floatBox = Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement());
+        root.AppendChild(floatBox);
+
+        var blockStyle = MakeStyle();
+        SetKeyword(blockStyle, PropertyId.Clear, 1);  // left
+        SetLengthPx(blockStyle, PropertyId.Height, 100);
+        var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+        root.AppendChild(block);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(2, sink.Fragments.Count);
+        // Float at y=0.
+        Assert.Equal(0, sink.Fragments[0].BlockOffset);
+        // Block at y=80 (cleared past left float's bottom).
+        Assert.Equal(80, sink.Fragments[1].BlockOffset);
+    }
+
+    [Fact]
+    public void Task8_clear_right_ignores_left_float()
+    {
+        // Block has clear:right but only a left float exists → no
+        // clearance, block emits at y=0.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var floatStyle = MakeStyle();
+        SetKeyword(floatStyle, PropertyId.Float, 1);  // left
+        SetLengthPx(floatStyle, PropertyId.Width, 100);
+        SetLengthPx(floatStyle, PropertyId.Height, 100);
+        var floatBox = Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement());
+        root.AppendChild(floatBox);
+
+        var blockStyle = MakeStyle();
+        SetKeyword(blockStyle, PropertyId.Clear, 2);  // right
+        SetLengthPx(blockStyle, PropertyId.Height, 50);
+        var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+        root.AppendChild(block);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // Block at y=0 (clear:right finds no right floats).
+        Assert.Equal(0, sink.Fragments[1].BlockOffset);
+    }
+
+    [Fact]
+    public void Task8_clear_both_advances_past_both_sides()
+    {
+        // Two floats (left + right), block has clear:both → past max.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var leftStyle = MakeStyle();
+        SetKeyword(leftStyle, PropertyId.Float, 1);  // left
+        SetLengthPx(leftStyle, PropertyId.Width, 80);
+        SetLengthPx(leftStyle, PropertyId.Height, 60);
+        var leftFloat = Box.ForElement(BoxKind.BlockContainer, leftStyle, MakeElement());
+        root.AppendChild(leftFloat);
+
+        var rightStyle = MakeStyle();
+        SetKeyword(rightStyle, PropertyId.Float, 2);  // right
+        SetLengthPx(rightStyle, PropertyId.Width, 80);
+        SetLengthPx(rightStyle, PropertyId.Height, 90);
+        var rightFloat = Box.ForElement(BoxKind.BlockContainer, rightStyle, MakeElement());
+        root.AppendChild(rightFloat);
+
+        var blockStyle = MakeStyle();
+        SetKeyword(blockStyle, PropertyId.Clear, 3);  // both
+        SetLengthPx(blockStyle, PropertyId.Height, 50);
+        var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+        root.AppendChild(block);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // Block clears past max(left=60, right=90) = 90.
+        Assert.Equal(90, sink.Fragments[2].BlockOffset);
+    }
+
+    [Fact]
+    public void Task8_two_left_floats_stack_vertically()
+    {
+        // Two left floats → second stacks below first per cycle-1 MVP.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var float1Style = MakeStyle();
+        SetKeyword(float1Style, PropertyId.Float, 1);
+        SetLengthPx(float1Style, PropertyId.Width, 100);
+        SetLengthPx(float1Style, PropertyId.Height, 60);
+        var float1 = Box.ForElement(BoxKind.BlockContainer, float1Style, MakeElement());
+        root.AppendChild(float1);
+
+        var float2Style = MakeStyle();
+        SetKeyword(float2Style, PropertyId.Float, 1);
+        SetLengthPx(float2Style, PropertyId.Width, 100);
+        SetLengthPx(float2Style, PropertyId.Height, 40);
+        var float2 = Box.ForElement(BoxKind.BlockContainer, float2Style, MakeElement());
+        root.AppendChild(float2);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(2, sink.Fragments.Count);
+        Assert.Equal(0, sink.Fragments[0].BlockOffset);   // first at y=0
+        Assert.Equal(60, sink.Fragments[1].BlockOffset);  // second at y=60
+    }
+
+    [Fact]
+    public void Task8_float_does_not_break_margin_collapse_chain_between_in_flow_blocks()
+    {
+        // Tree: blockA (marginBottom=20), float, blockB (marginTop=10).
+        // Floats are out-of-flow per CSS 2.2 §9.5 — the in-flow chain
+        // continues across the float, so blockA's marginBottom + blockB's
+        // marginTop collapse normally.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var aStyle = MakeStyle();
+        SetLengthPx(aStyle, PropertyId.Height, 50);
+        SetLengthPx(aStyle, PropertyId.MarginBottom, 20);
+        var blockA = Box.ForElement(BoxKind.BlockContainer, aStyle, MakeElement());
+        root.AppendChild(blockA);
+
+        var floatStyle = MakeStyle();
+        SetKeyword(floatStyle, PropertyId.Float, 1);
+        SetLengthPx(floatStyle, PropertyId.Width, 80);
+        SetLengthPx(floatStyle, PropertyId.Height, 30);
+        var floatBox = Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement());
+        root.AppendChild(floatBox);
+
+        var bStyle = MakeStyle();
+        SetLengthPx(bStyle, PropertyId.Height, 40);
+        SetLengthPx(bStyle, PropertyId.MarginTop, 10);
+        var blockB = Box.ForElement(BoxKind.BlockContainer, bStyle, MakeElement());
+        root.AppendChild(blockB);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // 3 fragments: blockA, float, blockB.
+        Assert.Equal(3, sink.Fragments.Count);
+        // blockA at 0, height 50.
+        Assert.Same(blockA, sink.Fragments[0].Box);
+        Assert.Equal(0, sink.Fragments[0].BlockOffset);
+        // blockB after blockA + collapsed margin: cursor=70 (=50 +
+        // marginBottom=20). Collapse(20, 10) = 20, topShift = 0.
+        // blockB at 70.
+        Assert.Same(blockB, sink.Fragments[2].Box);
+        Assert.Equal(70, sink.Fragments[2].BlockOffset);
+    }
+
+    [Fact]
+    public void Task8_inline_start_float_resolves_as_left_in_cycle_1_LTR()
+    {
+        // float: inline-start (keyword 3) → left under cycle 1's
+        // horizontal-tb LTR assumption.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var floatStyle = MakeStyle();
+        SetKeyword(floatStyle, PropertyId.Float, 3);  // inline-start
+        SetLengthPx(floatStyle, PropertyId.Width, 100);
+        SetLengthPx(floatStyle, PropertyId.Height, 80);
+        var floatBox = Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement());
+        root.AppendChild(floatBox);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // Aligned left (cycle 1: inline-start → left).
+        Assert.Equal(0, sink.Fragments[0].InlineOffset);
+    }
+
+    [Fact]
+    public void Task8_clear_resets_collapse_chain()
+    {
+        // Tree: blockA (marginBottom=30), float (h=200), blockB
+        //   (clear:left, marginTop=10).
+        // Trace:
+        //   - blockA at y=0, h=50, marginBottom=30 → cursor=80 after.
+        //   - float placed at currentBlockY=80 (float is processed
+        //     AFTER blockA in source order; cursor reflects blockA's
+        //     contribution). Float height=200 → float bottom = 280.
+        //   - blockB clear:left → cursor advances to 280 (past float).
+        //     Clearance also resets collapse chain → blockB's marginTop
+        //     is fully applied (10), NOT collapsed with blockA's
+        //     marginBottom=30. blockB.BlockOffset = 280 + 10 = 290.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var aStyle = MakeStyle();
+        SetLengthPx(aStyle, PropertyId.Height, 50);
+        SetLengthPx(aStyle, PropertyId.MarginBottom, 30);
+        var blockA = Box.ForElement(BoxKind.BlockContainer, aStyle, MakeElement());
+        root.AppendChild(blockA);
+
+        var floatStyle = MakeStyle();
+        SetKeyword(floatStyle, PropertyId.Float, 1);  // left
+        SetLengthPx(floatStyle, PropertyId.Width, 100);
+        SetLengthPx(floatStyle, PropertyId.Height, 200);
+        var floatBox = Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement());
+        root.AppendChild(floatBox);
+
+        var bStyle = MakeStyle();
+        SetKeyword(bStyle, PropertyId.Clear, 1);  // left
+        SetLengthPx(bStyle, PropertyId.Height, 40);
+        SetLengthPx(bStyle, PropertyId.MarginTop, 10);
+        var blockB = Box.ForElement(BoxKind.BlockContainer, bStyle, MakeElement());
+        root.AppendChild(blockB);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(3, sink.Fragments.Count);
+        Assert.Same(blockB, sink.Fragments[2].Box);
+        // Cleared past float (bottom=280), then full marginTop (10, NOT
+        // collapsed with blockA's marginBottom=30 because clearance
+        // creates a new collapse boundary).
+        Assert.Equal(290, sink.Fragments[2].BlockOffset);
+    }
+
+    // ====================================================================
     //  Phase 3 Task 7 cycle 2c post-PR-29 review tests
     // ====================================================================
 
@@ -3117,6 +3489,9 @@ public sealed class BlockLayouterTests
 
     private static void SetLengthPx(ComputedStyle style, PropertyId id, double px) =>
         style.Set(id, ComputedSlot.FromLengthPx(px));
+
+    private static void SetKeyword(ComputedStyle style, PropertyId id, int keywordIndex) =>
+        style.Set(id, ComputedSlot.FromKeyword(keywordIndex));
 
     private static AngleSharp.Dom.IElement MakeElement()
     {

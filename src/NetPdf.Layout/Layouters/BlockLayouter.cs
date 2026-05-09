@@ -209,8 +209,19 @@ namespace NetPdf.Layout.Layouters;
 ///   (PR #22 review fix #5); parent/first-child + parent/last-child
 ///   margin collapse (CSS 2.1 §8.3.1 — needs BFC detection); BFC root
 ///   collapse suppression.</item>
-///   <item><b>Phase 3 Task 8.</b> Float interaction via the
-///   <c>FloatManager</c>.</item>
+///   <item><b>Phase 3 Task 8 cycle 1 (this revision).</b> Float
+///   placement + <c>clear</c> resolution via the new
+///   <see cref="FloatManager"/>. Block-level children with <c>float:
+///   left|right|inline-start|inline-end</c> are placed out-of-flow on
+///   the named side (cycle 1 MVP: same-side floats stack vertically;
+///   cycle 2 will inline-pack per CSS 2.2 §9.5.1 rule 5). Subsequent
+///   non-floating blocks with <c>clear: ...</c> advance past the
+///   relevant float bottoms + reset the margin-collapse chain (per
+///   CSS 2.2 §8.3.1 clearance creates a new collapse boundary).
+///   Cycle 1 deferrals: blocks DON'T resize around floats (cycle 2);
+///   cross-fragmentainer floats per Fragmentation L3 §5 (cycle 2);
+///   inline content flowing around floats (Phase 3 Task 9-10
+///   LineBuilder/InlineLayouter).</item>
 ///   <item><b>Phase 3 Task 9-12.</b> Dedicated layouters for the
 ///   non-flow block kinds the cycle-2b recursion deliberately skips:
 ///   <c>TableLayouter</c> (Tables L3), <c>FlexLayouter</c> (Flexbox L1),
@@ -224,6 +235,20 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     private readonly IBlockFragmentSink _sink;
     private readonly LayoutContinuation? _incomingContinuation;
     private readonly IPaginateDiagnosticsSink? _diagnostics;
+
+    /// <summary>Per Phase 3 Task 8 cycle 1 — the float manager for
+    /// THIS BlockLayouter's BFC scope. One instance per BlockLayouter
+    /// (one per BFC root). When children have <c>float: left|right|
+    /// inline-start|inline-end</c>, they're registered here +
+    /// positioned per CSS 2.2 §9.5.1 cycle-1-MVP rules. Subsequent
+    /// children with <c>clear: ...</c> consult this manager to
+    /// determine their post-clear block-axis position.
+    ///
+    /// <para>Cycle 1 MVP: blocks ignore floats for sizing (full
+    /// containing-block inline-size); cycle 2 will reduce inline-size
+    /// to flow around floats. See <c>FloatManager</c>'s class XML doc
+    /// for the deferral list.</para></summary>
+    private readonly FloatManager _floatManager = new();
 
     /// <summary>Per PR #22 review fix #2 — the lease for the most
     /// recently registered checkpoint. Held until the next checkpoint
@@ -432,6 +457,59 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 hasPriorAdjoiningBlock = false;
                 prevBlockMarginEnd = 0;
                 continue;
+            }
+
+            // Per Phase 3 Task 8 cycle 1 — float dispatch. A
+            // block-level child with `float: left|right|inline-start|
+            // inline-end` is positioned out-of-flow + doesn't
+            // contribute to the in-flow cursor or the margin-collapse
+            // chain. Per CSS 2.2 §9.5: the float's outer top edge is
+            // no higher than the block-axis position at which it was
+            // authored (= current `fragmentainer.UsedBlockSize`); it's
+            // shifted to the named side until it touches the
+            // containing block edge or another same-side float.
+            //
+            // Cycle 1 MVP: floats stack along the block axis (cycle 2
+            // will inline-pack same-side floats per §9.5.1 rule 5).
+            // The float's fragment is emitted but blocks DON'T resize
+            // around it (cycle 2 will reduce inline-size to flow
+            // around floats; for now floats overlap visually + the
+            // painter handles z-order).
+            var floatSide = child.Style.ReadFloatSide();
+            if (floatSide.HasValue)
+            {
+                EmitFloat(
+                    child,
+                    floatSide.Value,
+                    fragmentainer,
+                    cancellationToken);
+                // Floats DON'T affect the in-flow margin-collapse
+                // chain (they're out-of-flow per CSS 2.2 §9.5). Don't
+                // mutate prevBlockMarginEnd / hasPriorAdjoiningBlock.
+                continue;
+            }
+
+            // Per Phase 3 Task 8 cycle 1 — clear resolution. A
+            // non-floating block with `clear: ...` advances its
+            // top edge past the bottom of the named-side float(s).
+            // Apply BEFORE the rest of the box-model math so the
+            // resolver consult sees the post-clearance position.
+            var clearKind = child.Style.ReadClearKind();
+            if (clearKind != ClearKind.None)
+            {
+                var clearedY = _floatManager.GetClearedBlockY(
+                    fragmentainer.UsedBlockSize, clearKind);
+                if (clearedY > fragmentainer.UsedBlockSize)
+                {
+                    // Cycle 1 — advancing UsedBlockSize for clearance
+                    // also resets the margin-collapse chain (per CSS
+                    // 2.2 §8.3.1: clearance creates a new collapse
+                    // boundary). The next block applies its full
+                    // marginTop without collapsing.
+                    fragmentainer.UsedBlockSize = clearedY;
+                    hasPriorAdjoiningBlock = false;
+                    prevBlockMarginEnd = 0;
+                }
             }
 
             // Read the box-axis extents.
@@ -1120,6 +1198,91 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             prevMarginEnd = marginEnd;
             hasPrior = true;
         }
+    }
+
+    /// <summary>Per Phase 3 Task 8 cycle 1 — emit a float fragment.
+    /// Reads the float child's box-model extents (margins, border,
+    /// padding, height), places via <see cref="FloatManager.PlaceFloat"/>,
+    /// emits the fragment + recursively emits its block-level
+    /// descendants relative to the placed position.
+    ///
+    /// <para>The float DOES NOT participate in the in-flow margin-
+    /// collapse chain or advance the in-flow cursor. Per CSS 2.2 §9.5
+    /// floats are out-of-flow but still belong to their parent's
+    /// formatting context for the purposes of clearing + flow-around
+    /// (cycle 2 work).</para></summary>
+    private void EmitFloat(
+        Box child,
+        FloatSide side,
+        FragmentainerContext fragmentainer,
+        CancellationToken cancellationToken)
+    {
+        // Box-model reads — same set as the in-flow path.
+        var marginStart = child.Style.ReadLengthPxOrZero(PropertyId.MarginTop);
+        var marginEnd = child.Style.ReadLengthPxOrZero(PropertyId.MarginBottom);
+        var marginInlineStart = child.Style.ReadLengthPxOrZero(PropertyId.MarginLeft);
+        var marginInlineEnd = child.Style.ReadLengthPxOrZero(PropertyId.MarginRight);
+        var borderStart = child.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
+        var borderEnd = child.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
+        var paddingStart = child.Style.ReadLengthPxOrZero(PropertyId.PaddingTop);
+        var paddingEnd = child.Style.ReadLengthPxOrZero(PropertyId.PaddingBottom);
+        var contentBlock = child.Style.ReadLengthPxOrZero(PropertyId.Height);
+        var contentInline = child.Style.ReadLengthPxOrZero(PropertyId.Width);
+
+        var borderBoxBlockSize = borderStart + paddingStart + contentBlock
+            + paddingEnd + borderEnd;
+        // For floats with explicit Width: use it; auto Width defaults
+        // to 0 in cycle 1 (cycle 3 will resolve auto against
+        // shrink-to-fit per CSS 2.2 §10.3.5 — floats are shrink-to-fit
+        // sized, distinct from in-flow blocks which are auto =
+        // containing-block width). For now, an unsized float gets
+        // 0 inline-size + visually disappears, but the geometry is
+        // well-defined.
+        var borderBoxInlineSize = Math.Max(0, contentInline);
+
+        // Outer (margin-box) extents drive FloatManager placement +
+        // determine the float's footprint for `clear` computation.
+        var marginBoxBlockSize = Math.Max(0,
+            marginStart + borderBoxBlockSize + marginEnd);
+        var marginBoxInlineSize = Math.Max(0,
+            marginInlineStart + borderBoxInlineSize + marginInlineEnd);
+
+        // Cycle 1 — containing block is the BFC content area
+        // (inlineStart=0, inlineEnd=fragmentainer.ContentInlineSize).
+        var (placedInline, placedBlock) = _floatManager.PlaceFloat(
+            side,
+            inlineSize: marginBoxInlineSize,
+            blockSize: marginBoxBlockSize,
+            containingInlineStart: 0,
+            containingInlineEnd: fragmentainer.ContentInlineSize,
+            currentBlockY: fragmentainer.UsedBlockSize);
+
+        // Border-box origin = margin-box origin + leading margins.
+        // For left floats, that's placedInline + marginInlineStart;
+        // for right floats, placedInline already accounts for
+        // marginInlineEnd (FloatManager placed the margin-box).
+        var fragmentInlineOffset = side == FloatSide.Left
+            ? placedInline + marginInlineStart
+            : placedInline + marginInlineStart;
+        var fragmentBlockOffset = placedBlock + marginStart;
+
+        _sink.Emit(new BoxFragment(
+            Box: child,
+            InlineOffset: fragmentInlineOffset,
+            BlockOffset: fragmentBlockOffset,
+            InlineSize: borderBoxInlineSize,
+            BlockSize: borderBoxBlockSize));
+
+        // Per cycle 2b — recursively emit descendants. Floats can
+        // contain block-level children (like any other container);
+        // they emit at offsets relative to the float's content area.
+        EmitBlockSubtreeRecursive(
+            child,
+            parentBlockOffset: fragmentBlockOffset,
+            parentInlineOffset: fragmentInlineOffset,
+            parentInlineSize: borderBoxInlineSize,
+            cancellationToken: cancellationToken,
+            depth: 1);
     }
 
     /// <summary>Per cycle-2b post-PR-28 review #3 — predicate

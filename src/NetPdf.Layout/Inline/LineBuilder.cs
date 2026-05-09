@@ -460,6 +460,19 @@ internal static class LineBuilder
     /// white-space carrying through to the wrap pass — scheduled for
     /// Task 10's <c>InlineLayouter</c> integration. The single-arg
     /// is a stopgap, not the long-term API.</para></param>
+    /// <param name="overflowWrap">CSS Text L3 §5.1
+    /// <c>overflow-wrap</c> property value. Default
+    /// <see cref="OverflowWrap.Normal"/>. <see cref="OverflowWrap.Anywhere"/>
+    /// forces a per-glyph break when the line would overflow + no
+    /// UAX #14 Allowed candidate exists. Cycle 3b sub-cycle 2.</param>
+    /// <param name="wordBreak">CSS Text L3 §5.2 <c>word-break</c>
+    /// property value. Default <see cref="WordBreak.Normal"/>.
+    /// <see cref="WordBreak.BreakAll"/> upgrades every Prohibited
+    /// glyph boundary to Allowed (forces aggressive glyph-level
+    /// wrapping). <see cref="WordBreak.KeepAll"/> is recognized but
+    /// has no observable effect for Latin/Cyrillic/Greek content
+    /// (CJK semantics activate when UAX #24 lands in cycle 4).
+    /// Cycle 3b sub-cycle 2.</param>
     /// <param name="cancellationToken">Checked at method entry, after
     /// each expensive loop pass (concat-rebuild, FindBreaks,
     /// coherence-validation, flat-glyph build, wrap loop), and
@@ -488,6 +501,8 @@ internal static class LineBuilder
         IReadOnlyList<ShapedRun> shapedRuns,
         double availableInlineSize,
         WhiteSpace whiteSpace = WhiteSpace.Normal,
+        OverflowWrap overflowWrap = OverflowWrap.Normal,
+        WordBreak wordBreak = WordBreak.Normal,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(sourceTextRuns);
@@ -508,6 +523,18 @@ internal static class LineBuilder
                 whiteSpace,
                 "LineBuilder.Wrap: whiteSpace must be a defined WhiteSpace value.");
         }
+        if (overflowWrap is not (OverflowWrap.Normal or OverflowWrap.Anywhere))
+        {
+            throw new ArgumentOutOfRangeException(nameof(overflowWrap),
+                overflowWrap,
+                "LineBuilder.Wrap: overflowWrap must be a defined OverflowWrap value.");
+        }
+        if (wordBreak is not (WordBreak.Normal or WordBreak.BreakAll or WordBreak.KeepAll))
+        {
+            throw new ArgumentOutOfRangeException(nameof(wordBreak),
+                wordBreak,
+                "LineBuilder.Wrap: wordBreak must be a defined WordBreak value.");
+        }
 
         // Per PR #34 review fix — check cancellation at entry, before
         // the expensive concat rebuild + FindBreaks + flat-build + wrap
@@ -526,6 +553,16 @@ internal static class LineBuilder
         var collapsesSpaces = whiteSpace is WhiteSpace.Normal
             or WhiteSpace.NoWrap
             or WhiteSpace.PreLine;
+
+        // Cycle 3b sub-cycle 2 — word-break:break-all treats every
+        // glyph boundary as a soft-break candidate (overrides UAX #14
+        // Prohibited classifications). overflow-wrap:anywhere
+        // permits a forced break when overflow occurs + no candidate
+        // exists (preserving UAX #14 candidates as preferred — the
+        // per-glyph fallback only fires under overflow + no
+        // candidate).
+        var breakAllGlyphs = wordBreak == WordBreak.BreakAll;
+        var allowOverflowAnywhere = overflowWrap == OverflowWrap.Anywhere;
 
         if (shapedRuns.Count == 0)
         {
@@ -649,6 +686,15 @@ internal static class LineBuilder
                     opp = breaks[breakIdx];
                 }
 
+                // Cycle 3b sub-cycle 2 — word-break:break-all upgrades
+                // every Prohibited boundary to Allowed (forces
+                // glyph-level break candidates). Mandatory breaks
+                // stay Mandatory.
+                if (breakAllGlyphs && opp == LineBreakOpportunity.Prohibited)
+                {
+                    opp = LineBreakOpportunity.Allowed;
+                }
+
                 // Tag mandatory-line-break control glyphs (LF, CR, VT,
                 // FF, NEL, LS, PS). The painter must NOT emit glyph
                 // data for these; the wrap loop trims them off the
@@ -718,6 +764,29 @@ internal static class LineBuilder
                     endsWithMandatoryBreak: false);
                 lineStart = lastAllowed + 1;
                 cursor = lineStart - 1; // for-loop increment lands on lineStart
+                lineAdvance = 0;
+                lastAllowed = -1;
+                cancellationToken.ThrowIfCancellationRequested();
+                continue;
+            }
+
+            // Cycle 3b sub-cycle 2 — overflow-wrap:anywhere fallback.
+            // When the line would overflow + no UAX #14 Allowed
+            // candidate exists in [lineStart, cursor), force a break
+            // at the previous glyph boundary (cursor - 1) so this
+            // glyph starts a new line. Single-glyph-wider-than-line
+            // case: cursor == lineStart → emit the glyph alone +
+            // start a fresh line at cursor + 1 (degenerate but
+            // matches CSS — every glyph fits where it can, line
+            // overflows by exactly one glyph).
+            if (afterAdvance > availableInlineSize
+                && allowOverflowAnywhere
+                && cursor > lineStart)
+            {
+                EmitDrawableRange(output, flat, lineStart, cursor - 1,
+                    endsWithMandatoryBreak: false);
+                lineStart = cursor;
+                cursor = lineStart - 1;
                 lineAdvance = 0;
                 lastAllowed = -1;
                 cancellationToken.ThrowIfCancellationRequested();

@@ -30,10 +30,12 @@ namespace NetPdf.Layout.Inline;
 ///   <item>The source TextRun changes (e.g., an
 ///   <c>&lt;em&gt;</c> child with a different font).</item>
 /// </list>
-/// Future cycles will add script-change boundaries (cycle 2 — a
-/// run of Latin can't share a HarfBuzz shaping pass with a run of
-/// Hebrew even at the same bidi level + same font, because each
-/// script has different OpenType feature requirements).</para>
+/// Future cycles will add script-change boundaries (cycle 3 —
+/// re-scoped from the original cycle-2 plan; cycle 2 wired up the
+/// shaper but kept itemization at cycle-1 granularity. A run of
+/// Latin can't share a HarfBuzz shaping pass with a run of Hebrew
+/// even at the same bidi level + same font, because each script
+/// has different OpenType feature requirements).</para>
 /// </summary>
 /// <param name="Utf16Start">UTF-16 code-unit start offset into the
 /// line builder's concatenated input text.</param>

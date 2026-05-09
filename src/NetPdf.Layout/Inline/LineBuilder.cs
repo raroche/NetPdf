@@ -3,7 +3,10 @@
 
 using System;
 using System.Collections.Generic;
+using System.Text;
+using System.Threading;
 using NetPdf.Text.Bidi;
+using NetPdf.Text.Shaping;
 
 namespace NetPdf.Layout.Inline;
 
@@ -37,13 +40,18 @@ namespace NetPdf.Layout.Inline;
 /// the shaper; cycle 3 ships line breaking + wrapping; cycle 4
 /// integrates with <c>InlineLayouter</c> (Task 10).</para>
 ///
-/// <para><b>Itemization rules (cycle 1).</b> A run boundary is
+/// <para><b>Itemization rules (cycle 1+2).</b> A run boundary is
 /// created when EITHER the bidi level OR the source TextRun
 /// changes between adjacent characters. Script-change boundaries
-/// (UAX #24) are deferred to cycle 2 — most documents are single-
-/// script (Latin) so cycle 1 produces correct output for them; mixed-
-/// script documents will see fewer boundaries than a real engine
-/// would create, which the cycle 2 shaper-integration will fix.</para>
+/// (UAX #24) are deferred to <b>cycle 3</b> — re-scoped from the
+/// original cycle-2 plan; cycle 2 wired up the shaper but kept
+/// itemization at cycle-1 granularity. Per-run UAX #24 detection
+/// + script tagging will land alongside the wrapping pass.
+/// Until then mixed-script documents will see fewer boundaries
+/// than a real engine would create — callers MUST pass an
+/// explicit <c>scriptIso15924</c> + <c>language</c> to
+/// <see cref="Shape"/> to avoid silent Latin-bias mis-shaping of
+/// non-Latin runs.</para>
 ///
 /// <para><b>Threading.</b> <see cref="LineBuilder"/> is stateless;
 /// every call is self-contained. No instance fields. Future cycles
@@ -169,5 +177,185 @@ internal static class LineBuilder
             SourceTextRunIndex: runSourceIdx));
 
         return output.ToArray();
+    }
+
+    /// <summary>Per Phase 3 Task 9 cycle 2 — shaping pass. Takes
+    /// the <see cref="ItemizedRun"/>s produced by <see cref="Itemize"/>
+    /// + the original source <see cref="TextRun"/>s + a
+    /// <see cref="IShaperResolver"/> + per-run shaping metadata
+    /// (script + language); returns a <see cref="ShapedRun"/> for
+    /// each itemized run.
+    ///
+    /// <para>For each itemized run the method:</para>
+    /// <list type="number">
+    ///   <item>Validates <see cref="ItemizedRun.SourceTextRunIndex"/>
+    ///   is a valid index into <paramref name="sourceTextRuns"/> +
+    ///   <see cref="ItemizedRun.Utf16Start"/>+<see cref="ItemizedRun.Utf16Length"/>
+    ///   stay inside the concatenated source text. Mismatched lists
+    ///   (e.g. itemized runs from a different source) throw
+    ///   <see cref="ArgumentException"/> with a clear message — fail
+    ///   early instead of <see cref="IndexOutOfRangeException"/>.</item>
+    ///   <item>Resolves a <see cref="HbShaper"/> via
+    ///   <paramref name="resolver"/> using the source TextRun's
+    ///   computed style.</item>
+    ///   <item>Determines shaping direction from
+    ///   <see cref="ItemizedRun.IsRtl"/>.</item>
+    ///   <item>Calls the full-buffer
+    ///   <see cref="HbShaper.Shape(System.ReadOnlySpan{char},int,int,ShapingDirection,string,string,System.Threading.CancellationToken)"/>
+    ///   overload — the FULL concat text is passed as the buffer +
+    ///   <c>itemOffset</c>=<see cref="ItemizedRun.Utf16Start"/> +
+    ///   <c>itemLength</c>=<see cref="ItemizedRun.Utf16Length"/>. This
+    ///   keeps glyph cluster indices concat-buffer relative + lets
+    ///   HarfBuzz use surrounding context for shaping decisions
+    ///   (Arabic joining across <c>TextRun</c> boundaries, complex
+    ///   reordering, etc.) per <c>hb_buffer_add_utf16</c>'s contract.</item>
+    ///   <item>Sums <see cref="ShapedGlyph.XAdvance"/> across the
+    ///   returned glyphs into <see cref="ShapedRun.TotalAdvance"/>
+    ///   for cycle 3's wrap pass.</item>
+    /// </list>
+    ///
+    /// <para><b>Cycle 2 review fix — explicit script/language only.</b>
+    /// <paramref name="scriptIso15924"/> + <paramref name="language"/>
+    /// are required (no defaults). The earlier cycle-2 ship had
+    /// defaults of <c>"Latn"</c> / <c>"en"</c> which silently
+    /// mis-shaped Arabic / Hebrew / Indic / CJK / Thai runs as Latin.
+    /// Until per-run UAX #24 script detection lands (cycle 3),
+    /// callers MUST pass explicit metadata so the failure mode is
+    /// "compile error" (missing arg), not "wrong glyphs ship to a
+    /// PDF and look plausible to a Latin-only reviewer".</para>
+    ///
+    /// <para><b>Cycle 2 simplifications.</b></para>
+    /// <list type="bullet">
+    ///   <item><paramref name="scriptIso15924"/> +
+    ///   <paramref name="language"/> are passed through to every run
+    ///   uniformly. Cycle 3 will add UAX #24 script detection +
+    ///   per-run script tagging at itemization time so each run gets
+    ///   its appropriate script + the correct OpenType feature
+    ///   selection.</item>
+    ///   <item>The concat text is rebuilt internally from the source
+    ///   <see cref="TextRun"/>s — the cost is O(N) where N is the
+    ///   total UTF-16 length, comparable to one extra string copy.
+    ///   Cycle 3 may pool a buffer.</item>
+    /// </list></summary>
+    /// <param name="sourceTextRuns">The original source runs passed
+    /// to <see cref="Itemize"/>. Used to (a) rebuild the concat text
+    /// + (b) read each itemized run's source style for
+    /// <paramref name="resolver"/>.</param>
+    /// <param name="itemizedRuns">The output of <see cref="Itemize"/>
+    /// for the same source runs. Each run's
+    /// <see cref="ItemizedRun.SourceTextRunIndex"/> must be a valid
+    /// index into <paramref name="sourceTextRuns"/> +
+    /// <see cref="ItemizedRun.Utf16Start"/>+<see cref="ItemizedRun.Utf16Length"/>
+    /// must fit inside the concatenated source text — mismatched
+    /// lists throw <see cref="ArgumentException"/>.</param>
+    /// <param name="resolver">Resolves a <see cref="HbShaper"/> per
+    /// style. The resolver owns the returned shapers — they are not
+    /// disposed by this method.</param>
+    /// <param name="scriptIso15924">ISO 15924 script tag (4 letters)
+    /// passed to every shaping call. Required (no default — see XML
+    /// summary). Cycle 3 will derive per-run from UAX #24.</param>
+    /// <param name="language">BCP 47 language tag passed to every
+    /// shaping call. Required.</param>
+    /// <param name="cancellationToken">Checked between runs. The
+    /// per-run native HarfBuzz call is microseconds; cancellation is
+    /// most useful for documents with thousands of itemized runs.</param>
+    /// <exception cref="ArgumentException">
+    /// <para>An <see cref="ItemizedRun.SourceTextRunIndex"/> is out
+    /// of range for <paramref name="sourceTextRuns"/>.</para>
+    /// <para>OR <see cref="ItemizedRun.Utf16Start"/> is negative or
+    /// <see cref="ItemizedRun.Utf16Start"/>+<see cref="ItemizedRun.Utf16Length"/>
+    /// extends past the concatenated source text length.</para>
+    /// </exception>
+    /// <exception cref="System.OperationCanceledException">
+    /// <paramref name="cancellationToken"/> was canceled.
+    /// </exception>
+    public static ShapedRun[] Shape(
+        IReadOnlyList<TextRun> sourceTextRuns,
+        IReadOnlyList<ItemizedRun> itemizedRuns,
+        IShaperResolver resolver,
+        string scriptIso15924,
+        string language,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(sourceTextRuns);
+        ArgumentNullException.ThrowIfNull(itemizedRuns);
+        ArgumentNullException.ThrowIfNull(resolver);
+        ArgumentNullException.ThrowIfNull(scriptIso15924);
+        ArgumentNullException.ThrowIfNull(language);
+
+        if (itemizedRuns.Count == 0)
+        {
+            return Array.Empty<ShapedRun>();
+        }
+
+        // Rebuild the concat text. Cheap O(N); avoids needing
+        // Itemize to plumb it back to the caller (which would break
+        // the existing Itemize signature + tests).
+        var concatTotal = 0;
+        for (var i = 0; i < sourceTextRuns.Count; i++)
+        {
+            concatTotal += sourceTextRuns[i].Text.Length;
+        }
+        var concatBuf = new StringBuilder(concatTotal);
+        for (var i = 0; i < sourceTextRuns.Count; i++)
+        {
+            concatBuf.Append(sourceTextRuns[i].Text);
+        }
+        var concatText = concatBuf.ToString();
+
+        var output = new ShapedRun[itemizedRuns.Count];
+        for (var runIdx = 0; runIdx < itemizedRuns.Count; runIdx++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var run = itemizedRuns[runIdx];
+
+            // Coherence checks — fail early with a descriptive message
+            // when itemizedRuns came from a different source list,
+            // instead of throwing IndexOutOfRangeException deep in the
+            // span slice / array index.
+            if ((uint)run.SourceTextRunIndex >= (uint)sourceTextRuns.Count)
+            {
+                throw new ArgumentException(
+                    $"LineBuilder.Shape: itemizedRuns[{runIdx}].SourceTextRunIndex={run.SourceTextRunIndex} is out of range for sourceTextRuns (count={sourceTextRuns.Count}). Did the itemized runs come from a different source list?",
+                    nameof(itemizedRuns));
+            }
+            if (run.Utf16Start < 0 || run.Utf16Length < 0 ||
+                (long)run.Utf16Start + run.Utf16Length > concatTotal)
+            {
+                throw new ArgumentException(
+                    $"LineBuilder.Shape: itemizedRuns[{runIdx}] range [Utf16Start={run.Utf16Start}, Utf16Length={run.Utf16Length}] is out of bounds for the concatenated source text (length={concatTotal}).",
+                    nameof(itemizedRuns));
+            }
+
+            var style = sourceTextRuns[run.SourceTextRunIndex].Style;
+            var direction = run.IsRtl
+                ? ShapingDirection.RightToLeft
+                : ShapingDirection.LeftToRight;
+
+            // Pass the FULL concat buffer + (Utf16Start, Utf16Length)
+            // so HarfBuzz sees left/right context for cross-source-
+            // boundary contextual shaping (Arabic joining across
+            // TextRuns, complex-script reordering, etc.) + cluster
+            // indices stay concat-buffer relative.
+            var shaper = resolver.Resolve(style);
+            var glyphs = shaper.Shape(
+                concatText.AsSpan(),
+                run.Utf16Start, run.Utf16Length,
+                direction, scriptIso15924, language,
+                cancellationToken);
+
+            // Cycle 2 — sum XAdvance for fast wrap-pass measurement.
+            // HarfBuzz XAdvance is in CSS px (HbShaper handles font-
+            // units → pixels conversion at construction time).
+            double totalAdvance = 0;
+            for (var g = 0; g < glyphs.Length; g++)
+            {
+                totalAdvance += glyphs[g].XAdvance;
+            }
+
+            output[runIdx] = new ShapedRun(run, glyphs, totalAdvance);
+        }
+        return output;
     }
 }

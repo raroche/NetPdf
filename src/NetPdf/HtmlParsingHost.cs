@@ -724,8 +724,15 @@ internal sealed class HtmlParsingHost
             // <body>{1M children} parents into a 1M-entry IElement[] before
             // the per-pop MaxElementCount check fires. Compute the budget
             // up-front; only materialize that many children + delete the
-            // rest in place. The Length lookup on Children is O(1) on
-            // AngleSharp's child collection.
+            // rest in place.
+            //
+            // Per PR #33 review fix — the original `while (Children.Length > budget)`
+            // loop hangs on the 300k-child regression because AngleSharp's
+            // ChildElements (the live HtmlCollection backing the
+            // .Children property) re-walks the child node list on each
+            // .Length read, making the truncation loop O(N²). Replaced
+            // with a single forward sibling traversal that walks to the
+            // budget boundary once + removes the tail in O(doomed).
             var childCount = element.Children.Length;
             var remainingBudget = MaxElementCount - elementCount;
             if (remainingBudget <= 0)
@@ -735,7 +742,13 @@ internal sealed class HtmlParsingHost
                 EmitOnce("count",
                     $"DOM element count exceeded the {MaxElementCount} cap; remaining elements were dropped.",
                     element);
-                while (element.FirstElementChild is { } first) first.Remove();
+                var doomed = element.FirstElementChild;
+                while (doomed is not null)
+                {
+                    var next = doomed.NextElementSibling;
+                    doomed.Remove();
+                    doomed = next;
+                }
                 continue;
             }
             if (childCount > remainingBudget)
@@ -743,13 +756,18 @@ internal sealed class HtmlParsingHost
                 EmitOnce("count",
                     $"DOM element count exceeded the {MaxElementCount} cap; remaining elements were dropped.",
                     element);
-                // Drop the doomed tail in place (using FirstElementChild +
-                // sibling traversal would force iteration to advance past
-                // the budget — using LastElementChild + Remove drops them
-                // back-to-front in O(doomed) without creating a tail array).
-                while (element.Children.Length > remainingBudget)
+                // Walk forward to the cut-off + remove every sibling
+                // from there. Single O(N) traversal.
+                var cursor = element.FirstElementChild;
+                for (var kept = 0; kept < remainingBudget && cursor is not null; kept++)
                 {
-                    element.LastElementChild!.Remove();
+                    cursor = cursor.NextElementSibling;
+                }
+                while (cursor is not null)
+                {
+                    var next = cursor.NextElementSibling;
+                    cursor.Remove();
+                    cursor = next;
                 }
                 childCount = remainingBudget;
             }

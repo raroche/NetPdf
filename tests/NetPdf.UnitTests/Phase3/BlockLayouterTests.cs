@@ -2646,10 +2646,14 @@ public sealed class BlockLayouterTests
         //   - float placed at currentBlockY=80 (float is processed
         //     AFTER blockA in source order; cursor reflects blockA's
         //     contribution). Float height=200 → float bottom = 280.
-        //   - blockB clear:left → cursor advances to 280 (past float).
-        //     Clearance also resets collapse chain → blockB's marginTop
-        //     is fully applied (10), NOT collapsed with blockA's
-        //     marginBottom=30. blockB.BlockOffset = 280 + 10 = 290.
+        //   - blockB clear:left, marginTop=10. Per CSS 2.1 clearance
+        //     is space ABOVE marginTop chosen so border-box top =
+        //     max(hypothetical, floatBottom). Hypothetical without
+        //     clearance = 80 + marginTop=10 = 90. Float bottom = 280.
+        //     border-box top = max(90, 280) = 280. Per cycle 1
+        //     post-PR-30 review (P1 #2) — pre-fix would have been 290
+        //     (= 280 + 10, marginTop applied ON TOP of clearance);
+        //     post-fix snaps to float bottom = 280.
         var sink = new RecordingFragmentSink();
         var root = Box.CreateRoot(MakeStyle());
 
@@ -2683,10 +2687,394 @@ public sealed class BlockLayouterTests
 
         Assert.Equal(3, sink.Fragments.Count);
         Assert.Same(blockB, sink.Fragments[2].Box);
-        // Cleared past float (bottom=280), then full marginTop (10, NOT
-        // collapsed with blockA's marginBottom=30 because clearance
-        // creates a new collapse boundary).
-        Assert.Equal(290, sink.Fragments[2].BlockOffset);
+        // Per CSS 2.1 clearance — border-box top = max(hypothetical=90,
+        // floatBottom=280) = 280. Cycle 1 post-PR-30 fix.
+        Assert.Equal(280, sink.Fragments[2].BlockOffset);
+    }
+
+    // ====================================================================
+    //  Phase 3 Task 8 cycle 1 post-PR-30 review tests
+    //  (the 6 required regression tests + supporting coverage)
+    // ====================================================================
+
+    [Fact]
+    public void PostPr30_rewind_after_emitted_float_does_not_duplicate_fragments()
+    {
+        // Per cycle 1 post-PR-30 review (P0 #1) — pre-fix the float
+        // accounting (lastEmittedIdx, FloatManager snapshot/restore)
+        // was missing, so a rewind after a float emit could:
+        //   (a) leave the float fragment in the sink (correct — sink
+        //       rolls back to the captured cursor), but
+        //   (b) re-emit the float on retry from a stale lastEmittedIdx,
+        //   (c) AND keep the float record in _floatManager (no
+        //       FloatManager rewind support).
+        // Post-fix: lastEmittedIdx advances past the float; the
+        // checkpoint captures the FloatManager snapshot; restore
+        // pops the snapshot back into _floatManager.
+        //
+        // Tree: float (h=80), block (h=100). Resolver rewinds at
+        // block 1 (the in-flow block AFTER the float). Sink should
+        // contain ONLY the float fragment after rollback (cursor=1).
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var floatStyle = MakeStyle();
+        SetKeyword(floatStyle, PropertyId.Float, 1);  // left
+        SetLengthPx(floatStyle, PropertyId.Width, 100);
+        SetLengthPx(floatStyle, PropertyId.Height, 80);
+        var floatBox = Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement());
+        root.AppendChild(floatBox);
+
+        var blockStyle = MakeStyle();
+        SetLengthPx(blockStyle, PropertyId.Height, 100);
+        var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+        root.AppendChild(block);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new RewindAtSecondTopLevelResolver();
+
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(LayoutAttemptOutcome.NeedsRewind, result.Outcome);
+        // 1 fragment emitted before rewind: the float (childIdx=0).
+        // Block (childIdx=1) hit the resolver's Rewind so its fragment
+        // wasn't emitted.
+        Assert.Equal(1, result.RewindTo!.FragmentOutputCursor);
+        sink.RollbackTo(result.RewindTo.FragmentOutputCursor);
+        Assert.Single(sink.Fragments);
+        Assert.Same(floatBox, sink.Fragments[0].Box);
+    }
+
+    /// <summary>Resolver that rewinds on the second ConsiderBreakAt
+    /// call (top-level block after a float).</summary>
+    private sealed class RewindAtSecondTopLevelResolver : IBreakResolver
+    {
+        private int _calls;
+        private CheckpointLease _lastLease;
+
+        public BreakDecision ConsiderBreakAt(BreakOpportunity opportunity, FragmentainerContext ctx)
+        {
+            _calls++;
+            if (_calls == 1)  // second call (1-indexed via _calls++ first)
+            {
+                return new BreakDecision(BreakAction.Rewind, 0, _lastLease.Checkpoint);
+            }
+            return BreakDecision.Continue;
+        }
+
+        public OptimizerResult ResolveBreaks(
+            IReadOnlyList<BreakOpportunity> opportunities, FragmentainerContext ctx, CancellationToken cancellationToken = default)
+            => OptimizerResult.Empty;
+
+        public void RegisterCheckpoint(CheckpointLease lease)
+        {
+            if (_lastLease.Checkpoint is not null
+                && !ReferenceEquals(_lastLease.Checkpoint, lease.Checkpoint))
+            {
+                LayoutCheckpointPool.Return(_lastLease);
+            }
+            _lastLease = lease;
+        }
+
+        public LayoutCheckpoint? GetLastCheckpoint() => _lastLease.Checkpoint;
+
+        public void Dispose()
+        {
+            if (_lastLease.Checkpoint is not null)
+            {
+                LayoutCheckpointPool.Return(_lastLease);
+                _lastLease = default;
+            }
+        }
+    }
+
+    [Fact]
+    public void PostPr30_float_counts_as_emitted_for_forced_overflow_check()
+    {
+        // Per cycle 1 post-PR-30 review (P0 #1) — pre-fix
+        // emittedThisAttempt didn't increment after a float, so a page
+        // containing only a float + an oversized block would trip the
+        // forced-overflow path (treating the oversized block as the
+        // "first thing on a fresh page"). Post-fix: float counts as
+        // emitted; the oversized block triggers a NORMAL break-before
+        // (PageComplete with ResumeAtChild=blockIdx).
+        //
+        // Tree: float (h=100), block (h=2000 — taller than page).
+        // Page = 800.
+        // Pre-fix: float emit (emittedThisAttempt stays 0); block hits
+        //   BreakHere; emittedThisAttempt==0 + atTopOfPage → forced-
+        //   overflow path → emit block + diagnostic → PageComplete
+        //   with ResumeAtChild=blockIdx+1 (= past block, no further
+        //   resumption).
+        // Post-fix: float emit increments emittedThisAttempt;
+        //   block hits BreakHere; emittedThisAttempt>0 → NORMAL break-
+        //   before path → PageComplete with ResumeAtChild=blockIdx
+        //   (the block is not emitted on this page; resumes on next).
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var floatStyle = MakeStyle();
+        SetKeyword(floatStyle, PropertyId.Float, 1);
+        SetLengthPx(floatStyle, PropertyId.Width, 100);
+        SetLengthPx(floatStyle, PropertyId.Height, 100);
+        var floatBox = Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement());
+        root.AppendChild(floatBox);
+
+        var blockStyle = MakeStyle();
+        SetLengthPx(blockStyle, PropertyId.Height, 2000);  // > page=800
+        var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+        root.AppendChild(block);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var cont = Assert.IsType<BlockContinuation>(result.Continuation);
+        // Post-fix: ResumeAtChild = block's index (1) — block didn't
+        // emit on this page, will resume on the next.
+        Assert.Equal(1, cont.ResumeAtChild);
+        // Only the float emitted on this page.
+        Assert.Single(sink.Fragments);
+        Assert.Same(floatBox, sink.Fragments[0].Box);
+    }
+
+    [Fact]
+    public void PostPr30_clear_with_marginTop_positions_border_at_float_bottom_not_below()
+    {
+        // Per cycle 1 post-PR-30 review (P1 #2) — clearance is space
+        // ABOVE marginTop, not below. Pre-fix: cursor advances to
+        // floatBottom, then marginTop is added → border-box top at
+        // floatBottom + marginTop (one marginTop too low). Post-fix:
+        // border-box top = max(hypothetical-without-clear, floatBottom).
+        //
+        // Tree: float (h=100), block (clear:left, marginTop=20,
+        //   h=50). Page = 800.
+        // Trace:
+        //   - float at y=0, h=100 → bottom=100.
+        //   - block: hypothetical without clear = 0 + marginTop=20 = 20.
+        //     With clear:left, border-box top = max(20, 100) = 100.
+        //   Pre-fix: 100 + 20 = 120. Post-fix: 100.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var floatStyle = MakeStyle();
+        SetKeyword(floatStyle, PropertyId.Float, 1);
+        SetLengthPx(floatStyle, PropertyId.Width, 100);
+        SetLengthPx(floatStyle, PropertyId.Height, 100);
+        var floatBox = Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement());
+        root.AppendChild(floatBox);
+
+        var blockStyle = MakeStyle();
+        SetKeyword(blockStyle, PropertyId.Clear, 1);  // left
+        SetLengthPx(blockStyle, PropertyId.MarginTop, 20);
+        SetLengthPx(blockStyle, PropertyId.Height, 50);
+        var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+        root.AppendChild(block);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // Block at y=100 (= float bottom), NOT 120 (= float + marginTop).
+        Assert.Equal(100, sink.Fragments[1].BlockOffset);
+    }
+
+    [Fact]
+    public void PostPr30_nested_float_inside_div_uses_float_manager()
+    {
+        // Per cycle 1 post-PR-30 review (P1 #4) — nested floats are
+        // dispatched in EmitBlockSubtreeRecursive too (cycle 1
+        // assumes single BFC; cycle 3 will detect nested BFCs).
+        //
+        // Tree: outer-div > [float-child (h=80, float:left), block-
+        //   sibling (h=50, clear:left)].
+        // The float and clear-block are NESTED inside outer-div.
+        // Float aligns to BFC-wide left edge (= 0); clear block
+        // advances past float bottom (= 80).
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var outerStyle = MakeStyle();
+        SetLengthPx(outerStyle, PropertyId.Height, 200);
+        var outer = Box.ForElement(BoxKind.BlockContainer, outerStyle, MakeElement());
+        root.AppendChild(outer);
+
+        var floatChildStyle = MakeStyle();
+        SetKeyword(floatChildStyle, PropertyId.Float, 1);
+        SetLengthPx(floatChildStyle, PropertyId.Width, 100);
+        SetLengthPx(floatChildStyle, PropertyId.Height, 80);
+        var floatChild = Box.ForElement(BoxKind.BlockContainer, floatChildStyle, MakeElement());
+        outer.AppendChild(floatChild);
+
+        var clearSiblingStyle = MakeStyle();
+        SetKeyword(clearSiblingStyle, PropertyId.Clear, 1);  // left
+        SetLengthPx(clearSiblingStyle, PropertyId.Height, 50);
+        var clearSibling = Box.ForElement(BoxKind.BlockContainer, clearSiblingStyle, MakeElement());
+        outer.AppendChild(clearSibling);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // 3 fragments: outer, floatChild, clearSibling.
+        Assert.Equal(3, sink.Fragments.Count);
+        Assert.Same(outer, sink.Fragments[0].Box);
+        Assert.Same(floatChild, sink.Fragments[1].Box);
+        // Float at BFC y=0, aligned to BFC-left (cycle 1 simplification).
+        Assert.Equal(0, sink.Fragments[1].BlockOffset);
+        Assert.Equal(0, sink.Fragments[1].InlineOffset);
+        // clearSibling at BFC y=80 (past float bottom).
+        Assert.Same(clearSibling, sink.Fragments[2].Box);
+        Assert.Equal(80, sink.Fragments[2].BlockOffset);
+    }
+
+    [Fact]
+    public void PostPr30_float_wider_than_containing_block_is_emitted_with_authored_size()
+    {
+        // Per cycle 1 post-PR-30 review (test #5) — oversized floats
+        // are allowed (overflow the containing block; painter handles
+        // z-order). Per the FloatManager docstring, end < start or
+        // oversized floats are legal.
+        //
+        // Tree: float (width=800, height=50, float:left) on a 600px
+        //   containing block. Float emits at InlineOffset=0,
+        //   InlineSize=800 (overflows by 200).
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var floatStyle = MakeStyle();
+        SetKeyword(floatStyle, PropertyId.Float, 1);
+        SetLengthPx(floatStyle, PropertyId.Width, 800);  // > 600 page
+        SetLengthPx(floatStyle, PropertyId.Height, 50);
+        var floatBox = Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement());
+        root.AppendChild(floatBox);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Single(sink.Fragments);
+        Assert.Equal(0, sink.Fragments[0].InlineOffset);
+        Assert.Equal(800, sink.Fragments[0].InlineSize);
+    }
+
+    [Fact]
+    public void PostPr30_right_float_with_asymmetric_margins_emits_at_correct_inline_offset()
+    {
+        // Right float with marginLeft=15, marginRight=5, width=100 on
+        // a 600px CB:
+        //   marginBoxInlineSize = 15 + 100 + 5 = 120
+        //   placedInline (margin-box origin) = 600 - 120 = 480
+        //   border-box origin = 480 + marginLeft=15 = 495
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var floatStyle = MakeStyle();
+        SetKeyword(floatStyle, PropertyId.Float, 2);  // right
+        SetLengthPx(floatStyle, PropertyId.Width, 100);
+        SetLengthPx(floatStyle, PropertyId.Height, 50);
+        SetLengthPx(floatStyle, PropertyId.MarginLeft, 15);
+        SetLengthPx(floatStyle, PropertyId.MarginRight, 5);
+        var floatBox = Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement());
+        root.AppendChild(floatBox);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(495, sink.Fragments[0].InlineOffset);
+        Assert.Equal(100, sink.Fragments[0].InlineSize);  // border-box, not margin-box
+    }
+
+    [Fact]
+    public void PostPr30_trailing_float_overflow_emits_diagnostic()
+    {
+        // Per cycle 1 post-PR-30 review (P1 #3 + test #6) — a float
+        // near the bottom of the page that extends past the
+        // fragmentainer must emit PAGINATION-FORCED-OVERFLOW-001 so
+        // consumers can detect the silent-truncation case (cycle 1
+        // doesn't yet move floats to the next fragmentainer per
+        // Fragmentation L3 §5; cycle 2 will).
+        //
+        // Tree: block (h=700, fills most of the 800-page), float
+        //   (h=200, left). Float placed at y=700, bottom=900 > 800.
+        //   Diagnostic fires.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var blockStyle = MakeStyle();
+        SetLengthPx(blockStyle, PropertyId.Height, 700);
+        var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+        root.AppendChild(block);
+
+        var floatStyle = MakeStyle();
+        SetKeyword(floatStyle, PropertyId.Float, 1);
+        SetLengthPx(floatStyle, PropertyId.Width, 100);
+        SetLengthPx(floatStyle, PropertyId.Height, 200);
+        var floatBox = Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement());
+        root.AppendChild(floatBox);
+
+        using var layouter = new BlockLayouter(
+            root, sink, incomingContinuation: null, diagnostics: diagSink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // Diagnostic emitted for the float overflow.
+        Assert.NotEmpty(diagSink.Diagnostics);
+        Assert.Contains(diagSink.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.PaginationForcedOverflow001
+            && d.Message.Contains("float overflow", System.StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void PostPr30_floatmanager_clear_uses_O1_cache()
+    {
+        // Per cycle 1 post-PR-30 review (P2 #7) — sanity check that
+        // GetClearedBlockY uses the per-side max-bottom cache rather
+        // than scanning all records. This is a lightweight test
+        // verifying the cache is correctly maintained — many floats
+        // + many clears succeed without timing out.
+        var fm = new FloatManager();
+        // Place 1000 left floats stacked vertically.
+        for (var i = 0; i < 1000; i++)
+        {
+            fm.PlaceFloat(FloatSide.Left, 10, 10, 0, 600, 0);
+        }
+        // Last float bottom = 10000.
+        Assert.Equal(10000, fm.GetClearedBlockY(0, ClearKind.Left));
+        // Right has no floats → returns input.
+        Assert.Equal(50, fm.GetClearedBlockY(50, ClearKind.Right));
+        // Both = max of left + right = 10000.
+        Assert.Equal(10000, fm.GetClearedBlockY(0, ClearKind.Both));
     }
 
     // ====================================================================

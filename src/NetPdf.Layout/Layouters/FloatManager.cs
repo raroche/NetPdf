@@ -63,6 +63,15 @@ internal sealed class FloatManager
 {
     private readonly List<FloatRecord> _floats;
 
+    // Per cycle 1 post-PR-30 review (P2 #7) — per-side max-bottom
+    // cache to keep `GetClearedBlockY` O(1) instead of O(n) over the
+    // full record list. Documents with many floats and clears would
+    // otherwise be O(n²); the cache lets clear-only queries hit
+    // constant time. Updated incrementally as floats are placed; reset
+    // on `RestoreFrom` (via re-derive from the restored array).
+    private double _maxLeftBottom;
+    private double _maxRightBottom;
+
     public FloatManager()
     {
         _floats = new List<FloatRecord>(capacity: 4);
@@ -127,16 +136,28 @@ internal sealed class FloatManager
         if (!double.IsFinite(currentBlockY))
             throw new ArgumentOutOfRangeException(nameof(currentBlockY),
                 $"currentBlockY must be finite; got {currentBlockY}");
+        // Per cycle 1 post-PR-30 review (P2 #7) — argument validation
+        // for containing-block extents. In production these are safe
+        // (BlockLayouter passes 0 + fragmentainer.ContentInlineSize),
+        // but the public contract should reject NaN/Infinity defensively.
+        if (!double.IsFinite(containingInlineStart))
+            throw new ArgumentOutOfRangeException(nameof(containingInlineStart),
+                $"containingInlineStart must be finite; got {containingInlineStart}");
+        if (!double.IsFinite(containingInlineEnd))
+            throw new ArgumentOutOfRangeException(nameof(containingInlineEnd),
+                $"containingInlineEnd must be finite; got {containingInlineEnd}");
+        // The contract permits oversized floats (inlineSize >
+        // containingInlineEnd - containingInlineStart) — they overflow
+        // the containing block and the painter handles z-order.
+        // Cycle 2 will refine `GetAvailableInlineRange` to express the
+        // overflow visibly. End < start is also legal (degenerate
+        // containing block) — treat as zero-width.
 
-        // Cycle 1 MVP — same-side floats stack vertically.
-        // Find the bottom edge of the lowest active float on this side.
-        var stackedY = currentBlockY;
-        foreach (var f in _floats)
-        {
-            if (f.Side != side) continue;
-            var bottom = f.BlockOffset + f.BlockSize;
-            if (bottom > stackedY) stackedY = bottom;
-        }
+        // Cycle 1 MVP — same-side floats stack vertically. Use the
+        // per-side max-bottom cache (post-P2-#7) instead of scanning
+        // the full record list.
+        var sameSideBottom = side == FloatSide.Left ? _maxLeftBottom : _maxRightBottom;
+        var stackedY = Math.Max(currentBlockY, sameSideBottom);
 
         // Inline-axis side alignment.
         var inlineOffset = side == FloatSide.Left
@@ -144,6 +165,20 @@ internal sealed class FloatManager
             : containingInlineEnd - inlineSize;
 
         _floats.Add(new FloatRecord(side, inlineOffset, stackedY, inlineSize, blockSize));
+
+        // Update the per-side cache. The just-placed float's bottom
+        // becomes the new max for its side (since same-side floats
+        // stack monotonically).
+        var newBottom = stackedY + blockSize;
+        if (side == FloatSide.Left)
+        {
+            if (newBottom > _maxLeftBottom) _maxLeftBottom = newBottom;
+        }
+        else
+        {
+            if (newBottom > _maxRightBottom) _maxRightBottom = newBottom;
+        }
+
         return (inlineOffset, stackedY);
     }
 
@@ -168,26 +203,23 @@ internal sealed class FloatManager
                 $"currentBlockY must be finite; got {currentBlockY}");
         if (clear == ClearKind.None) return currentBlockY;
 
-        var clearedY = currentBlockY;
-        foreach (var f in _floats)
+        // Per cycle 1 post-PR-30 review (P2 #7) — O(1) lookup via the
+        // per-side max-bottom cache. Pre-fix scanned all records on
+        // every clear query; documents with many floats + many clears
+        // were O(n²). The cache is correct because clearance is the
+        // MAX of float bottoms on the relevant side(s), and the cache
+        // is the running max maintained by `PlaceFloat`.
+        // Cycle 1 inline-start/inline-end resolve as left/right under
+        // horizontal-tb LTR (cycle 3 will resolve against
+        // writing-mode + direction).
+        var relevantBottom = clear switch
         {
-            var affects = clear switch
-            {
-                ClearKind.Left => f.Side == FloatSide.Left,
-                ClearKind.Right => f.Side == FloatSide.Right,
-                ClearKind.Both => true,
-                // Cycle 1 — assume horizontal-tb LTR. Cycle 3 will
-                // resolve inline-start/end against writing-mode +
-                // direction.
-                ClearKind.InlineStart => f.Side == FloatSide.Left,
-                ClearKind.InlineEnd => f.Side == FloatSide.Right,
-                _ => false,
-            };
-            if (!affects) continue;
-            var bottom = f.BlockOffset + f.BlockSize;
-            if (bottom > clearedY) clearedY = bottom;
-        }
-        return clearedY;
+            ClearKind.Left or ClearKind.InlineStart => _maxLeftBottom,
+            ClearKind.Right or ClearKind.InlineEnd => _maxRightBottom,
+            ClearKind.Both => Math.Max(_maxLeftBottom, _maxRightBottom),
+            _ => 0.0,
+        };
+        return Math.Max(currentBlockY, relevantBottom);
     }
 
     /// <summary>Per Phase 3 Task 4 review fix #1 — snapshot the float
@@ -206,20 +238,54 @@ internal sealed class FloatManager
     /// <see langword="null"/> resets to no floats (matches a fresh
     /// FloatManager); a non-null snapshot must be the array returned
     /// by <see cref="Snapshot"/>. Throws when the snapshot type is
-    /// unrecognized — defensive guard against bad caller wiring.</summary>
+    /// unrecognized — defensive guard against bad caller wiring.
+    ///
+    /// <para>Per cycle 1 post-PR-30 review (Copilot #3) — validate
+    /// the snapshot TYPE before mutating live state. Pre-fix the
+    /// method cleared `_floats` before the type check, so a wiring
+    /// bug that passed the wrong snapshot would wipe legitimate state
+    /// AND throw, leaving the manager empty if the exception was
+    /// caught by a wrapper. Post-fix: type check first; mutation only
+    /// on a valid snapshot or null.</para></summary>
     public void RestoreFrom(object? snapshot)
     {
-        _floats.Clear();
-        if (snapshot is null) return;
+        if (snapshot is null)
+        {
+            // Null snapshot is the "fresh manager" reset — explicitly
+            // valid per the public contract.
+            _floats.Clear();
+            _maxLeftBottom = 0;
+            _maxRightBottom = 0;
+            return;
+        }
         if (snapshot is not FloatRecord[] arr)
         {
+            // Type guard BEFORE any state mutation — pre-clear was a
+            // foot-gun.
             throw new InvalidOperationException(
                 $"FloatManager.RestoreFrom received a snapshot of type "
                 + $"{snapshot.GetType().Name}; expected FloatRecord[]. "
                 + "This indicates a wiring bug — only Snapshot()'s return "
                 + "value should be passed here.");
         }
+        _floats.Clear();
         _floats.AddRange(arr);
+        // Per cycle 1 post-PR-30 review (P2 #7) — re-derive the
+        // per-side max-bottom cache from the restored array.
+        _maxLeftBottom = 0;
+        _maxRightBottom = 0;
+        foreach (var f in arr)
+        {
+            var bottom = f.BlockOffset + f.BlockSize;
+            if (f.Side == FloatSide.Left)
+            {
+                if (bottom > _maxLeftBottom) _maxLeftBottom = bottom;
+            }
+            else
+            {
+                if (bottom > _maxRightBottom) _maxRightBottom = bottom;
+            }
+        }
     }
 }
 

@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Text;
 using System.Threading;
 using NetPdf.Text.Bidi;
+using NetPdf.Text.LineBreaking;
 using NetPdf.Text.Shaping;
 
 namespace NetPdf.Layout.Inline;
@@ -358,4 +359,260 @@ internal static class LineBuilder
         }
         return output;
     }
+
+    /// <summary>Per Phase 3 Task 9 cycle 3a — wrapping pass. Takes
+    /// the <see cref="ShapedRun"/>s produced by <see cref="Shape"/>
+    /// + the original source <see cref="TextRun"/>s + the available
+    /// inline-axis size; emits a <see cref="LineFragment"/> array
+    /// representing one wrapped line per fragment.
+    ///
+    /// <para><b>Algorithm (cycle 3a — naive greedy).</b></para>
+    /// <list type="number">
+    ///   <item>Rebuild the concatenated source text from
+    ///   <paramref name="sourceTextRuns"/> + run UAX #14
+    ///   (<see cref="LineBreakAlgorithm.FindBreaks"/>) on it.</item>
+    ///   <item>Flatten all glyphs across all shaped runs into a
+    ///   single linear array <c>(runIdx, glyphIdx, glyph,
+    ///   breakOpportunity)</c>. Indexing into this flat array as
+    ///   "global glyph index" simplifies the line-fill loop.</item>
+    ///   <item>Walk the flat array with two cursors:
+    ///   <c>lineStart</c> + <c>cursor</c>. Track the most recent
+    ///   <c>Allowed</c> break opportunity in
+    ///   <c>[lineStart, cursor]</c> as a candidate snap-back point.</item>
+    ///   <item>If accumulated advance exceeds
+    ///   <paramref name="availableInlineSize"/>: snap back to the
+    ///   candidate, slice <c>[lineStart, candidate]</c> into per-run
+    ///   <see cref="ShapedRunSlice"/>s, emit a
+    ///   <see cref="LineFragment"/>, set <c>lineStart = candidate+1
+    ///   = cursor</c>, retry. If no candidate exists, emit at the
+    ///   current position (cycle 3a allows overflow; cycle 3b adds
+    ///   <c>overflow-wrap</c>/<c>word-break</c>).</item>
+    ///   <item><c>Mandatory</c> breaks force a fragment boundary
+    ///   regardless of advance — paragraph separators, LF, CR, NEL,
+    ///   etc.</item>
+    /// </list>
+    ///
+    /// <para><b>Cycle 3a deferrals.</b> See <see cref="LineFragment"/>
+    /// XML doc for the full list — white-space variants, hyphenation,
+    /// overflow-wrap, word-break, text-align, vertical-align, RTL
+    /// fragment-level reversal — all in cycle 3b/c.</para></summary>
+    /// <param name="sourceTextRuns">The original source runs passed
+    /// to <see cref="Itemize"/> + <see cref="Shape"/>. Used to rebuild
+    /// the concatenated text for UAX #14 line-break analysis.</param>
+    /// <param name="shapedRuns">The output of <see cref="Shape"/> for
+    /// the same source runs.</param>
+    /// <param name="availableInlineSize">The maximum inline-axis size
+    /// of a line, in CSS px. Glyphs whose cumulative advance exceeds
+    /// this value are wrapped to a new line at the most recent UAX #14
+    /// <c>Allowed</c> break. Must be positive + finite.</param>
+    /// <param name="cancellationToken">Checked once per emitted line —
+    /// most useful for documents with thousands of wrapped lines.</param>
+    /// <returns>One <see cref="LineFragment"/> per wrapped line in
+    /// document order. Empty array when <paramref name="shapedRuns"/>
+    /// is empty.</returns>
+    /// <exception cref="ArgumentNullException">A required argument is
+    /// <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="availableInlineSize"/> is non-positive or
+    /// non-finite.</exception>
+    /// <exception cref="System.OperationCanceledException">
+    /// <paramref name="cancellationToken"/> was canceled.</exception>
+    public static LineFragment[] Wrap(
+        IReadOnlyList<TextRun> sourceTextRuns,
+        IReadOnlyList<ShapedRun> shapedRuns,
+        double availableInlineSize,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(sourceTextRuns);
+        ArgumentNullException.ThrowIfNull(shapedRuns);
+        if (!double.IsFinite(availableInlineSize) || availableInlineSize <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(availableInlineSize),
+                availableInlineSize,
+                "LineBuilder.Wrap: availableInlineSize must be a positive finite value (CSS px).");
+        }
+
+        if (shapedRuns.Count == 0)
+        {
+            return Array.Empty<LineFragment>();
+        }
+
+        // Rebuild concat text for UAX #14 line-break analysis.
+        var concatTotal = 0;
+        for (var i = 0; i < sourceTextRuns.Count; i++)
+        {
+            concatTotal += sourceTextRuns[i].Text.Length;
+        }
+        var concatBuf = new StringBuilder(concatTotal);
+        for (var i = 0; i < sourceTextRuns.Count; i++)
+        {
+            concatBuf.Append(sourceTextRuns[i].Text);
+        }
+        var concatText = concatBuf.ToString();
+
+        // breaks[i] = opportunity AFTER UTF-16 code unit i. Final
+        // entry is always Mandatory per LB3.
+        var breaks = LineBreakAlgorithm.FindBreaks(concatText.AsSpan());
+
+        // Flatten glyphs across all runs. flat[i] = (runIdx,
+        // glyphIdxInRun, advance, opp). Compute total once for
+        // capacity allocation.
+        var totalGlyphs = 0;
+        for (var i = 0; i < shapedRuns.Count; i++)
+        {
+            totalGlyphs += shapedRuns[i].Glyphs.Length;
+        }
+        if (totalGlyphs == 0)
+        {
+            return Array.Empty<LineFragment>();
+        }
+
+        var flat = new FlatGlyph[totalGlyphs];
+        var flatIdx = 0;
+        for (var r = 0; r < shapedRuns.Count; r++)
+        {
+            var glyphs = shapedRuns[r].Glyphs;
+            for (var g = 0; g < glyphs.Length; g++)
+            {
+                var glyph = glyphs[g];
+                var cluster = glyph.Cluster;
+                var opp = LineBreakOpportunity.Prohibited;
+                if (cluster >= 0 && cluster < breaks.Length)
+                {
+                    opp = breaks[cluster];
+                }
+                flat[flatIdx++] = new FlatGlyph(
+                    RunIdx: r,
+                    GlyphIdxInRun: g,
+                    Advance: glyph.XAdvance,
+                    Opportunity: opp);
+            }
+        }
+
+        var output = new List<LineFragment>(capacity: 4);
+        var lineStart = 0;
+        var lineAdvance = 0.0;
+        var lastAllowed = -1; // global glyph index of the last Allowed opportunity
+
+        for (var cursor = 0; cursor < totalGlyphs; cursor++)
+        {
+            var item = flat[cursor];
+            var afterAdvance = lineAdvance + item.Advance;
+
+            if (afterAdvance > availableInlineSize && lastAllowed >= 0
+                && lastAllowed >= lineStart)
+            {
+                // Soft-wrap: snap back to lastAllowed.
+                EmitFragmentRange(output, shapedRuns, flat, lineStart, lastAllowed,
+                    endsWithMandatoryBreak: false);
+                lineStart = lastAllowed + 1;
+                cursor = lineStart - 1; // for-loop increment lands on lineStart
+                lineAdvance = 0;
+                lastAllowed = -1;
+                cancellationToken.ThrowIfCancellationRequested();
+                continue;
+            }
+
+            lineAdvance = afterAdvance;
+
+            if (item.Opportunity == LineBreakOpportunity.Mandatory)
+            {
+                EmitFragmentRange(output, shapedRuns, flat, lineStart, cursor,
+                    endsWithMandatoryBreak: true);
+                lineStart = cursor + 1;
+                lineAdvance = 0;
+                lastAllowed = -1;
+                cancellationToken.ThrowIfCancellationRequested();
+            }
+            else if (item.Opportunity == LineBreakOpportunity.Allowed)
+            {
+                lastAllowed = cursor;
+            }
+        }
+
+        // Tail — any glyphs from lineStart..totalGlyphs-1 that didn't
+        // hit a Mandatory or overflow snap-back. Per LB3 the last
+        // codepoint's opportunity is always Mandatory, so this only
+        // fires if the last glyph's cluster didn't map to the
+        // mandatory entry (e.g., font with ligatures collapsing the
+        // last codepoint into an earlier cluster).
+        if (lineStart < totalGlyphs)
+        {
+            EmitFragmentRange(output, shapedRuns, flat, lineStart, totalGlyphs - 1,
+                endsWithMandatoryBreak: false);
+        }
+
+        return output.ToArray();
+    }
+
+    /// <summary>Slice a global glyph range <c>[start, end]</c>
+    /// (inclusive on both ends) into per-run
+    /// <see cref="ShapedRunSlice"/>s + emit a
+    /// <see cref="LineFragment"/>.</summary>
+    private static void EmitFragmentRange(
+        List<LineFragment> output,
+        IReadOnlyList<ShapedRun> shapedRuns,
+        FlatGlyph[] flat, int start, int end,
+        bool endsWithMandatoryBreak)
+    {
+        if (start > end)
+        {
+            // Empty line (e.g., back-to-back Mandatory).
+            output.Add(new LineFragment(
+                Slices: Array.Empty<ShapedRunSlice>(),
+                TotalAdvance: 0,
+                EndsWithMandatoryBreak: endsWithMandatoryBreak));
+            return;
+        }
+
+        var slices = new List<ShapedRunSlice>(capacity: 1);
+        var totalAdvance = 0.0;
+
+        var sliceRunIdx = flat[start].RunIdx;
+        var sliceStartGlyph = flat[start].GlyphIdxInRun;
+        var sliceAdvance = 0.0;
+        var sliceCount = 0;
+
+        for (var i = start; i <= end; i++)
+        {
+            var item = flat[i];
+            if (item.RunIdx != sliceRunIdx)
+            {
+                // Close the current slice; start a new one.
+                slices.Add(new ShapedRunSlice(
+                    ShapedRunIndex: sliceRunIdx,
+                    GlyphStart: sliceStartGlyph,
+                    GlyphLength: sliceCount,
+                    SliceAdvance: sliceAdvance));
+                totalAdvance += sliceAdvance;
+                sliceRunIdx = item.RunIdx;
+                sliceStartGlyph = item.GlyphIdxInRun;
+                sliceAdvance = 0;
+                sliceCount = 0;
+            }
+            sliceAdvance += item.Advance;
+            sliceCount++;
+        }
+
+        // Final slice.
+        slices.Add(new ShapedRunSlice(
+            ShapedRunIndex: sliceRunIdx,
+            GlyphStart: sliceStartGlyph,
+            GlyphLength: sliceCount,
+            SliceAdvance: sliceAdvance));
+        totalAdvance += sliceAdvance;
+
+        output.Add(new LineFragment(
+            Slices: slices.ToArray(),
+            TotalAdvance: totalAdvance,
+            EndsWithMandatoryBreak: endsWithMandatoryBreak));
+    }
+
+    /// <summary>Cycle 3a internal: a flattened glyph view across all
+    /// shaped runs, indexed by global glyph position.</summary>
+    private readonly record struct FlatGlyph(
+        int RunIdx,
+        int GlyphIdxInRun,
+        float Advance,
+        LineBreakOpportunity Opportunity);
 }

@@ -121,15 +121,23 @@ internal static class LineBuilder
             }
         }
 
-        // Resolve bidi levels per-codepoint. The pipeline takes a
-        // Span<BidiCharInfo> + a paragraph level (byte) — the
-        // ParagraphLevelResolver maps the requested direction (incl.
-        // Auto P2/P3) to a level.
-        var paragraphLevel = ParagraphLevelResolver.Resolve(
+        // Resolve bidi levels per-codepoint via the high-level
+        // BidiAlgorithm.ResolveLevels API. Per cycle 1 post-PR-32
+        // review (Copilot #1) — pre-fix called BidiPipeline directly
+        // with a single paragraph-level for the entire concatenated
+        // buffer, but UAX #9 §3.3.1 P1 requires per-paragraph
+        // resolution. ParagraphLevelResolver.Resolve's Auto scan
+        // also stops at the first B/paragraph separator, so
+        // multi-paragraph Auto input would have used the FIRST
+        // paragraph's level for ALL paragraphs — a real bug for
+        // mixed-direction multi-paragraph documents.
+        //
+        // BidiAlgorithm.ResolveLevels splits the input on UCD class-B
+        // characters (LF, CR, NEL, PARAGRAPH SEPARATOR, etc.) +
+        // resolves each paragraph independently with its own P2/P3-
+        // resolved level. Concatenated output is byte-deterministic.
+        var bidiLevels = BidiAlgorithm.ResolveLevels(
             concatBuf, paragraphDirection);
-        var charInfos = BidiPipeline.BuildCharInfos(concatBuf);
-        var bidiLevels = BidiPipeline.ResolveLevelsForUtf16(
-            charInfos, paragraphLevel, totalLength);
 
         // Walk the concatenated text + emit a new ItemizedRun
         // whenever the bidi level OR the source-run-index changes.

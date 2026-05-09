@@ -112,13 +112,25 @@ public class LineBuilderTests
     [Fact]
     public void Itemize_two_runs_same_direction_different_style_creates_run_boundary()
     {
-        // Two LTR text runs with different styles → 2 itemized runs
-        // (boundary at the source-run change even though bidi level
-        // is identical).
+        // Per cycle 1 post-PR-32 review (Copilot #2) — boundary is
+        // created on SourceTextRunIndex change regardless of style
+        // equality. Even when the runs have identical styles, they
+        // remain SEPARATE source-tree boxes (each one might be a
+        // distinct InlineBox / TextRun in the box tree, even if both
+        // happen to compute the same style). The cycle-1 itemizer
+        // correctly emits one ItemizedRun per source TextRun.
+        //
+        // To make the "different style" claim observable too, set
+        // distinguishing properties on the second style: different
+        // font-size makes the styles non-equal AND would affect the
+        // shaper output downstream (cycle 2).
+        var style1 = MakeStyle();
+        var style2 = MakeStyle();
+        SetLengthPx(style2, NetPdf.Css.Properties.PropertyId.FontSize, 24);
         var runs = new List<TextRun>
         {
-            new("foo", MakeStyle()),
-            new("bar", MakeStyle()),
+            new("foo", style1),
+            new("bar", style2),
         };
         var result = LineBuilder.Itemize(runs, ParagraphDirection.LeftToRight);
         Assert.Equal(2, result.Length);
@@ -128,6 +140,23 @@ public class LineBuilderTests
         Assert.Equal(3, result[0].Utf16Length);
         Assert.Equal(3, result[1].Utf16Start);
         Assert.Equal(3, result[1].Utf16Length);
+    }
+
+    [Fact]
+    public void Itemize_two_runs_same_direction_identical_style_still_creates_source_run_boundary()
+    {
+        // Mirror of the test above — even when styles are identical,
+        // a source-run change creates an ItemizedRun boundary. Pinning
+        // this so the cycle-1 source-run-boundary contract is explicit.
+        var runs = new List<TextRun>
+        {
+            new("foo", MakeStyle()),
+            new("bar", MakeStyle()),
+        };
+        var result = LineBuilder.Itemize(runs, ParagraphDirection.LeftToRight);
+        Assert.Equal(2, result.Length);
+        Assert.Equal(0, result[0].SourceTextRunIndex);
+        Assert.Equal(1, result[1].SourceTextRunIndex);
     }
 
     // --- Mandatory line break preserved ---------------------------
@@ -237,8 +266,96 @@ public class LineBuilderTests
             LineBuilder.Itemize(null!, ParagraphDirection.LeftToRight));
     }
 
+    // ====================================================================
+    //  Phase 3 Task 9 cycle 1 post-PR-32 review tests
+    // ====================================================================
+
+    [Fact]
+    public void PostPr32_multi_paragraph_LTR_RTL_each_resolves_independently_under_Auto()
+    {
+        // Per cycle 1 post-PR-32 review (Copilot #1) — pre-fix used
+        // ParagraphLevelResolver.Resolve on the FULL concatenated text,
+        // which scans only until the first B-class character. Under
+        // Auto direction, a "EnglishText\nالعربية" input would resolve
+        // BOTH paragraphs to LTR (paragraph 1's first-strong char wins
+        // the scan even for paragraph 2). Post-fix uses
+        // BidiAlgorithm.ResolveLevels which segments per UAX #9 §3.3.1
+        // P1 + resolves each paragraph independently.
+        //
+        // Test: "Hello\nمرحبا" with ParagraphDirection.Auto.
+        // Pre-fix: levels [0,0,0,0,0,0,0,0,0,0,0] (RTL paragraph
+        //   incorrectly resolved as LTR because the FIRST paragraph's
+        //   first-strong was 'H' = LTR).
+        // Post-fix: paragraph 1 ("Hello\n") at level 0; paragraph 2
+        //   ("مرحبا") at level 1.
+        var runs = new List<TextRun>
+        {
+            new("Hello\nمرحبا", MakeStyle()),
+        };
+        var result = LineBuilder.Itemize(runs, ParagraphDirection.Auto);
+        // Multi-paragraph input must produce at least an LTR run for
+        // paragraph 1 + an RTL run for paragraph 2.
+        var hasLtr = false;
+        var hasRtl = false;
+        foreach (var r in result)
+        {
+            if (r.IsRtl) hasRtl = true;
+            else hasLtr = true;
+        }
+        Assert.True(hasLtr, "Expected an LTR run for the English paragraph.");
+        Assert.True(hasRtl,
+            "Expected an RTL run for the Arabic paragraph (post-Copilot-#1 fix). "
+            + "Pre-fix would have resolved both paragraphs as LTR because "
+            + "ParagraphLevelResolver.Resolve's Auto scan stopped at the first B "
+            + "character (the LF), inheriting paragraph 1's level.");
+    }
+
+    [Fact]
+    public void PostPr32_multi_paragraph_with_explicit_LTR_does_not_drop_subsequent_paragraphs()
+    {
+        // Sanity: explicit LTR direction should still produce coverage
+        // across the full multi-paragraph input. Pre-fix coverage was
+        // also broken on multi-paragraph; post-fix uses
+        // BidiAlgorithm.ResolveLevels which correctly handles the
+        // full input.
+        var runs = new List<TextRun>
+        {
+            new("first paragraph\nsecond paragraph\nthird", MakeStyle()),
+        };
+        var result = LineBuilder.Itemize(runs, ParagraphDirection.LeftToRight);
+        // Coverage invariant — full input covered.
+        var totalCovered = 0;
+        foreach (var r in result) totalCovered += r.Utf16Length;
+        Assert.Equal(runs[0].Text.Length, totalCovered);
+    }
+
+    [Fact]
+    public void PostPr32_multi_paragraph_RTL_then_LTR_produces_two_distinct_levels()
+    {
+        // Auto direction: paragraph 1 = "مرحبا\n" (RTL), paragraph 2 =
+        // "Hello" (LTR). Each paragraph's first-strong drives its OWN
+        // level after the fix.
+        var runs = new List<TextRun>
+        {
+            new("مرحبا\nHello", MakeStyle()),
+        };
+        var result = LineBuilder.Itemize(runs, ParagraphDirection.Auto);
+        var hasLtr = false;
+        var hasRtl = false;
+        foreach (var r in result)
+        {
+            if (r.IsRtl) hasRtl = true;
+            else hasLtr = true;
+        }
+        Assert.True(hasLtr, "Expected an LTR run for the second-paragraph English text.");
+        Assert.True(hasRtl, "Expected an RTL run for the first-paragraph Arabic text.");
+    }
+
     // --- Helpers -------------------------------------------------
 
     private static ComputedStyle MakeStyle() =>
         ComputedStyle.RentForExclusiveTesting();
+
+    private static void SetLengthPx(ComputedStyle style, NetPdf.Css.Properties.PropertyId id, double px) =>
+        style.Set(id, NetPdf.Css.ComputedValues.ComputedSlot.FromLengthPx(px));
 }

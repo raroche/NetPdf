@@ -109,27 +109,59 @@ namespace NetPdf.Layout.Layouters;
 ///   well-formed.</item>
 /// </list>
 ///
-/// <para><b>Cycle 2 deferrals (still — to subsequent commits):</b></para>
+/// <para><b>Cycle 2b shipped (this revision) — recursive nested-block
+/// layout per CSS 2.1 §10.</b> Cycle 1 + 2 walked <c>_rootBox.Children</c>
+/// only; a <c>div &gt; p</c> tree emitted only the <c>div</c> fragment.
+/// Cycle 2b adds <see cref="EmitBlockSubtreeRecursive"/> — a private
+/// helper that emits <see cref="BoxFragment"/>s for nested block-level
+/// descendants at correctly nested offsets, applying adjacent-margin
+/// collapse (§8.3.1) between nested siblings. Recursion runs from BOTH
+/// the Continue path + the forced-overflow path. Per cycle-2b post-PR-28
+/// review #3, only block-flow containers (<see cref="BoxKind.BlockContainer"/>,
+/// <see cref="BoxKind.ListItem"/>, <see cref="BoxKind.AnonymousBlock"/>,
+/// <see cref="BoxKind.Root"/>) are recursed into; <see cref="BoxKind.Table"/>
+/// / <see cref="BoxKind.FlexContainer"/> / <see cref="BoxKind.GridContainer"/>
+/// / <see cref="BoxKind.BlockReplacedElement"/> are emitted as placeholders
+/// (their inner geometry belongs to the dedicated layouter). Per
+/// review #2, the recursion threads <see cref="CancellationToken"/>
+/// + caps depth at <see cref="MaxRecursionDepth"/> for DoS protection.
+/// Per review #1, the recursive child-cursor is a SIGNED visual cursor
+/// (no Math.Max(0, ...)) so negative-margin overlap between nested
+/// siblings works correctly.</para>
+///
+/// <para><b>Cycle 2b deferrals (still — to subsequent commits):</b></para>
 /// <list type="bullet">
-///   <item><b>Cycle 2b.</b> Recursive nested-block layout (PR #22
-///   review fix #4). Cycle 1 + 2 walk <c>_rootBox.Children</c> only;
-///   nested block descendants (<c>div &gt; p</c>) aren't laid out.
-///   Failing-skip integration test pins the deferral.</item>
-///   <item><b>Cycle 3.</b> BFC root detection; intrinsic sizing
-///   modes (<c>min-content</c> / <c>max-content</c> / <c>fit-content</c>);
-///   width / height auto resolution per §10.3.3 + §10.6.2;
-///   percentage resolution against containing-block; avoid-break /
-///   break-inside / break-before / break-after metadata extraction
-///   from <c>ComputedStyle</c> into <see cref="BreakOpportunity"/>
-///   flags; logical-axis margin/padding/border accessors that
-///   honor <see cref="LayoutContext.WritingMode"/> (PR #22 review
-///   fix #5); parent/first-child + parent/last-child margin collapse
-///   (CSS 2.1 §8.3.1 — needs recursive layout + BFC detection); BFC
-///   root collapse suppression.</item>
+///   <item><b>Cycle 2c.</b> Cross-subtree pagination splits — cycle 2b
+///   treats each top-level subtree as atomic for pagination (the outer
+///   <see cref="AttemptLayout"/> loop computes the parent's border-box
+///   from its own style only; if the subtree visually overflows, the
+///   painter clips). Real CSS allows breaks inside nested containers;
+///   this requires propagating <see cref="BreakOpportunity"/> through
+///   the recursion + per-level continuation tokens.</item>
+///   <item><b>Cycle 3.</b> Auto-height resolution per CSS 2.1 §10.6.3
+///   (when a container has <c>height: auto</c>, its content area
+///   should resolve to children's stack height — cycle 2b uses
+///   <see cref="ComputedStyleLayoutExtensions.ReadLengthPxOrZero"/>
+///   which returns 0 for auto, so a container with <c>height: auto</c>
+///   + children renders with a 0-sized parent fragment but children
+///   still emit at correct offsets); BFC root detection; intrinsic
+///   sizing modes (<c>min-content</c> / <c>max-content</c> /
+///   <c>fit-content</c>); width / height auto resolution per
+///   §10.3.3 + §10.6.2; percentage resolution against containing-block;
+///   avoid-break / break-inside / break-before / break-after metadata
+///   extraction from <c>ComputedStyle</c> into
+///   <see cref="BreakOpportunity"/> flags; logical-axis margin/padding/
+///   border accessors that honor <see cref="LayoutContext.WritingMode"/>
+///   (PR #22 review fix #5); parent/first-child + parent/last-child
+///   margin collapse (CSS 2.1 §8.3.1 — needs BFC detection); BFC root
+///   collapse suppression.</item>
 ///   <item><b>Phase 3 Task 8.</b> Float interaction via the
 ///   <c>FloatManager</c>.</item>
-///   <item><b>Phase 3 Task 10.</b> Inline content within blocks
-///   (<c>InlineLayouter</c> recursion).</item>
+///   <item><b>Phase 3 Task 9-12.</b> Dedicated layouters for the
+///   non-flow block kinds the cycle-2b recursion deliberately skips:
+///   <c>TableLayouter</c> (Tables L3), <c>FlexLayouter</c> (Flexbox L1),
+///   <c>GridLayouter</c> (Grid L2), <c>InlineLayouter</c> (inline content
+///   within blocks).</item>
 /// </list>
 /// </summary>
 internal sealed class BlockLayouter : ILayouter, IDisposable
@@ -593,12 +625,28 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     // First block on the (possibly resumed) page →
                     // topShift = effectiveTopGap = marginStart; no
                     // collapse-arithmetic needed.
+                    var forcedOverflowChildBlockOffset =
+                        fragmentainer.UsedBlockSize + topShift;
                     _sink.Emit(new BoxFragment(
                         Box: child,
                         InlineOffset: marginInlineStart,
-                        BlockOffset: fragmentainer.UsedBlockSize + topShift,
+                        BlockOffset: forcedOverflowChildBlockOffset,
                         InlineSize: borderBoxInlineSize,
                         BlockSize: borderBoxBlockSize));
+                    // Per Phase 3 Task 7 cycle 2b — recursively emit
+                    // fragments for the child's block-level descendants.
+                    // The painter sees the full subtree on the
+                    // committed page even though the child overflowed
+                    // the fragmentainer (forced-overflow forward
+                    // progress). Per cycle-2b post-PR-28 review #2 —
+                    // CT threaded through to abort deep traversals.
+                    EmitBlockSubtreeRecursive(
+                        child,
+                        parentBlockOffset: forcedOverflowChildBlockOffset,
+                        parentInlineOffset: marginInlineStart,
+                        parentInlineSize: borderBoxInlineSize,
+                        cancellationToken: cancellationToken,
+                        depth: 1);
                     // Per PR #23 review fix #4 — clamp UsedBlockSize
                     // to non-negative so subsequent BreakOpportunity
                     // construction doesn't trip CostModel's guard.
@@ -680,6 +728,25 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 InlineSize: borderBoxInlineSize,
                 BlockSize: borderBoxBlockSize));
 
+            // Per Phase 3 Task 7 cycle 2b — recursively emit fragments
+            // for the child's block-level descendants. Cycle 1 / 2
+            // emitted only top-level children of `_rootBox`; with
+            // recursion, a `div > p > span` tree (where span is block-
+            // level) emits div, p, AND span fragments at correctly
+            // nested offsets relative to each parent's content area.
+            // See EmitBlockSubtreeRecursive's XML doc for the cycle 2b
+            // scope + deferrals.
+            // Per cycle-2b post-PR-28 review #2 — CT threaded through
+            // to abort deep traversals; depth=1 since `child` is the
+            // first nesting level under `_rootBox`.
+            EmitBlockSubtreeRecursive(
+                child,
+                parentBlockOffset: blockOffset,
+                parentInlineOffset: marginInlineStart,
+                parentInlineSize: borderBoxInlineSize,
+                cancellationToken: cancellationToken,
+                depth: 1);
+
             // Per PR #23 review fix #4 — clamp UsedBlockSize to
             // non-negative. A valid block with very negative margins
             // could otherwise drive the cursor below zero, then the
@@ -699,6 +766,255 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // All children laid out — no more pages needed.
         return LayoutAttemptResult.AllDone(cost: 0);
     }
+
+    /// <summary>Per Phase 3 Task 7 cycle 2b — recursively emit fragments
+    /// for <paramref name="parent"/>'s block-level descendants. Called
+    /// AFTER the parent's own fragment is emitted; offsets are relative
+    /// to <paramref name="parent"/>'s content area (fragmentainer
+    /// coordinates).
+    ///
+    /// <para><b>Cycle 2b scope.</b> The recursion emits fragments so the
+    /// painter (Phase 4) sees the full box tree. Geometric semantics:</para>
+    /// <list type="bullet">
+    ///   <item>Each descendant's <see cref="BoxFragment.BlockOffset"/>
+    ///   is its border-box top edge in fragmentainer coordinates,
+    ///   computed by stacking the descendant's siblings inside the
+    ///   parent's content area with adjacent-margin collapse per
+    ///   CSS 2.1 §8.3.1.</item>
+    ///   <item><see cref="BoxFragment.InlineOffset"/> is the descendant's
+    ///   border-box inline-start edge (= parent's content-area inline
+    ///   offset + child's marginInlineStart).</item>
+    ///   <item><see cref="BoxFragment.InlineSize"/> = parent's content-
+    ///   area inline size - child's inline margins (clamped non-negative
+    ///   per PR #23 review fix #5).</item>
+    ///   <item><see cref="BoxFragment.BlockSize"/> = child's border-box
+    ///   block size (border + padding + Height-from-style; auto Height
+    ///   reads as 0, deferred to cycle 3).</item>
+    /// </list>
+    ///
+    /// <para><b>Cycle 2b deferrals (cycle 3 / cycle 2c).</b></para>
+    /// <list type="bullet">
+    ///   <item><b>Auto-height resolution</b> per CSS 2.1 §10.6.3 — when
+    ///   a container has <c>height: auto</c>, its content area should
+    ///   resolve to the children's stack height. Cycle 2b uses
+    ///   <see cref="ComputedStyleLayoutExtensions.ReadLengthPxOrZero"/>
+    ///   which returns 0 for auto, so a container with auto height +
+    ///   children renders with a 0-sized parent-fragment but the
+    ///   children DO emit at their correct offsets. The painter sees
+    ///   a degenerate parent rectangle but the descendants are
+    ///   correctly positioned relative to it. Cycle 3 wires real
+    ///   auto-height + percentage resolution.</item>
+    ///   <item><b>Cross-subtree pagination splits</b> — cycle 2b
+    ///   treats each top-level subtree as atomic for pagination (the
+    ///   outer <see cref="AttemptLayout"/> loop computes the parent's
+    ///   border-box from its own style only; if the subtree visually
+    ///   overflows, the painter clips). Real CSS allows breaks inside
+    ///   nested containers; this requires propagating
+    ///   <see cref="BreakOpportunity"/> through the recursion +
+    ///   per-level continuation tokens — cycle 2c work.</item>
+    ///   <item><b>Parent / first-child margin collapse</b> per CSS 2.1
+    ///   §8.3.1 — when parent has no border / padding / non-empty
+    ///   children before, the parent's marginStart collapses with the
+    ///   first child's marginStart. Requires BFC-root detection
+    ///   (cycle 3).</item>
+    /// </list></summary>
+    // TODO (cycle 2c / cycle 3) — per cycle-2b post-PR-28 review #6,
+    // extract duplicated style reads + border-box computation +
+    // topShift formula into a `BlockChildMetrics` readonly struct
+    // shared between this method and the outer AttemptLayout loop.
+    // Deferred for now: doing it in this PR would balloon the diff
+    // and obscure the correctness fixes. Cycle 2c will add a third
+    // call site (cross-subtree break propagation) where the
+    // duplication starts hurting; the refactor lands cleanly there.
+    private void EmitBlockSubtreeRecursive(
+        Box parent,
+        double parentBlockOffset,
+        double parentInlineOffset,
+        double parentInlineSize,
+        CancellationToken cancellationToken,
+        int depth)
+    {
+        // Per cycle-2b post-PR-28 review #2 + Copilot #1 — DoS
+        // protection. Untrusted HTML can construct pathologically
+        // deep box trees that would StackOverflow + halt the
+        // process. Throw a typed exception at a fixed depth so the
+        // surrounding pipeline can degrade gracefully (catches
+        // bubble up to SafeResourceLoader-style typed-failure
+        // handling at the assembly boundary).
+        if (depth > MaxRecursionDepth)
+        {
+            throw new InvalidOperationException(
+                $"BlockLayouter recursion depth exceeded {MaxRecursionDepth}; "
+                + "pathologically deep box tree. This is a DoS guard against "
+                + "untrusted HTML; legitimate documents rarely exceed depth "
+                + "32. If you hit this with a real document, please file an "
+                + "issue with the box tree.");
+        }
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // Per cycle-2b post-PR-28 review #3 — only block-flow
+        // containers' inner geometry is owned by BlockLayouter. Other
+        // block-level kinds (Table, Flex, Grid, BlockReplacedElement)
+        // were emitted by the caller as a placeholder fragment for the
+        // outer-display contract, but their INNER content belongs to a
+        // dedicated layouter (TableLayouter / FlexLayouter /
+        // GridLayouter / atomic). Skip the recursion for those kinds —
+        // the dedicated layouter will fill in the inner geometry when
+        // it ships (Phase 3 Tasks 8-12).
+        if (!IsBlockFlowContainerOwnedByBlockLayouter(parent))
+        {
+            return;
+        }
+
+        // Parent's content-area corner in fragmentainer coordinates.
+        var pBorderStart = parent.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
+        var pPaddingStart = parent.Style.ReadLengthPxOrZero(PropertyId.PaddingTop);
+        var pBorderInlineStart = parent.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
+        var pPaddingInlineStart = parent.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
+        var pBorderInlineEnd = parent.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
+        var pPaddingInlineEnd = parent.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
+
+        var contentTop = parentBlockOffset + pBorderStart + pPaddingStart;
+        var contentLeft = parentInlineOffset + pBorderInlineStart + pPaddingInlineStart;
+        var contentInlineSize = Math.Max(0, parentInlineSize
+            - pBorderInlineStart - pPaddingInlineStart
+            - pBorderInlineEnd - pPaddingInlineEnd);
+
+        // Stack children with adjacent-margin collapse (same formula
+        // as the outer AttemptLayout loop; CSS 2.1 §8.3.1).
+        // Per cycle-2b post-PR-28 review #1 + Copilot #2 — childCursor
+        // is a SIGNED visual cursor (no Math.Max(0, ...)). Unlike the
+        // outer loop's UsedBlockSize (which feeds BreakOpportunity
+        // validation that requires non-negative measures), the inner
+        // childCursor is purely positional — clamping it to 0 would
+        // prevent legitimate negative-margin overlap between nested
+        // siblings (CSS 2.1 §8.3.1 explicitly allows negative margins
+        // to produce overlap; the painter's z-order then handles which
+        // box paints on top).
+        double childCursor = 0;  // block-axis position within parent's content area
+        double prevMarginEnd = 0;
+        var hasPrior = false;
+
+        foreach (var child in parent.Children)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!child.IsBlockLevel)
+            {
+                // Non-block content (inline / atomic) breaks margin
+                // adjacency per CSS 2.1 §8.3.1 (PR #23 fix #3).
+                // Cycle 2b doesn't yet lay out inline content (Task 10
+                // domain); reset the collapse chain so the next block's
+                // marginTop is honored without collapsing.
+                hasPrior = false;
+                prevMarginEnd = 0;
+                continue;
+            }
+
+            var marginStart = child.Style.ReadLengthPxOrZero(PropertyId.MarginTop);
+            var marginEnd = child.Style.ReadLengthPxOrZero(PropertyId.MarginBottom);
+            var marginInlineStart = child.Style.ReadLengthPxOrZero(PropertyId.MarginLeft);
+            var marginInlineEnd = child.Style.ReadLengthPxOrZero(PropertyId.MarginRight);
+            var borderStart = child.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
+            var borderEnd = child.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
+            var paddingStart = child.Style.ReadLengthPxOrZero(PropertyId.PaddingTop);
+            var paddingEnd = child.Style.ReadLengthPxOrZero(PropertyId.PaddingBottom);
+            var contentBlock = child.Style.ReadLengthPxOrZero(PropertyId.Height);
+
+            var childBorderBoxBlockSize = borderStart + paddingStart + contentBlock
+                + paddingEnd + borderEnd;
+            var childBorderBoxInlineSize = Math.Max(0,
+                contentInlineSize - marginInlineStart - marginInlineEnd);
+
+            double topShift;
+            if (!hasPrior)
+            {
+                topShift = marginStart;
+            }
+            else
+            {
+                var gap = MarginCollapse.Collapse(prevMarginEnd, marginStart);
+                topShift = gap - prevMarginEnd;
+            }
+
+            var childBlockOffset = contentTop + childCursor + topShift;
+            var childInlineOffset = contentLeft + marginInlineStart;
+
+            _sink.Emit(new BoxFragment(
+                Box: child,
+                InlineOffset: childInlineOffset,
+                BlockOffset: childBlockOffset,
+                InlineSize: childBorderBoxInlineSize,
+                BlockSize: childBorderBoxBlockSize));
+
+            // Recurse — emit grandchildren relative to this child's
+            // content area. The recursion's own predicate gate skips
+            // walking INTO non-flow block kinds (Table/Flex/Grid/etc.).
+            EmitBlockSubtreeRecursive(
+                child,
+                parentBlockOffset: childBlockOffset,
+                parentInlineOffset: childInlineOffset,
+                parentInlineSize: childBorderBoxInlineSize,
+                cancellationToken: cancellationToken,
+                depth: depth + 1);
+
+            // Per cycle-2b post-PR-28 review #1 — SIGNED cursor advance.
+            // Negative margins legitimately produce overlap; clamping
+            // to 0 here would prevent a later sibling from being
+            // positioned above the prior sibling.
+            childCursor = childCursor + topShift + childBorderBoxBlockSize + marginEnd;
+            prevMarginEnd = marginEnd;
+            hasPrior = true;
+        }
+    }
+
+    /// <summary>Per cycle-2b post-PR-28 review #3 — predicate
+    /// distinguishing block-level kinds whose INNER geometry is owned
+    /// by <see cref="BlockLayouter"/> (block-flow containers per
+    /// CSS Display L3 §2.1) from kinds that are block-level for
+    /// outer display but whose inner content needs a dedicated
+    /// layouter.
+    ///
+    /// <para>True for: <see cref="BoxKind.Root"/>,
+    /// <see cref="BoxKind.BlockContainer"/>, <see cref="BoxKind.ListItem"/>,
+    /// <see cref="BoxKind.AnonymousBlock"/> — these have inner-display
+    /// "flow" + are laid out by the block-flow algorithm.</para>
+    ///
+    /// <para>False for: <see cref="BoxKind.Table"/> (TableLayouter
+    /// owns rows/cells per Tables L3), <see cref="BoxKind.FlexContainer"/>
+    /// (FlexLayouter owns flex items per Flexbox L1),
+    /// <see cref="BoxKind.GridContainer"/> (GridLayouter owns grid
+    /// items per Grid L2), <see cref="BoxKind.BlockReplacedElement"/>
+    /// (atomic — no inner geometry; replaced content fills the
+    /// border box).</para>
+    ///
+    /// <para>Pre-cycle-2b-fix the recursion used <see cref="Box.IsBlockLevel"/>
+    /// which is true for ALL of the above. The recursion would walk INTO
+    /// table rows / flex items / grid items as if they were block flow,
+    /// emitting fragments at incorrect offsets. With this narrower
+    /// predicate, non-flow block kinds are emitted as PLACEHOLDER
+    /// fragments by the outer loop (their outer-display position is
+    /// correct) but their inner content is left to the dedicated
+    /// layouter (Phase 3 Tasks 8-12 ship those).</para></summary>
+    private static bool IsBlockFlowContainerOwnedByBlockLayouter(Box box) => box.Kind switch
+    {
+        BoxKind.Root or BoxKind.BlockContainer
+            or BoxKind.ListItem or BoxKind.AnonymousBlock => true,
+        _ => false,
+    };
+
+    /// <summary>Per cycle-2b post-PR-28 review #2 + Copilot #1 — DoS
+    /// guard for <see cref="EmitBlockSubtreeRecursive"/>. Pathologically
+    /// deep HTML (e.g., 10,000 nested <c>div</c>s) could otherwise
+    /// trigger <see cref="StackOverflowException"/> + halt the entire
+    /// process. 256 is well above any realistic document depth (typical
+    /// HTML documents nest 10-30 deep) but low enough that throwing
+    /// catches the abuse cleanly without consuming the rest of the
+    /// stack.
+    ///
+    /// <para>This is the simplest defense; a future pass could replace
+    /// the recursion with an explicit stack to avoid the depth limit
+    /// entirely. For cycle 2b's MVP scope the limit is sufficient.</para></summary>
+    private const int MaxRecursionDepth = 256;
 
     /// <summary>Per PR #22 review fix #2 — release the final
     /// outstanding checkpoint lease when the layouter is discarded.

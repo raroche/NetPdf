@@ -109,35 +109,64 @@ namespace NetPdf.Layout.Layouters;
 ///   well-formed.</item>
 /// </list>
 ///
-/// <para><b>Cycle 2b shipped (this revision) — recursive nested-block
-/// layout per CSS 2.1 §10.</b> Cycle 1 + 2 walked <c>_rootBox.Children</c>
-/// only; a <c>div &gt; p</c> tree emitted only the <c>div</c> fragment.
-/// Cycle 2b adds <see cref="EmitBlockSubtreeRecursive"/> — a private
-/// helper that emits <see cref="BoxFragment"/>s for nested block-level
-/// descendants at correctly nested offsets, applying adjacent-margin
-/// collapse (§8.3.1) between nested siblings. Recursion runs from BOTH
-/// the Continue path + the forced-overflow path. Per cycle-2b post-PR-28
-/// review #3, only block-flow containers (<see cref="BoxKind.BlockContainer"/>,
+/// <para><b>Cycle 2b shipped — recursive nested-block layout per CSS
+/// 2.1 §10.</b> Cycle 1 + 2 walked <c>_rootBox.Children</c> only; a
+/// <c>div &gt; p</c> tree emitted only the <c>div</c> fragment. Cycle
+/// 2b adds <see cref="EmitBlockSubtreeRecursive"/> — emits
+/// <see cref="BoxFragment"/>s for nested block-level descendants at
+/// correctly nested offsets, applying adjacent-margin collapse
+/// (§8.3.1) between nested siblings. Recursion runs from BOTH the
+/// Continue path + the forced-overflow path. Only block-flow
+/// containers (<see cref="BoxKind.BlockContainer"/>,
 /// <see cref="BoxKind.ListItem"/>, <see cref="BoxKind.AnonymousBlock"/>,
-/// <see cref="BoxKind.Root"/>) are recursed into; <see cref="BoxKind.Table"/>
-/// / <see cref="BoxKind.FlexContainer"/> / <see cref="BoxKind.GridContainer"/>
-/// / <see cref="BoxKind.BlockReplacedElement"/> are emitted as placeholders
-/// (their inner geometry belongs to the dedicated layouter). Per
-/// review #2, the recursion threads <see cref="CancellationToken"/>
-/// + caps depth at <see cref="MaxRecursionDepth"/> for DoS protection.
-/// Per review #1, the recursive child-cursor is a SIGNED visual cursor
-/// (no Math.Max(0, ...)) so negative-margin overlap between nested
-/// siblings works correctly.</para>
+/// <see cref="BoxKind.Root"/>) are recursed into;
+/// <see cref="BoxKind.Table"/> / <see cref="BoxKind.FlexContainer"/> /
+/// <see cref="BoxKind.GridContainer"/> /
+/// <see cref="BoxKind.BlockReplacedElement"/> are emitted as
+/// placeholders (their inner geometry belongs to the dedicated
+/// layouter). Recursion threads <see cref="CancellationToken"/> +
+/// caps depth at <see cref="MaxRecursionDepth"/> for DoS protection;
+/// child-cursor is a SIGNED visual cursor so negative-margin overlap
+/// between nested siblings works correctly.</para>
 ///
-/// <para><b>Cycle 2b deferrals (still — to subsequent commits):</b></para>
+/// <para><b>Cycle 2c shipped (this revision) — subtree-aware
+/// pagination (atomic MVP).</b> Pre-cycle-2c the outer break decision
+/// + cursor advance both used the box's OWN <c>borderBoxBlockSize</c>,
+/// so containers with overflowing block-level descendants silently
+/// clipped past the fragmentainer boundary + subsequent siblings
+/// visually overlapped the overflow. Cycle 2c adds
+/// <see cref="MeasureSubtreeVisualBlockExtent"/> — a pre-measure
+/// pass that returns the maximum block-axis extent reached by any
+/// descendant. The break-fit chunk size + cursor advance both use
+/// this measured extent (max of own border-box + descendant bottoms),
+/// so:
 /// <list type="bullet">
-///   <item><b>Cycle 2c.</b> Cross-subtree pagination splits — cycle 2b
-///   treats each top-level subtree as atomic for pagination (the outer
-///   <see cref="AttemptLayout"/> loop computes the parent's border-box
-///   from its own style only; if the subtree visually overflows, the
-///   painter clips). Real CSS allows breaks inside nested containers;
-///   this requires propagating <see cref="BreakOpportunity"/> through
-///   the recursion + per-level continuation tokens.</item>
+///   <item>Oversized subtrees trigger a break-before via the resolver,
+///   pushing the entire subtree to the next page (atomic semantics
+///   per CSS Fragmentation L3 §5).</item>
+///   <item>Subtrees that can't fit any page (taller than the
+///   fragmentainer) commit via the existing forced-overflow forward
+///   progress + emit <c>PAGINATION-FORCED-OVERFLOW-001</c> — pre-fix
+///   this case was silent because the outer measure missed the
+///   overflow.</item>
+///   <item>Siblings AFTER an overflowing subtree are positioned past
+///   the overflow's bottom edge (no overlap).</item>
+/// </list>
+/// Non-flow block kinds (Table/Flex/Grid/Replaced) are atomic to the
+/// measure pass — only their own border-box size contributes (their
+/// inner geometry belongs to the dedicated layouter, same predicate
+/// gating as <see cref="EmitBlockSubtreeRecursive"/>).</para>
+///
+/// <para><b>Cycle 2c deferrals (still — to subsequent commits):</b></para>
+/// <list type="bullet">
+///   <item><b>Cycle 2d.</b> True mid-subtree pagination splits —
+///   cycle 2c MVP treats subtrees as ATOMIC (push wholly to next
+///   page OR forced-overflow). Real CSS allows breaks INSIDE a
+///   subtree (parent's first half on page 1 + parent's second half
+///   on page 2). Requires recursive continuation tokens
+///   (<c>BlockContinuation.NestedContinuation</c>) + break consultation
+///   inside <see cref="EmitBlockSubtreeRecursive"/> + recursive
+///   resume on retry.</item>
 ///   <item><b>Cycle 3.</b> Auto-height resolution per CSS 2.1 §10.6.3
 ///   (when a container has <c>height: auto</c>, its content area
 ///   should resolve to children's stack height — cycle 2b uses
@@ -487,11 +516,55 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // on a page (no collapse) and `effectiveTopGap -
             // prevBlockMarginEnd` (= the actual additional advance)
             // for subsequent collapsed blocks.
-            var visualBlockExtent = borderBoxBlockSize
+            //
+            // Per Phase 3 Task 7 cycle 2c — subtree-aware pagination.
+            // Pre-cycle-2c the break-fit measure + cursor advance both
+            // used the box's OWN `borderBoxBlockSize` (= border +
+            // padding + Height-from-style). For containers with block-
+            // level descendants whose VISUAL EXTENT exceeds the
+            // parent's own height (auto-height + tall children, or
+            // explicit-height + overflowing children), the outer
+            // break decision didn't see the overflow + the painter
+            // silently clipped on the next page. Post-fix the measure
+            // is the SUBTREE visual extent — the maximum block-axis
+            // position reached by ANY descendant, measured from the
+            // box's border-box top. For leaf boxes this equals
+            // `borderBoxBlockSize`; for containers with overflowing
+            // children it dominates so:
+            //   (a) the resolver sees the FULL visual footprint +
+            //       can dispatch a break-before that pushes the
+            //       entire subtree to the next page (cleanly, per
+            //       CSS Fragmentation L3 §5).
+            //   (b) the cursor advances past the overflow, so a
+            //       sibling AFTER the overflowing parent doesn't
+            //       visually overlap with the overflow.
+            //
+            // <b>Cycle 2c MVP scope.</b> The pre-measure produces
+            // ATOMIC pagination — the entire subtree commits on one
+            // page (with overflow + diagnostic if it doesn't fit any
+            // single page) OR moves wholly to the next page via
+            // break-before. Real CSS allows breaks INSIDE a subtree
+            // (mid-split, where the parent's first half sits on page
+            // 1 + the rest continues on page 2); that requires
+            // recursive continuation tokens + break consultation
+            // inside `EmitBlockSubtreeRecursive`. Deferred to cycle
+            // 2d.
+            var subtreeBlockExtent = MeasureSubtreeVisualBlockExtent(child);
+            // The "effective" border-box block size for pagination +
+            // cursor purposes: max of own border-box + subtree extent.
+            // Equals borderBoxBlockSize for leaves; dominates for
+            // containers with overflowing children.
+            var effectiveBlockSize = Math.Max(borderBoxBlockSize, subtreeBlockExtent);
+            var visualBlockExtent = effectiveBlockSize
                 + Math.Max(0, topShift)
                 + Math.Max(0, marginEnd);
+            // Cycle-2c cursor advance: use subtree-aware extent so
+            // siblings of an overflowing parent don't overlap the
+            // overflow. Falls back to borderBoxBlockSize for leaves
+            // (where subtree extent == own size).
+            var marginBoxBlockSizeForCursor = topShift + effectiveBlockSize + marginEnd;
             var chunkForBreakCheck = Math.Max(
-                Math.Max(0, marginBoxBlockSize),
+                Math.Max(0, marginBoxBlockSizeForCursor),
                 visualBlockExtent);
 
             // Per PR #22 review fix #2 — capture a checkpoint at the
@@ -650,8 +723,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     // Per PR #23 review fix #4 — clamp UsedBlockSize
                     // to non-negative so subsequent BreakOpportunity
                     // construction doesn't trip CostModel's guard.
+                    // Per cycle 2c — advance by `marginBoxBlockSizeForCursor`
+                    // (subtree-aware) so siblings AFTER an overflowing
+                    // subtree don't overlap with the overflow.
                     fragmentainer.UsedBlockSize = Math.Max(0,
-                        fragmentainer.UsedBlockSize + marginBoxBlockSize);
+                        fragmentainer.UsedBlockSize + marginBoxBlockSizeForCursor);
                     emittedThisAttempt++;
                     // Per PR #24/#25 Copilot review — track actual
                     // last-emitted index for accurate checkpoint
@@ -752,8 +828,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // could otherwise drive the cursor below zero, then the
             // next BreakOpportunity.UsedBlockSize would trip
             // CostModel.Score's non-negative guard.
+            // Per cycle 2c — advance by `marginBoxBlockSizeForCursor`
+            // (subtree-aware) so siblings AFTER an overflowing
+            // subtree don't overlap with the overflow.
             fragmentainer.UsedBlockSize = Math.Max(0,
-                fragmentainer.UsedBlockSize + marginBoxBlockSize);
+                fragmentainer.UsedBlockSize + marginBoxBlockSizeForCursor);
             prevBlockMarginEnd = marginEnd;
             hasPriorAdjoiningBlock = true;
             emittedThisAttempt++;
@@ -1015,6 +1094,132 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// the recursion with an explicit stack to avoid the depth limit
     /// entirely. For cycle 2b's MVP scope the limit is sufficient.</para></summary>
     private const int MaxRecursionDepth = 256;
+
+    /// <summary>Per Phase 3 Task 7 cycle 2c — pre-measure pass that
+    /// computes the maximum block-axis extent reached by any
+    /// descendant in <paramref name="parent"/>'s subtree, measured
+    /// from <paramref name="parent"/>'s border-box top.
+    ///
+    /// <para>For leaf boxes (no block-level descendants) returns
+    /// <paramref name="parent"/>'s own border-box block size (border +
+    /// padding + Height-from-style). For containers with block-level
+    /// descendants, walks the subtree applying adjacent-margin
+    /// collapse (CSS 2.1 §8.3.1) + returns the max of (parent's own
+    /// border-box, deepest descendant's bottom edge in parent's
+    /// border-box coordinates). When children overflow the parent's
+    /// content area (auto-height + tall children, or explicit-height
+    /// + overflowing children), the descendant extent dominates.</para>
+    ///
+    /// <para><b>Used by</b> <see cref="AttemptLayout"/>'s outer break
+    /// decision: the chunk-block-size for the resolver consult is
+    /// computed against this subtree extent, so an overflowing
+    /// subtree triggers a <see cref="BreakAction.BreakHere"/> that
+    /// pushes the entire subtree to the next page (atomic semantics —
+    /// real mid-subtree splits are deferred to cycle 2d). Also drives
+    /// the cursor advance so siblings AFTER an overflowing subtree
+    /// don't visually overlap with the overflow.</para>
+    ///
+    /// <para><b>Recursion + DoS guard.</b> Mirrors
+    /// <see cref="EmitBlockSubtreeRecursive"/>'s
+    /// <see cref="MaxRecursionDepth"/> + flow-container predicate
+    /// gating: non-flow block kinds (Table / Flex / Grid / replaced)
+    /// are treated as opaque (return their own border-box size; their
+    /// inner geometry belongs to a dedicated layouter). Pathologically
+    /// deep trees throw <see cref="InvalidOperationException"/> at
+    /// the same depth limit. Note: the measure pass does NOT accept a
+    /// CancellationToken — it's a pure traversal called once per
+    /// outer-loop child + the depth cap bounds the work; the outer
+    /// loop's CT check still runs between children.</para></summary>
+    private double MeasureSubtreeVisualBlockExtent(Box parent)
+        => MeasureSubtreeVisualBlockExtent(parent, depth: 0);
+
+    private double MeasureSubtreeVisualBlockExtent(Box parent, int depth)
+    {
+        if (depth > MaxRecursionDepth)
+        {
+            throw new InvalidOperationException(
+                $"BlockLayouter measure-pass recursion depth exceeded {MaxRecursionDepth}; "
+                + "pathologically deep box tree. This is a DoS guard against "
+                + "untrusted HTML; legitimate documents rarely exceed depth 32.");
+        }
+
+        // Parent's own border-box block size from style.
+        var pBorderStart = parent.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
+        var pPaddingStart = parent.Style.ReadLengthPxOrZero(PropertyId.PaddingTop);
+        var pBorderEnd = parent.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
+        var pPaddingEnd = parent.Style.ReadLengthPxOrZero(PropertyId.PaddingBottom);
+        var pHeight = parent.Style.ReadLengthPxOrZero(PropertyId.Height);
+        var parentBorderBoxBlockSize = pBorderStart + pPaddingStart + pHeight
+            + pPaddingEnd + pBorderEnd;
+
+        // Non-flow block kinds (Table/Flex/Grid/Replaced) are atomic
+        // to the BlockLayouter — their inner geometry belongs to a
+        // dedicated layouter. Return own size.
+        if (!IsBlockFlowContainerOwnedByBlockLayouter(parent))
+        {
+            return parentBorderBoxBlockSize;
+        }
+
+        // Walk block-level children, computing the deepest bottom-edge
+        // reached. Children's content area top is at (border + padding)
+        // from parent's border-box top.
+        var contentAreaTop = pBorderStart + pPaddingStart;
+        var maxExtent = parentBorderBoxBlockSize;  // baseline = own size
+
+        // Stack children with adjacent-margin collapse (mirrors
+        // EmitBlockSubtreeRecursive's stacking logic).
+        double childCursor = 0;  // signed visual cursor (cycle 2b post-PR-28 fix)
+        double prevMarginEnd = 0;
+        var hasPrior = false;
+
+        foreach (var child in parent.Children)
+        {
+            if (!child.IsBlockLevel)
+            {
+                // Non-block content (inline / atomic) breaks margin
+                // adjacency — same as EmitBlockSubtreeRecursive. Inline
+                // content's block-axis contribution is Task 10's
+                // domain (LineBuilder); cycle 2c measures the
+                // block-flow extent only.
+                hasPrior = false;
+                prevMarginEnd = 0;
+                continue;
+            }
+
+            var marginStart = child.Style.ReadLengthPxOrZero(PropertyId.MarginTop);
+            var marginEnd = child.Style.ReadLengthPxOrZero(PropertyId.MarginBottom);
+            // Recurse — child's subtree extent (= max of child's own
+            // border-box + its descendants).
+            var childSubtreeExtent = MeasureSubtreeVisualBlockExtent(child, depth + 1);
+
+            double topShift;
+            if (!hasPrior)
+            {
+                topShift = marginStart;
+            }
+            else
+            {
+                var gap = MarginCollapse.Collapse(prevMarginEnd, marginStart);
+                topShift = gap - prevMarginEnd;
+            }
+
+            // Child's bottom edge in parent's border-box coordinates.
+            var childTopInParent = contentAreaTop + childCursor + topShift;
+            var childBottomInParent = childTopInParent + childSubtreeExtent;
+            if (childBottomInParent > maxExtent)
+            {
+                maxExtent = childBottomInParent;
+            }
+
+            // Signed cursor advance (cycle 2b post-PR-28 fix — negative
+            // margins legitimately produce overlap).
+            childCursor = childCursor + topShift + childSubtreeExtent + marginEnd;
+            prevMarginEnd = marginEnd;
+            hasPrior = true;
+        }
+
+        return maxExtent;
+    }
 
     /// <summary>Per PR #22 review fix #2 — release the final
     /// outstanding checkpoint lease when the layouter is discarded.

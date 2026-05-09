@@ -232,6 +232,32 @@ internal sealed class FloatManager
         return Math.Max(currentBlockY, relevantBottom);
     }
 
+    /// <summary>Per Phase 3 Task 8 cycle 2 post-PR-31 review (P1 #3 +
+    /// Copilot #1) — peek at where <see cref="PlaceFloat"/> WOULD
+    /// place a float without actually adding it to the active list.
+    /// Returns the same Y that PlaceFloat would compute given the
+    /// stacking rule: <c>max(currentBlockY, max-bottom-of-active-floats-on-side)</c>.
+    ///
+    /// <para>Used by callers that need to decide whether a float
+    /// would fit before committing it (e.g., cross-fragmentainer
+    /// deferral). The pre-fix `WouldFloatOverflow` in BlockLayouter
+    /// used `currentBlockY` directly + missed overflow when prior
+    /// same-side floats already stacked below the cursor (e.g., a
+    /// 500-tall float followed by a 400-tall float on an 800-page
+    /// would overflow at y=900 but the check saw 0+400=400 + emitted
+    /// instead of deferring).</para>
+    ///
+    /// <para>O(1) — uses the same per-side max-bottom cache as
+    /// <see cref="GetClearedBlockY"/>.</para></summary>
+    public double PeekPlaceFloatBlockOffset(FloatSide side, double currentBlockY)
+    {
+        if (!double.IsFinite(currentBlockY))
+            throw new ArgumentOutOfRangeException(nameof(currentBlockY),
+                $"currentBlockY must be finite; got {currentBlockY}");
+        var sameSideBottom = side == FloatSide.Left ? _maxLeftBottom : _maxRightBottom;
+        return Math.Max(currentBlockY, sameSideBottom);
+    }
+
     /// <summary>Per Phase 3 Task 8 cycle 2 — return the inline-axis
     /// range available for an in-flow block at <paramref name="blockY"/>,
     /// reduced to flow around any float whose vertical extent overlaps

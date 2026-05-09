@@ -422,6 +422,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // FragmentainerContext access).
         _bfcContentInlineSize = fragmentainer.ContentInlineSize;
 
+        // Per Phase 3 Task 8 cycle 2 post-PR-31 review (P1 #5) —
+        // capture fragmentainer + diagnostic sink for nested-float
+        // overflow checks. Cycle 2 MVP: nested float overflows emit
+        // a diagnostic but don't defer (recursion has no PageComplete
+        // return path — cycle-2c-style continuations would be needed).
+        _capturedFragmentainer = fragmentainer;
+        _capturedDiagSink = layout.Diagnostics ?? _diagnostics;
+
         // Track whether this attempt has emitted any fragment so far.
         // Per PR #22 review fix #1 — the oversized-block forward-
         // progress path needs to know if BreakHere fires before any
@@ -496,12 +504,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // shifted to the named side until it touches the
             // containing block edge or another same-side float.
             //
-            // Cycle 1 MVP: floats stack along the block axis (cycle 2
+            // Cycle 1 MVP: floats stack along the block axis (cycle 3
             // will inline-pack same-side floats per §9.5.1 rule 5).
-            // The float's fragment is emitted but blocks DON'T resize
-            // around it (cycle 2 will reduce inline-size to flow
-            // around floats; for now floats overlap visually + the
-            // painter handles z-order).
+            // Cycle 2 (this revision) wires inline-size reduction so
+            // in-flow blocks flow AROUND floats; the BlockLayouter +
+            // FloatManager.GetAvailableInlineRange path handles that.
+            // Cycle 3 will refine for inline content (line boxes
+            // wrapping around floats — needs LineBuilder).
             var floatSide = child.Style.ReadFloatSide();
             if (floatSide.HasValue)
             {
@@ -522,8 +531,25 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // EmitFloat which still emits + diagnostic (the float
                 // is taller than ANY page; cycle 3 will fragment it
                 // or document the limitation).
-                if (WouldFloatOverflow(child, fragmentainer)
-                    && emittedThisAttempt > 0)
+                //
+                // Per post-PR-31 review (P1 #4) — "page has prior
+                // content" is a disjunction:
+                //   (a) `fragmentainer.UsedBlockSize > 0` — captures
+                //       any prior content (header reservation, prior
+                //       layouter output, prior page's content carrying
+                //       forward) regardless of source.
+                //   (b) `emittedThisAttempt > 0` — captures THIS
+                //       layouter's emissions even when those emissions
+                //       are out-of-flow + don't advance UsedBlockSize
+                //       (floats!). A page with one float emitted then
+                //       a second too-tall float must still defer the
+                //       second; UsedBlockSize stays 0 because floats
+                //       don't advance it.
+                var pageHasPriorContent =
+                    fragmentainer.UsedBlockSize > 0
+                    || emittedThisAttempt > 0;
+                if (WouldFloatOverflow(child, floatSide.Value, fragmentainer)
+                    && pageHasPriorContent)
                 {
                     return LayoutAttemptResult.PageComplete(
                         new BlockContinuation(
@@ -631,44 +657,6 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 + paddingEnd + borderEnd;
 
             // Per Phase 3 Task 8 cycle 2 — flow around floats. The
-            // available inline-axis range at the block's
-            // hypothetical-top-Y is reduced by any float whose
-            // vertical extent intersects that Y. Per CSS 2.2 §9.5,
-            // an in-flow non-floating block shrinks its inline-size
-            // to leave room for floats on both sides. Cycle 1 used
-            // the full containing-block range (floats overlapped
-            // visually); cycle 2 produces the correct flow-around
-            // semantics that real documents (sidebar layouts, image-
-            // with-text-wrap) need.
-            //
-            // The hypothetical block-Y for the available-range query
-            // is the post-collapse cursor position the block WILL
-            // occupy. We approximate it as `fragmentainer.UsedBlockSize`
-            // here (before adding marginTop / topShift); the small
-            // discrepancy when marginTop pushes the block past a float
-            // is acceptable for cycle 2 MVP — the available range only
-            // shrinks, never grows, so the worst case is a slightly
-            // narrower block than strictly necessary. Cycle 3 will
-            // refine to use the actual border-box top after collapse.
-            var (availInlineStart, availInlineEnd) =
-                _floatManager.GetAvailableInlineRange(
-                    blockY: fragmentainer.UsedBlockSize,
-                    containingStart: 0,
-                    containingEnd: fragmentainer.ContentInlineSize);
-            var availInlineSize = Math.Max(0, availInlineEnd - availInlineStart);
-
-            // Per PR #23 review fix #5 — clamp the border-box inline
-            // size to non-negative. Oversized left/right margins
-            // (margin-left + margin-right > ContentInlineSize) would
-            // otherwise produce a negative inline size + destabilize
-            // downstream painting. The fragment records 0 inline-size
-            // in that case; future cycle 3 will emit a layout
-            // overflow diagnostic.
-            // Per Phase 3 Task 8 cycle 2 — derive from the float-
-            // adjusted available range, not the full containing block.
-            var borderBoxInlineSize = Math.Max(0,
-                availInlineSize - marginInlineStart - marginInlineEnd);
-
             // Per Phase 3 Task 7 cycle 2 + CSS 2.1 §8.3.1 — adjacent-
             // sibling margin collapse.
             //
@@ -729,6 +717,41 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     topShift = floatBottomShift;
                 }
             }
+
+            // Per Phase 3 Task 8 cycle 2 + post-PR-31 review (P1 #1 +
+            // #2 + Copilot #2) — flow around floats. Query the
+            // available inline-axis range AT THE BLOCK'S ACTUAL
+            // BORDER-BOX TOP, not at fragmentainer.UsedBlockSize.
+            //
+            // Pre-cycle-2c-fix queried at UsedBlockSize (= the cursor
+            // before margin / clearance), which broke two cases:
+            //   (a) clear:left after a left float → block correctly
+            //       moved below the float vertically but still got
+            //       reduced inline-size (range query saw the float
+            //       active at the cursor Y); the block should use the
+            //       FULL containing-block range now that it's past
+            //       the float.
+            //   (b) marginTop / collapsed margins that move the block
+            //       past a float bottom → same false reduction.
+            //
+            // Post-fix: the hypothetical top-Y AFTER margin collapse +
+            // clearance is `fragmentainer.UsedBlockSize + topShift`.
+            // Per CSS 2.2 §9.5, the available range is queried at the
+            // border-box top edge — this is what we now use.
+            var hypotheticalBlockTop = fragmentainer.UsedBlockSize + topShift;
+            var (availInlineStart, availInlineEnd) =
+                _floatManager.GetAvailableInlineRange(
+                    blockY: hypotheticalBlockTop,
+                    containingStart: 0,
+                    containingEnd: fragmentainer.ContentInlineSize);
+            var availInlineSize = Math.Max(0, availInlineEnd - availInlineStart);
+
+            // Per PR #23 review fix #5 — clamp the border-box inline
+            // size to non-negative. Per cycle 2 — derive from the
+            // float-adjusted available range, not the full containing
+            // block.
+            var borderBoxInlineSize = Math.Max(0,
+                availInlineSize - marginInlineStart - marginInlineEnd);
 
             // Per cycle 2c post-PR-29 review #7 — `marginBoxBlockSize`
             // (= `topShift + borderBoxBlockSize + marginEnd`) was
@@ -1321,26 +1344,29 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             }
 
             // Per Phase 3 Task 8 cycle 1 post-PR-30 review (P1 #4) —
-            // nested clear. A non-floating block inside the recursion
-            // with `clear: ...` advances its top edge past the float
-            // bottom IN BFC COORDINATES. The local cursor (parent-
-            // relative) needs to be translated back: BFC-Y =
-            // contentTop + childCursor; cleared-BFC-Y = max(BFC-Y,
-            // float bottom on relevant side); local-clear-Y =
-            // cleared-BFC-Y - contentTop. The childCursor advances to
-            // local-clear-Y; collapse chain resets.
+            // nested clear resolution. A non-floating block inside the
+            // recursion with `clear: ...` clears past relevant float
+            // bottoms IN BFC COORDINATES.
+            //
+            // Per cycle 2 post-PR-31 review (P1 #6) — same fix as the
+            // outer loop's clearance handling: clearance is space ABOVE
+            // marginTop, not below. Pre-fix advanced `childCursor` to
+            // the cleared-Y immediately + then applied marginTop on
+            // top → border-box top at floatBottom + marginTop (one
+            // marginTop too low). Post-fix: defer clearance into
+            // topShift; border-box top = max(hypothetical-with-collapse,
+            // clearedFloatBottom).
             var nestedClearKind = child.Style.ReadClearKind();
-            if (nestedClearKind != ClearKind.None)
+            var nestedLocalBfcY = contentTop + childCursor;
+            var nestedClearedBfcY = nestedClearKind != ClearKind.None
+                ? _floatManager.GetClearedBlockY(nestedLocalBfcY, nestedClearKind)
+                : nestedLocalBfcY;
+            var nestedClearanceTriggered = nestedClearedBfcY > nestedLocalBfcY;
+            if (nestedClearanceTriggered)
             {
-                var localBfcY = contentTop + childCursor;
-                var clearedBfcY = _floatManager.GetClearedBlockY(
-                    localBfcY, nestedClearKind);
-                if (clearedBfcY > localBfcY)
-                {
-                    childCursor = clearedBfcY - contentTop;
-                    hasPrior = false;
-                    prevMarginEnd = 0;
-                }
+                // Per §8.3.1 — clearance creates a new collapse boundary.
+                hasPrior = false;
+                prevMarginEnd = 0;
             }
 
             var marginStart = child.Style.ReadLengthPxOrZero(PropertyId.MarginTop);
@@ -1387,6 +1413,19 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             {
                 var gap = MarginCollapse.Collapse(prevMarginEnd, marginStart);
                 topShift = gap - prevMarginEnd;
+            }
+
+            // Per cycle 2 post-PR-31 review (P1 #6) — fold nested
+            // clearance into topShift, same as the outer loop. CSS
+            // clearance is space ABOVE marginTop chosen so border-box
+            // top = max(hypothetical, floatBottom).
+            if (nestedClearanceTriggered)
+            {
+                var floatBottomShift = nestedClearedBfcY - nestedLocalBfcY;
+                if (floatBottomShift > topShift)
+                {
+                    topShift = floatBottomShift;
+                }
             }
 
             var childBlockOffset = contentTop + childCursor + topShift;
@@ -1499,6 +1538,31 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         var fragmentInlineOffset = placedInline + marginInlineStart;
         var fragmentBlockOffset = placedBlock + marginStart;
 
+        // Per cycle 2 post-PR-31 review (P1 #5) — nested float
+        // overflow diagnostic. Cycle 2 MVP: a nested float that
+        // would extend past the fragmentainer emits the same
+        // PAGINATION-FORCED-OVERFLOW-001 diagnostic as the top-level
+        // path. Cycle 2 doesn't yet defer nested floats to the next
+        // page (would require a PageComplete return path through
+        // the recursion — a cycle-2c-style refactor); the diagnostic
+        // is the observability channel until then.
+        if (_capturedFragmentainer is not null)
+        {
+            var floatBottom = placedBlock + marginBoxBlockSize;
+            if (floatBottom > _capturedFragmentainer.BlockSize)
+            {
+                OptimizingBreakResolver.SafeEmit(_capturedDiagSink, new PaginateDiagnostic(
+                    PaginateDiagnosticCodes.PaginationForcedOverflow001,
+                    $"BlockLayouter: nested float overflow on fragmentainer page index "
+                    + $"{_capturedFragmentainer.PageIndex} — float margin-box bottom="
+                    + $"{floatBottom:0.##} exceeds fragmentainer block-size="
+                    + $"{_capturedFragmentainer.BlockSize:0.##}. Cycle 2 emits the float "
+                    + "anyway (nested-float deferral requires recursive continuation "
+                    + "tokens — deferred to a future cycle).",
+                    PaginateDiagnosticSeverity.Warning));
+            }
+        }
+
         _sink.Emit(new BoxFragment(
             Box: child,
             InlineOffset: fragmentInlineOffset,
@@ -1531,17 +1595,15 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// if placed at the current cursor position. Used by the cross-
     /// fragmentainer float deferral path BEFORE the actual placement.
     ///
-    /// <para>Computes the float's hypothetical margin-box bottom from
-    /// box-model reads + the would-be Y from
-    /// <see cref="FloatManager.PlaceFloat"/>'s same-side stacking rule
-    /// (= max(currentBlockY, max-bottom-of-active-floats-on-side)).
-    /// Returns true when that bottom exceeds <c>fragmentainer.BlockSize</c>.</para>
-    ///
-    /// <para>This duplicates a few box-model reads that EmitFloat will
-    /// repeat after the deferral check passes; the deferral path is
-    /// rare so the duplication is fine. Cycle 3 will consolidate via
-    /// the BlockChildMetrics helper that's been deferred since cycle 2b.</para></summary>
-    private bool WouldFloatOverflow(Box child, FragmentainerContext fragmentainer)
+    /// <para>Per cycle 2 post-PR-31 review (P1 #3 + Copilot #1) —
+    /// uses <see cref="FloatManager.PeekPlaceFloatBlockOffset"/> to
+    /// compute the SAME stacked Y that PlaceFloat would. Pre-fix used
+    /// `currentBlockY` directly + missed overflow when prior same-side
+    /// floats already stacked below the cursor (e.g., a 500-tall float
+    /// followed by a 400-tall float on an 800-page should defer at
+    /// y=900 but the check saw 0+400 and emitted instead).</para></summary>
+    private bool WouldFloatOverflow(
+        Box child, FloatSide side, FragmentainerContext fragmentainer)
     {
         // Compute the float's margin-box block-size from the box-model
         // reads (same as EmitFloat).
@@ -1555,24 +1617,33 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         var marginBoxBlockSize = Math.Max(0,
             marginStart + (borderStart + paddingStart + contentBlock + paddingEnd + borderEnd) + marginEnd);
 
-        // Peek at the would-be Y. PlaceFloat's stacking rule = max of
-        // currentBlockY + same-side max-bottom. The float's authored
-        // currentBlockY in the outer-loop dispatch path is
-        // fragmentainer.UsedBlockSize. We don't peek into FloatManager's
-        // private cache here (test isolation); the existing public
-        // ActiveFloats lets us derive it. Since stacked Y is monotonic
-        // non-decreasing, using just the cursor without same-side
-        // stacking is a LOWER bound — meaning we may MISS overflow
-        // detection in the rare case where multiple floats already
-        // stack BELOW the cursor. The existing diagnostic (P1 #3 from
-        // cycle 1) catches that fallback case.
-        var hypotheticalY = fragmentainer.UsedBlockSize;
+        // Per post-PR-31 review (P1 #3 + Copilot #1) — use the
+        // FloatManager peek API which mirrors PlaceFloat's stacking
+        // rule (max of currentBlockY + same-side max-bottom). This
+        // catches the case where prior same-side floats have stacked
+        // below the cursor.
+        var hypotheticalY = _floatManager.PeekPlaceFloatBlockOffset(
+            side, fragmentainer.UsedBlockSize);
         return hypotheticalY + marginBoxBlockSize > fragmentainer.BlockSize;
     }
 
     /// <summary>Captured at AttemptLayout entry; used by
     /// EmitNestedFloat as the BFC-wide containing inline size.</summary>
     private double _bfcContentInlineSize;
+
+    /// <summary>Per cycle 2 post-PR-31 review (P1 #5) — captured at
+    /// AttemptLayout entry; used by EmitNestedFloat for overflow
+    /// detection (cycle 2 MVP: emits diagnostic for nested float
+    /// overflow but doesn't defer to next page; that requires
+    /// cycle-2c-style continuation tokens which are out of cycle 2
+    /// scope). The recursion can't easily defer (no PageComplete
+    /// return path) — diagnostic only.</summary>
+    private FragmentainerContext? _capturedFragmentainer;
+
+    /// <summary>Per cycle 2 post-PR-31 review (P1 #5) — captured at
+    /// AttemptLayout entry; the ambient diagnostic sink for nested-
+    /// float overflow emission.</summary>
+    private IPaginateDiagnosticsSink? _capturedDiagSink;
 
     private void EmitFloat(
         Box child,
@@ -1659,8 +1730,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 + $"{fragmentainer.PageIndex} — float margin-box bottom="
                 + $"{floatBottom:0.##} exceeds fragmentainer block-size="
                 + $"{fragmentainer.BlockSize:0.##}. Cycle 1 emits the float "
-                + "anyway; cycle 2 will move overflowing floats to the next "
-                + "fragmentainer per CSS Fragmentation L3 §5.",
+                + "anyway. Cross-fragmentainer deferral (cycle 2) handles "
+                + "the with-prior-content case automatically; this fallback "
+                + "fires only when the float is taller than ANY page (cycle "
+                + "3 will fragment such floats per CSS Fragmentation L3 §5).",
                 PaginateDiagnosticSeverity.Warning));
         }
 

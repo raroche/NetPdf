@@ -289,4 +289,118 @@ public class FloatManagerTests
         Assert.Throws<InvalidOperationException>(() =>
             fm.RestoreFrom("not a snapshot"));
     }
+
+    // ====================================================================
+    //  Phase 3 Task 8 cycle 2 — GetAvailableInlineRange
+    // ====================================================================
+
+    [Fact]
+    public void GetAvailableInlineRange_no_floats_returns_full_range()
+    {
+        var fm = new FloatManager();
+        var range = fm.GetAvailableInlineRange(blockY: 100,
+            containingStart: 0, containingEnd: 600);
+        Assert.Equal(0, range.InlineStart);
+        Assert.Equal(600, range.InlineEnd);
+    }
+
+    [Fact]
+    public void GetAvailableInlineRange_left_float_pushes_start_past_its_right_edge()
+    {
+        var fm = new FloatManager();
+        // Left float: inline=[0, 100), block=[0, 200).
+        fm.PlaceFloat(FloatSide.Left, 100, 200, 0, 600, 0);
+        // Query at y=50 (inside float's vertical extent) — left edge
+        // should be 100 (past float's right edge).
+        var range = fm.GetAvailableInlineRange(50, 0, 600);
+        Assert.Equal(100, range.InlineStart);
+        Assert.Equal(600, range.InlineEnd);
+    }
+
+    [Fact]
+    public void GetAvailableInlineRange_right_float_pulls_end_before_its_left_edge()
+    {
+        var fm = new FloatManager();
+        // Right float: inline=[500, 600), block=[0, 150).
+        fm.PlaceFloat(FloatSide.Right, 100, 150, 0, 600, 0);
+        var range = fm.GetAvailableInlineRange(50, 0, 600);
+        Assert.Equal(0, range.InlineStart);
+        Assert.Equal(500, range.InlineEnd);
+    }
+
+    [Fact]
+    public void GetAvailableInlineRange_left_and_right_floats_both_constrain()
+    {
+        var fm = new FloatManager();
+        fm.PlaceFloat(FloatSide.Left, 100, 200, 0, 600, 0);
+        fm.PlaceFloat(FloatSide.Right, 80, 200, 0, 600, 0);
+        var range = fm.GetAvailableInlineRange(50, 0, 600);
+        Assert.Equal(100, range.InlineStart);
+        Assert.Equal(520, range.InlineEnd);  // 600 - 80
+    }
+
+    [Fact]
+    public void GetAvailableInlineRange_y_above_float_top_is_unconstrained()
+    {
+        var fm = new FloatManager();
+        // Float starts at y=100.
+        fm.PlaceFloat(FloatSide.Left, 100, 50, 0, 600, currentBlockY: 100);
+        // Query at y=50 (BEFORE float's top) — full range available.
+        var range = fm.GetAvailableInlineRange(50, 0, 600);
+        Assert.Equal(0, range.InlineStart);
+        Assert.Equal(600, range.InlineEnd);
+    }
+
+    [Fact]
+    public void GetAvailableInlineRange_y_at_or_past_float_bottom_is_unconstrained()
+    {
+        var fm = new FloatManager();
+        // Float at y=[0, 100). Query at y=100 (= float bottom, exclusive).
+        fm.PlaceFloat(FloatSide.Left, 100, 100, 0, 600, 0);
+        var range = fm.GetAvailableInlineRange(100, 0, 600);
+        Assert.Equal(0, range.InlineStart);
+        Assert.Equal(600, range.InlineEnd);
+    }
+
+    [Fact]
+    public void GetAvailableInlineRange_two_left_floats_stacked_only_active_constrains()
+    {
+        var fm = new FloatManager();
+        // Float 1: y=[0, 50).
+        fm.PlaceFloat(FloatSide.Left, 100, 50, 0, 600, 0);
+        // Float 2 stacks below: y=[50, 130).
+        fm.PlaceFloat(FloatSide.Left, 80, 80, 0, 600, currentBlockY: 50);
+        // Query at y=80 — only float 2 is active (y in [50, 130)).
+        var range = fm.GetAvailableInlineRange(80, 0, 600);
+        Assert.Equal(80, range.InlineStart);  // float 2's right edge
+    }
+
+    [Fact]
+    public void GetAvailableInlineRange_oversized_left_float_can_make_end_below_start()
+    {
+        var fm = new FloatManager();
+        // Oversized left float: inline=[0, 700) on a 600-wide CB.
+        fm.PlaceFloat(FloatSide.Left, 700, 50, 0, 600, 0);
+        var range = fm.GetAvailableInlineRange(20, 0, 600);
+        // Left edge pushed to 700; right edge stays at 600. Caller
+        // sees end < start (degenerate); cycle 2 callers clamp width
+        // to 0.
+        Assert.Equal(700, range.InlineStart);
+        Assert.Equal(600, range.InlineEnd);
+    }
+
+    [Theory]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(double.NegativeInfinity)]
+    public void GetAvailableInlineRange_rejects_non_finite_inputs(double bad)
+    {
+        var fm = new FloatManager();
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            fm.GetAvailableInlineRange(bad, 0, 600));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            fm.GetAvailableInlineRange(0, bad, 600));
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            fm.GetAvailableInlineRange(0, 0, bad));
+    }
 }

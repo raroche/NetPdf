@@ -28,19 +28,29 @@ namespace NetPdf.Layout.Layouters;
 ///   slot reserved in Phase 3 Task 4.</item>
 /// </list>
 ///
-/// <para><b>Cycle 1 deferrals (subsequent cycles):</b></para>
+/// <para><b>Cycle 2 shipped (this revision) — flow around floats +
+/// cross-fragmentainer deferral.</b> New <see cref="GetAvailableInlineRange"/>
+/// method returns the inline-axis range reduced by any active float
+/// at the queried block-Y; in-flow blocks shrink to fit per CSS 2.2 §9.5.
+/// Cross-fragmentainer float deferral (Fragmentation L3 §5) is wired
+/// through <c>BlockLayouter</c>: floats that don't fit the current
+/// page move to the top of the next fragmentainer when the page
+/// already has emitted content; a too-tall float on an empty page
+/// still emits with `PAGINATION-FORCED-OVERFLOW-001` (cycle 3 will
+/// fragment such floats).</para>
+///
+/// <para><b>Remaining deferrals (cycle 3 / Task 9):</b></para>
 /// <list type="bullet">
-///   <item><b>Cycle 2.</b> Inline-axis available-range computation —
-///   blocks + line boxes that flow PAST a float should reduce their
-///   inline-size to accommodate the float. Cycle 1 keeps blocks at
-///   full containing-block inline-size (floats overlap visually; the
-///   painter handles z-order). Real CSS sets blocks' inline-size
-///   relative to the available range from <c>GetAvailableInlineRange</c>
-///   (cycle 2 method).</item>
-///   <item><b>Cycle 3.</b> Cross-fragmentainer floats per
-///   CSS Fragmentation L3 §5: floats that don't fit on the current
-///   page MOVE to the top of the next fragmentainer (not propagated
-///   from the same offset).</item>
+///   <item><b>Cycle 3.</b> Nested-block flow-around at the nested-Y
+///   (cycle 2 only queries at the OUTER cursor Y; nested blocks use
+///   the parent's content area as-is).</item>
+///   <item><b>Cycle 3.</b> A single block dynamically widening past
+///   a float's bottom (cycle 2 uses the block's hypothetical-top-Y
+///   for the available-range query; the block doesn't re-flow if it
+///   extends past the float bottom).</item>
+///   <item><b>Cycle 3.</b> Float CONTAINING block alignment to
+///   nearest block ancestor vs BFC-wide (cycle 1/2 simplification:
+///   nested floats use BFC-wide containing block).</item>
 ///   <item><b>Cycle 3.</b> Float interaction with negative margins,
 ///   <c>shape-outside</c>, multi-column containers, abs-pos
 ///   ancestors.</item>
@@ -220,6 +230,84 @@ internal sealed class FloatManager
             _ => 0.0,
         };
         return Math.Max(currentBlockY, relevantBottom);
+    }
+
+    /// <summary>Per Phase 3 Task 8 cycle 2 — return the inline-axis
+    /// range available for an in-flow block at <paramref name="blockY"/>,
+    /// reduced to flow around any float whose vertical extent overlaps
+    /// <paramref name="blockY"/>. Per CSS 2.2 §9.5: a non-floating block
+    /// shrinks its inline-size to leave room for floats on both sides
+    /// at its current block-Y.
+    ///
+    /// <para>The returned range is in BFC coordinates:
+    /// <list type="bullet">
+    ///   <item><c>InlineStart</c> = max(<paramref name="containingStart"/>,
+    ///   right edge of the deepest LEFT float at <paramref name="blockY"/>).</item>
+    ///   <item><c>InlineEnd</c> = min(<paramref name="containingEnd"/>,
+    ///   left edge of the deepest RIGHT float at <paramref name="blockY"/>).</item>
+    /// </list>
+    /// When no float intersects <paramref name="blockY"/>, returns the
+    /// full containing range. When a left + right float together
+    /// cover the full inline range (degenerate case — the block has
+    /// 0 inline-axis space), returns <c>InlineEnd &lt; InlineStart</c>;
+    /// callers handle this by clamping to 0 width or shifting block-Y
+    /// past the float (cycle 2 MVP: callers don't re-flow; they use
+    /// the clamped range as-is + paint may overlap).</para>
+    ///
+    /// <para>A float is considered "active" at <paramref name="blockY"/>
+    /// when <c>blockY ∈ [float.BlockOffset, float.BlockOffset + float.BlockSize)</c>
+    /// — i.e., the block-Y is within the float's vertical extent. Floats
+    /// whose bottom is at-or-above <paramref name="blockY"/> don't
+    /// constrain (they've ended); floats whose top is below
+    /// <paramref name="blockY"/> haven't started yet.</para>
+    ///
+    /// <para><b>Cost.</b> O(n) over the active float list; cycle 2 MVP
+    /// accepts this since typical pages have very few floats. Cycle 3
+    /// could add an interval tree if profiling shows hot-path concern.</para></summary>
+    public (double InlineStart, double InlineEnd) GetAvailableInlineRange(
+        double blockY,
+        double containingStart,
+        double containingEnd)
+    {
+        if (!double.IsFinite(blockY))
+            throw new ArgumentOutOfRangeException(nameof(blockY),
+                $"blockY must be finite; got {blockY}");
+        if (!double.IsFinite(containingStart))
+            throw new ArgumentOutOfRangeException(nameof(containingStart),
+                $"containingStart must be finite; got {containingStart}");
+        if (!double.IsFinite(containingEnd))
+            throw new ArgumentOutOfRangeException(nameof(containingEnd),
+                $"containingEnd must be finite; got {containingEnd}");
+
+        var leftEdge = containingStart;
+        var rightEdge = containingEnd;
+
+        foreach (var f in _floats)
+        {
+            // Active at blockY iff blockY is in [BlockOffset, BlockOffset+BlockSize).
+            // Floats with BlockSize=0 are degenerate and can't constrain
+            // any positive-extent block (we use exclusive upper bound to
+            // avoid false-positive coverage at the float's bottom edge).
+            if (blockY < f.BlockOffset) continue;
+            if (blockY >= f.BlockOffset + f.BlockSize) continue;
+
+            if (f.Side == FloatSide.Left)
+            {
+                // Left float occupies [InlineOffset, InlineOffset+InlineSize)
+                // — push the available start past it.
+                var rightOfFloat = f.InlineOffset + f.InlineSize;
+                if (rightOfFloat > leftEdge) leftEdge = rightOfFloat;
+            }
+            else
+            {
+                // Right float occupies the same range from the right;
+                // push the available end before it.
+                var leftOfFloat = f.InlineOffset;
+                if (leftOfFloat < rightEdge) rightEdge = leftOfFloat;
+            }
+        }
+
+        return (leftEdge, rightEdge);
     }
 
     /// <summary>Per Phase 3 Task 4 review fix #1 — snapshot the float

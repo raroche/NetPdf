@@ -1309,13 +1309,238 @@ public sealed class BlockLayouterTests
     //  Cycle 2-3 deferral pins — failing-skip integration tests
     // ====================================================================
 
-    [Fact(Skip = "Phase 3 Task 7 cycle 2 — recursive nested-block layout. "
-        + "Cycle 1 walks _rootBox.Children only; nested block descendants "
-        + "(div > p) are not laid out. Failing-skip test pins the deferral.")]
-    public void Cycle2_Layouter_lays_out_nested_block_descendants()
+    // Per Phase 3 Task 7 cycle 2b — recursive nested-block layout.
+    // The deferral pin from cycle 1 / 2 is now ACTIVATED — see the
+    // PostTask7_Cycle2b_* tests below for the activated coverage.
+
+    [Fact]
+    public void Cycle2b_layouter_emits_fragments_for_nested_block_descendants()
     {
-        // div > p > text: layouter should emit fragments for both div + p.
-        // Cycle 1 emits only div; cycle 2 wires recursion.
+        // Cycle 1 / 2 walked _rootBox.Children only — a nested
+        // `div > p` tree emitted only the div fragment. Cycle 2b
+        // recurses, emitting fragments for BOTH the div + the p.
+        //
+        // Tree:
+        //   root
+        //     └─ div (BlockContainer, height=200, padding=10, border=5)
+        //          └─ p (BlockContainer, height=80, marginTop=15)
+        //
+        // Expected fragments:
+        //   div: BlockOffset=0, BlockSize=230 (5+10+200+10+5 = border-box)
+        //   p:   BlockOffset = div.contentTop (0+5+10=15) + p.marginTop (15) = 30
+        //        BlockSize  = 80
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+        var divStyle = MakeStyle();
+        SetLengthPx(divStyle, PropertyId.Height, 200);
+        SetLengthPx(divStyle, PropertyId.PaddingTop, 10);
+        SetLengthPx(divStyle, PropertyId.PaddingBottom, 10);
+        SetLengthPx(divStyle, PropertyId.BorderTopWidth, 5);
+        SetLengthPx(divStyle, PropertyId.BorderBottomWidth, 5);
+        var div = Box.ForElement(BoxKind.BlockContainer, divStyle, MakeElement());
+        root.AppendChild(div);
+
+        var pStyle = MakeStyle();
+        SetLengthPx(pStyle, PropertyId.Height, 80);
+        SetLengthPx(pStyle, PropertyId.MarginTop, 15);
+        var p = Box.ForElement(BoxKind.BlockContainer, pStyle, MakeElement());
+        div.AppendChild(p);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+        // BOTH div AND p emitted (cycle 2b recursion).
+        Assert.Equal(2, sink.Fragments.Count);
+        // div first (parent emitted before children).
+        Assert.Same(div, sink.Fragments[0].Box);
+        Assert.Equal(0, sink.Fragments[0].BlockOffset);
+        Assert.Equal(230, sink.Fragments[0].BlockSize);  // 5+10+200+10+5
+        // p inside div.
+        Assert.Same(p, sink.Fragments[1].Box);
+        // p's BlockOffset = div's contentTop (0+5+10=15) + p.marginTop (15) = 30.
+        Assert.Equal(30, sink.Fragments[1].BlockOffset);
+        Assert.Equal(80, sink.Fragments[1].BlockSize);
+    }
+
+    [Fact]
+    public void Cycle2b_layouter_recurses_through_three_levels()
+    {
+        // Tree: root > section > article > h1
+        // All BlockContainers; verify all three nested levels emit
+        // fragments at correct offsets.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var sectionStyle = MakeStyle();
+        SetLengthPx(sectionStyle, PropertyId.Height, 400);
+        SetLengthPx(sectionStyle, PropertyId.PaddingTop, 20);
+        var section = Box.ForElement(BoxKind.BlockContainer, sectionStyle, MakeElement());
+        root.AppendChild(section);
+
+        var articleStyle = MakeStyle();
+        SetLengthPx(articleStyle, PropertyId.Height, 300);
+        SetLengthPx(articleStyle, PropertyId.PaddingTop, 10);
+        var article = Box.ForElement(BoxKind.BlockContainer, articleStyle, MakeElement());
+        section.AppendChild(article);
+
+        var h1Style = MakeStyle();
+        SetLengthPx(h1Style, PropertyId.Height, 50);
+        var h1 = Box.ForElement(BoxKind.BlockContainer, h1Style, MakeElement());
+        article.AppendChild(h1);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+        Assert.Equal(3, sink.Fragments.Count);
+        // section: BlockOffset=0, BlockSize=420 (20+400+0)
+        Assert.Same(section, sink.Fragments[0].Box);
+        Assert.Equal(0, sink.Fragments[0].BlockOffset);
+        Assert.Equal(420, sink.Fragments[0].BlockSize);
+        // article inside section: contentTop=0+0+20=20
+        Assert.Same(article, sink.Fragments[1].Box);
+        Assert.Equal(20, sink.Fragments[1].BlockOffset);
+        Assert.Equal(310, sink.Fragments[1].BlockSize);  // 10+300+0
+        // h1 inside article: article's contentTop = 20+0+10 = 30
+        Assert.Same(h1, sink.Fragments[2].Box);
+        Assert.Equal(30, sink.Fragments[2].BlockOffset);
+        Assert.Equal(50, sink.Fragments[2].BlockSize);
+    }
+
+    [Fact]
+    public void Cycle2b_nested_children_apply_inline_offsets_inside_parent_padding()
+    {
+        // Verify inline-axis nesting: child's InlineOffset = parent's
+        // contentLeft + child's marginLeft. Parent's contentLeft =
+        // parent.borderLeft + parent.paddingLeft.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var divStyle = MakeStyle();
+        SetLengthPx(divStyle, PropertyId.Height, 200);
+        SetLengthPx(divStyle, PropertyId.PaddingLeft, 25);
+        SetLengthPx(divStyle, PropertyId.BorderLeftWidth, 5);
+        var div = Box.ForElement(BoxKind.BlockContainer, divStyle, MakeElement());
+        root.AppendChild(div);
+
+        var pStyle = MakeStyle();
+        SetLengthPx(pStyle, PropertyId.Height, 50);
+        SetLengthPx(pStyle, PropertyId.MarginLeft, 8);
+        var p = Box.ForElement(BoxKind.BlockContainer, pStyle, MakeElement());
+        div.AppendChild(p);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // div.InlineOffset = 0; div.InlineSize = 600 (no margins on div).
+        Assert.Equal(0, sink.Fragments[0].InlineOffset);
+        Assert.Equal(600, sink.Fragments[0].InlineSize);
+        // p.InlineOffset = div.contentLeft (0+5+25=30) + p.marginLeft (8) = 38.
+        Assert.Equal(38, sink.Fragments[1].InlineOffset);
+        // p.InlineSize = div.contentInlineSize (600-5-25-0-0=570) - p.marginLeft (8) - p.marginRight (0) = 562.
+        Assert.Equal(562, sink.Fragments[1].InlineSize);
+    }
+
+    [Fact]
+    public void Cycle2b_nested_siblings_apply_margin_collapse()
+    {
+        // Two block-level siblings inside a parent should collapse
+        // adjacent margins per CSS 2.1 §8.3.1, just like top-level
+        // siblings. Parent contentTop=0; child1.marginTop=20;
+        // child2.marginTop=10 collapses with child1.marginBottom=15
+        // to max(15,10)=15 → topShift = 15 - 15 = 0.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var divStyle = MakeStyle();
+        SetLengthPx(divStyle, PropertyId.Height, 300);
+        var div = Box.ForElement(BoxKind.BlockContainer, divStyle, MakeElement());
+        root.AppendChild(div);
+
+        var c1Style = MakeStyle();
+        SetLengthPx(c1Style, PropertyId.Height, 60);
+        SetLengthPx(c1Style, PropertyId.MarginTop, 20);
+        SetLengthPx(c1Style, PropertyId.MarginBottom, 15);
+        var c1 = Box.ForElement(BoxKind.BlockContainer, c1Style, MakeElement());
+        div.AppendChild(c1);
+
+        var c2Style = MakeStyle();
+        SetLengthPx(c2Style, PropertyId.Height, 40);
+        SetLengthPx(c2Style, PropertyId.MarginTop, 10);
+        var c2 = Box.ForElement(BoxKind.BlockContainer, c2Style, MakeElement());
+        div.AppendChild(c2);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(3, sink.Fragments.Count);
+        // c1 inside div. Div.contentTop=0; c1.marginTop=20 → c1.BlockOffset=20.
+        Assert.Same(c1, sink.Fragments[1].Box);
+        Assert.Equal(20, sink.Fragments[1].BlockOffset);
+        // c2 inside div. cursor after c1 = 20+60+15=95. Collapse(15,10)=15;
+        // topShift = 15-15 = 0. c2.BlockOffset = div.contentTop + cursor + topShift = 0 + 95 + 0 = 95.
+        Assert.Same(c2, sink.Fragments[2].Box);
+        Assert.Equal(95, sink.Fragments[2].BlockOffset);
+    }
+
+    [Fact]
+    public void Cycle2b_nested_non_block_children_are_skipped()
+    {
+        // A BlockContainer containing both a block child + an inline-
+        // level child (TextRun): only the block child is emitted by
+        // recursion. TextRun is Task 10's domain.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var divStyle = MakeStyle();
+        SetLengthPx(divStyle, PropertyId.Height, 200);
+        var div = Box.ForElement(BoxKind.BlockContainer, divStyle, MakeElement());
+        root.AppendChild(div);
+
+        // Inline-level (skipped).
+        var textStyle = MakeStyle();
+        var text = Box.ForElement(BoxKind.TextRun, textStyle, MakeElement());
+        div.AppendChild(text);
+
+        // Block-level (emitted).
+        var pStyle = MakeStyle();
+        SetLengthPx(pStyle, PropertyId.Height, 50);
+        var p = Box.ForElement(BoxKind.BlockContainer, pStyle, MakeElement());
+        div.AppendChild(p);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // div + p (text skipped).
+        Assert.Equal(2, sink.Fragments.Count);
+        Assert.Same(div, sink.Fragments[0].Box);
+        Assert.Same(p, sink.Fragments[1].Box);
     }
 
     // ====================================================================

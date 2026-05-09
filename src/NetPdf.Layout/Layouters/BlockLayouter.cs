@@ -593,12 +593,25 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     // First block on the (possibly resumed) page →
                     // topShift = effectiveTopGap = marginStart; no
                     // collapse-arithmetic needed.
+                    var forcedOverflowChildBlockOffset =
+                        fragmentainer.UsedBlockSize + topShift;
                     _sink.Emit(new BoxFragment(
                         Box: child,
                         InlineOffset: marginInlineStart,
-                        BlockOffset: fragmentainer.UsedBlockSize + topShift,
+                        BlockOffset: forcedOverflowChildBlockOffset,
                         InlineSize: borderBoxInlineSize,
                         BlockSize: borderBoxBlockSize));
+                    // Per Phase 3 Task 7 cycle 2b — recursively emit
+                    // fragments for the child's block-level descendants.
+                    // The painter sees the full subtree on the
+                    // committed page even though the child overflowed
+                    // the fragmentainer (forced-overflow forward
+                    // progress).
+                    EmitBlockSubtreeRecursive(
+                        child,
+                        parentBlockOffset: forcedOverflowChildBlockOffset,
+                        parentInlineOffset: marginInlineStart,
+                        parentInlineSize: borderBoxInlineSize);
                     // Per PR #23 review fix #4 — clamp UsedBlockSize
                     // to non-negative so subsequent BreakOpportunity
                     // construction doesn't trip CostModel's guard.
@@ -680,6 +693,20 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 InlineSize: borderBoxInlineSize,
                 BlockSize: borderBoxBlockSize));
 
+            // Per Phase 3 Task 7 cycle 2b — recursively emit fragments
+            // for the child's block-level descendants. Cycle 1 / 2
+            // emitted only top-level children of `_rootBox`; with
+            // recursion, a `div > p > span` tree (where span is block-
+            // level) emits div, p, AND span fragments at correctly
+            // nested offsets relative to each parent's content area.
+            // See EmitBlockSubtreeRecursive's XML doc for the cycle 2b
+            // scope + deferrals.
+            EmitBlockSubtreeRecursive(
+                child,
+                parentBlockOffset: blockOffset,
+                parentInlineOffset: marginInlineStart,
+                parentInlineSize: borderBoxInlineSize);
+
             // Per PR #23 review fix #4 — clamp UsedBlockSize to
             // non-negative. A valid block with very negative margins
             // could otherwise drive the cursor below zero, then the
@@ -698,6 +725,152 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
 
         // All children laid out — no more pages needed.
         return LayoutAttemptResult.AllDone(cost: 0);
+    }
+
+    /// <summary>Per Phase 3 Task 7 cycle 2b — recursively emit fragments
+    /// for <paramref name="parent"/>'s block-level descendants. Called
+    /// AFTER the parent's own fragment is emitted; offsets are relative
+    /// to <paramref name="parent"/>'s content area (fragmentainer
+    /// coordinates).
+    ///
+    /// <para><b>Cycle 2b scope.</b> The recursion emits fragments so the
+    /// painter (Phase 4) sees the full box tree. Geometric semantics:</para>
+    /// <list type="bullet">
+    ///   <item>Each descendant's <see cref="BoxFragment.BlockOffset"/>
+    ///   is its border-box top edge in fragmentainer coordinates,
+    ///   computed by stacking the descendant's siblings inside the
+    ///   parent's content area with adjacent-margin collapse per
+    ///   CSS 2.1 §8.3.1.</item>
+    ///   <item><see cref="BoxFragment.InlineOffset"/> is the descendant's
+    ///   border-box inline-start edge (= parent's content-area inline
+    ///   offset + child's marginInlineStart).</item>
+    ///   <item><see cref="BoxFragment.InlineSize"/> = parent's content-
+    ///   area inline size - child's inline margins (clamped non-negative
+    ///   per PR #23 review fix #5).</item>
+    ///   <item><see cref="BoxFragment.BlockSize"/> = child's border-box
+    ///   block size (border + padding + Height-from-style; auto Height
+    ///   reads as 0, deferred to cycle 3).</item>
+    /// </list>
+    ///
+    /// <para><b>Cycle 2b deferrals (cycle 3 / cycle 2c).</b></para>
+    /// <list type="bullet">
+    ///   <item><b>Auto-height resolution</b> per CSS 2.1 §10.6.3 — when
+    ///   a container has <c>height: auto</c>, its content area should
+    ///   resolve to the children's stack height. Cycle 2b uses
+    ///   <see cref="ComputedStyleLayoutExtensions.ReadLengthPxOrZero"/>
+    ///   which returns 0 for auto, so a container with auto height +
+    ///   children renders with a 0-sized parent-fragment but the
+    ///   children DO emit at their correct offsets. The painter sees
+    ///   a degenerate parent rectangle but the descendants are
+    ///   correctly positioned relative to it. Cycle 3 wires real
+    ///   auto-height + percentage resolution.</item>
+    ///   <item><b>Cross-subtree pagination splits</b> — cycle 2b
+    ///   treats each top-level subtree as atomic for pagination (the
+    ///   outer <see cref="AttemptLayout"/> loop computes the parent's
+    ///   border-box from its own style only; if the subtree visually
+    ///   overflows, the painter clips). Real CSS allows breaks inside
+    ///   nested containers; this requires propagating
+    ///   <see cref="BreakOpportunity"/> through the recursion +
+    ///   per-level continuation tokens — cycle 2c work.</item>
+    ///   <item><b>Parent / first-child margin collapse</b> per CSS 2.1
+    ///   §8.3.1 — when parent has no border / padding / non-empty
+    ///   children before, the parent's marginStart collapses with the
+    ///   first child's marginStart. Requires BFC-root detection
+    ///   (cycle 3).</item>
+    /// </list></summary>
+    private void EmitBlockSubtreeRecursive(
+        Box parent,
+        double parentBlockOffset,
+        double parentInlineOffset,
+        double parentInlineSize)
+    {
+        // Parent's content-area corner in fragmentainer coordinates.
+        var pBorderStart = parent.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
+        var pPaddingStart = parent.Style.ReadLengthPxOrZero(PropertyId.PaddingTop);
+        var pBorderInlineStart = parent.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
+        var pPaddingInlineStart = parent.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
+        var pBorderInlineEnd = parent.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
+        var pPaddingInlineEnd = parent.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
+
+        var contentTop = parentBlockOffset + pBorderStart + pPaddingStart;
+        var contentLeft = parentInlineOffset + pBorderInlineStart + pPaddingInlineStart;
+        var contentInlineSize = Math.Max(0, parentInlineSize
+            - pBorderInlineStart - pPaddingInlineStart
+            - pBorderInlineEnd - pPaddingInlineEnd);
+
+        // Stack children with adjacent-margin collapse (same formula
+        // as the outer AttemptLayout loop; CSS 2.1 §8.3.1).
+        double childCursor = 0;  // block-axis position within parent's content area
+        double prevMarginEnd = 0;
+        var hasPrior = false;
+
+        foreach (var child in parent.Children)
+        {
+            if (!child.IsBlockLevel)
+            {
+                // Non-block content (inline / atomic) breaks margin
+                // adjacency per CSS 2.1 §8.3.1 (PR #23 fix #3).
+                // Cycle 2b doesn't yet lay out inline content (Task 10
+                // domain); reset the collapse chain so the next block's
+                // marginTop is honored without collapsing.
+                hasPrior = false;
+                prevMarginEnd = 0;
+                continue;
+            }
+
+            var marginStart = child.Style.ReadLengthPxOrZero(PropertyId.MarginTop);
+            var marginEnd = child.Style.ReadLengthPxOrZero(PropertyId.MarginBottom);
+            var marginInlineStart = child.Style.ReadLengthPxOrZero(PropertyId.MarginLeft);
+            var marginInlineEnd = child.Style.ReadLengthPxOrZero(PropertyId.MarginRight);
+            var borderStart = child.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
+            var borderEnd = child.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
+            var paddingStart = child.Style.ReadLengthPxOrZero(PropertyId.PaddingTop);
+            var paddingEnd = child.Style.ReadLengthPxOrZero(PropertyId.PaddingBottom);
+            var contentBlock = child.Style.ReadLengthPxOrZero(PropertyId.Height);
+
+            var childBorderBoxBlockSize = borderStart + paddingStart + contentBlock
+                + paddingEnd + borderEnd;
+            var childBorderBoxInlineSize = Math.Max(0,
+                contentInlineSize - marginInlineStart - marginInlineEnd);
+
+            double topShift;
+            if (!hasPrior)
+            {
+                topShift = marginStart;
+            }
+            else
+            {
+                var gap = MarginCollapse.Collapse(prevMarginEnd, marginStart);
+                topShift = gap - prevMarginEnd;
+            }
+
+            var childBlockOffset = contentTop + childCursor + topShift;
+            var childInlineOffset = contentLeft + marginInlineStart;
+
+            _sink.Emit(new BoxFragment(
+                Box: child,
+                InlineOffset: childInlineOffset,
+                BlockOffset: childBlockOffset,
+                InlineSize: childBorderBoxInlineSize,
+                BlockSize: childBorderBoxBlockSize));
+
+            // Recurse — emit grandchildren relative to this child's
+            // content area.
+            EmitBlockSubtreeRecursive(
+                child,
+                parentBlockOffset: childBlockOffset,
+                parentInlineOffset: childInlineOffset,
+                parentInlineSize: childBorderBoxInlineSize);
+
+            // Advance child cursor by margin-box block-axis extent
+            // (clamped non-negative per PR #23 fix #4 — negative
+            // margins move the cursor backward visually but the
+            // fit-check measure stays bounded).
+            childCursor = Math.Max(0,
+                childCursor + topShift + childBorderBoxBlockSize + marginEnd);
+            prevMarginEnd = marginEnd;
+            hasPrior = true;
+        }
     }
 
     /// <summary>Per PR #22 review fix #2 — release the final

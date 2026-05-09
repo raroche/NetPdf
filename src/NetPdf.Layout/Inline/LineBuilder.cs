@@ -3,7 +3,9 @@
 
 using System;
 using System.Collections.Generic;
+using System.Text;
 using NetPdf.Text.Bidi;
+using NetPdf.Text.Shaping;
 
 namespace NetPdf.Layout.Inline;
 
@@ -169,5 +171,117 @@ internal static class LineBuilder
             SourceTextRunIndex: runSourceIdx));
 
         return output.ToArray();
+    }
+
+    /// <summary>Per Phase 3 Task 9 cycle 2 — shaping pass. Takes
+    /// the <see cref="ItemizedRun"/>s produced by <see cref="Itemize"/>
+    /// + the original source <see cref="TextRun"/>s + a
+    /// <see cref="IShaperResolver"/> + per-run shaping metadata
+    /// (script + language); returns a <see cref="ShapedRun"/> for
+    /// each itemized run.
+    ///
+    /// <para>For each itemized run the method:</para>
+    /// <list type="number">
+    ///   <item>Resolves a <see cref="HbShaper"/> via
+    ///   <paramref name="resolver"/> using the source TextRun's
+    ///   computed style.</item>
+    ///   <item>Slices the concatenated input text using the run's
+    ///   <see cref="ItemizedRun.Utf16Start"/> +
+    ///   <see cref="ItemizedRun.Utf16Length"/>.</item>
+    ///   <item>Determines shaping direction from
+    ///   <see cref="ItemizedRun.IsRtl"/>.</item>
+    ///   <item>Calls <see cref="HbShaper.Shape"/> with the
+    ///   <paramref name="scriptIso15924"/> + <paramref name="language"/>
+    ///   tags.</item>
+    ///   <item>Sums <see cref="ShapedGlyph.XAdvance"/> across the
+    ///   returned glyphs into <see cref="ShapedRun.TotalAdvance"/>
+    ///   for cycle 3's wrap pass.</item>
+    /// </list>
+    ///
+    /// <para><b>Cycle 2 simplifications.</b></para>
+    /// <list type="bullet">
+    ///   <item><paramref name="scriptIso15924"/> +
+    ///   <paramref name="language"/> are passed through to every run
+    ///   uniformly. Cycle 3 will add UAX #24 script detection +
+    ///   per-run script tagging at itemization time so each run gets
+    ///   its appropriate script + the correct OpenType feature
+    ///   selection.</item>
+    ///   <item>The concat text is rebuilt internally from the source
+    ///   <see cref="TextRun"/>s — the cost is O(N) where N is the
+    ///   total UTF-16 length, comparable to one extra string copy.
+    ///   Cycle 3 may pool a buffer.</item>
+    /// </list></summary>
+    /// <param name="sourceTextRuns">The original source runs passed
+    /// to <see cref="Itemize"/>. Used to (a) rebuild the concat text
+    /// + (b) read each itemized run's source style for
+    /// <paramref name="resolver"/>.</param>
+    /// <param name="itemizedRuns">The output of <see cref="Itemize"/>
+    /// for the same source runs.</param>
+    /// <param name="resolver">Resolves a <see cref="HbShaper"/> per
+    /// style. The resolver owns the returned shapers — they are not
+    /// disposed by this method.</param>
+    /// <param name="scriptIso15924">ISO 15924 script tag (4 letters)
+    /// passed to every shaping call. Cycle 2 default: <c>"Latn"</c>.
+    /// Cycle 3 will derive per-run from UAX #24.</param>
+    /// <param name="language">BCP 47 language tag passed to every
+    /// shaping call. Cycle 2 default: <c>"en"</c>.</param>
+    public static ShapedRun[] Shape(
+        IReadOnlyList<TextRun> sourceTextRuns,
+        IReadOnlyList<ItemizedRun> itemizedRuns,
+        IShaperResolver resolver,
+        string scriptIso15924 = "Latn",
+        string language = "en")
+    {
+        ArgumentNullException.ThrowIfNull(sourceTextRuns);
+        ArgumentNullException.ThrowIfNull(itemizedRuns);
+        ArgumentNullException.ThrowIfNull(resolver);
+        ArgumentNullException.ThrowIfNull(scriptIso15924);
+        ArgumentNullException.ThrowIfNull(language);
+
+        if (itemizedRuns.Count == 0)
+        {
+            return Array.Empty<ShapedRun>();
+        }
+
+        // Rebuild the concat text. Cheap O(N); avoids needing
+        // Itemize to plumb it back to the caller (which would break
+        // the existing Itemize signature + tests).
+        var concatTotal = 0;
+        for (var i = 0; i < sourceTextRuns.Count; i++)
+        {
+            concatTotal += sourceTextRuns[i].Text.Length;
+        }
+        var concatBuf = new StringBuilder(concatTotal);
+        for (var i = 0; i < sourceTextRuns.Count; i++)
+        {
+            concatBuf.Append(sourceTextRuns[i].Text);
+        }
+        var concatText = concatBuf.ToString();
+
+        var output = new ShapedRun[itemizedRuns.Count];
+        for (var runIdx = 0; runIdx < itemizedRuns.Count; runIdx++)
+        {
+            var run = itemizedRuns[runIdx];
+            var style = sourceTextRuns[run.SourceTextRunIndex].Style;
+            var direction = run.IsRtl
+                ? ShapingDirection.RightToLeft
+                : ShapingDirection.LeftToRight;
+
+            var slice = concatText.AsSpan(run.Utf16Start, run.Utf16Length);
+            var shaper = resolver.Resolve(style);
+            var glyphs = shaper.Shape(slice, direction, scriptIso15924, language);
+
+            // Cycle 2 — sum XAdvance for fast wrap-pass measurement.
+            // HarfBuzz XAdvance is in CSS px (HbShaper handles font-
+            // units → pixels conversion at construction time).
+            double totalAdvance = 0;
+            for (var g = 0; g < glyphs.Length; g++)
+            {
+                totalAdvance += glyphs[g].XAdvance;
+            }
+
+            output[runIdx] = new ShapedRun(run, glyphs, totalAdvance);
+        }
+        return output;
     }
 }

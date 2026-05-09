@@ -3011,31 +3011,28 @@ public sealed class BlockLayouterTests
     }
 
     [Fact]
-    public void PostPr30_trailing_float_overflow_emits_diagnostic()
+    public void PostPr30_trailing_float_overflow_when_no_prior_emission_still_diagnoses()
     {
         // Per cycle 1 post-PR-30 review (P1 #3 + test #6) — a float
         // near the bottom of the page that extends past the
-        // fragmentainer must emit PAGINATION-FORCED-OVERFLOW-001 so
-        // consumers can detect the silent-truncation case (cycle 1
-        // doesn't yet move floats to the next fragmentainer per
-        // Fragmentation L3 §5; cycle 2 will).
+        // fragmentainer emits PAGINATION-FORCED-OVERFLOW-001.
+        // Per Phase 3 Task 8 cycle 2 — when the page already has
+        // emitted content, a too-tall float DEFERS to the next page
+        // (cross-fragmentainer float per Fragmentation L3 §5) instead
+        // of overflowing+diagnostic. This test pins the FALLBACK
+        // case: a float that's TALLER THAN ANY PAGE (still emits +
+        // diagnostic; cycle 3 will fragment such floats).
         //
-        // Tree: block (h=700, fills most of the 800-page), float
-        //   (h=200, left). Float placed at y=700, bottom=900 > 800.
-        //   Diagnostic fires.
+        // Tree: float (h=2000, left) on a page=800. The float can't
+        //   fit any page; it emits at y=0 with diagnostic.
         var sink = new RecordingFragmentSink();
         var diagSink = new RecordingDiagnosticsSink();
         var root = Box.CreateRoot(MakeStyle());
 
-        var blockStyle = MakeStyle();
-        SetLengthPx(blockStyle, PropertyId.Height, 700);
-        var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
-        root.AppendChild(block);
-
         var floatStyle = MakeStyle();
         SetKeyword(floatStyle, PropertyId.Float, 1);
         SetLengthPx(floatStyle, PropertyId.Width, 100);
-        SetLengthPx(floatStyle, PropertyId.Height, 200);
+        SetLengthPx(floatStyle, PropertyId.Height, 2000);  // > page=800
         var floatBox = Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement());
         root.AppendChild(floatBox);
 
@@ -3048,7 +3045,11 @@ public sealed class BlockLayouterTests
         layouter.AttemptLayout(
             ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
 
-        // Diagnostic emitted for the float overflow.
+        // Float emitted (page has no prior content; deferral falls
+        // back to cycle 1 emit + diagnostic).
+        Assert.Single(sink.Fragments);
+        Assert.Same(floatBox, sink.Fragments[0].Box);
+        // Diagnostic fired.
         Assert.NotEmpty(diagSink.Diagnostics);
         Assert.Contains(diagSink.Diagnostics, d =>
             d.Code == PaginateDiagnosticCodes.PaginationForcedOverflow001
@@ -3075,6 +3076,672 @@ public sealed class BlockLayouterTests
         Assert.Equal(50, fm.GetClearedBlockY(50, ClearKind.Right));
         // Both = max of left + right = 10000.
         Assert.Equal(10000, fm.GetClearedBlockY(0, ClearKind.Both));
+    }
+
+    // ====================================================================
+    //  Phase 3 Task 8 cycle 2 — flow around floats + cross-page deferral
+    // ====================================================================
+
+    [Fact]
+    public void Task8c2_in_flow_block_after_left_float_starts_past_float_right_edge()
+    {
+        // CSS: a left float (w=100, h=200) followed by a block. The
+        // block flows AROUND the float — its inline-axis extent
+        // shrinks + its inline-offset starts at the float's right
+        // edge.
+        //
+        // Tree: float (float:left, w=100, h=200), block (h=50).
+        // Page = 600 wide.
+        // Cycle 1 (pre-fix): block at InlineOffset=0, InlineSize=600
+        //   (overlaps float visually).
+        // Cycle 2 (post-fix): block at InlineOffset=100,
+        //   InlineSize=500.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var floatStyle = MakeStyle();
+        SetKeyword(floatStyle, PropertyId.Float, 1);  // left
+        SetLengthPx(floatStyle, PropertyId.Width, 100);
+        SetLengthPx(floatStyle, PropertyId.Height, 200);
+        var floatBox = Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement());
+        root.AppendChild(floatBox);
+
+        var blockStyle = MakeStyle();
+        SetLengthPx(blockStyle, PropertyId.Height, 50);
+        var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+        root.AppendChild(block);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(2, sink.Fragments.Count);
+        Assert.Same(floatBox, sink.Fragments[0].Box);
+        // Block flows around the float — starts at x=100, width=500.
+        Assert.Same(block, sink.Fragments[1].Box);
+        Assert.Equal(100, sink.Fragments[1].InlineOffset);
+        Assert.Equal(500, sink.Fragments[1].InlineSize);
+    }
+
+    [Fact]
+    public void Task8c2_in_flow_block_after_right_float_keeps_left_edge_but_shrinks_width()
+    {
+        // Right float (w=100, h=200), block (h=50). Block flows around
+        // the right float: InlineOffset=0, InlineSize=500.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var floatStyle = MakeStyle();
+        SetKeyword(floatStyle, PropertyId.Float, 2);  // right
+        SetLengthPx(floatStyle, PropertyId.Width, 100);
+        SetLengthPx(floatStyle, PropertyId.Height, 200);
+        var floatBox = Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement());
+        root.AppendChild(floatBox);
+
+        var blockStyle = MakeStyle();
+        SetLengthPx(blockStyle, PropertyId.Height, 50);
+        var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+        root.AppendChild(block);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Same(block, sink.Fragments[1].Box);
+        Assert.Equal(0, sink.Fragments[1].InlineOffset);
+        Assert.Equal(500, sink.Fragments[1].InlineSize);
+    }
+
+    [Fact]
+    public void Task8c2_block_past_float_bottom_uses_full_width()
+    {
+        // Float (h=50), tall block (h=300). Block at y=0 — float at
+        // y=[0,50). At block's hypothetical y=0, float is active →
+        // block shrinks. (This is cycle 2 MVP — uses the block's
+        // hypothetical-Y for the available-range query; the block
+        // doesn't dynamically widen below the float's bottom. Cycle 3
+        // will refine for blocks that span past the float bottom.)
+        //
+        // For a block AFTER another block that's past the float
+        // bottom, the second block uses full width.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var floatStyle = MakeStyle();
+        SetKeyword(floatStyle, PropertyId.Float, 1);
+        SetLengthPx(floatStyle, PropertyId.Width, 100);
+        SetLengthPx(floatStyle, PropertyId.Height, 50);
+        var floatBox = Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement());
+        root.AppendChild(floatBox);
+
+        // First block at y=0 — float still active.
+        var blockAStyle = MakeStyle();
+        SetLengthPx(blockAStyle, PropertyId.Height, 80);
+        var blockA = Box.ForElement(BoxKind.BlockContainer, blockAStyle, MakeElement());
+        root.AppendChild(blockA);
+
+        // Second block at y=80 — float bottom is 50, so y=80 > float
+        // bottom. Should use full width.
+        var blockBStyle = MakeStyle();
+        SetLengthPx(blockBStyle, PropertyId.Height, 50);
+        var blockB = Box.ForElement(BoxKind.BlockContainer, blockBStyle, MakeElement());
+        root.AppendChild(blockB);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // blockA flows around float (InlineOffset=100, InlineSize=500).
+        Assert.Equal(100, sink.Fragments[1].InlineOffset);
+        Assert.Equal(500, sink.Fragments[1].InlineSize);
+        // blockB at y=80 (past float bottom=50) — full width.
+        Assert.Equal(0, sink.Fragments[2].InlineOffset);
+        Assert.Equal(600, sink.Fragments[2].InlineSize);
+    }
+
+    [Fact]
+    public void Task8c2_block_with_left_and_right_floats_shrinks_from_both_sides()
+    {
+        // Left float (w=80, h=200), right float (w=60, h=200), block
+        // → block at InlineOffset=80, InlineSize=460 (= 600 - 80 - 60).
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var leftStyle = MakeStyle();
+        SetKeyword(leftStyle, PropertyId.Float, 1);
+        SetLengthPx(leftStyle, PropertyId.Width, 80);
+        SetLengthPx(leftStyle, PropertyId.Height, 200);
+        var leftFloat = Box.ForElement(BoxKind.BlockContainer, leftStyle, MakeElement());
+        root.AppendChild(leftFloat);
+
+        var rightStyle = MakeStyle();
+        SetKeyword(rightStyle, PropertyId.Float, 2);
+        SetLengthPx(rightStyle, PropertyId.Width, 60);
+        SetLengthPx(rightStyle, PropertyId.Height, 200);
+        var rightFloat = Box.ForElement(BoxKind.BlockContainer, rightStyle, MakeElement());
+        root.AppendChild(rightFloat);
+
+        var blockStyle = MakeStyle();
+        SetLengthPx(blockStyle, PropertyId.Height, 50);
+        var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+        root.AppendChild(block);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Same(block, sink.Fragments[2].Box);
+        Assert.Equal(80, sink.Fragments[2].InlineOffset);
+        Assert.Equal(460, sink.Fragments[2].InlineSize);
+    }
+
+    [Fact]
+    public void Task8c2_trailing_float_defers_to_next_page_when_page_has_prior_content()
+    {
+        // Per CSS Fragmentation L3 §5 — a float that doesn't fit the
+        // current fragmentainer moves to the top of the next one
+        // (when the page already has prior content; if the float is
+        // first, it forced-overflows with diagnostic per cycle 1).
+        //
+        // Tree: block (h=700), float (h=200, left). Page = 800.
+        // Block fills 0-700; float would extend 700-900 > 800.
+        // Page has emitted content → PageComplete with float as
+        // resume target.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var blockStyle = MakeStyle();
+        SetLengthPx(blockStyle, PropertyId.Height, 700);
+        var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+        root.AppendChild(block);
+
+        var floatStyle = MakeStyle();
+        SetKeyword(floatStyle, PropertyId.Float, 1);
+        SetLengthPx(floatStyle, PropertyId.Width, 100);
+        SetLengthPx(floatStyle, PropertyId.Height, 200);
+        var floatBox = Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement());
+        root.AppendChild(floatBox);
+
+        using var layouter = new BlockLayouter(
+            root, sink, incomingContinuation: null, diagnostics: diagSink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // Page complete with float as resume target.
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var cont = Assert.IsType<BlockContinuation>(result.Continuation);
+        Assert.Equal(1, cont.ResumeAtChild);  // float index
+        // Only the block emitted on this page; float deferred.
+        Assert.Single(sink.Fragments);
+        Assert.Same(block, sink.Fragments[0].Box);
+        // No overflow diagnostic — the deferral handled it cleanly.
+        Assert.Empty(diagSink.Diagnostics);
+    }
+
+    [Fact]
+    public void Task8c2_float_on_empty_page_that_exceeds_page_size_still_emits_with_diagnostic()
+    {
+        // Float taller than ANY page (h=2000 on page=800), no prior
+        // content. Cycle 2 deferral doesn't help (next page won't fit
+        // it either); falls back to cycle 1 emit + diagnostic.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var floatStyle = MakeStyle();
+        SetKeyword(floatStyle, PropertyId.Float, 1);
+        SetLengthPx(floatStyle, PropertyId.Width, 100);
+        SetLengthPx(floatStyle, PropertyId.Height, 2000);
+        var floatBox = Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement());
+        root.AppendChild(floatBox);
+
+        using var layouter = new BlockLayouter(
+            root, sink, incomingContinuation: null, diagnostics: diagSink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Single(sink.Fragments);
+        Assert.NotEmpty(diagSink.Diagnostics);
+    }
+
+    [Fact]
+    public void Task8c2_float_smaller_than_remaining_space_does_not_defer()
+    {
+        // Block (h=500), float (h=200). Float at y=500, bottom=700 ≤
+        // page=800 → fits, doesn't defer.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var blockStyle = MakeStyle();
+        SetLengthPx(blockStyle, PropertyId.Height, 500);
+        var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+        root.AppendChild(block);
+
+        var floatStyle = MakeStyle();
+        SetKeyword(floatStyle, PropertyId.Float, 1);
+        SetLengthPx(floatStyle, PropertyId.Width, 100);
+        SetLengthPx(floatStyle, PropertyId.Height, 200);
+        var floatBox = Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement());
+        root.AppendChild(floatBox);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // Both block + float emitted on the same page.
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+        Assert.Equal(2, sink.Fragments.Count);
+    }
+
+    [Fact]
+    public void Task8c2_float_with_margins_correctly_uses_margin_box_for_overflow_check()
+    {
+        // Float h=600, marginTop=100, marginBottom=150 → margin-box
+        // height = 850 > page=800 → would overflow even on fresh page.
+        // With prior content, defers; without, emits + diagnostic.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        // Prior block to make page non-empty.
+        var blockStyle = MakeStyle();
+        SetLengthPx(blockStyle, PropertyId.Height, 50);
+        var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+        root.AppendChild(block);
+
+        var floatStyle = MakeStyle();
+        SetKeyword(floatStyle, PropertyId.Float, 1);
+        SetLengthPx(floatStyle, PropertyId.Width, 100);
+        SetLengthPx(floatStyle, PropertyId.Height, 600);
+        SetLengthPx(floatStyle, PropertyId.MarginTop, 100);
+        SetLengthPx(floatStyle, PropertyId.MarginBottom, 150);
+        var floatBox = Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement());
+        root.AppendChild(floatBox);
+
+        using var layouter = new BlockLayouter(
+            root, sink, incomingContinuation: null, diagnostics: diagSink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // Float would overflow when added: 50 (block) + 850 (float
+        // margin-box) = 900 > 800. Page has prior content → defer.
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        Assert.Single(sink.Fragments);  // block only; float deferred
+    }
+
+    // ====================================================================
+    //  Phase 3 Task 8 cycle 2 post-PR-31 review tests (7 required)
+    // ====================================================================
+
+    [Fact]
+    public void PostPr31_clear_left_block_after_left_float_uses_full_width()
+    {
+        // Per cycle 2 post-PR-31 review (P1 #1) — pre-fix the
+        // GetAvailableInlineRange query happened at the cursor
+        // position BEFORE clearance/topShift was applied. A
+        // clear:left block after a left float was correctly moved
+        // BELOW the float vertically but the range query saw the
+        // float as active at the cursor → block got reduced
+        // inline-size.
+        //
+        // Tree: float (h=100, float:left), block (clear:left, h=50).
+        // Page = 600.
+        // Expected: block at y=100 (cleared past float), x=0 (FULL
+        // width past float bottom), width=600.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var floatStyle = MakeStyle();
+        SetKeyword(floatStyle, PropertyId.Float, 1);
+        SetLengthPx(floatStyle, PropertyId.Width, 100);
+        SetLengthPx(floatStyle, PropertyId.Height, 100);
+        var floatBox = Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement());
+        root.AppendChild(floatBox);
+
+        var blockStyle = MakeStyle();
+        SetKeyword(blockStyle, PropertyId.Clear, 1);  // left
+        SetLengthPx(blockStyle, PropertyId.Height, 50);
+        var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+        root.AppendChild(block);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(2, sink.Fragments.Count);
+        Assert.Same(block, sink.Fragments[1].Box);
+        // Block clears past float → y=100.
+        Assert.Equal(100, sink.Fragments[1].BlockOffset);
+        // Block uses FULL width (NOT 500) — past float bottom.
+        Assert.Equal(0, sink.Fragments[1].InlineOffset);
+        Assert.Equal(600, sink.Fragments[1].InlineSize);
+    }
+
+    [Fact]
+    public void PostPr31_marginTop_pushes_block_below_float_so_block_uses_full_width()
+    {
+        // Per cycle 2 post-PR-31 review (P1 #2 + Copilot #2) — pre-fix
+        // queried GetAvailableInlineRange at the cursor (= 0) instead
+        // of the post-margin border-box top, so a block whose
+        // marginTop pushed it past the float bottom still got reduced
+        // width as if it were beside the float.
+        //
+        // Tree: float (h=80, float:left), block (h=50, marginTop=120).
+        // Page = 600. Block's hypothetical-top = cursor + marginTop =
+        // 0 + 120 = 120 > float bottom = 80. Block should use full
+        // width (NOT shrink past the float).
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var floatStyle = MakeStyle();
+        SetKeyword(floatStyle, PropertyId.Float, 1);
+        SetLengthPx(floatStyle, PropertyId.Width, 100);
+        SetLengthPx(floatStyle, PropertyId.Height, 80);
+        var floatBox = Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement());
+        root.AppendChild(floatBox);
+
+        var blockStyle = MakeStyle();
+        SetLengthPx(blockStyle, PropertyId.MarginTop, 120);
+        SetLengthPx(blockStyle, PropertyId.Height, 50);
+        var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+        root.AppendChild(block);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Same(block, sink.Fragments[1].Box);
+        // Block at y=120 (= 0 + marginTop), full width.
+        Assert.Equal(120, sink.Fragments[1].BlockOffset);
+        Assert.Equal(0, sink.Fragments[1].InlineOffset);
+        Assert.Equal(600, sink.Fragments[1].InlineSize);
+    }
+
+    [Fact]
+    public void PostPr31_same_side_stacked_floats_overflow_defers_to_next_page()
+    {
+        // Per cycle 2 post-PR-31 review (P1 #3 + Copilot #1) — pre-fix
+        // WouldFloatOverflow used currentBlockY directly instead of
+        // PlaceFloat's stacking rule. A second same-side float that
+        // would stack BELOW the cursor would emit + diagnose instead
+        // of deferring.
+        //
+        // Tree: float1 (h=500, float:left), float2 (h=400, float:left).
+        // Page = 800. Float1 at y=0, bottom=500. Float2 should stack
+        // at y=500, bottom=900 > 800 → defer.
+        // Pre-fix: float2's WouldFloatOverflow saw 0 + 400 = 400 < 800 →
+        //   no defer → emit + diagnose.
+        // Post-fix: peek sees stacked y=500, 500 + 400 = 900 > 800 →
+        //   defer (page has prior content from float1).
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var float1Style = MakeStyle();
+        SetKeyword(float1Style, PropertyId.Float, 1);
+        SetLengthPx(float1Style, PropertyId.Width, 100);
+        SetLengthPx(float1Style, PropertyId.Height, 500);
+        var float1 = Box.ForElement(BoxKind.BlockContainer, float1Style, MakeElement());
+        root.AppendChild(float1);
+
+        var float2Style = MakeStyle();
+        SetKeyword(float2Style, PropertyId.Float, 1);
+        SetLengthPx(float2Style, PropertyId.Width, 100);
+        SetLengthPx(float2Style, PropertyId.Height, 400);
+        var float2 = Box.ForElement(BoxKind.BlockContainer, float2Style, MakeElement());
+        root.AppendChild(float2);
+
+        using var layouter = new BlockLayouter(
+            root, sink, incomingContinuation: null, diagnostics: diagSink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // Page complete, float2 deferred (resume at index 1).
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var cont = Assert.IsType<BlockContinuation>(result.Continuation);
+        Assert.Equal(1, cont.ResumeAtChild);
+        // Only float1 emitted; float2 deferred.
+        Assert.Single(sink.Fragments);
+        Assert.Same(float1, sink.Fragments[0].Box);
+        // No diagnostic — deferral handled it cleanly.
+        Assert.Empty(diagSink.Diagnostics);
+    }
+
+    [Fact]
+    public void PostPr31_initial_used_block_size_without_layouter_emissions_still_defers()
+    {
+        // Per cycle 2 post-PR-31 review (P1 #4) — pre-fix used
+        // emittedThisAttempt > 0 to gate deferral. If the
+        // fragmentainer had prior content from a header reservation
+        // (UsedBlockSize > 0) but THIS layouter hadn't emitted yet,
+        // a too-tall float would force-overflow instead of deferring.
+        // Post-fix uses fragmentainer.UsedBlockSize > 0.
+        //
+        // Tree: float (h=750). Page = 800. Layouter starts with
+        // UsedBlockSize=100 (simulated header reservation).
+        // Pre-fix: emittedThisAttempt=0 → no defer → emit + diagnose.
+        // Post-fix: UsedBlockSize=100 > 0 + would overflow (100+750=
+        //   850 > 800) → defer.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var floatStyle = MakeStyle();
+        SetKeyword(floatStyle, PropertyId.Float, 1);
+        SetLengthPx(floatStyle, PropertyId.Width, 100);
+        SetLengthPx(floatStyle, PropertyId.Height, 750);
+        var floatBox = Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement());
+        root.AppendChild(floatBox);
+
+        using var layouter = new BlockLayouter(
+            root, sink, incomingContinuation: null, diagnostics: diagSink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        ctx.UsedBlockSize = 100;  // simulate header reservation
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // Float deferred; PageComplete with float as resume.
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        Assert.Empty(sink.Fragments);  // float not emitted on this page
+        // No diagnostic — deferral handled it.
+        Assert.Empty(diagSink.Diagnostics);
+    }
+
+    [Fact]
+    public void PostPr31_nested_float_overflow_emits_diagnostic()
+    {
+        // Per cycle 2 post-PR-31 review (P1 #5) — nested floats now
+        // emit PAGINATION-FORCED-OVERFLOW-001 when their margin-box
+        // bottom exceeds the fragmentainer (cycle 2 MVP: diagnostic
+        // only — recursive deferral requires a future cycle's
+        // continuation-token refactor).
+        //
+        // Tree: outer-div > [block (h=700), nested-float (h=200,
+        //   float:left)]. Page = 800. Nested float at y=700, bottom=
+        //   900 > 800 → diagnostic fires.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var outerStyle = MakeStyle();
+        SetLengthPx(outerStyle, PropertyId.Height, 1000);
+        var outer = Box.ForElement(BoxKind.BlockContainer, outerStyle, MakeElement());
+        root.AppendChild(outer);
+
+        var blockStyle = MakeStyle();
+        SetLengthPx(blockStyle, PropertyId.Height, 700);
+        var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+        outer.AppendChild(block);
+
+        var floatStyle = MakeStyle();
+        SetKeyword(floatStyle, PropertyId.Float, 1);
+        SetLengthPx(floatStyle, PropertyId.Width, 100);
+        SetLengthPx(floatStyle, PropertyId.Height, 200);
+        var floatBox = Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement());
+        outer.AppendChild(floatBox);
+
+        using var layouter = new BlockLayouter(
+            root, sink, incomingContinuation: null, diagnostics: diagSink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // Nested-float overflow diagnostic emitted.
+        Assert.NotEmpty(diagSink.Diagnostics);
+        Assert.Contains(diagSink.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.PaginationForcedOverflow001
+            && d.Message.Contains("nested float overflow", System.StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void PostPr31_nested_clear_with_marginTop_does_not_add_marginTop_below_float_bottom()
+    {
+        // Per cycle 2 post-PR-31 review (P1 #6) — nested clear had
+        // the same over-applied-marginTop bug as outer clear (fixed
+        // in PR #30). Pre-fix: childCursor advanced to clearedBfcY
+        // immediately, then marginTop was applied → border-box top
+        // at floatBottom + marginTop. Post-fix: clearance folds into
+        // topShift; border-box top = max(hypothetical, floatBottom).
+        //
+        // Tree: outer-div > [float (h=80, float:left), block
+        //   (clear:left, marginTop=20, h=50)].
+        // Pre-fix: block at y=80 + 20 = 100. Post-fix: block at y=80
+        //   (= float bottom; marginTop=20 < 80, so floatBottom wins).
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var outerStyle = MakeStyle();
+        SetLengthPx(outerStyle, PropertyId.Height, 200);
+        var outer = Box.ForElement(BoxKind.BlockContainer, outerStyle, MakeElement());
+        root.AppendChild(outer);
+
+        var floatStyle = MakeStyle();
+        SetKeyword(floatStyle, PropertyId.Float, 1);
+        SetLengthPx(floatStyle, PropertyId.Width, 100);
+        SetLengthPx(floatStyle, PropertyId.Height, 80);
+        var floatBox = Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement());
+        outer.AppendChild(floatBox);
+
+        var blockStyle = MakeStyle();
+        SetKeyword(blockStyle, PropertyId.Clear, 1);  // left
+        SetLengthPx(blockStyle, PropertyId.MarginTop, 20);
+        SetLengthPx(blockStyle, PropertyId.Height, 50);
+        var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+        outer.AppendChild(block);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // 3 fragments: outer, float, block.
+        Assert.Equal(3, sink.Fragments.Count);
+        Assert.Same(block, sink.Fragments[2].Box);
+        // Block at y=80 (floatBottom dominates marginTop=20).
+        Assert.Equal(80, sink.Fragments[2].BlockOffset);
+    }
+
+    [Fact]
+    public void PostPr31_flow_around_with_float_border_padding_margins_uses_margin_box_footprint()
+    {
+        // Per cycle 2 post-PR-31 review (test #7) — verify the
+        // float's MARGIN-BOX (not just content-box) is used for
+        // GetAvailableInlineRange's footprint reporting. Float with
+        // marginLeft=10, borderLeft=5, paddingLeft=15, content-width=80
+        // → margin-box width = 10+5+15+80+15+5+10 = 140 (assuming
+        // symmetric padding/border).
+        //
+        // Block flowing around it should start at x=140 (past float's
+        // margin-box right edge), width = 600 - 140 = 460.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var floatStyle = MakeStyle();
+        SetKeyword(floatStyle, PropertyId.Float, 1);
+        SetLengthPx(floatStyle, PropertyId.Width, 80);
+        SetLengthPx(floatStyle, PropertyId.Height, 200);
+        SetLengthPx(floatStyle, PropertyId.MarginLeft, 10);
+        SetLengthPx(floatStyle, PropertyId.MarginRight, 10);
+        SetLengthPx(floatStyle, PropertyId.BorderLeftWidth, 5);
+        SetLengthPx(floatStyle, PropertyId.BorderRightWidth, 5);
+        SetLengthPx(floatStyle, PropertyId.PaddingLeft, 15);
+        SetLengthPx(floatStyle, PropertyId.PaddingRight, 15);
+        var floatBox = Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement());
+        root.AppendChild(floatBox);
+
+        var blockStyle = MakeStyle();
+        SetLengthPx(blockStyle, PropertyId.Height, 50);
+        var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+        root.AppendChild(block);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Same(block, sink.Fragments[1].Box);
+        // Block starts at x=140 (= 10 + 5 + 15 + 80 + 15 + 5 + 10 =
+        // float's margin-box width).
+        Assert.Equal(140, sink.Fragments[1].InlineOffset);
+        // Block width = 600 - 140 = 460.
+        Assert.Equal(460, sink.Fragments[1].InlineSize);
     }
 
     // ====================================================================

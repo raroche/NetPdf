@@ -2318,6 +2318,333 @@ public sealed class BlockLayouterTests
     }
 
     // ====================================================================
+    //  Phase 3 Task 7 cycle 2c post-PR-29 review tests
+    // ====================================================================
+
+    [Fact]
+    public void PostPr29_emit_recursion_advances_cursor_by_subtree_extent_for_nested_grandchildren()
+    {
+        // Per cycle 2c post-PR-29 review #2 (P1) — pre-fix the
+        // EmitBlockSubtreeRecursive cursor advanced by
+        // childBorderBoxBlockSize while the OUTER loop (cycle 2c)
+        // advanced by subtree-aware extent. So nested siblings AFTER
+        // an overflowing nested grandchild would visually overlap the
+        // overflow even though OUTER pagination correctly reserved space.
+        //
+        // Scenario from review #2:
+        //   parent > [
+        //     childA (h=200) > grandchild (h=350),
+        //     childB (h=100)
+        //   ]
+        //
+        // Pre-fix: childB inside parent's recursion at cursor 200 (=
+        //   childA's borderBoxBlockSize), overlapping grandchild
+        //   (which extends to 350 in childA's content area).
+        // Post-fix: childB at cursor 350 (= max(200, grandchild's bottom
+        //   in childA's coords)).
+        //
+        // Note: childA's BlockOffset = 0 (in parent's content area),
+        // grandchild.BlockOffset = 0 (in childA's content area, which
+        // is at parent.contentTop + 0 = 0). So grandchild's absolute
+        // bottom = 350. childB's expected absolute BlockOffset = 350
+        // (no longer 200).
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var parentStyle = MakeStyle();
+        SetLengthPx(parentStyle, PropertyId.Height, 500);  // big enough
+        var parent = Box.ForElement(BoxKind.BlockContainer, parentStyle, MakeElement());
+        root.AppendChild(parent);
+
+        var childAStyle = MakeStyle();
+        SetLengthPx(childAStyle, PropertyId.Height, 200);
+        var childA = Box.ForElement(BoxKind.BlockContainer, childAStyle, MakeElement());
+        parent.AppendChild(childA);
+
+        var grandchildStyle = MakeStyle();
+        SetLengthPx(grandchildStyle, PropertyId.Height, 350);
+        var grandchild = Box.ForElement(BoxKind.BlockContainer, grandchildStyle, MakeElement());
+        childA.AppendChild(grandchild);
+
+        var childBStyle = MakeStyle();
+        SetLengthPx(childBStyle, PropertyId.Height, 100);
+        var childB = Box.ForElement(BoxKind.BlockContainer, childBStyle, MakeElement());
+        parent.AppendChild(childB);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // 4 fragments: parent, childA, grandchild, childB.
+        Assert.Equal(4, sink.Fragments.Count);
+        Assert.Same(parent, sink.Fragments[0].Box);
+        Assert.Same(childA, sink.Fragments[1].Box);
+        Assert.Equal(0, sink.Fragments[1].BlockOffset);
+        Assert.Same(grandchild, sink.Fragments[2].Box);
+        Assert.Equal(0, sink.Fragments[2].BlockOffset);  // inside childA at offset 0
+        Assert.Same(childB, sink.Fragments[3].Box);
+        // childB's BlockOffset = parent.contentTop (0) + cursor +
+        //   topShift. Pre-fix cursor = 200, post-fix = 350.
+        Assert.Equal(350, sink.Fragments[3].BlockOffset);
+    }
+
+    [Fact]
+    public void PostPr29_two_page_follow_through_for_break_before_then_forced_overflow()
+    {
+        // Per cycle 2c post-PR-29 review #6 (P2) — the original cycle
+        // 2c test only verified page 1 of the break-before scenario.
+        // This test follows through page 2: assert parent + child
+        // both emit on page 2 + diagnostic fires + continuation
+        // advances past the parent.
+        //
+        // Tree (same as Cycle2c_nested_overflow_pushes_subtree_to_next_page_when_prior_content_exists):
+        //   root > [div_a (h=200), parent (h=600) > child (h=900)]
+        // Page = 800.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var divAStyle = MakeStyle();
+        SetLengthPx(divAStyle, PropertyId.Height, 200);
+        var divA = Box.ForElement(BoxKind.BlockContainer, divAStyle, MakeElement());
+        root.AppendChild(divA);
+
+        var parentStyle = MakeStyle();
+        SetLengthPx(parentStyle, PropertyId.Height, 600);
+        var parent = Box.ForElement(BoxKind.BlockContainer, parentStyle, MakeElement());
+        root.AppendChild(parent);
+
+        var childStyle = MakeStyle();
+        SetLengthPx(childStyle, PropertyId.Height, 900);
+        var child = Box.ForElement(BoxKind.BlockContainer, childStyle, MakeElement());
+        parent.AppendChild(child);
+
+        // Page 1.
+        using var page1Layouter = new BlockLayouter(
+            root, sink, incomingContinuation: null, diagnostics: diagSink);
+        var ctx1 = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx1 = new LayoutContext(ctx1);
+        using var resolver1 = new BreakResolver();
+
+        var page1 = page1Layouter.AttemptLayout(
+            ctx1, ref layoutCtx1, resolver1, LayoutAttemptStrategy.Strict);
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, page1.Outcome);
+        var cont1 = Assert.IsType<BlockContinuation>(page1.Continuation);
+        Assert.Equal(1, cont1.ResumeAtChild);  // resume at parent
+        var sinkBeforePage2 = sink.Fragments.Count;
+        Assert.Equal(1, sinkBeforePage2);  // div_a only on page 1
+
+        // Page 2 — same root, new layouter with continuation.
+        using var page2Layouter = new BlockLayouter(
+            root, sink, incomingContinuation: cont1, diagnostics: diagSink);
+        var ctx2 = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        ctx2.PageIndex = 1;
+        var layoutCtx2 = new LayoutContext(ctx2);
+        using var resolver2 = new BreakResolver();
+
+        var page2 = page2Layouter.AttemptLayout(
+            ctx2, ref layoutCtx2, resolver2, LayoutAttemptStrategy.Strict);
+
+        // Page 2: parent + child emitted via forced-overflow path
+        // (subtree extent 900 > page 800).
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, page2.Outcome);
+        var cont2 = Assert.IsType<BlockContinuation>(page2.Continuation);
+        // Continuation advances PAST parent (no more children).
+        Assert.Equal(2, cont2.ResumeAtChild);
+        // 3 fragments total: div_a (page 1), parent + child (page 2).
+        Assert.Equal(3, sink.Fragments.Count);
+        Assert.Same(parent, sink.Fragments[1].Box);
+        Assert.Same(child, sink.Fragments[2].Box);
+        // Diagnostic fired on page 2 (was silent on page 1's clean break).
+        Assert.Single(diagSink.Diagnostics);
+        Assert.Equal(PaginateDiagnosticCodes.PaginationForcedOverflow001,
+            diagSink.Diagnostics[0].Code);
+        // Per cycle 2c post-PR-29 review #9 — the diagnostic mentions
+        // BOTH own border-box + subtree extent.
+        Assert.Contains("subtree extent", diagSink.Diagnostics[0].Message,
+            System.StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("own border-box", diagSink.Diagnostics[0].Message,
+            System.StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void PostPr29_measure_includes_parent_padding_bottom_when_descendants_dominate()
+    {
+        // Per cycle 2c post-PR-29 review #5 (P2) — when descendants
+        // overflow the parent's own height, the measured extent must
+        // include the parent's padding-bottom + border-bottom (which
+        // sit BELOW the deepest descendant in CSS box model). Pre-fix
+        // the measure tracked only descendant border-box bottoms.
+        //
+        // Tree:
+        //   root > parent (h=auto-as-0, padding-bottom=20, border-bottom=5)
+        //          > child (h=300)
+        //   sibling (h=100)
+        //
+        // Pre-fix subtree extent: max(parent.borderBox=25, descendantBottom
+        //   = 0+300=300) = 300. Sibling at offset 300.
+        // Post-fix: descendant dominates → append parent's tail (20+5=25)
+        //   → subtree extent = 325. Sibling at offset 325.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var parentStyle = MakeStyle();
+        // height=auto (= 0); add padding-bottom + border-bottom.
+        SetLengthPx(parentStyle, PropertyId.PaddingBottom, 20);
+        SetLengthPx(parentStyle, PropertyId.BorderBottomWidth, 5);
+        var parent = Box.ForElement(BoxKind.BlockContainer, parentStyle, MakeElement());
+        root.AppendChild(parent);
+
+        var childStyle = MakeStyle();
+        SetLengthPx(childStyle, PropertyId.Height, 300);
+        var child = Box.ForElement(BoxKind.BlockContainer, childStyle, MakeElement());
+        parent.AppendChild(child);
+
+        var siblingStyle = MakeStyle();
+        SetLengthPx(siblingStyle, PropertyId.Height, 100);
+        var sibling = Box.ForElement(BoxKind.BlockContainer, siblingStyle, MakeElement());
+        root.AppendChild(sibling);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(3, sink.Fragments.Count);
+        // sibling at offset 325 (post-fix), not 300 (pre-fix).
+        Assert.Same(sibling, sink.Fragments[2].Box);
+        Assert.Equal(325, sink.Fragments[2].BlockOffset);
+    }
+
+    [Fact]
+    public void PostPr29_measure_includes_final_child_margin_bottom_when_descendants_dominate()
+    {
+        // Per cycle 2c post-PR-29 review #5 (P2) — sibling extension:
+        // the LAST child's margin-bottom also sits below its border-box
+        // bottom in the parent's box model. When descendants dominate,
+        // the measured extent must include it.
+        //
+        // Tree:
+        //   root > parent (h=auto-as-0, no padding/border) >
+        //          [c1 (h=200, marginBottom=30)]
+        //   sibling (h=100)
+        //
+        // Pre-fix subtree extent: max(0, 0+200) = 200. Sibling at 200.
+        // Post-fix: descendant dominates (200 > 0) → append last-child
+        //   marginEnd (30) + parent tail (0+0=0) = 230. Sibling at 230.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var parentStyle = MakeStyle();
+        var parent = Box.ForElement(BoxKind.BlockContainer, parentStyle, MakeElement());
+        root.AppendChild(parent);
+
+        var c1Style = MakeStyle();
+        SetLengthPx(c1Style, PropertyId.Height, 200);
+        SetLengthPx(c1Style, PropertyId.MarginBottom, 30);
+        var c1 = Box.ForElement(BoxKind.BlockContainer, c1Style, MakeElement());
+        parent.AppendChild(c1);
+
+        var siblingStyle = MakeStyle();
+        SetLengthPx(siblingStyle, PropertyId.Height, 100);
+        var sibling = Box.ForElement(BoxKind.BlockContainer, siblingStyle, MakeElement());
+        root.AppendChild(sibling);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(3, sink.Fragments.Count);
+        Assert.Same(sibling, sink.Fragments[2].Box);
+        Assert.Equal(230, sink.Fragments[2].BlockOffset);
+    }
+
+    [Fact]
+    public void PostPr29_negative_margin_subtree_overlap_measured_consistently_with_emit()
+    {
+        // Per cycle 2c post-PR-29 review #11 (P3) — measure + emit
+        // must agree on subtree extent under negative margins.
+        //
+        // Tree:
+        //   root > parent (h=400) > [
+        //     c1 (h=80, marginBottom=-30),
+        //     c2 (h=60)
+        //   ]
+        //   sibling (h=50)
+        //
+        // Inside parent (cycle 2b post-PR-28 — signed cursor):
+        //   c1 at offset 0, height 80; cursor after c1 = 0+0+80+(-30) = 50
+        //   c2 at offset 50 (in parent.contentArea), height 60; cursor = 50+60 = 110
+        // Subtree extent in parent: max(80, 110) = 110.
+        //
+        // Parent's own borderBox = 400. Subtree extent in parent =
+        //   max(parent.borderBox=400, deepestBottom-from-children=110) =
+        //   400 (parent's own height dominates).
+        //
+        // So sibling at offset = parent.borderBox = 400 (parent's own
+        // size dominates, no overflow).
+        //
+        // The KEY invariant is: emit places c1 at 0, c2 at 50 (overlap
+        // visible), and the measure agrees that the subtree extent is
+        // bounded by parent's own height (no overflow past parent).
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var parentStyle = MakeStyle();
+        SetLengthPx(parentStyle, PropertyId.Height, 400);
+        var parent = Box.ForElement(BoxKind.BlockContainer, parentStyle, MakeElement());
+        root.AppendChild(parent);
+
+        var c1Style = MakeStyle();
+        SetLengthPx(c1Style, PropertyId.Height, 80);
+        SetLengthPx(c1Style, PropertyId.MarginBottom, -30);
+        var c1 = Box.ForElement(BoxKind.BlockContainer, c1Style, MakeElement());
+        parent.AppendChild(c1);
+
+        var c2Style = MakeStyle();
+        SetLengthPx(c2Style, PropertyId.Height, 60);
+        var c2 = Box.ForElement(BoxKind.BlockContainer, c2Style, MakeElement());
+        parent.AppendChild(c2);
+
+        var siblingStyle = MakeStyle();
+        SetLengthPx(siblingStyle, PropertyId.Height, 50);
+        var sibling = Box.ForElement(BoxKind.BlockContainer, siblingStyle, MakeElement());
+        root.AppendChild(sibling);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(4, sink.Fragments.Count);
+        // c1 inside parent at 0.
+        Assert.Same(c1, sink.Fragments[1].Box);
+        Assert.Equal(0, sink.Fragments[1].BlockOffset);
+        // c2 at 50 (signed cursor allowed negative-margin overlap with c1).
+        Assert.Same(c2, sink.Fragments[2].Box);
+        Assert.Equal(50, sink.Fragments[2].BlockOffset);
+        // Sibling at 400 (parent's own border-box dominates the subtree
+        // extent — c1+c2 stack ends at 110 < parent.height=400, so no
+        // overflow past parent).
+        Assert.Same(sibling, sink.Fragments[3].Box);
+        Assert.Equal(400, sink.Fragments[3].BlockOffset);
+    }
+
+    // ====================================================================
     //  Phase 3 Task 7 cycle 2d deferral pin — true mid-subtree splits
     // ====================================================================
 

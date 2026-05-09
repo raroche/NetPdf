@@ -439,14 +439,27 @@ internal static class LineBuilder
     ///   only <c>Mandatory</c> breaks split the line.</item>
     ///   <item><see cref="WhiteSpace.Normal"/>, <see cref="WhiteSpace.PreWrap"/>,
     ///   <see cref="WhiteSpace.PreLine"/> all wrap at <c>Allowed</c> +
-    ///   <c>Mandatory</c> opportunities.</item>
+    ///   <c>Mandatory</c> opportunities. Normal / NoWrap / PreLine
+    ///   also trim trailing collapsible-whitespace glyphs (SP/TAB)
+    ///   off the drawable slice when wrapping at an Allowed break
+    ///   per §4.1.2 ("remove end-of-line spaces").</item>
     /// </list>
     /// Whitespace COLLAPSING is a separate concern handled by
-    /// <see cref="PreprocessWhitespace(string, WhiteSpace)"/> BEFORE
-    /// <see cref="Itemize"/> + <see cref="Shape"/> are called — Wrap
-    /// operates on already-shaped glyphs, so it can't collapse
-    /// post-hoc. Callers are expected to apply the preprocessor at
-    /// TextRun construction time.</param>
+    /// <see cref="PreprocessWhitespace(string, WhiteSpace)"/> +
+    /// <see cref="PreprocessTextRuns"/> BEFORE <see cref="Itemize"/>
+    /// + <see cref="Shape"/> are called — Wrap operates on already-
+    /// shaped glyphs, so it can't collapse post-hoc.
+    ///
+    /// <para><b>Per-run policy is a stopgap.</b> Cycle 3b sub-cycle 1
+    /// applies one <see cref="WhiteSpace"/> mode to the WHOLE inline
+    /// pass — adequate for paragraphs whose every descendant inherits
+    /// the same <c>white-space</c> property (the common case). Mixed
+    /// inline descendants (e.g.,
+    /// <c>&lt;span style="white-space:nowrap"&gt;</c> inside
+    /// <c>white-space:normal</c> text) require per-source-TextRun
+    /// white-space carrying through to the wrap pass — scheduled for
+    /// Task 10's <c>InlineLayouter</c> integration. The single-arg
+    /// is a stopgap, not the long-term API.</para></param>
     /// <param name="cancellationToken">Checked at method entry, after
     /// each expensive loop pass (concat-rebuild, FindBreaks,
     /// coherence-validation, flat-glyph build, wrap loop), and
@@ -504,6 +517,15 @@ internal static class LineBuilder
         // Cycle 3b — Pre + NoWrap suppress wrapping at UAX #14 Allowed
         // opportunities; only Mandatory breaks split lines.
         var wrapsAtAllowed = whiteSpace is not (WhiteSpace.Pre or WhiteSpace.NoWrap);
+
+        // Cycle 3b sub-cycle 1 hardening — Normal + NoWrap + PreLine
+        // collapse spaces; trailing collapsible whitespace at the
+        // wrap point is trimmed off the drawable slice (the SP glyph
+        // exists for shaping but doesn't contribute to the line's
+        // visible TotalAdvance).
+        var collapsesSpaces = whiteSpace is WhiteSpace.Normal
+            or WhiteSpace.NoWrap
+            or WhiteSpace.PreLine;
 
         if (shapedRuns.Count == 0)
         {
@@ -632,10 +654,24 @@ internal static class LineBuilder
                 // data for these; the wrap loop trims them off the
                 // drawable slice.
                 var isMandatoryControl = false;
+                // Cycle 3b sub-cycle 1 hardening — tag collapsible
+                // break-space glyphs (SP / TAB after preprocessing
+                // collapse). On soft-wrap snap-back the wrap loop
+                // trims trailing IsBreakSpace glyphs from the drawable
+                // slice + their advance, so the line's TotalAdvance
+                // doesn't include the trailing collapsible whitespace
+                // (per CSS Text L3 §4.1.2 "remove end-of-line spaces").
+                // Tag is suppressed for Pre/PreWrap (preserve modes
+                // — spaces are part of the rendered output).
+                var isBreakSpace = false;
                 if ((uint)glyph.Cluster < (uint)concatTotal)
                 {
-                    isMandatoryControl = IsMandatoryLineBreakControl(
-                        concatText[glyph.Cluster]);
+                    var clusterChar = concatText[glyph.Cluster];
+                    isMandatoryControl = IsMandatoryLineBreakControl(clusterChar);
+                    if (collapsesSpaces && (clusterChar == ' ' || clusterChar == '	'))
+                    {
+                        isBreakSpace = true;
+                    }
                 }
 
                 flat[flatIdx++] = new FlatGlyph(
@@ -643,7 +679,8 @@ internal static class LineBuilder
                     GlyphIdxInRun: g,
                     Advance: glyph.XAdvance,
                     Opportunity: opp,
-                    IsMandatoryControl: isMandatoryControl);
+                    IsMandatoryControl: isMandatoryControl,
+                    IsBreakSpace: isBreakSpace);
             }
             cancellationToken.ThrowIfCancellationRequested();
         }
@@ -662,8 +699,22 @@ internal static class LineBuilder
             if (afterAdvance > availableInlineSize && lastAllowed >= 0
                 && lastAllowed >= lineStart)
             {
-                // Soft-wrap: snap back to lastAllowed.
-                EmitDrawableRange(output, flat, lineStart, lastAllowed,
+                // Soft-wrap: snap back to lastAllowed. For collapsible
+                // modes (Normal/NoWrap/PreLine) trim trailing
+                // IsBreakSpace glyphs from the drawable slice — the
+                // SP glyph at the break point is part of the source
+                // text but should NOT contribute to the line's drawn
+                // glyph stream or TotalAdvance per CSS Text L3 §4.1.2.
+                var drawableEnd = lastAllowed;
+                if (collapsesSpaces)
+                {
+                    while (drawableEnd >= lineStart
+                        && flat[drawableEnd].IsBreakSpace)
+                    {
+                        drawableEnd--;
+                    }
+                }
+                EmitDrawableRange(output, flat, lineStart, drawableEnd,
                     endsWithMandatoryBreak: false);
                 lineStart = lastAllowed + 1;
                 cursor = lineStart - 1; // for-loop increment lands on lineStart
@@ -749,21 +800,30 @@ internal static class LineBuilder
     ///   collapse all whitespace runs (SP/TAB/LF/CR/FF) into a
     ///   single SP. Strip leading + trailing whitespace.</item>
     ///   <item><see cref="WhiteSpace.Pre"/> + <see cref="WhiteSpace.PreWrap"/>:
-    ///   pass through unchanged.</item>
+    ///   normalize segment breaks per §4.1.1 (CRLF → single LF;
+    ///   lone CR → LF); whitespace otherwise preserved unchanged.</item>
     ///   <item><see cref="WhiteSpace.PreLine"/>: collapse SP+TAB runs
-    ///   to a single SP; preserve LF + CR (segment breaks). Strips
-    ///   trailing SP at segment ends per §4.1.2 "remove end-of-line
-    ///   spaces".</item>
+    ///   to a single SP; preserve LF segment breaks (CRLF / lone CR
+    ///   normalized to LF per §4.1.1). Strips trailing SP at segment
+    ///   ends per §4.1.2 "remove end-of-line spaces".</item>
     /// </list>
     ///
-    /// <para><b>Cycle 3b sub-cycle 1 simplifications.</b> The CSS
-    /// Text L3 §4.1.1 segment-break-transformation rules
-    /// (CR-LF→LF, etc.) are NOT applied here — that pass belongs in
-    /// the HTML preprocessor (cycle 3b sub-cycle 2). Likewise the
-    /// "preserved tab" tab-size handling for Pre-mode is deferred.
-    /// Cycle 3b ships the most common cases (Normal + NoWrap collapse,
-    /// Pre/PreWrap pass-through, PreLine SP-collapse) which cover
-    /// 99% of v1 invoice / report content.</para>
+    /// <para><b>Single-run scope.</b> This overload preprocesses a
+    /// SINGLE text string in isolation — leading + trailing
+    /// whitespace are stripped under collapse modes assuming the
+    /// input is the entire document content. For multi-run inline
+    /// content where collapse state must carry across <c>TextRun</c>
+    /// boundaries (e.g., <c>"Hello "</c> + styled <c>"world"</c>
+    /// should collapse to <c>"Hello world"</c> with one space, not
+    /// <c>"Helloworld"</c> if both runs strip independently), use
+    /// <see cref="PreprocessTextRuns"/>.</para>
+    ///
+    /// <para><b>Cycle 3b sub-cycle 1 simplifications.</b> The
+    /// "preserved tab" <c>tab-size</c> handling for Pre-mode is
+    /// deferred (later sub-cycle). Cycle 3b ships the most common
+    /// cases (Normal + NoWrap collapse, Pre/PreWrap preserve-with-
+    /// segment-normalization, PreLine SP-collapse) which cover 99%
+    /// of v1 invoice / report content.</para>
     /// </summary>
     /// <param name="text">The source text — typically from a single
     /// box-tree TextRun before bidi/itemize. Surrogate pairs are
@@ -782,7 +842,7 @@ internal static class LineBuilder
         ArgumentNullException.ThrowIfNull(text);
         return mode switch
         {
-            WhiteSpace.Pre or WhiteSpace.PreWrap => text,
+            WhiteSpace.Pre or WhiteSpace.PreWrap => NormalizeSegmentBreaks(text),
             WhiteSpace.PreLine => CollapseSpacesPreserveBreaks(text),
             WhiteSpace.Normal or WhiteSpace.NoWrap => CollapseAllWhitespace(text),
             _ => throw new ArgumentOutOfRangeException(nameof(mode), mode,
@@ -791,10 +851,15 @@ internal static class LineBuilder
     }
 
     /// <summary>White-space:normal / nowrap — collapse all SP/TAB/LF/
-    /// CR/FF runs to a single SP + strip leading/trailing SP.</summary>
+    /// CR/FF runs to a single SP + strip leading/trailing SP. Fast-
+    /// path: returns input unchanged when there's no whitespace at
+    /// all OR whitespace appears only as single SPs between non-WS
+    /// chars + no leading/trailing whitespace (Copilot PR #35 review).</summary>
     private static string CollapseAllWhitespace(string text)
     {
         if (text.Length == 0) return text;
+        if (!NeedsCollapseAllWhitespace(text)) return text;
+
         var sb = new StringBuilder(text.Length);
         // inWs initialized to true so leading whitespace is stripped.
         var inWs = true;
@@ -824,11 +889,15 @@ internal static class LineBuilder
     }
 
     /// <summary>White-space:pre-line — collapse SP/TAB runs to a
-    /// single SP but preserve LF + CR segment breaks. Strips trailing
-    /// SP at segment ends per §4.1.2.</summary>
+    /// single SP, preserve LF segment breaks (CRLF / lone CR
+    /// normalized to LF per §4.1.1), strip trailing SP at segment
+    /// ends per §4.1.2. Fast-path: returns input unchanged when
+    /// already in canonical form.</summary>
     private static string CollapseSpacesPreserveBreaks(string text)
     {
         if (text.Length == 0) return text;
+        if (!NeedsCollapseSpacesPreserveBreaks(text)) return text;
+
         var sb = new StringBuilder(text.Length);
         var inSpaceRun = true; // strip leading SP
         for (var i = 0; i < text.Length; i++)
@@ -842,17 +911,29 @@ internal static class LineBuilder
                     inSpaceRun = true;
                 }
             }
-            else if (c == '\u000A' || c == '\u000D')
+            else if (c == '\u000A')
             {
-                // Segment break — strip a pending trailing SP, append
-                // the break, reset for the new segment's leading-SP
-                // strip.
+                // LF segment break — strip pending trailing SP.
                 if (sb.Length > 0 && sb[sb.Length - 1] == ' ')
                 {
                     sb.Length--;
                 }
-                sb.Append(c);
+                sb.Append('\u000A');
                 inSpaceRun = true;
+            }
+            else if (c == '\u000D')
+            {
+                // CR — normalize CRLF / lone CR to LF per §4.1.1.
+                if (sb.Length > 0 && sb[sb.Length - 1] == ' ')
+                {
+                    sb.Length--;
+                }
+                sb.Append('\u000A');
+                inSpaceRun = true;
+                if (i + 1 < text.Length && text[i + 1] == '\u000A')
+                {
+                    i++; // consume LF — CRLF collapses to single LF
+                }
             }
             else
             {
@@ -863,6 +944,234 @@ internal static class LineBuilder
         if (sb.Length > 0 && sb[sb.Length - 1] == ' ')
         {
             sb.Length--;
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>Returns <see langword="false"/> when input is already
+    /// in canonical-collapsed form for Normal/NoWrap (no leading/
+    /// trailing SP, no consecutive WS, no non-SP whitespace) — caller
+    /// can return the input unchanged. Per Copilot PR #35 fast-path
+    /// recommendation.</summary>
+    private static bool NeedsCollapseAllWhitespace(string text)
+    {
+        if (text.Length == 0) return false;
+        if (IsCssWhiteSpace(text[0])) return true;
+        if (IsCssWhiteSpace(text[text.Length - 1])) return true;
+        var prevWs = false;
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+            if (IsCssWhiteSpace(c))
+            {
+                if (c != ' ') return true; // non-SP WS needs convert
+                if (prevWs) return true; // consecutive WS run
+                prevWs = true;
+            }
+            else
+            {
+                prevWs = false;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>Returns <see langword="false"/> when input is already
+    /// in canonical PreLine form (only LF segment breaks; no CR; no
+    /// TAB/FF; no SP runs; no leading/trailing SP within segments).</summary>
+    private static bool NeedsCollapseSpacesPreserveBreaks(string text)
+    {
+        if (text.Length == 0) return false;
+        var c0 = text[0];
+        if (c0 == ' ' || c0 == '\u0009' || c0 == '\u000C') return true;
+        var cn = text[text.Length - 1];
+        if (cn == ' ' || cn == '\u0009' || cn == '\u000C') return true;
+        var prevSp = false;
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+            if (c == '\u0009' || c == '\u000C' || c == '\u000D') return true;
+            if (c == ' ')
+            {
+                if (prevSp) return true;
+                prevSp = true;
+            }
+            else if (c == '\u000A')
+            {
+                if (prevSp) return true; // trailing SP before LF
+                if (i + 1 < text.Length)
+                {
+                    var nx = text[i + 1];
+                    if (nx == ' ' || nx == '\u0009' || nx == '\u000C') return true;
+                }
+                prevSp = false;
+            }
+            else
+            {
+                prevSp = false;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>Per Phase 3 Task 9 cycle 3b sub-cycle 1 hardening —
+    /// inline-context white-space preprocessor. Carries collapse
+    /// state across <see cref="TextRun"/> boundaries so a trailing
+    /// SP in run N collapses with a leading SP in run N+1 to a
+    /// single SP, not two SPs (or a missing SP if both runs strip
+    /// independently).
+    ///
+    /// <para><b>Why a separate API?</b>
+    /// <see cref="PreprocessWhitespace(string, WhiteSpace)"/> treats
+    /// its single string as a complete document — it strips both
+    /// leading + trailing whitespace. For multi-run inline content
+    /// (e.g., a paragraph with styled <c>&lt;em&gt;</c> children)
+    /// each run is a fragment; only the document-leading SP of run 0
+    /// + document-trailing SP of the last run should strip. Internal
+    /// run boundaries preserve the collapse state.</para>
+    ///
+    /// <para><b>Algorithm.</b> Walks each run in order with a shared
+    /// <c>inWs</c> state (initialized to <see langword="true"/> to
+    /// strip document-leading whitespace). After all runs are
+    /// processed, the final trailing SP is stripped from the last
+    /// run's output.</para>
+    ///
+    /// <para><b>Per-run mode (cycle 3b sub-cycle 1 simplification).</b>
+    /// Cycle 3b sub-cycle 1 applies one <see cref="WhiteSpace"/> mode
+    /// to ALL runs — adequate for paragraphs whose every descendant
+    /// inherits the same <c>white-space</c> property. Per-run mode
+    /// (mixed inline descendants) is scheduled for Task 10's
+    /// <c>InlineLayouter</c> integration.</para>
+    /// </summary>
+    /// <param name="runs">The source runs in document order.</param>
+    /// <param name="mode">The CSS <c>white-space</c> value to apply
+    /// uniformly across all runs.</param>
+    /// <returns>A new <see cref="TextRun"/> array with each run's
+    /// text preprocessed + collapse state carried across boundaries.
+    /// Empty input returns empty.</returns>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="runs"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="mode"/> is not a defined
+    /// <see cref="WhiteSpace"/> value.</exception>
+    public static IReadOnlyList<TextRun> PreprocessTextRuns(
+        IReadOnlyList<TextRun> runs, WhiteSpace mode)
+    {
+        ArgumentNullException.ThrowIfNull(runs);
+        if (runs.Count == 0) return runs;
+
+        if (mode is WhiteSpace.Pre or WhiteSpace.PreWrap)
+        {
+            var preNormalized = new TextRun[runs.Count];
+            for (var i = 0; i < runs.Count; i++)
+            {
+                var raw = runs[i].Text;
+                var normalized = NormalizeSegmentBreaks(raw);
+                preNormalized[i] = ReferenceEquals(raw, normalized)
+                    ? runs[i]
+                    : new TextRun(normalized, runs[i].Style);
+            }
+            return preNormalized;
+        }
+
+        if (mode is not (WhiteSpace.Normal or WhiteSpace.NoWrap or WhiteSpace.PreLine))
+        {
+            throw new ArgumentOutOfRangeException(nameof(mode), mode,
+                "PreprocessTextRuns: mode must be a defined WhiteSpace value.");
+        }
+
+        var preserveBreaks = mode == WhiteSpace.PreLine;
+        var output = new TextRun[runs.Count];
+        var inWs = true;
+        for (var r = 0; r < runs.Count; r++)
+        {
+            output[r] = new TextRun(
+                CollapseStateful(runs[r].Text, preserveBreaks, ref inWs),
+                runs[r].Style);
+        }
+
+        if (output.Length > 0)
+        {
+            var last = output.Length - 1;
+            var t = output[last].Text;
+            if (t.Length > 0 && t[t.Length - 1] == ' ')
+            {
+                output[last] = new TextRun(t.Substring(0, t.Length - 1),
+                    output[last].Style);
+            }
+        }
+
+        return output;
+    }
+
+    /// <summary>Stateful collapse helper for
+    /// <see cref="PreprocessTextRuns"/>. Carries the <c>inWs</c>
+    /// state across calls so consecutive runs collapse their
+    /// boundary whitespace correctly. Does NOT strip trailing SP
+    /// (caller handles document-trailing strip after the last run).</summary>
+    private static string CollapseStateful(string text, bool preserveBreaks, ref bool inWs)
+    {
+        if (text.Length == 0) return text;
+        var sb = new StringBuilder(text.Length);
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+            if (preserveBreaks && c == '\u000A')
+            {
+                if (sb.Length > 0 && sb[sb.Length - 1] == ' ') sb.Length--;
+                sb.Append('\u000A');
+                inWs = true;
+            }
+            else if (preserveBreaks && c == '\u000D')
+            {
+                if (sb.Length > 0 && sb[sb.Length - 1] == ' ') sb.Length--;
+                sb.Append('\u000A');
+                inWs = true;
+                if (i + 1 < text.Length && text[i + 1] == '\u000A') i++;
+            }
+            else if (preserveBreaks
+                ? (c == ' ' || c == '\u0009' || c == '\u000C')
+                : IsCssWhiteSpace(c))
+            {
+                if (!inWs)
+                {
+                    sb.Append(' ');
+                    inWs = true;
+                }
+            }
+            else
+            {
+                sb.Append(c);
+                inWs = false;
+            }
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>Apply CSS Text L3 §4.1.1 segment-break-transformation:
+    /// any CR followed by LF → single LF; remaining lone CR → LF.
+    /// Fast-path: returns input unchanged when there are no CRs.</summary>
+    private static string NormalizeSegmentBreaks(string text)
+    {
+        if (text.Length == 0) return text;
+        if (text.IndexOf('\u000D') < 0) return text;
+
+        var sb = new StringBuilder(text.Length);
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+            if (c == '\u000D')
+            {
+                sb.Append('\u000A');
+                if (i + 1 < text.Length && text[i + 1] == '\u000A')
+                {
+                    i++;
+                }
+            }
+            else
+            {
+                sb.Append(c);
+            }
         }
         return sb.ToString();
     }
@@ -943,15 +1252,22 @@ internal static class LineBuilder
             EndsWithMandatoryBreak: endsWithMandatoryBreak));
     }
 
-    /// <summary>Cycle 3a internal: a flattened glyph view across all
-    /// shaped runs, indexed by global glyph position. <see cref="IsMandatoryControl"/>
-    /// is set for glyphs whose source codepoint is a UAX #14 hard-
-    /// line-break control (LF, CR, VT, FF, NEL, LS, PS) — these are
-    /// trimmed off the end of each emitted drawable slice.</summary>
+    /// <summary>Cycle 3a/3b internal: a flattened glyph view across
+    /// all shaped runs, indexed by global glyph position.
+    /// <see cref="IsMandatoryControl"/> is set for glyphs whose
+    /// source codepoint is a UAX #14 hard-line-break control (LF,
+    /// CR, VT, FF, NEL, LS, PS) — these are trimmed off the end of
+    /// each emitted drawable slice. <see cref="IsBreakSpace"/> is set
+    /// (cycle 3b sub-cycle 1) for collapsible-whitespace glyphs
+    /// (SP/TAB) under collapsible white-space modes (Normal/NoWrap/
+    /// PreLine) — these are trimmed off soft-wrap snap-back drawable
+    /// slices so the line's TotalAdvance doesn't include the trailing
+    /// SP per CSS Text L3 §4.1.2.</summary>
     private readonly record struct FlatGlyph(
         int RunIdx,
         int GlyphIdxInRun,
         float Advance,
         LineBreakOpportunity Opportunity,
-        bool IsMandatoryControl);
+        bool IsMandatoryControl,
+        bool IsBreakSpace);
 }

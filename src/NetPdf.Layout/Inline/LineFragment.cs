@@ -30,16 +30,28 @@ namespace NetPdf.Layout.Inline;
 /// <c>text-align</c>/<c>vertical-align</c> processing — all deferred
 /// to cycle 3b/c.</para>
 ///
-/// <para><b>Cycle 3a white-space behavior.</b> Cycle 3a does NOT
-/// preprocess CSS <c>white-space</c> — input is wrapped AS-IS.
-/// Multiple consecutive spaces stay as multiple glyphs (no
-/// collapsing). Leading + trailing whitespace is preserved. True
-/// CSS <c>white-space: normal</c> (collapse + trim) +
-/// <c>pre</c>/<c>pre-wrap</c>/<c>pre-line</c>/<c>nowrap</c>
-/// variants ship in cycle 3b. Until then, callers are expected to
-/// feed pre-collapsed text or accept the AS-IS behavior;
-/// <see cref="EndsWithMandatoryBreak"/> still distinguishes
-/// paragraph-end from soft-wrap regardless of white-space mode.</para>
+/// <para><b>Cycle 3b white-space pipeline.</b> CSS <c>white-space</c>
+/// processing is split between TWO call sites:
+/// <list type="number">
+///   <item><b>Pre-shaping preprocessing</b> via
+///   <see cref="LineBuilder.PreprocessWhitespace"/> or
+///   <see cref="LineBuilder.PreprocessTextRuns"/> — applies the
+///   collapse / preserve / segment-break-normalization rules from
+///   CSS Text L3 §4.1 to the source text BEFORE
+///   <see cref="LineBuilder.Itemize"/> + <see cref="LineBuilder.Shape"/>
+///   are called. Wrap can't collapse post-hoc because shaping
+///   already turned the text into glyphs with concat-relative
+///   cluster offsets.</item>
+///   <item><b>Wrap-time mode honoring</b> via the
+///   <see cref="WhiteSpace"/> argument on
+///   <see cref="LineBuilder.Wrap"/>. Cycle 3b sub-cycle 1 honors
+///   <see cref="WhiteSpace.Pre"/> + <see cref="WhiteSpace.NoWrap"/>
+///   to suppress UAX #14 Allowed-break wrapping (Mandatory still
+///   honored), and trims trailing collapsible-whitespace glyphs off
+///   the drawable slice when wrapping at an Allowed break in
+///   collapsible modes (Normal/NoWrap/PreLine) per §4.1.2.</item>
+/// </list>
+/// </para>
 ///
 /// <para><b>Cycle 3a deferrals (subsequent cycles):</b></para>
 /// <list type="bullet">

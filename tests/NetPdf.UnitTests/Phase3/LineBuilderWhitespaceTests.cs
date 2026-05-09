@@ -138,11 +138,26 @@ public class LineBuilderWhitespaceTests
     }
 
     [Fact]
-    public void PreprocessWhitespace_PreLine_preserves_CRLF()
+    public void PreprocessWhitespace_PreLine_normalizes_CRLF_to_LF()
     {
-        // PreLine preserves both CR + LF.
-        Assert.Equal("AA\r\nBB",
+        // Per CSS Text L3 §4.1.1 — CRLF → single LF, lone CR → LF.
+        // PreLine preserves segment breaks (LF) but normalizes CRLF
+        // and lone CR to LF first.
+        Assert.Equal("AA\nBB",
             LineBuilder.PreprocessWhitespace("AA\r\nBB", WhiteSpace.PreLine));
+        Assert.Equal("AA\nBB",
+            LineBuilder.PreprocessWhitespace("AA\rBB", WhiteSpace.PreLine));
+    }
+
+    [Fact]
+    public void PreprocessWhitespace_Pre_normalizes_CRLF_to_LF()
+    {
+        // Per CSS Text L3 §4.1.1 — Pre also normalizes CRLF/CR to LF
+        // (otherwise renderers would treat CR + LF as TWO segment breaks).
+        Assert.Equal("AA\nBB",
+            LineBuilder.PreprocessWhitespace("AA\r\nBB", WhiteSpace.Pre));
+        Assert.Equal("AA\nBB\nCC",
+            LineBuilder.PreprocessWhitespace("AA\rBB\rCC", WhiteSpace.Pre));
     }
 
     // --- Wrap with WhiteSpace.NoWrap suppresses Allowed wrap ---
@@ -232,6 +247,190 @@ public class LineBuilderWhitespaceTests
         Assert.Throws<ArgumentOutOfRangeException>(() =>
             LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 100,
                 whiteSpace: (WhiteSpace)99));
+    }
+
+    // --- PreprocessTextRuns: inline-context state ----------------
+
+    [Fact]
+    public void PreprocessTextRuns_null_runs_throws()
+    {
+        Assert.Throws<ArgumentNullException>(() =>
+            LineBuilder.PreprocessTextRuns(null!, WhiteSpace.Normal));
+    }
+
+    [Fact]
+    public void PreprocessTextRuns_empty_returns_empty()
+    {
+        var result = LineBuilder.PreprocessTextRuns(
+            Array.Empty<TextRun>(), WhiteSpace.Normal);
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public void PreprocessTextRuns_undefined_mode_throws()
+    {
+        var runs = new List<TextRun> { new("AA", MakeStyle()) };
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            LineBuilder.PreprocessTextRuns(runs, (WhiteSpace)99));
+    }
+
+    [Fact]
+    public void PreprocessTextRuns_Normal_carries_collapse_state_across_runs()
+    {
+        // "Hello " + "world" — naive per-run preprocessing would
+        // strip trailing SP from run 1 + give run 2 unchanged →
+        // concat = "Helloworld" (missing space). Stateful
+        // preprocessing produces "Hello " + "world" (the SP is
+        // preserved on run 1 since run 2 is non-empty).
+        var s1 = MakeStyle();
+        var s2 = MakeStyle();
+        var runs = new List<TextRun>
+        {
+            new("Hello ", s1),
+            new("world", s2),
+        };
+        var result = LineBuilder.PreprocessTextRuns(runs, WhiteSpace.Normal);
+
+        Assert.Equal(2, result.Count);
+        Assert.Equal("Hello ", result[0].Text);
+        Assert.Equal("world", result[1].Text);
+        Assert.Same(s1, result[0].Style);
+        Assert.Same(s2, result[1].Style);
+    }
+
+    [Fact]
+    public void PreprocessTextRuns_Normal_collapses_trailing_and_leading_at_boundary()
+    {
+        // "Hello " + " world" — both have whitespace at the boundary.
+        // Stateful preprocessing collapses them to a single SP:
+        // run 1 emits "Hello " (with trailing SP, inWs=true at end);
+        // run 2 sees " world" — leading SP is dropped (inWs=true on
+        // entry), 'w' starts new word: "world".
+        var runs = new List<TextRun>
+        {
+            new("Hello ", MakeStyle()),
+            new(" world", MakeStyle()),
+        };
+        var result = LineBuilder.PreprocessTextRuns(runs, WhiteSpace.Normal);
+
+        Assert.Equal("Hello ", result[0].Text);
+        Assert.Equal("world", result[1].Text);
+    }
+
+    [Fact]
+    public void PreprocessTextRuns_Normal_strips_document_leading_and_trailing()
+    {
+        // "  Hello " + "world  " — document-leading + trailing both
+        // strip; the trailing SP of "Hello " is preserved (run 2 is
+        // non-empty, but run 2's trailing is stripped at the end).
+        var runs = new List<TextRun>
+        {
+            new("  Hello ", MakeStyle()),
+            new("world  ", MakeStyle()),
+        };
+        var result = LineBuilder.PreprocessTextRuns(runs, WhiteSpace.Normal);
+
+        Assert.Equal("Hello ", result[0].Text);
+        Assert.Equal("world", result[1].Text); // doc-trailing stripped
+    }
+
+    [Fact]
+    public void PreprocessTextRuns_Normal_styled_leading_space_collapses_to_none()
+    {
+        // "Hello" + " world" — run 1 has no trailing SP, so the SP
+        // at the start of run 2 IS the inter-run space. Result:
+        // "Hello" + " world".
+        var runs = new List<TextRun>
+        {
+            new("Hello", MakeStyle()),
+            new(" world", MakeStyle()),
+        };
+        var result = LineBuilder.PreprocessTextRuns(runs, WhiteSpace.Normal);
+
+        Assert.Equal("Hello", result[0].Text);
+        Assert.Equal(" world", result[1].Text);
+    }
+
+    [Fact]
+    public void PreprocessTextRuns_Pre_normalizes_segment_breaks_per_run()
+    {
+        // Pre passes through with §4.1.1 normalization (CRLF → LF).
+        var runs = new List<TextRun>
+        {
+            new("Hello\r\n", MakeStyle()),
+            new("world", MakeStyle()),
+        };
+        var result = LineBuilder.PreprocessTextRuns(runs, WhiteSpace.Pre);
+
+        Assert.Equal("Hello\n", result[0].Text);
+        Assert.Equal("world", result[1].Text);
+    }
+
+    // --- Soft-wrap break-space trim (User #1) --------------------
+
+    [Fact]
+    public void Wrap_Normal_soft_wrap_trims_break_space_glyph_from_drawable()
+    {
+        // Synthetic font's .notdef has advance 600 fontUnits = 7.2px
+        // at 12pt unitsPerEm 1000. SP shapes as .notdef.
+        // "AAA AAA" with available=20 wraps at the SP.
+        // Without trim: line 1 = AAA + SP = 4 glyphs, advance 25.2.
+        // With trim:    line 1 = AAA      = 3 glyphs, advance 18.0.
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("AAA AAA", MakeStyle()) };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
+        var lines = LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 20,
+            whiteSpace: WhiteSpace.Normal);
+
+        Assert.Equal(2, lines.Length);
+        var line1Glyphs = 0;
+        double line1Advance = 0;
+        foreach (var s in lines[0].Slices)
+        {
+            line1Glyphs += s.GlyphLength;
+            line1Advance += s.SliceAdvance;
+        }
+        Assert.Equal(3, line1Glyphs); // SP trimmed
+        Assert.True(line1Advance < 20.0,
+            $"Line 1 advance after trim should be < 20px, got {line1Advance}");
+    }
+
+    [Fact]
+    public void Wrap_PreLine_soft_wrap_trims_break_space_glyph()
+    {
+        // PreLine collapses SP/TAB so it ALSO trims break-space at
+        // soft-wrap. Same input + assertion as Normal.
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("AAA AAA", MakeStyle()) };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
+        var lines = LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 20,
+            whiteSpace: WhiteSpace.PreLine);
+
+        Assert.Equal(2, lines.Length);
+        var line1Glyphs = 0;
+        foreach (var s in lines[0].Slices) line1Glyphs += s.GlyphLength;
+        Assert.Equal(3, line1Glyphs); // SP trimmed
+    }
+
+    [Fact]
+    public void Wrap_PreWrap_soft_wrap_does_NOT_trim_break_space()
+    {
+        // PreWrap preserves spaces — break-space at the wrap point
+        // IS part of the rendered output. Line 1 should INCLUDE
+        // the SP glyph (4 glyphs total: "AAA ").
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("AAA AAA", MakeStyle()) };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
+        var lines = LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 20,
+            whiteSpace: WhiteSpace.PreWrap);
+
+        Assert.Equal(2, lines.Length);
+        var line1Glyphs = 0;
+        foreach (var s in lines[0].Slices) line1Glyphs += s.GlyphLength;
+        Assert.Equal(4, line1Glyphs); // SP NOT trimmed (preserve mode)
     }
 
     // --- Helpers --------------------------------------------------

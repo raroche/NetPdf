@@ -1,6 +1,6 @@
 # NetPdf — Progress Status
 
-**Current phase:** Phase 3 — Fragmentainer-aware layout + pagination 🚧 In progress (Task 9 cycle 3a — `LineBuilder.Wrap` UAX #14 line-break + naive greedy wrapping → `LineFragment[]` — ready for review)
+**Current phase:** Phase 3 — Fragmentainer-aware layout + pagination 🚧 In progress (Task 9 cycle 3a + post-cycle-3a hardening pass — `LineBuilder.Wrap` UAX #14 line-break + naive greedy wrapping → `LineFragment[]` — ready for review)
 **Tagged release:** `0.1.0-alpha` (Phase 1 complete ✅). `0.3.0-alpha` is **ready to tag** — version bumped in [Directory.Build.props](Directory.Build.props) + [build/version.json](build/version.json), CHANGELOG entry staged under `[Unreleased]` framing, full suite + AOT gate green; `git tag --list` will not show `0.3.0-alpha` until Roland creates the tag after PR merge.
 **Target next tag:** `0.7.0-beta` (Phase 3 complete — fragmentainer-aware layout + pagination)
 

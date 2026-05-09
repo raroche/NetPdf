@@ -22,11 +22,24 @@ namespace NetPdf.Layout.Inline;
 /// algorithm — fill the line up to <c>availableInlineSize</c>, snap
 /// back to the most recent <c>Allowed</c> break opportunity (UAX #14),
 /// emit a fragment, repeat. <c>Mandatory</c> breaks force a
-/// fragment boundary even mid-line. No hyphenation, no
+/// fragment boundary even mid-line; mandatory-control glyphs
+/// (LF/CR/NEL/VT/FF/LS/PS) are trimmed off the drawable slice so
+/// the painter never emits glyph data for them. CRLF strips both
+/// CR + LF on the same line. No hyphenation, no
 /// <c>overflow-wrap</c>/<c>word-break</c> overrides, no
 /// <c>text-align</c>/<c>vertical-align</c> processing — all deferred
-/// to cycle 3b/c. <c>white-space</c> is treated as <c>normal</c>
-/// (collapse + wrap).</para>
+/// to cycle 3b/c.</para>
+///
+/// <para><b>Cycle 3a white-space behavior.</b> Cycle 3a does NOT
+/// preprocess CSS <c>white-space</c> — input is wrapped AS-IS.
+/// Multiple consecutive spaces stay as multiple glyphs (no
+/// collapsing). Leading + trailing whitespace is preserved. True
+/// CSS <c>white-space: normal</c> (collapse + trim) +
+/// <c>pre</c>/<c>pre-wrap</c>/<c>pre-line</c>/<c>nowrap</c>
+/// variants ship in cycle 3b. Until then, callers are expected to
+/// feed pre-collapsed text or accept the AS-IS behavior;
+/// <see cref="EndsWithMandatoryBreak"/> still distinguishes
+/// paragraph-end from soft-wrap regardless of white-space mode.</para>
 ///
 /// <para><b>Cycle 3a deferrals (subsequent cycles):</b></para>
 /// <list type="bullet">

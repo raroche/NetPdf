@@ -368,34 +368,58 @@ internal static class LineBuilder
     ///
     /// <para><b>Algorithm (cycle 3a — naive greedy).</b></para>
     /// <list type="number">
+    ///   <item>Validate args + check coherence: each shaped run's
+    ///   <see cref="ShapedRun.Source"/> indexes a valid source run +
+    ///   the run's UTF-16 range fits inside the concatenated text +
+    ///   each glyph's <see cref="ShapedGlyph.Cluster"/> is in range +
+    ///   each glyph's <see cref="ShapedGlyph.XAdvance"/> is finite +
+    ///   non-negative. Mismatched lists throw
+    ///   <see cref="ArgumentException"/> with descriptive messages.</item>
     ///   <item>Rebuild the concatenated source text from
     ///   <paramref name="sourceTextRuns"/> + run UAX #14
-    ///   (<see cref="LineBreakAlgorithm.FindBreaks"/>) on it.</item>
+    ///   (<see cref="LineBreakAlgorithm.FindBreaks"/>) on it.
+    ///   <c>breaks[i]</c> is the opportunity AFTER UTF-16 code unit
+    ///   <c>i</c>.</item>
     ///   <item>Flatten all glyphs across all shaped runs into a
-    ///   single linear array <c>(runIdx, glyphIdx, glyph,
-    ///   breakOpportunity)</c>. Indexing into this flat array as
-    ///   "global glyph index" simplifies the line-fill loop.</item>
-    ///   <item>Walk the flat array with two cursors:
-    ///   <c>lineStart</c> + <c>cursor</c>. Track the most recent
-    ///   <c>Allowed</c> break opportunity in
-    ///   <c>[lineStart, cursor]</c> as a candidate snap-back point.</item>
-    ///   <item>If accumulated advance exceeds
-    ///   <paramref name="availableInlineSize"/>: snap back to the
-    ///   candidate, slice <c>[lineStart, candidate]</c> into per-run
-    ///   <see cref="ShapedRunSlice"/>s, emit a
-    ///   <see cref="LineFragment"/>, set <c>lineStart = candidate+1
-    ///   = cursor</c>, retry. If no candidate exists, emit at the
-    ///   current position (cycle 3a allows overflow; cycle 3b adds
-    ///   <c>overflow-wrap</c>/<c>word-break</c>).</item>
-    ///   <item><c>Mandatory</c> breaks force a fragment boundary
-    ///   regardless of advance — paragraph separators, LF, CR, NEL,
-    ///   etc.</item>
+    ///   linear array. For each glyph, compute the cluster-end (one-
+    ///   past-end UTF-16 offset) and look up
+    ///   <c>breaks[clusterEnd-1]</c> — i.e., the break-opportunity
+    ///   AFTER the cluster, NOT after the cluster's first code unit.
+    ///   This handles surrogate-pair codepoints (emoji), combining
+    ///   marks, and ligatures correctly. For LTR runs, cluster-end
+    ///   is the next glyph's cluster (or the run's UTF-16 end);
+    ///   cycle 3a uses <c>cluster+1</c> as a fallback for RTL +
+    ///   pins RTL multi-codeunit accuracy as a cycle 3c
+    ///   improvement.</item>
+    ///   <item>Tag each glyph that's a UAX #14 hard-line-break
+    ///   control (LF, CR, VT, FF, NEL, LS, PS) so the wrap loop can
+    ///   exclude it from the drawable slice — the painter must NOT
+    ///   emit glyph data for control characters.</item>
+    ///   <item>Walk the flat array with two cursors
+    ///   (<c>lineStart</c>, <c>cursor</c>). Track the most recent
+    ///   <c>Allowed</c> opportunity. On overflow snap back; on
+    ///   <c>Mandatory</c> emit; trim trailing control glyphs from
+    ///   each emitted slice (CRLF: trims both CR + LF since both
+    ///   tag as <c>IsMandatoryControl</c>).</item>
     /// </list>
     ///
-    /// <para><b>Cycle 3a deferrals.</b> See <see cref="LineFragment"/>
-    /// XML doc for the full list — white-space variants, hyphenation,
-    /// overflow-wrap, word-break, text-align, vertical-align, RTL
-    /// fragment-level reversal — all in cycle 3b/c.</para></summary>
+    /// <para><b>Cycle 3a white-space behavior.</b> Cycle 3a does
+    /// NOT preprocess CSS <c>white-space</c> — input is wrapped
+    /// AS-IS. Multiple consecutive spaces stay as multiple glyphs
+    /// (no collapsing). Leading + trailing whitespace is preserved.
+    /// True CSS <c>white-space: normal</c> (collapse + trim) +
+    /// <c>pre</c>/<c>pre-wrap</c>/<c>pre-line</c>/<c>nowrap</c>
+    /// variants ship in cycle 3b. Until then, callers are expected
+    /// to feed pre-collapsed text or accept the AS-IS behavior; the
+    /// <see cref="LineFragment.EndsWithMandatoryBreak"/> flag still
+    /// distinguishes paragraph-end from soft-wrap regardless of
+    /// white-space mode.</para>
+    ///
+    /// <para><b>Other cycle 3a deferrals.</b> See
+    /// <see cref="LineFragment"/> XML doc for the full list —
+    /// hyphenation, overflow-wrap, word-break, text-align,
+    /// vertical-align, RTL fragment-level reversal — all cycle 3b/c.</para>
+    /// </summary>
     /// <param name="sourceTextRuns">The original source runs passed
     /// to <see cref="Itemize"/> + <see cref="Shape"/>. Used to rebuild
     /// the concatenated text for UAX #14 line-break analysis.</param>
@@ -405,16 +429,26 @@ internal static class LineBuilder
     /// of a line, in CSS px. Glyphs whose cumulative advance exceeds
     /// this value are wrapped to a new line at the most recent UAX #14
     /// <c>Allowed</c> break. Must be positive + finite.</param>
-    /// <param name="cancellationToken">Checked once per emitted line —
-    /// most useful for documents with thousands of wrapped lines.</param>
+    /// <param name="cancellationToken">Checked at method entry, after
+    /// each expensive loop pass (concat-rebuild, FindBreaks,
+    /// coherence-validation, flat-glyph build, wrap loop), and
+    /// before tail emission. The check granularity is per-shaped-run
+    /// during validation/flattening + per-line during wrap.</param>
     /// <returns>One <see cref="LineFragment"/> per wrapped line in
     /// document order. Empty array when <paramref name="shapedRuns"/>
-    /// is empty.</returns>
+    /// is empty or contains only zero-glyph runs.</returns>
     /// <exception cref="ArgumentNullException">A required argument is
     /// <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">
     /// <paramref name="availableInlineSize"/> is non-positive or
     /// non-finite.</exception>
+    /// <exception cref="ArgumentException">A shaped run's
+    /// <see cref="ShapedRun.Source"/> indexes outside
+    /// <paramref name="sourceTextRuns"/>; or a glyph's
+    /// <see cref="ShapedGlyph.Cluster"/> is out of range; or a
+    /// glyph's <see cref="ShapedGlyph.XAdvance"/> is non-finite or
+    /// negative; or a shaped run's UTF-16 range exceeds the
+    /// concatenated source text.</exception>
     /// <exception cref="System.OperationCanceledException">
     /// <paramref name="cancellationToken"/> was canceled.</exception>
     public static LineFragment[] Wrap(
@@ -432,6 +466,11 @@ internal static class LineBuilder
                 "LineBuilder.Wrap: availableInlineSize must be a positive finite value (CSS px).");
         }
 
+        // Per PR #34 review fix — check cancellation at entry, before
+        // the expensive concat rebuild + FindBreaks + flat-build + wrap
+        // loops. Pre-cancelled tokens fast-path out.
+        cancellationToken.ThrowIfCancellationRequested();
+
         if (shapedRuns.Count == 0)
         {
             return Array.Empty<LineFragment>();
@@ -443,6 +482,8 @@ internal static class LineBuilder
         {
             concatTotal += sourceTextRuns[i].Text.Length;
         }
+        cancellationToken.ThrowIfCancellationRequested();
+
         var concatBuf = new StringBuilder(concatTotal);
         for (var i = 0; i < sourceTextRuns.Count; i++)
         {
@@ -450,45 +491,130 @@ internal static class LineBuilder
         }
         var concatText = concatBuf.ToString();
 
+        cancellationToken.ThrowIfCancellationRequested();
+
         // breaks[i] = opportunity AFTER UTF-16 code unit i. Final
         // entry is always Mandatory per LB3.
         var breaks = LineBreakAlgorithm.FindBreaks(concatText.AsSpan());
 
-        // Flatten glyphs across all runs. flat[i] = (runIdx,
-        // glyphIdxInRun, advance, opp). Compute total once for
-        // capacity allocation.
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // Coherence validation pass + total glyph count.
         var totalGlyphs = 0;
-        for (var i = 0; i < shapedRuns.Count; i++)
+        for (var r = 0; r < shapedRuns.Count; r++)
         {
-            totalGlyphs += shapedRuns[i].Glyphs.Length;
+            var shaped = shapedRuns[r];
+            var src = shaped.Source;
+            if ((uint)src.SourceTextRunIndex >= (uint)sourceTextRuns.Count)
+            {
+                throw new ArgumentException(
+                    $"LineBuilder.Wrap: shapedRuns[{r}].Source.SourceTextRunIndex={src.SourceTextRunIndex} is out of range for sourceTextRuns (count={sourceTextRuns.Count}). Did the shaped runs come from a different source list?",
+                    nameof(shapedRuns));
+            }
+            if (src.Utf16Start < 0 || src.Utf16Length < 0 ||
+                (long)src.Utf16Start + src.Utf16Length > concatTotal)
+            {
+                throw new ArgumentException(
+                    $"LineBuilder.Wrap: shapedRuns[{r}].Source range [Utf16Start={src.Utf16Start}, Utf16Length={src.Utf16Length}] is out of bounds for the concatenated source text (length={concatTotal}).",
+                    nameof(shapedRuns));
+            }
+            var glyphs = shaped.Glyphs;
+            for (var g = 0; g < glyphs.Length; g++)
+            {
+                var glyph = glyphs[g];
+                if (glyph.Cluster < 0 || glyph.Cluster >= concatTotal)
+                {
+                    throw new ArgumentException(
+                        $"LineBuilder.Wrap: shapedRuns[{r}].Glyphs[{g}].Cluster={glyph.Cluster} is out of bounds [0, {concatTotal}).",
+                        nameof(shapedRuns));
+                }
+                if (!float.IsFinite(glyph.XAdvance) || glyph.XAdvance < 0)
+                {
+                    throw new ArgumentException(
+                        $"LineBuilder.Wrap: shapedRuns[{r}].Glyphs[{g}].XAdvance={glyph.XAdvance} is non-finite or negative; cycle 3a expects HarfBuzz output with finite, non-negative advances.",
+                        nameof(shapedRuns));
+                }
+            }
+            totalGlyphs += glyphs.Length;
+            cancellationToken.ThrowIfCancellationRequested();
         }
         if (totalGlyphs == 0)
         {
             return Array.Empty<LineFragment>();
         }
 
+        // Build the flat glyph array. For each glyph, compute the
+        // cluster-end UTF-16 position so the break-opportunity lookup
+        // is breaks[clusterEnd-1] — the opportunity AFTER the cluster,
+        // NOT after the cluster's first code unit. Surrogate pairs +
+        // combining marks + ligatures all map correctly.
         var flat = new FlatGlyph[totalGlyphs];
         var flatIdx = 0;
         for (var r = 0; r < shapedRuns.Count; r++)
         {
-            var glyphs = shapedRuns[r].Glyphs;
+            var shaped = shapedRuns[r];
+            var glyphs = shaped.Glyphs;
+            var runUtf16End = shaped.Source.Utf16Start + shaped.Source.Utf16Length;
+            var isRtl = shaped.Source.IsRtl;
+
             for (var g = 0; g < glyphs.Length; g++)
             {
                 var glyph = glyphs[g];
-                var cluster = glyph.Cluster;
-                var opp = LineBreakOpportunity.Prohibited;
-                if (cluster >= 0 && cluster < breaks.Length)
+
+                int clusterEnd;
+                if (!isRtl)
                 {
-                    opp = breaks[cluster];
+                    // LTR: clusters monotonically increase. Next-cluster
+                    // start (= this cluster's end) is glyphs[g+1].Cluster
+                    // for non-last glyphs, or runUtf16End for the last.
+                    clusterEnd = (g + 1 < glyphs.Length)
+                        ? glyphs[g + 1].Cluster
+                        : runUtf16End;
                 }
+                else
+                {
+                    // RTL: glyphs are in HarfBuzz visual (reversed) order.
+                    // Cluster-end is harder to compute correctly because
+                    // it requires looking at the previous-in-source glyph,
+                    // which for ligatures + combining marks isn't trivial.
+                    // Cycle 3a uses (cluster + 1) as a fallback — correct
+                    // for single-codeunit clusters; under-detects breaks
+                    // at multi-codeunit RTL cluster boundaries (Arabic
+                    // ligatures across surrogate pairs etc.). Cycle 3c's
+                    // RTL fragment-level reversal will refine this with
+                    // proper source-cluster span tracking.
+                    clusterEnd = glyph.Cluster + 1;
+                }
+
+                var breakIdx = clusterEnd - 1;
+                var opp = LineBreakOpportunity.Prohibited;
+                if ((uint)breakIdx < (uint)breaks.Length)
+                {
+                    opp = breaks[breakIdx];
+                }
+
+                // Tag mandatory-line-break control glyphs (LF, CR, VT,
+                // FF, NEL, LS, PS). The painter must NOT emit glyph
+                // data for these; the wrap loop trims them off the
+                // drawable slice.
+                var isMandatoryControl = false;
+                if ((uint)glyph.Cluster < (uint)concatTotal)
+                {
+                    isMandatoryControl = IsMandatoryLineBreakControl(
+                        concatText[glyph.Cluster]);
+                }
+
                 flat[flatIdx++] = new FlatGlyph(
                     RunIdx: r,
                     GlyphIdxInRun: g,
                     Advance: glyph.XAdvance,
-                    Opportunity: opp);
+                    Opportunity: opp,
+                    IsMandatoryControl: isMandatoryControl);
             }
+            cancellationToken.ThrowIfCancellationRequested();
         }
 
+        // Wrap loop.
         var output = new List<LineFragment>(capacity: 4);
         var lineStart = 0;
         var lineAdvance = 0.0;
@@ -503,7 +629,7 @@ internal static class LineBuilder
                 && lastAllowed >= lineStart)
             {
                 // Soft-wrap: snap back to lastAllowed.
-                EmitFragmentRange(output, shapedRuns, flat, lineStart, lastAllowed,
+                EmitDrawableRange(output, flat, lineStart, lastAllowed,
                     endsWithMandatoryBreak: false);
                 lineStart = lastAllowed + 1;
                 cursor = lineStart - 1; // for-loop increment lands on lineStart
@@ -517,7 +643,18 @@ internal static class LineBuilder
 
             if (item.Opportunity == LineBreakOpportunity.Mandatory)
             {
-                EmitFragmentRange(output, shapedRuns, flat, lineStart, cursor,
+                // Trim trailing mandatory-control glyphs from the
+                // drawable range. Handles single-LF, lone CR, lone
+                // NEL/PS/etc. cleanly; CRLF strips both since both
+                // CR + LF tag as IsMandatoryControl.
+                var drawableEnd = cursor;
+                while (drawableEnd >= lineStart
+                    && flat[drawableEnd].IsMandatoryControl)
+                {
+                    drawableEnd--;
+                }
+
+                EmitDrawableRange(output, flat, lineStart, drawableEnd,
                     endsWithMandatoryBreak: true);
                 lineStart = cursor + 1;
                 lineAdvance = 0;
@@ -530,34 +667,52 @@ internal static class LineBuilder
             }
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
+
         // Tail — any glyphs from lineStart..totalGlyphs-1 that didn't
         // hit a Mandatory or overflow snap-back. Per LB3 the last
         // codepoint's opportunity is always Mandatory, so this only
         // fires if the last glyph's cluster didn't map to the
-        // mandatory entry (e.g., font with ligatures collapsing the
-        // last codepoint into an earlier cluster).
+        // mandatory entry (e.g., last glyph's cluster span ends past
+        // breaks.Length due to coherence drift, or RTL cluster-end
+        // approximation under-detected the break).
         if (lineStart < totalGlyphs)
         {
-            EmitFragmentRange(output, shapedRuns, flat, lineStart, totalGlyphs - 1,
+            EmitDrawableRange(output, flat, lineStart, totalGlyphs - 1,
                 endsWithMandatoryBreak: false);
         }
 
         return output.ToArray();
     }
 
+    /// <summary>UAX #14 hard-line-break control characters that
+    /// callers must not draw. Trimmed off the end of each emitted
+    /// drawable slice.</summary>
+    private static bool IsMandatoryLineBreakControl(char c) =>
+        c == '\u000A' // LF
+        || c == '\u000B' // VT
+        || c == '\u000C' // FF
+        || c == '\u000D' // CR
+        || c == '\u0085' // NEL
+        || c == '\u2028' // LS
+        || c == '\u2029'; // PS
+
     /// <summary>Slice a global glyph range <c>[start, end]</c>
     /// (inclusive on both ends) into per-run
     /// <see cref="ShapedRunSlice"/>s + emit a
-    /// <see cref="LineFragment"/>.</summary>
-    private static void EmitFragmentRange(
+    /// <see cref="LineFragment"/>. Drawable-only — caller is
+    /// expected to have already trimmed any trailing control glyphs.
+    /// When <c>start &gt; end</c>, emits an empty
+    /// <see cref="LineFragment"/> (e.g., a lone LF on its own line
+    /// after trimming).</summary>
+    private static void EmitDrawableRange(
         List<LineFragment> output,
-        IReadOnlyList<ShapedRun> shapedRuns,
         FlatGlyph[] flat, int start, int end,
         bool endsWithMandatoryBreak)
     {
         if (start > end)
         {
-            // Empty line (e.g., back-to-back Mandatory).
+            // Empty drawable range (a control-only line, e.g., lone LF).
             output.Add(new LineFragment(
                 Slices: Array.Empty<ShapedRunSlice>(),
                 TotalAdvance: 0,
@@ -609,10 +764,14 @@ internal static class LineBuilder
     }
 
     /// <summary>Cycle 3a internal: a flattened glyph view across all
-    /// shaped runs, indexed by global glyph position.</summary>
+    /// shaped runs, indexed by global glyph position. <see cref="IsMandatoryControl"/>
+    /// is set for glyphs whose source codepoint is a UAX #14 hard-
+    /// line-break control (LF, CR, VT, FF, NEL, LS, PS) — these are
+    /// trimmed off the end of each emitted drawable slice.</summary>
     private readonly record struct FlatGlyph(
         int RunIdx,
         int GlyphIdxInRun,
         float Advance,
-        LineBreakOpportunity Opportunity);
+        LineBreakOpportunity Opportunity,
+        bool IsMandatoryControl);
 }

@@ -28,8 +28,12 @@ namespace NetPdf.Layout.Inline;
 /// slice belongs to.</param>
 /// <param name="GlyphStart">First glyph in this slice (inclusive).</param>
 /// <param name="GlyphLength">Number of glyphs in this slice. Always
-/// non-negative; zero-length slices may be emitted at line ends
-/// when a mandatory break falls right at a run boundary.</param>
+/// strictly positive — the wrapper never emits zero-length slices.
+/// (Empty drawable lines, e.g. a lone LF on its own line after
+/// mandatory-control trimming, surface as
+/// <see cref="LineFragment.Slices"/> = <c>Array.Empty&lt;ShapedRunSlice&gt;()</c>
+/// with <see cref="LineFragment.EndsWithMandatoryBreak"/> = true,
+/// not as a zero-length <see cref="ShapedRunSlice"/>.)</param>
 /// <param name="SliceAdvance">Sum of <c>XAdvance</c> across the
 /// glyphs in this slice, in CSS px. Cycle 3b/c uses this for
 /// <c>text-align</c> centering / justification distribution.</param>

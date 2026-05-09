@@ -234,7 +234,7 @@ public class LineBuilderWrapTests
         using var cts = new CancellationTokenSource();
         cts.Cancel();
         Assert.Throws<OperationCanceledException>(() =>
-            LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 100, cts.Token));
+            LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 100, cancellationToken: cts.Token));
     }
 
     // --- Cycle 3a hardening — mandatory-break control glyph trim --
@@ -397,7 +397,7 @@ public class LineBuilderWrapTests
         using var cts = new CancellationTokenSource();
         cts.Cancel();
         Assert.Throws<OperationCanceledException>(() =>
-            LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 1000, cts.Token));
+            LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 1000, cancellationToken: cts.Token));
     }
 
     // --- Cycle 3a hardening — coherence validation ----------------

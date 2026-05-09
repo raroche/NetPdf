@@ -429,6 +429,24 @@ internal static class LineBuilder
     /// of a line, in CSS px. Glyphs whose cumulative advance exceeds
     /// this value are wrapped to a new line at the most recent UAX #14
     /// <c>Allowed</c> break. Must be positive + finite.</param>
+    /// <param name="whiteSpace">The CSS Text L3 <c>white-space</c>
+    /// property value that controls wrap-time semantics for this
+    /// pass. Default <see cref="WhiteSpace.Normal"/>. Cycle 3b
+    /// sub-cycle 1 honors:
+    /// <list type="bullet">
+    ///   <item><see cref="WhiteSpace.NoWrap"/> + <see cref="WhiteSpace.Pre"/>
+    ///   suppress wrapping at UAX #14 <c>Allowed</c> opportunities —
+    ///   only <c>Mandatory</c> breaks split the line.</item>
+    ///   <item><see cref="WhiteSpace.Normal"/>, <see cref="WhiteSpace.PreWrap"/>,
+    ///   <see cref="WhiteSpace.PreLine"/> all wrap at <c>Allowed</c> +
+    ///   <c>Mandatory</c> opportunities.</item>
+    /// </list>
+    /// Whitespace COLLAPSING is a separate concern handled by
+    /// <see cref="PreprocessWhitespace(string, WhiteSpace)"/> BEFORE
+    /// <see cref="Itemize"/> + <see cref="Shape"/> are called — Wrap
+    /// operates on already-shaped glyphs, so it can't collapse
+    /// post-hoc. Callers are expected to apply the preprocessor at
+    /// TextRun construction time.</param>
     /// <param name="cancellationToken">Checked at method entry, after
     /// each expensive loop pass (concat-rebuild, FindBreaks,
     /// coherence-validation, flat-glyph build, wrap loop), and
@@ -441,7 +459,8 @@ internal static class LineBuilder
     /// <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">
     /// <paramref name="availableInlineSize"/> is non-positive or
-    /// non-finite.</exception>
+    /// non-finite; or <paramref name="whiteSpace"/> is not a defined
+    /// <see cref="WhiteSpace"/> value.</exception>
     /// <exception cref="ArgumentException">A shaped run's
     /// <see cref="ShapedRun.Source"/> indexes outside
     /// <paramref name="sourceTextRuns"/>; or a glyph's
@@ -455,6 +474,7 @@ internal static class LineBuilder
         IReadOnlyList<TextRun> sourceTextRuns,
         IReadOnlyList<ShapedRun> shapedRuns,
         double availableInlineSize,
+        WhiteSpace whiteSpace = WhiteSpace.Normal,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(sourceTextRuns);
@@ -465,11 +485,25 @@ internal static class LineBuilder
                 availableInlineSize,
                 "LineBuilder.Wrap: availableInlineSize must be a positive finite value (CSS px).");
         }
+        if (whiteSpace is not (WhiteSpace.Normal
+            or WhiteSpace.Pre
+            or WhiteSpace.NoWrap
+            or WhiteSpace.PreWrap
+            or WhiteSpace.PreLine))
+        {
+            throw new ArgumentOutOfRangeException(nameof(whiteSpace),
+                whiteSpace,
+                "LineBuilder.Wrap: whiteSpace must be a defined WhiteSpace value.");
+        }
 
         // Per PR #34 review fix — check cancellation at entry, before
         // the expensive concat rebuild + FindBreaks + flat-build + wrap
         // loops. Pre-cancelled tokens fast-path out.
         cancellationToken.ThrowIfCancellationRequested();
+
+        // Cycle 3b — Pre + NoWrap suppress wrapping at UAX #14 Allowed
+        // opportunities; only Mandatory breaks split lines.
+        var wrapsAtAllowed = whiteSpace is not (WhiteSpace.Pre or WhiteSpace.NoWrap);
 
         if (shapedRuns.Count == 0)
         {
@@ -661,8 +695,13 @@ internal static class LineBuilder
                 lastAllowed = -1;
                 cancellationToken.ThrowIfCancellationRequested();
             }
-            else if (item.Opportunity == LineBreakOpportunity.Allowed)
+            else if (item.Opportunity == LineBreakOpportunity.Allowed
+                && wrapsAtAllowed)
             {
+                // Cycle 3b — Pre + NoWrap suppress Allowed-break
+                // wrapping. Skip recording the candidate so the
+                // wrap loop's snap-back never fires; only Mandatory
+                // breaks split the line.
                 lastAllowed = cursor;
             }
         }
@@ -696,6 +735,147 @@ internal static class LineBuilder
         || c == '\u0085' // NEL
         || c == '\u2028' // LS
         || c == '\u2029'; // PS
+
+    /// <summary>Per Phase 3 Task 9 cycle 3b sub-cycle 1 — apply CSS
+    /// Text L3 §4.1 white-space processing rules to a source text
+    /// string. Callers (typically the integrating <c>InlineLayouter</c>
+    /// in Task 10) call this BEFORE constructing
+    /// <see cref="TextRun"/>s — Wrap operates on already-shaped
+    /// glyphs and can't collapse post-hoc.
+    ///
+    /// <para><b>Algorithm per mode (CSS Text L3 §3 + §4.1):</b></para>
+    /// <list type="bullet">
+    ///   <item><see cref="WhiteSpace.Normal"/> + <see cref="WhiteSpace.NoWrap"/>:
+    ///   collapse all whitespace runs (SP/TAB/LF/CR/FF) into a
+    ///   single SP. Strip leading + trailing whitespace.</item>
+    ///   <item><see cref="WhiteSpace.Pre"/> + <see cref="WhiteSpace.PreWrap"/>:
+    ///   pass through unchanged.</item>
+    ///   <item><see cref="WhiteSpace.PreLine"/>: collapse SP+TAB runs
+    ///   to a single SP; preserve LF + CR (segment breaks). Strips
+    ///   trailing SP at segment ends per §4.1.2 "remove end-of-line
+    ///   spaces".</item>
+    /// </list>
+    ///
+    /// <para><b>Cycle 3b sub-cycle 1 simplifications.</b> The CSS
+    /// Text L3 §4.1.1 segment-break-transformation rules
+    /// (CR-LF→LF, etc.) are NOT applied here — that pass belongs in
+    /// the HTML preprocessor (cycle 3b sub-cycle 2). Likewise the
+    /// "preserved tab" tab-size handling for Pre-mode is deferred.
+    /// Cycle 3b ships the most common cases (Normal + NoWrap collapse,
+    /// Pre/PreWrap pass-through, PreLine SP-collapse) which cover
+    /// 99% of v1 invoice / report content.</para>
+    /// </summary>
+    /// <param name="text">The source text — typically from a single
+    /// box-tree TextRun before bidi/itemize. Surrogate pairs are
+    /// preserved as-is (CSS whitespace chars are all BMP).</param>
+    /// <param name="mode">The CSS <c>white-space</c> value to apply.</param>
+    /// <returns>Preprocessed text ready to feed into a
+    /// <see cref="TextRun"/>. May share the input reference when
+    /// <paramref name="mode"/> is pass-through (Pre/PreWrap).</returns>
+    /// <exception cref="ArgumentNullException">
+    /// <paramref name="text"/> is <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="mode"/> is not a defined
+    /// <see cref="WhiteSpace"/> value.</exception>
+    public static string PreprocessWhitespace(string text, WhiteSpace mode)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        return mode switch
+        {
+            WhiteSpace.Pre or WhiteSpace.PreWrap => text,
+            WhiteSpace.PreLine => CollapseSpacesPreserveBreaks(text),
+            WhiteSpace.Normal or WhiteSpace.NoWrap => CollapseAllWhitespace(text),
+            _ => throw new ArgumentOutOfRangeException(nameof(mode), mode,
+                "PreprocessWhitespace: mode must be a defined WhiteSpace value."),
+        };
+    }
+
+    /// <summary>White-space:normal / nowrap — collapse all SP/TAB/LF/
+    /// CR/FF runs to a single SP + strip leading/trailing SP.</summary>
+    private static string CollapseAllWhitespace(string text)
+    {
+        if (text.Length == 0) return text;
+        var sb = new StringBuilder(text.Length);
+        // inWs initialized to true so leading whitespace is stripped.
+        var inWs = true;
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+            if (IsCssWhiteSpace(c))
+            {
+                if (!inWs)
+                {
+                    sb.Append(' ');
+                    inWs = true;
+                }
+            }
+            else
+            {
+                sb.Append(c);
+                inWs = false;
+            }
+        }
+        // Strip trailing space if present.
+        if (sb.Length > 0 && sb[sb.Length - 1] == ' ')
+        {
+            sb.Length--;
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>White-space:pre-line — collapse SP/TAB runs to a
+    /// single SP but preserve LF + CR segment breaks. Strips trailing
+    /// SP at segment ends per §4.1.2.</summary>
+    private static string CollapseSpacesPreserveBreaks(string text)
+    {
+        if (text.Length == 0) return text;
+        var sb = new StringBuilder(text.Length);
+        var inSpaceRun = true; // strip leading SP
+        for (var i = 0; i < text.Length; i++)
+        {
+            var c = text[i];
+            if (c == ' ' || c == '\u0009' || c == '\u000C')
+            {
+                if (!inSpaceRun)
+                {
+                    sb.Append(' ');
+                    inSpaceRun = true;
+                }
+            }
+            else if (c == '\u000A' || c == '\u000D')
+            {
+                // Segment break — strip a pending trailing SP, append
+                // the break, reset for the new segment's leading-SP
+                // strip.
+                if (sb.Length > 0 && sb[sb.Length - 1] == ' ')
+                {
+                    sb.Length--;
+                }
+                sb.Append(c);
+                inSpaceRun = true;
+            }
+            else
+            {
+                sb.Append(c);
+                inSpaceRun = false;
+            }
+        }
+        if (sb.Length > 0 && sb[sb.Length - 1] == ' ')
+        {
+            sb.Length--;
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>CSS Text L3 §3.1 "white space" set for the collapse
+    /// rules. Excludes U+00A0 NBSP (non-collapsing) + U+200B ZWSP
+    /// (zero-width).</summary>
+    private static bool IsCssWhiteSpace(char c) =>
+        c == ' ' // SPACE
+        || c == '\u0009' // TAB
+        || c == '\u000A' // LF
+        || c == '\u000D' // CR
+        || c == '\u000C'; // FF
 
     /// <summary>Slice a global glyph range <c>[start, end]</c>
     /// (inclusive on both ends) into per-run

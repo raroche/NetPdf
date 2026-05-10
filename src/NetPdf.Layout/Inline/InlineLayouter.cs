@@ -431,8 +431,16 @@ internal static class InlineLayouter
         // empty `<span>` with a different style doesn't falsely
         // trigger the mixed-mode guard. If ALL runs are empty,
         // delegate to the empty-input path with default policy.
+        //
+        // Per Phase 3 Task 10 cycle 3c — when policies differ ONLY
+        // in WhiteSpace (overflow-wrap/word-break/hyphens all
+        // match), build a per-source-run WhiteSpace array + delegate
+        // to the per-glyph WhiteSpace honoring path. Mixed-mode in
+        // ANY of the other 3 properties still throws (per-glyph
+        // overflow-wrap/word-break/hyphens defer to a future cycle).
         InlineTextPolicy? effectivePolicy = null;
         var firstNonEmptyIndex = -1;
+        WhiteSpace[]? whiteSpacePerRun = null; // built lazily on mismatch
         for (var i = 0; i < sourceTextRuns.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -445,13 +453,47 @@ internal static class InlineLayouter
             }
             else if (p != effectivePolicy)
             {
-                throw new NotSupportedException(
-                    $"InlineLayouter.LayoutPerRun: source TextRuns have " +
-                    $"different InlineTextPolicy values (run {firstNonEmptyIndex}={effectivePolicy}, " +
-                    $"run {i}={p}). Per-glyph mixed-mode policy is scheduled " +
-                    $"for cycle 3c. Until then, callers must either avoid " +
-                    $"mixed inline descendants or split the wrap into " +
-                    $"homogeneous sub-passes.");
+                // Cycle 3c — accept mismatch when ONLY WhiteSpace
+                // differs. The other 3 properties must still match.
+                var sameOtherFields = p.OverflowWrap == effectivePolicy.Value.OverflowWrap
+                    && p.WordBreak == effectivePolicy.Value.WordBreak
+                    && p.Hyphens == effectivePolicy.Value.Hyphens;
+                if (!sameOtherFields)
+                {
+                    throw new NotSupportedException(
+                        $"InlineLayouter.LayoutPerRun: source TextRuns have " +
+                        $"different InlineTextPolicy values that differ in " +
+                        $"more than just WhiteSpace (run {firstNonEmptyIndex}={effectivePolicy}, " +
+                        $"run {i}={p}). Per-glyph overflow-wrap/word-break/" +
+                        $"hyphens mixed-mode is deferred to a future cycle. " +
+                        $"Cycle 3c handles WhiteSpace mismatches; until others " +
+                        $"land, callers must either avoid mixed inline " +
+                        $"descendants of those properties or split the wrap " +
+                        $"into homogeneous sub-passes.");
+                }
+                // WhiteSpace-only mismatch — build per-run array
+                // lazily on first mismatch.
+                if (whiteSpacePerRun is null)
+                {
+                    whiteSpacePerRun = new WhiteSpace[sourceTextRuns.Count];
+                    var fillTo = effectivePolicy.Value.WhiteSpace;
+                    for (var j = 0; j < sourceTextRuns.Count; j++)
+                    {
+                        // Empty runs get the effective ws — they
+                        // contribute no glyphs anyway. Non-empty
+                        // already-walked runs get fillTo (the first
+                        // non-empty's ws). The current run + later
+                        // runs will be set as we walk.
+                        whiteSpacePerRun[j] = fillTo;
+                    }
+                }
+                whiteSpacePerRun[i] = p.WhiteSpace;
+            }
+            else if (whiteSpacePerRun is not null)
+            {
+                // Same policy as effective + we're already in per-
+                // run mode — set this run's ws too.
+                whiteSpacePerRun[i] = p.WhiteSpace;
             }
         }
 
@@ -459,19 +501,51 @@ internal static class InlineLayouter
         // policy or default if no non-empty run was seen.
         var policy = effectivePolicy ?? InlineTextPolicy.Default;
 
-        // Uniform policy — delegate to cycle-3a explicit-args path.
-        return Layout(
-            sourceTextRuns,
+        // Uniform policy — delegate to cycle-3a explicit-args path
+        // (with per-run array if WhiteSpace mismatched).
+        return LineBuilder.Wrap(
+            LineBuilder.PreprocessTextRuns(sourceTextRuns,
+                whiteSpacePerRun is null ? policy.WhiteSpace : WhiteSpace.PreWrap),
+            // ^ When per-run WhiteSpace varies, use a permissive
+            // preprocessing mode (PreWrap = preserve all whitespace,
+            // wrap at Allowed) so the preprocessor doesn't collapse
+            // spaces from a NoWrap span. The wrap loop's per-glyph
+            // honoring then suppresses wraps in the NoWrap run.
+            // Cycle 3c simplification: this is approximate — full
+            // per-source-run preprocessing per its OWN WhiteSpace
+            // mode + mixed mid-text would need run-by-run preprocess
+            // before Itemize, scheduled for cycle 3d.
+            ShapeForLayout(
+                LineBuilder.PreprocessTextRuns(sourceTextRuns,
+                    whiteSpacePerRun is null ? policy.WhiteSpace : WhiteSpace.PreWrap),
+                resolver, scriptIso15924, language, paragraphDirection,
+                cancellationToken),
             availableInlineSize,
-            resolver,
-            scriptIso15924,
-            language,
-            paragraphDirection,
             policy.WhiteSpace,
             policy.OverflowWrap,
             policy.WordBreak,
             policy.Hyphens,
             hyphenator,
-            cancellationToken);
+            cancellationToken,
+            whiteSpacePerRun);
+    }
+
+    /// <summary>Per Phase 3 Task 10 cycle 3c — itemize + shape
+    /// helper used by <see cref="LayoutPerRun"/> when delegating
+    /// directly to <see cref="LineBuilder.Wrap"/> with a per-run
+    /// WhiteSpace array (bypasses the convenience
+    /// <see cref="Layout(IReadOnlyList{TextRun}, double, IShaperResolver, string, string, ParagraphDirection, WhiteSpace, OverflowWrap, WordBreak, Hyphens, Hyphenator?, CancellationToken)"/>
+    /// path which doesn't take the per-run array).</summary>
+    private static IReadOnlyList<ShapedRun> ShapeForLayout(
+        IReadOnlyList<TextRun> textRuns,
+        IShaperResolver resolver,
+        string scriptIso15924,
+        string language,
+        ParagraphDirection paragraphDirection,
+        CancellationToken cancellationToken)
+    {
+        var itemized = LineBuilder.Itemize(textRuns, paragraphDirection, cancellationToken);
+        return LineBuilder.Shape(textRuns, itemized, resolver,
+            scriptIso15924, language, cancellationToken);
     }
 }

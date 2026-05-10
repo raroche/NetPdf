@@ -556,6 +556,17 @@ internal static class LineBuilder
     /// coherence-validation, flat-glyph build, wrap loop), and
     /// before tail emission. The check granularity is per-shaped-run
     /// during validation/flattening + per-line during wrap.</param>
+    /// <param name="whiteSpacePerRun">Per Phase 3 Task 10 cycle 3c —
+    /// optional per-source-TextRun WhiteSpace override. When
+    /// supplied, MUST have one entry per source run; the wrap loop
+    /// uses each glyph's source-run-index to look up its run-
+    /// specific WhiteSpace value. Glyphs in NoWrap or Pre runs get
+    /// their UAX #14 Allowed opportunities downgraded to Prohibited
+    /// — supports mixed-mode descendants like
+    /// <c>&lt;span style="white-space:nowrap"&gt;</c> inside
+    /// <c>white-space:normal</c> text. When null, the uniform
+    /// <paramref name="whiteSpace"/> argument applies to all
+    /// glyphs.</param>
     /// <returns>One <see cref="LineFragment"/> per wrapped line in
     /// document order. Empty array when <paramref name="shapedRuns"/>
     /// is empty or contains only zero-glyph runs.</returns>
@@ -583,10 +594,26 @@ internal static class LineBuilder
         WordBreak wordBreak = WordBreak.Normal,
         Hyphens hyphens = Hyphens.Manual,
         Hyphenator? hyphenator = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        IReadOnlyList<WhiteSpace>? whiteSpacePerRun = null)
     {
         ArgumentNullException.ThrowIfNull(sourceTextRuns);
         ArgumentNullException.ThrowIfNull(shapedRuns);
+        // Per Phase 3 Task 10 cycle 3c — when a per-source-run
+        // whiteSpacePerRun array is supplied, it MUST cover every
+        // source TextRun (one entry per source). The wrap loop
+        // looks up the run's WhiteSpace via this array to honor
+        // mixed-mode descendants (e.g., a `<span style="white-space:
+        // nowrap">` inside `white-space:normal` text). When null,
+        // the uniform `whiteSpace` argument applies to all glyphs.
+        if (whiteSpacePerRun is not null
+            && whiteSpacePerRun.Count != sourceTextRuns.Count)
+        {
+            throw new ArgumentException(
+                $"LineBuilder.Wrap: whiteSpacePerRun length ({whiteSpacePerRun.Count}) " +
+                $"must match sourceTextRuns count ({sourceTextRuns.Count}).",
+                nameof(whiteSpacePerRun));
+        }
         if (!double.IsFinite(availableInlineSize) || availableInlineSize <= 0)
         {
             throw new ArgumentOutOfRangeException(nameof(availableInlineSize),
@@ -886,6 +913,32 @@ internal static class LineBuilder
                         && hyphenationAfter[clusterEndIdx])
                     {
                         opp = LineBreakOpportunity.Allowed;
+                    }
+                }
+
+                // Per Phase 3 Task 10 cycle 3c — per-glyph WhiteSpace
+                // honoring. When a per-source-run whiteSpacePerRun
+                // array is supplied, glyphs in NoWrap/Pre runs get
+                // their Allowed opportunities downgraded to
+                // Prohibited (those modes suppress wrapping).
+                // Without this, mixed-mode descendants like
+                // `<span style="white-space:nowrap">` inside a
+                // `white-space:normal` paragraph would still wrap
+                // mid-span. With this, only the LAST glyph of the
+                // NoWrap span has its Allowed suppressed; the FIRST
+                // glyph in the surrounding Normal text retains its
+                // candidate, so the wrap snaps to a sensible boundary.
+                if (whiteSpacePerRun is not null
+                    && opp == LineBreakOpportunity.Allowed)
+                {
+                    var srcRunIdx = shaped.Source.SourceTextRunIndex;
+                    if ((uint)srcRunIdx < (uint)whiteSpacePerRun.Count)
+                    {
+                        var perRunWs = whiteSpacePerRun[srcRunIdx];
+                        if (perRunWs is WhiteSpace.Pre or WhiteSpace.NoWrap)
+                        {
+                            opp = LineBreakOpportunity.Prohibited;
+                        }
                     }
                 }
 

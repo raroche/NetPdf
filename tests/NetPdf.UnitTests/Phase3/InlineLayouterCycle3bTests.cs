@@ -75,9 +75,15 @@ public sealed class InlineLayouterCycle3bTests
     }
 
     [Fact]
-    public void LayoutPerRun_mixed_white_space_throws_NotSupported()
+    public void LayoutPerRun_mixed_white_space_handled_via_per_glyph_path()
     {
-        // First run: default Normal; second run: NoWrap (keyword id 2).
+        // Per Phase 3 Task 10 cycle 3c — mixed-mode WhiteSpace
+        // (NoWrap span inside Normal text) is now handled via the
+        // per-glyph WhiteSpace honoring path. Cycle 3b would have
+        // thrown NotSupportedException; cycle 3c builds a per-run
+        // WhiteSpace array + delegates to LineBuilder.Wrap with the
+        // array. Glyphs in NoWrap runs get their Allowed
+        // opportunities suppressed.
         using var resolver = new TestShaperResolver();
         var sNormal = MakeStyle();
         var sNoWrap = MakeStyleWithNoWrap();
@@ -86,11 +92,10 @@ public sealed class InlineLayouterCycle3bTests
             new("AAA", sNormal),
             new(" BBB", sNoWrap),
         };
-        var ex = Assert.Throws<NotSupportedException>(() =>
-            InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver,
-                LatnScript, EnLang));
-        Assert.Contains("different InlineTextPolicy", ex.Message);
-        Assert.Contains("cycle 3c", ex.Message);
+        // Should not throw; result depends on wrap logic.
+        var result = InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver,
+            LatnScript, EnLang);
+        Assert.NotEmpty(result);
     }
 
     [Fact]
@@ -240,20 +245,21 @@ public sealed class InlineLayouterCycle3bTests
     }
 
     [Fact]
-    public void LayoutPerRun_empty_run_then_nonempty_with_different_style_throws()
+    public void LayoutPerRun_empty_run_then_nonempty_with_different_white_space_handled()
     {
-        // Mixed-mode is detected ONLY among non-empty runs. If two
-        // non-empty runs have different policies, throw.
+        // Per cycle 3c — mixed-mode white-space among non-empty
+        // runs is now HANDLED (not thrown). Empty runs continue to
+        // be ignored for policy comparison purposes.
         using var resolver = new TestShaperResolver();
         var sourceRuns = new List<TextRun>
         {
             new("", MakeStyleWithNoWrap()), // empty, ignored
             new("AAA", MakeStyle()),         // non-empty Normal
-            new("BBB", MakeStyleWithNoWrap()), // non-empty NoWrap → mixed
+            new("BBB", MakeStyleWithNoWrap()), // non-empty NoWrap → handled per-glyph
         };
-        Assert.Throws<NotSupportedException>(() =>
-            InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver,
-                LatnScript, EnLang));
+        var result = InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver,
+            LatnScript, EnLang);
+        Assert.NotEmpty(result);
     }
 
     // --- Helpers --------------------------------------------------

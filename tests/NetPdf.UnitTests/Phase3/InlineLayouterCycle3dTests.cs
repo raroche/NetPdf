@@ -328,12 +328,14 @@ public sealed class InlineLayouterCycle3dTests
     }
 
     [Fact]
-    public void LayoutPerRun_mixed_word_break_still_throws()
+    public void LayoutPerRun_mixed_word_break_now_handled_per_glyph()
     {
-        // Cycle 3d sub-cycle 2 broadens the matrix to overflow-wrap
-        // mismatches too. The remaining "still throws" cases are
-        // word-break + hyphens mismatches (per-glyph metadata for
-        // those deferred to sub-cycle 3+).
+        // Cycle 3d sub-cycle 3 broadens the matrix to WordBreak
+        // mismatches via per-glyph BreakAll plumbing through
+        // LineBuilder.Wrap's `inlineTextPolicyPerRun` parameter.
+        // Glyphs in Normal/KeepAll source runs retain their UAX #14
+        // classifications; glyphs in BreakAll source runs get the
+        // Prohibited→Allowed upgrade at grapheme boundaries.
         using var resolver = new TestShaperResolver();
         var sNormal = MakeStyle();
         var sBreakAll = ComputedStyle.RentForExclusiveTesting();
@@ -343,17 +345,17 @@ public sealed class InlineLayouterCycle3dTests
             new("AAA", sNormal),
             new("BBB", sBreakAll),
         };
-        var ex = Assert.Throws<NotSupportedException>(() =>
-            InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver,
-                LatnScript, EnLang));
-        Assert.Contains("word-break or hyphens", ex.Message);
+        var result = InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver,
+            LatnScript, EnLang);
+        Assert.NotEmpty(result);
     }
 
     [Fact]
     public void LayoutPerRun_mixed_hyphens_still_throws()
     {
-        // Cycle 3d sub-cycle 2 broadens to overflow-wrap mismatches;
-        // hyphens mismatch still throws (sub-cycle 3+ scope).
+        // Cycle 3d sub-cycle 3 broadens to word-break mismatches.
+        // Remaining "still throws" case is hyphens mismatch
+        // (sub-cycle 4 scope).
         using var resolver = new TestShaperResolver();
         var sManual = MakeStyle();
         var sAuto = ComputedStyle.RentForExclusiveTesting();
@@ -366,7 +368,93 @@ public sealed class InlineLayouterCycle3dTests
         var ex = Assert.Throws<NotSupportedException>(() =>
             InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver,
                 LatnScript, EnLang));
-        Assert.Contains("word-break or hyphens", ex.Message);
+        Assert.Contains("hyphens", ex.Message);
+    }
+
+    // --- Cycle 3d sub-cycle 3: per-glyph word-break tests -------
+
+    [Fact]
+    public void LayoutPerRun_BreakAll_run_splits_at_every_glyph_while_Normal_run_stays_intact()
+    {
+        // Per Phase 3 Task 10 cycle 3d sub-cycle 3 — per-source-run
+        // WordBreak. Source: Normal(word-break:normal) "AAA " (with
+        // trailing SP for the run-boundary wrap opportunity) +
+        // Normal(word-break:break-all) "BBBB". Budget = 18.
+        //
+        // Geometry:
+        // - "AAA " = 3 letters (18 px) + SP (7.2 px) = 25.2 px.
+        // - "BBBB" = 4 letters × 6 = 24 px.
+        // - Concat: "AAA BBBB" (8 chars / 8 glyphs).
+        //
+        // Wrap trace under budget 18:
+        // 1. cursors 0-2 'AAA': cum 6/12/18 (fits exactly).
+        // 2. cursor 3 SP (Normal): cum 25.2 > 18. opp=Allowed (UAX
+        //    #14 LB18 after SP). lastAllowed=3.
+        // 3. cursor 4 'B' (Run 1): cum 31.2 > 18. Snap to
+        //    lastAllowed=3. Trim trailing IsBreakSpace (SP at
+        //    glyph 3 is collapsible-Normal break-space). drawableEnd=2.
+        //    Emit line 0 = [0..2] = 3 glyphs "AAA" (Run 0 intact).
+        //    lineStart=4.
+        // 4. Run 1 (BreakAll) glyphs get per-glyph upgrade: each
+        //    Prohibited boundary at grapheme boundary becomes
+        //    Allowed. Wraps at every 3 glyphs (3×6=18 fits, 4×6=24
+        //    overflows): line 1 = "BBB", line 2 = "B" (mandatory).
+        using var resolver = new TestShaperResolver();
+        var sNormal = MakeStyle();
+        var sBreakAll = ComputedStyle.RentForExclusiveTesting();
+        sBreakAll.Set(PropertyId.WordBreak, ComputedSlot.FromKeyword(1)); // break-all
+        var sourceRuns = new List<TextRun>
+        {
+            new("AAA ", sNormal),
+            new("BBBB", sBreakAll),
+        };
+        var result = InlineLayouter.LayoutPerRun(sourceRuns,
+            availableInlineSize: 18, resolver, LatnScript, EnLang);
+
+        // 3 lines: Run 0 stays whole, Run 1 splits per BreakAll.
+        Assert.Equal(3, result.Length);
+
+        // Line 0: 3 'A' glyphs from Run 0 (trailing SP trimmed at
+        // wrap boundary per Normal collapse).
+        Assert.Single(result[0].Slices);
+        Assert.Equal(0, result[0].Slices[0].ShapedRunIndex);
+        Assert.Equal(0, result[0].Slices[0].GlyphStart);
+        Assert.Equal(3, result[0].Slices[0].GlyphLength);
+
+        // Line 1: 3 'B' glyphs from Run 1 (BreakAll wrap at glyph 3).
+        Assert.Single(result[1].Slices);
+        Assert.Equal(1, result[1].Slices[0].ShapedRunIndex);
+        Assert.Equal(0, result[1].Slices[0].GlyphStart);
+        Assert.Equal(3, result[1].Slices[0].GlyphLength);
+
+        // Line 2: last 'B' glyph from Run 1 (mandatory at end).
+        Assert.Single(result[2].Slices);
+        Assert.Equal(1, result[2].Slices[0].ShapedRunIndex);
+        Assert.Equal(3, result[2].Slices[0].GlyphStart);
+        Assert.Equal(1, result[2].Slices[0].GlyphLength);
+        Assert.True(result[2].EndsWithMandatoryBreak);
+    }
+
+    [Fact]
+    public void LayoutPerRun_uniform_BreakAll_still_works_via_global_path()
+    {
+        // Regression guard — when ALL runs share word-break:break-all
+        // (no mismatch), LayoutPerRun stays on the uniform-policy
+        // delegation path (no per-run array built). The existing
+        // cycle 3b BreakAll behavior continues to apply.
+        using var resolver = new TestShaperResolver();
+        var sBreakAll = ComputedStyle.RentForExclusiveTesting();
+        sBreakAll.Set(PropertyId.WordBreak, ComputedSlot.FromKeyword(1)); // break-all
+        var sourceRuns = new List<TextRun>
+        {
+            new("AAAA", sBreakAll),
+        };
+        var result = InlineLayouter.LayoutPerRun(sourceRuns,
+            availableInlineSize: 12, resolver, LatnScript, EnLang);
+
+        // BreakAll lets every glyph boundary be a soft break →
+        // 2 glyphs (12 px) fits → wrap at glyph 2.
+        Assert.Equal(2, result.Length);
     }
 
     // --- Cycle 3d sub-cycle 2: per-glyph overflow-wrap tests -----

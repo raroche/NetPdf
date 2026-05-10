@@ -752,24 +752,27 @@ internal static class LineBuilder
         // per-glyph fallback only fires under overflow + no
         // candidate).
         var breakAllGlyphs = wordBreak == WordBreak.BreakAll;
-        // Per Phase 3 Task 10 cycle 3d sub-cycle 2 — when
+        // Per Phase 3 Task 10 cycle 3d sub-cycle 2 / 3 — when
         // inlineTextPolicyPerRun is supplied, the global
-        // allowOverflowAnywhere is true iff ANY source run has
-        // overflow-wrap=anywhere (we still need to enter the per-
-        // glyph code path for those runs). The per-glyph check at
-        // the anywhere fallback site then enforces "only fire if
-        // cursor's source run is anywhere AND grapheme boundary OK".
+        // allowOverflowAnywhere + breakAllGlyphs flags are true iff
+        // ANY source run enables the corresponding feature (we still
+        // need to enter the per-glyph code path for those runs).
+        // The per-glyph checks at the relevant gates then enforce
+        // run-specific semantics. Computing graphemeBreakAfter is
+        // also gated on these OR-over-runs values.
         var allowOverflowAnywhere = overflowWrap == OverflowWrap.Anywhere;
         if (inlineTextPolicyPerRun is not null)
         {
             allowOverflowAnywhere = false;
+            breakAllGlyphs = false;
             for (var i = 0; i < inlineTextPolicyPerRun.Count; i++)
             {
-                if (inlineTextPolicyPerRun[i].OverflowWrap == OverflowWrap.Anywhere)
-                {
+                var p = inlineTextPolicyPerRun[i];
+                if (p.OverflowWrap == OverflowWrap.Anywhere)
                     allowOverflowAnywhere = true;
-                    break;
-                }
+                if (p.WordBreak == WordBreak.BreakAll)
+                    breakAllGlyphs = true;
+                if (allowOverflowAnywhere && breakAllGlyphs) break;
             }
         }
 
@@ -982,7 +985,24 @@ internal static class LineBuilder
                 //      explicit non-break semantics in UAX #14
                 //      (LB8a, LB11, LB12, LB12a) which BreakAll must
                 //      not override.
-                if (breakAllGlyphs && opp == LineBreakOpportunity.Prohibited)
+                // Per Phase 3 Task 10 cycle 3d sub-cycle 3 — per-
+                // source-run WordBreak. When inlineTextPolicyPerRun
+                // is supplied, the BreakAll upgrade is per-glyph:
+                // only glyphs whose source run has
+                // <c>word-break: break-all</c> get their Prohibited
+                // opportunities upgraded. Glyphs in Normal/KeepAll
+                // source runs retain their UAX #14 classifications.
+                var perGlyphBreakAll = breakAllGlyphs;
+                if (inlineTextPolicyPerRun is not null)
+                {
+                    var srcRunIdxForBreakAll = shaped.Source.SourceTextRunIndex;
+                    if ((uint)srcRunIdxForBreakAll < (uint)inlineTextPolicyPerRun.Count)
+                    {
+                        perGlyphBreakAll = inlineTextPolicyPerRun[srcRunIdxForBreakAll]
+                            .WordBreak == WordBreak.BreakAll;
+                    }
+                }
+                if (perGlyphBreakAll && opp == LineBreakOpportunity.Prohibited)
                 {
                     var clusterEndIdx = clusterEnd - 1;
                     var isGraphemeBreakHere = clusterEndIdx >= 0

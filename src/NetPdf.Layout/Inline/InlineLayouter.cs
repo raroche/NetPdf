@@ -489,23 +489,23 @@ internal static class InlineLayouter
             }
             else if (p != effectivePolicy)
             {
-                // Cycle 3d sub-cycle 2 — accept mismatch when only
-                // WhiteSpace and/or OverflowWrap differ. WordBreak +
-                // Hyphens must still match (per-glyph metadata for
-                // those deferred to sub-cycle 3+).
-                if (p.WordBreak != effectivePolicy.Value.WordBreak
-                    || p.Hyphens != effectivePolicy.Value.Hyphens)
+                // Cycle 3d sub-cycle 3 — accept mismatch when
+                // WhiteSpace and/or OverflowWrap and/or WordBreak
+                // differ. Hyphens must still match (per-glyph Liang
+                // application deferred to sub-cycle 4).
+                if (p.Hyphens != effectivePolicy.Value.Hyphens)
                 {
                     throw new NotSupportedException(
                         $"InlineLayouter.LayoutPerRun: source TextRuns have " +
                         $"different InlineTextPolicy values that differ in " +
-                        $"word-break or hyphens (run {firstNonEmptyIndex}={effectivePolicy}, " +
-                        $"run {i}={p}). Per-glyph word-break/hyphens mixed-mode " +
-                        $"is deferred to a future cycle. Cycle 3d sub-cycles " +
-                        $"1+2 handle WhiteSpace and overflow-wrap mismatches; " +
-                        $"until others land, callers must either avoid mixed " +
-                        $"inline descendants of those properties or split the " +
-                        $"wrap into homogeneous sub-passes.");
+                        $"hyphens (run {firstNonEmptyIndex}={effectivePolicy}, " +
+                        $"run {i}={p}). Per-source-run hyphens mixed-mode " +
+                        $"is deferred to cycle 3d sub-cycle 4. Cycle 3d " +
+                        $"sub-cycles 1+2+3 handle WhiteSpace, overflow-wrap, " +
+                        $"and word-break mismatches; until hyphens lands, " +
+                        $"callers must either avoid mixed inline descendants " +
+                        $"with different hyphens values or split the wrap " +
+                        $"into homogeneous sub-passes.");
                 }
 
                 // Lazily build the per-run policy array on first

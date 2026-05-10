@@ -65,10 +65,17 @@ namespace NetPdf.Layout.Inline;
 ///   IReadOnlyList&lt;InlineTextPolicy&gt;?</c> parameter that
 ///   bundles all 4 dimensions in one coherent struct (per
 ///   sub-cycle 2 review Rec #4).</item>
-///   <item>WordBreak + Hyphens mismatches still throw — per-glyph
-///   metadata for those 2 dimensions deferred to sub-cycle 3+.
-///   The <see cref="InlineTextPolicy"/>[] parameter already carries
-///   those fields end-to-end, so wiring through is additive.</item>
+///   <item>Cycle 3d sub-cycle 3 broadened to WordBreak.BreakAll
+///   mismatches via per-glyph BreakAll upgrade in the flat-build
+///   phase. Cross-run BreakAll boundary uses "either side may opt
+///   in" (sub-cycle 3 review Finding #3). KeepAll on mismatch
+///   still THROWS pending UAX #24 script detection + LB30b
+///   handling for CJK inter-character break suppression
+///   (sub-cycle 3 review Finding #1). Hyphens mismatch still
+///   throws (sub-cycle 4 scope). <see cref="LineBuilder.Wrap"/>
+///   additionally enforces that per-run Hyphens values equal the
+///   global <c>hyphens</c> argument as defense-in-depth for
+///   direct callers (sub-cycle 3 review Finding #2).</item>
 /// </list>
 /// </para></summary>
 internal readonly record struct InlineTextPolicy(

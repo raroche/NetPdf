@@ -577,15 +577,27 @@ internal static class LineBuilder
     ///   by source run; cross-run breaks additionally require at
     ///   least one side to be wrap-friendly per
     ///   <see cref="InlineTextPolicy.WhiteSpace"/>.</item>
+    ///   <item><see cref="InlineTextPolicy.WordBreak"/> (sub-cycle
+    ///   3) — drives per-glyph BreakAll upgrade. Glyphs in
+    ///   BreakAll source runs get their Prohibited boundaries
+    ///   upgraded to Allowed at grapheme cluster boundaries. The
+    ///   cross-run BreakAll boundary uses "either side may opt in"
+    ///   (mirrors OverflowWrap's cross-run rule). KeepAll is read
+    ///   but NOT yet honored: behaves like Normal (no breaks
+    ///   suppressed), and <see cref="InlineLayouter.LayoutPerRun"/>
+    ///   throws on KeepAll mismatch to fail loud.</item>
     /// </list>
     ///
-    /// <para><see cref="InlineTextPolicy.WordBreak"/> and
-    /// <see cref="InlineTextPolicy.Hyphens"/> are read but NOT yet
-    /// honored per-run (sub-cycle 3+ scope). The uniform
-    /// <paramref name="wordBreak"/> + <paramref name="hyphens"/>
-    /// arguments still apply globally. When this array is null,
-    /// the uniform <paramref name="whiteSpace"/> +
-    /// <paramref name="overflowWrap"/> apply to all glyphs.</para></param>
+    /// <para><see cref="InlineTextPolicy.Hyphens"/> is NOT yet
+    /// honored per-run (sub-cycle 4 scope). Per sub-cycle 3 review
+    /// Finding #2 the validation enforces that EVERY per-run
+    /// Hyphens value equals the global <paramref name="hyphens"/>
+    /// argument — otherwise <see cref="System.ArgumentException"/>
+    /// is thrown at entry. The uniform <paramref name="wordBreak"/>
+    /// + <paramref name="hyphens"/> arguments apply globally as
+    /// before. When this array is null, the uniform
+    /// <paramref name="whiteSpace"/> + <paramref name="overflowWrap"/>
+    /// + <paramref name="wordBreak"/> apply to all glyphs.</para></param>
     /// <returns>One <see cref="LineFragment"/> per wrapped line in
     /// document order. Empty array when <paramref name="shapedRuns"/>
     /// is empty or contains only zero-glyph runs.</returns>
@@ -672,6 +684,28 @@ internal static class LineBuilder
                         $"is not a defined Hyphens value.",
                         nameof(inlineTextPolicyPerRun));
                 }
+                // Per Phase 3 Task 10 cycle 3d sub-cycle 3 review
+                // Finding #2 — hyphenationAfter[] is still built
+                // from the global `hyphens` argument only. Until
+                // sub-cycle 4 ships per-source-run Liang application,
+                // each per-run Hyphens value MUST equal the global
+                // hyphens argument; otherwise direct callers (tests,
+                // future block-layouter wires) would get silent
+                // wrong behavior. InlineLayouter.LayoutPerRun
+                // enforces this above by throwing on Hyphens
+                // mismatch across source runs before building the
+                // policy array; this is the defense-in-depth check
+                // for direct LineBuilder callers.
+                if (p.Hyphens != hyphens)
+                {
+                    throw new ArgumentException(
+                        $"LineBuilder.Wrap: inlineTextPolicyPerRun[{i}].Hyphens = {p.Hyphens} " +
+                        $"does not equal the global hyphens argument ({hyphens}). " +
+                        $"Per-source-run Hyphens plumbing is deferred to cycle " +
+                        $"3d sub-cycle 4; until then the per-run array's " +
+                        $"Hyphens fields MUST match the global value.",
+                        nameof(inlineTextPolicyPerRun));
+                }
             }
         }
         if (!double.IsFinite(availableInlineSize) || availableInlineSize <= 0)
@@ -752,24 +786,27 @@ internal static class LineBuilder
         // per-glyph fallback only fires under overflow + no
         // candidate).
         var breakAllGlyphs = wordBreak == WordBreak.BreakAll;
-        // Per Phase 3 Task 10 cycle 3d sub-cycle 2 — when
+        // Per Phase 3 Task 10 cycle 3d sub-cycle 2 / 3 — when
         // inlineTextPolicyPerRun is supplied, the global
-        // allowOverflowAnywhere is true iff ANY source run has
-        // overflow-wrap=anywhere (we still need to enter the per-
-        // glyph code path for those runs). The per-glyph check at
-        // the anywhere fallback site then enforces "only fire if
-        // cursor's source run is anywhere AND grapheme boundary OK".
+        // allowOverflowAnywhere + breakAllGlyphs flags are true iff
+        // ANY source run enables the corresponding feature (we still
+        // need to enter the per-glyph code path for those runs).
+        // The per-glyph checks at the relevant gates then enforce
+        // run-specific semantics. Computing graphemeBreakAfter is
+        // also gated on these OR-over-runs values.
         var allowOverflowAnywhere = overflowWrap == OverflowWrap.Anywhere;
         if (inlineTextPolicyPerRun is not null)
         {
             allowOverflowAnywhere = false;
+            breakAllGlyphs = false;
             for (var i = 0; i < inlineTextPolicyPerRun.Count; i++)
             {
-                if (inlineTextPolicyPerRun[i].OverflowWrap == OverflowWrap.Anywhere)
-                {
+                var p = inlineTextPolicyPerRun[i];
+                if (p.OverflowWrap == OverflowWrap.Anywhere)
                     allowOverflowAnywhere = true;
-                    break;
-                }
+                if (p.WordBreak == WordBreak.BreakAll)
+                    breakAllGlyphs = true;
+                if (allowOverflowAnywhere && breakAllGlyphs) break;
             }
         }
 
@@ -982,7 +1019,50 @@ internal static class LineBuilder
                 //      explicit non-break semantics in UAX #14
                 //      (LB8a, LB11, LB12, LB12a) which BreakAll must
                 //      not override.
-                if (breakAllGlyphs && opp == LineBreakOpportunity.Prohibited)
+                // Per Phase 3 Task 10 cycle 3d sub-cycle 3 — per-
+                // source-run WordBreak. When inlineTextPolicyPerRun
+                // is supplied, the BreakAll upgrade is per-glyph:
+                // only glyphs whose source run has
+                // <c>word-break: break-all</c> get their Prohibited
+                // opportunities upgraded. Glyphs in Normal/KeepAll
+                // source runs retain their UAX #14 classifications.
+                //
+                // Per sub-cycle 3 review Finding #3 — cross-run
+                // BreakAll boundary uses the "either side may opt in"
+                // rule (mirroring overflow-wrap's cross-run model
+                // from sub-cycle 2). For the LAST glyph of a shaped
+                // run that has a DIFFERENT next source run, if
+                // either THIS run or the NEXT source run has
+                // BreakAll, the boundary break is upgraded. This
+                // lets a Normal prefix wrap immediately at the
+                // boundary of a following BreakAll span (instead of
+                // overflowing into the first BreakAll glyph before
+                // the BreakAll's own upgrades take effect).
+                var perGlyphBreakAll = breakAllGlyphs;
+                if (inlineTextPolicyPerRun is not null)
+                {
+                    var srcRunIdxForBreakAll = shaped.Source.SourceTextRunIndex;
+                    if ((uint)srcRunIdxForBreakAll < (uint)inlineTextPolicyPerRun.Count)
+                    {
+                        perGlyphBreakAll = inlineTextPolicyPerRun[srcRunIdxForBreakAll]
+                            .WordBreak == WordBreak.BreakAll;
+                    }
+                    // Cross-run boundary upgrade (Finding #3).
+                    if (!perGlyphBreakAll
+                        && g + 1 == glyphs.Length
+                        && r + 1 < shapedRuns.Count)
+                    {
+                        var nextSrcRunIdx = shapedRuns[r + 1].Source.SourceTextRunIndex;
+                        if (nextSrcRunIdx != srcRunIdxForBreakAll
+                            && (uint)nextSrcRunIdx < (uint)inlineTextPolicyPerRun.Count
+                            && inlineTextPolicyPerRun[nextSrcRunIdx].WordBreak
+                                == WordBreak.BreakAll)
+                        {
+                            perGlyphBreakAll = true;
+                        }
+                    }
+                }
+                if (perGlyphBreakAll && opp == LineBreakOpportunity.Prohibited)
                 {
                     var clusterEndIdx = clusterEnd - 1;
                     var isGraphemeBreakHere = clusterEndIdx >= 0

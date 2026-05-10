@@ -50,6 +50,7 @@ These are non-negotiable. Every PR/commit must honor them. Detailed coding stand
 |---|---|
 | Know what phase / task we're on right now | [PROGRESS.md](PROGRESS.md) — single source of truth, updated as each task/phase ships. |
 | Know what to build next | [docs/phases/](docs/phases/) — pick the active phase doc; follow the work breakdown. |
+| Know what we **deliberately deferred** (approximation vs. throw, pickup triggers) | [docs/deferrals.md](docs/deferrals.md) — keep in sync with code when adding or picking up deferrals. |
 | Know what CSS features are in/out of scope | [docs/compatibility-matrix.md](docs/compatibility-matrix.md) |
 | Know the legal contract | [docs/clean-room-policy.md](docs/clean-room-policy.md) |
 | Add a dependency | [docs/legal/dependency-dossier.md](docs/legal/dependency-dossier.md) |

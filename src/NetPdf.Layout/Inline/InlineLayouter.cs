@@ -543,9 +543,21 @@ internal static class InlineLayouter
         }
         else
         {
+            // Per Phase 3 Task 10 cycle 3d sub-cycle 1 review Rec #4
+            // — pass cancellation through to the per-run preprocessor
+            // so large hostile inline text doesn't waste CPU after a
+            // late cancellation signal.
             preprocessed = LineBuilder.PreprocessTextRunsPerRun(
-                sourceTextRuns, whiteSpacePerRun);
+                sourceTextRuns, whiteSpacePerRun, cancellationToken);
         }
+        // Per cycle 3d sub-cycle 1 review Rec #4 — observe
+        // cancellation immediately after preprocessing, before the
+        // potentially-expensive ShapeForLayout call. The token may
+        // have been signaled DURING preprocessing (a long input
+        // span between the per-run boundary checks); this catches
+        // late cancellations before HarfBuzz fires up.
+        cancellationToken.ThrowIfCancellationRequested();
+
         var wrapWhiteSpace = whiteSpacePerRun is null
             ? policy.WhiteSpace
             : WhiteSpace.Normal;

@@ -348,6 +348,170 @@ public sealed class InlineLayouterCycle3dTests
                 LatnScript, EnLang));
     }
 
+    // --- Cycle 3d sub-cycle 1 review hardening tests --------------
+
+    [Fact]
+    public void LayoutPerRun_PreWrap_trailing_SP_preserved_at_soft_wrap_boundary()
+    {
+        // Per cycle 3d sub-cycle 1 review Rec #1 — preserved spaces
+        // (Pre/PreWrap/BreakSpaces) must NOT be trimmed at soft-wrap
+        // boundaries (they hang per CSS Text L3 §6.4 / preserve per
+        // §4.1.2). This test pins the regression: PreWrap "AAA "
+        // followed by Normal " BBB" with a budget that wraps right
+        // after the PreWrap trailing SP (the snap-back lastAllowed
+        // candidate). Pre-fix the SP would be tagged IsBreakSpace
+        // (because wrapWhiteSpace=Normal globally → collapsesSpaces
+        // applied to ALL glyphs) and trimmed off line 0; post-fix
+        // the per-glyph IsBreakSpace correctly identifies the SP as
+        // belonging to a preserve-mode run, so it stays in the
+        // drawable slice.
+        //
+        // Layout for budget 30:
+        //   PreWrap "AAA " = 4 glyphs (3*'A'=18 + SP=7.2 = 25.2px).
+        //   Normal " BBB"  = 4 glyphs (the leading SP not collapsed
+        //                     by Normal because inWs=false after Pre
+        //                     → SP output, then BBB).
+        //   At cursor=3 (PreWrap SP): cum 25.2 < 30, opp=Allowed
+        //                             (PreWrap = wrap-friendly). Record.
+        //   At cursor=4 (Normal SP):  cum 32.4 > 30. Snap to lastAllowed=3.
+        //                             drawableEnd=3.
+        //   Trim IsBreakSpace: glyph 3 has IsBreakSpace=false (PreWrap)
+        //                      → NO trim. drawableEnd stays 3.
+        //   Emit 0..3 → 4 glyphs "AAA " (SP PRESERVED).
+        using var resolver = new TestShaperResolver();
+        var sPreWrap = ComputedStyle.RentForExclusiveTesting();
+        sPreWrap.Set(PropertyId.WhiteSpace, ComputedSlot.FromKeyword(3)); // pre-wrap
+        var sNormal = MakeStyle();
+        var sourceRuns = new List<TextRun>
+        {
+            new("AAA ", sPreWrap),
+            new(" BBB", sNormal),
+        };
+        var result = InlineLayouter.LayoutPerRun(sourceRuns,
+            availableInlineSize: 30, resolver, LatnScript, EnLang);
+
+        Assert.Equal(2, result.Length);
+        // --- Line 0: "AAA " (4 glyphs, trailing SP preserved per
+        // PreWrap semantics — Rec #1 fix).
+        Assert.False(result[0].EndsWithMandatoryBreak);
+        Assert.Single(result[0].Slices);
+        Assert.Equal(0, result[0].Slices[0].ShapedRunIndex);
+        Assert.Equal(0, result[0].Slices[0].GlyphStart);
+        Assert.Equal(4, result[0].Slices[0].GlyphLength);
+        // Total advance INCLUDES the preserved trailing SP.
+        Assert.Equal(3 * LetterAdvance + SpaceAdvance,
+            result[0].TotalAdvance, precision: 4);
+    }
+
+    [Fact]
+    public void LayoutPerRun_anywhere_does_NOT_split_inside_NoWrap_run()
+    {
+        // Per cycle 3d sub-cycle 1 review Rec #2 — when all runs
+        // share overflow-wrap:anywhere AND a NoWrap run exists, the
+        // anywhere fallback must NOT force a break inside the NoWrap
+        // span. Per CSS Text L3 §5.1, overflow-wrap "only has an
+        // effect when white-space allows wrapping".
+        //
+        // Source: NoWrap+anywhere "AAAAA" (5 glyphs, all
+        // Allowed→Prohibited downgraded) + Normal+anywhere "B"
+        // (1 glyph). Available = 10 (very small).
+        //   - cursors 0..4: cum grows past 10. lastAllowed=-1 (NoWrap
+        //     downgrade kills candidates). Anywhere check: prev/cursor
+        //     in same NoWrap run → gate fails → no fire.
+        //   - cursor 5 ('B', Normal run): different src run from
+        //     cursor 4 → gate passes → anywhere fires at run boundary.
+        //     Emit [0..4] (NoWrap stays intact). lineStart=5.
+        //   - cursor 5: emit [5..5] alone (single overflowing 'B').
+        using var resolver = new TestShaperResolver();
+        var sNoWrapAnywhere = ComputedStyle.RentForExclusiveTesting();
+        sNoWrapAnywhere.Set(PropertyId.WhiteSpace, ComputedSlot.FromKeyword(2)); // nowrap
+        sNoWrapAnywhere.Set(PropertyId.OverflowWrap, ComputedSlot.FromKeyword(1)); // anywhere
+        var sNormalAnywhere = ComputedStyle.RentForExclusiveTesting();
+        sNormalAnywhere.Set(PropertyId.OverflowWrap, ComputedSlot.FromKeyword(1)); // anywhere
+        var sourceRuns = new List<TextRun>
+        {
+            new("AAAAA", sNoWrapAnywhere),
+            new("B", sNormalAnywhere),
+        };
+        var result = InlineLayouter.LayoutPerRun(sourceRuns,
+            availableInlineSize: 10, resolver, LatnScript, EnLang);
+
+        // Line 0: NoWrap stays whole (5 glyphs). Pre-fix anywhere
+        // would have split inside it.
+        Assert.True(result.Length >= 1);
+        Assert.Single(result[0].Slices);
+        Assert.Equal(0, result[0].Slices[0].ShapedRunIndex);
+        Assert.Equal(0, result[0].Slices[0].GlyphStart);
+        Assert.Equal(5, result[0].Slices[0].GlyphLength);
+    }
+
+    [Fact]
+    public void LayoutPerRun_anywhere_does_NOT_split_inside_Pre_run()
+    {
+        // Per cycle 3d sub-cycle 1 review Rec #2 — same gating for
+        // Pre runs.
+        using var resolver = new TestShaperResolver();
+        var sPreAnywhere = ComputedStyle.RentForExclusiveTesting();
+        sPreAnywhere.Set(PropertyId.WhiteSpace, ComputedSlot.FromKeyword(1)); // pre
+        sPreAnywhere.Set(PropertyId.OverflowWrap, ComputedSlot.FromKeyword(1)); // anywhere
+        var sNormalAnywhere = ComputedStyle.RentForExclusiveTesting();
+        sNormalAnywhere.Set(PropertyId.OverflowWrap, ComputedSlot.FromKeyword(1)); // anywhere
+        var sourceRuns = new List<TextRun>
+        {
+            new("AAAAA", sPreAnywhere),
+            new("B", sNormalAnywhere),
+        };
+        var result = InlineLayouter.LayoutPerRun(sourceRuns,
+            availableInlineSize: 10, resolver, LatnScript, EnLang);
+
+        Assert.True(result.Length >= 1);
+        // First slice is the entire 5-glyph Pre run, not split.
+        Assert.Equal(0, result[0].Slices[0].ShapedRunIndex);
+        Assert.Equal(0, result[0].Slices[0].GlyphStart);
+        Assert.Equal(5, result[0].Slices[0].GlyphLength);
+    }
+
+    [Fact]
+    public void PreprocessTextRunsPerRun_observes_pre_cancelled_token()
+    {
+        // Per cycle 3d sub-cycle 1 review Rec #4 — pre-cancelled
+        // tokens fast-path out before any allocation/walk.
+        var runs = new List<TextRun>
+        {
+            new("AAA", MakeStyle()),
+            new("BBB", MakeStyle()),
+        };
+        var modes = new[] { WhiteSpace.Normal, WhiteSpace.Pre };
+        using var cts = new System.Threading.CancellationTokenSource();
+        cts.Cancel();
+        Assert.Throws<OperationCanceledException>(() =>
+            LineBuilder.PreprocessTextRunsPerRun(runs, modes, cts.Token));
+    }
+
+    [Fact]
+    public void LayoutPerRun_observes_pre_cancelled_token_in_per_run_mode()
+    {
+        // Per cycle 3d sub-cycle 1 review Rec #4 — LayoutPerRun must
+        // propagate the cancellation token to the per-run preprocessor
+        // when WhiteSpace varies. A pre-cancelled token should throw
+        // before shaping fires.
+        using var resolver = new TestShaperResolver();
+        var sNormal = MakeStyle();
+        var sPre = ComputedStyle.RentForExclusiveTesting();
+        sPre.Set(PropertyId.WhiteSpace, ComputedSlot.FromKeyword(1)); // pre
+        var sourceRuns = new List<TextRun>
+        {
+            new("AAA", sNormal),
+            new("BBB", sPre), // mixed → triggers per-run preprocessor
+        };
+        using var cts = new System.Threading.CancellationTokenSource();
+        cts.Cancel();
+        Assert.Throws<OperationCanceledException>(() =>
+            InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver,
+                LatnScript, EnLang,
+                cancellationToken: cts.Token));
+    }
+
     // --- Helpers --------------------------------------------------
 
     private static ComputedStyle MakeStyle() =>

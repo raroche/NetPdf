@@ -9,33 +9,37 @@ namespace NetPdf.Layout.Inline;
 /// All six CSS keywords have enum members (cycle 3 review User #3
 /// added <see cref="BreakSpaces"/>). Behavior fidelity ladder:
 /// <list type="bullet">
-///   <item><see cref="Normal"/>, <see cref="Pre"/>,
-///   <see cref="NoWrap"/>, <see cref="PreWrap"/>,
-///   <see cref="PreLine"/> — full CSS Text L3 §3 semantics for
-///   collapse / preserve / wrap honored end-to-end through
-///   preprocessing + wrap.</item>
-///   <item><see cref="BreakSpaces"/> — cycle-3 simplification:
-///   behaves identically to <see cref="PreWrap"/> (preserve all
-///   whitespace + wrap at UAX #14 Allowed opportunities). The
-///   "wrap at every preserved space" + trailing-space wrap-vs-hang
-///   detail per CSS Text L3 §6.4 lands in a subsequent cycle that
-///   adds forced wrap candidates at every SP glyph. The simplified
-///   behavior preserves authored whitespace correctly — the
-///   user-visible guarantee — at the cost of slightly less
-///   aggressive wrap candidate placement.</item>
+///   <item><b>Full spec fidelity</b> — <see cref="Normal"/>,
+///   <see cref="Pre"/>, <see cref="NoWrap"/>, <see cref="PreWrap"/>,
+///   <see cref="PreLine"/>: collapse / preserve / wrap semantics
+///   honored end-to-end through preprocessing + wrap per CSS Text
+///   L3 §3 Table.</item>
+///   <item><b>Approximated</b> — <see cref="BreakSpaces"/>:
+///   <b>currently treated as <see cref="PreWrap"/></b> in both the
+///   preprocessor + wrap pass. The distinguishing CSS Text L3 §6.4
+///   semantics (forced wrap candidates at EVERY preserved SP, plus
+///   trailing-space wrap-vs-hang) are NOT yet implemented. Authored
+///   whitespace is preserved correctly (the user-visible guarantee
+///   for content), at the cost of less aggressive wrap candidate
+///   placement at preserved spaces — a known fidelity gap. Tracked
+///   for a subsequent cycle.</item>
 /// </list>
 ///
-/// <para><b>Per-source-run honoring.</b> Per Phase 3 Task 10
-/// cycle 3c, <see cref="LineBuilder.Wrap"/> accepts an optional
-/// per-source-run <c>whiteSpacePerRun</c> array that downgrades
-/// UAX #14 Allowed opportunities to Prohibited for glyphs in
-/// <see cref="NoWrap"/> / <see cref="Pre"/> source runs. The
-/// <see cref="InlineLayouter.LayoutPerRun"/> facade builds this
-/// array automatically when source TextRuns have mismatched
-/// WhiteSpace values within the Normal/NoWrap matrix (both share
-/// collapse semantics per CSS Text L3 §4.1); mixes involving
-/// Pre/PreWrap/PreLine/BreakSpaces still require per-source-run
-/// preprocessing (deferred to cycle 3d).</para>
+/// <para><b>Per-source-run honoring (cycle 3c + 3d sub-cycle 1).</b>
+/// <see cref="LineBuilder.Wrap"/> accepts an optional per-source-run
+/// <c>whiteSpacePerRun</c> array that downgrades UAX #14 Allowed
+/// opportunities to Prohibited for glyphs in <see cref="NoWrap"/> /
+/// <see cref="Pre"/> source runs (cycle 3c per-glyph downgrade) +
+/// gates the <c>overflow-wrap: anywhere</c> forced-break fallback by
+/// per-glyph WhiteSpace (cycle 3d sub-cycle 1 review Rec #2).
+/// <see cref="InlineLayouter.LayoutPerRun"/> builds this array
+/// automatically for the <b>full six-value mismatch matrix</b>
+/// (cycle 3d sub-cycle 1) — each source run is preprocessed with its
+/// own WhiteSpace via <see cref="LineBuilder.PreprocessTextRunsPerRun"/>
+/// while preserve-mode runs retain spaces and collapse-mode runs
+/// chain <c>inWs</c> across boundaries. <see cref="BreakSpaces"/>
+/// participates in the matrix via its PreWrap-equivalent
+/// approximation.</para>
 ///
 /// <para><b>Behavior summary (CSS Text L3 §3 Table).</b></para>
 /// <list type="table">
@@ -93,16 +97,25 @@ internal enum WhiteSpace : byte
     PreLine = 4,
 
     /// <summary>Per Phase 3 Task 10 cycle 3 review (User #3) —
-    /// preserve all whitespace AND allow wrapping at every preserved
-    /// space. Per CSS Text L3 §3 Table 1 + §6.4 — like
-    /// <see cref="PreWrap"/> but trailing spaces wrap (rather than
-    /// hang) at line ends. Cycle 3 simplification: behaves like
-    /// PreWrap for now (preserve + wrap at UAX #14 Allowed
-    /// opportunities); the "wrap at every preserved space" detail
-    /// requires forced wrap candidates at every SP glyph + lands
-    /// in a subsequent cycle. The simplification preserves
-    /// authored whitespace correctly (which is the user-visible
-    /// guarantee) at the cost of slightly less aggressive wrap
-    /// candidate placement.</summary>
+    /// the CSS spec defines BreakSpaces (CSS Text L3 §3 Table 1 +
+    /// §6.4) as: preserve all whitespace AND allow wrapping at
+    /// every preserved space, with trailing spaces wrapping (rather
+    /// than hanging) at line ends.
+    ///
+    /// <para><b>CURRENT BEHAVIOR — APPROXIMATION.</b> Both the
+    /// preprocessor + wrap pass treat <see cref="BreakSpaces"/>
+    /// identically to <see cref="PreWrap"/>: preserve all SP/TAB/
+    /// LF/CR + wrap at UAX #14 Allowed opportunities. The
+    /// distinguishing semantics — forced wrap candidates at EVERY
+    /// preserved SP glyph + trailing-space wrap-vs-hang — are NOT
+    /// implemented yet (would require synthesizing forced UAX #14
+    /// candidates at every SP and a separate trailing-space
+    /// pre-wrap pass). The approximation preserves authored
+    /// whitespace correctly (the user-visible guarantee) at the
+    /// cost of less aggressive wrap candidate placement. Per cycle
+    /// 3d sub-cycle 1 review Rec #3, this fidelity gap is now
+    /// explicitly documented (the prior "deferred to a subsequent
+    /// cycle" framing implied a cleaner ladder than reality).</para>
+    /// </summary>
     BreakSpaces = 5,
 }

@@ -388,7 +388,32 @@ internal static class InlineLayouter
         Hyphenator? hyphenator = null,
         CancellationToken cancellationToken = default)
     {
+        // Per Phase 3 Task 10 cycle 3b review (User #2 + Copilot #1)
+        // — front-load all argument validation BEFORE the per-run
+        // policy scan so invalid args throw their proper exceptions
+        // instead of being masked by the policy scan or the
+        // mixed-mode NotSupportedException.
         ArgumentNullException.ThrowIfNull(sourceTextRuns);
+        ArgumentNullException.ThrowIfNull(resolver);
+        ArgumentNullException.ThrowIfNull(scriptIso15924);
+        ArgumentNullException.ThrowIfNull(language);
+
+        if (!double.IsFinite(availableInlineSize) || availableInlineSize <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(availableInlineSize),
+                availableInlineSize,
+                "InlineLayouter.LayoutPerRun: availableInlineSize must be a positive finite value (CSS px).");
+        }
+        if (paragraphDirection is not (ParagraphDirection.LeftToRight
+            or ParagraphDirection.RightToLeft
+            or ParagraphDirection.Auto))
+        {
+            throw new ArgumentOutOfRangeException(nameof(paragraphDirection),
+                paragraphDirection,
+                "InlineLayouter.LayoutPerRun: paragraphDirection must be a defined ParagraphDirection value.");
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
 
         if (sourceTextRuns.Count == 0)
         {
@@ -400,22 +425,39 @@ internal static class InlineLayouter
                 cancellationToken: cancellationToken);
         }
 
-        // Read policy from each run; verify they all match.
-        var firstPolicy = sourceTextRuns[0].Style.ReadInlineTextPolicy();
-        for (var i = 1; i < sourceTextRuns.Count; i++)
+        // Per Phase 3 Task 10 cycle 3b review (User #3) — empty
+        // TextRuns contribute no glyphs and no wrap decisions. Skip
+        // them when picking + comparing the effective policy so an
+        // empty `<span>` with a different style doesn't falsely
+        // trigger the mixed-mode guard. If ALL runs are empty,
+        // delegate to the empty-input path with default policy.
+        InlineTextPolicy? effectivePolicy = null;
+        var firstNonEmptyIndex = -1;
+        for (var i = 0; i < sourceTextRuns.Count; i++)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (sourceTextRuns[i].Text.Length == 0) continue;
             var p = sourceTextRuns[i].Style.ReadInlineTextPolicy();
-            if (p != firstPolicy)
+            if (effectivePolicy is null)
+            {
+                effectivePolicy = p;
+                firstNonEmptyIndex = i;
+            }
+            else if (p != effectivePolicy)
             {
                 throw new NotSupportedException(
                     $"InlineLayouter.LayoutPerRun: source TextRuns have " +
-                    $"different InlineTextPolicy values (run 0={firstPolicy}, " +
+                    $"different InlineTextPolicy values (run {firstNonEmptyIndex}={effectivePolicy}, " +
                     $"run {i}={p}). Per-glyph mixed-mode policy is scheduled " +
                     $"for cycle 3c. Until then, callers must either avoid " +
                     $"mixed inline descendants or split the wrap into " +
                     $"homogeneous sub-passes.");
             }
         }
+
+        // All runs empty (or all share policy) — use the chosen
+        // policy or default if no non-empty run was seen.
+        var policy = effectivePolicy ?? InlineTextPolicy.Default;
 
         // Uniform policy — delegate to cycle-3a explicit-args path.
         return Layout(
@@ -425,10 +467,10 @@ internal static class InlineLayouter
             scriptIso15924,
             language,
             paragraphDirection,
-            firstPolicy.WhiteSpace,
-            firstPolicy.OverflowWrap,
-            firstPolicy.WordBreak,
-            firstPolicy.Hyphens,
+            policy.WhiteSpace,
+            policy.OverflowWrap,
+            policy.WordBreak,
+            policy.Hyphens,
             hyphenator,
             cancellationToken);
     }

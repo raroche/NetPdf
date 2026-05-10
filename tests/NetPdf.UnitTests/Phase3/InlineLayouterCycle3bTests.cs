@@ -142,6 +142,120 @@ public sealed class InlineLayouterCycle3bTests
         Assert.Single(result);
     }
 
+    // --- Cycle 3b post-PR-41 review hardening tests ------------
+
+    [Fact]
+    public void LayoutPerRun_null_resolver_throws_before_policy_scan()
+    {
+        // Per Phase 3 Task 10 cycle 3b review (User #2 + Copilot #1)
+        // — front-loaded validation. Null resolver throws
+        // ArgumentNullException, not the mixed-mode NotSupportedException.
+        var sourceRuns = new List<TextRun>
+        {
+            new("AAA", MakeStyle()),
+            new("BBB", MakeStyleWithNoWrap()), // mixed
+        };
+        Assert.Throws<ArgumentNullException>(() =>
+            InlineLayouter.LayoutPerRun(sourceRuns, 100, null!, LatnScript, EnLang));
+    }
+
+    [Fact]
+    public void LayoutPerRun_invalid_inlineSize_throws_before_policy_scan()
+    {
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun>
+        {
+            new("AAA", MakeStyle()),
+            new("BBB", MakeStyleWithNoWrap()), // mixed
+        };
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            InlineLayouter.LayoutPerRun(sourceRuns, -1, resolver, LatnScript, EnLang));
+    }
+
+    [Fact]
+    public void LayoutPerRun_undefined_paragraphDirection_throws()
+    {
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("AAA", MakeStyle()) };
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver, LatnScript, EnLang,
+                paragraphDirection: (NetPdf.Text.Bidi.ParagraphDirection)99));
+    }
+
+    [Fact]
+    public void LayoutPerRun_precancelled_token_throws_before_policy_scan()
+    {
+        // Per User #2 — pre-cancelled token throws
+        // OperationCanceledException at entry, before per-run policy
+        // scan or mixed-mode check.
+        using var resolver = new TestShaperResolver();
+        using var cts = new System.Threading.CancellationTokenSource();
+        cts.Cancel();
+        var sourceRuns = new List<TextRun>
+        {
+            new("AAA", MakeStyle()),
+            new("BBB", MakeStyleWithNoWrap()), // mixed
+        };
+        Assert.Throws<OperationCanceledException>(() =>
+            InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver, LatnScript, EnLang,
+                cancellationToken: cts.Token));
+    }
+
+    [Fact]
+    public void LayoutPerRun_empty_runs_with_mixed_styles_does_NOT_throw()
+    {
+        // Per User #3 — empty TextRuns contribute no glyphs; their
+        // styles should be IGNORED for the policy-equality check.
+        // Two empty runs with different styles + one non-empty run
+        // resolves to the non-empty run's policy.
+        using var resolver = new TestShaperResolver();
+        var sNormal = MakeStyle();
+        var sNoWrap = MakeStyleWithNoWrap();
+        var sourceRuns = new List<TextRun>
+        {
+            new("", sNormal),
+            new("", sNoWrap), // different style but empty — should be ignored
+            new("AAA", sNormal),
+        };
+        // Should not throw; uses sNormal's policy.
+        var result = InlineLayouter.LayoutPerRun(sourceRuns, 1000, resolver,
+            LatnScript, EnLang);
+        Assert.Single(result);
+    }
+
+    [Fact]
+    public void LayoutPerRun_all_empty_runs_returns_empty()
+    {
+        // Per User #3 — all-empty runs (any style mix) is well-
+        // defined: returns empty result with default policy.
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun>
+        {
+            new("", MakeStyle()),
+            new("", MakeStyleWithNoWrap()),
+        };
+        var result = InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver,
+            LatnScript, EnLang);
+        Assert.Empty(result);
+    }
+
+    [Fact]
+    public void LayoutPerRun_empty_run_then_nonempty_with_different_style_throws()
+    {
+        // Mixed-mode is detected ONLY among non-empty runs. If two
+        // non-empty runs have different policies, throw.
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun>
+        {
+            new("", MakeStyleWithNoWrap()), // empty, ignored
+            new("AAA", MakeStyle()),         // non-empty Normal
+            new("BBB", MakeStyleWithNoWrap()), // non-empty NoWrap → mixed
+        };
+        Assert.Throws<NotSupportedException>(() =>
+            InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver,
+                LatnScript, EnLang));
+    }
+
     // --- Helpers --------------------------------------------------
 
     private static ComputedStyle MakeStyle() =>

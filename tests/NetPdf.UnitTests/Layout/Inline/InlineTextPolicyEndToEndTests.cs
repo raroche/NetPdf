@@ -208,6 +208,84 @@ public sealed class InlineTextPolicyEndToEndTests
     }
 
     [Fact]
+    public async Task EndToEnd_repeated_white_space_declaration_last_wins()
+    {
+        // Per Phase 3 Task 10 cycle 3b review (User #1) — when a
+        // rule has repeated declarations like
+        // `white-space: normal; white-space: break-spaces`, the LAST
+        // one wins per CSS cascade rules. Earlier "first match"
+        // FindRecovery semantics broke this for known-dropped
+        // properties.
+        const string html = "<html><body><p>x</p></body></html>";
+        const string css = "p { white-space: normal; white-space: break-spaces; }";
+
+        var pStyle = await GetParagraphComputedStyle(html, css);
+        Assert.NotNull(pStyle);
+
+        var policy = pStyle.ReadInlineTextPolicy();
+        Assert.Equal(WhiteSpace.BreakSpaces, policy.WhiteSpace);
+    }
+
+    [Fact]
+    public async Task EndToEnd_repeated_overflow_wrap_declaration_last_wins()
+    {
+        const string html = "<html><body><p>x</p></body></html>";
+        const string css = "p { overflow-wrap: anywhere; overflow-wrap: normal; }";
+
+        var pStyle = await GetParagraphComputedStyle(html, css);
+        Assert.NotNull(pStyle);
+
+        var policy = pStyle.ReadInlineTextPolicy();
+        // Last decl is `normal` — should win.
+        Assert.Equal(OverflowWrap.Normal, policy.OverflowWrap);
+    }
+
+    [Fact]
+    public async Task EndToEnd_word_wrap_then_overflow_wrap_alias_pair_last_wins()
+    {
+        // word-wrap normalizes to overflow-wrap. Authored:
+        //   word-wrap: normal; overflow-wrap: anywhere;
+        // After alias normalization both target overflow-wrap;
+        // last-decl-wins picks anywhere.
+        const string html = "<html><body><p>x</p></body></html>";
+        const string css = "p { word-wrap: normal; overflow-wrap: anywhere; }";
+
+        var pStyle = await GetParagraphComputedStyle(html, css);
+        Assert.NotNull(pStyle);
+
+        var policy = pStyle.ReadInlineTextPolicy();
+        Assert.Equal(OverflowWrap.Anywhere, policy.OverflowWrap);
+    }
+
+    [Fact]
+    public async Task EndToEnd_overflow_wrap_then_word_wrap_alias_pair_last_wins()
+    {
+        // Reverse order — last-decl-wins picks word-wrap (which
+        // normalizes to overflow-wrap: normal).
+        const string html = "<html><body><p>x</p></body></html>";
+        const string css = "p { overflow-wrap: anywhere; word-wrap: normal; }";
+
+        var pStyle = await GetParagraphComputedStyle(html, css);
+        Assert.NotNull(pStyle);
+
+        var policy = pStyle.ReadInlineTextPolicy();
+        Assert.Equal(OverflowWrap.Normal, policy.OverflowWrap);
+    }
+
+    [Fact]
+    public async Task EndToEnd_repeated_hyphens_declaration_last_wins()
+    {
+        const string html = "<html><body><p>x</p></body></html>";
+        const string css = "p { hyphens: auto; hyphens: none; }";
+
+        var pStyle = await GetParagraphComputedStyle(html, css);
+        Assert.NotNull(pStyle);
+
+        var policy = pStyle.ReadInlineTextPolicy();
+        Assert.Equal(Hyphens.None, policy.Hyphens);
+    }
+
+    [Fact]
     public async Task EndToEnd_word_wrap_legacy_alias_normalizes_to_overflow_wrap()
     {
         // Per Phase 3 Task 10 cycle 3 review (User #2) — `word-wrap`

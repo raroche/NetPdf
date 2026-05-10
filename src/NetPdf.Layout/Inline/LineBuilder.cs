@@ -496,19 +496,20 @@ internal static class LineBuilder
     /// (CJK semantics activate when UAX #24 lands in cycle 4).
     /// Cycle 3b sub-cycle 2.</param>
     ///
-    /// <para><b>LineBuilder-only scope (cycle 3b sub-cycle 2 stopgap).</b>
-    /// <paramref name="overflowWrap"/> + <paramref name="wordBreak"/>
-    /// are applied uniformly across the WHOLE inline pass — they're
-    /// not yet wired to per-element CSS resolution / materialization
-    /// from a <c>ComputedStyle</c>. End-to-end CSS tests
-    /// (<c>&lt;p style="overflow-wrap:anywhere"&gt;…</c>) require
-    /// the InlineLayouter integration in Task 10 — at which point
-    /// the per-property metadata, resolver, and materialization land
-    /// alongside per-source-TextRun policy plumbing. Until then,
-    /// this single-arg API is a stopgap; production callers
-    /// constructing <see cref="LineBuilder"/> input directly may
-    /// pass arguments based on a single computed property at the
-    /// containing block.</para>
+    /// <para><b>Production wiring (Task 10 cycles 2-4 shipped).</b>
+    /// The CSS pipeline (<c>properties.json</c> →
+    /// <c>KeywordResolver</c> → <c>ComputedStyle</c>) for
+    /// <paramref name="overflowWrap"/>, <paramref name="wordBreak"/>,
+    /// and <paramref name="hyphens"/> shipped in Task 10 cycle 2.
+    /// <see cref="InlineLayouter.LayoutPerRun"/> reads each source-
+    /// TextRun's <see cref="InlineTextPolicy"/> via
+    /// <see cref="InlineTextPolicyMaterializer.ReadInlineTextPolicy"/>
+    /// + passes the per-run array to <see cref="LineBuilder.Wrap"/>
+    /// (cycle 3d sub-cycles 1-4). The uniform <paramref name="overflowWrap"/>
+    /// / <paramref name="wordBreak"/> / <paramref name="hyphens"/>
+    /// arguments still apply when <c>inlineTextPolicyPerRun</c> is
+    /// null (direct/test callers); per-run values take precedence
+    /// when supplied.</para>
     /// <param name="hyphens">CSS Text L3 §6.1 <c>hyphens</c> property
     /// value. Default <see cref="Hyphens.Manual"/> (CSS default).
     /// <see cref="Hyphens.None"/> ignores soft-hyphens + disables
@@ -517,33 +518,19 @@ internal static class LineBuilder
     /// <see cref="Hyphens.Auto"/> additionally applies Liang-pattern
     /// auto-hyphenation. Cycle 3b sub-cycle 3.
     ///
-    /// <para><b>CSS-property pipeline deferral.</b> Like
-    /// <paramref name="overflowWrap"/> + <paramref name="wordBreak"/>,
-    /// <c>hyphens</c> is currently a LineBuilder-only argument —
-    /// it's NOT yet wired through <c>NetPdf.SourceGen</c>'s
-    /// <c>properties.json</c> CSS-property table, the
-    /// <c>KeywordResolver</c>, or <c>ComputedStyle</c>
-    /// materialization. End-to-end CSS tests
-    /// (<c>&lt;p style="hyphens:auto"&gt;</c>) require the Task 10
-    /// <c>InlineLayouter</c> integration, which will:
-    /// <list type="number">
-    ///   <item>Add <c>hyphens</c> to <c>properties.json</c> +
-    ///   regenerate the <c>PropertyId</c> source-gen table.</item>
-    ///   <item>Add a <c>KeywordResolver</c> entry mapping
-    ///   <c>none|manual|auto</c> to the <see cref="Hyphens"/>
-    ///   enum.</item>
-    ///   <item>Materialize a typed <see cref="Hyphens"/> field on
-    ///   <c>ComputedStyle</c> (alongside
-    ///   <see cref="OverflowWrap"/> + <see cref="WordBreak"/> +
-    ///   <see cref="WhiteSpace"/>).</item>
-    ///   <item>Read those typed fields per source-TextRun in the
-    ///   <c>InlineLayouter</c> + plumb to per-glyph metadata so
-    ///   mixed-mode descendants work correctly (e.g.,
-    ///   <c>&lt;span style="hyphens:none"&gt;</c> inside
-    ///   <c>hyphens:auto</c> text).</item>
-    /// </list>
-    /// Until then, this single-arg API is a stopgap; tests + direct
-    /// callers wire the values manually at the LineBuilder seam.</para></param>
+    /// <para><b>CSS-property pipeline (shipped via Task 10 cycles
+    /// 2-4).</b> The full pipeline for <c>hyphens</c> is in place:
+    /// <c>properties.json</c> definition, <c>KeywordResolver</c>
+    /// mapping (none/manual/auto), <c>ComputedStyle</c>
+    /// materialization via <see cref="InlineTextPolicyMaterializer.ReadInlineTextPolicy"/>,
+    /// + per-source-TextRun plumbing through
+    /// <see cref="InlineLayouter.LayoutPerRun"/> using the
+    /// <c>inlineTextPolicyPerRun</c> parameter below. Mixed-mode
+    /// descendants like <c>&lt;span style="hyphens:none"&gt;</c>
+    /// inside <c>hyphens:auto</c> text work end-to-end as of
+    /// cycle 3d sub-cycle 4. The uniform <paramref name="hyphens"/>
+    /// argument here applies when no per-run array is supplied
+    /// (direct/test callers).</para></param>
     /// <param name="hyphenator">Optional Liang
     /// <see cref="Hyphenator"/> for <see cref="Hyphens.Auto"/>. When
     /// <see langword="null"/> + Auto mode, falls back to
@@ -860,34 +847,15 @@ internal static class LineBuilder
         // text contains no U+00AD (the only break source under
         // Manual). Saves an allocation + a scan for the common case
         // of paragraphs without explicit soft-hyphens.
-        // Per Phase 3 Task 10 cycle 3d sub-cycle 4 — per-source-run
-        // Hyphens handling. When inlineTextPolicyPerRun is supplied,
-        // build a position→source-run-index map so each concat
-        // position can look up its run's Hyphens value. Used both
-        // for the soft-hyphen demotion pass (None → Prohibited) and
-        // the hyphenationAfter[] construction (Manual/Auto → Allowed
-        // upgrade positions). The "effective hyphens" for the
-        // build-vs-skip decision is "any run has Hyphens != None".
-        int[]? posToSrcRun = null;
-        if (inlineTextPolicyPerRun is not null)
-        {
-            posToSrcRun = new int[concatTotal];
-            var p = 0;
-            for (var r = 0; r < sourceTextRuns.Count; r++)
-            {
-                var len = sourceTextRuns[r].Text.Length;
-                for (var k = 0; k < len && p + k < concatTotal; k++)
-                {
-                    posToSrcRun[p + k] = r;
-                }
-                p += len;
-            }
-        }
-
-        // Decide whether to build hyphenationAfter[] at all. Under
-        // uniform mode this is the existing fast-path. Under per-
-        // run mode we build if ANY run has Hyphens != None and the
-        // text contains a soft-hyphen OR any run has Hyphens=Auto.
+        // Per Phase 3 Task 10 cycle 3d sub-cycle 4 + sub-cycle 4
+        // review Finding #3 — per-source-run Hyphens handling.
+        // Compute the "any Hyphens != None / any Auto / any None"
+        // aggregates from inlineTextPolicyPerRun (or uniform
+        // hyphens) FIRST, then build the position→source-run-index
+        // map ONLY when actually needed (i.e., when the per-run
+        // array is supplied AND the text needs per-position
+        // Hyphens decisions — either a soft hyphen present or any
+        // Auto run for Liang).
         var anyHyphensNotNone = false;
         var anyHyphensAuto = false;
         var anyHyphensNone = false;
@@ -911,8 +879,32 @@ internal static class LineBuilder
             anyHyphensNone = hyphens == Hyphens.None;
         }
 
-        bool[]? hyphenationAfter = null;
         var hasSoftHyphen = concatText.IndexOf('­') >= 0;
+
+        // Sub-cycle 4 review Finding #3 — build posToSrcRun lazily.
+        // Skipped entirely for paragraphs without hyphenation needs
+        // (mixed WhiteSpace / OverflowWrap / WordBreak don't touch
+        // this code path). For large inline content this saves
+        // 4 bytes per UTF-16 code unit on common non-hyphenation
+        // paths.
+        int[]? posToSrcRun = null;
+        if (inlineTextPolicyPerRun is not null
+            && (hasSoftHyphen || anyHyphensAuto))
+        {
+            posToSrcRun = new int[concatTotal];
+            var p = 0;
+            for (var r = 0; r < sourceTextRuns.Count; r++)
+            {
+                var len = sourceTextRuns[r].Text.Length;
+                for (var k = 0; k < len && p + k < concatTotal; k++)
+                {
+                    posToSrcRun[p + k] = r;
+                }
+                p += len;
+            }
+        }
+
+        bool[]? hyphenationAfter = null;
         if (!anyHyphensAuto && !hasSoftHyphen)
         {
             // Fast path — no soft-hyphens + no Liang.
@@ -925,7 +917,6 @@ internal static class LineBuilder
                 anyHyphensAuto
                     ? (hyphenator ?? EnUsHyphenation.Default)
                     : null,
-                sourceTextRuns,
                 inlineTextPolicyPerRun,
                 posToSrcRun,
                 cancellationToken);
@@ -1561,7 +1552,6 @@ internal static class LineBuilder
     /// </summary>
     private static bool[] ComputeHyphenationPositions(
         string text, Hyphens hyphens, Hyphenator? autoHyphenator,
-        IReadOnlyList<TextRun>? sourceTextRuns,
         IReadOnlyList<InlineTextPolicy>? inlineTextPolicyPerRun,
         int[]? posToSrcRun,
         CancellationToken cancellationToken)
@@ -1655,18 +1645,41 @@ internal static class LineBuilder
 
             cancellationToken.ThrowIfCancellationRequested();
 
-            // Per cycle 3d sub-cycle 4 — per-word Hyphens gating.
-            // The word's first letter's source-run Hyphens decides
-            // whether Liang is applied: only Auto enables Liang.
-            // Under uniform mode (no per-run array), the global
-            // hyphens value decides.
-            var wordHyphens = inlineTextPolicyPerRun is null
-                ? globalHyphens
-                : (posToSrcRun is not null
-                    && (uint)posToSrcRun[start] < (uint)inlineTextPolicyPerRun.Count
-                    ? inlineTextPolicyPerRun[posToSrcRun[start]].Hyphens
-                    : globalHyphens);
-            if (wordHyphens != Hyphens.Auto)
+            // Per cycle 3d sub-cycle 4 — gate Liang application by
+            // source-run Hyphens. Under uniform mode (no per-run
+            // array) the global hyphens decides for the whole word.
+            // Under per-run mode, the word may span multiple source
+            // runs with different Hyphens values — so we run Liang
+            // when ANY letter in the word is in a Hyphens=Auto run
+            // (the per-position gate below filters out positions
+            // landing inside non-Auto runs).
+            //
+            // Per sub-cycle 4 review Finding #1, the previous
+            // first-letter-only gate was wrong: a word starting in
+            // a non-Auto run would skip Liang entirely even if
+            // later letters belonged to an Auto run (and vice
+            // versa, an Auto-first word would apply Liang inside a
+            // None or Manual segment).
+            bool runLiang;
+            if (inlineTextPolicyPerRun is null || posToSrcRun is null)
+            {
+                runLiang = globalHyphens == Hyphens.Auto;
+            }
+            else
+            {
+                runLiang = false;
+                for (var k = 0; k < wordLen; k++)
+                {
+                    var srcIdx = posToSrcRun[start + k];
+                    if ((uint)srcIdx < (uint)inlineTextPolicyPerRun.Count
+                        && inlineTextPolicyPerRun[srcIdx].Hyphens == Hyphens.Auto)
+                    {
+                        runLiang = true;
+                        break;
+                    }
+                }
+            }
+            if (!runLiang)
             {
                 continue;
             }
@@ -1677,36 +1690,63 @@ internal static class LineBuilder
             // — CSS Text L3 §6.1.1: "When a soft hyphen is
             // encountered in the text, all such automatic
             // hyphenation opportunities elsewhere in that word
-            // should be ignored, except when the user agent cannot
-            // break the word at the soft hyphen position." We skip
-            // Liang entirely when the word contains a soft hyphen —
-            // the dedicated soft-hyphen pass at
-            // <see cref="ComputeHyphenationPositions"/> already
-            // recorded the U+00AD positions. The "can't break at
-            // soft hyphen" fallback (e.g., when the soft hyphen
-            // sits too close to a line edge) is a min-line-length
-            // consideration deferred to future justifier work; in
-            // practice the LineBuilder.Wrap loop will fall through
-            // to overflow-wrap / word-break behavior anyway when
-            // the soft hyphen position isn't usable.
-            var hasSoftHyphen = false;
+            // should be ignored." We skip Liang entirely when the
+            // word contains a soft hyphen — the dedicated soft-
+            // hyphen pass at <see cref="ComputeHyphenationPositions"/>
+            // already recorded the U+00AD positions.
+            //
+            // Per sub-cycle 4 review Finding #2, the suppression
+            // must only consider soft hyphens whose source run has
+            // Hyphens != None. A disabled soft hyphen (Hyphens=None
+            // in its source run) was demoted + excluded from
+            // hyphenationAfter, so it shouldn't suppress valid Auto
+            // Liang opportunities elsewhere in the same word.
+            var hasActiveSoftHyphen = false;
             for (var k = 0; k < wordSpan.Length; k++)
             {
-                if (wordSpan[k] == '­') { hasSoftHyphen = true; break; }
+                if (wordSpan[k] != '­') continue;
+                if (inlineTextPolicyPerRun is null || posToSrcRun is null)
+                {
+                    // Uniform mode — globalHyphens != None here
+                    // (Liang was gated by Auto above, so SH is
+                    // active).
+                    hasActiveSoftHyphen = true;
+                    break;
+                }
+                var shSrcIdx = posToSrcRun[start + k];
+                if ((uint)shSrcIdx < (uint)inlineTextPolicyPerRun.Count
+                    && inlineTextPolicyPerRun[shSrcIdx].Hyphens != Hyphens.None)
+                {
+                    hasActiveSoftHyphen = true;
+                    break;
+                }
             }
-            if (hasSoftHyphen) continue;
+            if (hasActiveSoftHyphen) continue;
 
             var breaks = hyphenator.FindHyphenationPoints(wordSpan);
             // breaks[k] = position k in word means break BETWEEN
             // word[k-1] and word[k]. Concat position = start + k - 1
             // (the index of the LAST letter before the break).
+            //
+            // Per sub-cycle 4 review Finding #1, each break position
+            // MUST be gated by the source run AT that position. A
+            // word like Auto("hy") + None("phenation") should NOT
+            // record a Liang break at the boundary or inside the
+            // None segment.
             foreach (var k in breaks)
             {
                 var concatIdx = start + k - 1;
-                if ((uint)concatIdx < (uint)positions.Length)
+                if ((uint)concatIdx >= (uint)positions.Length) continue;
+                if (inlineTextPolicyPerRun is not null && posToSrcRun is not null)
                 {
-                    positions[concatIdx] = true;
+                    var srcIdx = posToSrcRun[concatIdx];
+                    if ((uint)srcIdx >= (uint)inlineTextPolicyPerRun.Count
+                        || inlineTextPolicyPerRun[srcIdx].Hyphens != Hyphens.Auto)
+                    {
+                        continue;
+                    }
                 }
+                positions[concatIdx] = true;
             }
         }
     }

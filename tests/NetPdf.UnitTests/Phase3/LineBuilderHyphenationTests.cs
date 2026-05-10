@@ -66,10 +66,16 @@ public class LineBuilderHyphenationTests
     [Fact]
     public void Wrap_None_ignores_soft_hyphen()
     {
-        // Same input as above, but Hyphens.None disables soft-hyphen
-        // breaks. The line should NOT wrap at the SH (since UAX #14
-        // doesn't classify it as Allowed by itself in this context),
-        // so the input flows as one line (overflowing).
+        // Per CSS Text L3 §6.1: Hyphens.None means "words are not
+        // hyphenated, even if there are characters inside the word
+        // that explicitly suggest hyphenation opportunities".
+        //
+        // U+00AD's UAX #14 line-break class IS BA (Break After), so
+        // FindBreaks() naturally classifies the after-SH position
+        // as Allowed. Our Wrap-pass actively DEMOTES that to
+        // Prohibited under Hyphens.None to honor the CSS contract.
+        // Without that demotion the line would wrap at the SH; with
+        // it, the input flows as one line (overflowing).
         using var resolver = new TestShaperResolver();
         var sourceRuns = new List<TextRun> { new("AAA­AAA", MakeStyle()) };
         var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
@@ -196,6 +202,128 @@ public class LineBuilderHyphenationTests
         var lines = LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 22);
 
         Assert.Equal(2, lines.Length);
+    }
+
+    // --- PR #37 hardening tests ----------------------------------
+
+    [Fact]
+    public void Wrap_soft_hyphen_glyph_trimmed_from_drawable_at_break()
+    {
+        // Per PR #37 review fix (User #3 + Copilot #1) — when the
+        // wrap fires at a soft-hyphen, the SH glyph should NOT be
+        // included in the drawable slice (it's invisible unless
+        // Phase 4 painter renders the visible hyphen). Total glyph
+        // count on line 1 should be 3 (AAA), NOT 4 (AAA + SH).
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("AAA­AAA", MakeStyle()) };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
+        var lines = LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 22,
+            hyphens: Hyphens.Manual);
+
+        Assert.Equal(2, lines.Length);
+        var line1Glyphs = 0;
+        foreach (var s in lines[0].Slices) line1Glyphs += s.GlyphLength;
+        Assert.Equal(3, line1Glyphs);
+    }
+
+    [Fact]
+    public void Wrap_soft_hyphen_advance_zero_for_fit_decisions()
+    {
+        // Per PR #37 review fix (Copilot #1) — soft-hyphen advance
+        // is 0 for fit decisions. "AAA­AAA" with available=18px
+        // (= 3 'A' glyphs at 6px each, exact fit). Without the
+        // 0-advance fix, SH would push lineAdvance to 25.2px and
+        // the wrap would snap back at SH (not actually overflow).
+        // With the fix, line 1 fits exactly 3 A's + 0 SH advance =
+        // 18px, then 'A' at glyph 4 overflows and snap-back fires
+        // at lastAllowed (the SH).
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("AAA­AAA", MakeStyle()) };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
+        var lines = LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 18,
+            hyphens: Hyphens.Manual);
+
+        Assert.Equal(2, lines.Length);
+        // Line 1's TotalAdvance should equal 18 (3 A's), NOT include
+        // the SH glyph's .notdef advance.
+        Assert.Equal(18.0, lines[0].TotalAdvance, precision: 1);
+    }
+
+    [Fact]
+    public void Wrap_LineFragment_EndsWithHyphenationBreak_set_on_soft_hyphen()
+    {
+        // Per PR #37 review fix (User #2) — LineFragment carries
+        // EndsWithHyphenationBreak=true when the wrap fired at a
+        // hyphenation candidate. Phase 4 painter uses this metadata
+        // to render a visible hyphen.
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("AAA­AAA", MakeStyle()) };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
+        var lines = LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 22,
+            hyphens: Hyphens.Manual);
+
+        Assert.Equal(2, lines.Length);
+        Assert.True(lines[0].EndsWithHyphenationBreak,
+            "Line 1 ended at a soft-hyphen — EndsWithHyphenationBreak must be true.");
+        Assert.False(lines[1].EndsWithHyphenationBreak,
+            "Line 2 ended at end-of-text (mandatory) — not a hyphenation break.");
+    }
+
+    [Fact]
+    public void Wrap_LineFragment_EndsWithHyphenationBreak_false_for_non_hyphenation_wrap()
+    {
+        // Soft-wrap at a regular space should NOT set
+        // EndsWithHyphenationBreak.
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("AAA AAA", MakeStyle()) };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
+        var lines = LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 25);
+
+        Assert.Equal(2, lines.Length);
+        Assert.False(lines[0].EndsWithHyphenationBreak,
+            "Soft-wrap at regular space is not a hyphenation break.");
+    }
+
+    [Fact]
+    public void Wrap_Auto_pathologically_long_token_skipped()
+    {
+        // Per PR #37 review fix (User #4) — Liang hyphenation skips
+        // ASCII tokens longer than MaxLiangWordLength to bound CPU +
+        // allocation. A 200-char "word" should NOT crash or hang.
+        using var resolver = new TestShaperResolver();
+        var giant = new string('a', 200);
+        var sourceRuns = new List<TextRun> { new(giant, MakeStyle()) };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
+        // Should not throw; result is one overflowing line (no
+        // hyphenation, no other break candidates).
+        var lines = LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 100,
+            hyphens: Hyphens.Auto);
+        Assert.Single(lines);
+    }
+
+    [Fact]
+    public void Wrap_Manual_no_soft_hyphen_fast_path_no_alloc()
+    {
+        // Per PR #37 review fix (User #5) — Manual mode with text
+        // containing no U+00AD takes the fast path (no
+        // hyphenationAfter[] allocation). Behavior should be
+        // indistinguishable from the slow path: wrap on regular
+        // spaces only, no hyphenation candidates.
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("AAA AAA", MakeStyle()) };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
+        var lines = LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 25,
+            hyphens: Hyphens.Manual);
+
+        // Should soft-wrap at the SP (UAX #14 LB18) — same as None.
+        Assert.Equal(2, lines.Length);
+        Assert.False(lines[0].EndsWithHyphenationBreak);
     }
 
     // --- Helpers --------------------------------------------------

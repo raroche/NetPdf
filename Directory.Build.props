@@ -122,14 +122,12 @@
     aren't affected.
   -->
   <!--
-    Per PR #36 review fix — earlier `<Compile Remove>` in this file
-    fired BEFORE the SDK expanded its default Compile items, so the
-    excludes had no effect when dup files appeared after a project's
-    Sdk import. Use DefaultItemExcludes which the SDK consults DURING
-    its default-item expansion. Patterns aligned with .gitignore.
+    Per PR #37 review fix — moved Finder-duplicate exclusion to
+    Directory.Build.targets where Compile Remove fires AFTER SDK
+    default-item expansion. The earlier DefaultItemExcludes
+    approach with `[2-9]` range globs proved unreliable across SDK
+    versions; targets-based Compile Remove on the populated
+    @(Compile) item collection is the deterministic fix.
   -->
-  <PropertyGroup>
-    <DefaultItemExcludes>$(DefaultItemExcludes);**/* [2-9].cs;**/* [1-9][0-9].cs</DefaultItemExcludes>
-  </PropertyGroup>
 
 </Project>

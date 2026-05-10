@@ -90,15 +90,26 @@ internal static class LineBuilder
     /// Empty runs are silently skipped (don't create itemized runs).</param>
     /// <param name="paragraphDirection">The paragraph-level base
     /// direction (UAX #9 P2/P3).</param>
+    /// <param name="cancellationToken">Per Phase 3 Task 10 cycle 1
+    /// review fix — cancellation is observed at method entry, after
+    /// per-run total-length accumulation, after concat + source-map
+    /// fill (single pass through total UTF-16 length), and after
+    /// bidi resolution. Long inputs (very wide blocks of text or
+    /// pathological documents) terminate cooperatively instead of
+    /// running an uninterrupted bidi pass.</param>
     /// <returns>Itemized runs covering the full text in document
     /// order. Each run's <see cref="ItemizedRun.Utf16Start"/> +
     /// <see cref="ItemizedRun.Utf16Length"/> indexes into the
     /// concatenated input text (= the source TextRuns joined).</returns>
+    /// <exception cref="System.OperationCanceledException">
+    /// <paramref name="cancellationToken"/> was canceled.</exception>
     public static ItemizedRun[] Itemize(
         IReadOnlyList<TextRun> textRuns,
-        ParagraphDirection paragraphDirection)
+        ParagraphDirection paragraphDirection,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(textRuns);
+        cancellationToken.ThrowIfCancellationRequested();
         if (textRuns.Count == 0)
         {
             return Array.Empty<ItemizedRun>();
@@ -113,6 +124,7 @@ internal static class LineBuilder
         {
             totalLength += textRuns[i].Text.Length;
         }
+        cancellationToken.ThrowIfCancellationRequested();
         if (totalLength == 0)
         {
             return Array.Empty<ItemizedRun>();
@@ -131,6 +143,7 @@ internal static class LineBuilder
                 pos++;
             }
         }
+        cancellationToken.ThrowIfCancellationRequested();
 
         // Resolve bidi levels per-codepoint via the high-level
         // BidiAlgorithm.ResolveLevels API. Per cycle 1 post-PR-32
@@ -149,6 +162,7 @@ internal static class LineBuilder
         // resolved level. Concatenated output is byte-deterministic.
         var bidiLevels = BidiAlgorithm.ResolveLevels(
             concatBuf, paragraphDirection);
+        cancellationToken.ThrowIfCancellationRequested();
 
         // Walk the concatenated text + emit a new ItemizedRun
         // whenever the bidi level OR the source-run-index changes.

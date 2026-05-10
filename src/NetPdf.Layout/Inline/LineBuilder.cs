@@ -614,6 +614,32 @@ internal static class LineBuilder
                 $"must match sourceTextRuns count ({sourceTextRuns.Count}).",
                 nameof(whiteSpacePerRun));
         }
+        // Per Phase 3 Task 10 cycle 3c review Rec #6 — validate every
+        // whiteSpacePerRun entry is a defined WhiteSpace enum value.
+        // An undefined cast (e.g., (WhiteSpace)99) would slip past
+        // the per-glyph downgrade switch silently — always reading
+        // as "not Pre or NoWrap" — and produce indeterminate wrap
+        // behavior. Validate at entry so the caller learns about
+        // the bug instead of getting weird output.
+        if (whiteSpacePerRun is not null)
+        {
+            for (var i = 0; i < whiteSpacePerRun.Count; i++)
+            {
+                var ws = whiteSpacePerRun[i];
+                if (ws is not (WhiteSpace.Normal
+                    or WhiteSpace.Pre
+                    or WhiteSpace.NoWrap
+                    or WhiteSpace.PreWrap
+                    or WhiteSpace.PreLine
+                    or WhiteSpace.BreakSpaces))
+                {
+                    throw new ArgumentException(
+                        $"LineBuilder.Wrap: whiteSpacePerRun[{i}] = {ws} " +
+                        $"is not a defined WhiteSpace value.",
+                        nameof(whiteSpacePerRun));
+                }
+            }
+        }
         if (!double.IsFinite(availableInlineSize) || availableInlineSize <= 0)
         {
             throw new ArgumentOutOfRangeException(nameof(availableInlineSize),
@@ -657,7 +683,23 @@ internal static class LineBuilder
 
         // Cycle 3b — Pre + NoWrap suppress wrapping at UAX #14 Allowed
         // opportunities; only Mandatory breaks split lines.
-        var wrapsAtAllowed = whiteSpace is not (WhiteSpace.Pre or WhiteSpace.NoWrap);
+        //
+        // Per Phase 3 Task 10 cycle 3c review Rec #2 + Copilot #2/#3
+        // — when whiteSpacePerRun is supplied the global gate must
+        // not unconditionally suppress wraps for the WHOLE pass. The
+        // per-glyph downgrade below (lines 931-943) converts Allowed
+        // → Prohibited for every glyph in a NoWrap/Pre source run;
+        // setting `wrapsAtAllowed = true` whenever per-run mode is
+        // active lets the per-glyph filter authoritatively decide.
+        // (Without this, a leading NoWrap source run made
+        // `whiteSpace = NoWrap` reach this seam, which suppressed
+        // wraps in a TRAILING Normal source run too — exactly the
+        // Normal-after-NoWrap order bug the review flagged.)
+        //
+        // When whiteSpacePerRun is null, the original cycle-3b
+        // semantics apply: the uniform `whiteSpace` argument decides.
+        var wrapsAtAllowed = whiteSpacePerRun is not null
+            || whiteSpace is not (WhiteSpace.Pre or WhiteSpace.NoWrap);
 
         // Cycle 3b sub-cycle 1 hardening — Normal + NoWrap + PreLine
         // collapse spaces; trailing collapsible whitespace at the
@@ -918,16 +960,28 @@ internal static class LineBuilder
 
                 // Per Phase 3 Task 10 cycle 3c — per-glyph WhiteSpace
                 // honoring. When a per-source-run whiteSpacePerRun
-                // array is supplied, glyphs in NoWrap/Pre runs get
-                // their Allowed opportunities downgraded to
-                // Prohibited (those modes suppress wrapping).
-                // Without this, mixed-mode descendants like
+                // array is supplied, EVERY glyph belonging to a
+                // NoWrap or Pre source run gets its UAX #14 Allowed
+                // opportunity downgraded to Prohibited (those modes
+                // suppress soft wraps). This applies uniformly
+                // across the whole NoWrap/Pre span — not just the
+                // last glyph (per cycle 3c review Copilot #4
+                // correction of an earlier comment that said "only
+                // LAST glyph": the loop visits each glyph and
+                // downgrades it independently, so all internal +
+                // trailing Allowed positions inside the NoWrap span
+                // are suppressed). Glyphs in surrounding wrap-
+                // friendly runs (Normal / PreWrap / PreLine /
+                // BreakSpaces) keep their Allowed candidates so the
+                // wrap loop can snap to those boundaries when the
+                // line overflows.
+                //
+                // Mixed-mode descendants like
                 // `<span style="white-space:nowrap">` inside a
-                // `white-space:normal` paragraph would still wrap
-                // mid-span. With this, only the LAST glyph of the
-                // NoWrap span has its Allowed suppressed; the FIRST
-                // glyph in the surrounding Normal text retains its
-                // candidate, so the wrap snaps to a sensible boundary.
+                // `white-space:normal` paragraph therefore wrap
+                // ONLY at the surrounding Normal text's boundaries
+                // (typically the SP between the prefix run and the
+                // NoWrap span, or the SP after the NoWrap span ends).
                 if (whiteSpacePerRun is not null
                     && opp == LineBreakOpportunity.Allowed)
                 {

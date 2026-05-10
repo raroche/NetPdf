@@ -18,20 +18,16 @@ namespace NetPdf.Layout.Inline;
 /// <see cref="ShapedRunSlice.GlyphLength"/> identify the exact glyph
 /// subrange on this line.</para>
 ///
-/// <para><b>Cycle 3a scope.</b> Cycle 3a wraps with a naive greedy
-/// algorithm — fill the line up to <c>availableInlineSize</c>, snap
-/// back to the most recent <c>Allowed</c> break opportunity (UAX #14),
-/// emit a fragment, repeat. <c>Mandatory</c> breaks force a
-/// fragment boundary even mid-line; mandatory-control glyphs
-/// (LF/CR/NEL/VT/FF/LS/PS) are trimmed off the drawable slice so
-/// the painter never emits glyph data for them. CRLF strips both
-/// CR + LF on the same line. No hyphenation, no
-/// <c>overflow-wrap</c>/<c>word-break</c> overrides, no
-/// <c>text-align</c>/<c>vertical-align</c> processing — all deferred
-/// to cycle 3b/c.</para>
+/// <para><b>Wrap algorithm.</b> Greedy fill — accumulate glyphs up
+/// to <c>availableInlineSize</c>, snap back to the most recent
+/// <c>Allowed</c> break opportunity (UAX #14), emit a fragment,
+/// repeat. <c>Mandatory</c> breaks force a fragment boundary even
+/// mid-line; mandatory-control glyphs (LF/CR/NEL/VT/FF/LS/PS) are
+/// trimmed off the drawable slice so the painter never emits glyph
+/// data for them. CRLF strips both CR + LF on the same line.</para>
 ///
-/// <para><b>Cycle 3b white-space pipeline.</b> CSS <c>white-space</c>
-/// processing is split between TWO call sites:
+/// <para><b>White-space pipeline (cycle 3b + 3c).</b> CSS
+/// <c>white-space</c> processing is split between TWO call sites:
 /// <list type="number">
 ///   <item><b>Pre-shaping preprocessing</b> via
 ///   <see cref="LineBuilder.PreprocessWhitespace"/> or
@@ -50,25 +46,53 @@ namespace NetPdf.Layout.Inline;
 ///   honored), and trims trailing collapsible-whitespace glyphs off
 ///   the drawable slice when wrapping at an Allowed break in
 ///   collapsible modes (Normal/NoWrap/PreLine) per §4.1.2.</item>
+///   <item><b>Per-source-run honoring</b> via the optional
+///   <c>whiteSpacePerRun</c> parameter on
+///   <see cref="LineBuilder.Wrap"/> (cycle 3c). When supplied,
+///   each glyph's UAX #14 Allowed opportunity is downgraded to
+///   Prohibited if its source TextRun's WhiteSpace ∈
+///   {<see cref="WhiteSpace.NoWrap"/>, <see cref="WhiteSpace.Pre"/>}.
+///   The <see cref="InlineLayouter.LayoutPerRun"/> facade builds
+///   this array automatically for mixed Normal/NoWrap inputs
+///   (both share collapse semantics per §4.1). Pre/PreWrap/
+///   PreLine/BreakSpaces mixes require per-source-run preprocessing
+///   + still throw at the facade pending cycle 3d.</item>
 /// </list>
 /// </para>
 ///
-/// <para><b>Cycle 3a deferrals (subsequent cycles):</b></para>
+/// <para><b>Shipped capabilities (3a / 3b / 3c):</b>
 /// <list type="bullet">
-///   <item>White-space: <c>pre</c>/<c>pre-wrap</c>/<c>pre-line</c>/
-///   <c>nowrap</c> variants (cycle 3b).</item>
-///   <item><c>overflow-wrap: anywhere</c> + <c>word-break: break-all</c>
-///   (cycle 3b).</item>
-///   <item>Hyphenation via Liang patterns (cycle 3b — primitives
-///   already exist in <c>NetPdf.Text.Hyphenation</c>).</item>
-///   <item><c>text-align</c> (start/end/center/justify) — cycle 3a
-///   emits left-aligned fragments only (cycle 3c).</item>
-///   <item><c>vertical-align</c> baseline shifts (cycle 3c).</item>
-///   <item>RTL line reversal at the fragment level (cycle 3c —
-///   cycle 2 already produces RTL glyph arrays in HarfBuzz visual
-///   order; cycle 3c reverses fragment-level slice order for RTL
-///   paragraphs).</item>
+///   <item>Cycle 3a — greedy wrap at UAX #14 Allowed boundaries,
+///   Mandatory break handling, mandatory-control glyph trim, multi-
+///   shaped-run slices, RTL glyph passthrough in HarfBuzz visual
+///   order.</item>
+///   <item>Cycle 3b — all 6 CSS white-space modes (<c>normal</c>,
+///   <c>pre</c>, <c>nowrap</c>, <c>pre-wrap</c>, <c>pre-line</c>,
+///   <c>break-spaces</c> — last folds to <c>pre-wrap</c>);
+///   <c>overflow-wrap: anywhere</c> + <c>word-break: break-all</c>
+///   forced-break fallback with grapheme-cluster + protected-
+///   codepoint guards; Liang-pattern hyphenation under
+///   <c>hyphens: auto</c> + soft-hyphen handling.</item>
+///   <item>Cycle 3c — per-source-run <c>WhiteSpace</c> array
+///   (Normal/NoWrap matrix) for mixed inline descendants.</item>
 /// </list>
+/// </para>
+///
+/// <para><b>Subsequent-cycle deferrals:</b>
+/// <list type="bullet">
+///   <item>Per-source-run preprocessing for Pre/PreWrap/PreLine/
+///   BreakSpaces mixed with Normal/NoWrap (cycle 3d).</item>
+///   <item>Per-glyph overflow-wrap / word-break / hyphens for
+///   mixed-mode descendants (cycle 3d / 3e).</item>
+///   <item><c>text-align</c> (start/end/center/justify) — wrap
+///   currently emits left-aligned fragments only.</item>
+///   <item><c>vertical-align</c> baseline shifts.</item>
+///   <item>RTL line reversal at the fragment level — cycle 2
+///   already produces RTL glyph arrays in HarfBuzz visual order;
+///   a subsequent cycle reverses fragment-level slice order for
+///   RTL paragraphs.</item>
+/// </list>
+/// </para>
 /// </summary>
 /// <param name="Slices">The shaped-run slices making up this line in
 /// document order. Empty array represents an empty line (e.g., a

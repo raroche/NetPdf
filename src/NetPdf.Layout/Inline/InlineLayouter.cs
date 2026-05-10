@@ -190,7 +190,8 @@ internal static class InlineLayouter
             or WhiteSpace.Pre
             or WhiteSpace.NoWrap
             or WhiteSpace.PreWrap
-            or WhiteSpace.PreLine))
+            or WhiteSpace.PreLine
+            or WhiteSpace.BreakSpaces))
         {
             throw new ArgumentOutOfRangeException(nameof(whiteSpace),
                 whiteSpace,
@@ -254,7 +255,7 @@ internal static class InlineLayouter
     /// passes the block's own ComputedStyle + the chain auto-
     /// resolves the policy bundle.
     ///
-    /// <para><b>Per-source-TextRun policy (cycle 3 simplification).</b>
+    /// <para><b>UNIFORM-POLICY only — does NOT support per-source-TextRun.</b>
     /// CSS Text L3 §3-§6 properties (white-space, overflow-wrap,
     /// word-break, hyphens) all inherit, so for the common case
     /// where a paragraph + its descendants share the inherited
@@ -262,9 +263,22 @@ internal static class InlineLayouter
     /// Mixed-mode descendants (e.g.,
     /// <c>&lt;span style="white-space:nowrap"&gt;</c> inside
     /// <c>white-space:normal</c> text) require per-glyph policy
-    /// metadata flowing through Wrap — scheduled for a subsequent
-    /// cycle. Cycle 3 ships only the containing-block-uniform path,
-    /// which covers the 95% case for invoice/report content.</para>
+    /// metadata flowing through Wrap — NOT supported by this
+    /// overload. Cycle 3 ships only the containing-block-uniform
+    /// path, which covers the 95% case for invoice/report content.</para>
+    ///
+    /// <para><b>Caller contract.</b> The integrating block-layouter
+    /// MUST verify that all source TextRuns inherit white-space /
+    /// overflow-wrap / word-break / hyphens from
+    /// <paramref name="containingBlockStyle"/>, OR pre-flatten the
+    /// box tree so mixed-mode descendants don't reach this seam.
+    /// When mixed modes ARE present, cycle 3b's per-glyph metadata
+    /// API will be the right call; this overload silently applies
+    /// the containing-block policy to the entire pass, producing
+    /// wrong output for mixed runs (no exception is thrown — the
+    /// failure is silent layout error). A pinned regression test
+    /// (<c>InlineLayouterCycle3Tests.Layout_with_mixed_run_styles_silently_uniform_pinned</c>)
+    /// documents this limit.</para>
     ///
     /// <para>Hyphenator selection: when
     /// <see cref="Hyphens.Auto"/>, the call falls back to

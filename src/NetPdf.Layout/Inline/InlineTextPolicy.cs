@@ -92,10 +92,14 @@ internal static class InlineTextPolicyMaterializer
             1 => WhiteSpace.Pre,
             2 => WhiteSpace.NoWrap,
             3 => WhiteSpace.PreWrap,
-            // break-spaces deferred to a later cycle; fold to Normal
-            // so cycle-2 callers see stable behavior. Cycle 4 may add
-            // the enum value when wrap-mode-component support lands.
-            4 => WhiteSpace.Normal,
+            // Per Phase 3 Task 10 cycle 3 review (User #3) — map
+            // break-spaces to its own enum value (no longer silently
+            // folds to Normal which would collapse spaces). Cycle 3
+            // simplification: BreakSpaces behaves like PreWrap
+            // (preserve + wrap at UAX #14 Allowed); the "wrap at
+            // every preserved space" detail lands in a subsequent
+            // cycle with forced wrap candidates.
+            4 => WhiteSpace.BreakSpaces,
             5 => WhiteSpace.PreLine,
             _ => WhiteSpace.Normal,
         };

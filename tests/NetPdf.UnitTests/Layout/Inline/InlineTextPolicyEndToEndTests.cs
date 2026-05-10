@@ -9,6 +9,7 @@ using AngleSharp.Dom;
 using NetPdf.Css.Cascade;
 using NetPdf.Css.ComputedValues;
 using NetPdf.Css.Parser;
+using NetPdf.Css.Parser.Preprocessing;
 using NetPdf.Css.Properties;
 using NetPdf.Layout.Boxes;
 using NetPdf.Layout.Inline;
@@ -60,10 +61,16 @@ public sealed class InlineTextPolicyEndToEndTests
 
     private static CssStylesheet ParseSheet(string css)
     {
+        // Per Phase 3 Task 10 cycle 3 review (User #1) — run the
+        // CssPreprocessor BEFORE handing the parsed AngleSharp tree
+        // to the adapter. Production (Phase2Pipeline) does this; the
+        // earlier test helper bypassed it which is why the
+        // recovered-property paths weren't being exercised end-to-end.
+        var preprocess = CssPreprocessor.Process(css);
         var ctx = BrowsingContext.New(Configuration.Default.WithCss());
         var parser = ctx.GetService<AngleSharp.Css.Parser.ICssParser>()!;
         var sheet = parser.ParseStyleSheet(css);
-        return CssParserAdapter.Adapt(sheet, href: null,
+        return CssParserAdapter.Adapt(sheet, preprocess, href: null,
             origin: CssStylesheetOrigin.Author,
             ownerKind: CssStylesheetOwnerKind.StyleElement,
             mediaQuery: null, isDisabled: false, order: 0);
@@ -111,16 +118,14 @@ public sealed class InlineTextPolicyEndToEndTests
     }
 
     [Fact]
-    public async Task EndToEnd_AngleSharp_drops_overflow_wrap_anywhere()
+    public async Task EndToEnd_overflow_wrap_anywhere_recovered_via_preprocessor()
     {
-        // Pin: AngleSharp.Css 1.0.0-beta.144's ICssParser drops the
-        // overflow-wrap declaration before our adapter sees it, so
-        // ComputedStyle holds the default keyword id (0 = normal).
-        // The materializer correctly returns OverflowWrap.Normal —
-        // the gap is at the CSS parser layer, not the layout layer.
-        // When AngleSharp upgrades to recognize overflow-wrap, this
-        // test flips: expected becomes OverflowWrap.Anywhere +
-        // keyword id 1.
+        // Per Phase 3 Task 10 cycle 3 review (User #1) — the
+        // CssPreprocessor now recovers overflow-wrap declarations
+        // that AngleSharp.Css drops. The full production pipeline
+        // (preprocess → parse → adapt → cascade → ComputedStyle)
+        // correctly resolves overflow-wrap:anywhere to keyword id 1
+        // (anywhere) → OverflowWrap.Anywhere.
         const string html = "<html><body><p>x</p></body></html>";
         const string css = "p { overflow-wrap: anywhere; }";
 
@@ -129,19 +134,33 @@ public sealed class InlineTextPolicyEndToEndTests
 
         var owSlot = pStyle.Get(PropertyId.OverflowWrap);
         Assert.Equal(ComputedSlotTag.Keyword, owSlot.Tag);
-        Assert.Equal(0, owSlot.AsKeyword()); // cycle-2 pinned: declaration dropped
+        Assert.Equal(1, owSlot.AsKeyword()); // anywhere
 
         var policy = pStyle.ReadInlineTextPolicy();
-        Assert.Equal(OverflowWrap.Normal, policy.OverflowWrap);
+        Assert.Equal(OverflowWrap.Anywhere, policy.OverflowWrap);
+    }
+
+    [Fact]
+    public async Task EndToEnd_overflow_wrap_break_word_recovered_and_folds()
+    {
+        // overflow-wrap:break-word is the deprecated alias for
+        // anywhere. Recovery emits keyword id 2 (break-word); the
+        // materializer folds to OverflowWrap.Anywhere.
+        const string html = "<html><body><p>x</p></body></html>";
+        const string css = "p { overflow-wrap: break-word; }";
+
+        var pStyle = await GetParagraphComputedStyle(html, css);
+        Assert.NotNull(pStyle);
+
+        var policy = pStyle.ReadInlineTextPolicy();
+        Assert.Equal(OverflowWrap.Anywhere, policy.OverflowWrap);
     }
 
     [Fact]
     public async Task EndToEnd_word_break_break_all_flows_through_pipeline()
     {
         // AngleSharp.Css 1.0.0-beta.144 DOES recognize word-break.
-        // The full pipeline (parse → adapt → cascade → ComputedStyle
-        // → ReadInlineTextPolicy) correctly produces
-        // WordBreak.BreakAll for the authored declaration. This test
+        // No recovery needed — declaration flows natively. This test
         // pins the working path so a future AngleSharp regression
         // is detected.
         const string html = "<html><body><p>x</p></body></html>";
@@ -155,10 +174,10 @@ public sealed class InlineTextPolicyEndToEndTests
     }
 
     [Fact]
-    public async Task EndToEnd_AngleSharp_drops_hyphens_auto()
+    public async Task EndToEnd_hyphens_auto_recovered_via_preprocessor()
     {
-        // Same pin as above — hyphens declaration is dropped at the
-        // AngleSharp parser layer.
+        // Per Phase 3 Task 10 cycle 3 review (User #1) — recovery
+        // closes the hyphens drop at the AngleSharp parser layer.
         const string html = "<html><body><p>x</p></body></html>";
         const string css = "p { hyphens: auto; }";
 
@@ -166,6 +185,45 @@ public sealed class InlineTextPolicyEndToEndTests
         Assert.NotNull(pStyle);
 
         var policy = pStyle.ReadInlineTextPolicy();
-        Assert.Equal(Hyphens.Manual, policy.Hyphens);
+        Assert.Equal(Hyphens.Auto, policy.Hyphens);
+    }
+
+    [Fact]
+    public async Task EndToEnd_white_space_break_spaces_no_longer_silently_folds_to_Normal()
+    {
+        // Per Phase 3 Task 10 cycle 3 review (User #3) — pre-fix:
+        // break-spaces silently folded to Normal, collapsing
+        // authored spaces. Post-fix: maps to WhiteSpace.BreakSpaces
+        // (preserve + wrap), which is the spec-compliant
+        // approximation pending the "wrap at every preserved
+        // space" detail in a later cycle.
+        const string html = "<html><body><p>x</p></body></html>";
+        const string css = "p { white-space: break-spaces; }";
+
+        var pStyle = await GetParagraphComputedStyle(html, css);
+        Assert.NotNull(pStyle);
+
+        var policy = pStyle.ReadInlineTextPolicy();
+        Assert.Equal(WhiteSpace.BreakSpaces, policy.WhiteSpace);
+    }
+
+    [Fact]
+    public async Task EndToEnd_word_wrap_legacy_alias_normalizes_to_overflow_wrap()
+    {
+        // Per Phase 3 Task 10 cycle 3 review (User #2) — `word-wrap`
+        // is the CSS Text 2 legacy alias for `overflow-wrap`. The
+        // CssPreprocessor's central LegacyPropertyAliases map
+        // normalizes word-wrap → overflow-wrap at recovery time, so
+        // authored documents using `word-wrap: break-word` resolve
+        // through the production cascade as `overflow-wrap:
+        // break-word` → OverflowWrap.Anywhere.
+        const string html = "<html><body><p>x</p></body></html>";
+        const string css = "p { word-wrap: break-word; }";
+
+        var pStyle = await GetParagraphComputedStyle(html, css);
+        Assert.NotNull(pStyle);
+
+        var policy = pStyle.ReadInlineTextPolicy();
+        Assert.Equal(OverflowWrap.Anywhere, policy.OverflowWrap);
     }
 }

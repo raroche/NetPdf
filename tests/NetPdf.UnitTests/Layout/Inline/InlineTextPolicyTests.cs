@@ -59,7 +59,7 @@ public sealed class InlineTextPolicyTests
     [Fact] public void WhiteSpace_pre()          => Assert.Equal(WhiteSpace.Pre, ResolveWith(PropertyId.WhiteSpace, 1).WhiteSpace);
     [Fact] public void WhiteSpace_nowrap()       => Assert.Equal(WhiteSpace.NoWrap, ResolveWith(PropertyId.WhiteSpace, 2).WhiteSpace);
     [Fact] public void WhiteSpace_pre_wrap()     => Assert.Equal(WhiteSpace.PreWrap, ResolveWith(PropertyId.WhiteSpace, 3).WhiteSpace);
-    [Fact] public void WhiteSpace_break_spaces_folds_to_Normal() => Assert.Equal(WhiteSpace.Normal, ResolveWith(PropertyId.WhiteSpace, 4).WhiteSpace);
+    [Fact] public void WhiteSpace_break_spaces_maps_to_BreakSpaces() => Assert.Equal(WhiteSpace.BreakSpaces, ResolveWith(PropertyId.WhiteSpace, 4).WhiteSpace);
     [Fact] public void WhiteSpace_pre_line()     => Assert.Equal(WhiteSpace.PreLine, ResolveWith(PropertyId.WhiteSpace, 5).WhiteSpace);
 
     // --- OverflowWrap mapping ---

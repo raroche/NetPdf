@@ -6,7 +6,6 @@ using System.Collections.Generic;
 using NetPdf.Css.ComputedValues;
 using NetPdf.Css.Properties;
 using NetPdf.Layout.Inline;
-using NetPdf.Text.Bidi;
 using NetPdf.Text.Shaping;
 using NetPdf.UnitTests.Text.Fonts.OpenType;
 using Xunit;
@@ -141,6 +140,50 @@ public sealed class InlineLayouterCycle3Tests
         // word-break:break-word → folds to overflow-wrap:anywhere
         // → splits unbreakable run.
         Assert.True(result.Length >= 3);
+    }
+
+    [Fact]
+    public void Layout_with_mixed_run_styles_silently_uniform_pinned()
+    {
+        // Per Phase 3 Task 10 cycle 3 review (User #4) — pin the
+        // documented limit: when source TextRuns have DIFFERENT
+        // policies (mixed-mode descendants), this overload applies
+        // the containing-block policy uniformly. Per-source-run
+        // policy is cycle 3b's responsibility. Output silently
+        // reflects the containing-block policy — no exception.
+        //
+        // Test scenario: containing block has Normal whitespace;
+        // one TextRun has its own NoWrap-marked style. Expected
+        // (cycle 3 behavior): containing-block Normal applies; the
+        // run's own style is IGNORED. Cycle 3b will flip this to
+        // honor the per-run NoWrap.
+        using var resolver = new TestShaperResolver();
+
+        var containingBlockStyle = ComputedStyle.RentForExclusiveTesting();
+        // Containing block: white-space:normal (default keyword id 0).
+
+        var runStyleNormal = MakeStyle();
+        var runStyleNoWrap = ComputedStyle.RentForExclusiveTesting();
+        runStyleNoWrap.Set(PropertyId.WhiteSpace, ComputedSlot.FromKeyword(2)); // nowrap
+
+        var sourceRuns = new List<TextRun>
+        {
+            new("AAA AAA", runStyleNormal),
+            new(" BBB BBB", runStyleNoWrap), // would prevent wrap if per-run honored
+        };
+
+        var result = InlineLayouter.Layout(sourceRuns, 25, resolver,
+            containingBlockStyle: containingBlockStyle,
+            scriptIso15924: LatnScript,
+            language: EnLang);
+
+        // Cycle 3 pinned: containing-block Normal applies — soft-
+        // wrap fires at spaces. Result has multiple lines because
+        // the run-level NoWrap is ignored.
+        // Cycle 3b fix: would honor run-level NoWrap, producing
+        // fewer lines.
+        Assert.True(result.Length >= 2,
+            $"Cycle 3 uniform-policy: containing-block Normal allows wrap; got {result.Length} lines.");
     }
 
     // --- Helpers --------------------------------------------------

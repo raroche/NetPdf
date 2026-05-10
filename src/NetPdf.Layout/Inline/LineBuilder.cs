@@ -597,7 +597,8 @@ internal static class LineBuilder
             or WhiteSpace.Pre
             or WhiteSpace.NoWrap
             or WhiteSpace.PreWrap
-            or WhiteSpace.PreLine))
+            or WhiteSpace.PreLine
+            or WhiteSpace.BreakSpaces))
         {
             throw new ArgumentOutOfRangeException(nameof(whiteSpace),
                 whiteSpace,
@@ -1337,7 +1338,8 @@ internal static class LineBuilder
         ArgumentNullException.ThrowIfNull(text);
         return mode switch
         {
-            WhiteSpace.Pre or WhiteSpace.PreWrap => NormalizeSegmentBreaks(text),
+            WhiteSpace.Pre or WhiteSpace.PreWrap or WhiteSpace.BreakSpaces
+                => NormalizeSegmentBreaks(text),
             WhiteSpace.PreLine => CollapseSpacesPreserveBreaks(text),
             WhiteSpace.Normal or WhiteSpace.NoWrap => CollapseAllWhitespace(text),
             _ => throw new ArgumentOutOfRangeException(nameof(mode), mode,
@@ -1555,7 +1557,7 @@ internal static class LineBuilder
         ArgumentNullException.ThrowIfNull(runs);
         if (runs.Count == 0) return runs;
 
-        if (mode is WhiteSpace.Pre or WhiteSpace.PreWrap)
+        if (mode is WhiteSpace.Pre or WhiteSpace.PreWrap or WhiteSpace.BreakSpaces)
         {
             var preNormalized = new TextRun[runs.Count];
             for (var i = 0; i < runs.Count; i++)

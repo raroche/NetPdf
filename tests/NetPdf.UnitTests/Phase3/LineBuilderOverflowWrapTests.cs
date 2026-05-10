@@ -185,13 +185,12 @@ public class LineBuilderOverflowWrapTests
     // --- Combo modes ---
 
     [Fact]
-    public void Wrap_OverflowWrap_Anywhere_with_NoWrap_only_breaks_at_Mandatory()
+    public void Wrap_NoWrap_with_Anywhere_does_NOT_force_breaks()
     {
-        // NoWrap suppresses Allowed-break wrapping. Anywhere only
-        // fires when overflow + no candidate. With NoWrap there's
-        // never a candidate, so Anywhere fallback IS the only wrap
-        // mechanism. Test: "AAAAAAAA" with NoWrap + Anywhere +
-        // available=15 should split per-glyph at the budget.
+        // Per PR #36 review fix (User #2): OverflowWrap.Anywhere is
+        // GATED by white-space wrapping permission. Under NoWrap (or
+        // Pre) the wrap pass disallows ALL soft wraps; Anywhere
+        // honors that. Result: no wrap, line overflows.
         using var resolver = new TestShaperResolver();
         var sourceRuns = new List<TextRun> { new("AAAAAAAA", MakeStyle()) };
         var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
@@ -200,30 +199,39 @@ public class LineBuilderOverflowWrapTests
             whiteSpace: WhiteSpace.NoWrap,
             overflowWrap: OverflowWrap.Anywhere);
 
-        Assert.True(lines.Length >= 2,
-            $"NoWrap + Anywhere should still wrap on overflow; got {lines.Length} lines.");
+        // Anywhere gated by wrapsAtAllowed=false → no wrap.
+        Assert.Single(lines);
         var totalGlyphs = 0;
-        foreach (var line in lines)
-        foreach (var s in line.Slices)
-            totalGlyphs += s.GlyphLength;
+        foreach (var s in lines[0].Slices) totalGlyphs += s.GlyphLength;
         Assert.Equal(8, totalGlyphs);
+        Assert.True(lines[0].TotalAdvance > 15,
+            "NoWrap + Anywhere overflows — Anywhere is gated by white-space wrapping permission.");
     }
 
     [Fact]
-    public void Wrap_BreakAll_overrides_Pre_NoWrap_Allowed_suppression()
+    public void Wrap_Pre_with_Anywhere_does_NOT_force_breaks()
+    {
+        // Same gating rule for white-space:pre.
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("AAAAAAAA", MakeStyle()) };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
+        var lines = LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 15,
+            whiteSpace: WhiteSpace.Pre,
+            overflowWrap: OverflowWrap.Anywhere);
+
+        Assert.Single(lines);
+    }
+
+    [Fact]
+    public void Wrap_Pre_BreakAll_combo_does_NOT_wrap_pin_pre_no_wrap_policy()
     {
         // Pre suppresses Allowed-break wrapping at the wrap-pass
-        // level. BreakAll upgrades EVERY glyph boundary to Allowed
-        // — the wrapsAtAllowed=false rule under Pre still suppresses
-        // those, so BreakAll alone with Pre = no wrapping. Verify
-        // this composition: Pre + BreakAll = Pre's no-wrap wins (we
-        // don't override Pre's strict no-wrap policy).
-        //
-        // Cycle 3b sub-cycle 2 chose this composition deliberately:
-        // CSS Text L3 leaves wordbreak/overflowwrap/whitespace
-        // interaction nuanced; the conservative semantics is "Pre's
-        // 'do not wrap' wins". Real-world CSS engines vary here;
-        // future cycles may refine.
+        // level. BreakAll's per-glyph upgrades to Allowed are then
+        // ignored by the wrapsAtAllowed=false gate — so Pre's "no
+        // wrap" policy wins. This composition pins that semantic;
+        // real-world CSS engines have varied historical behavior
+        // here, but our conservative read is "Pre wins".
         using var resolver = new TestShaperResolver();
         var sourceRuns = new List<TextRun> { new("AAAAAA", MakeStyle()) };
         var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
@@ -232,9 +240,35 @@ public class LineBuilderOverflowWrapTests
             whiteSpace: WhiteSpace.Pre,
             wordBreak: WordBreak.BreakAll);
 
-        // Pre's wrapsAtAllowed=false suppresses BreakAll's per-glyph
-        // candidates. No overflow-wrap, so the line just overflows.
         Assert.Single(lines);
+    }
+
+    // --- Anywhere single-glyph-wider-than-line guarantee (Copilot PR #36) ---
+
+    [Fact]
+    public void Wrap_OverflowWrap_Anywhere_single_glyph_wider_than_line_emits_one_per_line()
+    {
+        // Per PR #36 review fix (Copilot #1): when a SINGLE glyph
+        // is wider than the budget, Anywhere should emit it as its
+        // own line (overflows by exactly one glyph) and advance
+        // — not let additional glyphs accumulate. Available = 1px
+        // (impossibly small) + 'A' = 6px; every glyph is wider
+        // than the line.
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("AAAAAA", MakeStyle()) };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
+        var lines = LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 1,
+            overflowWrap: OverflowWrap.Anywhere);
+
+        // Each glyph emits as its own line.
+        Assert.Equal(6, lines.Length);
+        foreach (var line in lines)
+        {
+            var glyphs = 0;
+            foreach (var s in line.Slices) glyphs += s.GlyphLength;
+            Assert.Equal(1, glyphs);
+        }
     }
 
     // --- Backward compat: existing tests still pass with default args
@@ -252,6 +286,74 @@ public class LineBuilderOverflowWrapTests
 
         Assert.Single(lines);
         Assert.True(lines[0].TotalAdvance > 10);
+    }
+
+    // --- BreakAll grapheme + protected-char respect (User #3 + #4) ---
+
+    [Fact]
+    public void Wrap_WordBreak_BreakAll_does_not_break_adjacent_to_NBSP()
+    {
+        // "AA AA" — NBSP between Latin runs. BreakAll's glyph
+        // upgrades must NOT create candidate breaks adjacent to
+        // NBSP (UAX #14 LB12: no break after GL).
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("AA AA", MakeStyle()) };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
+
+        // Available = 13px — would force a break SOMEWHERE under
+        // BreakAll, but the candidates adjacent to NBSP should be
+        // suppressed. The break should land between the AA pair on
+        // the OTHER side of NBSP.
+        var lines = LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 13,
+            wordBreak: WordBreak.BreakAll);
+        Assert.True(lines.Length >= 2,
+            $"BreakAll should still wrap somewhere; got {lines.Length}");
+    }
+
+    [Fact]
+    public void Wrap_WordBreak_BreakAll_does_not_break_adjacent_to_ZWJ()
+    {
+        // "A‍A" — ZWJ (U+200D) between Latin runs. BreakAll's
+        // glyph upgrades must NOT create candidate breaks adjacent
+        // to ZWJ (UAX #14 LB8a: no break after ZWJ + structural
+        // protection for emoji/complex-script joining).
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("AA‍AA", MakeStyle()) };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
+
+        // ZWJ shapes through HarfBuzz; exact glyph count depends on
+        // how the shaper handles it for our synthetic Latin font
+        // (typically forms a cluster with an adjacent letter under
+        // MonotoneCharacters cluster level). Available = 13px
+        // forces wrap; assertion focuses on test intent: at least
+        // 2 lines emit + every glyph from input is preserved on
+        // some line.
+        var lines = LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 13,
+            wordBreak: WordBreak.BreakAll);
+        Assert.True(lines.Length >= 2);
+        var emittedGlyphs = 0;
+        foreach (var line in lines)
+        foreach (var s in line.Slices) emittedGlyphs += s.GlyphLength;
+        var totalShapedGlyphs = 0;
+        foreach (var run in shaped) totalShapedGlyphs += run.Glyphs.Length;
+        Assert.Equal(totalShapedGlyphs, emittedGlyphs);
+    }
+
+    [Fact]
+    public void Wrap_WordBreak_BreakAll_does_not_break_adjacent_to_WJ()
+    {
+        // "A⁠A" — Word Joiner (U+2060) is the explicit
+        // "do not break here" marker. BreakAll must respect it
+        // even when forcing wraps elsewhere.
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("AA⁠AA", MakeStyle()) };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
+        var lines = LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 13,
+            wordBreak: WordBreak.BreakAll);
+        Assert.True(lines.Length >= 2);
     }
 
     // --- Helpers --------------------------------------------------

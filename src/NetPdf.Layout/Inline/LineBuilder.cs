@@ -7,6 +7,7 @@ using System.Text;
 using System.Threading;
 using NetPdf.Text.Bidi;
 using NetPdf.Text.LineBreaking;
+using NetPdf.Text.Segmentation;
 using NetPdf.Text.Shaping;
 
 namespace NetPdf.Layout.Inline;
@@ -464,15 +465,35 @@ internal static class LineBuilder
     /// <c>overflow-wrap</c> property value. Default
     /// <see cref="OverflowWrap.Normal"/>. <see cref="OverflowWrap.Anywhere"/>
     /// forces a per-glyph break when the line would overflow + no
-    /// UAX #14 Allowed candidate exists. Cycle 3b sub-cycle 2.</param>
+    /// UAX #14 Allowed candidate exists, BUT only when wrapping is
+    /// permitted by <paramref name="whiteSpace"/> (i.e., NOT under
+    /// <see cref="WhiteSpace.Pre"/>/<see cref="WhiteSpace.NoWrap"/>).
+    /// Cycle 3b sub-cycle 2.</param>
     /// <param name="wordBreak">CSS Text L3 §5.2 <c>word-break</c>
     /// property value. Default <see cref="WordBreak.Normal"/>.
-    /// <see cref="WordBreak.BreakAll"/> upgrades every Prohibited
-    /// glyph boundary to Allowed (forces aggressive glyph-level
-    /// wrapping). <see cref="WordBreak.KeepAll"/> is recognized but
-    /// has no observable effect for Latin/Cyrillic/Greek content
+    /// <see cref="WordBreak.BreakAll"/> upgrades selected Prohibited
+    /// glyph boundaries to Allowed candidates — restricted to
+    /// grapheme cluster boundaries (UAX #29 §3.1) + boundaries that
+    /// are NOT adjacent to ZWJ (U+200D), WJ (U+2060), or NBSP
+    /// (U+00A0). Combining-mark + emoji-ZWJ + flag-pair sequences
+    /// stay atomic. <see cref="WordBreak.KeepAll"/> is recognized
+    /// but has no observable effect for Latin/Cyrillic/Greek content
     /// (CJK semantics activate when UAX #24 lands in cycle 4).
     /// Cycle 3b sub-cycle 2.</param>
+    ///
+    /// <para><b>LineBuilder-only scope (cycle 3b sub-cycle 2 stopgap).</b>
+    /// <paramref name="overflowWrap"/> + <paramref name="wordBreak"/>
+    /// are applied uniformly across the WHOLE inline pass — they're
+    /// not yet wired to per-element CSS resolution / materialization
+    /// from a <c>ComputedStyle</c>. End-to-end CSS tests
+    /// (<c>&lt;p style="overflow-wrap:anywhere"&gt;…</c>) require
+    /// the InlineLayouter integration in Task 10 — at which point
+    /// the per-property metadata, resolver, and materialization land
+    /// alongside per-source-TextRun policy plumbing. Until then,
+    /// this single-arg API is a stopgap; production callers
+    /// constructing <see cref="LineBuilder"/> input directly may
+    /// pass arguments based on a single computed property at the
+    /// containing block.</para>
     /// <param name="cancellationToken">Checked at method entry, after
     /// each expensive loop pass (concat-rebuild, FindBreaks,
     /// coherence-validation, flat-glyph build, wrap loop), and
@@ -592,6 +613,33 @@ internal static class LineBuilder
 
         cancellationToken.ThrowIfCancellationRequested();
 
+        // Cycle 3b sub-cycle 2 hardening — for word-break:break-all
+        // + overflow-wrap:anywhere, forced breaks must land at
+        // grapheme cluster boundaries (UAX #29 §3.1) rather than raw
+        // glyph indices. Build a sparse boolean lookup
+        // graphemeBreakAfter[i] = true iff position (i+1) is a
+        // grapheme boundary. The boundary array from
+        // GraphemeClusterBreaker.FindBoundaries lists positions
+        // [0, ..., concatTotal] in sorted order.
+        bool[]? graphemeBreakAfter = null;
+        if (breakAllGlyphs || allowOverflowAnywhere)
+        {
+            var boundaries = GraphemeClusterBreaker.FindBoundaries(
+                concatText.AsSpan());
+            graphemeBreakAfter = new bool[concatTotal];
+            // boundaries always includes 0 + concatTotal. Mark each
+            // (boundary - 1) as "break after this index is OK".
+            for (var b = 0; b < boundaries.Length; b++)
+            {
+                var pos = boundaries[b];
+                if (pos > 0 && pos <= concatTotal)
+                {
+                    graphemeBreakAfter[pos - 1] = true;
+                }
+            }
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+
         // Coherence validation pass + total glyph count.
         var totalGlyphs = 0;
         for (var r = 0; r < shapedRuns.Count; r++)
@@ -687,12 +735,31 @@ internal static class LineBuilder
                 }
 
                 // Cycle 3b sub-cycle 2 — word-break:break-all upgrades
-                // every Prohibited boundary to Allowed (forces
-                // glyph-level break candidates). Mandatory breaks
-                // stay Mandatory.
+                // selected Prohibited boundaries to Allowed.
+                //
+                // Per PR #36 review fix (User #3 + #4): NOT every
+                // Prohibited boundary becomes a candidate. Respect:
+                //   1. Grapheme cluster boundaries (UAX #29 §3.1) —
+                //      no break inside a cluster (combining marks,
+                //      ZWJ-joined emoji sequences, regional-indicator
+                //      flag pairs all stay atomic).
+                //   2. Protected codepoint adjacencies — no break
+                //      adjacent to ZWJ (U+200D), WJ (U+2060), NBSP
+                //      (U+00A0), CM-attaching context. These have
+                //      explicit non-break semantics in UAX #14
+                //      (LB8a, LB11, LB12, LB12a) which BreakAll must
+                //      not override.
                 if (breakAllGlyphs && opp == LineBreakOpportunity.Prohibited)
                 {
-                    opp = LineBreakOpportunity.Allowed;
+                    var clusterEndIdx = clusterEnd - 1;
+                    var isGraphemeBreakHere = clusterEndIdx >= 0
+                        && clusterEndIdx < concatTotal
+                        && graphemeBreakAfter![clusterEndIdx];
+                    if (isGraphemeBreakHere
+                        && !IsBreakAllProtected(concatText, clusterEndIdx))
+                    {
+                        opp = LineBreakOpportunity.Allowed;
+                    }
                 }
 
                 // Tag mandatory-line-break control glyphs (LF, CR, VT,
@@ -772,21 +839,43 @@ internal static class LineBuilder
 
             // Cycle 3b sub-cycle 2 — overflow-wrap:anywhere fallback.
             // When the line would overflow + no UAX #14 Allowed
-            // candidate exists in [lineStart, cursor), force a break
-            // at the previous glyph boundary (cursor - 1) so this
-            // glyph starts a new line. Single-glyph-wider-than-line
-            // case: cursor == lineStart → emit the glyph alone +
-            // start a fresh line at cursor + 1 (degenerate but
-            // matches CSS — every glyph fits where it can, line
-            // overflows by exactly one glyph).
+            // candidate exists in [lineStart, cursor), force a break.
+            //
+            // Per PR #36 review fix (User #2): Anywhere is GATED by
+            // wrapsAtAllowed — under white-space:pre / white-space:nowrap
+            // the wrap pass disallows all soft wraps; Anywhere must
+            // honor that. Anywhere only fires when wrapsAtAllowed
+            // is true.
+            //
+            // Per PR #36 review fix (Copilot #1): handle the
+            // cursor == lineStart case explicitly — when a SINGLE
+            // glyph is wider than the budget, emit it as its own
+            // line (overflows by exactly one glyph) and advance
+            // lineStart so the next iteration starts fresh. Without
+            // this, the prior cursor>lineStart guard would let
+            // additional glyphs accumulate.
             if (afterAdvance > availableInlineSize
                 && allowOverflowAnywhere
-                && cursor > lineStart)
+                && wrapsAtAllowed)
             {
-                EmitDrawableRange(output, flat, lineStart, cursor - 1,
-                    endsWithMandatoryBreak: false);
-                lineStart = cursor;
-                cursor = lineStart - 1;
+                if (cursor > lineStart)
+                {
+                    // Force break at cursor-1: emit lineStart..cursor-1,
+                    // start next line at cursor.
+                    EmitDrawableRange(output, flat, lineStart, cursor - 1,
+                        endsWithMandatoryBreak: false);
+                    lineStart = cursor;
+                    cursor = lineStart - 1;
+                }
+                else
+                {
+                    // Single glyph wider than line: emit just this
+                    // glyph alone, advance.
+                    EmitDrawableRange(output, flat, lineStart, cursor,
+                        endsWithMandatoryBreak: false);
+                    lineStart = cursor + 1;
+                    // cursor stays — for-loop increment moves it past.
+                }
                 lineAdvance = 0;
                 lastAllowed = -1;
                 cancellationToken.ThrowIfCancellationRequested();
@@ -843,6 +932,31 @@ internal static class LineBuilder
 
         return output.ToArray();
     }
+
+    /// <summary>Per PR #36 review fix (cycle 3b sub-cycle 2 hardening) —
+    /// returns <see langword="true"/> if a forced break BETWEEN
+    /// position <paramref name="i"/> and <paramref name="i"/>+1 in
+    /// <paramref name="text"/> is structurally protected (must not
+    /// be upgraded to a candidate by word-break:break-all). Covers
+    /// adjacencies to ZWJ (U+200D), WJ (U+2060), NBSP (U+00A0) which
+    /// have explicit non-break semantics in UAX #14 (LB8a, LB11, LB12).
+    /// Combining-mark + ligature attachment is already protected by
+    /// the caller's grapheme-boundary check.</summary>
+    private static bool IsBreakAllProtected(string text, int i)
+    {
+        if ((uint)i >= (uint)text.Length) return false;
+        var here = text[i];
+        if (IsBreakAllProtectedChar(here)) return true;
+        if (i + 1 < text.Length && IsBreakAllProtectedChar(text[i + 1])) return true;
+        return false;
+    }
+
+    /// <summary>Codepoints whose adjacency forbids breaking under
+    /// word-break:break-all per UAX #14 protection rules.</summary>
+    private static bool IsBreakAllProtectedChar(char c) =>
+        c == '‍' // ZWJ — joins emoji + complex scripts atomically
+        || c == '⁠' // WJ — explicit "do not break here"
+        || c == ' '; // NBSP — non-breaking space
 
     /// <summary>UAX #14 hard-line-break control characters that
     /// callers must not draw. Trimmed off the end of each emitted

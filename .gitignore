@@ -73,3 +73,8 @@ plans/
 * [1-9][0-9].targets
 * [0-9].json
 * [1-9][0-9].json
+
+# Finder-style "Foo 2.cs" duplicates from macOS dup-on-copy / Time Machine restore.
+# Aligns with Directory.Build.props DefaultItemExcludes.
+* [2-9].cs
+* [1-9][0-9].cs

@@ -177,10 +177,13 @@ public sealed class InlineLayouterCycle3cTests
     }
 
     [Fact]
-    public void LayoutPerRun_mixed_overflow_wrap_still_throws()
+    public void LayoutPerRun_mixed_overflow_wrap_now_handled_per_glyph()
     {
-        // Cycle 3c only handles WhiteSpace mismatch; other property
-        // mismatches still throw.
+        // Cycle 3c only handled WhiteSpace mismatch; cycle 3d
+        // sub-cycle 2 broadens to overflow-wrap mismatch via
+        // per-source-run plumbing through LineBuilder.Wrap's
+        // `overflowWrapPerRun` parameter. The anywhere fallback
+        // gates per-glyph by source-run-index.
         using var resolver = new TestShaperResolver();
         var sNormal = MakeStyle();
         var sAnywhere = ComputedStyle.RentForExclusiveTesting();
@@ -190,10 +193,9 @@ public sealed class InlineLayouterCycle3cTests
             new("AAA", sNormal),
             new("BBB", sAnywhere),
         };
-        var ex = Assert.Throws<NotSupportedException>(() =>
-            InlineLayouter.LayoutPerRun(sourceRuns, 15, resolver,
-                LatnScript, EnLang));
-        Assert.Contains("more than just WhiteSpace", ex.Message);
+        var result = InlineLayouter.LayoutPerRun(sourceRuns, 15, resolver,
+            LatnScript, EnLang);
+        Assert.NotEmpty(result);
     }
 
     [Fact]
@@ -229,11 +231,18 @@ public sealed class InlineLayouterCycle3cTests
         var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver,
             LatnScript, EnLang);
 
-        var bogusPerRun = new[] { WhiteSpace.Normal }; // length 1 != 2
+        // Per cycle 3d sub-cycle 2 Rec #4 refactor — single per-run
+        // InlineTextPolicy[] array replaces the cycle 3c
+        // whiteSpacePerRun parallel array; the length-validation
+        // moved to the new parameter.
+        var bogusPerRun = new[]
+        {
+            InlineTextPolicy.Default,
+        }; // length 1 != 2
 
         Assert.Throws<ArgumentException>(() =>
             LineBuilder.Wrap(sourceRuns, shaped, 100,
-                whiteSpacePerRun: bogusPerRun));
+                inlineTextPolicyPerRun: bogusPerRun));
     }
 
     // --- Cycle 3c review hardening (Recs #1+#3+#6 + Copilot) ------
@@ -266,12 +275,19 @@ public sealed class InlineLayouterCycle3cTests
         var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver,
             LatnScript, EnLang);
 
-        var perRun = new[] { WhiteSpace.Normal, (WhiteSpace)99 };
+        // Per cycle 3d sub-cycle 2 Rec #4 refactor — invalid enum
+        // validation moved to the inlineTextPolicyPerRun parameter.
+        var perRun = new[]
+        {
+            InlineTextPolicy.Default,
+            new InlineTextPolicy((WhiteSpace)99,
+                OverflowWrap.Normal, WordBreak.Normal, Hyphens.Manual),
+        };
 
         var ex = Assert.Throws<ArgumentException>(() =>
             LineBuilder.Wrap(sourceRuns, shaped, 100,
-                whiteSpacePerRun: perRun));
-        Assert.Contains("whiteSpacePerRun[1]", ex.Message);
+                inlineTextPolicyPerRun: perRun));
+        Assert.Contains("inlineTextPolicyPerRun[1].WhiteSpace", ex.Message);
     }
 
     [Fact]

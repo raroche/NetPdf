@@ -335,4 +335,143 @@ internal static class InlineLayouter
             hyphenator,
             cancellationToken);
     }
+
+    /// <summary>Per Phase 3 Task 10 cycle 3b — per-source-TextRun
+    /// policy overload. Reads <see cref="InlineTextPolicy"/> from
+    /// EACH source-TextRun's Style + verifies they all match.
+    /// When all runs share the same policy (the most common case
+    /// because CSS Text L3 §3-§6 properties all inherit), delegates
+    /// to the cycle-3a uniform path. When mixed-mode descendants
+    /// produce DIFFERENT per-run policies, throws
+    /// <see cref="NotSupportedException"/> with a descriptive
+    /// message — the failure mode is loud + deterministic instead
+    /// of silently using the wrong policy.
+    ///
+    /// <para><b>Why fail loud on mixed?</b> Cycle 3b sub-cycle 1
+    /// ships the per-run READING but NOT the per-glyph metadata
+    /// flowing through Wrap. Mixed-mode (e.g.,
+    /// <c>&lt;span style="white-space:nowrap"&gt;</c> inside
+    /// <c>white-space:normal</c> text) requires per-glyph policy
+    /// arrays threaded through every wrap-pass decision — a
+    /// substantial refactor. Until that lands (cycle 3c), the safe
+    /// behavior is to refuse the mixed-mode call so callers either
+    /// (a) avoid mixed inline descendants, or (b) split the wrap
+    /// into homogeneous sub-passes themselves.</para>
+    ///
+    /// <para><b>Equality check.</b> Two policies are "the same" by
+    /// the auto-generated <see cref="InlineTextPolicy"/> record-
+    /// struct equality (white-space + overflow-wrap + word-break +
+    /// hyphens all equal). Identity isn't required.</para>
+    /// </summary>
+    /// <param name="sourceTextRuns">Source runs in document order.
+    /// Each run's Style is read for its individual policy.</param>
+    /// <param name="availableInlineSize">Available inline-axis size
+    /// in CSS px.</param>
+    /// <param name="resolver">Shaper resolver.</param>
+    /// <param name="scriptIso15924">ISO 15924 script tag.</param>
+    /// <param name="language">BCP 47 language tag.</param>
+    /// <param name="paragraphDirection">Paragraph base direction.</param>
+    /// <param name="hyphenator">Optional Liang hyphenator override.</param>
+    /// <param name="cancellationToken">Cooperative cancellation.</param>
+    /// <returns>One <see cref="LineFragment"/> per wrapped line.</returns>
+    /// <exception cref="ArgumentNullException">Required arg is null.</exception>
+    /// <exception cref="NotSupportedException">Source TextRuns have
+    /// non-uniform <see cref="InlineTextPolicy"/> — per-glyph
+    /// metadata for mixed-mode pending cycle 3c.</exception>
+    public static LineFragment[] LayoutPerRun(
+        IReadOnlyList<TextRun> sourceTextRuns,
+        double availableInlineSize,
+        IShaperResolver resolver,
+        string scriptIso15924,
+        string language,
+        ParagraphDirection paragraphDirection = ParagraphDirection.LeftToRight,
+        Hyphenator? hyphenator = null,
+        CancellationToken cancellationToken = default)
+    {
+        // Per Phase 3 Task 10 cycle 3b review (User #2 + Copilot #1)
+        // — front-load all argument validation BEFORE the per-run
+        // policy scan so invalid args throw their proper exceptions
+        // instead of being masked by the policy scan or the
+        // mixed-mode NotSupportedException.
+        ArgumentNullException.ThrowIfNull(sourceTextRuns);
+        ArgumentNullException.ThrowIfNull(resolver);
+        ArgumentNullException.ThrowIfNull(scriptIso15924);
+        ArgumentNullException.ThrowIfNull(language);
+
+        if (!double.IsFinite(availableInlineSize) || availableInlineSize <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(availableInlineSize),
+                availableInlineSize,
+                "InlineLayouter.LayoutPerRun: availableInlineSize must be a positive finite value (CSS px).");
+        }
+        if (paragraphDirection is not (ParagraphDirection.LeftToRight
+            or ParagraphDirection.RightToLeft
+            or ParagraphDirection.Auto))
+        {
+            throw new ArgumentOutOfRangeException(nameof(paragraphDirection),
+                paragraphDirection,
+                "InlineLayouter.LayoutPerRun: paragraphDirection must be a defined ParagraphDirection value.");
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (sourceTextRuns.Count == 0)
+        {
+            // No runs → no policy contention. Use defaults.
+            return Layout(
+                sourceTextRuns, availableInlineSize, resolver,
+                scriptIso15924, language, paragraphDirection,
+                hyphenator: hyphenator,
+                cancellationToken: cancellationToken);
+        }
+
+        // Per Phase 3 Task 10 cycle 3b review (User #3) — empty
+        // TextRuns contribute no glyphs and no wrap decisions. Skip
+        // them when picking + comparing the effective policy so an
+        // empty `<span>` with a different style doesn't falsely
+        // trigger the mixed-mode guard. If ALL runs are empty,
+        // delegate to the empty-input path with default policy.
+        InlineTextPolicy? effectivePolicy = null;
+        var firstNonEmptyIndex = -1;
+        for (var i = 0; i < sourceTextRuns.Count; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (sourceTextRuns[i].Text.Length == 0) continue;
+            var p = sourceTextRuns[i].Style.ReadInlineTextPolicy();
+            if (effectivePolicy is null)
+            {
+                effectivePolicy = p;
+                firstNonEmptyIndex = i;
+            }
+            else if (p != effectivePolicy)
+            {
+                throw new NotSupportedException(
+                    $"InlineLayouter.LayoutPerRun: source TextRuns have " +
+                    $"different InlineTextPolicy values (run {firstNonEmptyIndex}={effectivePolicy}, " +
+                    $"run {i}={p}). Per-glyph mixed-mode policy is scheduled " +
+                    $"for cycle 3c. Until then, callers must either avoid " +
+                    $"mixed inline descendants or split the wrap into " +
+                    $"homogeneous sub-passes.");
+            }
+        }
+
+        // All runs empty (or all share policy) — use the chosen
+        // policy or default if no non-empty run was seen.
+        var policy = effectivePolicy ?? InlineTextPolicy.Default;
+
+        // Uniform policy — delegate to cycle-3a explicit-args path.
+        return Layout(
+            sourceTextRuns,
+            availableInlineSize,
+            resolver,
+            scriptIso15924,
+            language,
+            paragraphDirection,
+            policy.WhiteSpace,
+            policy.OverflowWrap,
+            policy.WordBreak,
+            policy.Hyphens,
+            hyphenator,
+            cancellationToken);
+    }
 }

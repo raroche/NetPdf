@@ -32,11 +32,12 @@ namespace NetPdf.Layout.Inline;
 ///   AND bumps <see cref="OverflowWrap"/> to
 ///   <see cref="OverflowWrap.Anywhere"/>, regardless of what the
 ///   <c>overflow-wrap</c> property declared independently.</item>
-///   <item><c>white-space: break-spaces</c> isn't yet modeled in
-///   <see cref="WhiteSpace"/>; the materializer folds it to
-///   <see cref="WhiteSpace.Normal"/> for cycle 2. Cycle 3 may add
-///   the enum value when CSS Text L3 §3 wrap-mode-component support
-///   ships.</item>
+///   <item><c>white-space: break-spaces</c> maps to
+///   <see cref="WhiteSpace.BreakSpaces"/> per cycle-3 review (User
+///   #3). Cycle-3 simplification: BreakSpaces behaves like PreWrap
+///   (preserve + wrap at UAX #14 Allowed); the "wrap at every
+///   preserved space" + end-of-line trailing-space semantics per
+///   CSS Text L3 §6.4 land in a subsequent cycle.</item>
 /// </list>
 ///
 /// <para><b>Integration plan (cycle 3).</b>

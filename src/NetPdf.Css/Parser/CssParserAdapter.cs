@@ -667,14 +667,24 @@ internal static class CssParserAdapter
         return output.ToImmutable();
     }
 
+    /// <summary>Per Phase 3 Task 10 cycle 3b review (User #1) —
+    /// returns the LAST recovery matching <paramref name="property"/>
+    /// in source order. Earlier "first match wins" semantics broke
+    /// CSS last-declaration-wins for repeated declarations like
+    /// <c>white-space: normal; white-space: break-spaces</c> — author
+    /// intent is the LAST one wins, not the first. Cascade-resolver
+    /// last-decl-wins still applies at rule-merge time; this fix
+    /// ensures the LAST recovery's value is what makes it through
+    /// the recovery-override pass (avoiding stale earlier values).</summary>
     private static CssDeclarationRecovery? FindRecovery(ImmutableArray<CssDeclarationRecovery> list, string property)
     {
+        CssDeclarationRecovery? last = null;
         foreach (var item in list)
         {
             if (string.Equals(item.Property, property, StringComparison.OrdinalIgnoreCase))
-                return item;
+                last = item;
         }
-        return null;
+        return last;
     }
 
     private static CssAtRule AdaptMediaRule(ICssMediaRule rule, CssSourceLocation location) => new(

@@ -99,8 +99,11 @@ namespace NetPdf.Layout.Inline;
 ///   wrap-vs-hang per CSS Text L3 §6.4) — currently approximated as
 ///   <see cref="WhiteSpace.PreWrap"/>; see
 ///   <see cref="WhiteSpace.BreakSpaces"/> docs.</item>
-///   <item>Per-glyph overflow-wrap / word-break / hyphens for
-///   mixed-mode descendants (cycle 3d sub-cycle 2).</item>
+///   <item>Per-source-run word-break + hyphens (cycle 3d
+///   sub-cycle 3+). The <see cref="InlineTextPolicy"/>[] parameter
+///   on <see cref="LineBuilder.Wrap"/> already carries those fields
+///   end-to-end so wiring through is additive. WhiteSpace +
+///   OverflowWrap mixed-mode is shipped (cycle 3d sub-cycle 1 + 2).</item>
 ///   <item><c>text-align</c> (start/end/center/justify) — wrap
 ///   currently emits left-aligned fragments only.</item>
 ///   <item><c>vertical-align</c> baseline shifts.</item>

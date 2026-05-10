@@ -13,13 +13,7 @@ namespace NetPdf.Layout.Inline;
 /// Per Phase 3 Task 10 cycle 1 — the inline-pass facade. Wraps the
 /// three-call sequence <see cref="LineBuilder.Itemize"/> →
 /// <see cref="LineBuilder.Shape"/> → <see cref="LineBuilder.Wrap"/>
-/// into a single integration seam for the block-layouter. Future
-/// cycles add per-source-TextRun policy plumbing (white-space,
-/// overflow-wrap, word-break, hyphens read from each source's
-/// <c>ComputedStyle</c>), UAX #24 script detection, RTL fragment-
-/// level reversal, and the <see cref="LineFragment"/>[] →
-/// <c>BoxFragment</c> conversion that emits inline-fragment records
-/// into the <c>IBlockFragmentSink</c>.
+/// into a single integration seam for the block-layouter.
 ///
 /// <para><b>Cycle 1 scope (this revision).</b> A thin static facade
 /// — bundles the existing 3-call sequence behind one <c>Layout</c>
@@ -29,15 +23,40 @@ namespace NetPdf.Layout.Inline;
 /// property pipeline (properties.json → KeywordResolver →
 /// ComputedStyle → InlineLayouter argument) lands in cycle 2.</para>
 ///
-/// <para><b>Cycle 1 deferrals (subsequent cycles):</b></para>
+/// <para><b>Shipped capabilities (cycle 1 → 3d sub-cycle 2):</b></para>
 /// <list type="bullet">
-///   <item>Per-source-TextRun policy — cycle 2. Mixed inline
-///   descendants like <c>&lt;span style="white-space:nowrap"&gt;</c>
-///   inside <c>white-space:normal</c> text need per-glyph metadata
-///   carrying through Wrap. Cycle 2 plumbs a per-source
-///   <c>InlineRunPolicy</c> struct alongside the typed
-///   <c>ComputedStyle</c> fields once the property pipeline lands.</item>
-///   <item>UAX #24 script detection — cycle 3. Detects script per
+///   <item>Cycle 2 — CSS property pipeline for overflow-wrap /
+///   word-break / hyphens read from ComputedStyle via
+///   <see cref="InlineTextPolicy"/>.</item>
+///   <item>Cycle 3 — Layout overload reading uniform-policy
+///   <see cref="InlineTextPolicy"/> from a containing-block
+///   <c>ComputedStyle</c>.</item>
+///   <item>Cycle 3b — <see cref="LayoutPerRun"/> reads each source-
+///   TextRun's policy + throws <see cref="System.NotSupportedException"/>
+///   on mismatch.</item>
+///   <item>Cycle 3c — per-source-run WhiteSpace plumbing through
+///   <see cref="LineBuilder.Wrap"/>'s per-glyph metadata for the
+///   Normal/NoWrap subset.</item>
+///   <item>Cycle 3d sub-cycle 1 — per-source-run preprocessor
+///   (<see cref="LineBuilder.PreprocessTextRunsPerRun"/>) broadens
+///   WhiteSpace matrix to all 6 values (collapse + preserve modes
+///   mixed).</item>
+///   <item>Cycle 3d sub-cycle 2 — per-source-run OverflowWrap
+///   plumbing via a single <see cref="InlineTextPolicy"/>[] array
+///   parameter on <see cref="LineBuilder.Wrap"/>. Anywhere
+///   forced-break fallback gated per-glyph by source-run
+///   WhiteSpace + OverflowWrap + grapheme-cluster boundary (UAX
+///   #29).</item>
+/// </list>
+///
+/// <para><b>Subsequent-cycle deferrals:</b></para>
+/// <list type="bullet">
+///   <item>Per-source-run word-break / hyphens (sub-cycle 3+) —
+///   <see cref="LayoutPerRun"/> still throws
+///   <see cref="System.NotSupportedException"/> on those mismatches.
+///   The <see cref="InlineTextPolicy"/>[] parameter already carries
+///   those fields end-to-end so wiring through is purely additive.</item>
+///   <item>UAX #24 script detection. Detects script per
 ///   codepoint + adds a script-change boundary in <see cref="LineBuilder.Itemize"/>
 ///   so multi-script documents shape each script with its
 ///   appropriate OpenType feature set.</item>
@@ -439,20 +458,25 @@ internal static class InlineLayouter
         // trigger the mixed-mode guard. If ALL runs are empty,
         // delegate to the empty-input path with default policy.
         //
-        // Per Phase 3 Task 10 cycle 3d sub-cycle 1 + 2 — when
-        // policies differ across runs, build per-source-run arrays
-        // for the dimensions that have per-glyph honoring in
-        // <see cref="LineBuilder.Wrap"/>:
+        // Per Phase 3 Task 10 cycle 3d sub-cycle 2 review Rec #4 —
+        // single per-source-run InlineTextPolicy array. Replaces
+        // the cycle 3c whiteSpacePerRun + cycle 3d sub-cycle 2
+        // overflowWrapPerRun parallel arrays. One coherent array
+        // both simplifies the wrap loop's lookups + lets future
+        // sub-cycles (word-break, hyphens) plumb through without
+        // adding more nullable parameters.
+        //
+        // Active dimensions in <see cref="LineBuilder.Wrap"/>:
         //   * WhiteSpace (sub-cycle 1) — collapse vs. preserve;
         //     per-glyph IsBreakSpace + wrap-at-Allowed downgrade.
         //   * OverflowWrap (sub-cycle 2) — per-glyph anywhere
         //     fallback gating.
-        // Mixed-mode in word-break / hyphens still throws (per-glyph
-        // metadata for those 2 properties is sub-cycle 3+ scope).
+        // WordBreak + Hyphens fields are populated but NOT yet
+        // honored per-run (sub-cycle 3+). Mixed-mode in those still
+        // throws here.
         InlineTextPolicy? effectivePolicy = null;
         var firstNonEmptyIndex = -1;
-        WhiteSpace[]? whiteSpacePerRun = null; // built lazily on mismatch
-        OverflowWrap[]? overflowWrapPerRun = null; // built lazily on mismatch
+        InlineTextPolicy[]? perRunPolicy = null; // built lazily on first mismatch
         for (var i = 0; i < sourceTextRuns.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -484,55 +508,27 @@ internal static class InlineLayouter
                         $"wrap into homogeneous sub-passes.");
                 }
 
-                // WhiteSpace-only mismatch path (cycle 3d sub-cycle 1).
-                if (p.WhiteSpace != effectivePolicy.Value.WhiteSpace
-                    && whiteSpacePerRun is null)
+                // Lazily build the per-run policy array on first
+                // mismatch. Fill all previously-walked entries with
+                // the effective (first non-empty's) policy so
+                // anything that referenced an empty run gets a
+                // sensible default + later runs get set as we walk.
+                if (perRunPolicy is null)
                 {
-                    whiteSpacePerRun = new WhiteSpace[sourceTextRuns.Count];
-                    var fillTo = effectivePolicy.Value.WhiteSpace;
+                    perRunPolicy = new InlineTextPolicy[sourceTextRuns.Count];
+                    var fillTo = effectivePolicy.Value;
                     for (var j = 0; j < sourceTextRuns.Count; j++)
                     {
-                        // Empty runs get the effective ws — they
-                        // contribute no glyphs anyway. Non-empty
-                        // already-walked runs get fillTo (the first
-                        // non-empty's ws). Later runs get set as
-                        // we walk.
-                        whiteSpacePerRun[j] = fillTo;
+                        perRunPolicy[j] = fillTo;
                     }
                 }
-                if (whiteSpacePerRun is not null)
-                {
-                    whiteSpacePerRun[i] = p.WhiteSpace;
-                }
-
-                // OverflowWrap-only mismatch path (cycle 3d sub-cycle 2).
-                if (p.OverflowWrap != effectivePolicy.Value.OverflowWrap
-                    && overflowWrapPerRun is null)
-                {
-                    overflowWrapPerRun = new OverflowWrap[sourceTextRuns.Count];
-                    var fillTo = effectivePolicy.Value.OverflowWrap;
-                    for (var j = 0; j < sourceTextRuns.Count; j++)
-                    {
-                        overflowWrapPerRun[j] = fillTo;
-                    }
-                }
-                if (overflowWrapPerRun is not null)
-                {
-                    overflowWrapPerRun[i] = p.OverflowWrap;
-                }
+                perRunPolicy[i] = p;
             }
-            else
+            else if (perRunPolicy is not null)
             {
-                // Same policy as effective — set per-run entries to
-                // the current value when already in per-run mode.
-                if (whiteSpacePerRun is not null)
-                {
-                    whiteSpacePerRun[i] = p.WhiteSpace;
-                }
-                if (overflowWrapPerRun is not null)
-                {
-                    overflowWrapPerRun[i] = p.OverflowWrap;
-                }
+                // Same policy as effective + we're already in per-
+                // run mode — set this run's policy too.
+                perRunPolicy[i] = p;
             }
         }
 
@@ -557,7 +553,7 @@ internal static class InlineLayouter
         // handles NoWrap/Pre suppression). When uniform, pass
         // policy.WhiteSpace.
         IReadOnlyList<TextRun> preprocessed;
-        if (whiteSpacePerRun is null)
+        if (perRunPolicy is null)
         {
             preprocessed = LineBuilder.PreprocessTextRuns(
                 sourceTextRuns, policy.WhiteSpace);
@@ -567,9 +563,16 @@ internal static class InlineLayouter
             // Per Phase 3 Task 10 cycle 3d sub-cycle 1 review Rec #4
             // — pass cancellation through to the per-run preprocessor
             // so large hostile inline text doesn't waste CPU after a
-            // late cancellation signal.
+            // late cancellation signal. Extract the WhiteSpace array
+            // from the per-run policy (the preprocessor only needs
+            // collapse-vs-preserve decisions per run).
+            var perRunWs = new WhiteSpace[perRunPolicy.Length];
+            for (var i = 0; i < perRunPolicy.Length; i++)
+            {
+                perRunWs[i] = perRunPolicy[i].WhiteSpace;
+            }
             preprocessed = LineBuilder.PreprocessTextRunsPerRun(
-                sourceTextRuns, whiteSpacePerRun, cancellationToken);
+                sourceTextRuns, perRunWs, cancellationToken);
         }
         // Per cycle 3d sub-cycle 1 review Rec #4 — observe
         // cancellation immediately after preprocessing, before the
@@ -579,7 +582,7 @@ internal static class InlineLayouter
         // late cancellations before HarfBuzz fires up.
         cancellationToken.ThrowIfCancellationRequested();
 
-        var wrapWhiteSpace = whiteSpacePerRun is null
+        var wrapWhiteSpace = perRunPolicy is null
             ? policy.WhiteSpace
             : WhiteSpace.Normal;
 
@@ -596,8 +599,7 @@ internal static class InlineLayouter
             policy.Hyphens,
             hyphenator,
             cancellationToken,
-            whiteSpacePerRun,
-            overflowWrapPerRun);
+            perRunPolicy);
     }
 
     /// <summary>Per Phase 3 Task 10 cycle 3c — itemize + shape

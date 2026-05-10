@@ -556,29 +556,36 @@ internal static class LineBuilder
     /// coherence-validation, flat-glyph build, wrap loop), and
     /// before tail emission. The check granularity is per-shaped-run
     /// during validation/flattening + per-line during wrap.</param>
-    /// <param name="whiteSpacePerRun">Per Phase 3 Task 10 cycle 3c —
-    /// optional per-source-TextRun WhiteSpace override. When
-    /// supplied, MUST have one entry per source run; the wrap loop
-    /// uses each glyph's source-run-index to look up its run-
-    /// specific WhiteSpace value. Glyphs in NoWrap or Pre runs get
-    /// their UAX #14 Allowed opportunities downgraded to Prohibited
-    /// — supports mixed-mode descendants like
-    /// <c>&lt;span style="white-space:nowrap"&gt;</c> inside
-    /// <c>white-space:normal</c> text. When null, the uniform
-    /// <paramref name="whiteSpace"/> argument applies to all
-    /// glyphs.</param>
-    /// <param name="overflowWrapPerRun">Per Phase 3 Task 10 cycle 3d
-    /// sub-cycle 2 — optional per-source-TextRun OverflowWrap
-    /// override. When supplied, MUST have one entry per source run;
-    /// the <c>overflow-wrap: anywhere</c> forced-break fallback at
-    /// the wrap loop checks each potential break point's
-    /// source-run-index against this array to decide whether the
-    /// forced break is permitted. Same-run breaks fire only when the
-    /// run's OverflowWrap is Anywhere; cross-run breaks fire when
-    /// either side enables anywhere (boundary is a natural anywhere
-    /// site for that run). When null, the uniform
-    /// <paramref name="overflowWrap"/> argument applies to all
-    /// glyphs.</param>
+    /// <param name="inlineTextPolicyPerRun">Per Phase 3 Task 10
+    /// cycle 3d sub-cycle 2 review Rec #4 — optional per-source-
+    /// TextRun <see cref="InlineTextPolicy"/> override. Replaces
+    /// the cycle 3c <c>whiteSpacePerRun</c> + cycle 3d sub-cycle 2
+    /// <c>overflowWrapPerRun</c> parallel arrays with a single
+    /// coherent policy struct per source run. When supplied, MUST
+    /// have one entry per source run; the wrap loop reads each
+    /// glyph's source-run-index to look up its run-specific
+    /// policy.
+    ///
+    /// <para>Active per-run dimensions:</para>
+    /// <list type="bullet">
+    ///   <item><see cref="InlineTextPolicy.WhiteSpace"/> — drives
+    ///   per-glyph UAX #14 Allowed-opportunity downgrade for
+    ///   NoWrap/Pre runs + per-glyph IsBreakSpace tag (only
+    ///   collapse modes trim).</item>
+    ///   <item><see cref="InlineTextPolicy.OverflowWrap"/> — gates
+    ///   the <c>overflow-wrap: anywhere</c> forced-break fallback
+    ///   by source run; cross-run breaks additionally require at
+    ///   least one side to be wrap-friendly per
+    ///   <see cref="InlineTextPolicy.WhiteSpace"/>.</item>
+    /// </list>
+    ///
+    /// <para><see cref="InlineTextPolicy.WordBreak"/> and
+    /// <see cref="InlineTextPolicy.Hyphens"/> are read but NOT yet
+    /// honored per-run (sub-cycle 3+ scope). The uniform
+    /// <paramref name="wordBreak"/> + <paramref name="hyphens"/>
+    /// arguments still apply globally. When this array is null,
+    /// the uniform <paramref name="whiteSpace"/> +
+    /// <paramref name="overflowWrap"/> apply to all glyphs.</para></param>
     /// <returns>One <see cref="LineFragment"/> per wrapped line in
     /// document order. Empty array when <paramref name="shapedRuns"/>
     /// is empty or contains only zero-glyph runs.</returns>
@@ -607,39 +614,31 @@ internal static class LineBuilder
         Hyphens hyphens = Hyphens.Manual,
         Hyphenator? hyphenator = null,
         CancellationToken cancellationToken = default,
-        IReadOnlyList<WhiteSpace>? whiteSpacePerRun = null,
-        IReadOnlyList<OverflowWrap>? overflowWrapPerRun = null)
+        IReadOnlyList<InlineTextPolicy>? inlineTextPolicyPerRun = null)
     {
         ArgumentNullException.ThrowIfNull(sourceTextRuns);
         ArgumentNullException.ThrowIfNull(shapedRuns);
-        // Per Phase 3 Task 10 cycle 3c — when a per-source-run
-        // whiteSpacePerRun array is supplied, it MUST cover every
-        // source TextRun (one entry per source). The wrap loop
-        // looks up the run's WhiteSpace via this array to honor
-        // mixed-mode descendants (e.g., a `<span style="white-space:
-        // nowrap">` inside `white-space:normal` text). When null,
-        // the uniform `whiteSpace` argument applies to all glyphs.
-        if (whiteSpacePerRun is not null
-            && whiteSpacePerRun.Count != sourceTextRuns.Count)
+        // Per Phase 3 Task 10 cycle 3d sub-cycle 2 review Rec #4 —
+        // single per-source-run InlineTextPolicy array. Length must
+        // match sourceTextRuns count; every entry's WhiteSpace +
+        // OverflowWrap fields must be defined enum values. (WordBreak
+        // and Hyphens fields are validated for sanity even though
+        // they're not yet honored per-run — sub-cycle 3+ will plumb
+        // them through.)
+        if (inlineTextPolicyPerRun is not null
+            && inlineTextPolicyPerRun.Count != sourceTextRuns.Count)
         {
             throw new ArgumentException(
-                $"LineBuilder.Wrap: whiteSpacePerRun length ({whiteSpacePerRun.Count}) " +
+                $"LineBuilder.Wrap: inlineTextPolicyPerRun length ({inlineTextPolicyPerRun.Count}) " +
                 $"must match sourceTextRuns count ({sourceTextRuns.Count}).",
-                nameof(whiteSpacePerRun));
+                nameof(inlineTextPolicyPerRun));
         }
-        // Per Phase 3 Task 10 cycle 3c review Rec #6 — validate every
-        // whiteSpacePerRun entry is a defined WhiteSpace enum value.
-        // An undefined cast (e.g., (WhiteSpace)99) would slip past
-        // the per-glyph downgrade switch silently — always reading
-        // as "not Pre or NoWrap" — and produce indeterminate wrap
-        // behavior. Validate at entry so the caller learns about
-        // the bug instead of getting weird output.
-        if (whiteSpacePerRun is not null)
+        if (inlineTextPolicyPerRun is not null)
         {
-            for (var i = 0; i < whiteSpacePerRun.Count; i++)
+            for (var i = 0; i < inlineTextPolicyPerRun.Count; i++)
             {
-                var ws = whiteSpacePerRun[i];
-                if (ws is not (WhiteSpace.Normal
+                var p = inlineTextPolicyPerRun[i];
+                if (p.WhiteSpace is not (WhiteSpace.Normal
                     or WhiteSpace.Pre
                     or WhiteSpace.NoWrap
                     or WhiteSpace.PreWrap
@@ -647,37 +646,31 @@ internal static class LineBuilder
                     or WhiteSpace.BreakSpaces))
                 {
                     throw new ArgumentException(
-                        $"LineBuilder.Wrap: whiteSpacePerRun[{i}] = {ws} " +
+                        $"LineBuilder.Wrap: inlineTextPolicyPerRun[{i}].WhiteSpace = {p.WhiteSpace} " +
                         $"is not a defined WhiteSpace value.",
-                        nameof(whiteSpacePerRun));
+                        nameof(inlineTextPolicyPerRun));
                 }
-            }
-        }
-        // Per Phase 3 Task 10 cycle 3d sub-cycle 2 — when an
-        // overflowWrapPerRun array is supplied, validate length +
-        // every entry is a defined OverflowWrap value. Same
-        // rationale as whiteSpacePerRun validation: undefined cast
-        // would silently fall through the per-glyph anywhere check
-        // + produce indeterminate behavior.
-        if (overflowWrapPerRun is not null
-            && overflowWrapPerRun.Count != sourceTextRuns.Count)
-        {
-            throw new ArgumentException(
-                $"LineBuilder.Wrap: overflowWrapPerRun length ({overflowWrapPerRun.Count}) " +
-                $"must match sourceTextRuns count ({sourceTextRuns.Count}).",
-                nameof(overflowWrapPerRun));
-        }
-        if (overflowWrapPerRun is not null)
-        {
-            for (var i = 0; i < overflowWrapPerRun.Count; i++)
-            {
-                var ow = overflowWrapPerRun[i];
-                if (ow is not (OverflowWrap.Normal or OverflowWrap.Anywhere))
+                if (p.OverflowWrap is not (OverflowWrap.Normal or OverflowWrap.Anywhere))
                 {
                     throw new ArgumentException(
-                        $"LineBuilder.Wrap: overflowWrapPerRun[{i}] = {ow} " +
+                        $"LineBuilder.Wrap: inlineTextPolicyPerRun[{i}].OverflowWrap = {p.OverflowWrap} " +
                         $"is not a defined OverflowWrap value.",
-                        nameof(overflowWrapPerRun));
+                        nameof(inlineTextPolicyPerRun));
+                }
+                if (p.WordBreak is not (WordBreak.Normal
+                    or WordBreak.BreakAll or WordBreak.KeepAll))
+                {
+                    throw new ArgumentException(
+                        $"LineBuilder.Wrap: inlineTextPolicyPerRun[{i}].WordBreak = {p.WordBreak} " +
+                        $"is not a defined WordBreak value.",
+                        nameof(inlineTextPolicyPerRun));
+                }
+                if (p.Hyphens is not (Hyphens.None or Hyphens.Manual or Hyphens.Auto))
+                {
+                    throw new ArgumentException(
+                        $"LineBuilder.Wrap: inlineTextPolicyPerRun[{i}].Hyphens = {p.Hyphens} " +
+                        $"is not a defined Hyphens value.",
+                        nameof(inlineTextPolicyPerRun));
                 }
             }
         }
@@ -737,9 +730,9 @@ internal static class LineBuilder
         // wraps in a TRAILING Normal source run too — exactly the
         // Normal-after-NoWrap order bug the review flagged.)
         //
-        // When whiteSpacePerRun is null, the original cycle-3b
+        // When inlineTextPolicyPerRun is null, the original cycle-3b
         // semantics apply: the uniform `whiteSpace` argument decides.
-        var wrapsAtAllowed = whiteSpacePerRun is not null
+        var wrapsAtAllowed = inlineTextPolicyPerRun is not null
             || whiteSpace is not (WhiteSpace.Pre or WhiteSpace.NoWrap);
 
         // Cycle 3b sub-cycle 1 hardening — Normal + NoWrap + PreLine
@@ -760,19 +753,19 @@ internal static class LineBuilder
         // candidate).
         var breakAllGlyphs = wordBreak == WordBreak.BreakAll;
         // Per Phase 3 Task 10 cycle 3d sub-cycle 2 — when
-        // overflowWrapPerRun is supplied, the global
+        // inlineTextPolicyPerRun is supplied, the global
         // allowOverflowAnywhere is true iff ANY source run has
         // overflow-wrap=anywhere (we still need to enter the per-
         // glyph code path for those runs). The per-glyph check at
         // the anywhere fallback site then enforces "only fire if
-        // cursor's source run is anywhere".
+        // cursor's source run is anywhere AND grapheme boundary OK".
         var allowOverflowAnywhere = overflowWrap == OverflowWrap.Anywhere;
-        if (overflowWrapPerRun is not null)
+        if (inlineTextPolicyPerRun is not null)
         {
             allowOverflowAnywhere = false;
-            for (var i = 0; i < overflowWrapPerRun.Count; i++)
+            for (var i = 0; i < inlineTextPolicyPerRun.Count; i++)
             {
-                if (overflowWrapPerRun[i] == OverflowWrap.Anywhere)
+                if (inlineTextPolicyPerRun[i].OverflowWrap == OverflowWrap.Anywhere)
                 {
                     allowOverflowAnywhere = true;
                     break;
@@ -1042,13 +1035,13 @@ internal static class LineBuilder
                 // ONLY at the surrounding Normal text's boundaries
                 // (typically the SP between the prefix run and the
                 // NoWrap span, or the SP after the NoWrap span ends).
-                if (whiteSpacePerRun is not null
+                if (inlineTextPolicyPerRun is not null
                     && opp == LineBreakOpportunity.Allowed)
                 {
                     var srcRunIdx = shaped.Source.SourceTextRunIndex;
-                    if ((uint)srcRunIdx < (uint)whiteSpacePerRun.Count)
+                    if ((uint)srcRunIdx < (uint)inlineTextPolicyPerRun.Count)
                     {
-                        var perRunWs = whiteSpacePerRun[srcRunIdx];
+                        var perRunWs = inlineTextPolicyPerRun[srcRunIdx].WhiteSpace;
                         if (perRunWs is WhiteSpace.Pre or WhiteSpace.NoWrap)
                         {
                             opp = LineBreakOpportunity.Prohibited;
@@ -1095,10 +1088,13 @@ internal static class LineBuilder
                 {
                     var clusterChar = concatText[glyph.Cluster];
                     isMandatoryControl = IsMandatoryLineBreakControl(clusterChar);
-                    // Per cycle 3d Rec #1 — per-glyph IsBreakSpace.
-                    var glyphCollapses = whiteSpacePerRun is not null
+                    // Per cycle 3d sub-cycle 1 Rec #1 — per-glyph
+                    // IsBreakSpace. Refactored in sub-cycle 2 Rec #4
+                    // to read from inlineTextPolicyPerRun's
+                    // WhiteSpace field.
+                    var glyphCollapses = inlineTextPolicyPerRun is not null
                         ? IsCollapseModeWhiteSpace(
-                            whiteSpacePerRun[shaped.Source.SourceTextRunIndex])
+                            inlineTextPolicyPerRun[shaped.Source.SourceTextRunIndex].WhiteSpace)
                         : collapsesSpaces;
                     if (glyphCollapses && (clusterChar == ' ' || clusterChar == '	'))
                     {
@@ -1237,83 +1233,109 @@ internal static class LineBuilder
             // this, the prior cursor>lineStart guard would let
             // additional glyphs accumulate.
             //
-            // Per Phase 3 Task 10 cycle 3d sub-cycle 1 review Rec #2
-            // — when whiteSpacePerRun is supplied the global
-            // wrapsAtAllowed is forced true so candidates can be
-            // recorded for wrap-friendly source runs. Without an
-            // additional per-glyph guard the anywhere fallback could
-            // force a break INSIDE an unbreakable NoWrap/Pre source
-            // run when all runs share overflow-wrap:anywhere. Per
-            // CSS Text L3 §5.1, overflow-wrap "only has an effect
-            // when white-space allows wrapping" — so we check the
-            // break point's source run(s):
-            //   * cursor > lineStart: break is between cursor-1 and
-            //     cursor. If both glyphs are in the SAME source run
-            //     and that run's WhiteSpace ∈ {Pre, NoWrap}, the
-            //     break would be INSIDE the unbreakable run — skip.
-            //   * cursor == lineStart: single-glyph overflow. The
-            //     glyph emits alone (every glyph must go somewhere);
-            //     this is the existing best-effort behavior even for
-            //     Pre/NoWrap glyphs.
-            var anywhereGatedByPerRun = true;
-            if (whiteSpacePerRun is not null && cursor > lineStart)
-            {
-                var prevSrcRunIdx = shapedRuns[flat[cursor - 1].RunIdx]
-                    .Source.SourceTextRunIndex;
-                var cursorSrcRunIdx = shapedRuns[flat[cursor].RunIdx]
-                    .Source.SourceTextRunIndex;
-                if (prevSrcRunIdx == cursorSrcRunIdx
-                    && !IsWrapFriendlyWhiteSpace(whiteSpacePerRun[cursorSrcRunIdx]))
-                {
-                    anywhereGatedByPerRun = false;
-                }
-            }
-            // Per Phase 3 Task 10 cycle 3d sub-cycle 2 — when
-            // overflowWrapPerRun is supplied, the global
-            // allowOverflowAnywhere is the OR over all runs (so the
-            // wrap loop enters this branch). The per-glyph check
-            // here gates "anywhere fires for THIS specific break
-            // point" by looking up the cursor's source run. The
-            // break is between cursor-1 and cursor; we require BOTH
-            // endpoints to be in overflow-wrap:anywhere source runs
-            // (or to share a single overflow-wrap:anywhere run) so
-            // the forced split is permitted by the spec for the
-            // affected glyphs. If cursor and cursor-1 are in
-            // different runs and EITHER is normal-overflow-wrap, the
-            // forced break at the run boundary is still allowed
-            // (treats the boundary as the natural anywhere site).
+            // Per Phase 3 Task 10 cycle 3d sub-cycle 1 + 2 +
+            // sub-cycle 2 review Recs #1 + #2 — gate the anywhere
+            // forced-break fallback by per-glyph metadata. Per CSS
+            // Text L3 §5.1, overflow-wrap "only has an effect when
+            // white-space allows wrapping" + §5.2 keeps grapheme
+            // clusters together. Three independent per-glyph gates
+            // apply at the break point (between cursor-1 and cursor
+            // when cursor > lineStart):
+            //
+            //   1. WhiteSpace gate (sub-cycle 1 + sub-cycle 2 Rec #2):
+            //      Same source run on both sides → run's WhiteSpace
+            //      must be wrap-friendly (not Pre/NoWrap).
+            //      Cross source-run boundary → at least ONE side
+            //      must be wrap-friendly. If both sides are
+            //      Pre/NoWrap, the boundary is not a valid soft-
+            //      wrap site even though it's a style boundary
+            //      (per sub-cycle 2 review Rec #2).
+            //
+            //   2. OverflowWrap gate (sub-cycle 2): the cursor's
+            //      source run must opt into overflow-wrap:anywhere
+            //      for same-run breaks; for cross-run breaks at
+            //      least one side must opt in.
+            //
+            //   3. Grapheme boundary gate (sub-cycle 2 Rec #1): per
+            //      CSS Text L3, anywhere must keep grapheme clusters
+            //      (UAX #29) together. Even when (1) + (2) pass, the
+            //      forced break at cursor-1 must land on a grapheme
+            //      boundary AND not be break-all-protected (ZWJ,
+            //      WJ, NBSP adjacencies). When inside a multi-glyph
+            //      cluster, suppress the fallback + let the cluster
+            //      stay intact (as overflowing single emission once
+            //      a boundary is reached).
+            //
+            // cursor == lineStart (single-glyph overflow): the lone
+            // glyph emits alone (every glyph must go somewhere) —
+            // existing best-effort behavior even for Pre/NoWrap or
+            // non-anywhere runs.
             var anywhereAllowedHere = allowOverflowAnywhere;
-            if (overflowWrapPerRun is not null)
+            if (cursor > lineStart)
             {
-                var cursorSrcRunIdx = shapedRuns[flat[cursor].RunIdx]
-                    .Source.SourceTextRunIndex;
-                var cursorAnywhere = overflowWrapPerRun[cursorSrcRunIdx]
-                    == OverflowWrap.Anywhere;
-                if (cursor > lineStart)
+                if (inlineTextPolicyPerRun is not null)
                 {
-                    var prevSrcRunIdx2 = shapedRuns[flat[cursor - 1].RunIdx]
+                    var prevSrcRunIdx = shapedRuns[flat[cursor - 1].RunIdx]
                         .Source.SourceTextRunIndex;
-                    var prevAnywhere = overflowWrapPerRun[prevSrcRunIdx2]
-                        == OverflowWrap.Anywhere;
-                    // Same source run: only fire if that run is
-                    // anywhere. Different runs: fire only if at
-                    // least one side enables anywhere (the boundary
-                    // is a natural split site for the anywhere run).
-                    anywhereAllowedHere = (prevSrcRunIdx2 == cursorSrcRunIdx)
-                        ? cursorAnywhere
-                        : (prevAnywhere || cursorAnywhere);
+                    var cursorSrcRunIdx = shapedRuns[flat[cursor].RunIdx]
+                        .Source.SourceTextRunIndex;
+                    var prevPolicy = inlineTextPolicyPerRun[prevSrcRunIdx];
+                    var cursorPolicy = inlineTextPolicyPerRun[cursorSrcRunIdx];
+
+                    // (1) WhiteSpace gate.
+                    bool wsAllows;
+                    if (prevSrcRunIdx == cursorSrcRunIdx)
+                    {
+                        wsAllows = IsWrapFriendlyWhiteSpace(cursorPolicy.WhiteSpace);
+                    }
+                    else
+                    {
+                        // Sub-cycle 2 Rec #2: cross-run requires at
+                        // least one side wrap-friendly. Two adjacent
+                        // non-wrap-friendly runs (Pre+NoWrap,
+                        // NoWrap+Pre, Pre+Pre, NoWrap+NoWrap) cannot
+                        // become a soft-wrap site just because they
+                        // straddle a style boundary.
+                        wsAllows = IsWrapFriendlyWhiteSpace(prevPolicy.WhiteSpace)
+                            || IsWrapFriendlyWhiteSpace(cursorPolicy.WhiteSpace);
+                    }
+
+                    // (2) OverflowWrap gate.
+                    bool owAllows;
+                    if (prevSrcRunIdx == cursorSrcRunIdx)
+                    {
+                        owAllows = cursorPolicy.OverflowWrap == OverflowWrap.Anywhere;
+                    }
+                    else
+                    {
+                        owAllows = prevPolicy.OverflowWrap == OverflowWrap.Anywhere
+                            || cursorPolicy.OverflowWrap == OverflowWrap.Anywhere;
+                    }
+
+                    anywhereAllowedHere = anywhereAllowedHere && wsAllows && owAllows;
                 }
-                else
+
+                // (3) Grapheme boundary gate (Rec #1) — even when
+                // (1) + (2) pass, the break must land on a grapheme
+                // cluster boundary. Apply uniformly whether per-run
+                // arrays are supplied or not (combining marks +
+                // ZWJ emoji + regional-indicator flags must stay
+                // intact under uniform anywhere too).
+                if (anywhereAllowedHere
+                    && graphemeBreakAfter is not null
+                    && allowOverflowAnywhere)
                 {
-                    // cursor == lineStart: single-glyph overflow.
-                    // Fire if the lone glyph's run is anywhere.
-                    anywhereAllowedHere = cursorAnywhere;
+                    if (!IsGraphemeBoundaryBetweenFlatGlyphs(
+                            flat, cursor, shapedRuns, graphemeBreakAfter,
+                            concatText, concatTotal))
+                    {
+                        anywhereAllowedHere = false;
+                    }
                 }
             }
             if (afterAdvance > availableInlineSize
                 && anywhereAllowedHere
-                && wrapsAtAllowed
-                && anywhereGatedByPerRun)
+                && wrapsAtAllowed)
             {
                 if (cursor > lineStart)
                 {
@@ -2159,6 +2181,78 @@ internal static class LineBuilder
     /// must not fire inside Pre / NoWrap source-run spans.</summary>
     private static bool IsWrapFriendlyWhiteSpace(WhiteSpace ws) =>
         ws is not (WhiteSpace.Pre or WhiteSpace.NoWrap);
+
+    /// <summary>Per Phase 3 Task 10 cycle 3d sub-cycle 2 review
+    /// Rec #1 — checks whether the boundary BETWEEN <c>flat[cursor-1]</c>
+    /// and <c>flat[cursor]</c> lands on a grapheme cluster boundary
+    /// (UAX #29 §3.1) AND is not adjacency-protected (LB8a/LB11/
+    /// LB12 — ZWJ, WJ, NBSP). The forced overflow-wrap:anywhere
+    /// break must NOT split inside a multi-glyph cluster
+    /// (combining marks, ZWJ-joined emoji, regional-indicator flag
+    /// pairs).
+    ///
+    /// <para>Returns <see langword="true"/> when the break point
+    /// is safe to use, <see langword="false"/> when the boundary is
+    /// inside an atomic cluster + the fallback must skip this
+    /// position (the wrap loop continues + retries at the next
+    /// cursor, which sits on a glyph that DOES start a new
+    /// cluster).</para></summary>
+    private static bool IsGraphemeBoundaryBetweenFlatGlyphs(
+        FlatGlyph[] flat, int cursor,
+        IReadOnlyList<ShapedRun> shapedRuns,
+        bool[] graphemeBreakAfter,
+        string concatText, int concatTotal)
+    {
+        // Compute the UTF-16 cluster-end position of flat[cursor-1].
+        // For LTR runs the next-glyph's cluster is the cluster-end
+        // (matches the existing flat-build logic). For RTL runs
+        // (cycle 3a fallback) we approximate as cluster + 1 which
+        // is correct for single-codeunit clusters.
+        var prev = flat[cursor - 1];
+        var prevShaped = shapedRuns[prev.RunIdx];
+        var prevGlyphs = prevShaped.Glyphs;
+        var isRtl = (prevShaped.Source.BidiLevel & 1) != 0;
+        int clusterEnd;
+        if (!isRtl)
+        {
+            clusterEnd = (prev.GlyphIdxInRun + 1 < prevGlyphs.Length)
+                ? prevGlyphs[prev.GlyphIdxInRun + 1].Cluster
+                : prevShaped.Source.Utf16Start + prevShaped.Source.Utf16Length;
+        }
+        else
+        {
+            clusterEnd = prevGlyphs[prev.GlyphIdxInRun].Cluster + 1;
+        }
+        // Multi-glyph SINGLE-cluster shapes (combining marks
+        // attached to a base char; ligatures; ZWJ-joined sequences)
+        // yield clusterEnd == prev's own cluster (HarfBuzz keeps
+        // glyphs in the same source cluster). That's never a valid
+        // grapheme boundary — the cluster spans multiple glyphs.
+        var prevCluster = prevGlyphs[prev.GlyphIdxInRun].Cluster;
+        if (clusterEnd <= prevCluster)
+        {
+            return false;
+        }
+        var graphemeIdx = clusterEnd - 1;
+        if ((uint)graphemeIdx >= (uint)concatTotal)
+        {
+            // End-of-input — always a valid boundary.
+            return true;
+        }
+        if (!graphemeBreakAfter[graphemeIdx])
+        {
+            // Inside a multi-codepoint grapheme cluster.
+            return false;
+        }
+        // Adjacency-protected positions (ZWJ, WJ, NBSP) are not
+        // valid anywhere break points even when grapheme-boundary
+        // analysis would allow them.
+        if (IsBreakAllProtected(concatText, graphemeIdx))
+        {
+            return false;
+        }
+        return true;
+    }
 
     /// <summary>Slice a global glyph range <c>[start, end]</c>
     /// (inclusive on both ends) into per-run

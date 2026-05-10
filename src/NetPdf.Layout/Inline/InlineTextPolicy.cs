@@ -51,12 +51,24 @@ namespace NetPdf.Layout.Inline;
 ///   mismatch — loud-fail semantics until per-glyph plumbing
 ///   lands.</item>
 ///   <item>Cycle 3c relaxed the throw for the Normal/NoWrap
-///   WhiteSpace matrix only: a per-source-run <c>WhiteSpace</c>
-///   array threads through <see cref="LineBuilder.Wrap"/> +
-///   downgrades Allowed → Prohibited for NoWrap-tagged glyphs.
-///   Per-glyph overflow-wrap/word-break/hyphens + WhiteSpace
-///   mismatches involving Pre/PreWrap/PreLine/BreakSpaces still
-///   throw (deferred to cycle 3d).</item>
+///   WhiteSpace matrix only via a per-source-run <c>WhiteSpace</c>
+///   array threaded through <see cref="LineBuilder.Wrap"/>'s
+///   per-glyph downgrade.</item>
+///   <item>Cycle 3d sub-cycle 1 broadened to the FULL six-value
+///   WhiteSpace mismatch matrix via
+///   <see cref="LineBuilder.PreprocessTextRunsPerRun"/> (per-source-
+///   run preprocessor handling collapse-vs-preserve modes coherently).</item>
+///   <item>Cycle 3d sub-cycle 2 broadened to OverflowWrap mismatches.
+///   Replaced the cycle 3c <c>whiteSpacePerRun</c> + cycle 3d
+///   sub-cycle 2 <c>overflowWrapPerRun</c> parallel arrays with a
+///   single <see cref="LineBuilder.Wrap"/> <c>inlineTextPolicyPerRun:
+///   IReadOnlyList&lt;InlineTextPolicy&gt;?</c> parameter that
+///   bundles all 4 dimensions in one coherent struct (per
+///   sub-cycle 2 review Rec #4).</item>
+///   <item>WordBreak + Hyphens mismatches still throw — per-glyph
+///   metadata for those 2 dimensions deferred to sub-cycle 3+.
+///   The <see cref="InlineTextPolicy"/>[] parameter already carries
+///   those fields end-to-end, so wiring through is additive.</item>
 /// </list>
 /// </para></summary>
 internal readonly record struct InlineTextPolicy(

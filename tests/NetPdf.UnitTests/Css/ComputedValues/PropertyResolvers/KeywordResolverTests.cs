@@ -61,6 +61,22 @@ public sealed class KeywordResolverTests
     [Fact] public void Position_stickys_emits_diagnostic()    => AssertInvalid("stickys", PropertyId.Position);
     [Fact] public void BoxSizing_padding_box_emits_diagnostic() => AssertInvalid("padding-box", PropertyId.BoxSizing);
 
+    // Phase 3 Task 10 cycle 2 — CSS Text L3 §5+§6 keyword tables.
+    [Fact] public void OverflowWrap_normal_resolves()     => AssertResolves("normal", PropertyId.OverflowWrap);
+    [Fact] public void OverflowWrap_anywhere_resolves()   => AssertResolves("anywhere", PropertyId.OverflowWrap);
+    [Fact] public void OverflowWrap_break_word_resolves() => AssertResolves("break-word", PropertyId.OverflowWrap);
+    [Fact] public void OverflowWrap_invalid_emits_diagnostic() => AssertInvalid("foo", PropertyId.OverflowWrap);
+    [Fact] public void WordBreak_normal_resolves()        => AssertResolves("normal", PropertyId.WordBreak);
+    [Fact] public void WordBreak_break_all_resolves()     => AssertResolves("break-all", PropertyId.WordBreak);
+    [Fact] public void WordBreak_keep_all_resolves()      => AssertResolves("keep-all", PropertyId.WordBreak);
+    [Fact] public void WordBreak_break_word_resolves()    => AssertResolves("break-word", PropertyId.WordBreak);
+    [Fact] public void WordBreak_invalid_emits_diagnostic() => AssertInvalid("bogus", PropertyId.WordBreak);
+    [Fact] public void Hyphens_none_resolves()            => AssertResolves("none", PropertyId.Hyphens);
+    [Fact] public void Hyphens_manual_resolves()          => AssertResolves("manual", PropertyId.Hyphens);
+    [Fact] public void Hyphens_auto_resolves()            => AssertResolves("auto", PropertyId.Hyphens);
+    [Fact] public void Hyphens_invalid_emits_diagnostic() => AssertInvalid("always", PropertyId.Hyphens);
+    [Fact] public void Hyphens_AUTO_resolves_case_insensitive() => AssertResolves("AUTO", PropertyId.Hyphens);
+
     [Fact]
     public void TryGetId_returns_dense_zero_based_ids()
     {

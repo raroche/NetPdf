@@ -230,6 +230,16 @@ internal static class KeywordResolver
         // out-of-scope for cycle 1).
         b[PropertyId.WhiteSpace] = T("normal", "pre", "nowrap", "pre-wrap", "break-spaces", "pre-line");
 
+        // Per Phase 3 Task 10 cycle 2 — overflow-wrap (CSS Text 3 §5.1),
+        // word-break (CSS Text 3 §5.2), hyphens (CSS Text 3 §6.1).
+        // Wired through here for cascade resolution; the
+        // ComputedStyle materializer maps these ids to the
+        // NetPdf.Layout.Inline enums (OverflowWrap/WordBreak/Hyphens)
+        // for the wrap pass.
+        b[PropertyId.OverflowWrap] = T("normal", "anywhere", "break-word");
+        b[PropertyId.WordBreak] = T("normal", "break-all", "keep-all", "break-word");
+        b[PropertyId.Hyphens] = T("none", "manual", "auto");
+
         return b.ToFrozenDictionary();
     }
 

@@ -99,8 +99,16 @@ public sealed class InlineLayouterCycle3bTests
     }
 
     [Fact]
-    public void LayoutPerRun_mixed_overflow_wrap_throws_NotSupported()
+    public void LayoutPerRun_mixed_overflow_wrap_now_handled_per_glyph()
     {
+        // Per Phase 3 Task 10 cycle 3d sub-cycle 2 — mixed-mode
+        // overflow-wrap (Normal vs Anywhere across source runs) is
+        // now HANDLED via per-source-run plumbing through
+        // <see cref="LineBuilder.Wrap"/>'s `overflowWrapPerRun`
+        // parameter. Cycle 3b would have thrown
+        // NotSupportedException; cycle 3d sub-cycle 2 builds the
+        // array + the anywhere fallback gates per-glyph by source-
+        // run-index.
         using var resolver = new TestShaperResolver();
         var sNormal = MakeStyle();
         var sAnywhere = ComputedStyle.RentForExclusiveTesting();
@@ -112,9 +120,9 @@ public sealed class InlineLayouterCycle3bTests
             new("BBB", sAnywhere),
         };
 
-        Assert.Throws<NotSupportedException>(() =>
-            InlineLayouter.LayoutPerRun(sourceRuns, 15, resolver,
-                LatnScript, EnLang));
+        var result = InlineLayouter.LayoutPerRun(sourceRuns, 15, resolver,
+            LatnScript, EnLang);
+        Assert.NotEmpty(result);
     }
 
     [Fact]

@@ -439,19 +439,20 @@ internal static class InlineLayouter
         // trigger the mixed-mode guard. If ALL runs are empty,
         // delegate to the empty-input path with default policy.
         //
-        // Per Phase 3 Task 10 cycle 3d sub-cycle 1 — when policies
-        // differ ONLY in WhiteSpace (any of the 6 values), build a
-        // per-source-run WhiteSpace array + delegate to the per-glyph
-        // WhiteSpace honoring path in <see cref="LineBuilder.Wrap"/>.
-        // Cross-mode preserve+collapse is handled by the new
-        // <see cref="LineBuilder.PreprocessTextRunsPerRun"/> which
-        // processes each run with its OWN WhiteSpace. Mixed-mode in
-        // overflow-wrap/word-break/hyphens still throws (per-glyph
-        // metadata for those 3 properties is out of cycle 3d
-        // sub-cycle 1 scope).
+        // Per Phase 3 Task 10 cycle 3d sub-cycle 1 + 2 — when
+        // policies differ across runs, build per-source-run arrays
+        // for the dimensions that have per-glyph honoring in
+        // <see cref="LineBuilder.Wrap"/>:
+        //   * WhiteSpace (sub-cycle 1) — collapse vs. preserve;
+        //     per-glyph IsBreakSpace + wrap-at-Allowed downgrade.
+        //   * OverflowWrap (sub-cycle 2) — per-glyph anywhere
+        //     fallback gating.
+        // Mixed-mode in word-break / hyphens still throws (per-glyph
+        // metadata for those 2 properties is sub-cycle 3+ scope).
         InlineTextPolicy? effectivePolicy = null;
         var firstNonEmptyIndex = -1;
         WhiteSpace[]? whiteSpacePerRun = null; // built lazily on mismatch
+        OverflowWrap[]? overflowWrapPerRun = null; // built lazily on mismatch
         for (var i = 0; i < sourceTextRuns.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -464,34 +465,28 @@ internal static class InlineLayouter
             }
             else if (p != effectivePolicy)
             {
-                // Cycle 3c — accept mismatch when ONLY WhiteSpace
-                // differs. The other 3 properties must still match.
-                var sameOtherFields = p.OverflowWrap == effectivePolicy.Value.OverflowWrap
-                    && p.WordBreak == effectivePolicy.Value.WordBreak
-                    && p.Hyphens == effectivePolicy.Value.Hyphens;
-                if (!sameOtherFields)
+                // Cycle 3d sub-cycle 2 — accept mismatch when only
+                // WhiteSpace and/or OverflowWrap differ. WordBreak +
+                // Hyphens must still match (per-glyph metadata for
+                // those deferred to sub-cycle 3+).
+                if (p.WordBreak != effectivePolicy.Value.WordBreak
+                    || p.Hyphens != effectivePolicy.Value.Hyphens)
                 {
                     throw new NotSupportedException(
                         $"InlineLayouter.LayoutPerRun: source TextRuns have " +
                         $"different InlineTextPolicy values that differ in " +
-                        $"more than just WhiteSpace (run {firstNonEmptyIndex}={effectivePolicy}, " +
-                        $"run {i}={p}). Per-glyph overflow-wrap/word-break/" +
-                        $"hyphens mixed-mode is deferred to a future cycle. " +
-                        $"Cycle 3d sub-cycle 1 handles WhiteSpace mismatches " +
-                        $"across the full six-value matrix; until others " +
-                        $"land, callers must either avoid mixed inline " +
-                        $"descendants of those properties or split the wrap " +
-                        $"into homogeneous sub-passes.");
+                        $"word-break or hyphens (run {firstNonEmptyIndex}={effectivePolicy}, " +
+                        $"run {i}={p}). Per-glyph word-break/hyphens mixed-mode " +
+                        $"is deferred to a future cycle. Cycle 3d sub-cycles " +
+                        $"1+2 handle WhiteSpace and overflow-wrap mismatches; " +
+                        $"until others land, callers must either avoid mixed " +
+                        $"inline descendants of those properties or split the " +
+                        $"wrap into homogeneous sub-passes.");
                 }
-                // Cycle 3d sub-cycle 1 — WhiteSpace-only mismatch
-                // accepted across the FULL six-value matrix. The
-                // per-source-run preprocessor
-                // (<see cref="LineBuilder.PreprocessTextRunsPerRun"/>)
-                // processes each run with its own WhiteSpace, and
-                // the wrap loop's per-glyph downgrade suppresses
-                // wraps inside NoWrap/Pre runs. Build the per-run
-                // array lazily on first mismatch.
-                if (whiteSpacePerRun is null)
+
+                // WhiteSpace-only mismatch path (cycle 3d sub-cycle 1).
+                if (p.WhiteSpace != effectivePolicy.Value.WhiteSpace
+                    && whiteSpacePerRun is null)
                 {
                     whiteSpacePerRun = new WhiteSpace[sourceTextRuns.Count];
                     var fillTo = effectivePolicy.Value.WhiteSpace;
@@ -500,18 +495,44 @@ internal static class InlineLayouter
                         // Empty runs get the effective ws — they
                         // contribute no glyphs anyway. Non-empty
                         // already-walked runs get fillTo (the first
-                        // non-empty's ws). The current run + later
-                        // runs will be set as we walk.
+                        // non-empty's ws). Later runs get set as
+                        // we walk.
                         whiteSpacePerRun[j] = fillTo;
                     }
                 }
-                whiteSpacePerRun[i] = p.WhiteSpace;
+                if (whiteSpacePerRun is not null)
+                {
+                    whiteSpacePerRun[i] = p.WhiteSpace;
+                }
+
+                // OverflowWrap-only mismatch path (cycle 3d sub-cycle 2).
+                if (p.OverflowWrap != effectivePolicy.Value.OverflowWrap
+                    && overflowWrapPerRun is null)
+                {
+                    overflowWrapPerRun = new OverflowWrap[sourceTextRuns.Count];
+                    var fillTo = effectivePolicy.Value.OverflowWrap;
+                    for (var j = 0; j < sourceTextRuns.Count; j++)
+                    {
+                        overflowWrapPerRun[j] = fillTo;
+                    }
+                }
+                if (overflowWrapPerRun is not null)
+                {
+                    overflowWrapPerRun[i] = p.OverflowWrap;
+                }
             }
-            else if (whiteSpacePerRun is not null)
+            else
             {
-                // Same policy as effective + we're already in per-
-                // run mode — set this run's ws too.
-                whiteSpacePerRun[i] = p.WhiteSpace;
+                // Same policy as effective — set per-run entries to
+                // the current value when already in per-run mode.
+                if (whiteSpacePerRun is not null)
+                {
+                    whiteSpacePerRun[i] = p.WhiteSpace;
+                }
+                if (overflowWrapPerRun is not null)
+                {
+                    overflowWrapPerRun[i] = p.OverflowWrap;
+                }
             }
         }
 
@@ -575,7 +596,8 @@ internal static class InlineLayouter
             policy.Hyphens,
             hyphenator,
             cancellationToken,
-            whiteSpacePerRun);
+            whiteSpacePerRun,
+            overflowWrapPerRun);
     }
 
     /// <summary>Per Phase 3 Task 10 cycle 3c — itemize + shape

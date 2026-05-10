@@ -567,6 +567,18 @@ internal static class LineBuilder
     /// <c>white-space:normal</c> text. When null, the uniform
     /// <paramref name="whiteSpace"/> argument applies to all
     /// glyphs.</param>
+    /// <param name="overflowWrapPerRun">Per Phase 3 Task 10 cycle 3d
+    /// sub-cycle 2 — optional per-source-TextRun OverflowWrap
+    /// override. When supplied, MUST have one entry per source run;
+    /// the <c>overflow-wrap: anywhere</c> forced-break fallback at
+    /// the wrap loop checks each potential break point's
+    /// source-run-index against this array to decide whether the
+    /// forced break is permitted. Same-run breaks fire only when the
+    /// run's OverflowWrap is Anywhere; cross-run breaks fire when
+    /// either side enables anywhere (boundary is a natural anywhere
+    /// site for that run). When null, the uniform
+    /// <paramref name="overflowWrap"/> argument applies to all
+    /// glyphs.</param>
     /// <returns>One <see cref="LineFragment"/> per wrapped line in
     /// document order. Empty array when <paramref name="shapedRuns"/>
     /// is empty or contains only zero-glyph runs.</returns>
@@ -595,7 +607,8 @@ internal static class LineBuilder
         Hyphens hyphens = Hyphens.Manual,
         Hyphenator? hyphenator = null,
         CancellationToken cancellationToken = default,
-        IReadOnlyList<WhiteSpace>? whiteSpacePerRun = null)
+        IReadOnlyList<WhiteSpace>? whiteSpacePerRun = null,
+        IReadOnlyList<OverflowWrap>? overflowWrapPerRun = null)
     {
         ArgumentNullException.ThrowIfNull(sourceTextRuns);
         ArgumentNullException.ThrowIfNull(shapedRuns);
@@ -637,6 +650,34 @@ internal static class LineBuilder
                         $"LineBuilder.Wrap: whiteSpacePerRun[{i}] = {ws} " +
                         $"is not a defined WhiteSpace value.",
                         nameof(whiteSpacePerRun));
+                }
+            }
+        }
+        // Per Phase 3 Task 10 cycle 3d sub-cycle 2 — when an
+        // overflowWrapPerRun array is supplied, validate length +
+        // every entry is a defined OverflowWrap value. Same
+        // rationale as whiteSpacePerRun validation: undefined cast
+        // would silently fall through the per-glyph anywhere check
+        // + produce indeterminate behavior.
+        if (overflowWrapPerRun is not null
+            && overflowWrapPerRun.Count != sourceTextRuns.Count)
+        {
+            throw new ArgumentException(
+                $"LineBuilder.Wrap: overflowWrapPerRun length ({overflowWrapPerRun.Count}) " +
+                $"must match sourceTextRuns count ({sourceTextRuns.Count}).",
+                nameof(overflowWrapPerRun));
+        }
+        if (overflowWrapPerRun is not null)
+        {
+            for (var i = 0; i < overflowWrapPerRun.Count; i++)
+            {
+                var ow = overflowWrapPerRun[i];
+                if (ow is not (OverflowWrap.Normal or OverflowWrap.Anywhere))
+                {
+                    throw new ArgumentException(
+                        $"LineBuilder.Wrap: overflowWrapPerRun[{i}] = {ow} " +
+                        $"is not a defined OverflowWrap value.",
+                        nameof(overflowWrapPerRun));
                 }
             }
         }
@@ -718,7 +759,26 @@ internal static class LineBuilder
         // per-glyph fallback only fires under overflow + no
         // candidate).
         var breakAllGlyphs = wordBreak == WordBreak.BreakAll;
+        // Per Phase 3 Task 10 cycle 3d sub-cycle 2 — when
+        // overflowWrapPerRun is supplied, the global
+        // allowOverflowAnywhere is true iff ANY source run has
+        // overflow-wrap=anywhere (we still need to enter the per-
+        // glyph code path for those runs). The per-glyph check at
+        // the anywhere fallback site then enforces "only fire if
+        // cursor's source run is anywhere".
         var allowOverflowAnywhere = overflowWrap == OverflowWrap.Anywhere;
+        if (overflowWrapPerRun is not null)
+        {
+            allowOverflowAnywhere = false;
+            for (var i = 0; i < overflowWrapPerRun.Count; i++)
+            {
+                if (overflowWrapPerRun[i] == OverflowWrap.Anywhere)
+                {
+                    allowOverflowAnywhere = true;
+                    break;
+                }
+            }
+        }
 
         if (shapedRuns.Count == 0)
         {
@@ -1208,8 +1268,50 @@ internal static class LineBuilder
                     anywhereGatedByPerRun = false;
                 }
             }
+            // Per Phase 3 Task 10 cycle 3d sub-cycle 2 — when
+            // overflowWrapPerRun is supplied, the global
+            // allowOverflowAnywhere is the OR over all runs (so the
+            // wrap loop enters this branch). The per-glyph check
+            // here gates "anywhere fires for THIS specific break
+            // point" by looking up the cursor's source run. The
+            // break is between cursor-1 and cursor; we require BOTH
+            // endpoints to be in overflow-wrap:anywhere source runs
+            // (or to share a single overflow-wrap:anywhere run) so
+            // the forced split is permitted by the spec for the
+            // affected glyphs. If cursor and cursor-1 are in
+            // different runs and EITHER is normal-overflow-wrap, the
+            // forced break at the run boundary is still allowed
+            // (treats the boundary as the natural anywhere site).
+            var anywhereAllowedHere = allowOverflowAnywhere;
+            if (overflowWrapPerRun is not null)
+            {
+                var cursorSrcRunIdx = shapedRuns[flat[cursor].RunIdx]
+                    .Source.SourceTextRunIndex;
+                var cursorAnywhere = overflowWrapPerRun[cursorSrcRunIdx]
+                    == OverflowWrap.Anywhere;
+                if (cursor > lineStart)
+                {
+                    var prevSrcRunIdx2 = shapedRuns[flat[cursor - 1].RunIdx]
+                        .Source.SourceTextRunIndex;
+                    var prevAnywhere = overflowWrapPerRun[prevSrcRunIdx2]
+                        == OverflowWrap.Anywhere;
+                    // Same source run: only fire if that run is
+                    // anywhere. Different runs: fire only if at
+                    // least one side enables anywhere (the boundary
+                    // is a natural split site for the anywhere run).
+                    anywhereAllowedHere = (prevSrcRunIdx2 == cursorSrcRunIdx)
+                        ? cursorAnywhere
+                        : (prevAnywhere || cursorAnywhere);
+                }
+                else
+                {
+                    // cursor == lineStart: single-glyph overflow.
+                    // Fire if the lone glyph's run is anywhere.
+                    anywhereAllowedHere = cursorAnywhere;
+                }
+            }
             if (afterAdvance > availableInlineSize
-                && allowOverflowAnywhere
+                && anywhereAllowedHere
                 && wrapsAtAllowed
                 && anywhereGatedByPerRun)
             {

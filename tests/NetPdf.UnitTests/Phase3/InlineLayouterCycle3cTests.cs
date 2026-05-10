@@ -177,10 +177,13 @@ public sealed class InlineLayouterCycle3cTests
     }
 
     [Fact]
-    public void LayoutPerRun_mixed_overflow_wrap_still_throws()
+    public void LayoutPerRun_mixed_overflow_wrap_now_handled_per_glyph()
     {
-        // Cycle 3c only handles WhiteSpace mismatch; other property
-        // mismatches still throw.
+        // Cycle 3c only handled WhiteSpace mismatch; cycle 3d
+        // sub-cycle 2 broadens to overflow-wrap mismatch via
+        // per-source-run plumbing through LineBuilder.Wrap's
+        // `overflowWrapPerRun` parameter. The anywhere fallback
+        // gates per-glyph by source-run-index.
         using var resolver = new TestShaperResolver();
         var sNormal = MakeStyle();
         var sAnywhere = ComputedStyle.RentForExclusiveTesting();
@@ -190,10 +193,9 @@ public sealed class InlineLayouterCycle3cTests
             new("AAA", sNormal),
             new("BBB", sAnywhere),
         };
-        var ex = Assert.Throws<NotSupportedException>(() =>
-            InlineLayouter.LayoutPerRun(sourceRuns, 15, resolver,
-                LatnScript, EnLang));
-        Assert.Contains("more than just WhiteSpace", ex.Message);
+        var result = InlineLayouter.LayoutPerRun(sourceRuns, 15, resolver,
+            LatnScript, EnLang);
+        Assert.NotEmpty(result);
     }
 
     [Fact]

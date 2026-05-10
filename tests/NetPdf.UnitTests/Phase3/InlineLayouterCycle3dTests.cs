@@ -328,24 +328,172 @@ public sealed class InlineLayouterCycle3dTests
     }
 
     [Fact]
-    public void LayoutPerRun_mixed_overflow_wrap_still_throws()
+    public void LayoutPerRun_mixed_word_break_still_throws()
     {
-        // Cycle 3d sub-cycle 1 broadens the WhiteSpace matrix; the
-        // OTHER 3 properties (overflow-wrap, word-break, hyphens)
-        // still throw on mismatch (per-glyph metadata for those
-        // deferred to a subsequent cycle).
+        // Cycle 3d sub-cycle 2 broadens the matrix to overflow-wrap
+        // mismatches too. The remaining "still throws" cases are
+        // word-break + hyphens mismatches (per-glyph metadata for
+        // those deferred to sub-cycle 3+).
+        using var resolver = new TestShaperResolver();
+        var sNormal = MakeStyle();
+        var sBreakAll = ComputedStyle.RentForExclusiveTesting();
+        sBreakAll.Set(PropertyId.WordBreak, ComputedSlot.FromKeyword(1)); // break-all
+        var sourceRuns = new List<TextRun>
+        {
+            new("AAA", sNormal),
+            new("BBB", sBreakAll),
+        };
+        var ex = Assert.Throws<NotSupportedException>(() =>
+            InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver,
+                LatnScript, EnLang));
+        Assert.Contains("word-break or hyphens", ex.Message);
+    }
+
+    [Fact]
+    public void LayoutPerRun_mixed_hyphens_still_throws()
+    {
+        // Cycle 3d sub-cycle 2 broadens to overflow-wrap mismatches;
+        // hyphens mismatch still throws (sub-cycle 3+ scope).
+        using var resolver = new TestShaperResolver();
+        var sManual = MakeStyle();
+        var sAuto = ComputedStyle.RentForExclusiveTesting();
+        sAuto.Set(PropertyId.Hyphens, ComputedSlot.FromKeyword(2)); // auto
+        var sourceRuns = new List<TextRun>
+        {
+            new("foo", sManual),
+            new("bar", sAuto),
+        };
+        var ex = Assert.Throws<NotSupportedException>(() =>
+            InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver,
+                LatnScript, EnLang));
+        Assert.Contains("word-break or hyphens", ex.Message);
+    }
+
+    // --- Cycle 3d sub-cycle 2: per-glyph overflow-wrap tests -----
+
+    [Fact]
+    public void LayoutPerRun_anywhere_in_one_run_does_NOT_break_inside_normal_overflow_wrap_run()
+    {
+        // Source: Normal(overflow-wrap:normal) "AAAA" (4 glyphs) +
+        // Normal(overflow-wrap:anywhere) "BBBBB" (5 glyphs).
+        // Budget = 10 (very small).
+        //
+        // overflowWrapPerRun = [Normal, Anywhere].
+        //
+        // - cursor 0-3 (Run 0, normal overflow-wrap):
+        //   afterAdvance grows past 10. No Allowed candidate
+        //   (Normal letters → Prohibited). Anywhere check at each
+        //   cursor: cursor's source-run is Run 0 = Normal overflow-
+        //   wrap → anywhereAllowedHere=false → don't fire.
+        // - cursor 4 (Run 1, Anywhere): cursor=4, lineStart=0,
+        //   cursor-1=3 (Run 0, Normal) → different src runs →
+        //   anywhereAllowedHere = prev.Normal || cursor.Anywhere
+        //   = true. Fire. Emit [0..3] (4 glyphs "AAAA").
+        //   lineStart=4.
+        // - cursor 4 (Run 1): cum 6.
+        // - cursor 5 (Run 1): cum 12 > 10. Same-run anywhere check:
+        //   cursor's run is Anywhere → fire. Emit [4..4]. lineStart=5.
+        // - ... each subsequent B emits alone.
         using var resolver = new TestShaperResolver();
         var sNormal = MakeStyle();
         var sAnywhere = ComputedStyle.RentForExclusiveTesting();
         sAnywhere.Set(PropertyId.OverflowWrap, ComputedSlot.FromKeyword(1)); // anywhere
         var sourceRuns = new List<TextRun>
         {
-            new("AAA", sNormal),
-            new("BBB", sAnywhere),
+            new("AAAA", sNormal),
+            new("BBBBB", sAnywhere),
         };
-        Assert.Throws<NotSupportedException>(() =>
-            InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver,
-                LatnScript, EnLang));
+        var result = InlineLayouter.LayoutPerRun(sourceRuns,
+            availableInlineSize: 10, resolver, LatnScript, EnLang);
+
+        // Line 0 = the entire "AAAA" run (4 glyphs in SR 0) —
+        // anywhere did NOT split inside the normal-overflow-wrap run.
+        Assert.True(result.Length >= 1);
+        Assert.Single(result[0].Slices);
+        Assert.Equal(0, result[0].Slices[0].ShapedRunIndex);
+        Assert.Equal(0, result[0].Slices[0].GlyphStart);
+        Assert.Equal(4, result[0].Slices[0].GlyphLength);
+        // The B run got split per anywhere (multiple lines after line 0).
+        Assert.True(result.Length >= 2);
+    }
+
+    [Fact]
+    public void LayoutPerRun_anywhere_in_one_run_DOES_break_inside_anywhere_run()
+    {
+        // Inverse of the test above — when the anywhere run is the
+        // one being walked, the forced break DOES fire inside it.
+        // Source: Normal(anywhere) "AAAAA" (5 glyphs) +
+        // Normal(normal overflow-wrap) "BBBB" (4 glyphs). Budget = 10.
+        //
+        // overflowWrapPerRun = [Anywhere, Normal].
+        // - cursor 0-1: cum 6, 12 > 10. cursor=1, prev=0, both in
+        //   Run 0 = Anywhere → fire. Emit [0..0] ("A"). lineStart=1.
+        // - cursor 1: cum 6. cursor 2: cum 12 > 10. Fire. lineStart=2.
+        // - ... Run 0 splits into 5 single-glyph lines.
+        // - At Run 1 (BBBB normal): no further forced splits inside
+        //   (would overflow as one line).
+        using var resolver = new TestShaperResolver();
+        var sAnywhere = ComputedStyle.RentForExclusiveTesting();
+        sAnywhere.Set(PropertyId.OverflowWrap, ComputedSlot.FromKeyword(1)); // anywhere
+        var sNormal = MakeStyle();
+        var sourceRuns = new List<TextRun>
+        {
+            new("AAAAA", sAnywhere),
+            new("BBBB", sNormal),
+        };
+        var result = InlineLayouter.LayoutPerRun(sourceRuns,
+            availableInlineSize: 10, resolver, LatnScript, EnLang);
+
+        // The Anywhere run got split (≥ 2 lines). Pre-fix
+        // (sub-cycle 1 threw on overflow-wrap mismatch) we wouldn't
+        // even reach this code path.
+        Assert.True(result.Length >= 2,
+            $"Anywhere run should split into multiple lines; got {result.Length}.");
+    }
+
+    [Fact]
+    public void Wrap_overflowWrapPerRun_length_mismatch_throws()
+    {
+        // Validate the new overflowWrapPerRun parameter rejects
+        // length mismatches.
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun>
+        {
+            new("AAA", MakeStyle()),
+            new("BBB", MakeStyle()),
+        };
+        var itemized = LineBuilder.Itemize(sourceRuns,
+            NetPdf.Text.Bidi.ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver,
+            LatnScript, EnLang);
+
+        var bogusPerRun = new[] { OverflowWrap.Normal }; // length 1 != 2
+
+        Assert.Throws<ArgumentException>(() =>
+            LineBuilder.Wrap(sourceRuns, shaped, 100,
+                overflowWrapPerRun: bogusPerRun));
+    }
+
+    [Fact]
+    public void Wrap_overflowWrapPerRun_invalid_enum_value_throws()
+    {
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun>
+        {
+            new("AAA", MakeStyle()),
+            new("BBB", MakeStyle()),
+        };
+        var itemized = LineBuilder.Itemize(sourceRuns,
+            NetPdf.Text.Bidi.ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver,
+            LatnScript, EnLang);
+
+        var perRun = new[] { OverflowWrap.Normal, (OverflowWrap)99 };
+
+        var ex = Assert.Throws<ArgumentException>(() =>
+            LineBuilder.Wrap(sourceRuns, shaped, 100,
+                overflowWrapPerRun: perRun));
+        Assert.Contains("overflowWrapPerRun[1]", ex.Message);
     }
 
     // --- Cycle 3d sub-cycle 1 review hardening tests --------------

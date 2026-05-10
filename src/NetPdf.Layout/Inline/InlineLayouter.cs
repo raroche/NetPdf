@@ -22,7 +22,7 @@ namespace NetPdf.Layout.Inline;
 /// into the <c>IBlockFragmentSink</c>.
 ///
 /// <para><b>Cycle 1 scope (this revision).</b> A thin static facade
-/// — bundles the existing 3-call sequence behind one <see cref="Layout"/>
+/// — bundles the existing 3-call sequence behind one <c>Layout</c>
 /// method that block-layouters and tests can call with one
 /// invocation. Cycle 1 takes wrap-time policy as EXPLICIT
 /// parameters (same as <see cref="LineBuilder.Wrap"/>); the CSS
@@ -56,7 +56,7 @@ namespace NetPdf.Layout.Inline;
 ///   for LTR vs RTL glyph runs.</item>
 /// </list>
 ///
-/// <para><b>Threading.</b> Stateless; every <see cref="Layout"/>
+/// <para><b>Threading.</b> Stateless; every <c>Layout</c>
 /// call is self-contained. No instance fields. The injected
 /// <see cref="IShaperResolver"/> is responsible for shaper caching;
 /// the <see cref="Hyphenator"/> is process-cached via
@@ -190,7 +190,8 @@ internal static class InlineLayouter
             or WhiteSpace.Pre
             or WhiteSpace.NoWrap
             or WhiteSpace.PreWrap
-            or WhiteSpace.PreLine))
+            or WhiteSpace.PreLine
+            or WhiteSpace.BreakSpaces))
         {
             throw new ArgumentOutOfRangeException(nameof(whiteSpace),
                 whiteSpace,
@@ -243,5 +244,95 @@ internal static class InlineLayouter
             hyphens, hyphenator, cancellationToken);
 
         return fragments;
+    }
+
+    /// <summary>Per Phase 3 Task 10 cycle 3 — convenience overload
+    /// that reads the wrap-time policy from a containing-block
+    /// <see cref="NetPdf.Css.ComputedValues.ComputedStyle"/> via
+    /// <see cref="InlineTextPolicyMaterializer.ReadInlineTextPolicy"/>.
+    /// Closes the cycle-1/2 gap where callers had to manually pass
+    /// 4 wrap-policy enums; now the integrating block-layouter just
+    /// passes the block's own ComputedStyle + the chain auto-
+    /// resolves the policy bundle.
+    ///
+    /// <para><b>UNIFORM-POLICY only — does NOT support per-source-TextRun.</b>
+    /// CSS Text L3 §3-§6 properties (white-space, overflow-wrap,
+    /// word-break, hyphens) all inherit, so for the common case
+    /// where a paragraph + its descendants share the inherited
+    /// values from the containing block, this overload is correct.
+    /// Mixed-mode descendants (e.g.,
+    /// <c>&lt;span style="white-space:nowrap"&gt;</c> inside
+    /// <c>white-space:normal</c> text) require per-glyph policy
+    /// metadata flowing through Wrap — NOT supported by this
+    /// overload. Cycle 3 ships only the containing-block-uniform
+    /// path, which covers the 95% case for invoice/report content.</para>
+    ///
+    /// <para><b>Caller contract.</b> The integrating block-layouter
+    /// MUST verify that all source TextRuns inherit white-space /
+    /// overflow-wrap / word-break / hyphens from
+    /// <paramref name="containingBlockStyle"/>, OR pre-flatten the
+    /// box tree so mixed-mode descendants don't reach this seam.
+    /// When mixed modes ARE present, cycle 3b's per-glyph metadata
+    /// API will be the right call; this overload silently applies
+    /// the containing-block policy to the entire pass, producing
+    /// wrong output for mixed runs (no exception is thrown — the
+    /// failure is silent layout error). A pinned regression test
+    /// (<c>InlineLayouterCycle3Tests.Layout_with_mixed_run_styles_silently_uniform_pinned</c>)
+    /// documents this limit.</para>
+    ///
+    /// <para>Hyphenator selection: when
+    /// <see cref="Hyphens.Auto"/>, the call falls back to
+    /// <see cref="EnUsHyphenation.Default"/> if no explicit
+    /// hyphenator is passed. Per-language pattern routing lands
+    /// alongside UAX #24 script detection (cycle 4).</para>
+    /// </summary>
+    /// <param name="sourceTextRuns">The inline content's source runs
+    /// in document order.</param>
+    /// <param name="availableInlineSize">The maximum inline-axis
+    /// size of a wrapped line, in CSS px.</param>
+    /// <param name="resolver">Resolves a HarfBuzz shaper per
+    /// <see cref="NetPdf.Css.ComputedValues.ComputedStyle"/>.</param>
+    /// <param name="containingBlockStyle">The
+    /// <see cref="NetPdf.Css.ComputedValues.ComputedStyle"/> of the
+    /// containing block (typically the &lt;p&gt;-level box). Cycle 3
+    /// reads white-space / overflow-wrap / word-break / hyphens
+    /// from this style via the <see cref="InlineTextPolicy"/>
+    /// materializer.</param>
+    /// <param name="scriptIso15924">ISO 15924 script tag.</param>
+    /// <param name="language">BCP 47 language tag.</param>
+    /// <param name="paragraphDirection">UAX #9 paragraph-level
+    /// direction.</param>
+    /// <param name="hyphenator">Optional Liang hyphenator override
+    /// for <see cref="Hyphens.Auto"/>.</param>
+    /// <param name="cancellationToken">Cooperative cancellation.</param>
+    /// <returns>One <see cref="LineFragment"/> per wrapped line in
+    /// document order.</returns>
+    public static LineFragment[] Layout(
+        IReadOnlyList<TextRun> sourceTextRuns,
+        double availableInlineSize,
+        IShaperResolver resolver,
+        NetPdf.Css.ComputedValues.ComputedStyle containingBlockStyle,
+        string scriptIso15924,
+        string language,
+        ParagraphDirection paragraphDirection = ParagraphDirection.LeftToRight,
+        Hyphenator? hyphenator = null,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(containingBlockStyle);
+
+        var policy = containingBlockStyle.ReadInlineTextPolicy();
+        return Layout(
+            sourceTextRuns,
+            availableInlineSize,
+            resolver,
+            scriptIso15924,
+            language,
+            paragraphDirection,
+            policy.WhiteSpace,
+            policy.OverflowWrap,
+            policy.WordBreak,
+            policy.Hyphens,
+            hyphenator,
+            cancellationToken);
     }
 }

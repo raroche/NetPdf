@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
 using System.Collections.Frozen;
+using System.Collections.Generic;
 using System.Collections.Immutable;
 
 namespace NetPdf.Css.Parser.Preprocessing;
@@ -67,6 +68,55 @@ internal static class CssPreprocessor
     /// </summary>
     private static FrozenSet<string> ModernValueFunctions =>
         NetPdf.Css.ComputedValues.ModernColorFunctions.Names;
+
+    /// <summary>
+    /// Per Phase 3 Task 10 cycle 3 review (User #1) — CSS Text L3
+    /// properties that AngleSharp.Css 1.0.0-beta.144's grammar drops
+    /// silently. The ScanDeclarations pass recovers them from the
+    /// raw rule body so the cascade resolver receives them.
+    /// </summary>
+    private static readonly FrozenSet<string> KnownDroppedProperties = new[]
+    {
+        "overflow-wrap",
+        "hyphens",
+        // Per Phase 3 Task 10 cycle 3 review (User #2) — `word-wrap`
+        // is the legacy alias for `overflow-wrap`. ScanDeclarations
+        // also normalizes it to `overflow-wrap` at recovery time,
+        // closing the production-path gap that previously left
+        // word-wrap declarations dropped at the parser layer.
+        "word-wrap",
+        // Per Phase 3 Task 10 cycle 3 review (User #3) — AngleSharp.Css
+        // accepts white-space:normal/pre/nowrap/pre-wrap/pre-line but
+        // drops white-space:break-spaces (CSS Text L3 §3 newer value).
+        // The recovery path emits the declaration verbatim so the
+        // cascade resolver gets it; the duplicate vs AngleSharp's
+        // valid-value emit is tolerated by the cascade per CSS
+        // last-decl-wins rules.
+        "white-space",
+    }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Per Phase 3 Task 10 cycle 3 review (User #2) — central
+    /// property-name normalizer for legacy aliases. Resolves
+    /// `word-wrap` → `overflow-wrap` per CSS Text L3 §5.1 (legacy
+    /// alias). Other aliases land as the cascade pipeline grows.
+    /// </summary>
+    private static readonly FrozenDictionary<string, string> LegacyPropertyAliases =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["word-wrap"] = "overflow-wrap",
+        }.ToFrozenDictionary(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Apply legacy-alias normalization to a property name.
+    /// Returns the modern name (lowercased) if the input is a known
+    /// alias; otherwise returns the input lowercased.</summary>
+    internal static string NormalizePropertyName(string name)
+    {
+        var lower = name.ToLowerInvariant();
+        return LegacyPropertyAliases.TryGetValue(lower, out var modern)
+            ? modern
+            : lower;
+    }
 
     /// <summary>
     /// Grouping at-rules that AngleSharp emits with a <c>Rules</c> child list. The
@@ -455,14 +505,27 @@ internal static class CssPreprocessor
             // fallback)` to CssContentList — the diagnostic
             // CSS-ATTR-MULTI-ARG-UNSUPPORTED-001 would only fire on direct
             // unit-test calls.
+            //
+            // Per Phase 3 Task 10 cycle 3 review (User #1) — also
+            // recover declarations whose property name is in
+            // KnownDroppedProperties (CSS Text L3 properties
+            // AngleSharp.Css 1.0.0-beta.144 drops). Per User #2 —
+            // emit using the legacy-alias-normalized name (so
+            // `word-wrap: break-word` lands at the cascade as
+            // `overflow-wrap: break-word`).
+            var lowerName = propertyName.ToLowerInvariant();
+            var isKnownDropped = KnownDroppedProperties.Contains(lowerName);
             var include = modernOnly
-                ? ContainsModernValueFunction(rawValue) || ContainsMultiArgAttr(rawValue)
+                ? ContainsModernValueFunction(rawValue)
+                  || ContainsMultiArgAttr(rawValue)
+                  || isKnownDropped
                 : !string.IsNullOrEmpty(rawValue);
             if (include)
             {
                 var (cleanValue, isImportant) = ImportantParser.Strip(rawValue);
+                var normalizedName = NormalizePropertyName(lowerName);
                 output.Add(new CssDeclarationRecovery(
-                    propertyName.ToLowerInvariant(),
+                    normalizedName,
                     cleanValue,
                     isImportant));
             }

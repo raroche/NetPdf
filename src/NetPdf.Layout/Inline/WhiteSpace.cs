@@ -65,4 +65,18 @@ internal enum WhiteSpace : byte
     /// <summary>Preserve LF/CR (segment breaks) but collapse
     /// SP/TAB runs to a single SP. Wrapping allowed.</summary>
     PreLine = 4,
+
+    /// <summary>Per Phase 3 Task 10 cycle 3 review (User #3) —
+    /// preserve all whitespace AND allow wrapping at every preserved
+    /// space. Per CSS Text L3 §3 Table 1 + §6.4 — like
+    /// <see cref="PreWrap"/> but trailing spaces wrap (rather than
+    /// hang) at line ends. Cycle 3 simplification: behaves like
+    /// PreWrap for now (preserve + wrap at UAX #14 Allowed
+    /// opportunities); the "wrap at every preserved space" detail
+    /// requires forced wrap candidates at every SP glyph + lands
+    /// in a subsequent cycle. The simplification preserves
+    /// authored whitespace correctly (which is the user-visible
+    /// guarantee) at the cost of slightly less aggressive wrap
+    /// candidate placement.</summary>
+    BreakSpaces = 5,
 }

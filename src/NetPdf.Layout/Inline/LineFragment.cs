@@ -83,7 +83,20 @@ namespace NetPdf.Layout.Inline;
 /// to decide whether a trailing CRLF should also reset the
 /// horizontal cursor (mandatory) or just advance the baseline (soft
 /// wrap).</param>
+/// <param name="EndsWithHyphenationBreak">Per Phase 3 Task 9 cycle 3b
+/// sub-cycle 3 — <see langword="true"/> when the soft wrap fired at
+/// a hyphenation candidate (a soft-hyphen U+00AD or a Liang-pattern
+/// position under <see cref="Hyphens.Auto"/>). The painter (Phase 4)
+/// uses this to decide whether to RENDER a visible hyphen glyph at
+/// the end of the line per CSS Text L3 §6.1.1: "When a line is
+/// broken at a hyphenation opportunity that does not include a
+/// visible hyphen character, the UA must insert one." Always
+/// <see langword="false"/> when <see cref="EndsWithMandatoryBreak"/>
+/// is <see langword="true"/> (mandatory wins). Cycle 3b sub-cycle 3
+/// only annotates the metadata; the actual visible-hyphen rendering
+/// lands in Phase 4's display-list IR.</param>
 internal readonly record struct LineFragment(
     ShapedRunSlice[] Slices,
     double TotalAdvance,
-    bool EndsWithMandatoryBreak);
+    bool EndsWithMandatoryBreak,
+    bool EndsWithHyphenationBreak = false);

@@ -1,0 +1,55 @@
+<Project>
+
+  <!--
+    Per PR #37 review fix — exclude Finder-style "Foo 2.cs" duplicates
+    that macOS dup-on-copy / Time Machine restore introduces. This file
+    runs AFTER the SDK's default Compile items are populated, so
+    `<Compile Remove>` on the @(Compile) item collection works
+    deterministically.
+
+    Range globs like `**/* [2-9].cs` proved unreliable across SDK
+    versions when used in Directory.Build.props's
+    `<DefaultItemExcludes>`. Explicit per-suffix patterns here cover
+    the typical Finder dup range (1-9 + 10-19) that real users
+    encounter. Aligns with .gitignore.
+  -->
+  <ItemGroup>
+    <Compile Remove="**/* 2.cs" />
+    <Compile Remove="**/* 3.cs" />
+    <Compile Remove="**/* 4.cs" />
+    <Compile Remove="**/* 5.cs" />
+    <Compile Remove="**/* 6.cs" />
+    <Compile Remove="**/* 7.cs" />
+    <Compile Remove="**/* 8.cs" />
+    <Compile Remove="**/* 9.cs" />
+    <Compile Remove="**/* 10.cs" />
+    <Compile Remove="**/* 11.cs" />
+    <Compile Remove="**/* 12.cs" />
+    <Compile Remove="**/* 13.cs" />
+    <Compile Remove="**/* 14.cs" />
+    <Compile Remove="**/* 15.cs" />
+    <Compile Remove="**/* 16.cs" />
+    <Compile Remove="**/* 17.cs" />
+    <Compile Remove="**/* 18.cs" />
+    <Compile Remove="**/* 19.cs" />
+    <None Remove="**/* 2.cs" />
+    <None Remove="**/* 3.cs" />
+    <None Remove="**/* 4.cs" />
+    <None Remove="**/* 5.cs" />
+    <None Remove="**/* 6.cs" />
+    <None Remove="**/* 7.cs" />
+    <None Remove="**/* 8.cs" />
+    <None Remove="**/* 9.cs" />
+    <None Remove="**/* 10.cs" />
+    <None Remove="**/* 11.cs" />
+    <None Remove="**/* 12.cs" />
+    <None Remove="**/* 13.cs" />
+    <None Remove="**/* 14.cs" />
+    <None Remove="**/* 15.cs" />
+    <None Remove="**/* 16.cs" />
+    <None Remove="**/* 17.cs" />
+    <None Remove="**/* 18.cs" />
+    <None Remove="**/* 19.cs" />
+  </ItemGroup>
+
+</Project>

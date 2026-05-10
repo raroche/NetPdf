@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Text;
 using System.Threading;
 using NetPdf.Text.Bidi;
+using NetPdf.Text.Hyphenation;
 using NetPdf.Text.LineBreaking;
 using NetPdf.Text.Segmentation;
 using NetPdf.Text.Shaping;
@@ -494,6 +495,48 @@ internal static class LineBuilder
     /// constructing <see cref="LineBuilder"/> input directly may
     /// pass arguments based on a single computed property at the
     /// containing block.</para>
+    /// <param name="hyphens">CSS Text L3 §6.1 <c>hyphens</c> property
+    /// value. Default <see cref="Hyphens.Manual"/> (CSS default).
+    /// <see cref="Hyphens.None"/> ignores soft-hyphens + disables
+    /// auto-hyphenation. <see cref="Hyphens.Manual"/> treats source
+    /// soft-hyphens (U+00AD) as break opportunities.
+    /// <see cref="Hyphens.Auto"/> additionally applies Liang-pattern
+    /// auto-hyphenation. Cycle 3b sub-cycle 3.
+    ///
+    /// <para><b>CSS-property pipeline deferral.</b> Like
+    /// <paramref name="overflowWrap"/> + <paramref name="wordBreak"/>,
+    /// <c>hyphens</c> is currently a LineBuilder-only argument —
+    /// it's NOT yet wired through <c>NetPdf.SourceGen</c>'s
+    /// <c>properties.json</c> CSS-property table, the
+    /// <c>KeywordResolver</c>, or <c>ComputedStyle</c>
+    /// materialization. End-to-end CSS tests
+    /// (<c>&lt;p style="hyphens:auto"&gt;</c>) require the Task 10
+    /// <c>InlineLayouter</c> integration, which will:
+    /// <list type="number">
+    ///   <item>Add <c>hyphens</c> to <c>properties.json</c> +
+    ///   regenerate the <c>PropertyId</c> source-gen table.</item>
+    ///   <item>Add a <c>KeywordResolver</c> entry mapping
+    ///   <c>none|manual|auto</c> to the <see cref="Hyphens"/>
+    ///   enum.</item>
+    ///   <item>Materialize a typed <see cref="Hyphens"/> field on
+    ///   <c>ComputedStyle</c> (alongside
+    ///   <see cref="OverflowWrap"/> + <see cref="WordBreak"/> +
+    ///   <see cref="WhiteSpace"/>).</item>
+    ///   <item>Read those typed fields per source-TextRun in the
+    ///   <c>InlineLayouter</c> + plumb to per-glyph metadata so
+    ///   mixed-mode descendants work correctly (e.g.,
+    ///   <c>&lt;span style="hyphens:none"&gt;</c> inside
+    ///   <c>hyphens:auto</c> text).</item>
+    /// </list>
+    /// Until then, this single-arg API is a stopgap; tests + direct
+    /// callers wire the values manually at the LineBuilder seam.</para></param>
+    /// <param name="hyphenator">Optional Liang
+    /// <see cref="Hyphenator"/> for <see cref="Hyphens.Auto"/>. When
+    /// <see langword="null"/> + Auto mode, falls back to
+    /// <see cref="EnUsHyphenation.Default"/> (en-US patterns).
+    /// Per-language pattern routing lands when Task 10's
+    /// <c>InlineLayouter</c> integrates per-source-TextRun language.
+    /// Cycle 3b sub-cycle 3.</param>
     /// <param name="cancellationToken">Checked at method entry, after
     /// each expensive loop pass (concat-rebuild, FindBreaks,
     /// coherence-validation, flat-glyph build, wrap loop), and
@@ -524,6 +567,8 @@ internal static class LineBuilder
         WhiteSpace whiteSpace = WhiteSpace.Normal,
         OverflowWrap overflowWrap = OverflowWrap.Normal,
         WordBreak wordBreak = WordBreak.Normal,
+        Hyphens hyphens = Hyphens.Manual,
+        Hyphenator? hyphenator = null,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(sourceTextRuns);
@@ -555,6 +600,12 @@ internal static class LineBuilder
             throw new ArgumentOutOfRangeException(nameof(wordBreak),
                 wordBreak,
                 "LineBuilder.Wrap: wordBreak must be a defined WordBreak value.");
+        }
+        if (hyphens is not (Hyphens.None or Hyphens.Manual or Hyphens.Auto))
+        {
+            throw new ArgumentOutOfRangeException(nameof(hyphens),
+                hyphens,
+                "LineBuilder.Wrap: hyphens must be a defined Hyphens value.");
         }
 
         // Per PR #34 review fix — check cancellation at entry, before
@@ -638,6 +689,51 @@ internal static class LineBuilder
                 }
             }
             cancellationToken.ThrowIfCancellationRequested();
+        }
+
+        // Cycle 3b sub-cycle 3 — hyphenation candidates.
+        // hyphenationAfter[i] = true means a hyphen-break is allowed
+        // BETWEEN UTF-16 code unit i and i+1. Built from:
+        //   1. Soft-hyphens (U+00AD) in the source — Manual + Auto.
+        //   2. Liang pattern auto-hyphenation positions — Auto only.
+        //
+        // Per PR #37 review fix (User #5): Manual-mode fast path —
+        // skip the hyphenationAfter[] allocation entirely when the
+        // text contains no U+00AD (the only break source under
+        // Manual). Saves an allocation + a scan for the common case
+        // of paragraphs without explicit soft-hyphens.
+        bool[]? hyphenationAfter = null;
+        if (hyphens == Hyphens.Manual && concatText.IndexOf('­') < 0)
+        {
+            // Fast path — no soft-hyphens, no Liang. Leave
+            // hyphenationAfter null; flat-build sees it null and
+            // skips the hyphenation upgrade pass.
+        }
+        else if (hyphens != Hyphens.None)
+        {
+            hyphenationAfter = ComputeHyphenationPositions(
+                concatText, hyphens,
+                hyphens == Hyphens.Auto
+                    ? (hyphenator ?? EnUsHyphenation.Default)
+                    : null,
+                cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+        else
+        {
+            // hyphens:none — per CSS Text L3 §6.1, words are not
+            // hyphenated even if soft-hyphens (U+00AD, UAX #14 class
+            // BA) suggest opportunities. Demote any Allowed-after-
+            // soft-hyphen entries in breaks[] to Prohibited so the
+            // wrap pass doesn't honor them.
+            for (var i = 0; i < concatTotal; i++)
+            {
+                if (concatText[i] == '­'
+                    && breaks[i] == LineBreakOpportunity.Allowed)
+                {
+                    breaks[i] = LineBreakOpportunity.Prohibited;
+                }
+            }
         }
 
         // Coherence validation pass + total glyph count.
@@ -762,6 +858,22 @@ internal static class LineBuilder
                     }
                 }
 
+                // Cycle 3b sub-cycle 3 — hyphenation candidates upgrade
+                // Prohibited boundaries to Allowed at soft-hyphen
+                // positions (Manual + Auto) + Liang-pattern positions
+                // (Auto only). hyphenationAfter[clusterEnd-1] true =
+                // hyphen-break opportunity AFTER this cluster.
+                if (hyphenationAfter is not null
+                    && opp == LineBreakOpportunity.Prohibited)
+                {
+                    var clusterEndIdx = clusterEnd - 1;
+                    if ((uint)clusterEndIdx < (uint)hyphenationAfter.Length
+                        && hyphenationAfter[clusterEndIdx])
+                    {
+                        opp = LineBreakOpportunity.Allowed;
+                    }
+                }
+
                 // Tag mandatory-line-break control glyphs (LF, CR, VT,
                 // FF, NEL, LS, PS). The painter must NOT emit glyph
                 // data for these; the wrap loop trims them off the
@@ -777,6 +889,16 @@ internal static class LineBuilder
                 // Tag is suppressed for Pre/PreWrap (preserve modes
                 // — spaces are part of the rendered output).
                 var isBreakSpace = false;
+                // Cycle 3b sub-cycle 3 hardening — tag soft-hyphen
+                // (U+00AD) glyphs. Per CSS Text L3 §6.1.1, soft-
+                // hyphens are invisible unless the line breaks at
+                // them (then the painter renders an explicit hyphen).
+                // We zero their Advance for fit decisions + trim
+                // them from drawable slices. Phase 4 painter sees
+                // the soft-hyphen via the slice's source-glyph back-
+                // reference but chooses NOT to render the .notdef
+                // unless this is a hyphenation-break line.
+                var isSoftHyphen = false;
                 if ((uint)glyph.Cluster < (uint)concatTotal)
                 {
                     var clusterChar = concatText[glyph.Cluster];
@@ -785,15 +907,25 @@ internal static class LineBuilder
                     {
                         isBreakSpace = true;
                     }
+                    if (clusterChar == '­')
+                    {
+                        isSoftHyphen = true;
+                    }
                 }
+
+                // Zero advance for soft-hyphens — they're invisible
+                // unless rendered at a break point (Phase 4 painter
+                // handles the visible-hyphen-on-break case).
+                var advanceForLayout = isSoftHyphen ? 0f : glyph.XAdvance;
 
                 flat[flatIdx++] = new FlatGlyph(
                     RunIdx: r,
                     GlyphIdxInRun: g,
-                    Advance: glyph.XAdvance,
+                    Advance: advanceForLayout,
                     Opportunity: opp,
                     IsMandatoryControl: isMandatoryControl,
-                    IsBreakSpace: isBreakSpace);
+                    IsBreakSpace: isBreakSpace,
+                    IsSoftHyphen: isSoftHyphen);
             }
             cancellationToken.ThrowIfCancellationRequested();
         }
@@ -818,6 +950,16 @@ internal static class LineBuilder
                 // SP glyph at the break point is part of the source
                 // text but should NOT contribute to the line's drawn
                 // glyph stream or TotalAdvance per CSS Text L3 §4.1.2.
+                // Cycle 3b sub-cycle 3 hardening: also trim trailing
+                // IsSoftHyphen glyphs (invisible unless break point —
+                // Phase 4 painter renders the visible hyphen).
+                //
+                // Detect "this snap is a hyphenation break" by
+                // checking if the candidate IS a soft-hyphen or sits
+                // at a hyphenation position recorded in
+                // hyphenationAfter. The metadata propagates to the
+                // emitted LineFragment for Phase 4's visible-hyphen
+                // rendering.
                 var drawableEnd = lastAllowed;
                 if (collapsesSpaces)
                 {
@@ -827,8 +969,51 @@ internal static class LineBuilder
                         drawableEnd--;
                     }
                 }
+                // Always trim trailing soft-hyphens (even when
+                // !collapsesSpaces) — Pre/PreWrap preserve regular
+                // spaces but soft-hyphens stay invisible until
+                // rendered at break per CSS Text L3 §6.1.1.
+                while (drawableEnd >= lineStart
+                    && flat[drawableEnd].IsSoftHyphen)
+                {
+                    drawableEnd--;
+                }
+
+                var endsWithHyphenation = false;
+                if (hyphenationAfter is not null)
+                {
+                    // The candidate position lastAllowed corresponds to
+                    // a glyph. Check if its cluster char is U+00AD OR
+                    // the hyphenationAfter array marks the cluster
+                    // end as a hyphenation position.
+                    if (flat[lastAllowed].IsSoftHyphen)
+                    {
+                        endsWithHyphenation = true;
+                    }
+                    else
+                    {
+                        // For Liang positions: the lastAllowed glyph's
+                        // cluster end is at hyphenationAfter[clusterEnd-1]
+                        // = true iff this was a hyphenation candidate.
+                        var lastShaped = shapedRuns[flat[lastAllowed].RunIdx];
+                        var lastGlyph = lastShaped.Glyphs[flat[lastAllowed].GlyphIdxInRun];
+                        var lastRunEnd = lastShaped.Source.Utf16Start + lastShaped.Source.Utf16Length;
+                        var lastClusterEnd =
+                            (flat[lastAllowed].GlyphIdxInRun + 1 < lastShaped.Glyphs.Length)
+                                ? lastShaped.Glyphs[flat[lastAllowed].GlyphIdxInRun + 1].Cluster
+                                : lastRunEnd;
+                        var lastBreakIdx = lastClusterEnd - 1;
+                        if ((uint)lastBreakIdx < (uint)hyphenationAfter.Length
+                            && hyphenationAfter[lastBreakIdx])
+                        {
+                            endsWithHyphenation = true;
+                        }
+                    }
+                }
+
                 EmitDrawableRange(output, flat, lineStart, drawableEnd,
-                    endsWithMandatoryBreak: false);
+                    endsWithMandatoryBreak: false,
+                    endsWithHyphenationBreak: endsWithHyphenation);
                 lineStart = lastAllowed + 1;
                 cursor = lineStart - 1; // for-loop increment lands on lineStart
                 lineAdvance = 0;
@@ -932,6 +1117,119 @@ internal static class LineBuilder
 
         return output.ToArray();
     }
+
+    /// <summary>Per Phase 3 Task 9 cycle 3b sub-cycle 3 — compute
+    /// hyphenation break positions. Returns a boolean array
+    /// <c>hyphenationAfter[i]</c> = <see langword="true"/> when a
+    /// hyphen-break is allowed BETWEEN code unit <c>i</c> and
+    /// <c>i+1</c>.
+    ///
+    /// <para>Sources:</para>
+    /// <list type="number">
+    ///   <item>Soft-hyphens (U+00AD) in the source — every soft-
+    ///   hyphen position becomes a break candidate (Manual + Auto).</item>
+    ///   <item>Liang-pattern auto-hyphenation (Auto only) — tokenize
+    ///   the text into "words" (runs of letters), call the
+    ///   <see cref="Hyphenator.FindHyphenationPoints"/> for each,
+    ///   map word-relative positions back to concat-text positions.</item>
+    /// </list>
+    /// </summary>
+    private static bool[] ComputeHyphenationPositions(
+        string text, Hyphens hyphens, Hyphenator? autoHyphenator,
+        CancellationToken cancellationToken)
+    {
+        var positions = new bool[text.Length];
+        if (text.Length == 0) return positions;
+
+        // Soft-hyphen pass — applies for both Manual and Auto.
+        for (var i = 0; i < text.Length; i++)
+        {
+            if (text[i] == '­')
+            {
+                // Break is permitted AFTER the soft-hyphen char.
+                positions[i] = true;
+            }
+        }
+
+        // Liang-pattern pass — Auto only.
+        if (hyphens == Hyphens.Auto && autoHyphenator is not null)
+        {
+            ApplyLiangPatterns(text, autoHyphenator, positions, cancellationToken);
+        }
+
+        return positions;
+    }
+
+    /// <summary>Maximum word length sent to the Liang hyphenator —
+    /// per PR #37 review fix (User #4). Real natural-language words
+    /// rarely exceed 32 chars; Long ASCII tokens (URLs, base64
+    /// strings, code identifiers, hashes) can drive large
+    /// allocations + CPU inside <see cref="Hyphenator.FindHyphenationPoints"/>
+    /// and aren't meaningful hyphenation candidates anyway. Skip
+    /// hyphenation entirely for words ≥ this length.</summary>
+    private const int MaxLiangWordLength = 64;
+
+    /// <summary>Walk the concat text, tokenize into word runs (ASCII
+    /// letter sequences for cycle 3b sub-cycle 3 simplification),
+    /// call the Hyphenator per word, and merge word-relative break
+    /// positions into the concat-relative <paramref name="positions"/>
+    /// array.
+    ///
+    /// <para>Cycle 3b sub-cycle 3 word definition: a maximal run of
+    /// ASCII letters [A-Za-z]. Apostrophes inside contractions
+    /// (don't, it's) are NOT treated as part of the word for
+    /// hyphenation purposes — they break the word into segments.
+    /// This is conservative; future cycles can integrate UAX #29
+    /// word-segmentation for proper apostrophe handling.</para>
+    ///
+    /// <para>Per PR #37 review fix (User #4): cancellation is checked
+    /// per-word, and words longer than <see cref="MaxLiangWordLength"/>
+    /// are skipped to bound CPU + allocation under malicious or
+    /// pathological input (long base64 strings, long identifiers,
+    /// etc.).</para></summary>
+    private static void ApplyLiangPatterns(
+        string text, Hyphenator hyphenator, bool[] positions,
+        CancellationToken cancellationToken)
+    {
+        var i = 0;
+        while (i < text.Length)
+        {
+            // Skip non-letter chars.
+            while (i < text.Length && !IsAsciiLetter(text[i])) i++;
+            if (i >= text.Length) break;
+
+            var start = i;
+            while (i < text.Length && IsAsciiLetter(text[i])) i++;
+            var wordLen = i - start;
+            if (wordLen < 2) continue; // tiny words — Hyphenator's leftMin filters anyway
+
+            // Per PR #37 review fix (User #4): skip pathologically
+            // long ASCII tokens — not real hyphenation candidates.
+            if (wordLen > MaxLiangWordLength) continue;
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var wordSpan = text.AsSpan(start, wordLen);
+            var breaks = hyphenator.FindHyphenationPoints(wordSpan);
+            // breaks[k] = position k in word means break BETWEEN
+            // word[k-1] and word[k]. Concat position = start + k - 1
+            // (the index of the LAST letter before the break).
+            foreach (var k in breaks)
+            {
+                var concatIdx = start + k - 1;
+                if ((uint)concatIdx < (uint)positions.Length)
+                {
+                    positions[concatIdx] = true;
+                }
+            }
+        }
+    }
+
+    /// <summary>ASCII letter test for cycle 3b sub-cycle 3's word
+    /// tokenizer. Conservative — non-ASCII letters need UAX #29
+    /// word-segmentation (deferred to later cycles).</summary>
+    private static bool IsAsciiLetter(char c) =>
+        (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
 
     /// <summary>Per PR #36 review fix (cycle 3b sub-cycle 2 hardening) —
     /// returns <see langword="true"/> if a forced break BETWEEN
@@ -1380,7 +1678,8 @@ internal static class LineBuilder
     private static void EmitDrawableRange(
         List<LineFragment> output,
         FlatGlyph[] flat, int start, int end,
-        bool endsWithMandatoryBreak)
+        bool endsWithMandatoryBreak,
+        bool endsWithHyphenationBreak = false)
     {
         if (start > end)
         {
@@ -1388,7 +1687,8 @@ internal static class LineBuilder
             output.Add(new LineFragment(
                 Slices: Array.Empty<ShapedRunSlice>(),
                 TotalAdvance: 0,
-                EndsWithMandatoryBreak: endsWithMandatoryBreak));
+                EndsWithMandatoryBreak: endsWithMandatoryBreak,
+                EndsWithHyphenationBreak: endsWithHyphenationBreak));
             return;
         }
 
@@ -1432,7 +1732,8 @@ internal static class LineBuilder
         output.Add(new LineFragment(
             Slices: slices.ToArray(),
             TotalAdvance: totalAdvance,
-            EndsWithMandatoryBreak: endsWithMandatoryBreak));
+            EndsWithMandatoryBreak: endsWithMandatoryBreak,
+            EndsWithHyphenationBreak: endsWithHyphenationBreak));
     }
 
     /// <summary>Cycle 3a/3b internal: a flattened glyph view across
@@ -1445,12 +1746,19 @@ internal static class LineBuilder
     /// (SP/TAB) under collapsible white-space modes (Normal/NoWrap/
     /// PreLine) — these are trimmed off soft-wrap snap-back drawable
     /// slices so the line's TotalAdvance doesn't include the trailing
-    /// SP per CSS Text L3 §4.1.2.</summary>
+    /// SP per CSS Text L3 §4.1.2. <see cref="IsSoftHyphen"/> is set
+    /// (cycle 3b sub-cycle 3 hardening) for soft-hyphen U+00AD
+    /// glyphs — invisible unless the line breaks at the soft-hyphen,
+    /// in which case the painter (Phase 4) renders an explicit
+    /// hyphen glyph. The line builder zeroes their
+    /// <see cref="Advance"/> for fit decisions + trims them off
+    /// drawable slices.</summary>
     private readonly record struct FlatGlyph(
         int RunIdx,
         int GlyphIdxInRun,
         float Advance,
         LineBreakOpportunity Opportunity,
         bool IsMandatoryControl,
-        bool IsBreakSpace);
+        bool IsBreakSpace,
+        bool IsSoftHyphen);
 }

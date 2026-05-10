@@ -86,6 +86,46 @@ public sealed class KeywordResolverTests
         Assert.Equal(1, borderBoxId);
     }
 
+    // Per Phase 3 Task 10 cycle 2 review (User #3): pin EXACT keyword
+    // ids for the new tables. The ids are part of the cascade →
+    // materializer contract; reordering would silently break any
+    // downstream switch. Adding new keywords appends; never reorders.
+
+    [Fact]
+    public void OverflowWrap_keyword_ids_are_pinned()
+    {
+        Assert.True(KeywordResolver.TryGetId(PropertyId.OverflowWrap, "normal", out var id0));
+        Assert.Equal(0, id0);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.OverflowWrap, "anywhere", out var id1));
+        Assert.Equal(1, id1);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.OverflowWrap, "break-word", out var id2));
+        Assert.Equal(2, id2);
+    }
+
+    [Fact]
+    public void WordBreak_keyword_ids_are_pinned()
+    {
+        Assert.True(KeywordResolver.TryGetId(PropertyId.WordBreak, "normal", out var id0));
+        Assert.Equal(0, id0);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.WordBreak, "break-all", out var id1));
+        Assert.Equal(1, id1);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.WordBreak, "keep-all", out var id2));
+        Assert.Equal(2, id2);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.WordBreak, "break-word", out var id3));
+        Assert.Equal(3, id3);
+    }
+
+    [Fact]
+    public void Hyphens_keyword_ids_are_pinned()
+    {
+        Assert.True(KeywordResolver.TryGetId(PropertyId.Hyphens, "none", out var id0));
+        Assert.Equal(0, id0);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.Hyphens, "manual", out var id1));
+        Assert.Equal(1, id1);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.Hyphens, "auto", out var id2));
+        Assert.Equal(2, id2);
+    }
+
     [Fact]
     public void Property_with_no_table_returns_UnsupportedUnvalidated_with_raw_text()
     {

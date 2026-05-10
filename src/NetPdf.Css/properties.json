@@ -36,6 +36,7 @@
     { "name": "font-style", "id": "FontStyle", "type": "Keyword", "default": "normal", "inherit": true, "applies_to": "All", "computed": "Specified" },
     { "name": "font-weight", "id": "FontWeight", "type": "FontWeight", "default": "normal", "inherit": true, "applies_to": "All", "computed": "ResolvedNumber" },
     { "name": "height", "id": "Height", "type": "LengthPercentageAuto", "default": "auto", "inherit": false, "applies_to": "BlockOrInlineOrReplaced", "computed": "Specified" },
+    { "name": "hyphens", "id": "Hyphens", "type": "Keyword", "default": "manual", "inherit": true, "applies_to": "All", "computed": "Specified" },
     { "name": "justify-content", "id": "JustifyContent", "type": "Keyword", "default": "normal", "inherit": false, "applies_to": "FlexContainers", "computed": "Specified" },
     { "name": "left", "id": "Left", "type": "LengthPercentageAuto", "default": "auto", "inherit": false, "applies_to": "Positioned", "computed": "Specified" },
     { "name": "letter-spacing", "id": "LetterSpacing", "type": "TextSpacing", "default": "normal", "inherit": true, "applies_to": "All", "computed": "AbsoluteLength" },
@@ -50,6 +51,7 @@
     { "name": "max-width", "id": "MaxWidth", "type": "MaxSize", "default": "none", "inherit": false, "applies_to": "BlockOrInlineOrReplaced", "computed": "Specified" },
     { "name": "min-height", "id": "MinHeight", "type": "LengthPercentageAuto", "default": "auto", "inherit": false, "applies_to": "BlockOrInlineOrReplaced", "computed": "Specified" },
     { "name": "min-width", "id": "MinWidth", "type": "LengthPercentageAuto", "default": "auto", "inherit": false, "applies_to": "BlockOrInlineOrReplaced", "computed": "Specified" },
+    { "name": "overflow-wrap", "id": "OverflowWrap", "type": "Keyword", "default": "normal", "inherit": true, "applies_to": "All", "computed": "Specified" },
     { "name": "overflow-x", "id": "OverflowX", "type": "Keyword", "default": "visible", "inherit": false, "applies_to": "BlockOrInlineOrReplaced", "computed": "Specified" },
     { "name": "overflow-y", "id": "OverflowY", "type": "Keyword", "default": "visible", "inherit": false, "applies_to": "BlockOrInlineOrReplaced", "computed": "Specified" },
     { "name": "padding-bottom", "id": "PaddingBottom", "type": "LengthPercentage", "default": "0", "inherit": false, "applies_to": "All", "computed": "Specified" },
@@ -65,6 +67,7 @@
     { "name": "vertical-align", "id": "VerticalAlign", "type": "VerticalAlign", "default": "baseline", "inherit": false, "applies_to": "All", "computed": "Specified" },
     { "name": "white-space", "id": "WhiteSpace", "type": "Keyword", "default": "normal", "inherit": true, "applies_to": "All", "computed": "Specified" },
     { "name": "width", "id": "Width", "type": "LengthPercentageAuto", "default": "auto", "inherit": false, "applies_to": "BlockOrInlineOrReplaced", "computed": "Specified" },
+    { "name": "word-break", "id": "WordBreak", "type": "Keyword", "default": "normal", "inherit": true, "applies_to": "All", "computed": "Specified" },
     { "name": "word-spacing", "id": "WordSpacing", "type": "TextSpacing", "default": "normal", "inherit": true, "applies_to": "All", "computed": "AbsoluteLength" }
   ]
 }

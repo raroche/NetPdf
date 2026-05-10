@@ -61,6 +61,22 @@ public sealed class KeywordResolverTests
     [Fact] public void Position_stickys_emits_diagnostic()    => AssertInvalid("stickys", PropertyId.Position);
     [Fact] public void BoxSizing_padding_box_emits_diagnostic() => AssertInvalid("padding-box", PropertyId.BoxSizing);
 
+    // Phase 3 Task 10 cycle 2 — CSS Text L3 §5+§6 keyword tables.
+    [Fact] public void OverflowWrap_normal_resolves()     => AssertResolves("normal", PropertyId.OverflowWrap);
+    [Fact] public void OverflowWrap_anywhere_resolves()   => AssertResolves("anywhere", PropertyId.OverflowWrap);
+    [Fact] public void OverflowWrap_break_word_resolves() => AssertResolves("break-word", PropertyId.OverflowWrap);
+    [Fact] public void OverflowWrap_invalid_emits_diagnostic() => AssertInvalid("foo", PropertyId.OverflowWrap);
+    [Fact] public void WordBreak_normal_resolves()        => AssertResolves("normal", PropertyId.WordBreak);
+    [Fact] public void WordBreak_break_all_resolves()     => AssertResolves("break-all", PropertyId.WordBreak);
+    [Fact] public void WordBreak_keep_all_resolves()      => AssertResolves("keep-all", PropertyId.WordBreak);
+    [Fact] public void WordBreak_break_word_resolves()    => AssertResolves("break-word", PropertyId.WordBreak);
+    [Fact] public void WordBreak_invalid_emits_diagnostic() => AssertInvalid("bogus", PropertyId.WordBreak);
+    [Fact] public void Hyphens_none_resolves()            => AssertResolves("none", PropertyId.Hyphens);
+    [Fact] public void Hyphens_manual_resolves()          => AssertResolves("manual", PropertyId.Hyphens);
+    [Fact] public void Hyphens_auto_resolves()            => AssertResolves("auto", PropertyId.Hyphens);
+    [Fact] public void Hyphens_invalid_emits_diagnostic() => AssertInvalid("always", PropertyId.Hyphens);
+    [Fact] public void Hyphens_AUTO_resolves_case_insensitive() => AssertResolves("AUTO", PropertyId.Hyphens);
+
     [Fact]
     public void TryGetId_returns_dense_zero_based_ids()
     {
@@ -68,6 +84,46 @@ public sealed class KeywordResolverTests
         Assert.Equal(0, contentBoxId);
         Assert.True(KeywordResolver.TryGetId(PropertyId.BoxSizing, "border-box", out var borderBoxId));
         Assert.Equal(1, borderBoxId);
+    }
+
+    // Per Phase 3 Task 10 cycle 2 review (User #3): pin EXACT keyword
+    // ids for the new tables. The ids are part of the cascade →
+    // materializer contract; reordering would silently break any
+    // downstream switch. Adding new keywords appends; never reorders.
+
+    [Fact]
+    public void OverflowWrap_keyword_ids_are_pinned()
+    {
+        Assert.True(KeywordResolver.TryGetId(PropertyId.OverflowWrap, "normal", out var id0));
+        Assert.Equal(0, id0);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.OverflowWrap, "anywhere", out var id1));
+        Assert.Equal(1, id1);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.OverflowWrap, "break-word", out var id2));
+        Assert.Equal(2, id2);
+    }
+
+    [Fact]
+    public void WordBreak_keyword_ids_are_pinned()
+    {
+        Assert.True(KeywordResolver.TryGetId(PropertyId.WordBreak, "normal", out var id0));
+        Assert.Equal(0, id0);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.WordBreak, "break-all", out var id1));
+        Assert.Equal(1, id1);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.WordBreak, "keep-all", out var id2));
+        Assert.Equal(2, id2);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.WordBreak, "break-word", out var id3));
+        Assert.Equal(3, id3);
+    }
+
+    [Fact]
+    public void Hyphens_keyword_ids_are_pinned()
+    {
+        Assert.True(KeywordResolver.TryGetId(PropertyId.Hyphens, "none", out var id0));
+        Assert.Equal(0, id0);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.Hyphens, "manual", out var id1));
+        Assert.Equal(1, id1);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.Hyphens, "auto", out var id2));
+        Assert.Equal(2, id2);
     }
 
     [Fact]

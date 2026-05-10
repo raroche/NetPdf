@@ -67,7 +67,12 @@ public sealed class PropertyCoverageCorpusTests
         "transform", "transform-origin", "transform-style", "perspective", "perspective-origin",
         "will-change", "backface-visibility",
         "object-fit", "object-position",
-        "list-style-type", "list-style-position", "list-style-image",
+        // Per Phase 3 Task 10 cycle 2 review (User #4) — list-style-type
+        // + list-style-position were ALREADY registered in
+        // properties.json but had been left in this allowlist as
+        // pre-existing stale entries. Removed; only list-style-image
+        // remains deferred (background-image-style imagery).
+        "list-style-image",
         "table-layout", "caption-side", "empty-cells", "border-spacing",
         "transition-property", "transition-duration", "transition-timing-function", "transition-delay",
         "animation-name", "animation-duration", "animation-timing-function", "animation-delay",
@@ -78,7 +83,14 @@ public sealed class PropertyCoverageCorpusTests
         "z-index", "visibility",
         "opacity",
         "direction", "unicode-bidi",
-        "text-indent", "text-overflow", "text-wrap", "word-break", "overflow-wrap", "hyphens",
+        "text-indent", "text-overflow", "text-wrap",
+        // Per Phase 3 Task 10 cycle 2 + post-cycle-2 review (User #4):
+        // word-break / overflow-wrap / hyphens REMOVED from this
+        // allowlist — they're now in properties.json. The legacy
+        // alias word-wrap → overflow-wrap also lands in
+        // LegacyAliases (User #2) so authored documents using
+        // word-wrap: break-word resolve correctly through the
+        // production cascade path.
         "tab-size",
         "color-scheme", "accent-color", "caret-color",
         "user-select", "pointer-events", "touch-action", "scroll-behavior",
@@ -106,6 +118,12 @@ public sealed class PropertyCoverageCorpusTests
         new System.Collections.Generic.Dictionary<string, string>(System.StringComparer.OrdinalIgnoreCase)
         {
             ["page-break-inside"] = "break-inside",
+            // Per Phase 3 Task 10 cycle 2 review (User #2): legacy
+            // CSS Text 2 `word-wrap` is the original spec name for
+            // `overflow-wrap`; older invoice/report templates
+            // still emit `word-wrap: break-word`. The cascade
+            // resolver normalizes via this alias.
+            ["word-wrap"] = "overflow-wrap",
         }.ToFrozenDictionary(System.StringComparer.OrdinalIgnoreCase);
 
     [Theory]
@@ -151,6 +169,40 @@ public sealed class PropertyCoverageCorpusTests
             Assert.True(PropertyMetadata.NameToId.ContainsKey(modern),
                 $"Legacy alias '{legacy}' → '{modern}' but '{modern}' is not in PropertyMetadata.NameToId.");
         }
+    }
+
+    [Fact]
+    public void UnsupportedAllowlist_entries_are_NOT_in_PropertyMetadata()
+    {
+        // Per Phase 3 Task 10 cycle 2 review (User #4): a property
+        // listed here as "unsupported" but actually present in
+        // PropertyMetadata.NameToId means the allowlist has gone
+        // stale (someone added the property to properties.json but
+        // forgot to remove it from this list). The allowlist would
+        // then mask a real regression — if the property were later
+        // removed from properties.json by accident, this test
+        // wouldn't fail because the corpus check would still skip
+        // via the allowlist match. Pin the contract: every allowlist
+        // entry MUST be absent from the registry.
+        var stale = new System.Collections.Generic.SortedSet<string>(
+            System.StringComparer.OrdinalIgnoreCase);
+        foreach (var name in UnsupportedAllowlist)
+        {
+            // Apply legacy-alias normalization same as the corpus
+            // walk does — `word-wrap` resolves to `overflow-wrap`
+            // which IS registered, but `word-wrap` itself isn't a
+            // direct registry name, so the test rightfully passes.
+            var normalized = LegacyAliases.TryGetValue(name, out var modern) ? modern : name;
+            if (PropertyMetadata.NameToId.ContainsKey(name))
+            {
+                stale.Add(name);
+            }
+        }
+        Assert.True(stale.Count == 0,
+            "UnsupportedAllowlist contains entries that ARE present in " +
+            "PropertyMetadata.NameToId — remove them so the corpus " +
+            "coverage check actually exercises them: " +
+            string.Join(", ", stale));
     }
 
     private static void CollectUnknownProperties(

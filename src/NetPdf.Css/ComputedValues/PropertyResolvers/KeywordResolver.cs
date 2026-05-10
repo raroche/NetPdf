@@ -230,6 +230,21 @@ internal static class KeywordResolver
         // out-of-scope for cycle 1).
         b[PropertyId.WhiteSpace] = T("normal", "pre", "nowrap", "pre-wrap", "break-spaces", "pre-line");
 
+        // Per Phase 3 Task 10 cycle 2 — overflow-wrap (CSS Text 3 §5.1),
+        // word-break (CSS Text 3 §5.2), hyphens (CSS Text 3 §6.1).
+        // Wired through here for cascade resolution. The keyword id
+        // is the source-of-truth (stored in ComputedSlot); the
+        // layout-side enum mapping is performed by the cycle-2-review
+        // materializer at `NetPdf.Layout.Inline.InlineTextPolicy` +
+        // `InlineTextPolicyMaterializer.ReadInlineTextPolicy`. That
+        // materializer also performs the cross-property alias folds
+        // (overflow-wrap:break-word → anywhere; word-break:break-word
+        // → word-break:normal + overflow-wrap:anywhere) that the
+        // simple cast-to-enum approach can't express.
+        b[PropertyId.OverflowWrap] = T("normal", "anywhere", "break-word");
+        b[PropertyId.WordBreak] = T("normal", "break-all", "keep-all", "break-word");
+        b[PropertyId.Hyphens] = T("none", "manual", "auto");
+
         return b.ToFrozenDictionary();
     }
 

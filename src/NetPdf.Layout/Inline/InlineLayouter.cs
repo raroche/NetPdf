@@ -342,39 +342,27 @@ internal static class InlineLayouter
     /// When all runs share the same policy (the most common case
     /// because CSS Text L3 §3-§6 properties all inherit), delegates
     /// to the cycle-3a uniform path. When mixed-mode descendants
-    /// produce DIFFERENT per-run policies, throws
-    /// <see cref="NotSupportedException"/> with a descriptive
-    /// message — the failure mode is loud + deterministic instead
-    /// of silently using the wrong policy.
+    /// produce DIFFERENT per-run policies, the dispatch depends on
+    /// which properties differ.
     ///
-    /// <para><b>Cycle 3c — narrow Normal/NoWrap mixed-mode support
-    /// (post-PR-#42 review hardening).</b> When the only inter-run
-    /// difference is <c>white-space</c> AND every non-empty run's
-    /// <c>white-space</c> ∈ {<see cref="WhiteSpace.Normal"/>,
-    /// <see cref="WhiteSpace.NoWrap"/>}, the call delegates to
-    /// <see cref="LineBuilder.Wrap"/> with a per-source-run
-    /// <c>WhiteSpace</c> array. Per CSS Text L3 §4.1, Normal + NoWrap
-    /// share the SAME whitespace-collapse semantics — only the
-    /// wrappability differs — so the preprocessor runs once with
-    /// <see cref="WhiteSpace.Normal"/> and the wrap loop's per-glyph
-    /// gating downgrades Allowed→Prohibited inside NoWrap runs. Any
-    /// other WhiteSpace mismatch (Pre/PreWrap/PreLine/BreakSpaces
-    /// mixed with Normal/NoWrap) requires true per-run preprocessing
-    /// — collapse vs. preserve cannot be reconciled by post-shape
-    /// metadata alone — and STILL throws
-    /// <see cref="NotSupportedException"/> until cycle 3d lands a
-    /// per-source-run preprocessor.</para>
+    /// <para><b>Cycle 3c + 3d WhiteSpace mixed-mode support.</b>
+    /// When the inter-run difference is in <c>white-space</c> only,
+    /// the call delegates to <see cref="LineBuilder.Wrap"/> with a
+    /// per-source-run <c>WhiteSpace</c> array. Cycle 3c handled the
+    /// Normal/NoWrap subset (uniform collapse, per-glyph wrap
+    /// suppression); cycle 3d sub-cycle 1 broadens to the FULL
+    /// six-value matrix by replacing the uniform preprocessor with
+    /// <see cref="LineBuilder.PreprocessTextRunsPerRun"/> — each
+    /// source run is preprocessed with its OWN WhiteSpace mode so
+    /// preserve-modes (Pre/PreWrap/BreakSpaces) keep their content
+    /// while collapse-modes (Normal/NoWrap/PreLine) continue to
+    /// strip/collapse via their carried <c>inWs</c> state.</para>
     ///
-    /// <para><b>Why fail loud outside the Normal/NoWrap matrix?</b>
-    /// Cycle 3b shipped the per-run READING but NOT the per-glyph
-    /// metadata flowing through Wrap. Cycle 3c adds the per-run
-    /// WhiteSpace array but ONLY for the Normal/NoWrap matrix where
-    /// preprocessing is uniform. Mixing Pre/PreWrap (preserve) with
-    /// Normal/NoWrap (collapse) would require splitting the
-    /// preprocessor into per-source-run passes that respect each
-    /// run's collapse mode — out of scope for cycle 3c. Per-glyph
-    /// overflow-wrap/word-break/hyphens mixed-mode also still throws
-    /// (deferred to subsequent cycles).</para>
+    /// <para><b>Still-loud failure modes.</b> Per-glyph
+    /// overflow-wrap / word-break / hyphens mixed-mode is NOT yet
+    /// supported — mismatch in any of those three properties throws
+    /// <see cref="NotSupportedException"/> (deferred to a subsequent
+    /// cycle).</para>
     ///
     /// <para><b>Equality check.</b> Two policies are "the same" by
     /// the auto-generated <see cref="InlineTextPolicy"/> record-
@@ -394,11 +382,9 @@ internal static class InlineLayouter
     /// <returns>One <see cref="LineFragment"/> per wrapped line.</returns>
     /// <exception cref="ArgumentNullException">Required arg is null.</exception>
     /// <exception cref="NotSupportedException">Source TextRuns have
-    /// non-uniform <see cref="InlineTextPolicy"/> values where the
-    /// difference falls OUTSIDE the cycle 3c Normal/NoWrap-only
-    /// WhiteSpace matrix (mismatch in overflow-wrap/word-break/
-    /// hyphens, or WhiteSpace mismatch involving Pre/PreWrap/PreLine/
-    /// BreakSpaces).</exception>
+    /// non-uniform <see cref="InlineTextPolicy"/> values where
+    /// overflow-wrap / word-break / hyphens differ (per-glyph
+    /// metadata for those 3 deferred to a subsequent cycle).</exception>
     public static LineFragment[] LayoutPerRun(
         IReadOnlyList<TextRun> sourceTextRuns,
         double availableInlineSize,
@@ -453,17 +439,16 @@ internal static class InlineLayouter
         // trigger the mixed-mode guard. If ALL runs are empty,
         // delegate to the empty-input path with default policy.
         //
-        // Per Phase 3 Task 10 cycle 3c — when policies differ ONLY
-        // in WhiteSpace AND every non-empty run's WhiteSpace is in
-        // the Normal/NoWrap subset (which share collapse semantics
-        // per CSS Text L3 §4.1), build a per-source-run WhiteSpace
-        // array + delegate to the per-glyph WhiteSpace honoring
-        // path. Mixed-mode involving Pre/PreWrap/PreLine/BreakSpaces
-        // still throws (collapse-vs-preserve cannot be reconciled
-        // post-shape; per-source-run preprocessing is deferred to
-        // cycle 3d). Mixed-mode in any of overflow-wrap/word-break/
-        // hyphens also still throws (per-glyph metadata for those
-        // 3 properties is out of cycle 3c scope).
+        // Per Phase 3 Task 10 cycle 3d sub-cycle 1 — when policies
+        // differ ONLY in WhiteSpace (any of the 6 values), build a
+        // per-source-run WhiteSpace array + delegate to the per-glyph
+        // WhiteSpace honoring path in <see cref="LineBuilder.Wrap"/>.
+        // Cross-mode preserve+collapse is handled by the new
+        // <see cref="LineBuilder.PreprocessTextRunsPerRun"/> which
+        // processes each run with its OWN WhiteSpace. Mixed-mode in
+        // overflow-wrap/word-break/hyphens still throws (per-glyph
+        // metadata for those 3 properties is out of cycle 3d
+        // sub-cycle 1 scope).
         InlineTextPolicy? effectivePolicy = null;
         var firstNonEmptyIndex = -1;
         WhiteSpace[]? whiteSpacePerRun = null; // built lazily on mismatch
@@ -492,50 +477,24 @@ internal static class InlineLayouter
                         $"more than just WhiteSpace (run {firstNonEmptyIndex}={effectivePolicy}, " +
                         $"run {i}={p}). Per-glyph overflow-wrap/word-break/" +
                         $"hyphens mixed-mode is deferred to a future cycle. " +
-                        $"Cycle 3c handles WhiteSpace mismatches; until others " +
+                        $"Cycle 3d sub-cycle 1 handles WhiteSpace mismatches " +
+                        $"across the full six-value matrix; until others " +
                         $"land, callers must either avoid mixed inline " +
                         $"descendants of those properties or split the wrap " +
                         $"into homogeneous sub-passes.");
                 }
-                // Cycle 3c hardening (post-PR-#42 review Recs #1+#3)
-                // — narrow the WhiteSpace mismatch matrix to
-                // {Normal, NoWrap}-only. Per CSS Text L3 §4.1 these
-                // two values share collapse semantics (both collapse
-                // runs of whitespace to a single SP, both normalize
-                // CR/LF to SP); they only differ in wrappability,
-                // which the per-glyph downgrade in
-                // <see cref="LineBuilder.Wrap"/> handles. Any other
-                // WhiteSpace combination — Pre/PreWrap/PreLine/
-                // BreakSpaces mixed with collapse modes — needs
-                // per-source-run preprocessing because preserve-vs-
-                // collapse decisions happen BEFORE shaping. Refuse
-                // those until cycle 3d ships the per-run
-                // preprocessor.
-                var prevWs = effectivePolicy.Value.WhiteSpace;
-                var currWs = p.WhiteSpace;
-                if (!IsCollapseModeMatrixMember(prevWs)
-                    || !IsCollapseModeMatrixMember(currWs))
-                {
-                    throw new NotSupportedException(
-                        $"InlineLayouter.LayoutPerRun: WhiteSpace " +
-                        $"mismatch outside the cycle 3c Normal/NoWrap " +
-                        $"matrix (run {firstNonEmptyIndex}={prevWs}, " +
-                        $"run {i}={currWs}). Mixed Pre/PreWrap/PreLine/" +
-                        $"BreakSpaces with Normal/NoWrap requires true " +
-                        $"per-source-run whitespace preprocessing " +
-                        $"(collapse-vs-preserve cannot be reconciled " +
-                        $"post-shape) and is deferred to cycle 3d. " +
-                        $"Until then, callers must either avoid the " +
-                        $"mismatched mode-mix or split the wrap into " +
-                        $"homogeneous sub-passes.");
-                }
-                // WhiteSpace-only mismatch within Normal/NoWrap
-                // matrix — build per-run array lazily on first
-                // mismatch.
+                // Cycle 3d sub-cycle 1 — WhiteSpace-only mismatch
+                // accepted across the FULL six-value matrix. The
+                // per-source-run preprocessor
+                // (<see cref="LineBuilder.PreprocessTextRunsPerRun"/>)
+                // processes each run with its own WhiteSpace, and
+                // the wrap loop's per-glyph downgrade suppresses
+                // wraps inside NoWrap/Pre runs. Build the per-run
+                // array lazily on first mismatch.
                 if (whiteSpacePerRun is null)
                 {
                     whiteSpacePerRun = new WhiteSpace[sourceTextRuns.Count];
-                    var fillTo = prevWs;
+                    var fillTo = effectivePolicy.Value.WhiteSpace;
                     for (var j = 0; j < sourceTextRuns.Count; j++)
                     {
                         // Empty runs get the effective ws — they
@@ -546,7 +505,7 @@ internal static class InlineLayouter
                         whiteSpacePerRun[j] = fillTo;
                     }
                 }
-                whiteSpacePerRun[i] = currWs;
+                whiteSpacePerRun[i] = p.WhiteSpace;
             }
             else if (whiteSpacePerRun is not null)
             {
@@ -562,30 +521,43 @@ internal static class InlineLayouter
 
         // Per cycle 3c review Rec #4 + Copilot #1 — preprocess once,
         // pass the SAME instance to ShapeForLayout AND
-        // <see cref="LineBuilder.Wrap"/>. The previous implementation
-        // called PreprocessTextRuns twice with identical args, which
-        // wasted CPU + risked non-determinism if the preprocessor
-        // ever became non-pure.
-        //
-        // When per-run WhiteSpace varies (whiteSpacePerRun != null),
-        // preprocess with <see cref="WhiteSpace.Normal"/>: the matrix
-        // is now narrowed to {Normal, NoWrap} (validated above) and
-        // both collapse identically per CSS Text L3 §4.1. The wrap
-        // loop's per-glyph gating then suppresses wraps inside the
-        // NoWrap-tagged runs. When the policy is uniform,
-        // preprocess with the chosen WhiteSpace as cycle 3a/3b did.
+        // <see cref="LineBuilder.Wrap"/>. Cycle 3d sub-cycle 1
+        // replaces the uniform PreprocessTextRuns call with
+        // <see cref="LineBuilder.PreprocessTextRunsPerRun"/> when
+        // per-run WhiteSpace varies — each run is processed with its
+        // OWN mode (preserve modes keep content, collapse modes chain
+        // <c>inWs</c> state across boundaries).
         //
         // For the wrap-time `whiteSpace` argument: pass
         // <see cref="WhiteSpace.Normal"/> when per-run mode is
         // active so the global `wrapsAtAllowed` gate inside
         // <see cref="LineBuilder.Wrap"/> doesn't suppress wraps for
         // the Normal-tagged runs (the per-glyph downgrade still
-        // handles NoWrap). When uniform, pass policy.WhiteSpace.
-        var preprocessWhiteSpace = whiteSpacePerRun is null
-            ? policy.WhiteSpace
-            : WhiteSpace.Normal;
-        var preprocessed = LineBuilder.PreprocessTextRuns(
-            sourceTextRuns, preprocessWhiteSpace);
+        // handles NoWrap/Pre suppression). When uniform, pass
+        // policy.WhiteSpace.
+        IReadOnlyList<TextRun> preprocessed;
+        if (whiteSpacePerRun is null)
+        {
+            preprocessed = LineBuilder.PreprocessTextRuns(
+                sourceTextRuns, policy.WhiteSpace);
+        }
+        else
+        {
+            // Per Phase 3 Task 10 cycle 3d sub-cycle 1 review Rec #4
+            // — pass cancellation through to the per-run preprocessor
+            // so large hostile inline text doesn't waste CPU after a
+            // late cancellation signal.
+            preprocessed = LineBuilder.PreprocessTextRunsPerRun(
+                sourceTextRuns, whiteSpacePerRun, cancellationToken);
+        }
+        // Per cycle 3d sub-cycle 1 review Rec #4 — observe
+        // cancellation immediately after preprocessing, before the
+        // potentially-expensive ShapeForLayout call. The token may
+        // have been signaled DURING preprocessing (a long input
+        // span between the per-run boundary checks); this catches
+        // late cancellations before HarfBuzz fires up.
+        cancellationToken.ThrowIfCancellationRequested();
+
         var wrapWhiteSpace = whiteSpacePerRun is null
             ? policy.WhiteSpace
             : WhiteSpace.Normal;
@@ -605,21 +577,6 @@ internal static class InlineLayouter
             cancellationToken,
             whiteSpacePerRun);
     }
-
-    /// <summary>Per Phase 3 Task 10 cycle 3c hardening (post-PR-#42
-    /// review Rec #1+#3) — predicate identifying members of the
-    /// Normal/NoWrap collapse-mode matrix accepted for mixed-mode
-    /// per-source-run WhiteSpace plumbing in
-    /// <see cref="LayoutPerRun"/>. Per CSS Text L3 §4.1 these two
-    /// values share whitespace-collapse semantics (collapse runs of
-    /// whitespace to a single SP, normalize CR/LF to SP); only their
-    /// wrappability differs (Normal wraps at Allowed, NoWrap
-    /// suppresses wraps). Any other WhiteSpace value
-    /// (Pre/PreWrap/PreLine/BreakSpaces) preserves whitespace and
-    /// requires distinct preprocessing — those mixes throw until
-    /// cycle 3d ships per-source-run preprocessing.</summary>
-    private static bool IsCollapseModeMatrixMember(WhiteSpace ws) =>
-        ws is WhiteSpace.Normal or WhiteSpace.NoWrap;
 
     /// <summary>Per Phase 3 Task 10 cycle 3c — itemize + shape
     /// helper used by <see cref="LayoutPerRun"/> when delegating

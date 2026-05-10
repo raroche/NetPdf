@@ -1008,8 +1008,18 @@ internal static class LineBuilder
                 // slice + their advance, so the line's TotalAdvance
                 // doesn't include the trailing collapsible whitespace
                 // (per CSS Text L3 §4.1.2 "remove end-of-line spaces").
-                // Tag is suppressed for Pre/PreWrap (preserve modes
-                // — spaces are part of the rendered output).
+                //
+                // Per Phase 3 Task 10 cycle 3d sub-cycle 1 review
+                // Rec #1 — IsBreakSpace must be computed from the
+                // SOURCE-RUN's WhiteSpace (not the global wrapWhiteSpace
+                // override). When whiteSpacePerRun is supplied,
+                // LayoutPerRun passes wrapWhiteSpace=Normal globally
+                // for the per-glyph downgrade pipeline; that would
+                // wrongly tag spaces in Pre/PreWrap/BreakSpaces source
+                // runs as IsBreakSpace and trim them at soft-wrap
+                // boundaries. Per CSS Text L3 §4.1, only collapse
+                // modes (Normal/NoWrap/PreLine) produce trimmable
+                // break-spaces; preserve modes keep their SPs visible.
                 var isBreakSpace = false;
                 // Cycle 3b sub-cycle 3 hardening — tag soft-hyphen
                 // (U+00AD) glyphs. Per CSS Text L3 §6.1.1, soft-
@@ -1025,7 +1035,12 @@ internal static class LineBuilder
                 {
                     var clusterChar = concatText[glyph.Cluster];
                     isMandatoryControl = IsMandatoryLineBreakControl(clusterChar);
-                    if (collapsesSpaces && (clusterChar == ' ' || clusterChar == '	'))
+                    // Per cycle 3d Rec #1 — per-glyph IsBreakSpace.
+                    var glyphCollapses = whiteSpacePerRun is not null
+                        ? IsCollapseModeWhiteSpace(
+                            whiteSpacePerRun[shaped.Source.SourceTextRunIndex])
+                        : collapsesSpaces;
+                    if (glyphCollapses && (clusterChar == ' ' || clusterChar == '	'))
                     {
                         isBreakSpace = true;
                     }
@@ -1161,9 +1176,42 @@ internal static class LineBuilder
             // lineStart so the next iteration starts fresh. Without
             // this, the prior cursor>lineStart guard would let
             // additional glyphs accumulate.
+            //
+            // Per Phase 3 Task 10 cycle 3d sub-cycle 1 review Rec #2
+            // — when whiteSpacePerRun is supplied the global
+            // wrapsAtAllowed is forced true so candidates can be
+            // recorded for wrap-friendly source runs. Without an
+            // additional per-glyph guard the anywhere fallback could
+            // force a break INSIDE an unbreakable NoWrap/Pre source
+            // run when all runs share overflow-wrap:anywhere. Per
+            // CSS Text L3 §5.1, overflow-wrap "only has an effect
+            // when white-space allows wrapping" — so we check the
+            // break point's source run(s):
+            //   * cursor > lineStart: break is between cursor-1 and
+            //     cursor. If both glyphs are in the SAME source run
+            //     and that run's WhiteSpace ∈ {Pre, NoWrap}, the
+            //     break would be INSIDE the unbreakable run — skip.
+            //   * cursor == lineStart: single-glyph overflow. The
+            //     glyph emits alone (every glyph must go somewhere);
+            //     this is the existing best-effort behavior even for
+            //     Pre/NoWrap glyphs.
+            var anywhereGatedByPerRun = true;
+            if (whiteSpacePerRun is not null && cursor > lineStart)
+            {
+                var prevSrcRunIdx = shapedRuns[flat[cursor - 1].RunIdx]
+                    .Source.SourceTextRunIndex;
+                var cursorSrcRunIdx = shapedRuns[flat[cursor].RunIdx]
+                    .Source.SourceTextRunIndex;
+                if (prevSrcRunIdx == cursorSrcRunIdx
+                    && !IsWrapFriendlyWhiteSpace(whiteSpacePerRun[cursorSrcRunIdx]))
+                {
+                    anywhereGatedByPerRun = false;
+                }
+            }
             if (afterAdvance > availableInlineSize
                 && allowOverflowAnywhere
-                && wrapsAtAllowed)
+                && wrapsAtAllowed
+                && anywhereGatedByPerRun)
             {
                 if (cursor > lineStart)
                 {
@@ -1316,12 +1364,18 @@ internal static class LineBuilder
         var i = 0;
         while (i < text.Length)
         {
-            // Skip non-letter chars.
-            while (i < text.Length && !IsAsciiLetter(text[i])) i++;
+            // Skip non-(letter or soft-hyphen) chars. Per cycle 3d
+            // sub-cycle 1 review Rec #6 — soft hyphens U+00AD are
+            // included in the word-tokenization sweep so a word like
+            // "rep­resent" is identified as ONE word (not two
+            // segments split by the soft hyphen). The Liang call is
+            // then SUPPRESSED for words containing U+00AD per CSS
+            // Text L3 §6.1.1.
+            while (i < text.Length && !IsAsciiLetterOrSoftHyphen(text[i])) i++;
             if (i >= text.Length) break;
 
             var start = i;
-            while (i < text.Length && IsAsciiLetter(text[i])) i++;
+            while (i < text.Length && IsAsciiLetterOrSoftHyphen(text[i])) i++;
             var wordLen = i - start;
             if (wordLen < 2) continue; // tiny words — Hyphenator's leftMin filters anyway
 
@@ -1332,6 +1386,30 @@ internal static class LineBuilder
             cancellationToken.ThrowIfCancellationRequested();
 
             var wordSpan = text.AsSpan(start, wordLen);
+
+            // Per Phase 3 Task 10 cycle 3d sub-cycle 1 review Rec #6
+            // — CSS Text L3 §6.1.1: "When a soft hyphen is
+            // encountered in the text, all such automatic
+            // hyphenation opportunities elsewhere in that word
+            // should be ignored, except when the user agent cannot
+            // break the word at the soft hyphen position." We skip
+            // Liang entirely when the word contains a soft hyphen —
+            // the dedicated soft-hyphen pass at
+            // <see cref="ComputeHyphenationPositions"/> already
+            // recorded the U+00AD positions. The "can't break at
+            // soft hyphen" fallback (e.g., when the soft hyphen
+            // sits too close to a line edge) is a min-line-length
+            // consideration deferred to future justifier work; in
+            // practice the LineBuilder.Wrap loop will fall through
+            // to overflow-wrap / word-break behavior anyway when
+            // the soft hyphen position isn't usable.
+            var hasSoftHyphen = false;
+            for (var k = 0; k < wordSpan.Length; k++)
+            {
+                if (wordSpan[k] == '­') { hasSoftHyphen = true; break; }
+            }
+            if (hasSoftHyphen) continue;
+
             var breaks = hyphenator.FindHyphenationPoints(wordSpan);
             // breaks[k] = position k in word means break BETWEEN
             // word[k-1] and word[k]. Concat position = start + k - 1
@@ -1352,6 +1430,17 @@ internal static class LineBuilder
     /// word-segmentation (deferred to later cycles).</summary>
     private static bool IsAsciiLetter(char c) =>
         (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+
+    /// <summary>Per Phase 3 Task 10 cycle 3d sub-cycle 1 review
+    /// Rec #6 — extends <see cref="IsAsciiLetter"/> to ALSO accept
+    /// soft hyphen U+00AD as a word-internal character so the
+    /// tokenizer can identify words like "rep­resent" as ONE
+    /// word (not two segments). Used by
+    /// <see cref="ApplyLiangPatterns"/> to enforce CSS Text L3
+    /// §6.1.1's "soft-hyphen suppresses Liang elsewhere in the
+    /// word" rule.</summary>
+    private static bool IsAsciiLetterOrSoftHyphen(char c) =>
+        IsAsciiLetter(c) || c == '­';
 
     /// <summary>Per PR #36 review fix (cycle 3b sub-cycle 2 hardening) —
     /// returns <see langword="true"/> if a forced break BETWEEN
@@ -1708,6 +1797,159 @@ internal static class LineBuilder
         return output;
     }
 
+    /// <summary>Per Phase 3 Task 10 cycle 3d sub-cycle 1 — per-source-
+    /// run white-space preprocessor. Each run is processed with its
+    /// OWN <see cref="WhiteSpace"/> mode, enabling mixed inline
+    /// descendants like <c>&lt;pre&gt;</c> inside <c>white-space:
+    /// normal</c> text to preserve their content while the
+    /// surrounding text continues to collapse per CSS Text L3 §4.1.
+    /// Unlike the uniform-mode <see cref="PreprocessTextRuns"/>,
+    /// this method dispatches per run.
+    ///
+    /// <para><b>Cross-run state semantics.</b>
+    /// <list type="bullet">
+    ///   <item>Two consecutive <b>collapse</b>-mode runs
+    ///   (<see cref="WhiteSpace.Normal"/>, <see cref="WhiteSpace.NoWrap"/>,
+    ///   <see cref="WhiteSpace.PreLine"/>) chain their <c>inWs</c>
+    ///   state across the boundary, so a trailing SP in run N + a
+    ///   leading SP in run N+1 collapse to a single SP.</item>
+    ///   <item>A <b>preserve</b>-mode run
+    ///   (<see cref="WhiteSpace.Pre"/>, <see cref="WhiteSpace.PreWrap"/>,
+    ///   <see cref="WhiteSpace.BreakSpaces"/>) emits its text
+    ///   character-for-character (after CR/LF normalization). It
+    ///   resets <c>inWs</c> to <see langword="false"/> for the next
+    ///   collapse run — preserve content sits as-is in the concat,
+    ///   not interacting with collapse decisions on either side.</item>
+    ///   <item>The document-leading SP strip applies only when the
+    ///   FIRST run is a collapse mode (initial <c>inWs = true</c>).
+    ///   The document-trailing SP strip applies only when the LAST
+    ///   run is a collapse mode.</item>
+    /// </list></para>
+    ///
+    /// <para><b>Spec note.</b> CSS Text L3 §4.1 models white-space
+    /// per-element, but the cross-element interaction at run
+    /// boundaries (collapse-run + preserve-run + collapse-run) is an
+    /// interop area not tightly specified. This implementation
+    /// follows the "preserve runs are atomic; collapse runs chain via
+    /// <c>inWs</c>" rule, which matches the most common UA behavior
+    /// for the invoice/report content NetPdf targets.</para>
+    /// </summary>
+    /// <param name="runs">The source runs in document order.</param>
+    /// <param name="modes">Per-source-run <see cref="WhiteSpace"/>
+    /// modes. MUST have the same length as <paramref name="runs"/>.
+    /// Each entry MUST be a defined <see cref="WhiteSpace"/> value.</param>
+    /// <param name="cancellationToken">Per Phase 3 Task 10 cycle 3d
+    /// sub-cycle 1 review Rec #4 — cooperative cancellation. Checked
+    /// at method entry + once per source-run boundary so large
+    /// hostile inline text doesn't waste CPU after the caller signals
+    /// cancellation. The character-level loops inside
+    /// <see cref="CollapseStateful"/> + <see cref="NormalizeSegmentBreaks"/>
+    /// are not currently broken into chunks (the granularity is
+    /// per-source-run); this is adequate when source runs are
+    /// typical-paragraph-sized.</param>
+    /// <returns>A new <see cref="TextRun"/> array with each run's
+    /// text preprocessed using its individual mode + cross-run state
+    /// managed per the rules above. Empty input returns empty.</returns>
+    /// <exception cref="ArgumentNullException">A required arg is null.</exception>
+    /// <exception cref="ArgumentException"><paramref name="modes"/>'s
+    /// length doesn't match <paramref name="runs"/>'s, or a mode
+    /// entry is not a defined <see cref="WhiteSpace"/> value.</exception>
+    /// <exception cref="System.OperationCanceledException">
+    /// <paramref name="cancellationToken"/> was canceled.</exception>
+    public static IReadOnlyList<TextRun> PreprocessTextRunsPerRun(
+        IReadOnlyList<TextRun> runs, IReadOnlyList<WhiteSpace> modes,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(runs);
+        ArgumentNullException.ThrowIfNull(modes);
+        if (runs.Count != modes.Count)
+        {
+            throw new ArgumentException(
+                $"PreprocessTextRunsPerRun: modes length ({modes.Count}) " +
+                $"must match runs count ({runs.Count}).",
+                nameof(modes));
+        }
+        // Validate every mode entry is a defined WhiteSpace value.
+        for (var i = 0; i < modes.Count; i++)
+        {
+            var m = modes[i];
+            if (m is not (WhiteSpace.Normal
+                or WhiteSpace.Pre
+                or WhiteSpace.NoWrap
+                or WhiteSpace.PreWrap
+                or WhiteSpace.PreLine
+                or WhiteSpace.BreakSpaces))
+            {
+                throw new ArgumentException(
+                    $"PreprocessTextRunsPerRun: modes[{i}] = {m} is not " +
+                    $"a defined WhiteSpace value.",
+                    nameof(modes));
+            }
+        }
+        if (runs.Count == 0) return runs;
+
+        // Per cycle 3d sub-cycle 1 review Rec #4 — pre-cancelled
+        // tokens fast-path out before any allocation.
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var output = new TextRun[runs.Count];
+        // Initial `inWs = true` strips document-leading whitespace
+        // ONLY if the first run is a collapse mode. For a preserve-
+        // first document the preserve run emits its content as-is,
+        // so the strip never fires.
+        var inWs = true;
+
+        for (var r = 0; r < runs.Count; r++)
+        {
+            // Per cycle 3d sub-cycle 1 review Rec #4 — observe
+            // cancellation at every source-run boundary.
+            cancellationToken.ThrowIfCancellationRequested();
+            var mode = modes[r];
+            if (mode is WhiteSpace.Pre
+                or WhiteSpace.PreWrap
+                or WhiteSpace.BreakSpaces)
+            {
+                // Preserve mode — normalize CR/LF + emit as-is.
+                var raw = runs[r].Text;
+                var normalized = NormalizeSegmentBreaks(raw);
+                output[r] = ReferenceEquals(raw, normalized)
+                    ? runs[r]
+                    : new TextRun(normalized, runs[r].Style);
+                // Reset inWs for the next run — preserve content
+                // doesn't interact with collapse decisions either side.
+                inWs = false;
+            }
+            else
+            {
+                // Collapse mode (Normal / NoWrap / PreLine).
+                var preserveBreaks = mode == WhiteSpace.PreLine;
+                output[r] = new TextRun(
+                    CollapseStateful(runs[r].Text, preserveBreaks, ref inWs),
+                    runs[r].Style);
+            }
+        }
+
+        // Document-trailing SP strip — only when the LAST run is a
+        // collapse mode. For preserve-last documents, the trailing
+        // whitespace is part of the preserved content.
+        var lastIdx = output.Length - 1;
+        var lastMode = modes[lastIdx];
+        if (lastMode is WhiteSpace.Normal
+            or WhiteSpace.NoWrap
+            or WhiteSpace.PreLine)
+        {
+            var t = output[lastIdx].Text;
+            if (t.Length > 0 && t[t.Length - 1] == ' ')
+            {
+                output[lastIdx] = new TextRun(
+                    t.Substring(0, t.Length - 1),
+                    output[lastIdx].Style);
+            }
+        }
+
+        return output;
+    }
+
     /// <summary>Stateful collapse helper for
     /// <see cref="PreprocessTextRuns"/>. Carries the <c>inWs</c>
     /// state across calls so consecutive runs collapse their
@@ -1789,6 +2031,32 @@ internal static class LineBuilder
         || c == '\u000A' // LF
         || c == '\u000D' // CR
         || c == '\u000C'; // FF
+
+    /// <summary>Per Phase 3 Task 10 cycle 3d sub-cycle 1 review
+    /// Rec #1 — predicate identifying collapse-mode <see cref="WhiteSpace"/>
+    /// values. Per CSS Text L3 §4.1, only Normal / NoWrap / PreLine
+    /// collapse runs of whitespace; preserve modes
+    /// (Pre / PreWrap / BreakSpaces) keep all whitespace
+    /// character-for-character. Used by the wrap pass to decide
+    /// whether a SP/TAB glyph is trimmable from a line's drawable
+    /// slice (collapse-mode → trimmable; preserve-mode → must
+    /// remain in output).</summary>
+    private static bool IsCollapseModeWhiteSpace(WhiteSpace ws) =>
+        ws is WhiteSpace.Normal
+            or WhiteSpace.NoWrap
+            or WhiteSpace.PreLine;
+
+    /// <summary>Per Phase 3 Task 10 cycle 3d sub-cycle 1 review
+    /// Rec #2 — predicate identifying wrap-friendly
+    /// <see cref="WhiteSpace"/> values. Per CSS Text L3 §3,
+    /// Pre / NoWrap suppress wrapping at UAX #14 Allowed
+    /// opportunities; the other 4 modes wrap. Per §5.1, the
+    /// <c>overflow-wrap</c> property has effect ONLY where
+    /// wrapping is otherwise allowed — so the
+    /// <c>overflow-wrap: anywhere</c> forced-break fallback also
+    /// must not fire inside Pre / NoWrap source-run spans.</summary>
+    private static bool IsWrapFriendlyWhiteSpace(WhiteSpace ws) =>
+        ws is not (WhiteSpace.Pre or WhiteSpace.NoWrap);
 
     /// <summary>Slice a global glyph range <c>[start, end]</c>
     /// (inclusive on both ends) into per-run

@@ -238,92 +238,13 @@ public sealed class InlineLayouterCycle3cTests
 
     // --- Cycle 3c review hardening (Recs #1+#3+#6 + Copilot) ------
 
-    [Fact]
-    public void LayoutPerRun_Normal_mixed_with_Pre_throws_NotSupported()
-    {
-        // Per cycle 3c review Recs #1+#3 — Pre/PreWrap/PreLine/
-        // BreakSpaces mixed with Normal/NoWrap requires per-source-
-        // run preprocessing (collapse-vs-preserve cannot be
-        // reconciled post-shape). Cycle 3c narrows the accepted
-        // matrix to Normal/NoWrap-only; other combos throw.
-        using var resolver = new TestShaperResolver();
-        var sNormal = MakeStyle();
-        var sPre = ComputedStyle.RentForExclusiveTesting();
-        sPre.Set(PropertyId.WhiteSpace, ComputedSlot.FromKeyword(1)); // pre
-        var sourceRuns = new List<TextRun>
-        {
-            new("AAA", sNormal),
-            new("BBB", sPre),
-        };
-        var ex = Assert.Throws<NotSupportedException>(() =>
-            InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver,
-                LatnScript, EnLang));
-        Assert.Contains("outside the cycle 3c Normal/NoWrap matrix",
-            ex.Message);
-    }
-
-    [Fact]
-    public void LayoutPerRun_NoWrap_mixed_with_PreWrap_throws_NotSupported()
-    {
-        // Same narrowing applies to PreWrap mix.
-        using var resolver = new TestShaperResolver();
-        var sNoWrap = MakeStyleWithNoWrap();
-        var sPreWrap = ComputedStyle.RentForExclusiveTesting();
-        sPreWrap.Set(PropertyId.WhiteSpace, ComputedSlot.FromKeyword(3)); // pre-wrap
-        var sourceRuns = new List<TextRun>
-        {
-            new("AAA", sNoWrap),
-            new("BBB", sPreWrap),
-        };
-        var ex = Assert.Throws<NotSupportedException>(() =>
-            InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver,
-                LatnScript, EnLang));
-        Assert.Contains("outside the cycle 3c Normal/NoWrap matrix",
-            ex.Message);
-    }
-
-    [Fact]
-    public void LayoutPerRun_Normal_mixed_with_PreLine_throws_NotSupported()
-    {
-        // PreLine collapses spaces but preserves newlines — distinct
-        // collapse semantics from Normal, so still outside the
-        // cycle 3c matrix.
-        using var resolver = new TestShaperResolver();
-        var sNormal = MakeStyle();
-        var sPreLine = ComputedStyle.RentForExclusiveTesting();
-        sPreLine.Set(PropertyId.WhiteSpace, ComputedSlot.FromKeyword(4)); // pre-line
-        var sourceRuns = new List<TextRun>
-        {
-            new("AAA", sNormal),
-            new("BBB", sPreLine),
-        };
-        var ex = Assert.Throws<NotSupportedException>(() =>
-            InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver,
-                LatnScript, EnLang));
-        Assert.Contains("outside the cycle 3c Normal/NoWrap matrix",
-            ex.Message);
-    }
-
-    [Fact]
-    public void LayoutPerRun_Normal_mixed_with_BreakSpaces_throws_NotSupported()
-    {
-        // BreakSpaces preserves whitespace + lets line breaks happen
-        // after them; outside the cycle 3c matrix.
-        using var resolver = new TestShaperResolver();
-        var sNormal = MakeStyle();
-        var sBreakSpaces = ComputedStyle.RentForExclusiveTesting();
-        sBreakSpaces.Set(PropertyId.WhiteSpace, ComputedSlot.FromKeyword(5)); // break-spaces
-        var sourceRuns = new List<TextRun>
-        {
-            new("AAA", sNormal),
-            new("BBB", sBreakSpaces),
-        };
-        var ex = Assert.Throws<NotSupportedException>(() =>
-            InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver,
-                LatnScript, EnLang));
-        Assert.Contains("outside the cycle 3c Normal/NoWrap matrix",
-            ex.Message);
-    }
+    // The 4 matrix-narrowing throw tests that used to live here
+    // (Normal+Pre, NoWrap+PreWrap, Normal+PreLine, Normal+BreakSpaces)
+    // were removed when Phase 3 Task 10 cycle 3d sub-cycle 1 broadened
+    // the LayoutPerRun WhiteSpace matrix to the full six-value set
+    // via the new per-source-run preprocessor. See
+    // [`InlineLayouterCycle3dTests`](InlineLayouterCycle3dTests.cs)
+    // for the now-handled behavior with exact assertions.
 
     [Fact]
     public void Wrap_with_whiteSpacePerRun_invalid_enum_value_throws()

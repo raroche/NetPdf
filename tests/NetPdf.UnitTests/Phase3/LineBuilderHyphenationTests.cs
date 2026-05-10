@@ -326,6 +326,77 @@ public class LineBuilderHyphenationTests
         Assert.False(lines[0].EndsWithHyphenationBreak);
     }
 
+    // --- PR #43 cycle 3d sub-cycle 1 review Rec #6 hardening ------
+
+    [Fact]
+    public void Wrap_Auto_soft_hyphen_in_word_suppresses_Liang_positions_in_same_word()
+    {
+        // Per Phase 3 Task 10 cycle 3d sub-cycle 1 review Rec #6 —
+        // CSS Text L3 §6.1.1: "When a soft hyphen is encountered in
+        // the text, all such automatic hyphenation opportunities
+        // elsewhere in that word should be ignored". The Liang
+        // suppression depends on the tokenizer treating soft-hyphen
+        // as a word-internal character so "hyphen­ation" is ONE
+        // word; the per-word check then skips Liang for the whole
+        // word.
+        //
+        // Geometry: "hyphen­ation" = 11 visible chars + 1 SH (zero
+        // advance for layout). Each visible char = 7.2 px (.notdef).
+        //   - "hy"     = 14.4 px
+        //   - "hyphen" = 43.2 px (the prefix before the SH)
+        //   - At budget 30, "hyphen" overflows but "hy" fits.
+        //
+        // PRE-FIX behavior (Liang on "hyphen" produces hyphenationAfter[1]
+        // for "hy-phen"): wrap snaps at position 1 (after "hy"), line
+        // 0 = 2 glyphs.
+        // POST-FIX behavior (Liang skipped for soft-hyphen-containing
+        // word, only the soft-hyphen position 6 used): wrap can't fire
+        // until cursor reaches the SH glyph; snap-back at the SH.
+        // Line 0 = 6 glyphs ("hyphen", with the SH trimmed off the
+        // drawable per soft-hyphen invisible-unless-rendered rule).
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun>
+        {
+            new("hyphen­ation", MakeStyle()),
+        };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
+        var lines = LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 30,
+            hyphens: Hyphens.Auto);
+
+        Assert.True(lines.Length >= 2,
+            $"Soft-hyphen-containing word should still produce ≥2 lines via the SH break; got {lines.Length}.");
+        // Line 0's drawable should be 6 glyphs ("hyphen"), proving
+        // the SH position was preferred over Liang. Pre-fix it would
+        // have been 2 glyphs ("hy") via the Liang position at concat
+        // index 1 inside the "hyphen" sub-token.
+        Assert.True(lines[0].Slices.Length >= 1);
+        var line0Glyphs = 0;
+        foreach (var s in lines[0].Slices) line0Glyphs += s.GlyphLength;
+        Assert.Equal(6, line0Glyphs);
+        Assert.True(lines[0].EndsWithHyphenationBreak,
+            "Line 0 ends at the soft-hyphen position — EndsWithHyphenationBreak must be true.");
+    }
+
+    [Fact]
+    public void Wrap_Auto_no_soft_hyphen_word_still_uses_Liang_positions()
+    {
+        // Regression guard for Rec #6 — a word with NO soft hyphen
+        // continues to get Liang positions. The fix only suppresses
+        // Liang for words containing U+00AD; everything else stays.
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun> { new("hyphenation", MakeStyle()) };
+        var itemized = LineBuilder.Itemize(sourceRuns, ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver, LatnScript, EnLang);
+        var lines = LineBuilder.Wrap(sourceRuns, shaped, availableInlineSize: 30,
+            hyphens: Hyphens.Auto);
+
+        // Same word + budget but no soft hyphen — Liang patterns
+        // should split the word (≥ 2 lines) per the existing
+        // `Wrap_Auto_applies_Liang_patterns_to_split_long_word` test.
+        Assert.True(lines.Length >= 2);
+    }
+
     // --- Helpers --------------------------------------------------
 
     private static ComputedStyle MakeStyle() =>

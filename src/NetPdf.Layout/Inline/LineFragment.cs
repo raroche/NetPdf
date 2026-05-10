@@ -48,19 +48,25 @@ namespace NetPdf.Layout.Inline;
 ///   collapsible modes (Normal/NoWrap/PreLine) per §4.1.2.</item>
 ///   <item><b>Per-source-run honoring</b> via the optional
 ///   <c>whiteSpacePerRun</c> parameter on
-///   <see cref="LineBuilder.Wrap"/> (cycle 3c). When supplied,
+///   <see cref="LineBuilder.Wrap"/> (cycle 3c + 3d). When supplied,
 ///   each glyph's UAX #14 Allowed opportunity is downgraded to
 ///   Prohibited if its source TextRun's WhiteSpace ∈
-///   {<see cref="WhiteSpace.NoWrap"/>, <see cref="WhiteSpace.Pre"/>}.
-///   The <see cref="InlineLayouter.LayoutPerRun"/> facade builds
-///   this array automatically for mixed Normal/NoWrap inputs
-///   (both share collapse semantics per §4.1). Pre/PreWrap/
-///   PreLine/BreakSpaces mixes require per-source-run preprocessing
-///   + still throw at the facade pending cycle 3d.</item>
+///   {<see cref="WhiteSpace.NoWrap"/>, <see cref="WhiteSpace.Pre"/>};
+///   each glyph's IsBreakSpace tag derives from its source-run's
+///   collapse-mode-ness so preserved spaces aren't trimmed (cycle
+///   3d sub-cycle 1 review Rec #1); the
+///   <c>overflow-wrap: anywhere</c> forced-break fallback is gated
+///   by per-glyph WhiteSpace so it doesn't fire INSIDE a NoWrap/Pre
+///   span (cycle 3d sub-cycle 1 review Rec #2). The
+///   <see cref="InlineLayouter.LayoutPerRun"/> facade builds the
+///   per-run array automatically for the FULL six-value WhiteSpace
+///   mismatch matrix (cycle 3d sub-cycle 1) — each run is
+///   preprocessed with its OWN WhiteSpace via
+///   <see cref="LineBuilder.PreprocessTextRunsPerRun"/>.</item>
 /// </list>
 /// </para>
 ///
-/// <para><b>Shipped capabilities (3a / 3b / 3c):</b>
+/// <para><b>Shipped capabilities (3a / 3b / 3c / 3d):</b>
 /// <list type="bullet">
 ///   <item>Cycle 3a — greedy wrap at UAX #14 Allowed boundaries,
 ///   Mandatory break handling, mandatory-control glyph trim, multi-
@@ -68,22 +74,33 @@ namespace NetPdf.Layout.Inline;
 ///   order.</item>
 ///   <item>Cycle 3b — all 6 CSS white-space modes (<c>normal</c>,
 ///   <c>pre</c>, <c>nowrap</c>, <c>pre-wrap</c>, <c>pre-line</c>,
-///   <c>break-spaces</c> — last folds to <c>pre-wrap</c>);
+///   <c>break-spaces</c> — last approximated as <c>pre-wrap</c> per
+///   <see cref="WhiteSpace.BreakSpaces"/> docs);
 ///   <c>overflow-wrap: anywhere</c> + <c>word-break: break-all</c>
 ///   forced-break fallback with grapheme-cluster + protected-
 ///   codepoint guards; Liang-pattern hyphenation under
 ///   <c>hyphens: auto</c> + soft-hyphen handling.</item>
 ///   <item>Cycle 3c — per-source-run <c>WhiteSpace</c> array
-///   (Normal/NoWrap matrix) for mixed inline descendants.</item>
+///   (Normal/NoWrap matrix only) for mixed inline descendants —
+///   superseded by cycle 3d's broader matrix.</item>
+///   <item>Cycle 3d sub-cycle 1 — per-source-run preprocessor
+///   (<see cref="LineBuilder.PreprocessTextRunsPerRun"/>) lifts the
+///   accepted matrix to ALL 6 WhiteSpace values (collapse-vs-preserve
+///   honored per-run). Plus Rec #1 per-glyph IsBreakSpace +
+///   Rec #2 per-glyph anywhere gating + Rec #4 cancellation token
+///   on the per-run preprocessor.</item>
 /// </list>
 /// </para>
 ///
 /// <para><b>Subsequent-cycle deferrals:</b>
 /// <list type="bullet">
-///   <item>Per-source-run preprocessing for Pre/PreWrap/PreLine/
-///   BreakSpaces mixed with Normal/NoWrap (cycle 3d).</item>
+///   <item><see cref="WhiteSpace.BreakSpaces"/>-distinctive semantics
+///   (forced wrap candidates at every preserved SP + trailing-space
+///   wrap-vs-hang per CSS Text L3 §6.4) — currently approximated as
+///   <see cref="WhiteSpace.PreWrap"/>; see
+///   <see cref="WhiteSpace.BreakSpaces"/> docs.</item>
 ///   <item>Per-glyph overflow-wrap / word-break / hyphens for
-///   mixed-mode descendants (cycle 3d / 3e).</item>
+///   mixed-mode descendants (cycle 3d sub-cycle 2).</item>
 ///   <item><c>text-align</c> (start/end/center/justify) — wrap
 ///   currently emits left-aligned fragments only.</item>
 ///   <item><c>vertical-align</c> baseline shifts.</item>

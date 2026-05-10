@@ -351,11 +351,12 @@ public sealed class InlineLayouterCycle3dTests
     }
 
     [Fact]
-    public void LayoutPerRun_mixed_hyphens_still_throws()
+    public void LayoutPerRun_mixed_hyphens_now_handled_per_run()
     {
-        // Cycle 3d sub-cycle 3 broadens to word-break mismatches.
-        // Remaining "still throws" case is hyphens mismatch
-        // (sub-cycle 4 scope).
+        // Cycle 3d sub-cycle 4 — Hyphens mismatch is now handled
+        // via per-source-run plumbing through the hyphenation
+        // pipeline (soft-hyphen pass + Liang application per-word
+        // gated by source-run Hyphens).
         using var resolver = new TestShaperResolver();
         var sManual = MakeStyle();
         var sAuto = ComputedStyle.RentForExclusiveTesting();
@@ -365,10 +366,322 @@ public sealed class InlineLayouterCycle3dTests
             new("foo", sManual),
             new("bar", sAuto),
         };
-        var ex = Assert.Throws<NotSupportedException>(() =>
-            InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver,
-                LatnScript, EnLang));
-        Assert.Contains("hyphens", ex.Message);
+        var result = InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver,
+            LatnScript, EnLang);
+        Assert.NotEmpty(result);
+    }
+
+    // --- Cycle 3d sub-cycle 4: per-source-run hyphens tests ------
+
+    [Fact]
+    public void LayoutPerRun_soft_hyphen_in_None_run_is_NOT_a_wrap_candidate()
+    {
+        // Per Phase 3 Task 10 cycle 3d sub-cycle 4 — when a soft
+        // hyphen sits in a source run with Hyphens=None, it is NOT a
+        // wrap candidate even though UAX #14 LB10 would normally
+        // classify U+00AD as Allowed.
+        //
+        // Source: Auto "AAAA" + None "BBB­BBB" (soft hyphen in None
+        // run). Budget = 30.
+        // - Run 0 (Auto): no soft hyphens, Liang on "AAAA" is a
+        //   no-op (synthetic font, no real patterns).
+        // - Run 1 (None): the U+00AD at position 7 must be DEMOTED
+        //   (breaks[7]: Allowed→Prohibited) AND not added to
+        //   hyphenationAfter. Wrap doesn't snap at it.
+        using var resolver = new TestShaperResolver();
+        var sAuto = ComputedStyle.RentForExclusiveTesting();
+        sAuto.Set(PropertyId.Hyphens, ComputedSlot.FromKeyword(2)); // auto
+        var sNone = ComputedStyle.RentForExclusiveTesting();
+        sNone.Set(PropertyId.Hyphens, ComputedSlot.FromKeyword(0)); // none
+        var sourceRuns = new List<TextRun>
+        {
+            new("AAAA", sAuto),
+            new("BBB­BBB", sNone),
+        };
+        var result = InlineLayouter.LayoutPerRun(sourceRuns,
+            availableInlineSize: 30, resolver, LatnScript, EnLang);
+
+        // Run 1's soft-hyphen is not a wrap candidate → no
+        // hyphenation break inside Run 1. Wrap behaves like the
+        // uniform Hyphens=None case for Run 1: 7 glyphs of Run 1
+        // (3 B + 1 SH-zero-advance + 3 B = 36 px) overflow as one
+        // line (no internal candidates).
+        Assert.True(result.Length >= 1);
+        // No line ends with a hyphenation break (the soft hyphen in
+        // the None run was demoted).
+        foreach (var line in result)
+        {
+            Assert.False(line.EndsWithHyphenationBreak,
+                "No line should end with a hyphenation break — the SH " +
+                "is in a Hyphens:None source run, so it was demoted.");
+        }
+    }
+
+    [Fact]
+    public void LayoutPerRun_soft_hyphen_in_Manual_run_IS_a_wrap_candidate()
+    {
+        // Per Phase 3 Task 10 cycle 3d sub-cycle 4 — when a soft
+        // hyphen sits in a source run with Hyphens=Manual (or Auto),
+        // it is a wrap candidate as usual.
+        //
+        // Source: None "AAAA" + Manual "BBB­BBB". Budget = 25.
+        // - Run 1's U+00AD position is NOT demoted (Hyphens=Manual).
+        //   Soft-hyphen pass adds it to hyphenationAfter.
+        // - Wrap should snap at the soft-hyphen position when Run 1's
+        //   B-sequence overflows.
+        using var resolver = new TestShaperResolver();
+        var sNone = ComputedStyle.RentForExclusiveTesting();
+        sNone.Set(PropertyId.Hyphens, ComputedSlot.FromKeyword(0)); // none
+        var sManual = MakeStyle(); // default Manual
+        var sourceRuns = new List<TextRun>
+        {
+            new("AAAA", sNone),
+            new("BBB­BBB", sManual),
+        };
+        var result = InlineLayouter.LayoutPerRun(sourceRuns,
+            availableInlineSize: 25, resolver, LatnScript, EnLang);
+
+        // Expect at least one line to end with a hyphenation break
+        // (the SH in the Manual run was honored).
+        var anyHyphenationBreak = false;
+        foreach (var line in result)
+        {
+            if (line.EndsWithHyphenationBreak)
+            {
+                anyHyphenationBreak = true;
+                break;
+            }
+        }
+        Assert.True(anyHyphenationBreak,
+            "At least one line should end with a hyphenation break — " +
+            "the SH in the Hyphens:Manual source run is a valid wrap " +
+            "candidate.");
+    }
+
+    [Fact]
+    public void LayoutPerRun_uniform_Hyphens_Auto_still_works_via_global_path()
+    {
+        // Regression guard — when ALL runs share Hyphens=Auto (no
+        // mismatch), LayoutPerRun stays on the uniform-policy
+        // delegation path (no per-run array built). Liang applies
+        // globally as before.
+        using var resolver = new TestShaperResolver();
+        var sAuto = ComputedStyle.RentForExclusiveTesting();
+        sAuto.Set(PropertyId.Hyphens, ComputedSlot.FromKeyword(2)); // auto
+        var sourceRuns = new List<TextRun>
+        {
+            new("hyphenation", sAuto),
+        };
+        var result = InlineLayouter.LayoutPerRun(sourceRuns,
+            availableInlineSize: 30, resolver, LatnScript, EnLang);
+
+        // Auto + Liang patterns split "hyphenation".
+        Assert.True(result.Length >= 2,
+            $"Uniform Auto should split 'hyphenation' via Liang; got {result.Length} lines.");
+    }
+
+    [Fact]
+    public void Wrap_direct_InlineTextPolicy_array_Hyphens_None_demotes_soft_hyphen()
+    {
+        // Direct LineBuilder.Wrap call — per-run Hyphens.None should
+        // demote any soft-hyphen breaks from Allowed to Prohibited.
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun>
+        {
+            new("AAA­AAA", MakeStyle()), // soft hyphen between letters
+        };
+        var itemized = LineBuilder.Itemize(sourceRuns,
+            NetPdf.Text.Bidi.ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver,
+            LatnScript, EnLang);
+
+        // Per-run Hyphens.None on the single run.
+        var perRun = new[]
+        {
+            new InlineTextPolicy(WhiteSpace.Normal,
+                OverflowWrap.Normal, WordBreak.Normal, Hyphens.None),
+        };
+        var lines = LineBuilder.Wrap(sourceRuns, shaped, 25,
+            hyphens: Hyphens.None,
+            inlineTextPolicyPerRun: perRun);
+
+        // No line should end at the soft-hyphen (it was demoted).
+        foreach (var line in lines)
+        {
+            Assert.False(line.EndsWithHyphenationBreak);
+        }
+    }
+
+    // --- Cycle 3d sub-cycle 4 review hardening tests --------------
+
+    [Fact]
+    public void LayoutPerRun_Liang_breaks_inside_None_segment_of_mixed_word_are_suppressed()
+    {
+        // Per sub-cycle 4 review Finding #1 — when a word spans
+        // two source runs Auto + None, Liang break positions
+        // landing INSIDE the None segment must NOT be recorded.
+        //
+        // Source: Auto "hy" + None "phenation" — concat
+        // "hyphenation" (11 chars), but positions 0-1 are in Auto
+        // run and 2-10 in None run. Liang on "hyphenation" finds
+        // positions like "hy-phen-ation" (at concat indices 1, 5).
+        // Per Finding #1, only position 1 should be kept (in Auto
+        // run); position 5 should be suppressed (in None run).
+        //
+        // Pre-fix: both positions kept (first-letter is Auto so
+        // word is "in"). Post-fix: position 5 dropped.
+        using var resolver = new TestShaperResolver();
+        var sAuto = ComputedStyle.RentForExclusiveTesting();
+        sAuto.Set(PropertyId.Hyphens, ComputedSlot.FromKeyword(2)); // auto
+        var sNone = ComputedStyle.RentForExclusiveTesting();
+        sNone.Set(PropertyId.Hyphens, ComputedSlot.FromKeyword(0)); // none
+        var sourceRuns = new List<TextRun>
+        {
+            new("hy", sAuto),
+            new("phenation", sNone),
+        };
+        var result = InlineLayouter.LayoutPerRun(sourceRuns,
+            availableInlineSize: 30, resolver, LatnScript, EnLang);
+
+        // Available 30 fits ~4 chars (4×7.2 = 28.8). Only the
+        // position-1 Liang break (in Auto run) is a valid candidate;
+        // line 0 ends at the hy-phen split (drawable = "hy",
+        // EndsWithHyphenationBreak=true). Position 5 was suppressed
+        // by Finding #1's per-position gate — without it, line
+        // geometry would differ.
+        Assert.True(result.Length >= 2);
+        // Line 0 ends with a hyphenation break (the Auto-run Liang
+        // position is honored).
+        Assert.True(result[0].EndsWithHyphenationBreak,
+            "Line 0 should end with a hyphenation break at the " +
+            "Auto-run Liang position.");
+        // Line 0's drawable contains the first 2 glyphs ("hy") from
+        // Run 0 — pinning the geometry to prove Finding #1 didn't
+        // suppress the in-Auto break.
+        Assert.Single(result[0].Slices);
+        Assert.Equal(0, result[0].Slices[0].ShapedRunIndex);
+        Assert.Equal(0, result[0].Slices[0].GlyphStart);
+        Assert.Equal(2, result[0].Slices[0].GlyphLength);
+    }
+
+    [Fact]
+    public void LayoutPerRun_Liang_runs_when_only_later_letters_are_Auto()
+    {
+        // Per sub-cycle 4 review Finding #1 — inverse of the test
+        // above: a word starting in None + ending in Auto must
+        // STILL apply Liang where the Auto segment lies. Pre-fix
+        // (first-letter-only gate): word skipped entirely because
+        // first letter is in None. Post-fix: Liang runs because
+        // SOME letter in the word is Auto, and positions are then
+        // gated per-position.
+        //
+        // Source: None "hy" + Auto "phenation" — Liang positions
+        // at 1 and 5. Position 1 in None → suppressed. Position 5
+        // in Auto → kept.
+        using var resolver = new TestShaperResolver();
+        var sNone = ComputedStyle.RentForExclusiveTesting();
+        sNone.Set(PropertyId.Hyphens, ComputedSlot.FromKeyword(0)); // none
+        var sAuto = ComputedStyle.RentForExclusiveTesting();
+        sAuto.Set(PropertyId.Hyphens, ComputedSlot.FromKeyword(2)); // auto
+        var sourceRuns = new List<TextRun>
+        {
+            new("hy", sNone),
+            new("phenation", sAuto),
+        };
+        var result = InlineLayouter.LayoutPerRun(sourceRuns,
+            availableInlineSize: 50, resolver, LatnScript, EnLang);
+
+        // Available 50 fits ~6 chars (6×7.2 = 43.2 < 50, 7×7.2 =
+        // 50.4 > 50). Position-1 Liang in None-run is suppressed.
+        // Position-5 (after "phen", concat pos 5) in Auto-run is
+        // honored — wrap snaps there. Line 0 = "hyphen" (6 chars).
+        Assert.True(result.Length >= 2);
+        Assert.True(result[0].EndsWithHyphenationBreak,
+            "Line 0 should end at the in-Auto Liang break " +
+            "(position 5 = end of 'hyphen').");
+        // Line 0 contains 6 glyphs across 2 slices (Run 0: 2 'h'+'y',
+        // Run 1: 4 'phen').
+        var line0Glyphs = 0;
+        foreach (var s in result[0].Slices) line0Glyphs += s.GlyphLength;
+        Assert.Equal(6, line0Glyphs);
+    }
+
+    [Fact]
+    public void LayoutPerRun_disabled_soft_hyphen_does_NOT_suppress_Liang_in_Auto_segment()
+    {
+        // Per sub-cycle 4 review Finding #2 — a U+00AD in a
+        // Hyphens=None source run is disabled (demoted), so it
+        // must NOT suppress Liang opportunities elsewhere in the
+        // same tokenized word that are in Auto source runs.
+        //
+        // Source: Auto "hy" + None "­" + Auto "phenation" —
+        // concat "hy­phenation" (12 chars). The U+00AD at
+        // concat pos 2 is in a None run → demoted. Pre-fix
+        // (whole-word SH suppression): Liang would be skipped
+        // entirely. Post-fix: Liang runs (the SH is disabled +
+        // ignored for the suppression rule).
+        using var resolver = new TestShaperResolver();
+        var sAuto = ComputedStyle.RentForExclusiveTesting();
+        sAuto.Set(PropertyId.Hyphens, ComputedSlot.FromKeyword(2)); // auto
+        var sNone = ComputedStyle.RentForExclusiveTesting();
+        sNone.Set(PropertyId.Hyphens, ComputedSlot.FromKeyword(0)); // none
+        var sourceRuns = new List<TextRun>
+        {
+            new("hy", sAuto),
+            new("­", sNone),
+            new("phenation", sAuto),
+        };
+        var result = InlineLayouter.LayoutPerRun(sourceRuns,
+            availableInlineSize: 50, resolver, LatnScript, EnLang);
+
+        // Liang on "hyphenation" still produces position-5 break
+        // (after "phen", concat pos 6 with the SH inserted between
+        // hy and phenation: 'h''y'SH'p''h''e''n''a''t''i''o''n').
+        // Auto runs cover positions 0-1 (hy) + 3-11 (phenation).
+        // Pre-fix: SH would suppress all Liang. Post-fix: Liang
+        // applies and finds breaks in the Auto segments.
+        Assert.True(result.Length >= 2,
+            $"Expected ≥ 2 lines (Auto Liang break in the longer " +
+            $"segment should fire); got {result.Length}. Pre-fix " +
+            $"would yield 1 overflowing line because the disabled " +
+            $"SH suppressed all Liang.");
+    }
+
+    [Fact]
+    public void LayoutPerRun_Manual_run_alongside_Auto_does_NOT_get_Liang_inside_Manual()
+    {
+        // Per sub-cycle 4 review Finding #1 — Manual + Auto mix.
+        // Manual source runs honor soft-hyphens but NOT Liang.
+        // Per-position gate: positions in Manual segment are
+        // dropped from Liang output.
+        //
+        // Source: Manual "hy" + Auto "phenation". Liang positions:
+        // 1 (Manual) suppressed, 5 (Auto) kept.
+        using var resolver = new TestShaperResolver();
+        var sManual = MakeStyle(); // default Manual
+        var sAuto = ComputedStyle.RentForExclusiveTesting();
+        sAuto.Set(PropertyId.Hyphens, ComputedSlot.FromKeyword(2)); // auto
+        var sourceRuns = new List<TextRun>
+        {
+            new("hy", sManual),
+            new("phenation", sAuto),
+        };
+        var result = InlineLayouter.LayoutPerRun(sourceRuns,
+            availableInlineSize: 30, resolver, LatnScript, EnLang);
+
+        // The position-1 Liang break in the Manual segment is
+        // suppressed. Position 5 in Auto is kept but doesn't
+        // satisfy budget 30 (would need 6 chars × 7.2 = 43.2 px
+        // line). So wrap may fire later or overflow.
+        Assert.True(result.Length >= 1);
+        // Line 0 should not be just "hy" (2 glyphs) — that would
+        // mean the Manual segment's Liang fired, which is wrong.
+        var line0Glyphs = 0;
+        foreach (var s in result[0].Slices) line0Glyphs += s.GlyphLength;
+        Assert.True(line0Glyphs != 2 || !result[0].EndsWithHyphenationBreak,
+            $"Line 0 = 2 glyphs + EndsWithHyphenationBreak would " +
+            $"mean the Manual segment's Liang fired (wrong). " +
+            $"Got {line0Glyphs} glyphs, EndsWithHyphenationBreak={result[0].EndsWithHyphenationBreak}.");
     }
 
     // --- Cycle 3d sub-cycle 3: per-glyph word-break tests -------
@@ -678,13 +991,13 @@ public sealed class InlineLayouterCycle3dTests
     }
 
     [Fact]
-    public void Wrap_inlineTextPolicyPerRun_Hyphens_must_match_global_hyphens()
+    public void Wrap_inlineTextPolicyPerRun_Hyphens_now_supports_per_run_mismatch()
     {
-        // Per sub-cycle 3 review Finding #2 — until sub-cycle 4
-        // ships per-source-run Liang application, every per-run
-        // Hyphens value must equal the global hyphens argument.
-        // Direct callers can't pass a mix without triggering this
-        // guard.
+        // Cycle 3d sub-cycle 4 — per-run Hyphens is now plumbed
+        // through the hyphenation pipeline. The sub-cycle 3 hardening
+        // guard (per-run Hyphens must equal global) is removed; the
+        // hyphenationAfter pipeline gates per-position decisions
+        // based on the source run's Hyphens.
         using var resolver = new TestShaperResolver();
         var sourceRuns = new List<TextRun>
         {
@@ -704,11 +1017,13 @@ public sealed class InlineLayouterCycle3dTests
                 OverflowWrap.Normal, WordBreak.Normal, Hyphens.Auto),
         };
 
-        var ex = Assert.Throws<ArgumentException>(() =>
-            LineBuilder.Wrap(sourceRuns, shaped, 100,
-                hyphens: Hyphens.Manual,
-                inlineTextPolicyPerRun: perRun));
-        Assert.Contains("does not equal the global hyphens argument", ex.Message);
+        // Should NOT throw — the per-run Hyphens mismatch is now
+        // accepted. The result is a normal wrap with the per-run
+        // Hyphens decisions applied internally.
+        var lines = LineBuilder.Wrap(sourceRuns, shaped, 100,
+            hyphens: Hyphens.Manual,
+            inlineTextPolicyPerRun: perRun);
+        Assert.NotEmpty(lines);
     }
 
     [Fact]

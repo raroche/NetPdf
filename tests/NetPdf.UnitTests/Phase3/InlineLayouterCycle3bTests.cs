@@ -126,8 +126,12 @@ public sealed class InlineLayouterCycle3bTests
     }
 
     [Fact]
-    public void LayoutPerRun_mixed_hyphens_throws_NotSupported()
+    public void LayoutPerRun_mixed_hyphens_now_handled_per_run()
     {
+        // Cycle 3d sub-cycle 4 — per-source-run Hyphens via the
+        // hyphenation pipeline. Cycle 3b would have thrown
+        // NotSupportedException; sub-cycle 4 plumbs per-position
+        // Hyphens decisions through soft-hyphen + Liang passes.
         using var resolver = new TestShaperResolver();
         var sManual = MakeStyle(); // default Hyphens.Manual
         var sAuto = ComputedStyle.RentForExclusiveTesting();
@@ -139,9 +143,9 @@ public sealed class InlineLayouterCycle3bTests
             new("bar", sAuto),
         };
 
-        Assert.Throws<NotSupportedException>(() =>
-            InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver,
-                LatnScript, EnLang));
+        var result = InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver,
+            LatnScript, EnLang);
+        Assert.NotEmpty(result);
     }
 
     [Fact]

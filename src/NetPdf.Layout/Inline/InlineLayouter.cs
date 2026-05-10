@@ -53,10 +53,15 @@ namespace NetPdf.Layout.Inline;
 ///   UAX #24 script detection). Cross-run BreakAll boundary uses
 ///   "either side may opt in" rule per sub-cycle 3 review
 ///   Finding #3.</item>
+///   <item>Cycle 3d sub-cycle 4 — per-source-run Hyphens via the
+///   hyphenation pipeline. Soft-hyphen demotion (Hyphens=None)
+///   applied per concat position; Liang application gated
+///   per-word by the source-run's Hyphens (apply iff Auto).
+///   Position→source-run-index map built lazily when
+///   <c>inlineTextPolicyPerRun</c> is supplied.</item>
 /// </list>
 ///
-/// <para><b>Per-run mismatch acceptance matrix as of sub-cycle 3
-/// review hardening:</b></para>
+/// <para><b>Per-run mismatch acceptance matrix as of sub-cycle 4:</b></para>
 /// <list type="bullet">
 ///   <item><b>WhiteSpace</b> — all 6 values mixable
 ///   (sub-cycle 1).</item>
@@ -65,20 +70,16 @@ namespace NetPdf.Layout.Inline;
 ///   <item><b>WordBreak</b> — Normal + BreakAll mixable
 ///   (sub-cycle 3). KeepAll on mismatch THROWS (CJK semantics
 ///   deferred).</item>
-///   <item><b>Hyphens</b> — mismatch THROWS (sub-cycle 4 scope).</item>
+///   <item><b>Hyphens</b> — all 3 values mixable
+///   (sub-cycle 4).</item>
 /// </list>
 ///
 /// <para><b>Subsequent-cycle deferrals:</b></para>
 /// <list type="bullet">
-///   <item>Per-source-run hyphens (sub-cycle 4) — Liang
-///   application per-run; <see cref="LayoutPerRun"/> still throws
-///   on Hyphens mismatch and <see cref="LineBuilder.Wrap"/>
-///   defense-in-depth rejects per-run Hyphens values that differ
-///   from the global <c>hyphens</c> argument.</item>
 ///   <item>KeepAll CJK inter-character break suppression — needs
 ///   UAX #24 script detection + UAX #14 LB30b handling. Uniform
 ///   KeepAll currently behaves like Normal (documented
-///   approximation).</item>
+///   approximation); KeepAll on mismatch throws.</item>
 ///   <item>UAX #24 script detection. Detects script per
 ///   codepoint + adds a script-change boundary in <see cref="LineBuilder.Itemize"/>
 ///   so multi-script documents shape each script with its
@@ -512,32 +513,12 @@ internal static class InlineLayouter
             }
             else if (p != effectivePolicy)
             {
-                // Cycle 3d sub-cycle 3 + sub-cycle 3 review hardening
-                // — accept mismatch when WhiteSpace and/or
-                // OverflowWrap and/or WordBreak (BreakAll only)
-                // differ. Hyphens must still match (sub-cycle 4
-                // scope). KeepAll on mismatch ALSO throws — per
-                // sub-cycle 3 review Finding #1, KeepAll currently
-                // behaves identically to Normal because CJK inter-
-                // character break suppression requires UAX #24
-                // script detection (not yet shipped). Accepting a
-                // mismatch where one side has KeepAll would silently
-                // ignore the spec — fail loud until KeepAll's CJK
-                // semantics land.
-                if (p.Hyphens != effectivePolicy.Value.Hyphens)
-                {
-                    throw new NotSupportedException(
-                        $"InlineLayouter.LayoutPerRun: source TextRuns have " +
-                        $"different InlineTextPolicy values that differ in " +
-                        $"hyphens (run {firstNonEmptyIndex}={effectivePolicy}, " +
-                        $"run {i}={p}). Per-source-run hyphens mixed-mode " +
-                        $"is deferred to cycle 3d sub-cycle 4. Cycle 3d " +
-                        $"sub-cycles 1+2+3 handle WhiteSpace, overflow-wrap, " +
-                        $"and word-break mismatches; until hyphens lands, " +
-                        $"callers must either avoid mixed inline descendants " +
-                        $"with different hyphens values or split the wrap " +
-                        $"into homogeneous sub-passes.");
-                }
+                // Cycle 3d sub-cycle 4 — Hyphens mismatch is now
+                // handled via per-source-run plumbing through
+                // <see cref="LineBuilder.Wrap"/>'s hyphenation
+                // pipeline. The remaining hard-throw is KeepAll
+                // mismatch (per sub-cycle 3 review Finding #1,
+                // KeepAll's CJK semantics need UAX #24).
                 if ((p.WordBreak == WordBreak.KeepAll
                         || effectivePolicy.Value.WordBreak == WordBreak.KeepAll)
                     && p.WordBreak != effectivePolicy.Value.WordBreak)

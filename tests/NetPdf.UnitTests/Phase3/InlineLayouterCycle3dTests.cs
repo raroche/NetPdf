@@ -457,6 +457,310 @@ public sealed class InlineLayouterCycle3dTests
         Assert.Equal(2, result.Length);
     }
 
+    // --- Cycle 3d sub-cycle 3 review hardening tests --------------
+
+    [Fact]
+    public void LayoutPerRun_BreakAll_first_then_Normal_no_whitespace_boundary()
+    {
+        // Per sub-cycle 3 review Finding #3 — cross-run BreakAll
+        // boundary uses "either side may opt in". Source:
+        // BreakAll "AAAA" + Normal "BBBB" with NO whitespace
+        // between. Budget = 12.
+        //
+        // - Run 0 (BreakAll): glyph-pair breaks upgraded.
+        //   cursors 0-1: cum 6/12. opp upgraded to Allowed.
+        //   cursor 2: cum 18 > 12. Snap to lastAllowed=1. Emit
+        //   [0..1] = "AA". lineStart=2.
+        // - cursor 2 'A' (Run 0): cum 6. lastAllowed upgrade fires.
+        // - cursor 3 'A' (last of Run 0, BreakAll): cum 12.
+        //   At the run boundary (next shaped run is Run 1 = Normal),
+        //   Finding #3's cross-run "either side opts in" gives this
+        //   glyph's BreakAll its upgrade naturally (same run, BreakAll).
+        // - cursor 4 'B' (Run 1, Normal): cum 18 > 12. Snap to
+        //   lastAllowed=3. Emit [2..3] = "AA". lineStart=4.
+        // - Run 1 (Normal): no candidates → overflows as a line.
+        using var resolver = new TestShaperResolver();
+        var sBreakAll = ComputedStyle.RentForExclusiveTesting();
+        sBreakAll.Set(PropertyId.WordBreak, ComputedSlot.FromKeyword(1)); // break-all
+        var sNormal = MakeStyle();
+        var sourceRuns = new List<TextRun>
+        {
+            new("AAAA", sBreakAll),
+            new("BBBB", sNormal),
+        };
+        var result = InlineLayouter.LayoutPerRun(sourceRuns,
+            availableInlineSize: 12, resolver, LatnScript, EnLang);
+
+        // Run 0 splits per BreakAll; Run 1 stays whole overflowing.
+        Assert.True(result.Length >= 3,
+            $"Expected at least 3 lines (Run 0 splits, Run 1 overflows); got {result.Length}.");
+        // Last line is Run 1's full "BBBB" (no internal BreakAll).
+        var lastLine = result[result.Length - 1];
+        Assert.True(lastLine.EndsWithMandatoryBreak);
+        Assert.Single(lastLine.Slices);
+        Assert.Equal(1, lastLine.Slices[0].ShapedRunIndex);
+        Assert.Equal(4, lastLine.Slices[0].GlyphLength);
+    }
+
+    [Fact]
+    public void LayoutPerRun_Normal_immediately_followed_by_BreakAll_no_whitespace_either_side_opts_in()
+    {
+        // Per sub-cycle 3 review Finding #3 — Normal "AAAA" followed
+        // by BreakAll "BBBB" with NO whitespace between. Budget = 18.
+        //
+        // The break BEFORE the first BreakAll glyph (= AT the run
+        // boundary between glyph 3 [last A] and glyph 4 [first B])
+        // is upgraded via Finding #3's cross-run "either side opts
+        // in" rule. Glyph 3's perGlyphBreakAll is set TRUE because
+        // it's the LAST glyph of its shaped run AND the next shaped
+        // run is in a BreakAll source run. So cursor 4's overflow
+        // can snap back to lastAllowed=3.
+        using var resolver = new TestShaperResolver();
+        var sNormal = MakeStyle();
+        var sBreakAll = ComputedStyle.RentForExclusiveTesting();
+        sBreakAll.Set(PropertyId.WordBreak, ComputedSlot.FromKeyword(1)); // break-all
+        var sourceRuns = new List<TextRun>
+        {
+            new("AAAA", sNormal),
+            new("BBBB", sBreakAll),
+        };
+        var result = InlineLayouter.LayoutPerRun(sourceRuns,
+            availableInlineSize: 18, resolver, LatnScript, EnLang);
+
+        // Expected with Finding #3 fix:
+        // - Line 0: Run 0 "AAAA" (4 glyphs, 24 px) — wait, 24 > 18
+        //   so would need a wrap candidate inside Run 0 OR at its
+        //   END. With Finding #3, the LAST glyph of Run 0 gets
+        //   its break upgraded (Run 1 is BreakAll). At cursor 4
+        //   (first B, cum 30 > 18), snap to lastAllowed=3.
+        //   Emit [0..3] = "AAAA" (4 glyphs). lineStart=4.
+        // - Run 1 (BreakAll) splits per its own upgrades.
+        //   3 letters (18 px) fits; 4 overflows. Split at glyph 6.
+        //   Emit [4..6] = "BBB". Then [7..7] = "B" mandatory.
+        Assert.Equal(3, result.Length);
+
+        // Line 0: full Run 0 "AAAA" (4 glyphs).
+        Assert.Single(result[0].Slices);
+        Assert.Equal(0, result[0].Slices[0].ShapedRunIndex);
+        Assert.Equal(0, result[0].Slices[0].GlyphStart);
+        Assert.Equal(4, result[0].Slices[0].GlyphLength);
+
+        // Line 1: Run 1 first 3 'B's.
+        Assert.Single(result[1].Slices);
+        Assert.Equal(1, result[1].Slices[0].ShapedRunIndex);
+        Assert.Equal(0, result[1].Slices[0].GlyphStart);
+        Assert.Equal(3, result[1].Slices[0].GlyphLength);
+
+        // Line 2: Run 1 last 'B', mandatory.
+        Assert.Single(result[2].Slices);
+        Assert.Equal(1, result[2].Slices[0].ShapedRunIndex);
+        Assert.Equal(3, result[2].Slices[0].GlyphStart);
+        Assert.Equal(1, result[2].Slices[0].GlyphLength);
+        Assert.True(result[2].EndsWithMandatoryBreak);
+    }
+
+    [Fact]
+    public void LayoutPerRun_NoWrap_BreakAll_interaction_NoWrap_wins()
+    {
+        // Per sub-cycle 3 review Finding #4 — interaction test:
+        // a source run with WhiteSpace=NoWrap AND WordBreak=BreakAll
+        // must behave like NoWrap (no breaks). NoWrap downgrade in
+        // the wrap loop runs AFTER the BreakAll upgrade in the same
+        // pass; the downgrade restores Prohibited at all positions.
+        //
+        // To trigger the interaction we need a per-run policy mix.
+        // Use NoWrap+BreakAll for Run 0, Normal+Normal for Run 1
+        // (with a space at the boundary so wrap can fire there).
+        using var resolver = new TestShaperResolver();
+        var sNoWrapBreakAll = ComputedStyle.RentForExclusiveTesting();
+        sNoWrapBreakAll.Set(PropertyId.WhiteSpace, ComputedSlot.FromKeyword(2)); // nowrap
+        sNoWrapBreakAll.Set(PropertyId.WordBreak, ComputedSlot.FromKeyword(1)); // break-all
+        var sNormal = MakeStyle();
+        var sourceRuns = new List<TextRun>
+        {
+            new("AAAAAAAA", sNoWrapBreakAll), // 8 letters
+            new(" BBB", sNormal),
+        };
+        var result = InlineLayouter.LayoutPerRun(sourceRuns,
+            availableInlineSize: 12, resolver, LatnScript, EnLang);
+
+        // NoWrap suppresses all soft breaks inside Run 0 even though
+        // WordBreak=BreakAll would have upgraded them. Run 0 stays
+        // as one overflowing line; Run 1 wraps separately (the SP
+        // at glyph 8 provides a wrap candidate).
+        Assert.True(result.Length >= 2);
+        // Line 0 contains all 8 'A' glyphs from Run 0 — NoWrap
+        // semantics + the cross-run wrap at the SP boundary.
+        Assert.True(result[0].Slices.Length >= 1);
+        Assert.Equal(0, result[0].Slices[0].ShapedRunIndex);
+        Assert.Equal(0, result[0].Slices[0].GlyphStart);
+        Assert.Equal(8, result[0].Slices[0].GlyphLength);
+    }
+
+    [Fact]
+    public void LayoutPerRun_KeepAll_mixed_with_Normal_throws_pending_CJK_support()
+    {
+        // Per sub-cycle 3 review Finding #1 — KeepAll on mismatch
+        // throws because the wrap pass currently doesn't implement
+        // KeepAll semantics (CJK inter-character break suppression
+        // requires UAX #24 script detection + LB30b handling).
+        using var resolver = new TestShaperResolver();
+        var sNormal = MakeStyle();
+        var sKeepAll = ComputedStyle.RentForExclusiveTesting();
+        sKeepAll.Set(PropertyId.WordBreak, ComputedSlot.FromKeyword(2)); // keep-all
+        var sourceRuns = new List<TextRun>
+        {
+            new("AAA", sNormal),
+            new("BBB", sKeepAll),
+        };
+        var ex = Assert.Throws<NotSupportedException>(() =>
+            InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver,
+                LatnScript, EnLang));
+        Assert.Contains("keep-all", ex.Message);
+    }
+
+    [Fact]
+    public void Wrap_inlineTextPolicyPerRun_invalid_WordBreak_throws()
+    {
+        // Per sub-cycle 3 review Finding #4 — invalid WordBreak
+        // enum values in the per-run array throw at entry.
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun>
+        {
+            new("AAA", MakeStyle()),
+            new("BBB", MakeStyle()),
+        };
+        var itemized = LineBuilder.Itemize(sourceRuns,
+            NetPdf.Text.Bidi.ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver,
+            LatnScript, EnLang);
+
+        var perRun = new[]
+        {
+            InlineTextPolicy.Default,
+            new InlineTextPolicy(WhiteSpace.Normal,
+                OverflowWrap.Normal, (WordBreak)99, Hyphens.Manual),
+        };
+
+        var ex = Assert.Throws<ArgumentException>(() =>
+            LineBuilder.Wrap(sourceRuns, shaped, 100,
+                inlineTextPolicyPerRun: perRun));
+        Assert.Contains("inlineTextPolicyPerRun[1].WordBreak", ex.Message);
+    }
+
+    [Fact]
+    public void Wrap_inlineTextPolicyPerRun_invalid_Hyphens_throws()
+    {
+        // Per sub-cycle 3 review Finding #4 — invalid Hyphens
+        // enum values in the per-run array throw at entry.
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun>
+        {
+            new("AAA", MakeStyle()),
+            new("BBB", MakeStyle()),
+        };
+        var itemized = LineBuilder.Itemize(sourceRuns,
+            NetPdf.Text.Bidi.ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver,
+            LatnScript, EnLang);
+
+        var perRun = new[]
+        {
+            InlineTextPolicy.Default,
+            new InlineTextPolicy(WhiteSpace.Normal,
+                OverflowWrap.Normal, WordBreak.Normal, (Hyphens)99),
+        };
+
+        var ex = Assert.Throws<ArgumentException>(() =>
+            LineBuilder.Wrap(sourceRuns, shaped, 100,
+                inlineTextPolicyPerRun: perRun));
+        Assert.Contains("inlineTextPolicyPerRun[1].Hyphens", ex.Message);
+    }
+
+    [Fact]
+    public void Wrap_inlineTextPolicyPerRun_Hyphens_must_match_global_hyphens()
+    {
+        // Per sub-cycle 3 review Finding #2 — until sub-cycle 4
+        // ships per-source-run Liang application, every per-run
+        // Hyphens value must equal the global hyphens argument.
+        // Direct callers can't pass a mix without triggering this
+        // guard.
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun>
+        {
+            new("AAA", MakeStyle()),
+            new("BBB", MakeStyle()),
+        };
+        var itemized = LineBuilder.Itemize(sourceRuns,
+            NetPdf.Text.Bidi.ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver,
+            LatnScript, EnLang);
+
+        var perRun = new[]
+        {
+            new InlineTextPolicy(WhiteSpace.Normal,
+                OverflowWrap.Normal, WordBreak.Normal, Hyphens.Manual),
+            new InlineTextPolicy(WhiteSpace.Normal,
+                OverflowWrap.Normal, WordBreak.Normal, Hyphens.Auto),
+        };
+
+        var ex = Assert.Throws<ArgumentException>(() =>
+            LineBuilder.Wrap(sourceRuns, shaped, 100,
+                hyphens: Hyphens.Manual,
+                inlineTextPolicyPerRun: perRun));
+        Assert.Contains("does not equal the global hyphens argument", ex.Message);
+    }
+
+    [Fact]
+    public void Wrap_direct_InlineTextPolicy_array_BreakAll_per_run_splits_correctly()
+    {
+        // Per sub-cycle 3 review Finding #4 — direct LineBuilder.Wrap
+        // call with inlineTextPolicyPerRun array. Pins the per-glyph
+        // BreakAll upgrade behavior end-to-end without going through
+        // LayoutPerRun's bookkeeping.
+        using var resolver = new TestShaperResolver();
+        var sourceRuns = new List<TextRun>
+        {
+            new("AAA ", MakeStyle()),
+            new("BBBB", MakeStyle()),
+        };
+        var itemized = LineBuilder.Itemize(sourceRuns,
+            NetPdf.Text.Bidi.ParagraphDirection.LeftToRight);
+        var shaped = LineBuilder.Shape(sourceRuns, itemized, resolver,
+            LatnScript, EnLang);
+
+        // Per-run policies: Run 0 = Normal; Run 1 = BreakAll.
+        var perRun = new[]
+        {
+            new InlineTextPolicy(WhiteSpace.Normal,
+                OverflowWrap.Normal, WordBreak.Normal, Hyphens.Manual),
+            new InlineTextPolicy(WhiteSpace.Normal,
+                OverflowWrap.Normal, WordBreak.BreakAll, Hyphens.Manual),
+        };
+        var preprocessed = LineBuilder.PreprocessTextRuns(sourceRuns,
+            WhiteSpace.Normal);
+        var preprocessedItemized = LineBuilder.Itemize(preprocessed,
+            NetPdf.Text.Bidi.ParagraphDirection.LeftToRight);
+        var preprocessedShaped = LineBuilder.Shape(preprocessed,
+            preprocessedItemized, resolver, LatnScript, EnLang);
+
+        var lines = LineBuilder.Wrap(preprocessed, preprocessedShaped, 18,
+            wordBreak: WordBreak.Normal,
+            inlineTextPolicyPerRun: perRun);
+
+        // Same geometry as the integration test:
+        // Line 0: 3 glyphs "AAA" (Run 0).
+        // Line 1: 3 glyphs "BBB" (Run 1, BreakAll).
+        // Line 2: 1 glyph "B" (Run 1, mandatory).
+        Assert.Equal(3, lines.Length);
+        Assert.Equal(0, lines[0].Slices[0].ShapedRunIndex);
+        Assert.Equal(3, lines[0].Slices[0].GlyphLength);
+        Assert.Equal(1, lines[1].Slices[0].ShapedRunIndex);
+        Assert.Equal(3, lines[1].Slices[0].GlyphLength);
+        Assert.Equal(1, lines[2].Slices[0].ShapedRunIndex);
+        Assert.Equal(1, lines[2].Slices[0].GlyphLength);
+    }
+
     // --- Cycle 3d sub-cycle 2: per-glyph overflow-wrap tests -----
 
     [Fact]

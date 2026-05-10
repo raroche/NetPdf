@@ -89,6 +89,16 @@ namespace NetPdf.Layout.Inline;
 ///   honored per-run). Plus Rec #1 per-glyph IsBreakSpace +
 ///   Rec #2 per-glyph anywhere gating + Rec #4 cancellation token
 ///   on the per-run preprocessor.</item>
+///   <item>Cycle 3d sub-cycle 2 — per-source-run OverflowWrap +
+///   refactor to single <see cref="InlineTextPolicy"/>[] parameter.
+///   Anywhere fallback gated per-glyph by source-run WhiteSpace +
+///   OverflowWrap + UAX #29 grapheme-cluster boundary.</item>
+///   <item>Cycle 3d sub-cycle 3 — per-source-run WordBreak.BreakAll
+///   per-glyph upgrade in flat-build phase. Cross-run boundary uses
+///   "either side may opt in" rule. KeepAll on mismatch throws
+///   (CJK semantics deferred); Hyphens mismatch throws (sub-cycle
+///   4 scope) + <see cref="LineBuilder.Wrap"/> enforces per-run
+///   Hyphens equals global as defense-in-depth.</item>
 /// </list>
 /// </para>
 ///
@@ -99,11 +109,10 @@ namespace NetPdf.Layout.Inline;
 ///   wrap-vs-hang per CSS Text L3 §6.4) — currently approximated as
 ///   <see cref="WhiteSpace.PreWrap"/>; see
 ///   <see cref="WhiteSpace.BreakSpaces"/> docs.</item>
-///   <item>Per-source-run word-break + hyphens (cycle 3d
-///   sub-cycle 3+). The <see cref="InlineTextPolicy"/>[] parameter
-///   on <see cref="LineBuilder.Wrap"/> already carries those fields
-///   end-to-end so wiring through is additive. WhiteSpace +
-///   OverflowWrap mixed-mode is shipped (cycle 3d sub-cycle 1 + 2).</item>
+///   <item>Per-source-run hyphens (sub-cycle 4) — Liang application
+///   per-run. WordBreak.KeepAll CJK suppression also still deferred
+///   (needs UAX #24 script detection). WhiteSpace + OverflowWrap +
+///   WordBreak.BreakAll mixed-mode are all shipped end-to-end.</item>
 ///   <item><c>text-align</c> (start/end/center/justify) — wrap
 ///   currently emits left-aligned fragments only.</item>
 ///   <item><c>vertical-align</c> baseline shifts.</item>

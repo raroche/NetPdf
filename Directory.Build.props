@@ -121,11 +121,15 @@
     required so legitimate files with trailing digits (`UAX29.cs`, `Type8x8.cs`)
     aren't affected.
   -->
-  <ItemGroup>
-    <Compile Remove="**/* [2-9].cs" />
-    <Compile Remove="**/* [1-9][0-9].cs" />
-    <None Remove="**/* [2-9].cs" />
-    <None Remove="**/* [1-9][0-9].cs" />
-  </ItemGroup>
+  <!--
+    Per PR #36 review fix — earlier `<Compile Remove>` in this file
+    fired BEFORE the SDK expanded its default Compile items, so the
+    excludes had no effect when dup files appeared after a project's
+    Sdk import. Use DefaultItemExcludes which the SDK consults DURING
+    its default-item expansion. Patterns aligned with .gitignore.
+  -->
+  <PropertyGroup>
+    <DefaultItemExcludes>$(DefaultItemExcludes);**/* [2-9].cs;**/* [1-9][0-9].cs</DefaultItemExcludes>
+  </PropertyGroup>
 
 </Project>

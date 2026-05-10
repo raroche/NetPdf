@@ -1708,6 +1708,140 @@ internal static class LineBuilder
         return output;
     }
 
+    /// <summary>Per Phase 3 Task 10 cycle 3d sub-cycle 1 — per-source-
+    /// run white-space preprocessor. Each run is processed with its
+    /// OWN <see cref="WhiteSpace"/> mode, enabling mixed inline
+    /// descendants like <c>&lt;pre&gt;</c> inside <c>white-space:
+    /// normal</c> text to preserve their content while the
+    /// surrounding text continues to collapse per CSS Text L3 §4.1.
+    /// Unlike the uniform-mode <see cref="PreprocessTextRuns"/>,
+    /// this method dispatches per run.
+    ///
+    /// <para><b>Cross-run state semantics.</b>
+    /// <list type="bullet">
+    ///   <item>Two consecutive <b>collapse</b>-mode runs
+    ///   (<see cref="WhiteSpace.Normal"/>, <see cref="WhiteSpace.NoWrap"/>,
+    ///   <see cref="WhiteSpace.PreLine"/>) chain their <c>inWs</c>
+    ///   state across the boundary, so a trailing SP in run N + a
+    ///   leading SP in run N+1 collapse to a single SP.</item>
+    ///   <item>A <b>preserve</b>-mode run
+    ///   (<see cref="WhiteSpace.Pre"/>, <see cref="WhiteSpace.PreWrap"/>,
+    ///   <see cref="WhiteSpace.BreakSpaces"/>) emits its text
+    ///   character-for-character (after CR/LF normalization). It
+    ///   resets <c>inWs</c> to <see langword="false"/> for the next
+    ///   collapse run — preserve content sits as-is in the concat,
+    ///   not interacting with collapse decisions on either side.</item>
+    ///   <item>The document-leading SP strip applies only when the
+    ///   FIRST run is a collapse mode (initial <c>inWs = true</c>).
+    ///   The document-trailing SP strip applies only when the LAST
+    ///   run is a collapse mode.</item>
+    /// </list></para>
+    ///
+    /// <para><b>Spec note.</b> CSS Text L3 §4.1 models white-space
+    /// per-element, but the cross-element interaction at run
+    /// boundaries (collapse-run + preserve-run + collapse-run) is an
+    /// interop area not tightly specified. This implementation
+    /// follows the "preserve runs are atomic; collapse runs chain via
+    /// <c>inWs</c>" rule, which matches the most common UA behavior
+    /// for the invoice/report content NetPdf targets.</para>
+    /// </summary>
+    /// <param name="runs">The source runs in document order.</param>
+    /// <param name="modes">Per-source-run <see cref="WhiteSpace"/>
+    /// modes. MUST have the same length as <paramref name="runs"/>.
+    /// Each entry MUST be a defined <see cref="WhiteSpace"/> value.</param>
+    /// <returns>A new <see cref="TextRun"/> array with each run's
+    /// text preprocessed using its individual mode + cross-run state
+    /// managed per the rules above. Empty input returns empty.</returns>
+    /// <exception cref="ArgumentNullException">A required arg is null.</exception>
+    /// <exception cref="ArgumentException"><paramref name="modes"/>'s
+    /// length doesn't match <paramref name="runs"/>'s, or a mode
+    /// entry is not a defined <see cref="WhiteSpace"/> value.</exception>
+    public static IReadOnlyList<TextRun> PreprocessTextRunsPerRun(
+        IReadOnlyList<TextRun> runs, IReadOnlyList<WhiteSpace> modes)
+    {
+        ArgumentNullException.ThrowIfNull(runs);
+        ArgumentNullException.ThrowIfNull(modes);
+        if (runs.Count != modes.Count)
+        {
+            throw new ArgumentException(
+                $"PreprocessTextRunsPerRun: modes length ({modes.Count}) " +
+                $"must match runs count ({runs.Count}).",
+                nameof(modes));
+        }
+        // Validate every mode entry is a defined WhiteSpace value.
+        for (var i = 0; i < modes.Count; i++)
+        {
+            var m = modes[i];
+            if (m is not (WhiteSpace.Normal
+                or WhiteSpace.Pre
+                or WhiteSpace.NoWrap
+                or WhiteSpace.PreWrap
+                or WhiteSpace.PreLine
+                or WhiteSpace.BreakSpaces))
+            {
+                throw new ArgumentException(
+                    $"PreprocessTextRunsPerRun: modes[{i}] = {m} is not " +
+                    $"a defined WhiteSpace value.",
+                    nameof(modes));
+            }
+        }
+        if (runs.Count == 0) return runs;
+
+        var output = new TextRun[runs.Count];
+        // Initial `inWs = true` strips document-leading whitespace
+        // ONLY if the first run is a collapse mode. For a preserve-
+        // first document the preserve run emits its content as-is,
+        // so the strip never fires.
+        var inWs = true;
+
+        for (var r = 0; r < runs.Count; r++)
+        {
+            var mode = modes[r];
+            if (mode is WhiteSpace.Pre
+                or WhiteSpace.PreWrap
+                or WhiteSpace.BreakSpaces)
+            {
+                // Preserve mode — normalize CR/LF + emit as-is.
+                var raw = runs[r].Text;
+                var normalized = NormalizeSegmentBreaks(raw);
+                output[r] = ReferenceEquals(raw, normalized)
+                    ? runs[r]
+                    : new TextRun(normalized, runs[r].Style);
+                // Reset inWs for the next run — preserve content
+                // doesn't interact with collapse decisions either side.
+                inWs = false;
+            }
+            else
+            {
+                // Collapse mode (Normal / NoWrap / PreLine).
+                var preserveBreaks = mode == WhiteSpace.PreLine;
+                output[r] = new TextRun(
+                    CollapseStateful(runs[r].Text, preserveBreaks, ref inWs),
+                    runs[r].Style);
+            }
+        }
+
+        // Document-trailing SP strip — only when the LAST run is a
+        // collapse mode. For preserve-last documents, the trailing
+        // whitespace is part of the preserved content.
+        var lastIdx = output.Length - 1;
+        var lastMode = modes[lastIdx];
+        if (lastMode is WhiteSpace.Normal
+            or WhiteSpace.NoWrap
+            or WhiteSpace.PreLine)
+        {
+            var t = output[lastIdx].Text;
+            if (t.Length > 0 && t[t.Length - 1] == ' ')
+            {
+                output[lastIdx] = new TextRun(
+                    t.Substring(0, t.Length - 1),
+                    output[lastIdx].Style);
+            }
+        }
+
+        return output;
+    }
+
     /// <summary>Stateful collapse helper for
     /// <see cref="PreprocessTextRuns"/>. Carries the <c>inWs</c>
     /// state across calls so consecutive runs collapse their

@@ -40,14 +40,25 @@ namespace NetPdf.Layout.Inline;
 ///   CSS Text L3 §6.4 land in a subsequent cycle.</item>
 /// </list>
 ///
-/// <para><b>Integration plan (cycle 3).</b>
-/// <c>InlineLayouter.Layout</c> currently takes wrap-policy
-/// arguments explicitly. Cycle 3 reads
-/// <c>ReadInlineTextPolicy</c> per source-TextRun + bundles into
-/// a per-glyph metadata stream so mixed inline descendants
-/// (<c>&lt;span style="white-space:nowrap"&gt;</c> inside
-/// <c>white-space:normal</c> text) work correctly.</para>
-/// </summary>
+/// <para><b>Integration status.</b>
+/// <list type="number">
+///   <item>Cycle 3a shipped the uniform-policy <c>Layout</c>
+///   overload reading <see cref="InlineTextPolicy"/> off the
+///   containing-block <see cref="ComputedStyle"/>.</item>
+///   <item>Cycle 3b shipped the per-source-TextRun
+///   <c>LayoutPerRun</c> overload that reads each run's policy +
+///   throws <see cref="System.NotSupportedException"/> on
+///   mismatch — loud-fail semantics until per-glyph plumbing
+///   lands.</item>
+///   <item>Cycle 3c relaxed the throw for the Normal/NoWrap
+///   WhiteSpace matrix only: a per-source-run <c>WhiteSpace</c>
+///   array threads through <see cref="LineBuilder.Wrap"/> +
+///   downgrades Allowed → Prohibited for NoWrap-tagged glyphs.
+///   Per-glyph overflow-wrap/word-break/hyphens + WhiteSpace
+///   mismatches involving Pre/PreWrap/PreLine/BreakSpaces still
+///   throw (deferred to cycle 3d).</item>
+/// </list>
+/// </para></summary>
 internal readonly record struct InlineTextPolicy(
     WhiteSpace WhiteSpace,
     OverflowWrap OverflowWrap,

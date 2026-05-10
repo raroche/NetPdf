@@ -6,10 +6,36 @@ namespace NetPdf.Layout.Inline;
 /// <summary>
 /// Per Phase 3 Task 9 cycle 3b — CSS Text Module Level 3 §3
 /// <c>white-space</c> property values that the inline pass honors.
-/// Cycle 3b sub-cycle 1 ships <see cref="Normal"/>, <see cref="Pre"/>,
-/// <see cref="NoWrap"/>, <see cref="PreWrap"/>, <see cref="PreLine"/>.
-/// <c>break-spaces</c> is deferred — wraps at every preserved
-/// space which is rarely needed for v1's invoice / report use cases.
+/// All six CSS keywords have enum members (cycle 3 review User #3
+/// added <see cref="BreakSpaces"/>). Behavior fidelity ladder:
+/// <list type="bullet">
+///   <item><see cref="Normal"/>, <see cref="Pre"/>,
+///   <see cref="NoWrap"/>, <see cref="PreWrap"/>,
+///   <see cref="PreLine"/> — full CSS Text L3 §3 semantics for
+///   collapse / preserve / wrap honored end-to-end through
+///   preprocessing + wrap.</item>
+///   <item><see cref="BreakSpaces"/> — cycle-3 simplification:
+///   behaves identically to <see cref="PreWrap"/> (preserve all
+///   whitespace + wrap at UAX #14 Allowed opportunities). The
+///   "wrap at every preserved space" + trailing-space wrap-vs-hang
+///   detail per CSS Text L3 §6.4 lands in a subsequent cycle that
+///   adds forced wrap candidates at every SP glyph. The simplified
+///   behavior preserves authored whitespace correctly — the
+///   user-visible guarantee — at the cost of slightly less
+///   aggressive wrap candidate placement.</item>
+/// </list>
+///
+/// <para><b>Per-source-run honoring.</b> Per Phase 3 Task 10
+/// cycle 3c, <see cref="LineBuilder.Wrap"/> accepts an optional
+/// per-source-run <c>whiteSpacePerRun</c> array that downgrades
+/// UAX #14 Allowed opportunities to Prohibited for glyphs in
+/// <see cref="NoWrap"/> / <see cref="Pre"/> source runs. The
+/// <see cref="InlineLayouter.LayoutPerRun"/> facade builds this
+/// array automatically when source TextRuns have mismatched
+/// WhiteSpace values within the Normal/NoWrap matrix (both share
+/// collapse semantics per CSS Text L3 §4.1); mixes involving
+/// Pre/PreWrap/PreLine/BreakSpaces still require per-source-run
+/// preprocessing (deferred to cycle 3d).</para>
 ///
 /// <para><b>Behavior summary (CSS Text L3 §3 Table).</b></para>
 /// <list type="table">

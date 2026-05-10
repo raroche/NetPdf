@@ -1,0 +1,247 @@
+// Copyright 2026 Roland Aroche and NetPdf contributors.
+// Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
+
+using System;
+using System.Collections.Generic;
+using System.Threading;
+using NetPdf.Text.Bidi;
+using NetPdf.Text.Hyphenation;
+
+namespace NetPdf.Layout.Inline;
+
+/// <summary>
+/// Per Phase 3 Task 10 cycle 1 — the inline-pass facade. Wraps the
+/// three-call sequence <see cref="LineBuilder.Itemize"/> →
+/// <see cref="LineBuilder.Shape"/> → <see cref="LineBuilder.Wrap"/>
+/// into a single integration seam for the block-layouter. Future
+/// cycles add per-source-TextRun policy plumbing (white-space,
+/// overflow-wrap, word-break, hyphens read from each source's
+/// <c>ComputedStyle</c>), UAX #24 script detection, RTL fragment-
+/// level reversal, and the <see cref="LineFragment"/>[] →
+/// <c>BoxFragment</c> conversion that emits inline-fragment records
+/// into the <c>IBlockFragmentSink</c>.
+///
+/// <para><b>Cycle 1 scope (this revision).</b> A thin static facade
+/// — bundles the existing 3-call sequence behind one <see cref="Layout"/>
+/// method that block-layouters and tests can call with one
+/// invocation. Cycle 1 takes wrap-time policy as EXPLICIT
+/// parameters (same as <see cref="LineBuilder.Wrap"/>); the CSS
+/// property pipeline (properties.json → KeywordResolver →
+/// ComputedStyle → InlineLayouter argument) lands in cycle 2.</para>
+///
+/// <para><b>Cycle 1 deferrals (subsequent cycles):</b></para>
+/// <list type="bullet">
+///   <item>Per-source-TextRun policy — cycle 2. Mixed inline
+///   descendants like <c>&lt;span style="white-space:nowrap"&gt;</c>
+///   inside <c>white-space:normal</c> text need per-glyph metadata
+///   carrying through Wrap. Cycle 2 plumbs a per-source
+///   <c>InlineRunPolicy</c> struct alongside the typed
+///   <c>ComputedStyle</c> fields once the property pipeline lands.</item>
+///   <item>UAX #24 script detection — cycle 3. Detects script per
+///   codepoint + adds a script-change boundary in <see cref="LineBuilder.Itemize"/>
+///   so multi-script documents shape each script with its
+///   appropriate OpenType feature set.</item>
+///   <item>RTL fragment-level reversal — cycle 3.
+///   <see cref="LineBuilder.Shape"/> (cycle 2 ship) already produces
+///   RTL glyph arrays in HarfBuzz visual order; cycle 3 reverses
+///   fragment-level slice order for RTL paragraphs so the painter
+///   walks slices visually right-to-left.</item>
+///   <item>BoxFragment conversion — cycle 4. Converts
+///   <see cref="LineFragment"/>[] into per-line <c>BoxFragment</c>
+///   records that the block-layouter emits into the
+///   <c>IBlockFragmentSink</c> alongside its block fragments.
+///   Phase 4 painter consumes the unified fragment list.</item>
+///   <item>Bidi-aware glyph painting — cycle 4 (Phase 4 painter
+///   integration). The painter's pen-position arithmetic differs
+///   for LTR vs RTL glyph runs.</item>
+/// </list>
+///
+/// <para><b>Threading.</b> Stateless; every <see cref="Layout"/>
+/// call is self-contained. No instance fields. The injected
+/// <see cref="IShaperResolver"/> is responsible for shaper caching;
+/// the <see cref="Hyphenator"/> is process-cached via
+/// <see cref="EnUsHyphenation.Default"/> (lazy first-load).</para>
+/// </summary>
+internal static class InlineLayouter
+{
+    /// <summary>Per Phase 3 Task 10 cycle 1 + post-cycle-1 review
+    /// hardening — run the inline pass. Apply CSS white-space
+    /// preprocessing, tokenize source <see cref="TextRun"/>s into
+    /// <see cref="ItemizedRun"/>s, shape each one, then wrap into
+    /// <see cref="LineFragment"/>s sized to fit
+    /// <paramref name="availableInlineSize"/>.
+    ///
+    /// <para>Equivalent to the call sequence:</para>
+    /// <code>
+    /// var preprocessed = LineBuilder.PreprocessTextRuns(textRuns, whiteSpace);
+    /// var itemized = LineBuilder.Itemize(preprocessed, paragraphDirection, ct);
+    /// var shaped = LineBuilder.Shape(preprocessed, itemized, resolver,
+    ///                                scriptIso15924, language, ct);
+    /// var fragments = LineBuilder.Wrap(preprocessed, shaped, availableInlineSize,
+    ///                                  whiteSpace, overflowWrap, wordBreak,
+    ///                                  hyphens, hyphenator, ct);
+    /// </code>
+    ///
+    /// <para><b>Post-cycle-1 review hardening (PR #38):</b></para>
+    /// <list type="number">
+    ///   <item>White-space preprocessing now runs at the facade
+    ///   layer via <see cref="LineBuilder.PreprocessTextRuns"/>.
+    ///   Multi-run whitespace boundaries (e.g.,
+    ///   <c>"Hello "</c> + styled <c>"world"</c>) collapse correctly
+    ///   instead of producing <c>"Helloworld"</c> or duplicated
+    ///   spaces; CRLF normalizes to LF for Pre/PreWrap/PreLine; etc.
+    ///   Without this, callers using the facade got cycle 3a
+    ///   AS-IS-input behavior even after sub-cycle 1's preprocessor
+    ///   shipped — surprising + spec-violating.</item>
+    ///   <item>Removed unsafe Latn/en defaults for
+    ///   <paramref name="scriptIso15924"/> + <paramref name="language"/>.
+    ///   Both are now required arguments to match
+    ///   <see cref="LineBuilder.Shape"/>'s contract — silently
+    ///   shaping non-Latin (Arabic / Hebrew / Indic / CJK / Thai)
+    ///   text as Latin would produce plausible-but-wrong glyphs that
+    ///   pass a Latin-only reviewer's eye test.</item>
+    ///   <item>All argument validation runs at method entry BEFORE
+    ///   any expensive work (Itemize, Shape, Wrap). Invalid
+    ///   <paramref name="availableInlineSize"/> / enum values throw
+    ///   immediately instead of after a full bidi+shaping pass.</item>
+    ///   <item>Cancellation is observed at method entry + after
+    ///   PreprocessTextRuns + after Itemize + after Shape + during
+    ///   Wrap. Cycle 1 originally checked only between calls;
+    ///   <see cref="LineBuilder.Itemize"/> now also checks during
+    ///   its own concat/bidi/run-split passes.</item>
+    /// </list>
+    /// </summary>
+    /// <param name="sourceTextRuns">The inline content's source runs
+    /// in document order. Must not be <see langword="null"/>.</param>
+    /// <param name="availableInlineSize">The maximum inline-axis
+    /// size of a wrapped line, in CSS px. Must be positive +
+    /// finite.</param>
+    /// <param name="resolver">Resolves a HarfBuzz shaper per
+    /// <c>ComputedStyle</c> for the shape pass.</param>
+    /// <param name="scriptIso15924">ISO 15924 script tag passed
+    /// uniformly to every shaping call. <b>Required</b> — no default.
+    /// Cycle 3 will derive per-run from UAX #24.</param>
+    /// <param name="language">BCP 47 language tag passed uniformly.
+    /// <b>Required</b> — no default.</param>
+    /// <param name="paragraphDirection">UAX #9 paragraph-level base
+    /// direction (default <see cref="ParagraphDirection.LeftToRight"/>).</param>
+    /// <param name="whiteSpace">CSS Text L3 §3 <c>white-space</c>
+    /// value applied to the WHOLE inline pass. Drives both the
+    /// preprocessing step + the wrap-time <c>Pre</c>/<c>NoWrap</c>
+    /// gating. Cycle 2 adds per-run support.</param>
+    /// <param name="overflowWrap">CSS Text L3 §5.1 <c>overflow-wrap</c>
+    /// value.</param>
+    /// <param name="wordBreak">CSS Text L3 §5.2 <c>word-break</c>
+    /// value.</param>
+    /// <param name="hyphens">CSS Text L3 §6.1 <c>hyphens</c>
+    /// value.</param>
+    /// <param name="hyphenator">Optional Liang hyphenator. Falls
+    /// back to <see cref="EnUsHyphenation.Default"/> when null +
+    /// <see cref="Hyphens.Auto"/>.</param>
+    /// <param name="cancellationToken">Cooperative cancellation
+    /// across preprocessing, itemization, shaping, and wrap.</param>
+    /// <returns>One <see cref="LineFragment"/> per wrapped line in
+    /// document order. Empty when <paramref name="sourceTextRuns"/>
+    /// is empty or contains only empty strings.</returns>
+    /// <exception cref="ArgumentNullException">A required argument is
+    /// <see langword="null"/>.</exception>
+    /// <exception cref="ArgumentOutOfRangeException">
+    /// <paramref name="availableInlineSize"/> non-positive /
+    /// non-finite, or any of the enum args has an undefined value.</exception>
+    /// <exception cref="System.OperationCanceledException">
+    /// <paramref name="cancellationToken"/> was canceled.</exception>
+    public static LineFragment[] Layout(
+        IReadOnlyList<TextRun> sourceTextRuns,
+        double availableInlineSize,
+        IShaperResolver resolver,
+        string scriptIso15924,
+        string language,
+        ParagraphDirection paragraphDirection = ParagraphDirection.LeftToRight,
+        WhiteSpace whiteSpace = WhiteSpace.Normal,
+        OverflowWrap overflowWrap = OverflowWrap.Normal,
+        WordBreak wordBreak = WordBreak.Normal,
+        Hyphens hyphens = Hyphens.Manual,
+        Hyphenator? hyphenator = null,
+        CancellationToken cancellationToken = default)
+    {
+        // Per PR #38 review fix (User #3 + Copilot #2): all argument
+        // validation runs at method entry BEFORE Itemize/Shape so
+        // invalid inputs don't waste CPU/native shaping.
+        ArgumentNullException.ThrowIfNull(sourceTextRuns);
+        ArgumentNullException.ThrowIfNull(resolver);
+        ArgumentNullException.ThrowIfNull(scriptIso15924);
+        ArgumentNullException.ThrowIfNull(language);
+
+        if (!double.IsFinite(availableInlineSize) || availableInlineSize <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(availableInlineSize),
+                availableInlineSize,
+                "InlineLayouter.Layout: availableInlineSize must be a positive finite value (CSS px).");
+        }
+        if (paragraphDirection is not (ParagraphDirection.LeftToRight
+            or ParagraphDirection.RightToLeft
+            or ParagraphDirection.Auto))
+        {
+            throw new ArgumentOutOfRangeException(nameof(paragraphDirection),
+                paragraphDirection,
+                "InlineLayouter.Layout: paragraphDirection must be a defined ParagraphDirection value.");
+        }
+        if (whiteSpace is not (WhiteSpace.Normal
+            or WhiteSpace.Pre
+            or WhiteSpace.NoWrap
+            or WhiteSpace.PreWrap
+            or WhiteSpace.PreLine))
+        {
+            throw new ArgumentOutOfRangeException(nameof(whiteSpace),
+                whiteSpace,
+                "InlineLayouter.Layout: whiteSpace must be a defined WhiteSpace value.");
+        }
+        if (overflowWrap is not (OverflowWrap.Normal or OverflowWrap.Anywhere))
+        {
+            throw new ArgumentOutOfRangeException(nameof(overflowWrap),
+                overflowWrap,
+                "InlineLayouter.Layout: overflowWrap must be a defined OverflowWrap value.");
+        }
+        if (wordBreak is not (WordBreak.Normal or WordBreak.BreakAll or WordBreak.KeepAll))
+        {
+            throw new ArgumentOutOfRangeException(nameof(wordBreak),
+                wordBreak,
+                "InlineLayouter.Layout: wordBreak must be a defined WordBreak value.");
+        }
+        if (hyphens is not (Hyphens.None or Hyphens.Manual or Hyphens.Auto))
+        {
+            throw new ArgumentOutOfRangeException(nameof(hyphens),
+                hyphens,
+                "InlineLayouter.Layout: hyphens must be a defined Hyphens value.");
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // Step 0: white-space preprocessing — collapse / preserve /
+        // normalize per CSS Text L3 §4.1. Carries collapse state
+        // across TextRun boundaries (per PR #35 review fix —
+        // PreprocessTextRuns is the inline-context API). Pre/PreWrap
+        // also normalize CRLF→LF.
+        var preprocessed = LineBuilder.PreprocessTextRuns(sourceTextRuns, whiteSpace);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // Step 1: bidi + style itemization.
+        var itemized = LineBuilder.Itemize(preprocessed, paragraphDirection,
+            cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // Step 2: shape each itemized run.
+        var shaped = LineBuilder.Shape(
+            preprocessed, itemized, resolver,
+            scriptIso15924, language, cancellationToken);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // Step 3: wrap to fit available inline size.
+        var fragments = LineBuilder.Wrap(
+            preprocessed, shaped, availableInlineSize,
+            whiteSpace, overflowWrap, wordBreak,
+            hyphens, hyphenator, cancellationToken);
+
+        return fragments;
+    }
+}

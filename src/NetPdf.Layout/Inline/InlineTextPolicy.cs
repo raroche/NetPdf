@@ -71,11 +71,16 @@ namespace NetPdf.Layout.Inline;
 ///   in" (sub-cycle 3 review Finding #3). KeepAll on mismatch
 ///   still THROWS pending UAX #24 script detection + LB30b
 ///   handling for CJK inter-character break suppression
-///   (sub-cycle 3 review Finding #1). Hyphens mismatch still
-///   throws (sub-cycle 4 scope). <see cref="LineBuilder.Wrap"/>
-///   additionally enforces that per-run Hyphens values equal the
-///   global <c>hyphens</c> argument as defense-in-depth for
-///   direct callers (sub-cycle 3 review Finding #2).</item>
+///   (sub-cycle 3 review Finding #1).</item>
+///   <item>Cycle 3d sub-cycle 4 broadened to Hyphens mismatches.
+///   Per-source-run Hyphens flows through
+///   <see cref="LineBuilder.Wrap"/>'s hyphenation pipeline:
+///   soft-hyphen demotion (Hyphens=None) gates per concat
+///   position; Liang application gates per word (apply only when
+///   the word's first letter's source-run Hyphens=Auto). The
+///   sub-cycle 3 Hyphens-must-match-global defense-in-depth guard
+///   is removed. KeepAll on WordBreak mismatch is the only
+///   remaining hard-throw case (CJK semantics deferred).</item>
 /// </list>
 /// </para></summary>
 internal readonly record struct InlineTextPolicy(

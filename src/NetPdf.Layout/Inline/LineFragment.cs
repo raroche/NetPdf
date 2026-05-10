@@ -96,9 +96,10 @@ namespace NetPdf.Layout.Inline;
 ///   <item>Cycle 3d sub-cycle 3 — per-source-run WordBreak.BreakAll
 ///   per-glyph upgrade in flat-build phase. Cross-run boundary uses
 ///   "either side may opt in" rule. KeepAll on mismatch throws
-///   (CJK semantics deferred); Hyphens mismatch throws (sub-cycle
-///   4 scope) + <see cref="LineBuilder.Wrap"/> enforces per-run
-///   Hyphens equals global as defense-in-depth.</item>
+///   (CJK semantics deferred).</item>
+///   <item>Cycle 3d sub-cycle 4 — per-source-run Hyphens via the
+///   hyphenation pipeline (soft-hyphen demotion per position,
+///   Liang application per word). All 3 Hyphens values mixable.</item>
 /// </list>
 /// </para>
 ///
@@ -109,10 +110,10 @@ namespace NetPdf.Layout.Inline;
 ///   wrap-vs-hang per CSS Text L3 §6.4) — currently approximated as
 ///   <see cref="WhiteSpace.PreWrap"/>; see
 ///   <see cref="WhiteSpace.BreakSpaces"/> docs.</item>
-///   <item>Per-source-run hyphens (sub-cycle 4) — Liang application
-///   per-run. WordBreak.KeepAll CJK suppression also still deferred
-///   (needs UAX #24 script detection). WhiteSpace + OverflowWrap +
-///   WordBreak.BreakAll mixed-mode are all shipped end-to-end.</item>
+///   <item><see cref="WordBreak.KeepAll"/> CJK inter-character
+///   break suppression — needs UAX #24 script detection + UAX #14
+///   LB30b. Uniform KeepAll currently approximates as Normal;
+///   KeepAll on mismatch throws.</item>
 ///   <item><c>text-align</c> (start/end/center/justify) — wrap
 ///   currently emits left-aligned fragments only.</item>
 ///   <item><c>vertical-align</c> baseline shifts.</item>

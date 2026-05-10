@@ -199,8 +199,9 @@ public sealed class InlineLayouterCycle3cTests
     }
 
     [Fact]
-    public void LayoutPerRun_mixed_hyphens_still_throws()
+    public void LayoutPerRun_mixed_hyphens_now_handled_per_run()
     {
+        // Cycle 3d sub-cycle 4 — Hyphens mismatch is now handled.
         using var resolver = new TestShaperResolver();
         var sManual = MakeStyle();
         var sAuto = ComputedStyle.RentForExclusiveTesting();
@@ -210,9 +211,9 @@ public sealed class InlineLayouterCycle3cTests
             new("foo", sManual),
             new("bar", sAuto),
         };
-        Assert.Throws<NotSupportedException>(() =>
-            InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver,
-                LatnScript, EnLang));
+        var result = InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver,
+            LatnScript, EnLang);
+        Assert.NotEmpty(result);
     }
 
     [Fact]

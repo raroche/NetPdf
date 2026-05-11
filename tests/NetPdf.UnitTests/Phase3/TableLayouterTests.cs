@@ -2078,6 +2078,537 @@ public sealed class TableLayouterTests
     }
 
     // ====================================================================
+    //  Sub-cycle 3 hardening — Finding 1 (caption box model)
+    // ====================================================================
+
+    [Fact]
+    public void Caption_padding_offsets_caption_content_and_row_offset()
+    {
+        // Sub-cycle 3 hardening Finding 1 — caption padding contributes
+        // to the caption's border-box block-size + shifts the row stack
+        // down. Caption: padding-top=10, padding-bottom=10, content=20.
+        // Expected: caption fragment BlockSize >= 40, content
+        // additionalBlockOffset >= 10 from fragment top, row 0
+        // BlockOffset >= captionBlockSize.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+
+        var captionStyle = MakeStyle();
+        captionStyle.Set(PropertyId.CaptionSide, ComputedSlot.FromKeyword(0)); // top
+        SetLengthPx(captionStyle, PropertyId.PaddingTop, 10);
+        SetLengthPx(captionStyle, PropertyId.PaddingBottom, 10);
+        var caption = Box.ForElement(BoxKind.TableCaption, captionStyle, MakeElement());
+        var captionInner = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var captionInnerStyle = MakeStyle();
+        SetLengthPx(captionInnerStyle, PropertyId.Height, 20);
+        captionInner.AppendChild(Box.ForElement(BoxKind.BlockContainer, captionInnerStyle, MakeElement()));
+        caption.AppendChild(captionInner);
+        table.AppendChild(caption);
+
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        var cellInner = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var cellInnerStyle = MakeStyle();
+        SetLengthPx(cellInnerStyle, PropertyId.Height, 30);
+        cellInner.AppendChild(Box.ForElement(BoxKind.BlockContainer, cellInnerStyle, MakeElement()));
+        cell.AppendChild(cellInner);
+        row.AppendChild(cell);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? captionFragment = null;
+        BoxFragment? rowFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCaption && captionFragment is null)
+                captionFragment = f;
+            else if (f.Box.Kind == BoxKind.TableRow && rowFragment is null)
+                rowFragment = f;
+        }
+        Assert.NotNull(captionFragment);
+        Assert.NotNull(rowFragment);
+        // Border-box block-size = padding-top (10) + content (20) +
+        // padding-bottom (10) = 40.
+        Assert.Equal(40, captionFragment!.Value.BlockSize);
+        // Row 0 anchors AT the caption's border-box bottom (= 40).
+        Assert.Equal(40, rowFragment!.Value.BlockOffset);
+    }
+
+    [Fact]
+    public void Caption_border_offsets_caption_content_and_row_offset()
+    {
+        // Sub-cycle 3 hardening Finding 1 — border-top + border-bottom
+        // count for border-box block-size. caption { border: 2px solid }
+        // expands the caption by 4px total beyond content extent. Test
+        // sets border-top + border-bottom directly (BlockLayouter reads
+        // those property ids, not the shorthand `border`).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+
+        var captionStyle = MakeStyle();
+        captionStyle.Set(PropertyId.CaptionSide, ComputedSlot.FromKeyword(0));
+        SetLengthPx(captionStyle, PropertyId.BorderTopWidth, 2);
+        SetLengthPx(captionStyle, PropertyId.BorderBottomWidth, 2);
+        var caption = Box.ForElement(BoxKind.TableCaption, captionStyle, MakeElement());
+        var captionInner = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var captionInnerStyle = MakeStyle();
+        SetLengthPx(captionInnerStyle, PropertyId.Height, 15);
+        captionInner.AppendChild(Box.ForElement(BoxKind.BlockContainer, captionInnerStyle, MakeElement()));
+        caption.AppendChild(captionInner);
+        table.AppendChild(caption);
+
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        var cellInner = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var cellInnerStyle = MakeStyle();
+        SetLengthPx(cellInnerStyle, PropertyId.Height, 25);
+        cellInner.AppendChild(Box.ForElement(BoxKind.BlockContainer, cellInnerStyle, MakeElement()));
+        cell.AppendChild(cellInner);
+        row.AppendChild(cell);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? captionFragment = null;
+        BoxFragment? rowFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCaption && captionFragment is null)
+                captionFragment = f;
+            else if (f.Box.Kind == BoxKind.TableRow && rowFragment is null)
+                rowFragment = f;
+        }
+        Assert.NotNull(captionFragment);
+        Assert.NotNull(rowFragment);
+        // Border-box block-size = border-top (2) + content (15) +
+        // border-bottom (2) = 19.
+        Assert.Equal(19, captionFragment!.Value.BlockSize);
+        // Row 0 anchors AT the caption's border-box bottom (= 19).
+        Assert.Equal(19, rowFragment!.Value.BlockOffset);
+    }
+
+    [Fact]
+    public void Caption_margin_bottom_shifts_rows_down()
+    {
+        // Sub-cycle 3 hardening Finding 1 — margin-bottom on a top
+        // caption shifts the row stack down by the margin BEYOND the
+        // caption's border-box bottom. caption { margin-bottom: 8px }
+        // with content=12, no padding/border ⇒ caption fragment
+        // border-box at [0..12], row 0 anchors at 20 (= 12 + 8).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+
+        var captionStyle = MakeStyle();
+        captionStyle.Set(PropertyId.CaptionSide, ComputedSlot.FromKeyword(0));
+        SetLengthPx(captionStyle, PropertyId.MarginBottom, 8);
+        var caption = Box.ForElement(BoxKind.TableCaption, captionStyle, MakeElement());
+        var captionInner = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var captionInnerStyle = MakeStyle();
+        SetLengthPx(captionInnerStyle, PropertyId.Height, 12);
+        captionInner.AppendChild(Box.ForElement(BoxKind.BlockContainer, captionInnerStyle, MakeElement()));
+        caption.AppendChild(captionInner);
+        table.AppendChild(caption);
+
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        row.AppendChild(cell);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? captionFragment = null;
+        BoxFragment? rowFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCaption && captionFragment is null)
+                captionFragment = f;
+            else if (f.Box.Kind == BoxKind.TableRow && rowFragment is null)
+                rowFragment = f;
+        }
+        Assert.NotNull(captionFragment);
+        Assert.NotNull(rowFragment);
+        Assert.Equal(0, captionFragment!.Value.BlockOffset);
+        Assert.Equal(12, captionFragment.Value.BlockSize);
+        // Row anchors at caption border-box bottom + margin-bottom =
+        // 12 + 8 = 20.
+        Assert.Equal(20, rowFragment!.Value.BlockOffset);
+    }
+
+    [Fact]
+    public void Caption_explicit_height_is_floor_for_block_size()
+    {
+        // Sub-cycle 3 hardening Finding 1 — `height: 40px` floors the
+        // caption's content-block-size; the resolved border-box uses
+        // max(declaredHeight, contentExtent). Here declaredHeight=40 >
+        // contentExtent=10, so the caption's content-box is 40, border-
+        // box (no padding/border) is 40.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+
+        var captionStyle = MakeStyle();
+        captionStyle.Set(PropertyId.CaptionSide, ComputedSlot.FromKeyword(0));
+        SetLengthPx(captionStyle, PropertyId.Height, 40);
+        var caption = Box.ForElement(BoxKind.TableCaption, captionStyle, MakeElement());
+        var captionInner = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var captionInnerStyle = MakeStyle();
+        SetLengthPx(captionInnerStyle, PropertyId.Height, 10);
+        captionInner.AppendChild(Box.ForElement(BoxKind.BlockContainer, captionInnerStyle, MakeElement()));
+        caption.AppendChild(captionInner);
+        table.AppendChild(caption);
+
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        row.AppendChild(cell);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var captionFragment = sink.Fragments.Find(f => f.Box.Kind == BoxKind.TableCaption);
+        Assert.True(captionFragment.Box?.Kind == BoxKind.TableCaption);
+        Assert.Equal(40, captionFragment.BlockSize);
+    }
+
+    [Fact]
+    public void Caption_height_smaller_than_content_does_not_clip()
+    {
+        // Sub-cycle 3 hardening Finding 1 — when `height` is less than
+        // measured content, content wins (height is a FLOOR not a
+        // CAP). Sub-cycle 4+ may add overflow-aware clipping; sub-cycle
+        // 3 uses max(declared, content). declaredHeight=5,
+        // contentExtent=30 ⇒ border-box block-size = 30.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+
+        var captionStyle = MakeStyle();
+        captionStyle.Set(PropertyId.CaptionSide, ComputedSlot.FromKeyword(0));
+        SetLengthPx(captionStyle, PropertyId.Height, 5);
+        var caption = Box.ForElement(BoxKind.TableCaption, captionStyle, MakeElement());
+        var captionInner = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var captionInnerStyle = MakeStyle();
+        SetLengthPx(captionInnerStyle, PropertyId.Height, 30);
+        captionInner.AppendChild(Box.ForElement(BoxKind.BlockContainer, captionInnerStyle, MakeElement()));
+        caption.AppendChild(captionInner);
+        table.AppendChild(caption);
+
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        row.AppendChild(cell);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var captionFragment = sink.Fragments.Find(f => f.Box.Kind == BoxKind.TableCaption);
+        Assert.True(captionFragment.Box?.Kind == BoxKind.TableCaption);
+        // Content wins — sub-cycle 3 does not clip.
+        Assert.True(captionFragment.BlockSize >= 30,
+            $"Expected caption BlockSize >= content extent (30), got "
+            + $"{captionFragment.BlockSize}. Sub-cycle 3 hardening: "
+            + "height is a floor, not a cap.");
+    }
+
+    // ====================================================================
+    //  Sub-cycle 3 hardening — Finding 2 (caption truncation safety net)
+    // ====================================================================
+
+    [Fact]
+    public void Caption_with_multiple_tall_blocks_exceeding_page_emits_diagnostic_and_renders_all()
+    {
+        // Sub-cycle 3 hardening Finding 2 — when a caption contains
+        // multiple block children whose combined heights exceed the
+        // outer fragmentainer's block-size, the NoBreakBreakResolver
+        // ensures the nested BlockLayouter walks the FULL subtree
+        // (no PageComplete with continuation that would silently drop
+        // children). The outer overflow check at commit time emits
+        // PAGINATION-FORCED-OVERFLOW-001.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+
+        var captionStyle = MakeStyle();
+        captionStyle.Set(PropertyId.CaptionSide, ComputedSlot.FromKeyword(0));
+        var caption = Box.ForElement(BoxKind.TableCaption, captionStyle, MakeElement());
+        // Two known-height block children inside the caption. Each is
+        // 60 px tall — combined 120 px. Fragmentainer is 100 px ⇒
+        // the second block lands past the page bottom.
+        for (var i = 0; i < 2; i++)
+        {
+            var inner = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+            var innerStyle = MakeStyle();
+            SetLengthPx(innerStyle, PropertyId.Height, 60);
+            inner.AppendChild(Box.ForElement(BoxKind.BlockContainer, innerStyle, MakeElement()));
+            caption.AppendChild(inner);
+        }
+        table.AppendChild(caption);
+
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        row.AppendChild(cell);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, diagSink, shaper);
+        // Page block-size 100 < combined caption content 120 ⇒
+        // overflow.
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 100);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // Both inner content fragments are rendered (NoBreakBreakResolver
+        // forces Continue) — verify at least 2 BlockContainer fragments
+        // appear inside the caption (the caption fragment itself + the
+        // two block children's fragments + their TableCaption parent).
+        var blockContainerCount = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.BlockContainer) blockContainerCount++;
+        }
+        Assert.True(blockContainerCount >= 2,
+            $"Expected at least 2 BlockContainer fragments inside the "
+            + $"caption (both tall blocks rendered), got "
+            + $"{blockContainerCount}. NoBreakBreakResolver should "
+            + "have prevented mid-caption truncation.");
+
+        // PAGINATION-FORCED-OVERFLOW-001 fires because the total
+        // table content (caption + row) exceeds the fragmentainer.
+        Assert.Contains(diagSink.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.PaginationForcedOverflow001);
+    }
+
+    // ====================================================================
+    //  Sub-cycle 3 hardening — Finding 3 (inline-axis caption-side keywords)
+    // ====================================================================
+
+    [Fact]
+    public void Caption_side_inline_start_emits_unsupported_diagnostic_and_falls_back_to_top()
+    {
+        // Sub-cycle 3 hardening Finding 3 — caption-side: inline-start
+        // is admitted by the keyword resolver (valid CSS) but the
+        // layouter doesn't yet route through writing-mode resolution.
+        // Sub-cycle 3 falls back to `top` for inline-axis keywords +
+        // emits LAYOUT-TABLE-FEATURE-UNSUPPORTED-001 Warning so authors
+        // see why their caption rendered at the top.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+
+        var captionStyle = MakeStyle();
+        // Keyword index 4 == inline-start.
+        captionStyle.Set(PropertyId.CaptionSide, ComputedSlot.FromKeyword(4));
+        var caption = Box.ForElement(BoxKind.TableCaption, captionStyle, MakeElement());
+        var captionInner = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var captionInnerStyle = MakeStyle();
+        SetLengthPx(captionInnerStyle, PropertyId.Height, 10);
+        captionInner.AppendChild(Box.ForElement(BoxKind.BlockContainer, captionInnerStyle, MakeElement()));
+        caption.AppendChild(captionInner);
+        table.AppendChild(caption);
+
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        row.AppendChild(cell);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, diagSink, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // Diagnostic fires with "inline-start" mentioned.
+        Assert.Contains(diagSink.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001
+            && d.Message.Contains("inline-start"));
+
+        // Caption still renders, at the top (fallback behavior).
+        BoxFragment? captionFragment = null;
+        BoxFragment? rowFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCaption && captionFragment is null)
+                captionFragment = f;
+            else if (f.Box.Kind == BoxKind.TableRow && rowFragment is null)
+                rowFragment = f;
+        }
+        Assert.NotNull(captionFragment);
+        Assert.NotNull(rowFragment);
+        Assert.True(captionFragment!.Value.BlockOffset < rowFragment!.Value.BlockOffset,
+            "inline-start falls back to top under LTR horizontal mode.");
+    }
+
+    [Fact]
+    public void Caption_side_inline_end_emits_unsupported_diagnostic_and_falls_back_to_top()
+    {
+        // Sub-cycle 3 hardening Finding 3 — same as inline-start
+        // (keyword index 5 == inline-end).
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+
+        var captionStyle = MakeStyle();
+        captionStyle.Set(PropertyId.CaptionSide, ComputedSlot.FromKeyword(5));
+        var caption = Box.ForElement(BoxKind.TableCaption, captionStyle, MakeElement());
+        var captionInner = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var captionInnerStyle = MakeStyle();
+        SetLengthPx(captionInnerStyle, PropertyId.Height, 10);
+        captionInner.AppendChild(Box.ForElement(BoxKind.BlockContainer, captionInnerStyle, MakeElement()));
+        caption.AppendChild(captionInner);
+        table.AppendChild(caption);
+
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        row.AppendChild(cell);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, diagSink, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        Assert.Contains(diagSink.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001
+            && d.Message.Contains("inline-end"));
+
+        BoxFragment? captionFragment = null;
+        BoxFragment? rowFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCaption && captionFragment is null)
+                captionFragment = f;
+            else if (f.Box.Kind == BoxKind.TableRow && rowFragment is null)
+                rowFragment = f;
+        }
+        Assert.NotNull(captionFragment);
+        Assert.NotNull(rowFragment);
+        Assert.True(captionFragment!.Value.BlockOffset < rowFragment!.Value.BlockOffset,
+            "inline-end falls back to top under LTR horizontal mode.");
+    }
+
+    // ====================================================================
+    //  Sub-cycle 3 hardening — Finding 4 (overflow check in early-return)
+    // ====================================================================
+
+    [Fact]
+    public void Table_with_missing_grid_and_tall_caption_emits_overflow_diagnostic()
+    {
+        // Sub-cycle 3 hardening Finding 4 — a caption-only table
+        // (Table wrapper with NO TableGrid) whose caption exceeds the
+        // fragmentainer block-size still emits
+        // PAGINATION-FORCED-OVERFLOW-001 from the early-return path.
+        // Pre-fix the missing-grid path skipped the check, dropping
+        // the diagnostic silently.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+
+        var captionStyle = MakeStyle();
+        captionStyle.Set(PropertyId.CaptionSide, ComputedSlot.FromKeyword(0));
+        var caption = Box.ForElement(BoxKind.TableCaption, captionStyle, MakeElement());
+        var captionInner = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var captionInnerStyle = MakeStyle();
+        SetLengthPx(captionInnerStyle, PropertyId.Height, 150);
+        captionInner.AppendChild(Box.ForElement(BoxKind.BlockContainer, captionInnerStyle, MakeElement()));
+        caption.AppendChild(captionInner);
+        table.AppendChild(caption);
+        // NO TableGrid child — missing-grid early-return path.
+        root.AppendChild(table);
+
+        // Construct TableLayouter directly so we don't depend on
+        // BoxBuilder's table-fixup auto-insertion of a TableGrid.
+        using var tableLayouter = new TableLayouter(
+            rootBox: table,
+            sink: sink,
+            incomingContinuation: null,
+            diagnostics: diagSink,
+            shaperResolver: shaper);
+        tableLayouter.ConfigureEmission(
+            contentInlineOffset: 0,
+            contentBlockOffset: 0,
+            contentInlineSize: 600);
+        // Page block-size 100 < caption content 150 ⇒ overflow.
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 100);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+        tableLayouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // Both the missing-grid LAYOUT-TABLE-FEATURE-UNSUPPORTED-001
+        // AND the overflow PAGINATION-FORCED-OVERFLOW-001 should fire.
+        Assert.Contains(diagSink.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.PaginationForcedOverflow001);
+    }
+
+    // ====================================================================
     //  Tree builders + test doubles
     // ====================================================================
 

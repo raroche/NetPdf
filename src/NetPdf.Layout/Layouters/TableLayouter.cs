@@ -39,7 +39,8 @@ namespace NetPdf.Layout.Layouters;
 /// rowspan), any excess content above the natural row-height sum lands
 /// on the LAST row of the span — a deterministic naive distribution.
 /// The CSS Tables L3 spec-strict distribution-proportional algorithm
-/// is sub-cycle 3 work.</para>
+/// is sub-cycle 4+ work — see
+/// <c>docs/deferrals.md#table-auto-fixed-spans-borders</c>.</para>
 ///
 /// <para><b>Two-phase protocol (post-Finding-1 hardening).</b> The
 /// layouter exposes a public <see cref="MeasureContentHeight"/> method
@@ -106,7 +107,8 @@ namespace NetPdf.Layout.Layouters;
 ///   <c>sum(rowHeight[originRow..originRow+rowspan-1]) &lt; cellContent</c>,
 ///   add the excess to <c>rowHeight[originRow+rowspan-1]</c> (the last
 ///   row of the span). Deterministic + simple; spec-strict
-///   distribution-proportional algorithm is sub-cycle 3.</item>
+///   distribution-proportional algorithm is sub-cycle 4+ work —
+///   see <c>docs/deferrals.md#table-auto-fixed-spans-borders</c>.</item>
 ///   <item>Emit pass (when <see cref="AttemptLayout"/> runs): for each
 ///   row, emit the row fragment + the cell fragments anchored at that
 ///   row (skipping continuation slots from previous rows' rowspans),
@@ -356,7 +358,26 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     /// 3 doesn't yet ship auto-table-layout, so wrapper content-inline-
     /// size = grid's outer inline-size); block-size is the caption's
     /// content extent measured via a nested <see cref="BlockLayouter"/>
-    /// into a buffered <see cref="MeasuringFragmentSink"/>.</summary>
+    /// into a buffered <see cref="MeasuringFragmentSink"/>.
+    ///
+    /// <para><b>Post sub-cycle 3 hardening (Finding 1):</b> the
+    /// caption's CSS box model is now honored — margin / border /
+    /// padding (all four block + inline edges) and an explicit
+    /// <c>height</c> all contribute to the emitted fragment's
+    /// border-box size + the surrounding stacking math. The
+    /// <see cref="BorderBoxBlockSize"/> field is what the emit pass
+    /// stamps on the caption's <c>BoxFragment.BlockSize</c>; the
+    /// <see cref="MarginBoxBlockSize"/> field is what the table's
+    /// content-extent totals + the row-stack-origin shift consume.
+    /// <see cref="MarginBlockStart"/> is broken out separately so the
+    /// emit pass can add it to the cumulative cursor BEFORE stamping
+    /// the fragment's <c>BlockOffset</c>.</para>
+    ///
+    /// <para><b>Adjacent caption margin-collapse</b> (CSS 2.1 §8.3.1)
+    /// is NOT implemented in sub-cycle 3 hardening — captions stack by
+    /// margin SUM, not by collapse. Sub-cycle 4+ may revisit when the
+    /// general BlockLayouter margin-collapse infrastructure becomes
+    /// reusable here.</para></summary>
     private readonly struct CaptionMeasurement
     {
         public CaptionMeasurement(
@@ -364,19 +385,88 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             CaptionSide side,
             MeasuringFragmentSink contentBuffer,
             BufferingDiagnosticsSink? diagnosticsBuffer,
-            double contentBlockExtent)
+            double contentBlockExtent,
+            // Finding 1 box-model fields:
+            double marginBlockStart,
+            double marginBlockEnd,
+            double borderBlockStart,
+            double borderBlockEnd,
+            double paddingBlockStart,
+            double paddingBlockEnd,
+            double borderInlineStart,
+            double borderInlineEnd,
+            double paddingInlineStart,
+            double paddingInlineEnd,
+            double declaredBlockSize)
         {
             Caption = caption;
             Side = side;
             ContentBuffer = contentBuffer;
             DiagnosticsBuffer = diagnosticsBuffer;
             ContentBlockExtent = contentBlockExtent;
+            MarginBlockStart = marginBlockStart;
+            MarginBlockEnd = marginBlockEnd;
+            BorderBlockStart = borderBlockStart;
+            BorderBlockEnd = borderBlockEnd;
+            PaddingBlockStart = paddingBlockStart;
+            PaddingBlockEnd = paddingBlockEnd;
+            BorderInlineStart = borderInlineStart;
+            BorderInlineEnd = borderInlineEnd;
+            PaddingInlineStart = paddingInlineStart;
+            PaddingInlineEnd = paddingInlineEnd;
+            DeclaredBlockSize = declaredBlockSize;
         }
         public Box Caption { get; }
         public CaptionSide Side { get; }
         public MeasuringFragmentSink ContentBuffer { get; }
         public BufferingDiagnosticsSink? DiagnosticsBuffer { get; }
+        /// <summary>The caption's MEASURED inner content extent — the
+        /// max BlockOffset+BlockSize observed across the nested
+        /// BlockLayouter's buffered fragments. CSS calls this the
+        /// content-box block-size before height clamping. Sub-cycle 3
+        /// hardening uses this as the FLOOR for the resolved block-size
+        /// per CSS Tables L3 §11.5 + CSS 2.1 §10.6 (an explicit
+        /// <c>height</c> below the content extent does NOT clip;
+        /// content is what wins). Documented as a TODO inline if
+        /// sub-cycle 4 needs to introduce <c>overflow</c>-aware
+        /// clipping.</summary>
         public double ContentBlockExtent { get; }
+        public double MarginBlockStart { get; }
+        public double MarginBlockEnd { get; }
+        public double BorderBlockStart { get; }
+        public double BorderBlockEnd { get; }
+        public double PaddingBlockStart { get; }
+        public double PaddingBlockEnd { get; }
+        public double BorderInlineStart { get; }
+        public double BorderInlineEnd { get; }
+        public double PaddingInlineStart { get; }
+        public double PaddingInlineEnd { get; }
+        /// <summary>The explicit <c>height</c> from the caption's
+        /// computed style, or 0 when unset / <c>auto</c>. Sub-cycle 3
+        /// hardening: this acts as a FLOOR for the resolved block-size;
+        /// the actual border-box block-size is
+        /// <c>BorderBlockStart + PaddingBlockStart + max(DeclaredBlockSize,
+        /// ContentBlockExtent) + PaddingBlockEnd + BorderBlockEnd</c>.</summary>
+        public double DeclaredBlockSize { get; }
+
+        /// <summary>The caption's border-box block-size — what the
+        /// emit pass stamps on the <c>BoxFragment.BlockSize</c> field.
+        /// Equals
+        /// <c>BorderBlockStart + PaddingBlockStart + max(DeclaredBlockSize,
+        /// ContentBlockExtent) + PaddingBlockEnd + BorderBlockEnd</c>.
+        /// </summary>
+        public double BorderBoxBlockSize =>
+            BorderBlockStart + PaddingBlockStart
+            + (DeclaredBlockSize > ContentBlockExtent
+                ? DeclaredBlockSize
+                : ContentBlockExtent)
+            + PaddingBlockEnd + BorderBlockEnd;
+
+        /// <summary>The caption's margin-box block-size — what the
+        /// table's overall content extent + the row-stack origin shift
+        /// accumulate.</summary>
+        public double MarginBoxBlockSize =>
+            MarginBlockStart + BorderBoxBlockSize + MarginBlockEnd;
     }
 
     private bool _measureDone;
@@ -482,6 +572,14 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         // who hand-craft a malformed table tree still see their
         // caption text. The missing-grid diagnostic above flags the
         // structural anomaly so they can fix it.
+        //
+        // Sub-cycle 3 hardening (Finding 1) — the cursor walks
+        // CAPTION MARGIN-BOXES, not content extents. For each
+        // caption: shift by `MarginBlockStart`, stamp the BORDER-BOX
+        // size as the fragment's BlockSize, flush content into the
+        // caption's CONTENT BOX (= fragment top + border-block-start
+        // + padding-block-start), advance by border-box + margin-
+        // block-end.
         var topCaptionCursor = _contentBlockOffset;
         if (captions is { Count: > 0 })
         {
@@ -490,14 +588,22 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                 cancellationToken.ThrowIfCancellationRequested();
                 var c = captions[i];
                 if (c.Side != CaptionSide.Top) continue;
+                topCaptionCursor += c.MarginBlockStart;
+                var borderBoxBlockOffset = topCaptionCursor;
+                var borderBoxBlockSize = c.BorderBoxBlockSize;
                 _sink.Emit(new BoxFragment(
                     Box: c.Caption,
                     InlineOffset: _contentInlineOffset,
-                    BlockOffset: topCaptionCursor,
+                    BlockOffset: borderBoxBlockOffset,
                     InlineSize: _contentInlineSize,
-                    BlockSize: c.ContentBlockExtent));
-                c.ContentBuffer.FlushTo(_sink, topCaptionCursor);
-                topCaptionCursor += c.ContentBlockExtent;
+                    BlockSize: borderBoxBlockSize));
+                // Caption inner content lands INSIDE the caption's
+                // padding — content-box-top = fragment-top + border-
+                // block-start + padding-block-start.
+                var contentBlockOriginInFragmentainer =
+                    borderBoxBlockOffset + c.BorderBlockStart + c.PaddingBlockStart;
+                c.ContentBuffer.FlushTo(_sink, contentBlockOriginInFragmentainer);
+                topCaptionCursor += borderBoxBlockSize + c.MarginBlockEnd;
             }
         }
 
@@ -514,6 +620,13 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             // Phase D — even with no rows, render bottom captions
             // immediately after the top-caption stack so they don't
             // get visually orphaned.
+            //
+            // Sub-cycle 3 hardening (Finding 1) — same margin-box
+            // cursor algorithm as the top-caption pass above. Each
+            // caption contributes MarginBlockStart + BorderBoxBlockSize
+            // + MarginBlockEnd to the cursor; the fragment's
+            // BlockSize = BorderBoxBlockSize; content flushes into
+            // the caption's content box.
             var bottomCursor = topCaptionCursor;
             if (captions is { Count: > 0 })
             {
@@ -522,16 +635,29 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                     cancellationToken.ThrowIfCancellationRequested();
                     var c = captions[i];
                     if (c.Side != CaptionSide.Bottom) continue;
+                    bottomCursor += c.MarginBlockStart;
+                    var borderBoxBlockOffset = bottomCursor;
+                    var borderBoxBlockSize = c.BorderBoxBlockSize;
                     _sink.Emit(new BoxFragment(
                         Box: c.Caption,
                         InlineOffset: _contentInlineOffset,
-                        BlockOffset: bottomCursor,
+                        BlockOffset: borderBoxBlockOffset,
                         InlineSize: _contentInlineSize,
-                        BlockSize: c.ContentBlockExtent));
-                    c.ContentBuffer.FlushTo(_sink, bottomCursor);
-                    bottomCursor += c.ContentBlockExtent;
+                        BlockSize: borderBoxBlockSize));
+                    var contentBlockOriginInFragmentainer =
+                        borderBoxBlockOffset + c.BorderBlockStart + c.PaddingBlockStart;
+                    c.ContentBuffer.FlushTo(_sink, contentBlockOriginInFragmentainer);
+                    bottomCursor += borderBoxBlockSize + c.MarginBlockEnd;
                 }
             }
+            // Sub-cycle 3 hardening (Finding 4) — the no-grid /
+            // empty-grid path now ALSO runs the forced-overflow check
+            // so a caption-only table whose caption exceeds the
+            // fragmentainer block-size emits PAGINATION-FORCED-
+            // OVERFLOW-001 (pre-fix the early-return skipped the
+            // check + the diagnostic was silently dropped).
+            EmitOverflowDiagnosticIfNeeded(
+                fragmentainer, bottomCursor, ref layout);
             return LayoutAttemptResult.AllDone(cost: 0);
         }
 
@@ -656,6 +782,13 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         // captions AFTER the row stack. Stacks vertically in document
         // order. Starts at the row-stack bottom (= rowEndBlockOffset
         // at index rows.Count).
+        //
+        // Sub-cycle 3 hardening (Finding 1) — same margin-box cursor
+        // algorithm as the top-caption pass; each caption's
+        // MarginBlockStart shifts the cursor, the fragment carries
+        // BorderBoxBlockSize, content flushes into the caption's
+        // content-box (= fragment top + border-block-start + padding-
+        // block-start).
         var bottomCaptionCursor = rowEndBlockOffset[rows.Count];
         if (captions is { Count: > 0 })
         {
@@ -664,14 +797,19 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                 cancellationToken.ThrowIfCancellationRequested();
                 var c = captions[i];
                 if (c.Side != CaptionSide.Bottom) continue;
+                bottomCaptionCursor += c.MarginBlockStart;
+                var borderBoxBlockOffset = bottomCaptionCursor;
+                var borderBoxBlockSize = c.BorderBoxBlockSize;
                 _sink.Emit(new BoxFragment(
                     Box: c.Caption,
                     InlineOffset: _contentInlineOffset,
-                    BlockOffset: bottomCaptionCursor,
+                    BlockOffset: borderBoxBlockOffset,
                     InlineSize: _contentInlineSize,
-                    BlockSize: c.ContentBlockExtent));
-                c.ContentBuffer.FlushTo(_sink, bottomCaptionCursor);
-                bottomCaptionCursor += c.ContentBlockExtent;
+                    BlockSize: borderBoxBlockSize));
+                var contentBlockOriginInFragmentainer =
+                    borderBoxBlockOffset + c.BorderBlockStart + c.PaddingBlockStart;
+                c.ContentBuffer.FlushTo(_sink, contentBlockOriginInFragmentainer);
+                bottomCaptionCursor += borderBoxBlockSize + c.MarginBlockEnd;
             }
         }
 
@@ -680,8 +818,38 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         // extends past the fragmentainer block-size. Multi-page table
         // splitting is deferred — see
         // docs/deferrals.md#table-auto-fixed-spans-borders.
-        var tableBottom = bottomCaptionCursor;
-        if (tableBottom > fragmentainer.BlockSize)
+        //
+        // Sub-cycle 3 hardening (Finding 4) — extracted into
+        // EmitOverflowDiagnosticIfNeeded so the early-return paths
+        // (missing-grid / zero-row / zero-column) can reuse the same
+        // logic without duplicating the message.
+        EmitOverflowDiagnosticIfNeeded(
+            fragmentainer, bottomCaptionCursor, ref layout);
+
+        return LayoutAttemptResult.AllDone(cost: 0);
+    }
+
+    /// <summary>Per Phase 3 Task 12 sub-cycle 3 hardening (Finding 4) —
+    /// shared overflow-detection helper: emits exactly one
+    /// <see cref="PaginateDiagnosticCodes.PaginationForcedOverflow001"/>
+    /// Warning when the table's total content extent
+    /// (<paramref name="tableBottomBlockOffset"/>) exceeds the
+    /// fragmentainer's block-size. Multi-fragmentainer table splitting
+    /// is deferred — see
+    /// <c>docs/deferrals.md#table-auto-fixed-spans-borders</c>.
+    ///
+    /// <para>Pre-Finding-4 the overflow check ran only in the row-
+    /// stack emit path; the missing-grid / zero-row / zero-column
+    /// early-return paths skipped it. A caption-only table whose
+    /// caption was taller than the fragmentainer would commit all
+    /// caption content without emitting the diagnostic. Post-fix the
+    /// helper runs in BOTH paths.</para></summary>
+    private void EmitOverflowDiagnosticIfNeeded(
+        FragmentainerContext fragmentainer,
+        double tableBottomBlockOffset,
+        ref LayoutContext layout)
+    {
+        if (tableBottomBlockOffset > fragmentainer.BlockSize)
         {
             OptimizingBreakResolver.SafeEmit(
                 layout.Diagnostics ?? _diagnostics,
@@ -690,14 +858,12 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                     $"TableLayouter: table on fragmentainer page index "
                     + $"{fragmentainer.PageIndex} overflows page block-"
                     + $"size {fragmentainer.BlockSize:0.##} (table content "
-                    + $"extends to {tableBottom:0.##}). The layouter commits "
-                    + "all rows + captions anyway; multi-fragmentainer "
-                    + "splitting is deferred — see "
+                    + $"extends to {tableBottomBlockOffset:0.##}). The "
+                    + "layouter commits all rows + captions anyway; "
+                    + "multi-fragmentainer splitting is deferred — see "
                     + "docs/deferrals.md#table-auto-fixed-spans-borders.",
                     PaginateDiagnosticSeverity.Warning));
         }
-
-        return LayoutAttemptResult.AllDone(cost: 0);
     }
 
     /// <summary>Per Phase 3 Task 12 sub-cycle 1 hardening (Finding 1) —
@@ -873,7 +1039,9 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         // settle the heights of the rows they cover before longer-
         // span cells consult those heights. This is NOT the CSS
         // Tables L3 §11 distribution-proportional algorithm — that's
-        // sub-cycle 3 work — but it's deterministic + simple.
+        // sub-cycle 4+ work (see
+        // docs/deferrals.md#table-auto-fixed-spans-borders) — but
+        // it's deterministic + simple.
         var rowHeights = new double[rows.Count];
         for (var pIdx = 0; pIdx < placements.Count; pIdx++)
         {
@@ -1377,7 +1545,42 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             // (mapped to top/bottom under LTR horizontal writing
             // mode by ReadCaptionSide; RTL + vertical modes deferred
             // to sub-cycle 4+).
+            //
+            // Finding 3 (sub-cycle 3 hardening) — the keyword resolver
+            // (KeywordResolver) admits `inline-start` / `inline-end`
+            // because they're valid CSS values for caption-side. At
+            // resolution time NO diagnostic fires (resolver-side
+            // accepts the keyword). At LAYOUT time the inline-axis
+            // keywords map to `top` under LTR horizontal writing mode
+            // — sub-cycle 3 doesn't yet route through the writing-
+            // mode resolver. The fallback is surfaced as a
+            // LAYOUT-TABLE-FEATURE-UNSUPPORTED-001 Warning here so
+            // authors who set `caption-side: inline-start` see why
+            // their caption renders at the top instead of the side.
+            var captionSideKeyword = ch.Style.ReadKeywordOrDefault(
+                PropertyId.CaptionSide, defaultIndex: 0);
             var side = ch.Style.ReadCaptionSide();
+            if (captionSideKeyword == 4 || captionSideKeyword == 5)
+            {
+                var keywordName = captionSideKeyword == 4
+                    ? "inline-start"
+                    : "inline-end";
+                OptimizingBreakResolver.SafeEmit(
+                    layout.Diagnostics ?? _diagnostics,
+                    new PaginateDiagnostic(
+                        PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001,
+                        $"TableLayouter: caption-side: {keywordName} on "
+                        + "<caption> is currently unsupported — only physical "
+                        + "`top` / `bottom` + the writing-mode-relative "
+                        + "`block-start` / `block-end` are routed through to "
+                        + "layout. Inline-axis caption placement requires "
+                        + "writing-mode + direction resolution (deferred to "
+                        + "sub-cycle 4+; see "
+                        + "docs/deferrals.md#table-auto-fixed-spans-borders). "
+                        + "Caption falls back to `top` under LTR horizontal "
+                        + "writing mode.",
+                        PaginateDiagnosticSeverity.Warning));
+            }
 
             // The caption is laid out at the wrapper's content-inline-
             // size. Inline offset for buffered fragments is the
@@ -1389,7 +1592,11 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             // this for the grid's outer inline-size (which can be
             // narrower than the wrapper's content-inline-size when
             // columns are intrinsically narrower than the wrapper).
-            var (buffer, diagBuffer, blockExtent) = MeasureCaptionContent(
+            //
+            // Finding 1 — MeasureCaptionContent now returns the full
+            // box-model metric set; CaptionMeasurement stores them
+            // for the emit pass to consume.
+            var m = MeasureCaptionContent(
                 captionBox: ch,
                 captionInlineOffset: _contentInlineOffset,
                 captionInlineSize: _contentInlineSize,
@@ -1398,20 +1605,39 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                 cancellationToken: cancellationToken);
 
             list ??= new List<CaptionMeasurement>(capacity: 2);
-            list.Add(new CaptionMeasurement(
+            var measurement = new CaptionMeasurement(
                 caption: ch,
                 side: side,
-                contentBuffer: buffer,
-                diagnosticsBuffer: diagBuffer,
-                contentBlockExtent: blockExtent));
+                contentBuffer: m.Buffer,
+                diagnosticsBuffer: m.DiagnosticsBuffer,
+                contentBlockExtent: m.BlockExtent,
+                marginBlockStart: m.MarginBlockStart,
+                marginBlockEnd: m.MarginBlockEnd,
+                borderBlockStart: m.BorderBlockStart,
+                borderBlockEnd: m.BorderBlockEnd,
+                paddingBlockStart: m.PaddingBlockStart,
+                paddingBlockEnd: m.PaddingBlockEnd,
+                borderInlineStart: m.BorderInlineStart,
+                borderInlineEnd: m.BorderInlineEnd,
+                paddingInlineStart: m.PaddingInlineStart,
+                paddingInlineEnd: m.PaddingInlineEnd,
+                declaredBlockSize: m.DeclaredBlockSize);
+            list.Add(measurement);
 
+            // Per Finding 1 — the contribution to the stacking total
+            // is the MARGIN-BOX block-size (margin + border + padding
+            // + content), NOT just the content extent. Adjacent
+            // caption margin-collapse (CSS 2.1 §8.3.1) is out of
+            // scope for sub-cycle 3 hardening — captions stack by
+            // margin SUM, not by collapse; sub-cycle 4+ may revisit.
+            var marginBoxBlockSize = measurement.MarginBoxBlockSize;
             if (side == CaptionSide.Bottom)
             {
-                bottomCaptionsTotal += blockExtent;
+                bottomCaptionsTotal += marginBoxBlockSize;
             }
             else
             {
-                topCaptionsTotal += blockExtent;
+                topCaptionsTotal += marginBoxBlockSize;
             }
         }
 
@@ -1423,14 +1649,45 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     /// <see cref="BlockLayouter"/>, BUFFERING the translated
     /// fragments in a <see cref="MeasuringFragmentSink"/> for later
     /// flush. Mirrors <see cref="MeasureCellContent"/>'s contract —
-    /// fresh inner break resolver, buffered diagnostics sink, deferred
-    /// block translation — the only differences are (1) the inline
-    /// translation = wrapper content-inline-offset (caption spans the
-    /// full wrapper content width), (2) no rowspan distribution is
-    /// involved so the buffered block translation can be applied
-    /// directly by FlushTo with the caption's final block origin.
+    /// buffered diagnostics sink, deferred block translation — the
+    /// only differences are (1) the inline translation = caption's
+    /// content-box inline-offset (caption inline content sits inside
+    /// the caption's padding/border edges), (2) no rowspan
+    /// distribution is involved so the buffered block translation can
+    /// be applied directly by FlushTo with the caption's final
+    /// content-box origin.
+    ///
+    /// <para><b>Sub-cycle 3 hardening (Finding 1).</b> The caption's
+    /// CSS box model is now read from
+    /// <paramref name="captionBox"/>.Style — margin / border /
+    /// padding on all four edges + explicit <c>height</c>. Returned
+    /// to the caller for storage on the <see cref="CaptionMeasurement"/>
+    /// record. The nested BlockLayouter sees only the caption's
+    /// CONTENT BOX (inline-size = caption inline-size minus inline
+    /// borders + paddings); the buffered fragments are flushed with
+    /// the caption's content-box block origin at FlushTo time.</para>
+    ///
+    /// <para><b>Sub-cycle 3 hardening (Finding 2 — caption truncation).</b>
+    /// The nested BlockLayouter is dispatched against a
+    /// <see cref="NoBreakBreakResolver"/> that ALWAYS returns
+    /// <see cref="BreakAction.Continue"/>. The caption is treated as a
+    /// single indivisible block — even if its content would exceed
+    /// the outer fragmentainer's block-size, the nested layouter walks
+    /// the full subtree. The caller (<see cref="MeasureCaptions"/>)
+    /// then surfaces a <see cref="PaginateDiagnosticCodes.PaginationForcedOverflow001"/>
+    /// at commit time if the measured caption + table overflows the
+    /// outer page. Multi-fragmentainer caption splitting is deferred
+    /// (see docs/deferrals.md#table-auto-fixed-spans-borders).</para>
     /// </summary>
-    private (MeasuringFragmentSink Buffer, BufferingDiagnosticsSink? DiagnosticsBuffer, double BlockExtent) MeasureCaptionContent(
+    private (MeasuringFragmentSink Buffer,
+        BufferingDiagnosticsSink? DiagnosticsBuffer,
+        double BlockExtent,
+        double MarginBlockStart, double MarginBlockEnd,
+        double BorderBlockStart, double BorderBlockEnd,
+        double PaddingBlockStart, double PaddingBlockEnd,
+        double BorderInlineStart, double BorderInlineEnd,
+        double PaddingInlineStart, double PaddingInlineEnd,
+        double DeclaredBlockSize) MeasureCaptionContent(
         Box captionBox,
         double captionInlineOffset,
         double captionInlineSize,
@@ -1438,24 +1695,70 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         ref LayoutContext layout,
         CancellationToken cancellationToken)
     {
+        // Finding 1 — read the caption's CSS box model. Mirrors the
+        // same pattern BlockLayouter uses for normal-flow children
+        // (margin/border/padding/height per edge). The values default
+        // to 0 when not set or for non-LengthPx slots (Auto /
+        // Percentage / Unset) per ReadLengthPxOrZero's contract;
+        // percentage resolution + Auto margin centering remain
+        // deferred per CSS 2.1 §10.3.3 (Phase 3 Task 7+ scope —
+        // documented in ComputedStyleLayoutExtensions).
+        var style = captionBox.Style;
+        var marginBlockStart = style.ReadLengthPxOrZero(PropertyId.MarginTop);
+        var marginBlockEnd = style.ReadLengthPxOrZero(PropertyId.MarginBottom);
+        var borderBlockStart = style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
+        var borderBlockEnd = style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
+        var paddingBlockStart = style.ReadLengthPxOrZero(PropertyId.PaddingTop);
+        var paddingBlockEnd = style.ReadLengthPxOrZero(PropertyId.PaddingBottom);
+        var borderInlineStart = style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
+        var borderInlineEnd = style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
+        var paddingInlineStart = style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
+        var paddingInlineEnd = style.ReadLengthPxOrZero(PropertyId.PaddingRight);
+        var declaredBlockSize = style.ReadLengthPxOrZero(PropertyId.Height);
+
+        // The caption's CONTENT BOX inline-size is the caller's
+        // inline-size (= wrapper content-inline-size for sub-cycle 3;
+        // sub-cycle 4 will switch to grid outer-inline-size once
+        // auto-table-layout ships) MINUS the caption's own inline
+        // borders + paddings. Clamp to at least 1 px so the inner
+        // BlockLayouter doesn't divide by zero.
+        var contentInlineSize = captionInlineSize
+            - borderInlineStart - paddingInlineStart
+            - borderInlineEnd - paddingInlineEnd;
+        if (contentInlineSize < 1) contentInlineSize = 1;
+
+        // The inline OFFSET passed to the buffering sink is the
+        // caption's content-box inline-start edge (= caller's caption
+        // inline offset + the caption's own border-inline-start +
+        // padding-inline-start). Pre-Finding-1 this was the caption's
+        // border-box inline-start; inner content then sat AT the
+        // border instead of INSIDE the padding.
+        var contentInlineOffset = captionInlineOffset
+            + borderInlineStart + paddingInlineStart;
+
         // Pass 0 for the block translation — the caption's final
         // block origin is known only after the row-stack heights
         // settle (because the row stack's offset depends on the top-
         // caption total, which is THIS measure pass). The emit pass
-        // calls FlushTo with the caption's finalized block origin.
+        // calls FlushTo with the caption's finalized CONTENT-BOX
+        // block origin (Finding 1: content-box not border-box, so
+        // content lands inside the caption's padding).
         var measuringSink = new MeasuringFragmentSink(
             outerSinkBaselineCursor: _sink.Cursor,
-            inlineOffsetTranslation: captionInlineOffset,
+            inlineOffsetTranslation: contentInlineOffset,
             blockOffsetTranslation: 0);
 
-        // The caption's content area inline-extent matches the
-        // wrapper's content-inline-size. Sub-cycle 3 doesn't yet
-        // subtract caption-side padding/border (the caption box's own
-        // margins / padding / border are taken from its style on the
-        // emit fragment). For typical authoring this is good enough;
-        // refinement is sub-cycle 4 work.
+        // The caption's content area is what the inner BlockLayouter
+        // sees as its own page. Sub-cycle 3 + hardening expose
+        // contentInlineSize MINUS the caption's inline borders +
+        // paddings (Finding 1). The inner fragmentainer's block-size
+        // matches the outer fragmentainer's so the inner break
+        // resolver — Finding 2's NoBreakBreakResolver — never sees
+        // a chunk-too-tall condition that would otherwise force a
+        // BreakHere. Multi-fragmentainer caption splitting is
+        // deferred — see docs/deferrals.md#table-auto-fixed-spans-borders.
         var captionFragmentainer = new FragmentainerContext(
-            contentInlineSize: captionInlineSize,
+            contentInlineSize: contentInlineSize,
             blockSize: Math.Max(fragmentainer.BlockSize, 1));
 
         // Per Finding 5 (sub-cycle 1) — wrap the ambient diagnostic
@@ -1485,16 +1788,57 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             diagnostics: captionDiagnosticSink,
             shaperResolver: _shaperResolver);
 
-        // Per Finding 3 (sub-cycle 1) — fresh BreakResolver scoped to
-        // the caption so the outer resolver's checkpoint state is
-        // preserved untouched.
-        using var captionResolver = new BreakResolver();
+        // Per sub-cycle 3 hardening (Finding 2) — caption-content
+        // layout uses a NoBreakBreakResolver so the inner
+        // BlockLayouter NEVER returns PageComplete. Captions are
+        // single indivisible boxes (CSS Tables L3 §11.5 treats
+        // them as a block-level box in the table's principal box
+        // formatting context). The outer fragmentainer-overflow
+        // check at commit time handles the rare "caption taller
+        // than the page" case by emitting
+        // PAGINATION-FORCED-OVERFLOW-001.
+        //
+        // The Dispose path on NoBreakBreakResolver returns its held
+        // checkpoint lease (if any) to the pool — same contract as
+        // BreakResolver.
+        using var captionResolver = new NoBreakBreakResolver();
 
-        _ = captionLayouter.AttemptLayout(
+        // Defense-in-depth: NoBreakBreakResolver guarantees Continue,
+        // but if the inner BlockLayouter's forced-overflow forward
+        // progress path ever bypasses ConsiderBreakAt + returns
+        // PageComplete on its own, the assert below surfaces the
+        // contract violation as a deferral diagnostic. The caller
+        // (MeasureCaptions) ALSO checks the outer overflow at commit
+        // time + emits PAGINATION-FORCED-OVERFLOW-001 there.
+        var attemptResult = captionLayouter.AttemptLayout(
             captionFragmentainer, ref innerLayout, captionResolver,
             LayoutAttemptStrategy.LastResort, cancellationToken);
+        if (attemptResult.Outcome == LayoutAttemptOutcome.PageComplete)
+        {
+            // Surface via the buffered diagnostic sink — picked up at
+            // commit by the outer FlushTo. The buffered content the
+            // BlockLayouter already emitted PRE-PageComplete is still
+            // in the measuringSink + still gets rendered.
+            OptimizingBreakResolver.SafeEmit(
+                captionDiagnosticSink,
+                new PaginateDiagnostic(
+                    PaginateDiagnosticCodes.PaginationForcedOverflow001,
+                    "TableLayouter: caption content's nested BlockLayouter "
+                    + "returned PageComplete despite NoBreakBreakResolver. "
+                    + "Caption content past the inner overflow forward-"
+                    + "progress threshold may have been truncated. "
+                    + "Multi-fragmentainer caption splitting is deferred — "
+                    + "see docs/deferrals.md#table-auto-fixed-spans-borders.",
+                    PaginateDiagnosticSeverity.Warning));
+        }
 
-        return (measuringSink, diagBuffer, measuringSink.MaxBlockExtentFromCellOrigin);
+        return (measuringSink, diagBuffer, measuringSink.MaxBlockExtentFromCellOrigin,
+            marginBlockStart, marginBlockEnd,
+            borderBlockStart, borderBlockEnd,
+            paddingBlockStart, paddingBlockEnd,
+            borderInlineStart, borderInlineEnd,
+            paddingInlineStart, paddingInlineEnd,
+            declaredBlockSize);
     }
 
     /// <summary>Sub-cycle 1 — walk <paramref name="grid"/>'s children
@@ -1902,6 +2246,99 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         /// resume semantics where a partial cell flush would need to
         /// translate buffer cursors into outer cursors.</summary>
         internal int OuterCursorBaseline => _outerCursorBaseline;
+    }
+
+    /// <summary>Per Phase 3 Task 12 sub-cycle 3 hardening (Finding 2) —
+    /// <see cref="IBreakResolver"/> that ALWAYS returns
+    /// <see cref="BreakAction.Continue"/> — even for chunks that don't
+    /// fit on the current page. Captions are atomic block-level boxes
+    /// (CSS Tables L3 §11.5); the nested BlockLayouter that walks the
+    /// caption subtree must traverse the whole subtree in a single
+    /// pass without ever returning <c>BreakHere</c>.
+    ///
+    /// <para>Pre-Finding-2, caption-content measurement used a vanilla
+    /// <see cref="BreakResolver"/>. If a caption's content was taller
+    /// than the fragmentainer, the resolver returned
+    /// <see cref="BreakAction.BreakHere"/>; BlockLayouter then returned
+    /// <see cref="LayoutAttemptOutcome.PageComplete"/> with a continuation
+    /// and the rest of the caption's children were silently dropped.
+    /// Post-fix: the no-break resolver guarantees Continue, the nested
+    /// BlockLayouter walks the full subtree, and the OUTER overflow
+    /// detector at commit time emits
+    /// <see cref="PaginateDiagnosticCodes.PaginationForcedOverflow001"/>
+    /// when the caption + table exceeds the fragmentainer block-size.</para>
+    ///
+    /// <para><b>ResolveBreaks contract.</b> The batched path is unused
+    /// for captions (BlockLayouter inline content uses the streaming
+    /// path through <see cref="ConsiderBreakAt"/>); we still implement
+    /// it for completeness — always returns
+    /// <see cref="OptimizerResult.Empty"/>, meaning "no breaks
+    /// needed".</para>
+    ///
+    /// <para><b>Checkpoint lifecycle.</b> The resolver still rents +
+    /// holds checkpoint leases for callers that register them — same
+    /// contract as <see cref="BreakResolver"/>'s lease handling.
+    /// Captions don't currently register checkpoints, so the lease
+    /// is never replaced in practice, but the no-break resolver
+    /// honors the contract so future caption-internal work that does
+    /// register checkpoints doesn't leak leases.</para></summary>
+    private sealed class NoBreakBreakResolver : IBreakResolver
+    {
+        private CheckpointLease _lastLease;
+
+        public BreakDecision ConsiderBreakAt(
+            BreakOpportunity opportunity, FragmentainerContext ctx)
+        {
+            // Always Continue — the caption is an atomic block.
+            // BreakOpportunity.ForceBreak still wins per the
+            // BreakResolver convention; the caller (caption-internal
+            // BlockLayouter) shouldn't be emitting forced breaks
+            // anyway because captions don't model break-before/after,
+            // but the contract violation surfaces here if it does.
+            // Cost = 0 — no break committed.
+            if (opportunity.ForceBreak)
+            {
+                // Defensive: a forced break inside a caption is a
+                // structural anomaly. Emit BreakHere so the outer
+                // diagnostics surface the issue rather than silently
+                // ignoring the author's request.
+                return new BreakDecision(BreakAction.BreakHere, 0, RewindTo: null);
+            }
+            return new BreakDecision(BreakAction.Continue, 0, RewindTo: null);
+        }
+
+        public OptimizerResult ResolveBreaks(
+            IReadOnlyList<BreakOpportunity> opportunities,
+            FragmentainerContext ctx,
+            CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(opportunities);
+            cancellationToken.ThrowIfCancellationRequested();
+            // No breaks — captions are atomic.
+            return OptimizerResult.Empty;
+        }
+
+        public void RegisterCheckpoint(CheckpointLease lease)
+        {
+            ArgumentNullException.ThrowIfNull(lease.Checkpoint);
+            if (_lastLease.Checkpoint is not null
+                && !ReferenceEquals(_lastLease.Checkpoint, lease.Checkpoint))
+            {
+                LayoutCheckpointPool.Return(_lastLease);
+            }
+            _lastLease = lease;
+        }
+
+        public LayoutCheckpoint? GetLastCheckpoint() => _lastLease.Checkpoint;
+
+        public void Dispose()
+        {
+            if (_lastLease.Checkpoint is not null)
+            {
+                LayoutCheckpointPool.Return(_lastLease);
+                _lastLease = default;
+            }
+        }
     }
 
     /// <summary>No-op disposer for symmetry with

@@ -374,6 +374,54 @@ public sealed class TableLayouterProductionTests
     }
 
     [Fact]
+    public async Task Production_caption_side_inherits_from_table_to_caption()
+    {
+        // Sub-cycle 3 hardening Finding 5 — `caption-side` is an
+        // INHERITED CSS property (CSS Tables L3 §11.5.2). Setting it
+        // on the <table> element should cascade to the <caption>; the
+        // caption then renders at the bottom even though the <caption>
+        // itself has no caption-side declaration. Pre-Finding-5 the
+        // production tests only covered explicit caption-side on the
+        // <caption> element.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                table { caption-side: bottom; }
+                caption > div { height: 20px; }
+                td > div { height: 35px; }
+            </style></head><body>
+            <table>
+              <caption><div>Inherited bottom</div></caption>
+              <tr><td><div>X</div></td></tr>
+            </table>
+            </body></html>
+            """;
+
+        var (sink, diagnostics, _) = await RenderViaFullPipelineAsync(html);
+
+        // No caption deferral diagnostic — caption renders normally.
+        Assert.DoesNotContain(diagnostics.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001
+            && d.Message.Contains("caption"));
+
+        // Caption appears BELOW the row (inheritance from <table>'s
+        // caption-side: bottom worked).
+        BoxFragment? captionFragment = null;
+        BoxFragment? rowFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCaption) captionFragment = f;
+            else if (f.Box.Kind == BoxKind.TableRow) rowFragment = f;
+        }
+        Assert.NotNull(captionFragment);
+        Assert.NotNull(rowFragment);
+        var rowBottom = rowFragment!.Value.BlockOffset + rowFragment.Value.BlockSize;
+        Assert.True(captionFragment!.Value.BlockOffset >= rowBottom,
+            $"Expected caption (BlockOffset={captionFragment.Value.BlockOffset}) "
+            + $"to render AT OR BELOW row bottom ({rowBottom}) via "
+            + "caption-side inheritance from <table>.");
+    }
+
+    [Fact]
     public async Task Table_cell_with_real_inline_text_lays_out_via_inline_only_block()
     {
         // Per Finding 6 — the cell content path must produce a

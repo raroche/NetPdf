@@ -291,7 +291,7 @@ grepping the ID).
   `max(content extent)` over `rowspan=1` cells and a second pass
   (ascending rowspan) lands any excess from `rowspan>1` cells on
   the LAST row of the span. The CSS Tables L3 §11 spec-strict
-  distribution-proportional algorithm is sub-cycle 3 work. No
+  distribution-proportional algorithm is sub-cycle 4+ work. No
   `table-layout: auto` / `fixed` algorithm distinction, no
   `border-collapse`, no `<thead>` / `<tfoot>` repetition across
   pages, no `<col>` widths, no multi-page splitting within a single

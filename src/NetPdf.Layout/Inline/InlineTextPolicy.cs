@@ -21,17 +21,29 @@ namespace NetPdf.Layout.Inline;
 /// layout-side enums are property-local too but with explicit
 /// alias-folding semantics for the cross-property keywords:</para>
 /// <list type="bullet">
-///   <item><c>overflow-wrap: break-word</c> (deprecated alias for
-///   <c>anywhere</c> per CSS Text L3 §5.1) folds to
-///   <see cref="OverflowWrap.Anywhere"/>. Layout doesn't yet model
-///   the subtle min-content-size distinction; cycle 4 may revisit.</item>
+///   <item><c>overflow-wrap: break-word</c> per CSS Text L3 §5.1
+///   produces glyph-boundary line-wrap opportunities (same as
+///   <c>anywhere</c>) but those opportunities DO NOT count for
+///   min-content sizing — the column min-content remains the full
+///   word width. Phase 3 Task 12 sub-cycle 5 hardening Finding 5 —
+///   the materializer now maps to a DISTINCT
+///   <see cref="OverflowWrap.BreakWord"/> variant (was folded to
+///   <see cref="OverflowWrap.Anywhere"/> pre-fix, which let auto-
+///   table-layout's min-content pass narrow break-word columns to a
+///   single glyph — incorrect per spec).</item>
 ///   <item><c>word-break: break-word</c> behaves as
 ///   <c>word-break: normal</c> PLUS <c>overflow-wrap: anywhere</c>
 ///   per CSS Text L3 §5.2 informative spec note. The materializer
 ///   sets <see cref="WordBreak"/> = <see cref="WordBreak.Normal"/>
 ///   AND bumps <see cref="OverflowWrap"/> to
 ///   <see cref="OverflowWrap.Anywhere"/>, regardless of what the
-///   <c>overflow-wrap</c> property declared independently.</item>
+///   <c>overflow-wrap</c> property declared independently. (The §5.2
+///   informative note explicitly maps to <c>anywhere</c>, NOT
+///   <c>break-word</c> — so the spec-strict min-content distinction
+///   from Finding 5 above flows: <c>word-break: break-word</c> sets
+///   <see cref="OverflowWrap.Anywhere"/> with min-content
+///   contribution, NOT the new
+///   <see cref="OverflowWrap.BreakWord"/>.)</item>
 ///   <item><c>white-space: break-spaces</c> maps to
 ///   <see cref="WhiteSpace.BreakSpaces"/> per cycle-3 review (User
 ///   #3). Cycle-3 simplification: BreakSpaces behaves like PreWrap
@@ -144,11 +156,14 @@ internal static class InlineTextPolicyMaterializer
         {
             0 => OverflowWrap.Normal,
             1 => OverflowWrap.Anywhere,
-            // break-word is the deprecated alias for anywhere per
-            // CSS Text L3 §5.1. Folds to Anywhere at the layout
-            // boundary (cycle 4 may revisit if min-content-size
-            // distinction matters for intrinsic sizing).
-            2 => OverflowWrap.Anywhere,
+            // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 5 —
+            // break-word maps to its own enum variant so auto-table-
+            // layout's min-content pass can honor the CSS Text L3 §5.1
+            // semantics distinction (break-word's soft opportunities
+            // don't count for min-content; anywhere's do). Line-wrap
+            // behavior is identical to Anywhere; only intrinsic-sizing
+            // measurement distinguishes the two.
+            2 => OverflowWrap.BreakWord,
             _ => OverflowWrap.Normal,
         };
 

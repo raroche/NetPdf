@@ -13,13 +13,17 @@ using NetPdf.Paginate.Diagnostics;
 namespace NetPdf.Layout.Layouters;
 
 /// <summary>
-/// Per Phase 3 Task 12 sub-cycle 1 + 2 + 3 + 4 + plan §"TableLayouter" —
-/// Hello-World table layouter. Walks the inner content of a
+/// Per Phase 3 Task 12 sub-cycle 1 + 2 + 3 + 4 + 5 + plan §"TableLayouter" —
+/// CSS Tables L3 table layouter. Walks the inner content of a
 /// <see cref="BoxKind.Table"/> (or <see cref="BoxKind.InlineTable"/>)
 /// wrapper: finds the <see cref="BoxKind.TableGrid"/>, collects table
-/// rows (recursing into row groups), splits the content-inline-size
-/// equally across the columns implied by the placed cell grid, stacks
-/// rows vertically, dispatches each cell's content through a nested
+/// rows (recursing into row groups), runs the column-width algorithm
+/// per <c>table-layout: fixed</c> (CSS Tables L3 §3.5, sub-cycle 4 —
+/// declared <c>&lt;col&gt;</c> / <c>&lt;colgroup&gt;</c> / first-row
+/// cell widths) OR <c>table-layout: auto</c> (CSS Tables L3 §3,
+/// sub-cycle 5 — shrink-to-fit via per-cell min/max-content
+/// intrinsic widths), stacks rows vertically with rowspan / colspan
+/// merging, dispatches each cell's content through a nested
 /// <see cref="BlockLayouter"/> for recursive layout, and emits one
 /// <see cref="BoxFragment"/> per row + per cell into the same
 /// <see cref="IBlockFragmentSink"/> the outer block layouter uses.
@@ -92,14 +96,24 @@ namespace NetPdf.Layout.Layouters;
 ///   anchor the cell at the cursor with its <c>colspan × rowspan</c>
 ///   slot rectangle marked occupied. The column count = max occupied
 ///   column index + 1 across all rows.</item>
-///   <item><b>Sub-cycle 4:</b> compute per-column widths via
+///   <item><b>Sub-cycle 4 + 5:</b> compute per-column widths via
 ///   <see cref="ComputeColumnWidths"/>. For <c>table-layout: fixed</c>
-///   (CSS Tables L3 §3.5) a 3-pass algorithm reads <c>&lt;col&gt;</c>
+///   (CSS Tables L3 §3.5) a 4-pass algorithm reads <c>&lt;col&gt;</c>
 ///   / <c>&lt;colgroup&gt;</c> declarations (Pass A), then first-row
 ///   cell widths (Pass B), then equal-distributes the remainder to
-///   undeclared columns (Pass C). For <c>table-layout: auto</c>
-///   (default) sub-cycle 4 still equal-splits — the §3 shrink-to-
-///   fit min/max-content algorithm is sub-cycle 5+ work — see
+///   undeclared columns (Pass C), then reconciles against the
+///   wrapper's content-inline-size (Pass D — distributes leftover
+///   or records inline-overflow). For <c>table-layout: auto</c>
+///   (default — sub-cycle 5) the CSS Tables L3 §3 shrink-to-fit
+///   algorithm runs via <see cref="ComputeColumnWidthsAuto"/>: per-
+///   cell min/max-content widths are measured by speculative cell-
+///   content layouts at extreme inline sizes
+///   (<see cref="MeasureCellIntrinsicWidths"/>); per-column min/max
+///   are aggregated (colspan distribution mirrors Pass B); the table
+///   width is clamped to <c>[sumMin, sumMax]</c>; widths are
+///   distributed via the overflow / saturated / interpolation
+///   branches. The §3 spec-strict proportional-weight distribution
+///   is approximated by linear interpolation — see
 ///   <c>docs/deferrals.md#table-auto-fixed-spans-borders</c>.</item>
 ///   <item>Measure pass: for each cell at its origin, lay out its
 ///   content into a <see cref="MeasuringFragmentSink"/> that BUFFERS
@@ -124,10 +138,15 @@ namespace NetPdf.Layout.Layouters;
 /// <para><b>Remaining deferrals</b> (see
 /// <c>docs/deferrals.md#table-auto-fixed-spans-borders</c>):</para>
 /// <list type="bullet">
-///   <item>CSS Tables L3 §3 auto-table-layout column-width algorithm
-///   (shrink-to-fit / intrinsic min/max content) — sub-cycle 5+ work.
-///   Sub-cycle 4 ships the §3.5 fixed-layout algorithm; auto layout
-///   still uses the equal-split approximation.</item>
+///   <item>CSS Tables L3 §3 spec-strict proportional-weight column-
+///   width distribution — sub-cycle 5 ships a deterministic linear-
+///   interpolation approximation between min and max plus a
+///   deterministic equal-split colspan distribution. Sub-cycle 6+
+///   may revisit.</item>
+///   <item>Block-level fixed-width content + replaced elements in
+///   cells don't differentiate min vs max (sub-cycle 5's measurement
+///   reads inline-only-block line widths; block-level cell content
+///   falls back to the border-box = available width).</item>
 ///   <item>Percentage column widths (e.g.
 ///   <c>&lt;col width="20%"&gt;</c>) — sub-cycle 4 treats them as 0,
 ///   falling back to Pass B / Pass C.</item>
@@ -478,16 +497,16 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     private bool _measureDone;
     private double _measuredContentHeight;
     private int _measuredColumnCount;
-    // Per Phase 3 Task 12 sub-cycle 4 — replaced the scalar
-    // `_measuredColumnWidth` with a per-column-width array because
+    // Per Phase 3 Task 12 sub-cycle 4 — per-column-width array.
     // `table-layout: fixed` derives per-column widths from <col> /
-    // <colgroup> + first-row cell widths (CSS Tables L3 §3.5). For
-    // `table-layout: auto` (sub-cycle 4 still equal-splits — the §3
-    // shrink-to-fit algorithm is sub-cycle 5+ work) the array entries
-    // are all equal to the prior `contentInlineSize / columnCount`.
-    // Cell inline-size for a placement is sum(columnWidths[col..col+colspan]).
-    // Per-column inline OFFSET is the prefix-sum stored separately so
-    // the emit pass avoids re-summing.
+    // <colgroup> + first-row cell widths (CSS Tables L3 §3.5);
+    // sub-cycle 5 added `table-layout: auto` shrink-to-fit via per-
+    // cell min/max-content intrinsic widths (CSS Tables L3 §3) with
+    // sub-cycle 5 hardening Finding 2 also honoring declared widths
+    // as min/max-content floors. Cell inline-size for a placement is
+    // sum(columnWidths[col..col+colspan]). Per-column inline OFFSET
+    // is the prefix-sum stored separately so the emit pass avoids
+    // re-summing.
     private double[]? _measuredColumnWidths;
     private double[]? _measuredColumnOffsets;
     // Per Phase 3 Task 12 sub-cycle 4 hardening Finding 1 — table grid's
@@ -536,6 +555,19 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     // EXCEEDED-001 diagnostic from EmitDeferralDiagnostics.
     private bool _measuredSlotBudgetExceeded;
     private long _measuredSlotsUsed;
+
+    // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 4 —
+    // intrinsic-measurement budget accounting. _intrinsicMeasurementOps
+    // counts cumulative 2-ops-per-cell consumption during
+    // ComputeColumnWidthsAuto's Step 1. When it crosses
+    // MaxIntrinsicMeasurementOps, _intrinsicMeasurementBudgetExceeded
+    // turns true + remaining cells fall back to (0, contentInlineSize).
+    // _intrinsicMeasurementCellsMeasured / _intrinsicMeasurementCellsFellBack
+    // are counters that drive the diagnostic message at emit time.
+    private long _intrinsicMeasurementOps;
+    private bool _intrinsicMeasurementBudgetExceeded;
+    private int _intrinsicMeasurementCellsMeasured;
+    private int _intrinsicMeasurementCellsFellBack;
 
     /// <summary>Per Phase 3 Task 12 sub-cycle 4 hardening Finding 1 —
     /// the table grid's used inline-size after Pass D reconciliation.
@@ -588,21 +620,30 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         // observed columnSum > contentInlineSize. The pre-Finding-1
         // path silently let the table grid overflow the wrapper; the
         // diagnostic gives authors a hook to tune their declarations.
+        //
+        // Sub-cycle 5 — the same diagnostic now also fires under
+        // table-layout: auto when sum(min-content) > contentInlineSize
+        // (the shrink-to-fit algorithm CAN'T narrow the columns below
+        // their min-content widths without splitting words). The
+        // message uses the generic phrasing "column widths" rather
+        // than "declared column widths" so it serves both paths.
         if (_measuredInlineOverflowed)
         {
             OptimizingBreakResolver.SafeEmit(
                 layout.Diagnostics ?? _diagnostics,
                 new PaginateDiagnostic(
                     PaginateDiagnosticCodes.LayoutTableInlineOverflow001,
-                    $"TableLayouter: under table-layout: fixed, sum of "
-                    + $"declared column widths "
+                    $"TableLayouter: sum of column widths "
                     + $"({_measuredInlineOverflowColumnSum:0.##}) exceeds "
                     + $"the wrapper's content-inline-size "
                     + $"({_measuredInlineOverflowContentSize:0.##}). The "
                     + "table grid overflows the wrapper in the inline "
-                    + "axis; declared widths are preserved + row + "
-                    + "caption fragments grow to the column sum. See "
-                    + "docs/deferrals.md#table-auto-fixed-spans-borders.",
+                    + "axis; column widths are preserved + row + "
+                    + "caption fragments grow to the column sum. Under "
+                    + "table-layout: fixed this means declared widths "
+                    + "summed past the wrapper; under table-layout: auto "
+                    + "it means the min-content sum exceeds the wrapper. "
+                    + "See docs/deferrals.md#table-auto-fixed-spans-borders.",
                     PaginateDiagnosticSeverity.Warning));
         }
 
@@ -1027,32 +1068,36 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                 + "columns + measure cell content.");
         }
 
-        // Per Phase 3 Task 12 sub-cycle 3 — collect captions (direct
-        // wrapper children) + lay each one out via a nested
-        // BlockLayouter into a buffered MeasuringFragmentSink. Captions
-        // ARE block-level boxes with the wrapper's content-inline-size
-        // (CSS Tables L3 §11.5.1) — auto-table-layout's column-aware
-        // grid-width pass is deferred so grid-outer-inline-size =
-        // wrapper-content-inline-size for sub-cycle 3.
+        // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 6 —
+        // caption measurement is DEFERRED until after the column-
+        // widths pass has produced _measuredUsedInlineSize. CSS
+        // Tables L3 §11.5.1 specifies the caption's used inline-size
+        // equals the outer inline-size of the table grid; under
+        // auto-table-layout that can DIFFER from the wrapper's
+        // content-inline-size (when min-content overflow fires,
+        // the grid's inline extent exceeds the wrapper, and the
+        // captions should match the grid). Pre-fix captions were
+        // always measured at _contentInlineSize, producing visual
+        // narrow-captions over a wide grid.
         //
-        // The measured caption list + top/bottom totals are folded
-        // into the table content height returned by this method. The
-        // AttemptLayout emit phase consumes the list directly.
-        // sub-cycle 1 + 2's diagnostic-only path is gone — the
-        // LAYOUT-TABLE-FEATURE-UNSUPPORTED-001 code now fires only for
-        // missing-TableGrid + span=0 deferral.
-        _measuredCaptionList = MeasureCaptions(
-            _rootBox, fragmentainer, ref layout, cancellationToken,
-            out _measuredTopCaptionsTotal, out _measuredBottomCaptionsTotal);
+        // For the missing-grid + zero-row + zero-column early-return
+        // paths the caption measurement still falls back to
+        // _contentInlineSize (no grid → grid-outer-inline-size is
+        // undefined; fall back to the wrapper).
 
         // Locate the TableGrid child.
         var grid = FindTableGrid(_rootBox);
         if (grid is null)
         {
             _measuredMissingGrid = true;
-            _measureDone = true;
             // Captions still contribute to the total even if the grid
-            // is missing — they were laid out as standalone block boxes.
+            // is missing — they were laid out as standalone block
+            // boxes. The fallback inline-size = _contentInlineSize.
+            _measuredCaptionList = MeasureCaptions(
+                _rootBox, _contentInlineSize,
+                fragmentainer, ref layout, cancellationToken,
+                out _measuredTopCaptionsTotal, out _measuredBottomCaptionsTotal);
+            _measureDone = true;
             _measuredContentHeight =
                 _measuredTopCaptionsTotal + _measuredBottomCaptionsTotal;
             return _measuredContentHeight;
@@ -1062,18 +1107,17 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         var rows = new List<Box>();
         CollectRows(grid, rows, cancellationToken);
 
-        // Per Phase 3 Task 12 sub-cycle 3 — captions still contribute
-        // to the content height even when the grid has zero rows /
-        // columns / column width. Compute the caption-only total once
-        // for the early-return paths below.
-        var captionOnlyHeight =
-            _measuredTopCaptionsTotal + _measuredBottomCaptionsTotal;
-
         if (rows.Count == 0)
         {
+            // Captions-only case — fall back to _contentInlineSize.
+            _measuredCaptionList = MeasureCaptions(
+                _rootBox, _contentInlineSize,
+                fragmentainer, ref layout, cancellationToken,
+                out _measuredTopCaptionsTotal, out _measuredBottomCaptionsTotal);
             _measureDone = true;
-            _measuredContentHeight = captionOnlyHeight;
-            return captionOnlyHeight;
+            _measuredContentHeight =
+                _measuredTopCaptionsTotal + _measuredBottomCaptionsTotal;
+            return _measuredContentHeight;
         }
 
         // Sub-cycle 2 — place cells onto a 2D occupancy grid using the
@@ -1093,29 +1137,41 @@ internal sealed class TableLayouter : ILayouter, IDisposable
 
         if (columnCount == 0)
         {
+            // No columns → no grid extent; measure captions at the
+            // wrapper's content-inline-size + return caption-only
+            // total.
+            _measuredCaptionList = MeasureCaptions(
+                _rootBox, _contentInlineSize,
+                fragmentainer, ref layout, cancellationToken,
+                out _measuredTopCaptionsTotal, out _measuredBottomCaptionsTotal);
             _measureDone = true;
-            _measuredContentHeight = captionOnlyHeight;
-            return captionOnlyHeight;
+            _measuredContentHeight =
+                _measuredTopCaptionsTotal + _measuredBottomCaptionsTotal;
+            return _measuredContentHeight;
         }
 
-        // Per Phase 3 Task 12 sub-cycle 4 — compute per-column widths
-        // via `table-layout: fixed` (CSS Tables L3 §3.5) when the
-        // wrapper declares it; otherwise fall back to equal-split
-        // (the §3 auto-table-layout shrink-to-fit algorithm is sub-
-        // cycle 5+ work — see docs/deferrals.md#table-auto-fixed-spans-borders).
+        // Per Phase 3 Task 12 sub-cycle 4 + 5 — compute per-column
+        // widths. The branch on `table-layout` selects between:
+        //   * `fixed` (CSS Tables L3 §3.5) — 4-pass algorithm with
+        //     <col> / <colgroup> declarations + first-row cell widths
+        //     + Pass D reconciliation.
+        //   * `auto` (CSS Tables L3 §3) — shrink-to-fit via per-cell
+        //     min/max-content intrinsic widths + per-column
+        //     aggregation + linear-interpolation distribution.
+        //     Sub-cycle 5 hardening Finding 2 also incorporates
+        //     <col> / first-row widths as min/max-content floors.
         //
-        // Sub-cycle 4 hardening (Finding 1) — under fixed-layout, after
-        // Pass A + B + C complete, run Pass D reconciliation:
-        // distribute leftover wrapper space equally across columns when
-        // the column sum < contentInlineSize, or record the inline-
-        // overflow when it exceeds. The grid's used inline-size
+        // Sub-cycle 4 hardening (Finding 1) — fixed-layout's Pass D
+        // distributes leftover wrapper space equally across columns
+        // when the column sum < contentInlineSize, or records the
+        // inline-overflow when it exceeds. The grid's used inline-size
         // (_measuredUsedInlineSize) is consumed by the emit pass to
         // size the row + caption fragments to the ACTUAL column extent
         // instead of the wrapper's content-inline-size (the pre-fix
         // mismatch left visual gaps when columnSum < contentInlineSize).
         var columnWidths = ComputeColumnWidths(
             _rootBox, rows, columnCount, _contentInlineSize, placements,
-            cancellationToken);
+            fragmentainer, ref layout, cancellationToken);
         _measuredColumnWidths = columnWidths;
 
         // Pre-compute per-column inline OFFSETS as a prefix-sum so the
@@ -1142,10 +1198,34 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         }
         if (!anyPositiveWidth)
         {
+            // All columns resolved to zero — degenerate grid; measure
+            // captions at the wrapper's content-inline-size + return
+            // caption-only total.
+            _measuredCaptionList = MeasureCaptions(
+                _rootBox, _contentInlineSize,
+                fragmentainer, ref layout, cancellationToken,
+                out _measuredTopCaptionsTotal, out _measuredBottomCaptionsTotal);
             _measureDone = true;
-            _measuredContentHeight = captionOnlyHeight;
-            return captionOnlyHeight;
+            _measuredContentHeight =
+                _measuredTopCaptionsTotal + _measuredBottomCaptionsTotal;
+            return _measuredContentHeight;
         }
+
+        // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 6 — now
+        // that the grid's used inline-size is known, measure captions
+        // at that size (CSS Tables L3 §11.5.1 — caption inline-size
+        // matches the grid's outer inline-size). The cells haven't
+        // been measured yet but the grid's INLINE extent is already
+        // settled. Cell content measurement happens AFTER (below) and
+        // uses _measuredColumnWidths which the row-stack-driven
+        // pagination logic consumes.
+        var captionInlineSize = _measuredUsedInlineSize > 0
+            ? _measuredUsedInlineSize
+            : _contentInlineSize;
+        _measuredCaptionList = MeasureCaptions(
+            _rootBox, captionInlineSize,
+            fragmentainer, ref layout, cancellationToken,
+            out _measuredTopCaptionsTotal, out _measuredBottomCaptionsTotal);
 
         // Sub-cycle 2 — measure each cell's content into its buffer.
         // The buffer captures the inline translation (the cell's column
@@ -1168,13 +1248,25 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             var cellInlineSize =
                 columnOffsets[placement.OriginCol + placement.ColSpan]
                 - columnOffsets[placement.OriginCol];
-            var (buffer, diagBuffer) = MeasureCellContent(
+            var (buffer, diagBuffer, _) = MeasureCellContent(
                 cellBox: placement.Cell,
                 cellInlineOffset: cellInlineOffset,
                 cellInlineSize: cellInlineSize,
                 fragmentainer: fragmentainer,
                 layout: ref layout,
                 cancellationToken: cancellationToken);
+            // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 3 —
+            // the cell's content extent includes the cell's block-
+            // axis box-model edges (border-block-start + padding-
+            // block-start + padding-block-end + border-block-end)
+            // so the row height covers the inner content + the
+            // cell's own padding/border. MeasuringFragmentSink's
+            // tracker measures the inner content extent only.
+            var cellBlockEdges =
+                placement.Cell.Style.ReadLengthPxOrZero(PropertyId.PaddingTop)
+                + placement.Cell.Style.ReadLengthPxOrZero(PropertyId.PaddingBottom)
+                + placement.Cell.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth)
+                + placement.Cell.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
             placements[pIdx] = new CellPlacement(
                 cell: placement.Cell,
                 originRow: placement.OriginRow,
@@ -1183,7 +1275,7 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                 colSpan: placement.ColSpan,
                 contentBuffer: buffer,
                 diagnosticsBuffer: diagBuffer,
-                contentBlockExtent: buffer.MaxBlockExtentFromCellOrigin);
+                contentBlockExtent: buffer.MaxBlockExtentFromCellOrigin + cellBlockEdges);
         }
 
         // Sub-cycle 2 — row-height pass.
@@ -1284,6 +1376,19 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     /// pass. 1M is generous for legitimate documents (a 1000-row × 1000-
     /// column matrix) yet keeps placement bounded.</summary>
     private const long MaxOccupiedSlots = 1_000_000;
+
+    /// <summary>Per Phase 3 Task 12 sub-cycle 5 hardening Finding 4 —
+    /// per-table cap on the cumulative auto-table-layout intrinsic-
+    /// measurement op count. Each cell costs 2 ops (one min-content
+    /// + one max-content speculative <see cref="BlockLayouter"/>
+    /// dispatch). 10,000 ops comfortably handles real invoice /
+    /// report tables (5,000 cells covers a 100-row × 50-column
+    /// matrix) while capping pathological inputs at a known bound.
+    /// Beyond the cap, remaining cells fall back to
+    /// <c>(minContent=0, maxContent=contentInlineSize)</c> + the
+    /// <c>LAYOUT-TABLE-INTRINSIC-MEASUREMENT-BUDGET-EXCEEDED-001</c>
+    /// diagnostic surfaces.</summary>
+    private const long MaxIntrinsicMeasurementOps = 10_000;
 
     /// <summary>Sub-cycle 2 + Finding 4 + 6 — place each cell onto the
     /// 2D occupancy grid via the HTML5 "Forming a table" algorithm
@@ -1625,6 +1730,30 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                     PaginateDiagnosticSeverity.Warning));
         }
 
+        // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 4 —
+        // intrinsic-measurement-budget exceeded; ComputeColumnWidthsAuto
+        // fell back to (0, contentInlineSize) for the cells past the
+        // cap. The table still renders but the column min/max-content
+        // aggregation for those cells didn't reflect their content.
+        if (_intrinsicMeasurementBudgetExceeded)
+        {
+            OptimizingBreakResolver.SafeEmit(
+                sink,
+                new PaginateDiagnostic(
+                    PaginateDiagnosticCodes.LayoutTableIntrinsicMeasurementBudgetExceeded001,
+                    $"TableLayouter: cumulative auto-table-layout intrinsic-"
+                    + $"measurement op count exceeded the {MaxIntrinsicMeasurementOps} "
+                    + $"DoS budget. {_intrinsicMeasurementCellsMeasured} cells "
+                    + $"were fully measured (min + max-content speculative passes) "
+                    + $"+ {_intrinsicMeasurementCellsFellBack} cells fell back to "
+                    + $"(minContent=0, maxContent=contentInlineSize) — column "
+                    + $"widths for those cells degenerate toward an equal-split-like "
+                    + "distribution. Defends against hostile HTML with very "
+                    + "large tables of pathologically deep cell content trees. "
+                    + "See docs/deferrals.md#table-auto-fixed-spans-borders.",
+                    PaginateDiagnosticSeverity.Warning));
+        }
+
         // Per Phase 3 Task 12 sub-cycle 3 — captions are now laid out
         // for real (see MeasureCaptions + Phase 0 / Phase D emits in
         // AttemptLayout). The caption-emits-LAYOUT-TABLE-FEATURE-
@@ -1682,6 +1811,7 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     /// </summary>
     private List<CaptionMeasurement>? MeasureCaptions(
         Box wrapper,
+        double captionInlineSize,
         FragmentainerContext fragmentainer,
         ref LayoutContext layout,
         CancellationToken cancellationToken,
@@ -1741,16 +1871,20 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                         PaginateDiagnosticSeverity.Warning));
             }
 
-            // The caption is laid out at the wrapper's content-inline-
-            // size. Inline offset for buffered fragments is the
-            // content-inline-offset (= wrapper's content-box inline-
-            // start edge) so the caption text aligns with the cell
-            // grid below / above.
+            // The caption is laid out at the grid's used inline-size.
+            // CSS Tables L3 §11.5.1 — caption inline-size equals the
+            // outer inline-size of the table grid; under auto-table-
+            // layout the grid extent can differ from the wrapper's
+            // content-inline-size. Per Phase 3 Task 12 sub-cycle 5
+            // hardening Finding 6, the caller passes the post-column-
+            // widths used inline-size. The fallback for missing-grid /
+            // empty-grid paths is the wrapper's content-inline-size
+            // (which is what the caller passes when the grid hasn't
+            // produced a usable inline extent).
             //
-            // TODO sub-cycle 4 — once auto-table-layout ships, swap
-            // this for the grid's outer inline-size (which can be
-            // narrower than the wrapper's content-inline-size when
-            // columns are intrinsically narrower than the wrapper).
+            // Inline offset for buffered fragments is the wrapper's
+            // content-inline-offset so the caption text aligns with
+            // the cell grid below / above.
             //
             // Finding 1 — MeasureCaptionContent now returns the full
             // box-model metric set; CaptionMeasurement stores them
@@ -1758,7 +1892,7 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             var m = MeasureCaptionContent(
                 captionBox: ch,
                 captionInlineOffset: _contentInlineOffset,
-                captionInlineSize: _contentInlineSize,
+                captionInlineSize: captionInlineSize,
                 fragmentainer: fragmentainer,
                 layout: ref layout,
                 cancellationToken: cancellationToken);
@@ -2043,12 +2177,15 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         }
     }
 
-    /// <summary>Per Phase 3 Task 12 sub-cycle 4 — compute the per-column
-    /// width array for the table. CSS Tables L3 §3.5 (fixed-table-
-    /// layout): when <c>table-layout: fixed</c> is set, column widths
-    /// derive from author declarations rather than content; sub-cycle 4
-    /// implements the three-pass algorithm:
+    /// <summary>Per Phase 3 Task 12 sub-cycle 4 + 5 — compute the
+    /// per-column width array for the table. CSS Tables L3 §3.5
+    /// (fixed-table-layout): when <c>table-layout: fixed</c> is set,
+    /// column widths derive from author declarations; CSS Tables L3 §3
+    /// (auto-table-layout): when <c>table-layout: auto</c> (default),
+    /// column widths derive from per-cell min/max-content intrinsic
+    /// widths via speculative cell-content layouts.
     ///
+    /// <para><b>Fixed-layout pipeline (sub-cycle 4):</b></para>
     /// <list type="number">
     ///   <item><b>Pass A</b> — walk <see cref="BoxKind.TableColumn"/>
     ///     / <see cref="BoxKind.TableColumnGroup"/> direct children of
@@ -2069,33 +2206,40 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     ///     distribute <c>max(0, contentInlineSize − sum(declared))</c>
     ///     across them. Columns with no declaration AND no remainder
     ///     stay at 0.</item>
+    ///   <item><b>Pass D (hardening Finding 1)</b> — reconcile the
+    ///     column sum with the wrapper's content-inline-size: if
+    ///     less, distribute the leftover equally; if greater, keep
+    ///     declared widths intact + record an inline-overflow
+    ///     diagnostic for the emit pass.</item>
     /// </list>
     ///
-    /// <para>For <c>table-layout: auto</c> (default) sub-cycle 4 keeps
-    /// the prior equal-split — every column gets
-    /// <c>contentInlineSize / columnCount</c>. The CSS Tables L3 §3
-    /// shrink-to-fit auto algorithm (min/max-content per column) is
-    /// sub-cycle 5+ work — see
-    /// <c>docs/deferrals.md#table-auto-fixed-spans-borders</c>.</para>
+    /// <para><b>Auto-layout pipeline (sub-cycle 5):</b> delegates to
+    /// <see cref="ComputeColumnWidthsAuto"/>, which runs the CSS Tables
+    /// L3 §3 shrink-to-fit algorithm (per-cell min/max-content via
+    /// speculative cell-content layouts, per-column aggregation,
+    /// linear-interpolation distribution). Sub-cycle 5 hardening
+    /// Finding 2 also folds declared <c>&lt;col&gt;</c> / first-row
+    /// cell widths in as per-column min/max floors. The fragmentainer
+    /// + layout context are threaded in so the speculative
+    /// measurements can run nested BlockLayouter instances.</para>
     ///
     /// <para><b>Percentage widths are NOT supported.</b>
     /// <c>&lt;col width="20%"&gt;</c> is treated as 0 (the column falls
-    /// through to Pass B / Pass C). Sub-cycle 5+ work — see
+    /// through). Sub-cycle 6+ work — see
     /// <c>docs/deferrals.md#table-auto-fixed-spans-borders</c>.</para>
-    /// </summary>
-    /// <summary>Per Phase 3 Task 12 sub-cycle 4 hardening Finding 1 +
-    /// 2 + 5 — instance method (was static; promoted so the cancellation-
-    /// token threading + the Pass D inline-overflow recording can read
-    /// /write the instance's measure-phase state). Reads
+    ///
+    /// <para>Instance method (was static pre-Pass-D — promoted so
+    /// cancellation-token threading + inline-overflow flag recording
+    /// can read/write the instance state). Reads
     /// <paramref name="placements"/> for Pass B's first-row colspan
-    /// partial-declare semantics. Records
-    /// <see cref="_measuredInlineOverflowed"/> +
-    /// <see cref="_measuredInlineOverflowColumnSum"/> +
-    /// <see cref="_measuredInlineOverflowContentSize"/> when Pass D
-    /// observes columnSum > contentInlineSize.</summary>
+    /// partial-declare semantics + Step 0 of the auto branch.</para>
+    /// </summary>
     private double[] ComputeColumnWidths(
         Box wrapper, List<Box> rows, int columnCount, double contentInlineSize,
-        IList<CellPlacement> placements, CancellationToken cancellationToken)
+        IList<CellPlacement> placements,
+        FragmentainerContext fragmentainer,
+        ref LayoutContext layout,
+        CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         var widths = new double[columnCount];
@@ -2181,17 +2325,440 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             return widths;
         }
 
-        // table-layout: auto — equal-split for sub-cycle 4. The §3
-        // auto-table-layout shrink-to-fit min/max-content algorithm is
-        // sub-cycle 5+ work — see
-        // docs/deferrals.md#table-auto-fixed-spans-borders.
-        // No Pass D distribution for auto — equal-split already sums
-        // exactly to contentInlineSize so the reconciliation would be
-        // a no-op.
+        // Per Phase 3 Task 12 sub-cycle 5 — table-layout: auto now runs
+        // the CSS Tables L3 §3 shrink-to-fit algorithm. Per-cell min/
+        // max-content widths are measured via speculative cell-content
+        // layouts at extreme inline sizes (1px → min-content, 1e6 →
+        // max-content); per-column min/max are aggregated (colspan
+        // distribution mirrors the Pass B partial-declare pattern); the
+        // table's effective width is clamped to
+        // [sum(min), sum(max)]; columns are distributed via linear
+        // interpolation.
+        //
+        // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 2 — the
+        // auto branch now also consults <col> / <colgroup> +
+        // first-row cell widths as inputs to per-column sizing
+        // (declared widths floor both min AND max). The wrapper is
+        // passed in so Step 0 can walk the column declarations.
+        return ComputeColumnWidthsAuto(
+            wrapper, columnCount, contentInlineSize, placements,
+            fragmentainer, ref layout, cancellationToken);
+    }
+
+    /// <summary>Per Phase 3 Task 12 sub-cycle 5 — CSS Tables L3 §3
+    /// auto-table-layout column-width algorithm. Computes per-cell
+    /// min-content + max-content intrinsic widths via speculative
+    /// cell-content layouts, aggregates to per-column min/max arrays
+    /// (distributing across colspan>1 cells the same way Pass B
+    /// distributes declared widths), then computes the table's
+    /// effective width as
+    /// <c>clamp(contentInlineSize, sum(colMinContent), sum(colMaxContent))</c>
+    /// and distributes via:
+    /// <list type="bullet">
+    ///   <item>If <c>tableWidth &gt;= sum(colMaxContent)</c>: each
+    ///     column gets <c>colMaxContent[c]</c>; extra space is
+    ///     distributed equally across all columns.</item>
+    ///   <item>If <c>tableWidth &lt;= sum(colMinContent)</c>: each
+    ///     column gets <c>colMinContent[c]</c>; the table overflows
+    ///     the wrapper inline-axis (records inline-overflow flags for
+    ///     the emit pass to surface <c>LAYOUT-TABLE-INLINE-OVERFLOW-001</c>).</item>
+    ///   <item>Otherwise: linear interpolation —
+    ///     <c>widths[c] = colMin[c] + (tableWidth - sumMin) * (colMax[c] - colMin[c]) / (sumMax - sumMin)</c>.</item>
+    /// </list>
+    ///
+    /// <para><b>Sub-cycle 5 simplification.</b> A single speculative
+    /// pass per cell at <c>cellInlineSize = 1.0</c> (forces line-wrap
+    /// at every UAX #14 break opportunity, yielding the widest line as
+    /// min-content) + another at <c>cellInlineSize = 1e6</c> (no wrap
+    /// pressure, yielding the natural inline extent as max-content).
+    /// The speculative buffers are discarded — only their
+    /// <see cref="MeasuringFragmentSink.MaxInlineExtentFromCellOrigin"/>
+    /// trackers are read. Block-level / replaced cell content treats
+    /// these the same way (the inner BlockLayouter's emitted
+    /// fragments' inline-axis extents drive the tracker regardless of
+    /// whether the content is text-only or block-only). The main
+    /// measure pass then re-runs <see cref="MeasureCellContent"/> with
+    /// the FINAL column widths to harvest the row-height-driving
+    /// block extent + the buffered fragments for emit.</para>
+    ///
+    /// <para><b>Cancellation.</b> Honored per cell + per column.</para>
+    /// </summary>
+    private double[] ComputeColumnWidthsAuto(
+        Box wrapper,
+        int columnCount, double contentInlineSize,
+        IList<CellPlacement> placements,
+        FragmentainerContext fragmentainer,
+        ref LayoutContext layout,
+        CancellationToken cancellationToken)
+    {
         cancellationToken.ThrowIfCancellationRequested();
-        var equalWidth = contentInlineSize / columnCount;
-        for (var c = 0; c < columnCount; c++) widths[c] = equalWidth;
+
+        var widths = new double[columnCount];
+        if (columnCount == 0) return widths;
+
+        // ============================================================
+        //  Step 0 — collect declared <col> / <colgroup> + first-row
+        //  cell widths so auto-table-layout can FLOOR the per-column
+        //  min/max with author declarations.
+        //  (Phase 3 Task 12 sub-cycle 5 hardening Finding 2.)
+        // ============================================================
+        // Per CSS Tables L3 §3 auto-table-layout treats author column
+        // / cell width declarations as INPUTS to per-column sizing —
+        // pre-fix the auto branch ignored them entirely + only the
+        // intrinsic content drove widths. The locked design (sub-cycle
+        // 5 hardening Finding 2) uses the simpler approximation
+        // "declared widths floor both colMin AND colMax" — a declared
+        // width is the AUTHOR'S preferred minimum + when the content's
+        // intrinsic widths exceed the declaration the algorithm
+        // upgrades (max(declared, intrinsic)). The spec-strict
+        // "declared width is preferred for max-content but not
+        // necessarily a floor for min-content" lands in sub-cycle 6+
+        // — see docs/deferrals.md#table-auto-fixed-spans-borders.
+        var declaredWidths = new double[columnCount];
+        var columnHasDeclared = new bool[columnCount];
+        var colCursor = 0;
+        CollectColumnsFromGridLevel(
+            wrapper, columnCount, declaredWidths, columnHasDeclared,
+            ref colCursor, cancellationToken);
+        ApplyFirstRowCellWidths(
+            placements, declaredWidths, columnHasDeclared, columnCount,
+            cancellationToken);
+
+        // ============================================================
+        //  Step 1 — per-cell intrinsic widths via speculative layouts.
+        // ============================================================
+        // For each placement, run two nested cell layouts: one at a
+        // very small inline-size (1.0 px) to force every UAX #14 break
+        // opportunity to wrap (yielding min-content as the widest
+        // resulting line/atom advance), and one at a very large inline-
+        // size (1e6 px) to suppress any wrap (yielding max-content as
+        // the natural inline extent). The buffered fragments + their
+        // diagnostics are discarded — these are speculative
+        // measurements that do not appear in the final layout. Cached
+        // in arrays parallel to `placements` so the per-column
+        // aggregation below can read them.
+        //
+        // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 4 — DoS-
+        // resistant budget. Each cell consumes 2 ops (min-content +
+        // max-content speculative passes). When the cumulative ops
+        // exceed MaxIntrinsicMeasurementOps the remaining cells fall
+        // back to (minContent=0, maxContent=contentInlineSize), and
+        // the layouter emits LAYOUT-TABLE-INTRINSIC-MEASUREMENT-
+        // BUDGET-EXCEEDED-001 from AttemptLayout's deferral pass.
+        var cellMinContent = new double[placements.Count];
+        var cellMaxContent = new double[placements.Count];
+        var measuredCells = 0;
+        var fallbackCells = 0;
+        for (var pIdx = 0; pIdx < placements.Count; pIdx++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            // Each cell normally costs 2 ops (min + max passes).
+            if (_intrinsicMeasurementOps + 2 > MaxIntrinsicMeasurementOps)
+            {
+                // Budget exceeded — fall back to a degenerate
+                // (0, contentInlineSize) range so the column gets
+                // up to the full available width as max + can shrink
+                // to 0 as min. Combined with the interpolation
+                // distribution path this produces a degenerate-equal-
+                // split-like result without dispatching more
+                // speculative passes.
+                _intrinsicMeasurementBudgetExceeded = true;
+                cellMinContent[pIdx] = 0;
+                cellMaxContent[pIdx] = contentInlineSize;
+                fallbackCells++;
+                continue;
+            }
+            var cell = placements[pIdx].Cell;
+            var (cellMin, cellMax) = MeasureCellIntrinsicWidths(
+                cell, fragmentainer, ref layout, cancellationToken);
+            cellMinContent[pIdx] = cellMin;
+            cellMaxContent[pIdx] = cellMax;
+            _intrinsicMeasurementOps += 2;
+            measuredCells++;
+        }
+        _intrinsicMeasurementCellsMeasured = measuredCells;
+        _intrinsicMeasurementCellsFellBack = fallbackCells;
+
+        // ============================================================
+        //  Step 2 — per-column min/max aggregation.
+        // ============================================================
+        // For colspan=1 placements: column's min/max = max(cell.min /
+        // cell.max) over cells anchored at that column. For colspan>1
+        // placements: distribute the cell's intrinsic width across the
+        // spanned columns ONLY IF the cell's intrinsic width exceeds
+        // the sum already attributed to those columns by colspan=1
+        // cells. The excess is split equally across the spanned
+        // columns (a deterministic, naive split — the CSS Tables L3 §3
+        // distribution-proportional algorithm with proportional column-
+        // weight allocation is deferred; this matches sub-cycle 2's
+        // rowspan "extra-to-last" simplification, and the equal split
+        // across spanned columns is symmetric to fixed-layout Pass B's
+        // partial-declare distribution).
+        var colMin = new double[columnCount];
+        var colMax = new double[columnCount];
+
+        // First pass: colspan=1 placements set per-column min/max
+        // directly (= max of cells anchored at that column).
+        for (var pIdx = 0; pIdx < placements.Count; pIdx++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var p = placements[pIdx];
+            if (p.ColSpan != 1) continue;
+            var c = p.OriginCol;
+            if (cellMinContent[pIdx] > colMin[c]) colMin[c] = cellMinContent[pIdx];
+            if (cellMaxContent[pIdx] > colMax[c]) colMax[c] = cellMaxContent[pIdx];
+        }
+
+        // Second pass: colspan>1 placements top up the columns they
+        // span if the cell's intrinsic width exceeds the sum already
+        // attributed to those columns. Equal-split across the spanned
+        // columns of the excess.
+        for (var pIdx = 0; pIdx < placements.Count; pIdx++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var p = placements[pIdx];
+            if (p.ColSpan <= 1) continue;
+            var spanEnd = p.OriginCol + p.ColSpan;
+            if (spanEnd > columnCount) spanEnd = columnCount;
+            var span = spanEnd - p.OriginCol;
+            if (span <= 0) continue;
+
+            // Aggregate already-attributed min / max across the spanned
+            // columns; distribute any excess equally.
+            var existingMinSum = 0.0;
+            var existingMaxSum = 0.0;
+            for (var c = p.OriginCol; c < spanEnd; c++)
+            {
+                existingMinSum += colMin[c];
+                existingMaxSum += colMax[c];
+            }
+            if (cellMinContent[pIdx] > existingMinSum)
+            {
+                var perColumn = (cellMinContent[pIdx] - existingMinSum) / span;
+                for (var c = p.OriginCol; c < spanEnd; c++) colMin[c] += perColumn;
+            }
+            if (cellMaxContent[pIdx] > existingMaxSum)
+            {
+                var perColumn = (cellMaxContent[pIdx] - existingMaxSum) / span;
+                for (var c = p.OriginCol; c < spanEnd; c++) colMax[c] += perColumn;
+            }
+        }
+
+        // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 2 —
+        // floor per-column min/max with declared widths from
+        // <col> / <colgroup> + first-row cells. The locked design
+        // ("declared widths floor both min and max") yields:
+        //   colMin[c] = max(intrinsicMin[c], declaredWidth[c])
+        //   colMax[c] = max(intrinsicMax[c], declaredWidth[c])
+        // when the column carries a declaration. Pre-fix the auto
+        // branch ignored declarations entirely, producing widths
+        // narrower than the author intended. The simpler approximation
+        // matches author expectation (declared width is a preferred
+        // minimum) without the spec-strict "preferred = declared only
+        // for max-content" rule (sub-cycle 6+ — see
+        // docs/deferrals.md#table-auto-fixed-spans-borders).
+        for (var c = 0; c < columnCount; c++)
+        {
+            if (columnHasDeclared[c] && declaredWidths[c] > 0)
+            {
+                if (declaredWidths[c] > colMin[c]) colMin[c] = declaredWidths[c];
+                if (declaredWidths[c] > colMax[c]) colMax[c] = declaredWidths[c];
+            }
+        }
+
+        // Ensure max >= min per column (defensive — speculative
+        // measurements at 1px CAN exceed those at 1e6 if a replaced
+        // element forced an intrinsic-width floor in the small case;
+        // float rounding can also flip the order by a hair).
+        for (var c = 0; c < columnCount; c++)
+        {
+            if (colMax[c] < colMin[c]) colMax[c] = colMin[c];
+        }
+
+        // ============================================================
+        //  Step 3 — table effective width via clamp.
+        // ============================================================
+        cancellationToken.ThrowIfCancellationRequested();
+        var sumMin = 0.0;
+        var sumMax = 0.0;
+        for (var c = 0; c < columnCount; c++)
+        {
+            sumMin += colMin[c];
+            sumMax += colMax[c];
+        }
+
+        // tableWidth = clamp(contentInlineSize, sumMin, sumMax).
+        var tableWidth = contentInlineSize;
+        if (tableWidth < sumMin) tableWidth = sumMin;
+        else if (tableWidth > sumMax) tableWidth = sumMax;
+
+        // ============================================================
+        //  Step 4 — distribute width to columns.
+        // ============================================================
+        const double Tolerance = 1e-9;
+
+        if (sumMin > contentInlineSize + Tolerance)
+        {
+            // Overflow path: the table's min-content sum exceeds the
+            // wrapper's content-inline-size. Every column gets its
+            // min-content; the table grid overflows the wrapper in the
+            // inline axis. Record overflow flags so the emit pass
+            // surfaces LAYOUT-TABLE-INLINE-OVERFLOW-001 (mirrors the
+            // fixed-layout Pass D contract).
+            for (var c = 0; c < columnCount; c++) widths[c] = colMin[c];
+            _measuredInlineOverflowed = true;
+            _measuredInlineOverflowColumnSum = sumMin;
+            _measuredInlineOverflowContentSize = contentInlineSize;
+            return widths;
+        }
+
+        if (contentInlineSize + Tolerance >= sumMax)
+        {
+            // Saturated path: contentInlineSize >= sumMax — every
+            // column reaches its max-content; the extra space is
+            // distributed equally across all columns (per the §3 spec
+            // step "if the table-width is greater than the
+            // max-content-table-width, the difference [...] is
+            // distributed equally between all columns").
+            for (var c = 0; c < columnCount; c++) widths[c] = colMax[c];
+            var extra = contentInlineSize - sumMax;
+            if (extra > Tolerance)
+            {
+                var perColumn = extra / columnCount;
+                for (var c = 0; c < columnCount; c++) widths[c] += perColumn;
+            }
+            return widths;
+        }
+
+        // Interpolation path: sumMin < contentInlineSize < sumMax.
+        // Linear interpolation per column:
+        //   widths[c] = colMin[c]
+        //             + (tableWidth - sumMin)
+        //               * (colMax[c] - colMin[c]) / (sumMax - sumMin)
+        // The §3 spec calls this "all columns get min-content; then the
+        // available extra is distributed proportional to (max - min) of
+        // each column" — the closed-form interpolation is equivalent.
+        var range = sumMax - sumMin;
+        // Guard against pathological all-columns-have-identical-min-max
+        // (range ≈ 0 implies sumMin ≈ sumMax ≈ contentInlineSize given
+        // the clamp; equal-split the excess to be safe).
+        if (range <= Tolerance)
+        {
+            for (var c = 0; c < columnCount; c++) widths[c] = colMin[c];
+            var extra = contentInlineSize - sumMin;
+            if (extra > Tolerance && columnCount > 0)
+            {
+                var perColumn = extra / columnCount;
+                for (var c = 0; c < columnCount; c++) widths[c] += perColumn;
+            }
+            return widths;
+        }
+
+        var available = tableWidth - sumMin;
+        for (var c = 0; c < columnCount; c++)
+        {
+            widths[c] = colMin[c] + available * (colMax[c] - colMin[c]) / range;
+        }
         return widths;
+    }
+
+    /// <summary>Per Phase 3 Task 12 sub-cycle 5 — speculative cell-
+    /// content layout pair used by <see cref="ComputeColumnWidthsAuto"/>
+    /// to derive per-cell min-content + max-content intrinsic widths.
+    /// Runs two nested cell layouts:
+    /// <list type="number">
+    ///   <item>At <c>cellInlineSize = 1.0</c> — the inner inline
+    ///     content force-wraps at every UAX #14 break opportunity;
+    ///     the widest single line-advance becomes the cell's
+    ///     min-content (i.e., the narrowest cell width that doesn't
+    ///     require glyph-level splitting).</item>
+    ///   <item>At <c>cellInlineSize = 1e6</c> — no wrap pressure; the
+    ///     full natural inline extent of the cell's content becomes
+    ///     the max-content.</item>
+    /// </list>
+    /// Both buffers + their diagnostic sinks are DISCARDED — these are
+    /// speculative measurements that don't appear in the final layout.
+    /// Only <see cref="MeasuringFragmentSink.MaxInlineExtentFromCellOrigin"/>
+    /// is harvested.
+    ///
+    /// <para><b>Performance.</b> Each call dispatches two nested
+    /// BlockLayouter passes. For a table with N cells the total cost
+    /// is O(2N × per-cell-content). Sub-cycle 5+ may cache or short-
+    /// circuit when content is trivially measurable (single literal
+    /// without breaks → min = max = naturalWidth without
+    /// dispatching).</para>
+    ///
+    /// <para><b>Edge cases.</b> Cells with no inner content (empty
+    /// AnonymousBlock / no children) yield (0, 0). The clamp in
+    /// <see cref="ComputeColumnWidthsAuto"/> ensures
+    /// <c>colMax &gt;= colMin</c>.</para>
+    /// </summary>
+    /// <returns>Tuple <c>(MinContent, MaxContent)</c> in CSS px. Both
+    /// values are non-negative; <c>MaxContent &gt;= MinContent</c> is
+    /// enforced by the speculative pass order (the larger inline-size
+    /// pass typically produces the wider extent, but the §3 algorithm
+    /// is tolerant of unusual content where they're reversed; the
+    /// caller's clamp handles it).</returns>
+    private (double MinContent, double MaxContent) MeasureCellIntrinsicWidths(
+        Box cell,
+        FragmentainerContext fragmentainer,
+        ref LayoutContext layout,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // Min-content pass — cellInlineSize = 1.0 forces wrap at every
+        // UAX #14 break opportunity. The widest resulting line / atom
+        // advance is the min-content. We discard the buffer because
+        // the main measure pass below re-runs MeasureCellContent with
+        // the final column width.
+        //
+        // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 5 —
+        // intrinsicSizingMode=true so the speculative wrap pass
+        // downgrades break-word opportunities to Normal per CSS Text
+        // L3 §5.1 (break-word's soft opportunities don't count for
+        // min-content sizing). Anywhere opportunities continue to
+        // fire.
+        var (minBuffer, _, inlineEdgesMin) = MeasureCellContent(
+            cellBox: cell,
+            cellInlineOffset: 0,
+            cellInlineSize: 1.0,
+            fragmentainer: fragmentainer,
+            layout: ref layout,
+            cancellationToken: cancellationToken,
+            intrinsicSizingMode: true);
+        var minContent = minBuffer.MaxInlineExtentFromCellOrigin;
+
+        // Max-content pass — cellInlineSize = 1e6 (effectively
+        // unbounded). The inner inline content lays out without
+        // wrapping; the rightmost inner inline-axis cursor is the
+        // max-content.
+        var (maxBuffer, _, _) = MeasureCellContent(
+            cellBox: cell,
+            cellInlineOffset: 0,
+            cellInlineSize: 1e6,
+            fragmentainer: fragmentainer,
+            layout: ref layout,
+            cancellationToken: cancellationToken,
+            intrinsicSizingMode: false);
+        var maxContent = maxBuffer.MaxInlineExtentFromCellOrigin;
+
+        // Defensive: clamp max-content to 1e6 in case the inner layout
+        // ever exceeds the speculative ceiling. The clamp in
+        // ComputeColumnWidthsAuto independently enforces max >= min.
+        if (maxContent > 1e6) maxContent = 1e6;
+        if (minContent < 0) minContent = 0;
+        if (maxContent < 0) maxContent = 0;
+
+        // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 3 — the
+        // cell's intrinsic widths INCLUDE its inline box-model edges
+        // (border + padding both sides). Pre-fix the min/max content
+        // reflected the INNER content only; the column min/max would
+        // then under-allocate the cell's space relative to its
+        // padding/border. CSS Tables L3 §3 says the auto-table-layout
+        // min/max-content per column aggregates the OUTER cell extent
+        // (the border-box inline-size).
+        return (minContent + inlineEdgesMin, maxContent + inlineEdgesMin);
     }
 
     /// <summary>Per Phase 3 Task 12 sub-cycle 4 hardening Finding 1 —
@@ -2676,10 +3243,15 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     /// box. The nested BlockLayouter treats this as a fresh root —
     /// its children lay out within the cell's allocated column.</param>
     /// <param name="cellInlineOffset">Inline-axis position of the
-    /// cell's column-start edge in fragmentainer coordinates. Baked
-    /// into the buffer at Emit time.</param>
+    /// cell's column-start edge in fragmentainer coordinates (= the
+    /// cell's OUTER edge — the inner content-box edge is shifted by
+    /// border-inline-start + padding-inline-start per Finding 3
+    /// hardening).</param>
     /// <param name="cellInlineSize">Inline extent of the cell's
-    /// column (colspan-aware — colspan=N gives N × columnWidth).</param>
+    /// column (colspan-aware — colspan=N gives N × columnWidth). This
+    /// is the cell's BORDER-BOX inline-size; the inner fragmentainer's
+    /// content-inline-size is this value minus the cell's inline
+    /// edges (border + padding both sides).</param>
     /// <param name="fragmentainer">The outer fragmentainer; the nested
     /// layouter uses a scoped temporary to keep its own pagination
     /// accounting separate from the outer.</param>
@@ -2687,13 +3259,32 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     /// diagnostic sink + counter state).</param>
     /// <param name="cancellationToken">Propagated to the inner
     /// layouter.</param>
-    private (MeasuringFragmentSink Buffer, BufferingDiagnosticsSink? DiagnosticsBuffer) MeasureCellContent(
+    /// <param name="intrinsicSizingMode">Per Phase 3 Task 12 sub-cycle
+    /// 5 hardening Finding 5 — when <see langword="true"/>, the inner
+    /// <see cref="BlockLayouter"/> downgrades
+    /// <c>overflow-wrap: break-word</c> opportunities to
+    /// <c>OverflowWrap.Normal</c> for the speculative min-content pass
+    /// (CSS Text L3 §5.1 — break-word's soft opportunities don't
+    /// count for min-content sizing). <c>overflow-wrap: anywhere</c>
+    /// opportunities continue to fire. Defaults to
+    /// <see langword="false"/> for the final main-measure pass.</param>
+    /// <returns>Tuple of the buffered fragments, the buffered cell-
+    /// internal diagnostic sink, and the cell's box-model inline edges
+    /// (= border-inline-start + padding-inline-start +
+    /// padding-inline-end + border-inline-end). The inline-edges value
+    /// is used by <see cref="MeasureCellIntrinsicWidths"/> to add the
+    /// edge contribution to the cell's intrinsic widths per CSS Tables
+    /// L3 §3 — Finding 3 hardening; the EMIT path doesn't need it
+    /// directly (the inner translation already accounts for the inner
+    /// content-box start edge).</returns>
+    private (MeasuringFragmentSink Buffer, BufferingDiagnosticsSink? DiagnosticsBuffer, double InlineEdges) MeasureCellContent(
         Box cellBox,
         double cellInlineOffset,
         double cellInlineSize,
         FragmentainerContext fragmentainer,
         ref LayoutContext layout,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool intrinsicSizingMode = false)
     {
         // The cell is a block-flow container. Wrap it in a Root box
         // would require allocating a parent — the simpler approach is
@@ -2707,26 +3298,60 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         // Per sub-cycle 1 the cell content is treated as a single
         // "best effort" pass — no pagination splitting within a cell.
 
+        // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 3 —
+        // read the cell's box-model inline edges (border + padding,
+        // both sides) so the inner fragmentainer's content-inline-
+        // size is the actual content-box width, and the buffered
+        // fragments are translated by the inner content-box start
+        // edge (not the outer cell edge). Padding/border on the
+        // block axis isn't fully wired in sub-cycle 5 hardening —
+        // the existing rowspan distribution model assumes the cell's
+        // outer block edge equals the row's top; sub-cycle 6+ may
+        // revisit. (The block-axis padding still contributes to the
+        // cell's content extent because the inner BlockLayouter
+        // measures content from offset 0 + the outer row-height
+        // accumulation already covers the inner extent.)
+        var paddingInlineStart = cellBox.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
+        var paddingInlineEnd = cellBox.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
+        var borderInlineStart = cellBox.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
+        var borderInlineEnd = cellBox.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
+        var paddingBlockStart = cellBox.Style.ReadLengthPxOrZero(PropertyId.PaddingTop);
+        var borderBlockStart = cellBox.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
+        var inlineEdges = paddingInlineStart + paddingInlineEnd
+            + borderInlineStart + borderInlineEnd;
+        var innerInlineOffset = cellInlineOffset + paddingInlineStart + borderInlineStart;
+        var innerBlockOffsetWithinCell = paddingBlockStart + borderBlockStart;
+
         // Sub-cycle 2 — pass 0 for the block translation. The block
         // origin can't be finalized until row-height distribution
         // completes (because rowspan cells may extend row heights
         // after the measure pass observes all content extents). The
         // emit pass passes the final cellBlockOffset to FlushTo,
         // which adds it to each buffered fragment's BlockOffset.
+        //
+        // Per Finding 3 hardening — the buffered fragments' inline
+        // translation is the inner content-box start (cellOrigin +
+        // borderInlineStart + paddingInlineStart). The block
+        // translation gets the inner content-box-top contribution
+        // (paddingBlockStart + borderBlockStart) baked in at Emit
+        // time so FlushTo can add the row's final block origin
+        // uniformly.
         var measuringSink = new MeasuringFragmentSink(
             outerSinkBaselineCursor: _sink.Cursor,
-            inlineOffsetTranslation: cellInlineOffset,
-            blockOffsetTranslation: 0);
+            inlineOffsetTranslation: innerInlineOffset,
+            blockOffsetTranslation: innerBlockOffsetWithinCell);
 
-        // Per CSS Tables L3 §11.5.3 — cell content lays out within the
-        // cell's content area. Sub-cycle 1 doesn't yet read the cell's
-        // padding/border (would require ComputedStyleLayoutExtensions
-        // reads here); the cell's inline extent passed as the
-        // fragmentainer's content-inline-size is the full column
-        // width. Sub-cycle 2 will subtract padding + border to give
-        // the cell-content area.
+        // Per CSS Tables L3 §11.5.3 — cell content lays out within
+        // the cell's content area. Inner fragmentainer's content-
+        // inline-size = max(1.0, cellInlineSize - inlineEdges).
+        // Defensive clamp because FragmentainerContext rejects
+        // zero/negative widths + auto-table-layout's interpolation
+        // can produce a near-zero column width when every cell
+        // anchored at that column is empty.
+        var innerContentInlineSize = cellInlineSize - inlineEdges;
+        if (innerContentInlineSize < 1.0) innerContentInlineSize = 1.0;
         var cellFragmentainer = new FragmentainerContext(
-            contentInlineSize: cellInlineSize,
+            contentInlineSize: innerContentInlineSize,
             blockSize: Math.Max(fragmentainer.BlockSize, 1));
 
         // Per Finding 5 — wrap the ambient diagnostic sink in a
@@ -2764,6 +3389,12 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             diagnostics: cellDiagnosticSink,
             shaperResolver: _shaperResolver);
 
+        // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 5 —
+        // propagate the intrinsic-sizing-mode flag into the nested
+        // BlockLayouter so it can downgrade BreakWord opportunities
+        // for the speculative min-content pass.
+        cellLayouter.SetIntrinsicSizingMode(intrinsicSizingMode);
+
         // Per Finding 3 — fresh BreakResolver scoped to the cell. The
         // outer resolver's checkpoint state is preserved untouched —
         // cell-internal pagination never modifies the outer table's
@@ -2779,7 +3410,7 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             cellFragmentainer, ref innerLayout, cellResolver,
             LayoutAttemptStrategy.LastResort, cancellationToken);
 
-        return (measuringSink, diagBuffer);
+        return (measuringSink, diagBuffer, inlineEdges);
     }
 
     /// <summary>Per Phase 3 Task 12 sub-cycle 1 hardening (Finding 2) —
@@ -2830,6 +3461,28 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         /// the row-height computation.</summary>
         public double MaxBlockExtentFromCellOrigin { get; private set; }
 
+        /// <summary>Per Phase 3 Task 12 sub-cycle 5 — maximum inline
+        /// extent (InlineOffset + InlineSize) observed across forwarded
+        /// fragments, expressed RELATIVE TO THE CELL'S inline origin
+        /// (NOT the fragmentainer origin). Drives the auto-table-layout
+        /// min/max-content per-cell intrinsic width measurement:
+        /// callers run two speculative cell-content layouts at extreme
+        /// inline sizes (1px → min-content, 1e6 → max-content) and read
+        /// this property to harvest the natural inline extent each
+        /// produced.
+        ///
+        /// <para>Tracked at <see cref="Emit"/> time alongside
+        /// <see cref="MaxBlockExtentFromCellOrigin"/>; the inner
+        /// BlockLayouter emits fragments in INNER coordinates (inner
+        /// inline-offset starts at 0 = cell's content-box inline-start
+        /// edge), so the inner inline rightmost edge equals
+        /// <c>fragment.InlineOffset + fragment.InlineSize</c> directly
+        /// — the cell's translation isn't baked in at this stage. The
+        /// outer translation IS still applied to the buffered fragment
+        /// for later flush; only the intrinsic-width tracker reads the
+        /// inner-coordinate value.</para></summary>
+        public double MaxInlineExtentFromCellOrigin { get; private set; }
+
         /// <summary>Per Finding 2 — the cursor is the count of
         /// BUFFERED fragments, not a baselined outer cursor. The
         /// inner BlockLayouter's checkpoint capture uses this to
@@ -2858,6 +3511,58 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             {
                 MaxBlockExtentFromCellOrigin = innerBottom;
             }
+            // Per Phase 3 Task 12 sub-cycle 5 — track inner inline right
+            // edge so MeasureCellIntrinsicWidths can derive min/max-
+            // content widths. The inner coordinate space starts at 0 =
+            // cell's content-box inline-start edge; the cell's outer
+            // translation isn't baked in here (it IS baked into the
+            // buffered fragment for FlushTo's benefit, but the intrinsic
+            // measurement reads the cell-relative value).
+            //
+            // Two contribution paths:
+            //   1) When the fragment carries an InlineLayout (= it's an
+            //      inline-only-block fragment with shaped lines), the
+            //      widest LINE.TotalAdvance — picks up the ACTUAL text
+            //      content extent regardless of the wrapper's border-
+            //      box width (which is the AVAILABLE size, not the
+            //      natural text width). Without this, text content
+            //      gets the same min/max-content (both = wrapper
+            //      available width), defeating the §3 algorithm.
+            //   2) Otherwise (block-level fragments WITHOUT inline
+            //      layout), the fragment's BORDER-BOX inline right
+            //      edge — block-level content that lacks an inline
+            //      layout reflects its container's resolved width
+            //      (which IS the available size in the current cycle's
+            //      recursive in-flow path; sub-cycle 6+ may revise once
+            //      block-level shrink-to-fit per CSS 2.2 §10.3.5 lands).
+            //
+            // Sub-cycle 5 known limitation: when the inline-only-block
+            // fragment exists AND lacks line wrapping data
+            // (Lines.Length == 0 — e.g., all-whitespace collapsed
+            // input), the contribution falls back to (1)'s zero, then
+            // (2) picks up the border-box. This is rare in practice but
+            // a potential source of over-estimation; documented + left
+            // for sub-cycle 6+.
+            if (fragment.InlineLayout is { } inlineLayout && inlineLayout.Lines.Length > 0)
+            {
+                var lines = inlineLayout.Lines;
+                for (var i = 0; i < lines.Length; i++)
+                {
+                    var lineRight = innerInlineOffset + lines[i].TotalAdvance;
+                    if (lineRight > MaxInlineExtentFromCellOrigin)
+                    {
+                        MaxInlineExtentFromCellOrigin = lineRight;
+                    }
+                }
+            }
+            else
+            {
+                var innerRight = innerInlineOffset + fragment.InlineSize;
+                if (innerRight > MaxInlineExtentFromCellOrigin)
+                {
+                    MaxInlineExtentFromCellOrigin = innerRight;
+                }
+            }
             _buffered.Add(translated);
         }
 
@@ -2883,6 +3588,8 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             // not worth it for the sub-cycle-1 unreachable path; we
             // leave the value stale, accepting that a rolled-back cell
             // measure is over-estimated. Documented for sub-cycle 2.
+            // Same staleness applies to
+            // MaxInlineExtentFromCellOrigin per sub-cycle 5.
         }
 
         /// <summary>Per Finding 2 — drain the buffered fragments to

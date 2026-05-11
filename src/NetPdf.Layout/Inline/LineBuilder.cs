@@ -586,6 +586,20 @@ internal static class LineBuilder
     /// <paramref name="hyphens"/> arguments still apply when this
     /// array is null. When supplied, the per-run values take
     /// precedence for the dimensions noted above.</para></param>
+    /// <param name="intrinsicSizingMode">Per Phase 3 Task 12 sub-cycle
+    /// 5 hardening Finding 5 — when <see langword="true"/>,
+    /// <see cref="OverflowWrap.BreakWord"/> is downgraded to
+    /// <see cref="OverflowWrap.Normal"/> so the per-glyph forced-
+    /// break fallback doesn't fire during the auto-table-layout
+    /// speculative min-content pass. Per CSS Text L3 §5.1
+    /// <c>break-word</c>'s soft opportunities do NOT count for
+    /// min-content sizing (the column min-content remains the full
+    /// word width). <see cref="OverflowWrap.Anywhere"/> opportunities
+    /// continue to count (the spec carves out anywhere as the only
+    /// soft-opportunity source that contributes to intrinsic sizing).
+    /// Defaults to <see langword="false"/> — the line-wrap pass for
+    /// final layout always honors break-word's glyph-boundary
+    /// fallback.</param>
     /// <returns>One <see cref="LineFragment"/> per wrapped line in
     /// document order. Empty array when <paramref name="shapedRuns"/>
     /// is empty or contains only zero-glyph runs.</returns>
@@ -614,7 +628,8 @@ internal static class LineBuilder
         Hyphens hyphens = Hyphens.Manual,
         Hyphenator? hyphenator = null,
         CancellationToken cancellationToken = default,
-        IReadOnlyList<InlineTextPolicy>? inlineTextPolicyPerRun = null)
+        IReadOnlyList<InlineTextPolicy>? inlineTextPolicyPerRun = null,
+        bool intrinsicSizingMode = false)
     {
         ArgumentNullException.ThrowIfNull(sourceTextRuns);
         ArgumentNullException.ThrowIfNull(shapedRuns);
@@ -650,7 +665,8 @@ internal static class LineBuilder
                         $"is not a defined WhiteSpace value.",
                         nameof(inlineTextPolicyPerRun));
                 }
-                if (p.OverflowWrap is not (OverflowWrap.Normal or OverflowWrap.Anywhere))
+                if (p.OverflowWrap is not (OverflowWrap.Normal
+                    or OverflowWrap.Anywhere or OverflowWrap.BreakWord))
                 {
                     throw new ArgumentException(
                         $"LineBuilder.Wrap: inlineTextPolicyPerRun[{i}].OverflowWrap = {p.OverflowWrap} " +
@@ -696,11 +712,57 @@ internal static class LineBuilder
                 whiteSpace,
                 "LineBuilder.Wrap: whiteSpace must be a defined WhiteSpace value.");
         }
-        if (overflowWrap is not (OverflowWrap.Normal or OverflowWrap.Anywhere))
+        if (overflowWrap is not (OverflowWrap.Normal
+            or OverflowWrap.Anywhere or OverflowWrap.BreakWord))
         {
             throw new ArgumentOutOfRangeException(nameof(overflowWrap),
                 overflowWrap,
                 "LineBuilder.Wrap: overflowWrap must be a defined OverflowWrap value.");
+        }
+
+        // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 5 —
+        // under intrinsic sizing (auto-table-layout's speculative
+        // min-content pass), BreakWord opportunities don't count
+        // (CSS Text L3 §5.1: "values that introduce additional break
+        // opportunities (other than UAX #14) are considered for
+        // min-content sizing only if overflow-wrap: anywhere is in
+        // effect"). Downgrade BreakWord → Normal so the per-glyph
+        // forced-break fallback doesn't fire during intrinsic sizing.
+        // Anywhere remains honored (its opportunities DO count for
+        // min-content). This downgrade is the cleanest way to honor
+        // the spec without forking the wrap loop.
+        if (intrinsicSizingMode && overflowWrap == OverflowWrap.BreakWord)
+        {
+            overflowWrap = OverflowWrap.Normal;
+        }
+        if (intrinsicSizingMode && inlineTextPolicyPerRun is not null)
+        {
+            // Rebuild the per-run array, downgrading BreakWord → Normal.
+            // Allocate only when at least one run carries BreakWord —
+            // saves allocations in the common case where the caller
+            // passes intrinsicSizingMode=true but no run uses
+            // break-word.
+            var hasBreakWord = false;
+            for (var i = 0; i < inlineTextPolicyPerRun.Count; i++)
+            {
+                if (inlineTextPolicyPerRun[i].OverflowWrap == OverflowWrap.BreakWord)
+                {
+                    hasBreakWord = true;
+                    break;
+                }
+            }
+            if (hasBreakWord)
+            {
+                var downgraded = new InlineTextPolicy[inlineTextPolicyPerRun.Count];
+                for (var i = 0; i < inlineTextPolicyPerRun.Count; i++)
+                {
+                    var p = inlineTextPolicyPerRun[i];
+                    downgraded[i] = p.OverflowWrap == OverflowWrap.BreakWord
+                        ? p with { OverflowWrap = OverflowWrap.Normal }
+                        : p;
+                }
+                inlineTextPolicyPerRun = downgraded;
+            }
         }
         if (wordBreak is not (WordBreak.Normal or WordBreak.BreakAll or WordBreak.KeepAll))
         {
@@ -765,7 +827,18 @@ internal static class LineBuilder
         // The per-glyph checks at the relevant gates then enforce
         // run-specific semantics. Computing graphemeBreakAfter is
         // also gated on these OR-over-runs values.
-        var allowOverflowAnywhere = overflowWrap == OverflowWrap.Anywhere;
+        //
+        // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 5 —
+        // OverflowWrap.BreakWord behaves like Anywhere at LINE-WRAP
+        // time (both fire glyph-boundary breaks when no UAX #14
+        // Allowed candidate fits). The distinction only matters
+        // during intrinsic sizing (where BreakWord opportunities
+        // don't count for min-content per CSS Text L3 §5.1) — the
+        // TableLayouter's MeasureCellIntrinsicWidths runs its
+        // min-content pass under intrinsicSizingMode=true (sub-cycle
+        // 5 hardening Finding 5; see the new Wrap parameter).
+        var allowOverflowAnywhere =
+            overflowWrap is OverflowWrap.Anywhere or OverflowWrap.BreakWord;
         if (inlineTextPolicyPerRun is not null)
         {
             allowOverflowAnywhere = false;
@@ -773,7 +846,7 @@ internal static class LineBuilder
             for (var i = 0; i < inlineTextPolicyPerRun.Count; i++)
             {
                 var p = inlineTextPolicyPerRun[i];
-                if (p.OverflowWrap == OverflowWrap.Anywhere)
+                if (p.OverflowWrap is OverflowWrap.Anywhere or OverflowWrap.BreakWord)
                     allowOverflowAnywhere = true;
                 if (p.WordBreak == WordBreak.BreakAll)
                     breakAllGlyphs = true;
@@ -1416,15 +1489,22 @@ internal static class LineBuilder
                     }
 
                     // (2) OverflowWrap gate.
+                    // Per Phase 3 Task 12 sub-cycle 5 hardening
+                    // Finding 5 — BreakWord behaves like Anywhere for
+                    // line-wrap (both fire glyph-boundary fallback
+                    // breaks); only intrinsic sizing distinguishes.
                     bool owAllows;
                     if (prevSrcRunIdx == cursorSrcRunIdx)
                     {
-                        owAllows = cursorPolicy.OverflowWrap == OverflowWrap.Anywhere;
+                        owAllows = cursorPolicy.OverflowWrap
+                            is OverflowWrap.Anywhere or OverflowWrap.BreakWord;
                     }
                     else
                     {
-                        owAllows = prevPolicy.OverflowWrap == OverflowWrap.Anywhere
-                            || cursorPolicy.OverflowWrap == OverflowWrap.Anywhere;
+                        owAllows = prevPolicy.OverflowWrap
+                            is OverflowWrap.Anywhere or OverflowWrap.BreakWord
+                            || cursorPolicy.OverflowWrap
+                            is OverflowWrap.Anywhere or OverflowWrap.BreakWord;
                     }
 
                     anywhereAllowedHere = anywhereAllowedHere && wsAllows && owAllows;

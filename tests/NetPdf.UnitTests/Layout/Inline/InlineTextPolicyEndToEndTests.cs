@@ -141,11 +141,14 @@ public sealed class InlineTextPolicyEndToEndTests
     }
 
     [Fact]
-    public async Task EndToEnd_overflow_wrap_break_word_recovered_and_folds()
+    public async Task EndToEnd_overflow_wrap_break_word_recovered_and_maps_to_BreakWord()
     {
-        // overflow-wrap:break-word is the deprecated alias for
-        // anywhere. Recovery emits keyword id 2 (break-word); the
-        // materializer folds to OverflowWrap.Anywhere.
+        // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 5 —
+        // overflow-wrap: break-word now maps to a DISTINCT BreakWord
+        // enum variant (pre-fix folded to Anywhere). Line-wrap
+        // behavior is identical to Anywhere; only intrinsic-sizing
+        // measurement (auto-table-layout's min-content pass)
+        // distinguishes the two per CSS Text L3 §5.1.
         const string html = "<html><body><p>x</p></body></html>";
         const string css = "p { overflow-wrap: break-word; }";
 
@@ -153,7 +156,7 @@ public sealed class InlineTextPolicyEndToEndTests
         Assert.NotNull(pStyle);
 
         var policy = pStyle.ReadInlineTextPolicy();
-        Assert.Equal(OverflowWrap.Anywhere, policy.OverflowWrap);
+        Assert.Equal(OverflowWrap.BreakWord, policy.OverflowWrap);
     }
 
     [Fact]
@@ -294,7 +297,13 @@ public sealed class InlineTextPolicyEndToEndTests
         // normalizes word-wrap → overflow-wrap at recovery time, so
         // authored documents using `word-wrap: break-word` resolve
         // through the production cascade as `overflow-wrap:
-        // break-word` → OverflowWrap.Anywhere.
+        // break-word`.
+        //
+        // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 5 —
+        // the materializer now maps overflow-wrap:break-word to a
+        // distinct BreakWord enum variant (line-wrap behavior
+        // identical to Anywhere; intrinsic-sizing-pass distinction
+        // per CSS Text L3 §5.1).
         const string html = "<html><body><p>x</p></body></html>";
         const string css = "p { word-wrap: break-word; }";
 
@@ -302,6 +311,6 @@ public sealed class InlineTextPolicyEndToEndTests
         Assert.NotNull(pStyle);
 
         var policy = pStyle.ReadInlineTextPolicy();
-        Assert.Equal(OverflowWrap.Anywhere, policy.OverflowWrap);
+        Assert.Equal(OverflowWrap.BreakWord, policy.OverflowWrap);
     }
 }

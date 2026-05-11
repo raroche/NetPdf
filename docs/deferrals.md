@@ -307,9 +307,7 @@ grepping the ID).
   column widths derive from `<col>` / `<colgroup>` `width` (Pass A),
   first-row cell widths (Pass B), then equal-distribute the
   remaining inline-size to columns with no declared width
-  (Pass C). When `table-layout: auto` (default), all columns
-  equal-split — the §3 shrink-to-fit auto algorithm via
-  min/max-content remains sub-cycle 5+ work. Sub-cycle 4 hardening
+  (Pass C). Sub-cycle 4 hardening
   Finding 1 added Pass D reconciliation: when the column sum is
   below the wrapper's content-inline-size, leftover space is
   distributed equally across ALL columns (CSS 2.1 §17.5.2.1); when
@@ -338,58 +336,133 @@ grepping the ID).
   wrapper's resolved content-inline-size (from CSS `width` or the
   containing-block width) as the effective table width, even when
   `table.width` is `auto`. Sub-cycle 5+ may revise once `width: auto`
-  shrink-to-fit lands.**
+  shrink-to-fit lands.** **Sub-cycle 5 — `table-layout: auto`
+  (default) now runs the CSS Tables L3 §3 shrink-to-fit algorithm.
+  Per-cell min-content + max-content widths are measured via
+  speculative cell-content layouts at `cellInlineSize = 1.0`
+  (min-content — force-wrap at every UAX #14 break opportunity)
+  and `cellInlineSize = 1e6` (max-content — no wrap pressure);
+  the buffered fragments + diagnostic sinks from the speculative
+  passes are discarded. Per-column min/max aggregated across all
+  cells anchored at that column (colspan=1 first; colspan>1 then
+  distributes any excess equally across the spanned columns —
+  symmetric to fixed-layout Pass B's partial-declare semantics).
+  Table effective width = `clamp(contentInlineSize, sum(colMin),
+  sum(colMax))`. Distribution has three branches:
+  (a) **overflow** when `sumMin > contentInlineSize` — every
+  column gets its colMin; row + caption fragments grow to the
+  column sum; `LAYOUT-TABLE-INLINE-OVERFLOW-001` is emitted
+  (mirrors the fixed-layout Pass D contract);
+  (b) **saturated** when `contentInlineSize >= sumMax` — every
+  column gets its colMax + the extra space is distributed equally
+  across all columns;
+  (c) **interpolation** otherwise — linear interpolation:
+  `widths[c] = colMin[c] + (tableWidth - sumMin) *
+  (colMax[c] - colMin[c]) / (sumMax - sumMin)`. The CSS Tables L3 §3
+  proportional-weight distribution is a deterministic linear-
+  interpolation approximation. The min/max signal comes from
+  `MeasuringFragmentSink.MaxInlineExtentFromCellOrigin`, which
+  prefers `InlineLayout.Lines[i].TotalAdvance` (actual shaped-text
+  width) when available + falls back to the buffered fragment's
+  border-box width otherwise. Cells with no inline-only-block
+  fragment (block-level content without text) participate via the
+  border-box fallback but don't differentiate min vs max. Empty
+  cells contribute `min = max = 0`; clamp enforces `colMax >= colMin`.
+  Performance: per-cell 2× speculative measurement is unbounded by a
+  budget today — sub-cycle 6+ may cache or short-circuit when
+  min == max trivially.**
   Tables that overflow the page emit
   `PAGINATION-FORCED-OVERFLOW-001`; a Table wrapper with no
   TableGrid child (malformed box tree) emits
   `LAYOUT-TABLE-FEATURE-UNSUPPORTED-001` (NOT a pagination overflow
   code — the anomaly is structural).
-- **Missing** — Per CSS Tables L3 + HTML5 §4.9.11: §3 auto-table-
-  layout via min/max-content shrink-to-fit; percentage column
-  widths; full grid/table used-inline-size reconciliation for
+- **Missing** — Per CSS Tables L3 + HTML5 §4.9.11: percentage
+  column widths; full grid/table used-inline-size reconciliation for
   content-shrink scenarios; §6.3 border-collapse + border-spacing;
   §6.4 column-group widths beyond Pass A fallback; per-page
   header/footer repeat (Task 13); multi-fragmentainer row splitting;
   §11 spec-strict rowspan distribution-proportional algorithm;
+  CSS Tables L3 §3 spec-strict proportional-weight column-width
+  distribution (sub-cycle 5 ships a deterministic linear-interpolation
+  approximation + a deterministic equal-split colspan distribution);
+  block-level fixed `width` honoring in cell content + replaced-
+  element intrinsic-width measurement (sub-cycle 5's measurement
+  reads inline-only-block line widths only; block-level cell
+  content falls back to the border-box = available width, so
+  fixed-width block content doesn't differentiate min vs max);
+  cell intrinsic-width caching to amortize the 2× speculative-
+  measurement cost across re-layout passes;
   HTML5 colspan='0'/rowspan='0' remainder semantics; RTL writing
   modes / row reversal / caption inline-axis keyword routing; HTML
-  width attribute cascade precedence (sub-cycle 4 hardening Finding
-  3 wires `IsSet(Width)` to gate the fallback — but the HTML width
-  attribute should ideally be a low-specificity presentational hint
-  in the cascade, not a layout-time fallback; sub-cycle 5+ work).
+  width attribute cascade precedence (the HTML `width` attribute
+  should ideally be a low-specificity presentational hint in the
+  cascade, not a layout-time fallback consumed AFTER computed
+  values resolve — but the current cascade pipeline
+  (`BoxBuilder.ApplyDefaults` → `PropertyResolverDispatch.Resolve`)
+  eagerly fills every `ComputedStyle` slot with the property's
+  initial value, collapsing the distinction between "author wrote
+  `width: auto`" and "no author rule, defaulted to auto" — both
+  report `IsSet(PropertyId.Width) = true` with a `Keyword(auto)`
+  slot. Sub-cycle 4 hardening Finding 3 was a documentation-only
+  pass; the layout-time fallback path (read CSS `width`, fall back
+  to the HTML `width` attribute when CSS resolved to 0) kept its
+  pre-fix behavior because cascade-aware gating was infeasible
+  given the `ApplyDefaults` constraint. An explicit-author-rule
+  bitmap or side declaration table consulted PRE-defaults is the
+  spec-correct fix, deferred to sub-cycle 6+).
 - **Trigger** — corpus invoice needs proper column widths
   (typical), OR a user-reported case where a table renders with
   equal columns when it shouldn't.
 - **Owner files** —
-  - `src/NetPdf.Layout/Layouters/TableLayouter.cs` — implement the
-    CSS Tables L3 §3 auto-table-layout shrink-to-fit algorithm
-    (min/max content per column); spec-strict §11 rowspan
-    distribution-proportional algorithm; §6.3 border-collapse
+  - `src/NetPdf.Layout/Layouters/TableLayouter.cs` — sub-cycle 5
+    shipped the CSS Tables L3 §3 auto-table-layout shrink-to-fit
+    algorithm via per-cell min/max content speculative measurement +
+    linear-interpolation distribution. Remaining: spec-strict §11
+    rowspan distribution-proportional algorithm; §6.3 border-collapse
     model + `border-spacing`; per-page `<thead>` / `<tfoot>`
     repetition; multi-fragmentainer row splitting + row-level
     `break-inside: avoid`; RTL writing modes / row reversal /
     caption inline-axis keyword routing; HTML5 colspan='0'/
     rowspan='0' remainder semantics; percentage column widths.
-  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs::DispatchTableInnerIfNeeded`
-    — once sub-cycle 5+ shrink-to-fit lands, consume the table's
-    `MeasuredUsedInlineSize` to drive the wrapper's auto-width
-    resolution (sub-cycle 4 leaves the wrapper at content-inline-
-    size; the grid's used inline-size can exceed the wrapper).
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs::PreMeasureTableIfNeeded`
+    — sub-cycle 5 hardening Finding 6 now consumes the table's
+    `MeasuredUsedInlineSize` to widen the wrapper's border-box
+    inline extent when the grid overflows. Both outer-AttemptLayout
+    + nested-recursion paths apply the widening.
 - **Added** — Phase 3 Task 12 sub-cycle 1; sub-cycle 2 added
   `colspan` / `rowspan` cell merging; sub-cycle 3 added caption
   layout (`caption-side: top` / `bottom`); sub-cycle 4 added the
   `table-layout: fixed` algorithm (`<col>` / `<colgroup>` + first-
   row cell widths drive per-column widths); sub-cycle 4 hardening
   added Pass D reconciliation + first-row colspan partial-declare
-  semantics + CSS-cascade-aware `width` precedence.
+  semantics; sub-cycle 5 added the CSS Tables L3 §3 auto-table-
+  layout shrink-to-fit algorithm (per-cell min/max content via
+  speculative measurement + linear-interpolation distribution +
+  overflow / saturated / interpolation branches + shared
+  `LAYOUT-TABLE-INLINE-OVERFLOW-001` diagnostic with the fixed-
+  layout path); sub-cycle 5 hardening added: (Finding 1) BoxBuilder
+  wraps inline-only TableCell children in `AnonymousBlock` so the
+  cell's direct text contributes to intrinsic widths; (Finding 2)
+  auto-layout incorporates `<col>` / `<colgroup>` / first-row cell
+  widths as per-column min/max floors; (Finding 3) cell padding +
+  border contribute to intrinsic widths + inner content fragments
+  are offset by the cell's inner content-box origin; (Finding 4)
+  per-table intrinsic-measurement budget + `LAYOUT-TABLE-INTRINSIC-
+  MEASUREMENT-BUDGET-EXCEEDED-001` diagnostic; (Finding 5) new
+  `OverflowWrap.BreakWord` enum variant + intrinsicSizingMode flag
+  so the min-content speculative pass honors CSS Text L3 §5.1's
+  carve-out (break-word's soft opportunities don't count for min-
+  content); (Finding 6) caption inline-size matches the grid's
+  used inline-size + wrapper widens when the grid overflows.
 - **Removal condition** — All "Missing" items above are
-  implemented: CSS Tables L3 §3 auto-table-layout shrink-to-fit;
-  percentage column widths; §6.3 border-collapse + border-spacing;
-  per-page header/footer repeat; multi-fragmentainer row splitting;
-  §11 spec-strict rowspan distribution-proportional algorithm;
-  HTML5 colspan='0'/rowspan='0' remainder semantics; RTL writing
-  modes; HTML width attribute as a low-specificity presentational
-  cascade hint.
+  implemented: percentage column widths; §6.3 border-collapse +
+  border-spacing; per-page header/footer repeat; multi-fragmentainer
+  row splitting; §11 spec-strict rowspan distribution-proportional
+  algorithm; CSS Tables L3 §3 spec-strict proportional-weight column
+  distribution; block-level fixed `width` honoring + replaced-element
+  intrinsic-width measurement; HTML5 colspan='0'/rowspan='0'
+  remainder semantics; RTL writing modes; HTML width attribute as a
+  low-specificity presentational cascade hint.
 
 ---
 

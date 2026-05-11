@@ -511,16 +511,20 @@ public sealed class TableLayouterProductionTests
     }
 
     [Fact]
-    public async Task Production_table_with_auto_layout_ignores_col_widths_for_now()
+    public async Task Production_auto_layout_col_width_interacts_with_intrinsic_content()
     {
-        // Sub-cycle 4 — table-layout: auto (default) IGNORES <col>
-        // widths because the §3 shrink-to-fit algorithm is sub-cycle
-        // 5+ work; equal-split applies.
+        // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 2 —
+        // table-layout: auto now INCORPORATES <col> / <colgroup>
+        // widths as per-column min/max floors. A <col width="100">
+        // for col 0 + "B" content for col 1 means col 0's floor is
+        // 100; col 1 has only the intrinsic width of "B". The
+        // saturated-path distribution adds equal extra to both
+        // columns, so col 0 ends up wider than col 1.
         const string html = """
             <!DOCTYPE html><html><head><style></style></head><body>
             <table>
               <col width="100">
-              <tr><td>A</td><td>B</td></tr>
+              <tr><td><div>A</div></td><td><div>B</div></td></tr>
             </table>
             </body></html>
             """;
@@ -533,10 +537,250 @@ public sealed class TableLayouterProductionTests
             if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
         }
         Assert.Equal(2, cells.Count);
-        // contentInlineSize=600 / 2 columns ⇒ 300 each. The <col
-        // width="100"> is silently ignored by sub-cycle 4 auto mode.
-        Assert.Equal(300, cells[0].InlineSize);
-        Assert.Equal(300, cells[1].InlineSize);
+        // Col 0 is floored by <col width="100"> AND gets the
+        // saturated-path extra; col 1 only gets the extra. Both
+        // sum to contentInlineSize=600.
+        Assert.Equal(600, cells[0].InlineSize + cells[1].InlineSize, precision: 3);
+        Assert.True(cells[0].InlineSize > cells[1].InlineSize,
+            $"Expected col 0 (floored by <col width=100>) wider than col 1 "
+            + $"(intrinsic only); got col0={cells[0].InlineSize}, col1={cells[1].InlineSize}.");
+    }
+
+    // ====================================================================
+    //  Phase 3 Task 12 sub-cycle 5 — table-layout: auto shrink-to-fit
+    //  (CSS Tables L3 §3 — min/max-content per column).
+    // ====================================================================
+
+    [Fact]
+    public async Task Production_auto_layout_with_real_text_renders_per_content()
+    {
+        // Sub-cycle 5 — the production pipeline (HTML → BoxBuilder →
+        // BlockLayouter → TableLayouter) produces ASYMMETRIC column
+        // widths under table-layout: auto when cell content has
+        // different intrinsic widths. The shorter cell ("A") gets a
+        // narrower column than the longer cell ("BBBBBBBBBB"). Both
+        // must sum to contentInlineSize.
+        //
+        // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 1 — direct
+        // <td>text</td> now contributes intrinsic widths (was skipped
+        // pre-fix because TableCell wasn't in
+        // <c>IsInlineOnlyBlockContainer</c>'s allowed kinds, so the
+        // nested BlockLayouter's child loop never dispatched the
+        // TableCell's direct TextRun children). The <div> workaround
+        // is gone; this test pins the spec-correct behavior.
+        const string html = """
+            <!DOCTYPE html><html><head><style></style></head><body>
+            <table><tr><td>A</td><td>BBBBBBBBBB</td></tr></table>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var cells = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
+        }
+        Assert.Equal(2, cells.Count);
+        // Combined widths cover the wrapper's content-inline-size
+        // (600 from the test fixture).
+        Assert.Equal(600, cells[0].InlineSize + cells[1].InlineSize, precision: 3);
+        // Column 0 (shorter content) is narrower than column 1
+        // (longer content) — the §3 shrink-to-fit derives widths
+        // from intrinsic content extents.
+        Assert.True(cells[0].InlineSize < cells[1].InlineSize,
+            $"Expected col 0 ('A', width={cells[0].InlineSize}) to be "
+            + $"narrower than col 1 ('BBBBBBBBBB', width={cells[1].InlineSize}). "
+            + "Pre-sub-cycle-5 they would have been equal (300/300 from "
+            + "the equal-split approximation).");
+    }
+
+    [Fact]
+    public async Task Production_auto_layout_invoice_style_columns()
+    {
+        // Sub-cycle 5 — a typical invoice-style 4-column layout: a
+        // narrow "Qty" column with single-digit content + a wider
+        // "Description" column with multi-word content + an "Amount"
+        // column + a "Date" column. Under auto-table-layout the
+        // description column should be the widest (its max-content
+        // is the longest text), and the qty column should be one of
+        // the narrowest. Asserted as ORDERING invariants, not exact
+        // pixels (synthetic shaper widths are fixed but the test
+        // covers the behavioral contract).
+        const string html = """
+            <!DOCTYPE html><html><head><style></style></head><body>
+            <table>
+              <tr>
+                <td><div>1</div></td>
+                <td><div>AAAAAAAA BBBBBBBB AAAAAAAA</div></td>
+                <td><div>AA</div></td>
+                <td><div>AA</div></td>
+              </tr>
+            </table>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var cells = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
+        }
+        Assert.Equal(4, cells.Count);
+        // The Description column (cell 1) is the widest — it has the
+        // longest max-content.
+        Assert.True(cells[1].InlineSize > cells[0].InlineSize,
+            $"Expected description col (width={cells[1].InlineSize}) "
+            + $"to be wider than qty col (width={cells[0].InlineSize}).");
+        Assert.True(cells[1].InlineSize > cells[2].InlineSize,
+            $"Expected description col (width={cells[1].InlineSize}) "
+            + $"to be wider than amount col (width={cells[2].InlineSize}).");
+        Assert.True(cells[1].InlineSize > cells[3].InlineSize,
+            $"Expected description col (width={cells[1].InlineSize}) "
+            + $"to be wider than date col (width={cells[3].InlineSize}).");
+        // The four columns sum to contentInlineSize = 600.
+        var totalWidth = cells[0].InlineSize + cells[1].InlineSize
+            + cells[2].InlineSize + cells[3].InlineSize;
+        Assert.Equal(600, totalWidth, precision: 3);
+    }
+
+    // ====================================================================
+    //  Phase 3 Task 12 sub-cycle 5 hardening tests
+    // ====================================================================
+
+    [Fact]
+    public async Task Production_auto_layout_with_direct_td_text_renders_asymmetric_widths()
+    {
+        // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 1 — direct
+        // `<td>X</td>` text (no <div> wrapper) now contributes its
+        // intrinsic widths to auto-table-layout column sizing. Pre-fix
+        // BlockLayouter's IsInlineOnlyBlockContainer predicate rejected
+        // TableCell, so the cell's direct TextRun children were
+        // skipped + the cell's min/max-content stayed at 0.
+        const string html = """
+            <!DOCTYPE html><html><head><style></style></head><body>
+            <table><tr><td>A</td><td>BBBBBBBBBB</td></tr></table>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var cells = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
+        }
+        Assert.Equal(2, cells.Count);
+        // The two columns produce ASYMMETRIC widths because their
+        // intrinsic content widths differ. Pre-fix both columns
+        // got the equal-split (300, 300).
+        Assert.True(cells[0].InlineSize < cells[1].InlineSize,
+            $"Expected col 0 ('A') narrower than col 1 ('BBBBBBBBBB'); "
+            + $"got col0={cells[0].InlineSize}, col1={cells[1].InlineSize}.");
+    }
+
+    [Fact]
+    public async Task Production_auto_layout_with_direct_td_text_emits_inline_content()
+    {
+        // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 1 — direct
+        // `<td>Description</td>` content emits an inline content
+        // fragment (shaped glyphs) under the cell. Pre-fix the cell's
+        // direct TextRun was silently dropped + no inline fragment
+        // was produced.
+        const string html = """
+            <!DOCTYPE html><html><head><style></style></head><body>
+            <table><tr><td>Description</td></tr></table>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        // Walk fragments for one with InlineLayout (= the cell's
+        // shaped inline content). Pre-Finding-1 the cell would emit
+        // a fragment but its inline content would never reach the
+        // inline pass (the cell wasn't dispatched as an inline-only
+        // block container).
+        var anyInlineFragment = false;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.InlineLayout is { } inline && inline.Lines.Length > 0)
+            {
+                anyInlineFragment = true;
+                break;
+            }
+        }
+        Assert.True(anyInlineFragment,
+            "Expected at least one inline content fragment from "
+            + "the direct <td>Description</td> text.");
+    }
+
+    [Fact]
+    public async Task Production_table_with_cell_padding_renders_correctly()
+    {
+        // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 3 — cell
+        // padding contributes to the cell's intrinsic widths under
+        // auto-table-layout + the inner content is offset by the
+        // padding within the cell.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                td { padding: 10px; }
+            </style></head><body>
+            <table><tr><td>A</td><td>B</td></tr></table>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var cells = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
+        }
+        Assert.Equal(2, cells.Count);
+        // Each column carries the 20px padding inline-edges; the
+        // sum still equals contentInlineSize (600) under the
+        // saturated path. The content fragment should be inset
+        // by padding-left within the cell.
+        Assert.Equal(600, cells[0].InlineSize + cells[1].InlineSize, precision: 3);
+    }
+
+    [Fact]
+    public async Task Production_auto_layout_min_content_overflow_wrapper_consistent()
+    {
+        // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 6 —
+        // end-to-end test that the wrapper's emitted geometry
+        // matches the overflowing grid extent under auto-table-
+        // layout's min-content overflow path.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                table { width: 200px; }
+                col { width: 400px; }
+            </style></head><body>
+            <table>
+              <col><col>
+              <tr><td>A</td><td>B</td></tr>
+            </table>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        BoxFragment? wrapper = null;
+        BoxFragment? row = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.Table && wrapper is null) wrapper = f;
+            else if (f.Box.Kind == BoxKind.TableRow && row is null) row = f;
+        }
+        Assert.NotNull(wrapper);
+        Assert.NotNull(row);
+        // Per Finding 6 — the wrapper's InlineSize matches the
+        // row's InlineSize (= grid's used inline-size). Pre-fix the
+        // wrapper stayed at the declared 200 while the row grew to
+        // 800; the wrapper background was narrower than its
+        // content.
+        Assert.Equal(wrapper!.Value.InlineSize, row!.Value.InlineSize, precision: 3);
     }
 
     // ====================================================================

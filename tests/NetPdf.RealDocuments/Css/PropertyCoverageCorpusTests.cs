@@ -76,7 +76,10 @@ public sealed class PropertyCoverageCorpusTests
         // Per Phase 3 Task 12 sub-cycle 3 — caption-side moved out of
         // this allowlist when it landed in properties.json + the
         // TableLayouter Phase 0 / Phase D caption emits.
-        "table-layout", "empty-cells", "border-spacing",
+        // Per Phase 3 Task 12 sub-cycle 4 — table-layout moved out of
+        // this allowlist when it landed in properties.json + the
+        // TableLayouter ComputeColumnWidths fixed-layout path.
+        "empty-cells", "border-spacing",
         "transition-property", "transition-duration", "transition-timing-function", "transition-delay",
         "animation-name", "animation-duration", "animation-timing-function", "animation-delay",
         "animation-iteration-count", "animation-direction", "animation-fill-mode", "animation-play-state",

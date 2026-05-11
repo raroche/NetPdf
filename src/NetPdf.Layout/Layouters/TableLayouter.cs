@@ -13,7 +13,7 @@ using NetPdf.Paginate.Diagnostics;
 namespace NetPdf.Layout.Layouters;
 
 /// <summary>
-/// Per Phase 3 Task 12 sub-cycle 1 + 2 + plan §"TableLayouter" —
+/// Per Phase 3 Task 12 sub-cycle 1 + 2 + 3 + 4 + plan §"TableLayouter" —
 /// Hello-World table layouter. Walks the inner content of a
 /// <see cref="BoxKind.Table"/> (or <see cref="BoxKind.InlineTable"/>)
 /// wrapper: finds the <see cref="BoxKind.TableGrid"/>, collects table
@@ -92,10 +92,15 @@ namespace NetPdf.Layout.Layouters;
 ///   anchor the cell at the cursor with its <c>colspan × rowspan</c>
 ///   slot rectangle marked occupied. The column count = max occupied
 ///   column index + 1 across all rows.</item>
-///   <item>Split the available inline-size equally:
-///   <c>columnWidth = contentInlineSize / columnCount</c>. No
-///   author column widths, no shrink-to-fit, no min/max content
-///   sizing (auto + fixed layout algorithms still deferred).</item>
+///   <item><b>Sub-cycle 4:</b> compute per-column widths via
+///   <see cref="ComputeColumnWidths"/>. For <c>table-layout: fixed</c>
+///   (CSS Tables L3 §3.5) a 3-pass algorithm reads <c>&lt;col&gt;</c>
+///   / <c>&lt;colgroup&gt;</c> declarations (Pass A), then first-row
+///   cell widths (Pass B), then equal-distributes the remainder to
+///   undeclared columns (Pass C). For <c>table-layout: auto</c>
+///   (default) sub-cycle 4 still equal-splits — the §3 shrink-to-
+///   fit min/max-content algorithm is sub-cycle 5+ work — see
+///   <c>docs/deferrals.md#table-auto-fixed-spans-borders</c>.</item>
 ///   <item>Measure pass: for each cell at its origin, lay out its
 ///   content into a <see cref="MeasuringFragmentSink"/> that BUFFERS
 ///   fragments with an inline translation baked in but a deferred
@@ -120,15 +125,16 @@ namespace NetPdf.Layout.Layouters;
 /// <c>docs/deferrals.md#table-auto-fixed-spans-borders</c>):</para>
 /// <list type="bullet">
 ///   <item>CSS Tables L3 §3 auto-table-layout column-width algorithm
-///   (shrink-to-fit / intrinsic min/max content).</item>
-///   <item>CSS Tables L3 §3.5 fixed-table-layout algorithm (column
-///   widths from <c>&lt;col&gt;</c> + first-row cell widths).</item>
+///   (shrink-to-fit / intrinsic min/max content) — sub-cycle 5+ work.
+///   Sub-cycle 4 ships the §3.5 fixed-layout algorithm; auto layout
+///   still uses the equal-split approximation.</item>
+///   <item>Percentage column widths (e.g.
+///   <c>&lt;col width="20%"&gt;</c>) — sub-cycle 4 treats them as 0,
+///   falling back to Pass B / Pass C.</item>
 ///   <item>Border-collapse model + <c>border-spacing</c> per
 ///   §6.3.</item>
 ///   <item><c>&lt;thead&gt;</c> / <c>&lt;tfoot&gt;</c> repetition
 ///   across pages.</item>
-///   <item><c>&lt;col&gt;</c> / <c>&lt;colgroup&gt;</c> column-specific
-///   widths.</item>
 ///   <item>Multi-fragmentainer table splitting (rows that cross
 ///   pages). If the table doesn't fit on the current fragmentainer,
 ///   the layouter emits all rows anyway + a forced-overflow
@@ -472,7 +478,37 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     private bool _measureDone;
     private double _measuredContentHeight;
     private int _measuredColumnCount;
-    private double _measuredColumnWidth;
+    // Per Phase 3 Task 12 sub-cycle 4 — replaced the scalar
+    // `_measuredColumnWidth` with a per-column-width array because
+    // `table-layout: fixed` derives per-column widths from <col> /
+    // <colgroup> + first-row cell widths (CSS Tables L3 §3.5). For
+    // `table-layout: auto` (sub-cycle 4 still equal-splits — the §3
+    // shrink-to-fit algorithm is sub-cycle 5+ work) the array entries
+    // are all equal to the prior `contentInlineSize / columnCount`.
+    // Cell inline-size for a placement is sum(columnWidths[col..col+colspan]).
+    // Per-column inline OFFSET is the prefix-sum stored separately so
+    // the emit pass avoids re-summing.
+    private double[]? _measuredColumnWidths;
+    private double[]? _measuredColumnOffsets;
+    // Per Phase 3 Task 12 sub-cycle 4 hardening Finding 1 — table grid's
+    // used inline-size after Pass D reconciliation. Equals
+    // max(sum(_measuredColumnWidths), _contentInlineSize). When the
+    // column sum was below contentInlineSize, Pass D distributed the
+    // leftover equally across columns + this value == _contentInlineSize.
+    // When the column sum exceeded contentInlineSize, declared widths
+    // are preserved + this value == columnSum (the table overflows the
+    // wrapper inline-axis; row + caption fragments grow to match;
+    // LAYOUT-TABLE-INLINE-OVERFLOW-001 is recorded for emit).
+    private double _measuredUsedInlineSize;
+    // Per Phase 3 Task 12 sub-cycle 4 hardening Finding 1 — when Pass D
+    // observed columnSum > contentInlineSize, record the values so the
+    // AttemptLayout emit pass can surface
+    // LAYOUT-TABLE-INLINE-OVERFLOW-001 with the actual numbers in the
+    // message. Both are zero in the non-overflow case + the diagnostic
+    // is not emitted.
+    private bool _measuredInlineOverflowed;
+    private double _measuredInlineOverflowColumnSum;
+    private double _measuredInlineOverflowContentSize;
     private List<RowMeasurement>? _measuredRows;
     private List<CellPlacement>? _measuredPlacements;
     // Per Phase 3 Task 12 sub-cycle 3 — caption measurements live
@@ -500,6 +536,19 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     // EXCEEDED-001 diagnostic from EmitDeferralDiagnostics.
     private bool _measuredSlotBudgetExceeded;
     private long _measuredSlotsUsed;
+
+    /// <summary>Per Phase 3 Task 12 sub-cycle 4 hardening Finding 1 —
+    /// the table grid's used inline-size after Pass D reconciliation.
+    /// Equals <c>max(sum(columnWidths), contentInlineSize)</c>. Only
+    /// meaningful after <see cref="MeasureContentHeight"/> has run.
+    ///
+    /// <para>Sub-cycle 5+ — BlockLayouter's
+    /// <c>PreMeasureTableIfNeeded</c> can consume this to size the
+    /// table wrapper's auto-width to the actual grid extent. Sub-cycle
+    /// 4 keeps the wrapper at <c>contentInlineSize</c>; the table
+    /// grid + row + caption fragments grow to match this used inline-
+    /// size when it exceeds the wrapper.</para></summary>
+    internal double MeasuredUsedInlineSize => _measuredUsedInlineSize;
 
     /// <inheritdoc />
     public LayoutAttemptResult AttemptLayout(
@@ -534,9 +583,46 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         // Emit caption diagnostics + missing-grid diagnostic first.
         EmitDeferralDiagnostics(ref layout);
 
+        // Per Phase 3 Task 12 sub-cycle 4 hardening Finding 1 — surface
+        // the LAYOUT-TABLE-INLINE-OVERFLOW-001 diagnostic when Pass D
+        // observed columnSum > contentInlineSize. The pre-Finding-1
+        // path silently let the table grid overflow the wrapper; the
+        // diagnostic gives authors a hook to tune their declarations.
+        if (_measuredInlineOverflowed)
+        {
+            OptimizingBreakResolver.SafeEmit(
+                layout.Diagnostics ?? _diagnostics,
+                new PaginateDiagnostic(
+                    PaginateDiagnosticCodes.LayoutTableInlineOverflow001,
+                    $"TableLayouter: under table-layout: fixed, sum of "
+                    + $"declared column widths "
+                    + $"({_measuredInlineOverflowColumnSum:0.##}) exceeds "
+                    + $"the wrapper's content-inline-size "
+                    + $"({_measuredInlineOverflowContentSize:0.##}). The "
+                    + "table grid overflows the wrapper in the inline "
+                    + "axis; declared widths are preserved + row + "
+                    + "caption fragments grow to the column sum. See "
+                    + "docs/deferrals.md#table-auto-fixed-spans-borders.",
+                    PaginateDiagnosticSeverity.Warning));
+        }
+
         var rows = _measuredRows;
         var placements = _measuredPlacements ?? new List<CellPlacement>(0);
         var captions = _measuredCaptionList;
+
+        // Sub-cycle 4 hardening (Finding 1) — used inline-size is the
+        // post-Pass-D column sum (= max(columnSum, contentInlineSize)).
+        // Row + caption fragments use THIS value for their InlineSize
+        // so the rendered geometry matches the actual column extent.
+        // Pre-fix the four emit sites used `_contentInlineSize` which
+        // could leave visual gaps (columnSum < contentInlineSize) or
+        // clip rendered backgrounds (columnSum > contentInlineSize).
+        // Falls back to `_contentInlineSize` when the measure pass
+        // didn't compute a used-inline-size (no-grid / captions-only
+        // path).
+        var usedInlineSize = _measuredUsedInlineSize > 0
+            ? _measuredUsedInlineSize
+            : _contentInlineSize;
 
         // Per Finding 5 — flush each cell's + caption's
         // BufferingDiagnosticsSink to the outer diagnostic sink now
@@ -595,7 +681,7 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                     Box: c.Caption,
                     InlineOffset: _contentInlineOffset,
                     BlockOffset: borderBoxBlockOffset,
-                    InlineSize: _contentInlineSize,
+                    InlineSize: usedInlineSize,
                     BlockSize: borderBoxBlockSize));
                 // Caption inner content lands INSIDE the caption's
                 // padding — content-box-top = fragment-top + border-
@@ -614,8 +700,19 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         // D emits. Bottom captions ARE emitted below for the no-grid
         // path so authors who attach <caption> + nothing else still
         // see their caption text.
+        // Per Phase 3 Task 12 sub-cycle 4 — the scalar `_measuredColumnWidth`
+        // was replaced by `_measuredColumnWidths` (per-column array). The
+        // early-return guard now bails when EVERY column resolved to ≤0,
+        // not just when a scalar mean ≤0. MeasureContentHeight's
+        // `anyPositiveWidth` pre-check returns early (leaving
+        // `_measuredRows` null) so the `rows is null` branch below covers
+        // the captions-only and zero-positive-width paths uniformly.
+        // `_measuredColumnWidths` may have been assigned (with all zeros)
+        // before that early return — the guard treats the null `rows`
+        // pointer as the authoritative "no row stack" signal.
         if (_measuredMissingGrid || rows is null || rows.Count == 0
-            || _measuredColumnCount == 0 || _measuredColumnWidth <= 0)
+            || _measuredColumnCount == 0 || _measuredColumnWidths is null
+            || _measuredColumnOffsets is null)
         {
             // Phase D — even with no rows, render bottom captions
             // immediately after the top-caption stack so they don't
@@ -642,7 +739,7 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                         Box: c.Caption,
                         InlineOffset: _contentInlineOffset,
                         BlockOffset: borderBoxBlockOffset,
-                        InlineSize: _contentInlineSize,
+                        InlineSize: usedInlineSize,
                         BlockSize: borderBoxBlockSize));
                     var contentBlockOriginInFragmentainer =
                         borderBoxBlockOffset + c.BorderBlockStart + c.PaddingBlockStart;
@@ -661,7 +758,13 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             return LayoutAttemptResult.AllDone(cost: 0);
         }
 
-        var columnWidth = _measuredColumnWidth;
+        // Per Phase 3 Task 12 sub-cycle 4 — pull the per-column-offsets
+        // prefix-sum cached by MeasureContentHeight (built from the
+        // per-column-widths array). Cell inline-offset = column-offset
+        // at OriginCol; cell inline-size = columnOffsets[OriginCol +
+        // ColSpan] − columnOffsets[OriginCol]. This replaces the prior
+        // scalar `placement.OriginCol * columnWidth` arithmetic.
+        var columnOffsetsLocal = _measuredColumnOffsets;
 
         // Per Finding 3 — emit in three phases for the WHOLE table so
         // the painter sees backgrounds before borders before content
@@ -723,6 +826,13 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         // row gets a (degenerate) fragment because its rowHeight may
         // be 0 (rowspan continuation slots from earlier rows kept the
         // row in the row list).
+        //
+        // Sub-cycle 4 hardening (Finding 1) — row InlineSize is
+        // `usedInlineSize` (= max(columnSum, contentInlineSize)) so
+        // the row background spans the actual column extent. Pre-fix
+        // the value was `_contentInlineSize` which left gaps when
+        // declared widths summed below the wrapper or clipped backgrounds
+        // when they exceeded.
         for (var r = 0; r < rows.Count; r++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -731,7 +841,7 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                 Box: rowMeasure.Row,
                 InlineOffset: _contentInlineOffset,
                 BlockOffset: rowBlockOffsets[r],
-                InlineSize: _contentInlineSize,
+                InlineSize: usedInlineSize,
                 BlockSize: rowMeasure.RowHeight));
         }
 
@@ -747,8 +857,10 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             {
                 var placement = bucket[i];
                 var cellInlineOffset = _contentInlineOffset
-                    + (placement.OriginCol * columnWidth);
-                var cellInlineSize = placement.ColSpan * columnWidth;
+                    + columnOffsetsLocal[placement.OriginCol];
+                var cellInlineSize =
+                    columnOffsetsLocal[placement.OriginCol + placement.ColSpan]
+                    - columnOffsetsLocal[placement.OriginCol];
                 var cellBlockOffset = rowBlockOffsets[r];
                 var cellBlockSize =
                     rowEndBlockOffset[placement.OriginRow + placement.RowSpan]
@@ -804,7 +916,7 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                     Box: c.Caption,
                     InlineOffset: _contentInlineOffset,
                     BlockOffset: borderBoxBlockOffset,
-                    InlineSize: _contentInlineSize,
+                    InlineSize: usedInlineSize,
                     BlockSize: borderBoxBlockSize));
                 var contentBlockOriginInFragmentainer =
                     borderBoxBlockOffset + c.BorderBlockStart + c.PaddingBlockStart;
@@ -986,9 +1098,49 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             return captionOnlyHeight;
         }
 
-        var columnWidth = _contentInlineSize / columnCount;
-        _measuredColumnWidth = columnWidth;
-        if (columnWidth <= 0)
+        // Per Phase 3 Task 12 sub-cycle 4 — compute per-column widths
+        // via `table-layout: fixed` (CSS Tables L3 §3.5) when the
+        // wrapper declares it; otherwise fall back to equal-split
+        // (the §3 auto-table-layout shrink-to-fit algorithm is sub-
+        // cycle 5+ work — see docs/deferrals.md#table-auto-fixed-spans-borders).
+        //
+        // Sub-cycle 4 hardening (Finding 1) — under fixed-layout, after
+        // Pass A + B + C complete, run Pass D reconciliation:
+        // distribute leftover wrapper space equally across columns when
+        // the column sum < contentInlineSize, or record the inline-
+        // overflow when it exceeds. The grid's used inline-size
+        // (_measuredUsedInlineSize) is consumed by the emit pass to
+        // size the row + caption fragments to the ACTUAL column extent
+        // instead of the wrapper's content-inline-size (the pre-fix
+        // mismatch left visual gaps when columnSum < contentInlineSize).
+        var columnWidths = ComputeColumnWidths(
+            _rootBox, rows, columnCount, _contentInlineSize, placements,
+            cancellationToken);
+        _measuredColumnWidths = columnWidths;
+
+        // Pre-compute per-column inline OFFSETS as a prefix-sum so the
+        // emit pass + the measure pass below can do O(1) lookups.
+        var columnOffsets = new double[columnCount + 1];
+        for (var c = 0; c < columnCount; c++)
+        {
+            columnOffsets[c + 1] = columnOffsets[c] + columnWidths[c];
+        }
+        _measuredColumnOffsets = columnOffsets;
+        // Sub-cycle 4 hardening (Finding 1) — used inline-size is the
+        // post-Pass-D column sum (which ComputeColumnWidths already
+        // reconciled against _contentInlineSize for the fixed path).
+        // Pre-fix the value was always _contentInlineSize; post-fix it
+        // matches the row + cell geometry.
+        _measuredUsedInlineSize = columnOffsets[columnCount];
+
+        // Defensive: if every column resolved to 0 inline-size (e.g.,
+        // contentInlineSize ≤ 0), bail like the prior scalar-zero path.
+        var anyPositiveWidth = false;
+        for (var c = 0; c < columnCount; c++)
+        {
+            if (columnWidths[c] > 0) { anyPositiveWidth = true; break; }
+        }
+        if (!anyPositiveWidth)
         {
             _measureDone = true;
             _measuredContentHeight = captionOnlyHeight;
@@ -1006,9 +1158,16 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         {
             cancellationToken.ThrowIfCancellationRequested();
             var placement = placements[pIdx];
+            // Per Phase 3 Task 12 sub-cycle 4 — cell inline-offset is
+            // the column-offset prefix-sum at `OriginCol`; cell inline-
+            // size is the sum of `columnWidths[OriginCol..OriginCol+ColSpan]`
+            // (= `columnOffsets[OriginCol + ColSpan] - columnOffsets[OriginCol]`).
+            // Pre-sub-cycle-4 this was `placement.ColSpan * columnWidth`.
             var cellInlineOffset = _contentInlineOffset
-                + (placement.OriginCol * columnWidth);
-            var cellInlineSize = placement.ColSpan * columnWidth;
+                + columnOffsets[placement.OriginCol];
+            var cellInlineSize =
+                columnOffsets[placement.OriginCol + placement.ColSpan]
+                - columnOffsets[placement.OriginCol];
             var (buffer, diagBuffer) = MeasureCellContent(
                 cellBox: placement.Cell,
                 cellInlineOffset: cellInlineOffset,
@@ -1880,6 +2039,533 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                 // per sub-cycle 1 deferrals.
                 default:
                     break;
+            }
+        }
+    }
+
+    /// <summary>Per Phase 3 Task 12 sub-cycle 4 — compute the per-column
+    /// width array for the table. CSS Tables L3 §3.5 (fixed-table-
+    /// layout): when <c>table-layout: fixed</c> is set, column widths
+    /// derive from author declarations rather than content; sub-cycle 4
+    /// implements the three-pass algorithm:
+    ///
+    /// <list type="number">
+    ///   <item><b>Pass A</b> — walk <see cref="BoxKind.TableColumn"/>
+    ///     / <see cref="BoxKind.TableColumnGroup"/> direct children of
+    ///     the table wrapper in document order. Each <c>&lt;col&gt;</c>
+    ///     contributes its declared <c>width</c> to <c>span</c>
+    ///     consecutive columns (default span = 1). A
+    ///     <c>&lt;colgroup&gt;</c> with <c>width</c> + no
+    ///     <c>&lt;col&gt;</c> children also contributes; explicit
+    ///     <c>&lt;col&gt;</c> children take priority over their
+    ///     parent group's width.</item>
+    ///   <item><b>Pass B</b> — walk first-row cells. For each cell at
+    ///     <c>(0, c)</c> with colspan <c>S</c>, when none of
+    ///     <c>columnWidths[c..c+S]</c> were set by Pass A, read the
+    ///     cell's <c>width</c> property + HTML <c>width</c> attribute;
+    ///     a declared width is distributed equally across the
+    ///     <c>S</c> columns.</item>
+    ///   <item><b>Pass C</b> — count columns still at 0; equal-
+    ///     distribute <c>max(0, contentInlineSize − sum(declared))</c>
+    ///     across them. Columns with no declaration AND no remainder
+    ///     stay at 0.</item>
+    /// </list>
+    ///
+    /// <para>For <c>table-layout: auto</c> (default) sub-cycle 4 keeps
+    /// the prior equal-split — every column gets
+    /// <c>contentInlineSize / columnCount</c>. The CSS Tables L3 §3
+    /// shrink-to-fit auto algorithm (min/max-content per column) is
+    /// sub-cycle 5+ work — see
+    /// <c>docs/deferrals.md#table-auto-fixed-spans-borders</c>.</para>
+    ///
+    /// <para><b>Percentage widths are NOT supported.</b>
+    /// <c>&lt;col width="20%"&gt;</c> is treated as 0 (the column falls
+    /// through to Pass B / Pass C). Sub-cycle 5+ work — see
+    /// <c>docs/deferrals.md#table-auto-fixed-spans-borders</c>.</para>
+    /// </summary>
+    /// <summary>Per Phase 3 Task 12 sub-cycle 4 hardening Finding 1 +
+    /// 2 + 5 — instance method (was static; promoted so the cancellation-
+    /// token threading + the Pass D inline-overflow recording can read
+    /// /write the instance's measure-phase state). Reads
+    /// <paramref name="placements"/> for Pass B's first-row colspan
+    /// partial-declare semantics. Records
+    /// <see cref="_measuredInlineOverflowed"/> +
+    /// <see cref="_measuredInlineOverflowColumnSum"/> +
+    /// <see cref="_measuredInlineOverflowContentSize"/> when Pass D
+    /// observes columnSum > contentInlineSize.</summary>
+    private double[] ComputeColumnWidths(
+        Box wrapper, List<Box> rows, int columnCount, double contentInlineSize,
+        IList<CellPlacement> placements, CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var widths = new double[columnCount];
+        var hasDeclared = new bool[columnCount];
+
+        var mode = wrapper.Style.ReadTableLayout();
+
+        if (mode == TableLayoutMode.Fixed)
+        {
+            // Pass A — walk <col> / <colgroup> direct children of the
+            // wrapper. Per BoxBuilder Rec 5 captions are direct wrapper
+            // children but columns + column-groups are children of the
+            // TableGrid (see GridLevelFixup). Sub-cycle 4 walks BOTH the
+            // wrapper AND the grid because authors may place <col> /
+            // <colgroup> as siblings of <tr> in the source HTML, which
+            // BoxBuilder slots under the synthesized TableGrid.
+            var colCursor = 0;
+            CollectColumnsFromGridLevel(
+                wrapper, columnCount, widths, hasDeclared, ref colCursor,
+                cancellationToken);
+
+            // Pass B — walk first-row placements. Sub-cycle 4 hardening
+            // (Finding 2): use the placement list (authoritative origin
+            // column from PlaceCellsOntoGrid) instead of re-deriving a
+            // local cursor that re-parsed spans. For each first-row
+            // cell at OriginCol with ColSpan S, distribute the cell's
+            // declared width across the UNDECLARED columns in
+            // [OriginCol, OriginCol+S). When some columns in the span
+            // are already declared by Pass A, only the REMAINING
+            // (cellWidth - alreadyDeclared) is split across the
+            // undeclared columns — spec-correct partial-declare
+            // (the prior `width / colSpan` divided by the full span
+            // even when some columns were pre-declared).
+            ApplyFirstRowCellWidths(
+                placements, widths, hasDeclared, columnCount,
+                cancellationToken);
+
+            // Pass C — equal-distribute the remaining inline-size
+            // across columns not declared by Pass A or Pass B. Columns
+            // with no declared width AND no remainder stay at 0 (the
+            // sum-of-declared-widths exceeded contentInlineSize — the
+            // table overflows in the inline-axis; Pass D below records
+            // a diagnostic for the emit pass to surface).
+            cancellationToken.ThrowIfCancellationRequested();
+            var declaredTotal = 0.0;
+            var undeclaredCount = 0;
+            for (var c = 0; c < columnCount; c++)
+            {
+                if (hasDeclared[c]) declaredTotal += widths[c];
+                else undeclaredCount++;
+            }
+            if (undeclaredCount > 0)
+            {
+                var remainder = contentInlineSize - declaredTotal;
+                if (remainder < 0) remainder = 0;
+                var perUndeclared = remainder / undeclaredCount;
+                for (var c = 0; c < columnCount; c++)
+                {
+                    if (!hasDeclared[c])
+                    {
+                        widths[c] = perUndeclared;
+                        // Mark as declared after Pass C — Pass D treats
+                        // every column as "fixed" once Pass A+B+C have
+                        // run; Pass D distributes leftover or records
+                        // overflow without re-touching individual
+                        // declared-flags.
+                        hasDeclared[c] = true;
+                    }
+                }
+            }
+
+            // Pass D (Finding 1) — reconcile the column-sum with the
+            // wrapper's content-inline-size. CSS 2.1 §17.5.2.1: if the
+            // column sum is less than the table width, the extra space
+            // is distributed equally across the columns. If the column
+            // sum exceeds the wrapper, the table grid overflows in the
+            // inline axis (we keep declared widths intact + record an
+            // inline-overflow diagnostic for the emit pass). When the
+            // sum matches contentInlineSize, no-op.
+            ReconcileColumnWidthsFixed(
+                widths, columnCount, contentInlineSize, cancellationToken);
+
+            return widths;
+        }
+
+        // table-layout: auto — equal-split for sub-cycle 4. The §3
+        // auto-table-layout shrink-to-fit min/max-content algorithm is
+        // sub-cycle 5+ work — see
+        // docs/deferrals.md#table-auto-fixed-spans-borders.
+        // No Pass D distribution for auto — equal-split already sums
+        // exactly to contentInlineSize so the reconciliation would be
+        // a no-op.
+        cancellationToken.ThrowIfCancellationRequested();
+        var equalWidth = contentInlineSize / columnCount;
+        for (var c = 0; c < columnCount; c++) widths[c] = equalWidth;
+        return widths;
+    }
+
+    /// <summary>Per Phase 3 Task 12 sub-cycle 4 hardening Finding 1 —
+    /// Pass D of the fixed-table-layout column-width algorithm. After
+    /// Pass A+B+C have populated every column, compare the column-sum
+    /// to <paramref name="contentInlineSize"/>:
+    /// <list type="bullet">
+    ///   <item>If columnSum &lt; contentInlineSize: distribute the
+    ///     leftover (contentInlineSize - columnSum) equally across ALL
+    ///     columns. Per CSS 2.1 §17.5.2.1 "if the total width of the
+    ///     columns is less than the width of the table, the extra
+    ///     space should be distributed over the columns".</item>
+    ///   <item>If columnSum &gt; contentInlineSize: keep declared
+    ///     widths intact (the table grid overflows the wrapper in the
+    ///     inline axis). Record <c>_measuredInlineOverflowed</c> +
+    ///     <c>_measuredInlineOverflowColumnSum</c> +
+    ///     <c>_measuredInlineOverflowContentSize</c> so the emit pass
+    ///     surfaces <c>LAYOUT-TABLE-INLINE-OVERFLOW-001</c>.</item>
+    ///   <item>If columnSum == contentInlineSize: no-op.</item>
+    /// </list>
+    /// </summary>
+    private void ReconcileColumnWidthsFixed(
+        double[] widths, int columnCount, double contentInlineSize,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        var columnSum = 0.0;
+        for (var c = 0; c < columnCount; c++) columnSum += widths[c];
+
+        // Floating-point tolerance — exact equality is fragile when
+        // Pass C's equal-distribute introduces rounding. Treat sums
+        // within 1e-9 as "equal" to skip needless arithmetic.
+        const double Tolerance = 1e-9;
+        if (columnSum + Tolerance < contentInlineSize)
+        {
+            // columnSum < contentInlineSize → distribute leftover
+            // equally across ALL columns. columnCount > 0 guaranteed
+            // by the caller (ComputeColumnWidths skips fixed-layout
+            // when columnCount == 0 via the same branch that returns
+            // the empty widths array).
+            var leftover = contentInlineSize - columnSum;
+            var perColumn = leftover / columnCount;
+            for (var c = 0; c < columnCount; c++) widths[c] += perColumn;
+        }
+        else if (columnSum > contentInlineSize + Tolerance)
+        {
+            // columnSum > contentInlineSize → keep declared widths
+            // intact; record overflow for the AttemptLayout emit pass.
+            // The row + cell + caption fragments will use the column
+            // sum as their inline extent (see _measuredUsedInlineSize
+            // in MeasureContentHeight) so author intent is preserved.
+            _measuredInlineOverflowed = true;
+            _measuredInlineOverflowColumnSum = columnSum;
+            _measuredInlineOverflowContentSize = contentInlineSize;
+        }
+        // columnSum == contentInlineSize → no-op.
+    }
+
+    /// <summary>Per Phase 3 Task 12 sub-cycle 4 — recursive walk that
+    /// visits the wrapper's direct children + the TableGrid's direct
+    /// children for <c>&lt;col&gt;</c> / <c>&lt;colgroup&gt;</c>
+    /// declarations. Authors may place column declarations as either
+    /// (1) direct children of the wrapper (less common; BoxBuilder
+    /// keeps them where they were authored unless table fixup pulls
+    /// them inside the grid — see <c>GridLevelFixup</c>'s pass-through
+    /// branch for TableColumn / TableColumnGroup), or (2) children of
+    /// the synthesized TableGrid (most common — they sit alongside row
+    /// groups inside the grid box).
+    /// <para>Walks in document order; advances a shared
+    /// <paramref name="colCursor"/> so a <c>&lt;col span="2"&gt;</c>
+    /// declaration claims columns [cursor, cursor+span) regardless of
+    /// whether it lives at the wrapper level or inside the grid. Stops
+    /// once the cursor reaches <paramref name="columnCount"/> (extra
+    /// declarations are silently ignored per CSS Tables L3 §11.1).</para>
+    /// </summary>
+    private static void CollectColumnsFromGridLevel(
+        Box wrapper, int columnCount, double[] widths, bool[] hasDeclared,
+        ref int colCursor, CancellationToken cancellationToken)
+    {
+        // Wrapper-level children first (rare but valid per Display 3 if
+        // an author authored <col> as a direct wrapper child + BoxBuilder
+        // didn't relocate it).
+        for (var i = 0; i < wrapper.Children.Count && colCursor < columnCount; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            VisitColumnishChild(
+                wrapper.Children[i], columnCount, widths, hasDeclared,
+                ref colCursor, cancellationToken);
+        }
+
+        // Find the TableGrid + walk its children for <col> / <colgroup>.
+        var grid = FindTableGrid(wrapper);
+        if (grid is null) return;
+        for (var i = 0; i < grid.Children.Count && colCursor < columnCount; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            VisitColumnishChild(
+                grid.Children[i], columnCount, widths, hasDeclared,
+                ref colCursor, cancellationToken);
+        }
+    }
+
+    /// <summary>Per Phase 3 Task 12 sub-cycle 4 — visit one direct
+    /// child of the wrapper / grid. If it's a <c>&lt;col&gt;</c>, claim
+    /// <c>span</c> columns at the cursor. If it's a
+    /// <c>&lt;colgroup&gt;</c> with <c>&lt;col&gt;</c> children, recurse
+    /// into them (the colgroup acts as a structural parent — its own
+    /// <c>width</c> is overridden by explicit children). If it's a
+    /// <c>&lt;colgroup&gt;</c> with NO <c>&lt;col&gt;</c> children, the
+    /// colgroup's own <c>width</c> + <c>span</c> applies to
+    /// <c>span</c> consecutive columns.
+    /// </summary>
+    private static void VisitColumnishChild(
+        Box child, int columnCount, double[] widths, bool[] hasDeclared,
+        ref int colCursor, CancellationToken cancellationToken)
+    {
+        switch (child.Kind)
+        {
+            case BoxKind.TableColumn:
+            {
+                var span = ParseColumnSpan(child);
+                var width = ReadColumnWidthPx(child);
+                ApplyDeclaredWidthToColumns(
+                    width, span, columnCount, widths, hasDeclared,
+                    ref colCursor, cancellationToken);
+                break;
+            }
+            case BoxKind.TableColumnGroup:
+            {
+                // Per HTML §4.9.3 a <colgroup> with <col> children
+                // ignores its own width attribute + delegates to the
+                // children. Otherwise its own span + width applies.
+                var hasColChildren = false;
+                for (var i = 0; i < child.Children.Count; i++)
+                {
+                    if (child.Children[i].Kind == BoxKind.TableColumn)
+                    {
+                        hasColChildren = true;
+                        break;
+                    }
+                }
+                if (hasColChildren)
+                {
+                    for (var i = 0; i < child.Children.Count && colCursor < columnCount; i++)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+                        var inner = child.Children[i];
+                        if (inner.Kind != BoxKind.TableColumn) continue;
+                        var span = ParseColumnSpan(inner);
+                        var width = ReadColumnWidthPx(inner);
+                        ApplyDeclaredWidthToColumns(
+                            width, span, columnCount, widths, hasDeclared,
+                            ref colCursor, cancellationToken);
+                    }
+                }
+                else
+                {
+                    var span = ParseColumnSpan(child);
+                    var width = ReadColumnWidthPx(child);
+                    ApplyDeclaredWidthToColumns(
+                        width, span, columnCount, widths, hasDeclared,
+                        ref colCursor, cancellationToken);
+                }
+                break;
+            }
+            default:
+                // Not a columnish child — ignore (row groups + rows are
+                // walked elsewhere).
+                break;
+        }
+    }
+
+    /// <summary>Per Phase 3 Task 12 sub-cycle 4 — claim
+    /// <paramref name="span"/> columns at <paramref name="colCursor"/>
+    /// for the declared <paramref name="width"/>. The cursor always
+    /// advances by <paramref name="span"/> — the
+    /// <c>&lt;col&gt;</c> claims the column slots in document order
+    /// regardless of whether it had a usable width. When
+    /// <paramref name="width"/> ≤ 0 the column slots stay undeclared
+    /// (Pass B / Pass C can still claim them), so a
+    /// <c>&lt;col width="20%"&gt;</c> (percentage clamped to 0 by
+    /// sub-cycle 4) falls through to Pass C's equal-distribute.
+    /// Pre-clamp span to remaining columns so the loop stays in-
+    /// bounds.</summary>
+    private static void ApplyDeclaredWidthToColumns(
+        double width, int span, int columnCount,
+        double[] widths, bool[] hasDeclared, ref int colCursor,
+        CancellationToken cancellationToken)
+    {
+        if (span < 1) span = 1;
+        var end = colCursor + span;
+        if (end > columnCount) end = columnCount;
+        if (width > 0)
+        {
+            for (var c = colCursor; c < end; c++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                widths[c] = width;
+                hasDeclared[c] = true;
+            }
+        }
+        // The cursor always advances — the <col> claims the slot
+        // positionally even when its width contribution was 0.
+        colCursor = end;
+    }
+
+    /// <summary>Per Phase 3 Task 12 sub-cycle 4 — read a column-related
+    /// box's declared width in CSS px. Tries (in order):
+    /// <list type="number">
+    ///   <item>CSS <c>width</c> property via
+    ///     <see cref="ComputedStyleLayoutExtensions.ReadLengthPxOrZero"/>.
+    ///     Returns 0 for <c>auto</c>, percentages, and unset slots.</item>
+    ///   <item>HTML <c>width</c> attribute on the source element
+    ///     (<see cref="Box.SourceElement"/>). Per HTML §4.9.3 the
+    ///     attribute is parsed as a non-negative integer in CSS px;
+    ///     non-integer / negative values are ignored.</item>
+    /// </list>
+    /// Returns 0 when both are absent / invalid. Percentage column
+    /// widths (e.g. <c>20%</c>) are NOT supported — sub-cycle 5+ work,
+    /// see <c>docs/deferrals.md#table-auto-fixed-spans-borders</c>.
+    /// </summary>
+    private static double ReadColumnWidthPx(Box box)
+    {
+        // CSS width (resolved-px). Percentages + auto map to 0 per
+        // ReadLengthPxOrZero's contract — that's the documented sub-
+        // cycle-4 simplification.
+        var cssWidth = box.Style.ReadLengthPxOrZero(PropertyId.Width);
+        if (cssWidth > 0) return cssWidth;
+
+        // Sub-cycle 4 hardening (Finding 3) — KNOWN LIMITATION:
+        // ideally per CSS 2.1 §17.5 the HTML `width` attribute is a
+        // low-specificity PRESENTATIONAL hint; explicit author CSS
+        // (including `width: auto` / percent) should win. Current
+        // limitation: NetPdf's cascade pipeline (BoxBuilder.ApplyDefaults
+        // → PropertyResolverDispatch.Resolve) eagerly fills every
+        // ComputedStyle slot with the property's INITIAL value (so
+        // `width: auto` is set even when no author rule fired); this
+        // collapses the distinction between "author wrote width:auto"
+        // and "no author rule, defaulted to auto" — both report
+        // `IsSet(PropertyId.Width)=true` with a Keyword(auto) slot.
+        //
+        // Until the cascade exposes a way to query "explicit-author-
+        // rule applied" (sub-cycle 5+ — likely a separate bitmap layer
+        // or a side declaration table consulted PRE-defaults), Pass A
+        // falls back to the HTML attribute whenever CSS resolved to 0.
+        // This means an authored `<col width="100" style="width: auto">`
+        // will still pick up the HTML attribute's 100 — incorrect per
+        // spec but a deliberate trade-off until the cascade exposes
+        // explicit-author detection. The HTML width attribute path is
+        // documented in docs/deferrals.md#table-auto-fixed-spans-borders
+        // as the open work item.
+        var el = box.SourceElement;
+        if (el is null) return 0;
+        var raw = el.GetAttribute("width");
+        if (string.IsNullOrEmpty(raw)) return 0;
+        // TODO sub-cycle 5+ — handle "%" suffix (currently dropped to
+        // 0, falling back to Pass B / Pass C; see
+        // docs/deferrals.md#table-auto-fixed-spans-borders).
+        if (raw.EndsWith('%')) return 0;
+        // HTML §2.4.4.2 — parse a non-negative integer. int.TryParse
+        // with NumberStyles.Integer ACCEPTS leading "+" / "-" — so we
+        // explicitly reject negative parsed values below (Copilot #4
+        // — the pre-fix comment claimed leading sign was rejected,
+        // which was false: a "-100" parsed to -100 + the cell got a
+        // negative width). A leading "+100" still parses to +100 (a
+        // valid non-negative integer).
+        if (!int.TryParse(raw, System.Globalization.NumberStyles.Integer,
+            System.Globalization.CultureInfo.InvariantCulture, out var n))
+        {
+            return 0;
+        }
+        if (n < 0) return 0;
+        return n;
+    }
+
+    /// <summary>Per Phase 3 Task 12 sub-cycle 4 — parse the
+    /// <c>span</c> HTML attribute on a <c>&lt;col&gt;</c> /
+    /// <c>&lt;colgroup&gt;</c>. Per HTML §4.9.3 the attribute defaults
+    /// to 1; valid range <c>[1, 1000]</c>; non-numeric / 0 / negative
+    /// values fall back to 1.
+    /// <para>Distinct from <see cref="ParseSpanAttribute"/> (which
+    /// handles cell <c>rowspan</c> / <c>colspan</c>'s
+    /// <c>0 = "remainder"</c> semantic). Column <c>span</c> doesn't
+    /// admit the remainder semantic, so the helpers stay separate.
+    /// </para></summary>
+    private static int ParseColumnSpan(Box columnishBox)
+    {
+        var el = columnishBox.SourceElement;
+        if (el is null) return 1;
+        var raw = el.GetAttribute("span");
+        if (string.IsNullOrEmpty(raw)) return 1;
+        if (!int.TryParse(raw, System.Globalization.NumberStyles.Integer,
+            System.Globalization.CultureInfo.InvariantCulture, out var n))
+        {
+            return 1;
+        }
+        if (n < 1) return 1;
+        if (n > 1000) return 1000;
+        return n;
+    }
+
+    /// <summary>Per Phase 3 Task 12 sub-cycle 4 — Pass B of the fixed-
+    /// table-layout algorithm: read declared widths off the first row's
+    /// cells. Per CSS Tables L3 §3.5 a first-row cell's <c>width</c>
+    /// fills its column ONLY when <c>&lt;col&gt;</c> didn't claim it.
+    ///
+    /// <para>Sub-cycle 4 hardening (Finding 2) — for cells with
+    /// <c>colspan &gt; 1</c> that PARTIALLY overlap Pass-A declared
+    /// columns, the cell's declared width minus the sum of
+    /// already-declared columns is distributed across the REMAINING
+    /// undeclared columns. Example: col 0 has <c>&lt;col width="100"&gt;</c>,
+    /// first-row cell <c>colspan=2 width=400</c> → col 0 stays 100,
+    /// col 1 gets <c>400 - 100 = 300</c> (NOT <c>400 / 2 = 200</c> like
+    /// the pre-Finding-2 path).</para>
+    ///
+    /// <para>Sub-cycle 4 hardening (Finding 2 + 5) — operates on the
+    /// authoritative placement list (the prior version re-walked the
+    /// row + re-parsed spans). Cancellation checked per first-row
+    /// placement so long tables respond to cancellation.</para>
+    /// </summary>
+    private void ApplyFirstRowCellWidths(
+        IList<CellPlacement> placements, double[] widths, bool[] hasDeclared,
+        int columnCount, CancellationToken cancellationToken)
+    {
+        for (var i = 0; i < placements.Count; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var placement = placements[i];
+            if (placement.OriginRow != 0) continue;
+            var colOrigin = placement.OriginCol;
+            var colSpan = placement.ColSpan;
+            // Defensive clamp (the placement algorithm already clamped
+            // but we re-confirm in case future caller passes a stale
+            // list).
+            var spanEnd = colOrigin + colSpan;
+            if (spanEnd > columnCount) spanEnd = columnCount;
+
+            // Count undeclared columns in span + sum already-declared
+            // widths. Two reads of `hasDeclared[]` per column avoided
+            // by doing both in one loop.
+            var undeclaredCount = 0;
+            var alreadyDeclared = 0.0;
+            for (var c = colOrigin; c < spanEnd; c++)
+            {
+                if (hasDeclared[c]) alreadyDeclared += widths[c];
+                else undeclaredCount++;
+            }
+
+            // No undeclared columns to fill — skip.
+            if (undeclaredCount == 0) continue;
+
+            // Read the cell's declared width (CSS width OR HTML width
+            // attribute per Finding 3 cascade-precedence semantics in
+            // ReadColumnWidthPx).
+            var cellWidth = ReadColumnWidthPx(placement.Cell);
+            if (cellWidth <= 0) continue;
+
+            // remainingWidth = cellWidth - alreadyDeclared. When the
+            // already-declared columns soak up the cell's width
+            // (cellWidth ≤ alreadyDeclared), leave the undeclared
+            // columns as undeclared so Pass C can handle them — author
+            // intent (the smaller cell width) wins versus expanding the
+            // table to fit.
+            var remainingWidth = cellWidth - alreadyDeclared;
+            if (remainingWidth <= 0) continue;
+
+            var perUndeclared = remainingWidth / undeclaredCount;
+            for (var c = colOrigin; c < spanEnd; c++)
+            {
+                if (!hasDeclared[c])
+                {
+                    widths[c] = perUndeclared;
+                    hasDeclared[c] = true;
+                }
             }
         }
     }

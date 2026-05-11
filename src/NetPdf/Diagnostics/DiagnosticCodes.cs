@@ -291,5 +291,19 @@ internal static class DiagnosticCodes
     /// </summary>
     public const string LayoutTableSlotBudgetExceeded001 = "LAYOUT-TABLE-SLOT-BUDGET-EXCEEDED-001";
 
+    /// <summary>
+    /// Per Phase 3 Task 12 sub-cycle 4 hardening Finding 1 — emitted
+    /// by the table layouter when the sum of declared column widths
+    /// under <c>table-layout: fixed</c> exceeds the table wrapper's
+    /// content-inline-size. CSS 2.1 §17.5.2.1 says the table grid's
+    /// inline extent grows to fit the declared column widths in that
+    /// case — the table overflows its wrapper in the inline axis. The
+    /// layouter keeps the declared widths intact (row + caption
+    /// fragments grow to the column sum); the diagnostic surfaces the
+    /// overflow so authors can tune their declarations.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string LayoutTableInlineOverflow001 = "LAYOUT-TABLE-INLINE-OVERFLOW-001";
+
     // endregion LAYOUT-*
 }

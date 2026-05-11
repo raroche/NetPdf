@@ -222,6 +222,14 @@ internal static class KeywordResolver
         // position — CSS Positioned Layout 3 §2.
         b[PropertyId.Position] = T("static", "relative", "absolute", "fixed", "sticky");
 
+        // table-layout — CSS Tables 3 §3 + §3.5. Phase 3 Task 12 sub-
+        // cycle 4 ships the `fixed` algorithm (per-column widths from
+        // <col> / first-row cells); `auto` still uses the equal-split
+        // approximation (the spec-strict shrink-to-fit min/max-content
+        // algorithm is sub-cycle 5+ work — see
+        // docs/deferrals.md#table-auto-fixed-spans-borders).
+        b[PropertyId.TableLayout] = T("auto", "fixed");
+
         // text-align — CSS Text 3 §7.1.
         b[PropertyId.TextAlign] = T("start", "end", "left", "right", "center", "justify",
             "match-parent", "justify-all");

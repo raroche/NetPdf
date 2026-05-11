@@ -140,6 +140,27 @@ internal static class ComputedStyleLayoutExtensions
             _ => CaptionSide.Top,
         };
     }
+
+    /// <summary>Per Phase 3 Task 12 sub-cycle 4 — decode
+    /// <see cref="PropertyId.TableLayout"/> into a
+    /// <see cref="TableLayoutMode"/>. CSS Tables 3 §3 + §3.5 admit
+    /// <c>auto</c> (default — the spec-strict shrink-to-fit min/max-
+    /// content algorithm; sub-cycle 5+ work) and <c>fixed</c> (sub-
+    /// cycle 4 — column widths derive from <c>&lt;col&gt;</c> +
+    /// first-row cell widths). Keyword indices match the source-gen'd
+    /// table in
+    /// <see cref="NetPdf.Css.ComputedValues.PropertyResolvers.KeywordResolver"/>:
+    /// 0=auto, 1=fixed.
+    /// </summary>
+    public static TableLayoutMode ReadTableLayout(this ComputedStyle style)
+    {
+        var keyword = style.ReadKeywordOrDefault(PropertyId.TableLayout, defaultIndex: 0);
+        return keyword switch
+        {
+            1 => TableLayoutMode.Fixed,
+            _ => TableLayoutMode.Auto,
+        };
+    }
 }
 
 /// <summary>Per Phase 3 Task 12 sub-cycle 3 — typed decode of
@@ -153,4 +174,15 @@ internal enum CaptionSide : byte
 {
     Top = 0,
     Bottom = 1,
+}
+
+/// <summary>Per Phase 3 Task 12 sub-cycle 4 — typed decode of
+/// <see cref="PropertyId.TableLayout"/>. CSS Tables 3 §3 + §3.5
+/// admit two values; sub-cycle 4 ships <see cref="Fixed"/> in full
+/// + leaves <see cref="Auto"/> using the equal-split approximation
+/// pending sub-cycle 5+ shrink-to-fit work.</summary>
+internal enum TableLayoutMode : byte
+{
+    Auto = 0,
+    Fixed = 1,
 }

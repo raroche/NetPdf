@@ -479,6 +479,11 @@ public sealed class TableLayouterProductionTests
         // Sub-cycle 4 — through the full pipeline a
         // table-layout: fixed table with two <col width> declarations
         // renders cells at the declared per-column widths.
+        //
+        // Sub-cycle 4 hardening (Finding 1) — after Pass A claims cols
+        // 0 + 1 with widths 100 + 200 (columnSum=300), Pass D
+        // distributes the leftover (600 - 300 = 300) equally (+150
+        // each) → 250 + 350.
         const string html = """
             <!DOCTYPE html><html><head><style>
                 table { table-layout: fixed; }
@@ -499,10 +504,10 @@ public sealed class TableLayouterProductionTests
             if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
         }
         Assert.Equal(2, cells.Count);
-        Assert.Equal(100, cells[0].InlineSize);
-        Assert.Equal(200, cells[1].InlineSize);
+        Assert.Equal(250, cells[0].InlineSize);
+        Assert.Equal(350, cells[1].InlineSize);
         Assert.Equal(0, cells[0].InlineOffset);
-        Assert.Equal(100, cells[1].InlineOffset);
+        Assert.Equal(250, cells[1].InlineOffset);
     }
 
     [Fact]

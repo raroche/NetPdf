@@ -291,7 +291,7 @@ grepping the ID).
   `max(content extent)` over `rowspan=1` cells and a second pass
   (ascending rowspan) lands any excess from `rowspan>1` cells on
   the LAST row of the span. The CSS Tables L3 §11 spec-strict
-  distribution-proportional algorithm is sub-cycle 4+ work. No
+  distribution-proportional algorithm is sub-cycle 5+ work. No
   `border-collapse`, no `<thead>` / `<tfoot>` repetition across
   pages, no multi-page splitting within a single table, no RTL
   flips. **Sub-cycle 3 — captions (`<caption>`) lay
@@ -300,8 +300,8 @@ grepping the ID).
   size = table wrapper's content-inline-size; the writing-mode-
   relative `block-start` / `block-end` keywords map to `top` /
   `bottom` for LTR horizontal writing modes only (RTL + vertical-
-  axis writing modes deferred to sub-cycle 4 with the rest of the
-  writing-mode work). The sub-cycle 1 + 2
+  axis writing modes deferred to a future sub-cycle alongside the
+  rest of the writing-mode work). The sub-cycle 1 + 2
   `LAYOUT-TABLE-FEATURE-UNSUPPORTED-001` diagnostic for captions
   is gone.** **Sub-cycle 4 — when `table-layout: fixed` is set,
   column widths derive from `<col>` / `<colgroup>` `width` (Pass A),
@@ -309,52 +309,87 @@ grepping the ID).
   remaining inline-size to columns with no declared width
   (Pass C). When `table-layout: auto` (default), all columns
   equal-split — the §3 shrink-to-fit auto algorithm via
-  min/max-content remains sub-cycle 5+ work.**
+  min/max-content remains sub-cycle 5+ work. Sub-cycle 4 hardening
+  Finding 1 added Pass D reconciliation: when the column sum is
+  below the wrapper's content-inline-size, leftover space is
+  distributed equally across ALL columns (CSS 2.1 §17.5.2.1); when
+  the column sum exceeds the wrapper, declared widths are kept and
+  the table grid overflows the wrapper in the inline axis (row +
+  caption fragments grow to the column sum so author intent is
+  preserved) + `LAYOUT-TABLE-INLINE-OVERFLOW-001` is emitted with
+  the column sum + wrapper content-inline-size in the message.
+  Sub-cycle 4 hardening Finding 2 fixed first-row colspan
+  partial-declare semantics: when some spanned columns are pre-
+  declared by Pass A, the cell's declared width minus the sum of
+  already-declared columns is distributed across the remaining
+  undeclared columns (spec-correct; pre-fix divided the full cell
+  width by the full colspan regardless). Sub-cycle 4 hardening
+  Finding 3 attempted to make CSS `width` cascade-aware (per CSS 2.1
+  §17.5 the HTML `width` attribute is a low-specificity presentational
+  hint that should lose to explicit author CSS), but the current
+  cascade pipeline (`BoxBuilder.ApplyDefaults`) eagerly populates every
+  ComputedStyle slot with the property's initial value, collapsing
+  the distinction between "author wrote `width: auto`" and "no author
+  rule, defaulted to auto". Sub-cycle 4 hardening therefore keeps the
+  pre-fix behavior (HTML `width` attribute wins when CSS resolves to
+  0) + documents the limitation inline in `ReadColumnWidthPx`. **NetPdf's
+  fixed-layout approximation: CSS 2.1 strictly requires a definite
+  table width for `table-layout: fixed`. NetPdf currently treats the
+  wrapper's resolved content-inline-size (from CSS `width` or the
+  containing-block width) as the effective table width, even when
+  `table.width` is `auto`. Sub-cycle 5+ may revise once `width: auto`
+  shrink-to-fit lands.**
   Tables that overflow the page emit
   `PAGINATION-FORCED-OVERFLOW-001`; a Table wrapper with no
   TableGrid child (malformed box tree) emits
   `LAYOUT-TABLE-FEATURE-UNSUPPORTED-001` (NOT a pagination overflow
   code — the anomaly is structural).
-- **Missing** — Per CSS Tables L3 + HTML5 §4.9.11: §3 auto-layout
-  algorithm (shrink-to-fit column widths via min/max-content),
-  §6.3 border-collapse model + `border-spacing`, §11 spec-strict
-  rowspan distribution-proportional algorithm (sub-cycle 2 uses
-  naive last-row-of-span distribution), HTML5 §4.9.11 `rowspan="0"`
-  / `colspan="0"` "spans the remainder of the row-group /
-  column-group" semantics (sub-cycle 2 clamps to 1 + emits a
-  deferral diagnostic via `LAYOUT-TABLE-FEATURE-UNSUPPORTED-001`),
-  Percentage column widths (`<col width="20%">`) — sub-cycle 5+
-  work; sub-cycle 4 treats `%` widths as 0 + falls back to Pass B
-  / Pass C, per-page header / footer repeat, multi-fragmentainer
-  table splitting + row-level `break-inside: avoid`, RTL writing
-  modes / row reversal, writing-mode-relative
-  `caption-side: inline-start` / `inline-end` for vertical writing
-  modes (sub-cycle 3 falls back to `top` for these — see Owner
-  files).
+- **Missing** — Per CSS Tables L3 + HTML5 §4.9.11: §3 auto-table-
+  layout via min/max-content shrink-to-fit; percentage column
+  widths; full grid/table used-inline-size reconciliation for
+  content-shrink scenarios; §6.3 border-collapse + border-spacing;
+  §6.4 column-group widths beyond Pass A fallback; per-page
+  header/footer repeat (Task 13); multi-fragmentainer row splitting;
+  §11 spec-strict rowspan distribution-proportional algorithm;
+  HTML5 colspan='0'/rowspan='0' remainder semantics; RTL writing
+  modes / row reversal / caption inline-axis keyword routing; HTML
+  width attribute cascade precedence (sub-cycle 4 hardening Finding
+  3 wires `IsSet(Width)` to gate the fallback — but the HTML width
+  attribute should ideally be a low-specificity presentational hint
+  in the cascade, not a layout-time fallback; sub-cycle 5+ work).
 - **Trigger** — corpus invoice needs proper column widths
   (typical), OR a user-reported case where a table renders with
   equal columns when it shouldn't.
 - **Owner files** —
-  - `src/NetPdf.Layout/Layouters/TableLayouter.cs` — replace the
-    equal-split algorithm with the auto + fixed layout passes;
-    add the collapsed-borders model; add col widths + per-page
-    header repeat + multi-page row splitting.
+  - `src/NetPdf.Layout/Layouters/TableLayouter.cs` — implement the
+    CSS Tables L3 §3 auto-table-layout shrink-to-fit algorithm
+    (min/max content per column); spec-strict §11 rowspan
+    distribution-proportional algorithm; §6.3 border-collapse
+    model + `border-spacing`; per-page `<thead>` / `<tfoot>`
+    repetition; multi-fragmentainer row splitting + row-level
+    `break-inside: avoid`; RTL writing modes / row reversal /
+    caption inline-axis keyword routing; HTML5 colspan='0'/
+    rowspan='0' remainder semantics; percentage column widths.
   - `src/NetPdf.Layout/Layouters/BlockLayouter.cs::DispatchTableInnerIfNeeded`
-    — thread the per-cell metrics into the wrapper's auto-height
-    resolution (sub-cycle 1 leaves wrapper height as the explicit
-    style value).
+    — once sub-cycle 5+ shrink-to-fit lands, consume the table's
+    `MeasuredUsedInlineSize` to drive the wrapper's auto-width
+    resolution (sub-cycle 4 leaves the wrapper at content-inline-
+    size; the grid's used inline-size can exceed the wrapper).
 - **Added** — Phase 3 Task 12 sub-cycle 1; sub-cycle 2 added
   `colspan` / `rowspan` cell merging; sub-cycle 3 added caption
   layout (`caption-side: top` / `bottom`); sub-cycle 4 added the
   `table-layout: fixed` algorithm (`<col>` / `<colgroup>` + first-
-  row cell widths drive per-column widths).
-- **Removal condition** — Tables render with proper column widths
-  from `<col>` / `<th>` / `table-layout: fixed` first-row widths;
-  borders collapse correctly; thead / tfoot repeat across pages;
-  rows can split across pages; and the CSS Tables L3 §11 spec-
-  strict rowspan distribution-proportional algorithm replaces sub-
-  cycle 2's naive last-row distribution. (Captions actually lay
-  out — sub-cycle 3.)
+  row cell widths drive per-column widths); sub-cycle 4 hardening
+  added Pass D reconciliation + first-row colspan partial-declare
+  semantics + CSS-cascade-aware `width` precedence.
+- **Removal condition** — All "Missing" items above are
+  implemented: CSS Tables L3 §3 auto-table-layout shrink-to-fit;
+  percentage column widths; §6.3 border-collapse + border-spacing;
+  per-page header/footer repeat; multi-fragmentainer row splitting;
+  §11 spec-strict rowspan distribution-proportional algorithm;
+  HTML5 colspan='0'/rowspan='0' remainder semantics; RTL writing
+  modes; HTML width attribute as a low-specificity presentational
+  cascade hint.
 
 ---
 

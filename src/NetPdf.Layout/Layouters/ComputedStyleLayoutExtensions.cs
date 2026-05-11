@@ -104,4 +104,53 @@ internal static class ComputedStyleLayoutExtensions
             _ => ClearKind.None,
         };
     }
+
+    /// <summary>Per Phase 3 Task 12 sub-cycle 3 — decode
+    /// <see cref="PropertyId.CaptionSide"/> into a <see cref="CaptionSide"/>.
+    /// CSS Tables 3 §11.5.2 admits the physical pair <c>top</c> /
+    /// <c>bottom</c>; CSS Logical Properties 1 §4.4 admits the
+    /// writing-mode-relative pair <c>block-start</c> / <c>block-end</c>
+    /// + the inline-axis pair <c>inline-start</c> / <c>inline-end</c>.
+    /// Keyword indices match the source-gen'd table in
+    /// <see cref="NetPdf.Css.ComputedValues.PropertyResolvers.KeywordResolver"/>:
+    /// 0=top, 1=bottom, 2=block-start, 3=block-end, 4=inline-start,
+    /// 5=inline-end.
+    ///
+    /// <para><b>Writing-mode resolution.</b> Sub-cycle 3 maps the
+    /// writing-mode-relative keywords assuming LTR + horizontal writing
+    /// mode — <c>block-start</c> → <see cref="CaptionSide.Top"/>,
+    /// <c>block-end</c> → <see cref="CaptionSide.Bottom"/>. The inline-
+    /// axis keywords (<c>inline-start</c> / <c>inline-end</c>) are
+    /// authored on table captions only in vertical writing modes; sub-
+    /// cycle 3 falls back to <see cref="CaptionSide.Top"/> for them
+    /// (RTL + vertical writing-mode support is deferred to sub-cycle 4+
+    /// alongside the rest of the writing-mode work; see
+    /// <c>docs/deferrals.md#table-auto-fixed-spans-borders</c>).</para>
+    /// </summary>
+    public static CaptionSide ReadCaptionSide(this ComputedStyle style)
+    {
+        var keyword = style.ReadKeywordOrDefault(PropertyId.CaptionSide, defaultIndex: 0);
+        return keyword switch
+        {
+            1 => CaptionSide.Bottom,
+            2 => CaptionSide.Top,    // block-start → top (LTR horizontal mode)
+            3 => CaptionSide.Bottom, // block-end → bottom (LTR horizontal mode)
+            // 4 / 5 (inline-start / inline-end) fall through to Top for
+            // sub-cycle 3 — vertical writing-mode resolution is deferred.
+            _ => CaptionSide.Top,
+        };
+    }
+}
+
+/// <summary>Per Phase 3 Task 12 sub-cycle 3 — typed decode of
+/// <see cref="PropertyId.CaptionSide"/>. CSS Tables 3 §11.5.2 admits
+/// the physical pair <c>top</c> / <c>bottom</c>; CSS Logical Properties
+/// 1 §4.4 admits the writing-mode-relative <c>block-start</c> /
+/// <c>block-end</c> pair which sub-cycle 3 maps to the same two
+/// physical sides under LTR horizontal writing mode (RTL + vertical
+/// modes deferred).</summary>
+internal enum CaptionSide : byte
+{
+    Top = 0,
+    Bottom = 1,
 }

@@ -291,13 +291,20 @@ grepping the ID).
   `max(content extent)` over `rowspan=1` cells and a second pass
   (ascending rowspan) lands any excess from `rowspan>1` cells on
   the LAST row of the span. The CSS Tables L3 §11 spec-strict
-  distribution-proportional algorithm is sub-cycle 3 work. No
+  distribution-proportional algorithm is sub-cycle 4+ work. No
   `table-layout: auto` / `fixed` algorithm distinction, no
   `border-collapse`, no `<thead>` / `<tfoot>` repetition across
   pages, no `<col>` widths, no multi-page splitting within a single
-  table, no RTL flips. Captions (`<caption>`) are skipped + emit
-  `LAYOUT-TABLE-FEATURE-UNSUPPORTED-001` with the caption text in
-  the diagnostic message (so authors see what is being dropped).
+  table, no RTL flips. **Sub-cycle 3 — captions (`<caption>`) lay
+  out as block fragments above (`caption-side: top`, default) or
+  below (`caption-side: bottom`) the table grid; caption inline-
+  size = table wrapper's content-inline-size; the writing-mode-
+  relative `block-start` / `block-end` keywords map to `top` /
+  `bottom` for LTR horizontal writing modes only (RTL + vertical-
+  axis writing modes deferred to sub-cycle 4 with the rest of the
+  writing-mode work). The sub-cycle 1 + 2
+  `LAYOUT-TABLE-FEATURE-UNSUPPORTED-001` diagnostic for captions
+  is gone.**
   Tables that overflow the page emit
   `PAGINATION-FORCED-OVERFLOW-001`; a Table wrapper with no
   TableGrid child (malformed box tree) emits
@@ -307,7 +314,7 @@ grepping the ID).
   algorithm (shrink-to-fit column widths via min/max-content), §3.5
   fixed-layout algorithm (column widths from `<col>` + first-row
   cell widths), §6.3 border-collapse model + `border-spacing`,
-  §11 caption box, §6.4 column-group widths, §11 spec-strict
+  §6.4 column-group widths, §11 spec-strict
   rowspan distribution-proportional algorithm (sub-cycle 2 uses
   naive last-row-of-span distribution), HTML5 §4.9.11 `rowspan="0"`
   / `colspan="0"` "spans the remainder of the row-group /
@@ -315,28 +322,31 @@ grepping the ID).
   deferral diagnostic via `LAYOUT-TABLE-FEATURE-UNSUPPORTED-001`),
   per-page header / footer repeat, multi-fragmentainer table
   splitting + row-level `break-inside: avoid`, RTL writing modes /
-  row reversal.
+  row reversal, writing-mode-relative `caption-side: inline-start`
+  / `inline-end` for vertical writing modes (sub-cycle 3 falls
+  back to `top` for these — see Owner files).
 - **Trigger** — corpus invoice needs proper column widths
   (typical), OR a user-reported case where a table renders with
   equal columns when it shouldn't.
 - **Owner files** —
   - `src/NetPdf.Layout/Layouters/TableLayouter.cs` — replace the
     equal-split algorithm with the auto + fixed layout passes;
-    add the collapsed-borders model; add span resolution +
-    caption handling + col widths + per-page header repeat +
-    multi-page row splitting.
+    add the collapsed-borders model; add col widths + per-page
+    header repeat + multi-page row splitting.
   - `src/NetPdf.Layout/Layouters/BlockLayouter.cs::DispatchTableInnerIfNeeded`
     — thread the per-cell metrics into the wrapper's auto-height
     resolution (sub-cycle 1 leaves wrapper height as the explicit
     style value).
 - **Added** — Phase 3 Task 12 sub-cycle 1; sub-cycle 2 added
-  `colspan` / `rowspan` cell merging.
+  `colspan` / `rowspan` cell merging; sub-cycle 3 added caption
+  layout (`caption-side: top` / `bottom`).
 - **Removal condition** — Tables render with proper column widths
   from `<col>` / `<th>` / `table-layout: fixed` first-row widths;
   borders collapse correctly; thead / tfoot repeat across pages;
-  rows can split across pages; captions actually lay out; and the
-  CSS Tables L3 §11 spec-strict rowspan distribution-proportional
-  algorithm replaces sub-cycle 2's naive last-row distribution.
+  rows can split across pages; and the CSS Tables L3 §11 spec-
+  strict rowspan distribution-proportional algorithm replaces sub-
+  cycle 2's naive last-row distribution. (Captions actually lay
+  out — sub-cycle 3.)
 
 ---
 

@@ -161,6 +161,17 @@ internal static class KeywordResolver
         // break-inside — CSS Fragmentation 3 §3.2.
         b[PropertyId.BreakInside] = T("auto", "avoid", "avoid-page", "avoid-column", "avoid-region");
 
+        // caption-side — CSS Tables 3 §11.5.2 + CSS Logical Properties 1 §4.4.
+        // Physical: top, bottom. Writing-mode-relative: block-start, block-end,
+        // inline-start, inline-end. Phase 3 Task 12 sub-cycle 3 maps the
+        // writing-mode-relative keywords through to the physical axes via LTR-
+        // only mapping (block-start → top, block-end → bottom); the inline-
+        // axis keywords are admitted by the keyword table but the layout-side
+        // ReadCaptionSide reader falls back to top (RTL + vertical writing-mode
+        // support is deferred to sub-cycle 4+ writing-mode work).
+        b[PropertyId.CaptionSide] = T("top", "bottom",
+            "block-start", "block-end", "inline-start", "inline-end");
+
         // clear — CSS 2.2 §9.5.2 (still active in L3).
         b[PropertyId.Clear] = T("none", "left", "right", "both", "inline-start", "inline-end");
 

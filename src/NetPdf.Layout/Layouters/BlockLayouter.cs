@@ -1194,6 +1194,20 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         parentInlineSize: borderBoxInlineSize,
                         cancellationToken: cancellationToken,
                         depth: 1);
+                    // Per Phase 3 Task 12 sub-cycle 1 — dispatch into
+                    // TableLayouter for the inner rows/cells when the
+                    // emitted block is a Table or InlineTable wrapper.
+                    // The wrapper's outer fragment is already emitted
+                    // above; TableLayouter only adds rows + cells.
+                    DispatchTableInnerIfNeeded(
+                        child,
+                        wrapperBlockOffset: forcedOverflowChildBlockOffset,
+                        wrapperInlineOffset: forcedOverflowInlineOffset,
+                        wrapperInlineSize: borderBoxInlineSize,
+                        fragmentainer: fragmentainer,
+                        layout: ref layout,
+                        resolver: resolver,
+                        cancellationToken: cancellationToken);
                     // Per PR #23 review fix #4 — clamp UsedBlockSize
                     // to non-negative so subsequent BreakOpportunity
                     // construction doesn't trip CostModel's guard.
@@ -1299,6 +1313,22 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 parentInlineSize: borderBoxInlineSize,
                 cancellationToken: cancellationToken,
                 depth: 1);
+            // Per Phase 3 Task 12 sub-cycle 1 — dispatch into
+            // TableLayouter for the inner rows/cells when the emitted
+            // block is a Table or InlineTable wrapper. The wrapper's
+            // outer fragment is already emitted above; TableLayouter
+            // only adds rows + cells. EmitBlockSubtreeRecursive's own
+            // predicate gate skips Table inner content (the inner
+            // geometry belongs to TableLayouter, not BlockLayouter).
+            DispatchTableInnerIfNeeded(
+                child,
+                wrapperBlockOffset: blockOffset,
+                wrapperInlineOffset: inFlowInlineOffset,
+                wrapperInlineSize: borderBoxInlineSize,
+                fragmentainer: fragmentainer,
+                layout: ref layout,
+                resolver: resolver,
+                cancellationToken: cancellationToken);
 
             // Per PR #23 review fix #4 — clamp UsedBlockSize to
             // non-negative. A valid block with very negative margins
@@ -3023,6 +3053,82 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         }
 
         return maxExtent;
+    }
+
+    /// <summary>Per Phase 3 Task 12 sub-cycle 1 — dispatch into
+    /// <see cref="TableLayouter"/> when <paramref name="wrapperChild"/>
+    /// is a <see cref="BoxKind.Table"/> or
+    /// <see cref="BoxKind.InlineTable"/>. The wrapper's outer
+    /// <see cref="BoxFragment"/> has already been emitted by the
+    /// caller; this method appends the inner row + cell fragments at
+    /// fragmentainer-relative offsets inside the wrapper's content
+    /// area.
+    ///
+    /// <para>The wrapper's content-area top-left is computed from the
+    /// wrapper's border-box top-left (= <paramref name="wrapperBlockOffset"/>
+    /// + border-block-start + padding-block-start, similarly for
+    /// inline). The wrapper's content-area inline extent is
+    /// <paramref name="wrapperInlineSize"/> - border-inline - padding-
+    /// inline (clamped non-negative). Sub-cycle 1 reads
+    /// border/padding from the wrapper's style via the same physical-
+    /// axis helpers as the block path (no logical-axis support yet
+    /// — see cycle 3 TODO).</para>
+    ///
+    /// <para>No-op when <paramref name="wrapperChild"/> is not a
+    /// Table or InlineTable wrapper — the predicate keeps the call
+    /// site simple at the cost of an extra branch on every emitted
+    /// block.</para></summary>
+    private void DispatchTableInnerIfNeeded(
+        Box wrapperChild,
+        double wrapperBlockOffset,
+        double wrapperInlineOffset,
+        double wrapperInlineSize,
+        FragmentainerContext fragmentainer,
+        ref LayoutContext layout,
+        IBreakResolver resolver,
+        CancellationToken cancellationToken)
+    {
+        if (wrapperChild.Kind is not (BoxKind.Table or BoxKind.InlineTable))
+        {
+            return;
+        }
+
+        // Compute the wrapper's content-box top-left + inline extent.
+        // Sub-cycle 1 reads physical axes (matches the rest of the
+        // BlockLayouter cycle 1 behavior; cycle 3 logical-axis pass
+        // applies uniformly).
+        var borderBlockStart = wrapperChild.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
+        var paddingBlockStart = wrapperChild.Style.ReadLengthPxOrZero(PropertyId.PaddingTop);
+        var borderInlineStart = wrapperChild.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
+        var paddingInlineStart = wrapperChild.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
+        var borderInlineEnd = wrapperChild.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
+        var paddingInlineEnd = wrapperChild.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
+
+        var contentInlineOffset = wrapperInlineOffset
+            + borderInlineStart + paddingInlineStart;
+        var contentBlockOffset = wrapperBlockOffset
+            + borderBlockStart + paddingBlockStart;
+        var contentInlineSize = Math.Max(0,
+            wrapperInlineSize
+            - borderInlineStart - paddingInlineStart
+            - borderInlineEnd - paddingInlineEnd);
+
+        using var tableLayouter = new TableLayouter(
+            rootBox: wrapperChild,
+            sink: _sink,
+            incomingContinuation: null,
+            diagnostics: _diagnostics,
+            shaperResolver: _shaperResolver);
+        tableLayouter.ConfigureEmission(
+            contentInlineOffset: contentInlineOffset,
+            contentBlockOffset: contentBlockOffset,
+            contentInlineSize: contentInlineSize);
+        _ = tableLayouter.AttemptLayout(
+            fragmentainer,
+            ref layout,
+            resolver,
+            LayoutAttemptStrategy.LastResort,
+            cancellationToken);
     }
 
     /// <summary>Per PR #22 review fix #2 — release the final

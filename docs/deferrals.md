@@ -263,6 +263,55 @@ grepping the ID).
 
 ---
 
+## table-auto-fixed-spans-borders
+
+- **ID** — `table-auto-fixed-spans-borders`
+- **Status** — `approximated`.
+- **Behavior** — `TableLayouter` (Phase 3 Task 12 sub-cycle 1) walks
+  the Table → TableGrid → row → cell hierarchy, splits the wrapper's
+  content-inline-size equally across columns (max cell count across
+  rows), stacks rows vertically, dispatches each cell's content
+  through a nested `BlockLayouter` whose emitted fragments are
+  forwarded through a `MeasuringFragmentSink` so cell-content
+  fragments land at fragmentainer coordinates + the row height
+  resolves to the tallest cell. No table-layout: auto / fixed
+  algorithm distinction, no `border-collapse`, no `colspan` /
+  `rowspan` merging, no `<thead>` / `<tfoot>` repetition across
+  pages, no captions, no `<col>` widths, no multi-page splitting
+  within a single table, no RTL flips. Tables that overflow the
+  page emit `PAGINATION-FORCED-OVERFLOW-001`; cells carrying
+  `colspan` / `rowspan` attributes emit
+  `LAYOUT-TABLE-FEATURE-UNSUPPORTED-001` (the attribute is
+  ignored, each cell occupies one column / one row).
+- **Missing** — Per CSS Tables L3: §3 auto-layout algorithm
+  (shrink-to-fit column widths via min/max-content), §3.5
+  fixed-layout algorithm (column widths from `<col>` + first-row
+  cell widths), §6.3 border-collapse model + `border-spacing`,
+  cell merging (`colspan` / `rowspan`), §11 caption box, §6.4
+  column-group widths, per-page header / footer repeat,
+  multi-fragmentainer table splitting + row-level
+  `break-inside: avoid`, RTL writing modes / row reversal.
+- **Trigger** — corpus invoice needs proper column widths
+  (typical), OR a user-reported case where a table renders with
+  equal columns when it shouldn't.
+- **Owner files** —
+  - `src/NetPdf.Layout/Layouters/TableLayouter.cs` — replace the
+    equal-split algorithm with the auto + fixed layout passes;
+    add the collapsed-borders model; add span resolution +
+    caption handling + col widths + per-page header repeat +
+    multi-page row splitting.
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs::DispatchTableInnerIfNeeded`
+    — thread the per-cell metrics into the wrapper's auto-height
+    resolution (sub-cycle 1 leaves wrapper height as the explicit
+    style value).
+- **Added** — Phase 3 Task 12 sub-cycle 1 (this branch).
+- **Removal condition** — Tables render with proper column widths
+  from `<col>` / `<th>` / `table-layout: fixed` first-row widths;
+  `colspan` / `rowspan` work; borders collapse correctly; thead /
+  tfoot repeat across pages; rows can split across pages.
+
+---
+
 ## fuzzing-infrastructure
 
 - **ID** — `fuzzing-infrastructure`

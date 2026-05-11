@@ -66,7 +66,12 @@ public sealed class InlineTextPolicyTests
 
     [Fact] public void OverflowWrap_normal()                   => Assert.Equal(OverflowWrap.Normal, ResolveWith(PropertyId.OverflowWrap, 0).OverflowWrap);
     [Fact] public void OverflowWrap_anywhere()                 => Assert.Equal(OverflowWrap.Anywhere, ResolveWith(PropertyId.OverflowWrap, 1).OverflowWrap);
-    [Fact] public void OverflowWrap_break_word_folds_to_Anywhere() => Assert.Equal(OverflowWrap.Anywhere, ResolveWith(PropertyId.OverflowWrap, 2).OverflowWrap);
+    // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 5 —
+    // overflow-wrap: break-word maps to its own enum variant (was
+    // folded to Anywhere pre-fix). Line-wrap behavior is identical
+    // to Anywhere; only intrinsic-sizing measurement (auto-table-
+    // layout's min-content pass) distinguishes the two.
+    [Fact] public void OverflowWrap_break_word_maps_to_BreakWord() => Assert.Equal(OverflowWrap.BreakWord, ResolveWith(PropertyId.OverflowWrap, 2).OverflowWrap);
 
     // --- WordBreak mapping ---
 
@@ -114,13 +119,14 @@ public sealed class InlineTextPolicyTests
     [Fact]
     public void OverflowWrap_break_word_with_WordBreak_break_all_resolves_correctly()
     {
-        // overflow-wrap: break-word folds to anywhere; word-break:
-        // break-all stands.
+        // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 5 —
+        // overflow-wrap: break-word maps to BreakWord (not Anywhere);
+        // word-break: break-all stands.
         var style = ComputedStyle.RentForExclusiveTesting();
         style.Set(PropertyId.OverflowWrap, ComputedSlot.FromKeyword(2)); // break-word
         style.Set(PropertyId.WordBreak, ComputedSlot.FromKeyword(1));    // break-all
         var p = style.ReadInlineTextPolicy();
-        Assert.Equal(OverflowWrap.Anywhere, p.OverflowWrap);
+        Assert.Equal(OverflowWrap.BreakWord, p.OverflowWrap);
         Assert.Equal(WordBreak.BreakAll, p.WordBreak);
     }
 

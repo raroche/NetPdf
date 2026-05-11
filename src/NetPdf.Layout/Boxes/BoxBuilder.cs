@@ -865,7 +865,20 @@ internal static class BoxBuilder
             else if (c.IsInlineLevel) hasInline = true;
             if (hasBlock && hasInline) break;
         }
-        if (!(hasBlock && hasInline)) return;
+        // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 1 — also
+        // fire when the parent is a TableCell with only inline children.
+        // CSS Tables L3 §11.5.3 specifies the cell content's principal
+        // formatting context is block-level; an inline-only run of cell
+        // content (e.g., `<td>Description</td>`) needs to wrap in an
+        // anonymous block so the downstream
+        // <c>IsInlineOnlyBlockContainer</c> predicate detects it +
+        // dispatches via the inline pass. Pre-fix the cell carried
+        // direct TextRun children + the inner BlockLayouter (invoked
+        // from TableLayouter.MeasureCellContent) skipped them at the
+        // child-iteration loop.
+        var isInlineOnlyCell =
+            parent.Kind == BoxKind.TableCell && hasInline && !hasBlock;
+        if (!(hasBlock && hasInline) && !isInlineOnlyCell) return;
 
         var snapshot = new List<Box>(parent.Children.Count);
         foreach (var c in parent.Children) snapshot.Add(c);

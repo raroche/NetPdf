@@ -114,4 +114,20 @@ internal static class PaginateDiagnosticCodes
     /// <c>NetPdf.DiagnosticCodes.LayoutTableInlineOverflow001</c>.
     /// Severity: <see cref="PaginateDiagnosticSeverity.Warning"/>.</summary>
     public const string LayoutTableInlineOverflow001 = "LAYOUT-TABLE-INLINE-OVERFLOW-001";
+
+    /// <summary>Per Phase 3 Task 12 sub-cycle 5 hardening Finding 4 —
+    /// emitted by <c>TableLayouter</c> when the auto-table-layout
+    /// intrinsic-measurement pass exceeds its per-table speculative-
+    /// measurement budget. Each cell normally runs two speculative
+    /// nested <c>BlockLayouter</c> passes (min-content at 1px +
+    /// max-content at 1e6 px) — i.e., 2 ops per cell. For tables with
+    /// thousands of cells the cumulative work is bounded by this budget;
+    /// cells beyond the cap fall back to <c>(minContent=0,
+    /// maxContent=contentInlineSize)</c>, producing a degenerate
+    /// equal-split-like distribution rather than DoS-amplifying the
+    /// speculative passes. Mirrors
+    /// <c>NetPdf.DiagnosticCodes.LayoutTableIntrinsicMeasurementBudgetExceeded001</c>.
+    /// Severity: <see cref="PaginateDiagnosticSeverity.Warning"/>.</summary>
+    public const string LayoutTableIntrinsicMeasurementBudgetExceeded001 =
+        "LAYOUT-TABLE-INTRINSIC-MEASUREMENT-BUDGET-EXCEEDED-001";
 }

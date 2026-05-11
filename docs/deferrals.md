@@ -394,10 +394,22 @@ grepping the ID).
   measurement cost across re-layout passes;
   HTML5 colspan='0'/rowspan='0' remainder semantics; RTL writing
   modes / row reversal / caption inline-axis keyword routing; HTML
-  width attribute cascade precedence (sub-cycle 4 hardening Finding
-  3 wires `IsSet(Width)` to gate the fallback — but the HTML width
-  attribute should ideally be a low-specificity presentational hint
-  in the cascade, not a layout-time fallback; sub-cycle 6+ work).
+  width attribute cascade precedence (the HTML `width` attribute
+  should ideally be a low-specificity presentational hint in the
+  cascade, not a layout-time fallback consumed AFTER computed
+  values resolve — but the current cascade pipeline
+  (`BoxBuilder.ApplyDefaults` → `PropertyResolverDispatch.Resolve`)
+  eagerly fills every `ComputedStyle` slot with the property's
+  initial value, collapsing the distinction between "author wrote
+  `width: auto`" and "no author rule, defaulted to auto" — both
+  report `IsSet(PropertyId.Width) = true` with a `Keyword(auto)`
+  slot. Sub-cycle 4 hardening Finding 3 was a documentation-only
+  pass; the layout-time fallback path (read CSS `width`, fall back
+  to the HTML `width` attribute when CSS resolved to 0) kept its
+  pre-fix behavior because cascade-aware gating was infeasible
+  given the `ApplyDefaults` constraint. An explicit-author-rule
+  bitmap or side declaration table consulted PRE-defaults is the
+  spec-correct fix, deferred to sub-cycle 6+).
 - **Trigger** — corpus invoice needs proper column widths
   (typical), OR a user-reported case where a table renders with
   equal columns when it shouldn't.
@@ -412,23 +424,36 @@ grepping the ID).
     `break-inside: avoid`; RTL writing modes / row reversal /
     caption inline-axis keyword routing; HTML5 colspan='0'/
     rowspan='0' remainder semantics; percentage column widths.
-  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs::DispatchTableInnerIfNeeded`
-    — once sub-cycle 5+ shrink-to-fit lands, consume the table's
-    `MeasuredUsedInlineSize` to drive the wrapper's auto-width
-    resolution (sub-cycle 4 leaves the wrapper at content-inline-
-    size; the grid's used inline-size can exceed the wrapper).
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs::PreMeasureTableIfNeeded`
+    — sub-cycle 5 hardening Finding 6 now consumes the table's
+    `MeasuredUsedInlineSize` to widen the wrapper's border-box
+    inline extent when the grid overflows. Both outer-AttemptLayout
+    + nested-recursion paths apply the widening.
 - **Added** — Phase 3 Task 12 sub-cycle 1; sub-cycle 2 added
   `colspan` / `rowspan` cell merging; sub-cycle 3 added caption
   layout (`caption-side: top` / `bottom`); sub-cycle 4 added the
   `table-layout: fixed` algorithm (`<col>` / `<colgroup>` + first-
   row cell widths drive per-column widths); sub-cycle 4 hardening
   added Pass D reconciliation + first-row colspan partial-declare
-  semantics + CSS-cascade-aware `width` precedence; sub-cycle 5
-  added the CSS Tables L3 §3 auto-table-layout shrink-to-fit
-  algorithm (per-cell min/max content via speculative measurement +
-  linear-interpolation distribution + overflow / saturated / inter-
-  polation branches + shared `LAYOUT-TABLE-INLINE-OVERFLOW-001`
-  diagnostic with the fixed-layout path).
+  semantics; sub-cycle 5 added the CSS Tables L3 §3 auto-table-
+  layout shrink-to-fit algorithm (per-cell min/max content via
+  speculative measurement + linear-interpolation distribution +
+  overflow / saturated / interpolation branches + shared
+  `LAYOUT-TABLE-INLINE-OVERFLOW-001` diagnostic with the fixed-
+  layout path); sub-cycle 5 hardening added: (Finding 1) BoxBuilder
+  wraps inline-only TableCell children in `AnonymousBlock` so the
+  cell's direct text contributes to intrinsic widths; (Finding 2)
+  auto-layout incorporates `<col>` / `<colgroup>` / first-row cell
+  widths as per-column min/max floors; (Finding 3) cell padding +
+  border contribute to intrinsic widths + inner content fragments
+  are offset by the cell's inner content-box origin; (Finding 4)
+  per-table intrinsic-measurement budget + `LAYOUT-TABLE-INTRINSIC-
+  MEASUREMENT-BUDGET-EXCEEDED-001` diagnostic; (Finding 5) new
+  `OverflowWrap.BreakWord` enum variant + intrinsicSizingMode flag
+  so the min-content speculative pass honors CSS Text L3 §5.1's
+  carve-out (break-word's soft opportunities don't count for min-
+  content); (Finding 6) caption inline-size matches the grid's
+  used inline-size + wrapper widens when the grid overflows.
 - **Removal condition** — All "Missing" items above are
   implemented: percentage column widths; §6.3 border-collapse +
   border-spacing; per-page header/footer repeat; multi-fragmentainer

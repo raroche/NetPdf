@@ -3001,14 +3001,16 @@ public sealed class TableLayouterTests
     }
 
     [Fact]
-    public void Auto_layout_ignores_col_widths()
+    public void Auto_layout_col_width_floors_per_column_min_and_max()
     {
-        // Sub-cycle 4 + 5 — table-layout: auto IGNORES <col>
-        // declarations (auto-table-layout derives column widths from
-        // cell content, not from <col>); both columns of this empty-
-        // cell table get equal-split because empty cells have
-        // min=max=0 and the saturated-path distribution shares the
-        // wrapper's content-inline-size equally across the columns.
+        // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 2 —
+        // table-layout: auto now INCORPORATES <col> widths as
+        // per-column min/max floors (was ignored pre-fix). A
+        // <col width="100"> for col 0 + empty cells → col 0's min
+        // and max are both floored to 100. Col 1 has no <col> +
+        // empty cells → min/max = 0. Saturated path distributes
+        // the 600-100 = 500 extra equally across the 2 columns
+        // (+250 each) → col 0 = 350, col 1 = 250.
         var sink = new RecordingFragmentSink();
         using var shaper = new SyntheticShaperResolver();
 
@@ -3042,13 +3044,66 @@ public sealed class TableLayouterTests
             if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
         }
         Assert.Equal(2, cells.Count);
-        // Sub-cycle 5 — empty cells → min=max=0; saturated-path
-        // distributes contentInlineSize=600 equally across 2 columns
-        // → 300 each. (Pre-sub-cycle-5 this was the equal-split
-        // approximation; post-sub-cycle-5 the result is the same for
-        // empty cells.)
-        Assert.Equal(300, cells[0].InlineSize);
-        Assert.Equal(300, cells[1].InlineSize);
+        // Per Finding 2 — col 0 is floored by <col width="100"> +
+        // gets +250 from the saturated-path extra distribution =
+        // 350; col 1 gets only the +250 from the extra = 250.
+        Assert.Equal(350, cells[0].InlineSize);
+        Assert.Equal(250, cells[1].InlineSize);
+    }
+
+    [Fact]
+    public void Auto_layout_col_width_smaller_than_max_content_does_not_clamp()
+    {
+        // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 2 —
+        // declared widths FLOOR per-column min/max, they don't
+        // CLAMP. When intrinsic content's max-content exceeds the
+        // declared width, the column gets the intrinsic max.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+
+        // <col width="50"> — but col 0's cell has content with
+        // max-content > 50.
+        var colStyle = MakeStyle();
+        SetLengthPx(colStyle, PropertyId.Width, 50);
+        var col = Box.ForElement(BoxKind.TableColumn, colStyle, MakeElement());
+
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        grid.AppendChild(col);
+
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        // Cell 0: content "AAAAAAAAAAAA" (12 'A's at 7.2px each =
+        // 86.4 max-content, > 50).
+        var cell0 = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        var anon0 = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        anon0.AppendChild(Box.TextRun("AAAAAAAAAAAA", MakeStyle()));
+        cell0.AppendChild(anon0);
+        row.AppendChild(cell0);
+        // Cell 1: empty.
+        row.AppendChild(Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement()));
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var cells = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
+        }
+        Assert.Equal(2, cells.Count);
+        // Col 0's max-content exceeds 50 → col 0 gets max-content
+        // (not clamped). The cells sum to contentInlineSize=600.
+        Assert.True(cells[0].InlineSize > 50,
+            $"Expected col 0 width > 50 (intrinsic max-content), got {cells[0].InlineSize}");
+        Assert.Equal(600, cells[0].InlineSize + cells[1].InlineSize, precision: 3);
     }
 
     // ====================================================================
@@ -3522,6 +3577,332 @@ public sealed class TableLayouterTests
         // (Identical to Fixed_layout_col_width_drives_column_widths.)
         Assert.Equal(250, cells[0].InlineSize);
         Assert.Equal(350, cells[1].InlineSize);
+    }
+
+    // ====================================================================
+    //  Phase 3 Task 12 sub-cycle 5 hardening — Findings 2/3/4/6 tests
+    // ====================================================================
+
+    [Fact]
+    public void Auto_layout_first_row_cell_width_floors_column()
+    {
+        // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 2 —
+        // a first-row cell's `width` attribute floors its column's
+        // min/max for auto-table-layout (same as <col> widths).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        // First-row cell with width=200 attribute.
+        row.AppendChild(Box.ForElement(BoxKind.TableCell, MakeStyle(),
+            MakeElementWithAttribute("width", "200")));
+        row.AppendChild(Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement()));
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var cells = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
+        }
+        Assert.Equal(2, cells.Count);
+        // Col 0 floored by first-row cell width=200 → col 0 gets at
+        // least 200; saturated-path extra distributed across the
+        // remaining 400 → +200 each → col 0 = 400, col 1 = 200.
+        Assert.True(cells[0].InlineSize >= 200,
+            $"Expected col 0 >= 200 (floored), got {cells[0].InlineSize}");
+        Assert.Equal(600, cells[0].InlineSize + cells[1].InlineSize, precision: 3);
+    }
+
+    [Fact]
+    public void Auto_layout_cell_padding_contributes_to_intrinsic_widths()
+    {
+        // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 3 —
+        // cell padding contributes to the cell's intrinsic widths
+        // so the column gets allocated extra space for the padding.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        // Two columns: col 0 has padding-left + padding-right; col 1
+        // has no padding. Both cells contain identical content "A".
+        // Col 0's min/max-content should be inset by the padding so
+        // its allocated width is WIDER than col 1's.
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cell0Style = MakeStyle();
+        SetLengthPx(cell0Style, PropertyId.PaddingLeft, 20);
+        SetLengthPx(cell0Style, PropertyId.PaddingRight, 20);
+        var cell0 = Box.ForElement(BoxKind.TableCell, cell0Style, MakeElement());
+        var anon0 = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        anon0.AppendChild(Box.TextRun("A", MakeStyle()));
+        cell0.AppendChild(anon0);
+        row.AppendChild(cell0);
+
+        var cell1 = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        var anon1 = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        anon1.AppendChild(Box.TextRun("A", MakeStyle()));
+        cell1.AppendChild(anon1);
+        row.AppendChild(cell1);
+
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var cells = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
+        }
+        Assert.Equal(2, cells.Count);
+        // Col 0's intrinsic widths include the 40px padding, so its
+        // column gets allocated WIDER than col 1's (saturated path
+        // distributes extra equally, but col 0 starts with a 40-px
+        // higher min/max). Pre-fix col 0's intrinsic widths excluded
+        // padding + the two cells got identical widths.
+        Assert.True(cells[0].InlineSize >= cells[1].InlineSize + 40,
+            $"Expected col 0 wider than col 1 by >= 40 (padding contribution); "
+            + $"got col0={cells[0].InlineSize}, col1={cells[1].InlineSize}.");
+    }
+
+    [Fact]
+    public void Auto_layout_intrinsic_measurement_budget_exceeded_emits_diagnostic_and_falls_back()
+    {
+        // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 4 —
+        // a table with cells exceeding the intrinsic-measurement
+        // budget emits LAYOUT-TABLE-INTRINSIC-MEASUREMENT-BUDGET-
+        // EXCEEDED-001 + falls back to (0, contentInlineSize) for
+        // cells past the cap. The budget is 10,000 ops + each cell
+        // costs 2 ops, so > 5,000 cells trips the budget. Build a
+        // 1 × 5001 table — that's 5001 × 2 = 10,002 ops > 10,000.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        const int cellCount = 5001;
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        for (var i = 0; i < cellCount; i++)
+        {
+            row.AppendChild(Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement()));
+        }
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, diagSink, shaper);
+        // Big content inline size so the saturated path fires for
+        // the measured cells; the un-measured cells then fall back
+        // to a (0, 600) range.
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        Assert.Contains(diagSink.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutTableIntrinsicMeasurementBudgetExceeded001);
+
+        // The cells should still emit fragments — the budget guard
+        // doesn't drop content, it just truncates the measurement.
+        var emittedCells = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) emittedCells++;
+        }
+        Assert.Equal(cellCount, emittedCells);
+    }
+
+    [Fact]
+    public void Auto_layout_overflow_wrap_anywhere_reduces_min_content()
+    {
+        // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 5 —
+        // overflow-wrap: anywhere CAN force per-glyph breaks during
+        // min-content sizing (CSS Text L3 §5.1). The cell's
+        // min-content is the width of a single glyph, not the full
+        // word width. With contentInlineSize narrow, the column gets
+        // sized close to the single-glyph width.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        // Cell with overflow-wrap: anywhere on its text run.
+        var anywhereStyle = MakeStyle();
+        anywhereStyle.Set(PropertyId.OverflowWrap, ComputedSlot.FromKeyword(1)); // anywhere
+        var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        var anon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        anon.AppendChild(Box.TextRun("VeryLongUnbreakableWord", anywhereStyle));
+        cell.AppendChild(anon);
+        row.AppendChild(cell);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        // Narrow contentInlineSize forces the interpolation/overflow
+        // branch — column sized to min-content because content
+        // exceeds it.
+        var ctx = new FragmentainerContext(contentInlineSize: 50, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var cells = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
+        }
+        Assert.Single(cells);
+        // With Anywhere, min-content can be a single glyph (~7.2px
+        // for the synthetic font). Pre-fix the cell was clamped to
+        // the full word width. Now the column can shrink narrower
+        // than the full word; contentInlineSize=50 caps it at 50.
+        Assert.True(cells[0].InlineSize <= 50,
+            $"Expected col width <= 50 (Anywhere min-content collapses); "
+            + $"got {cells[0].InlineSize}.");
+    }
+
+    [Fact]
+    public void Auto_layout_overflow_wrap_break_word_does_not_reduce_min_content()
+    {
+        // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 5 —
+        // overflow-wrap: break-word per CSS Text L3 §5.1 does NOT
+        // contribute to min-content sizing (line-wrap fires at glyph
+        // boundaries for production layout, but the speculative
+        // min-content pass treats break-word as Normal). The cell's
+        // min-content remains the full word width.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        // Cell with overflow-wrap: break-word on its text run.
+        var breakWordStyle = MakeStyle();
+        breakWordStyle.Set(PropertyId.OverflowWrap, ComputedSlot.FromKeyword(2)); // break-word
+        var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        var anon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        anon.AppendChild(Box.TextRun("VeryLongUnbreakableWord", breakWordStyle));
+        cell.AppendChild(anon);
+        row.AppendChild(cell);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        // contentInlineSize generous enough so the column would
+        // naturally fit the full word; we're testing that the
+        // min-content sum reflects the WHOLE word, not a single
+        // glyph. A narrow CB tests the overflow path.
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var cells = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
+        }
+        Assert.Single(cells);
+        // Min-content is the full word width (~ 23 chars * 7.2 ≈
+        // 165.6 px). The cell occupies the full table inline-size
+        // (600) under saturated path, but its min-content
+        // contribution (= floor for any other column allocation)
+        // covers the full word — sub-cycle 5 hardening Finding 5
+        // gives us this. Since this is a single-cell table, the
+        // visible width is just the wrapper's contentInlineSize;
+        // the SEMANTIC contract (min-content >= full word) is
+        // verified indirectly by comparing against the Anywhere
+        // narrow-CB test where the column DID shrink below the
+        // full word.
+        Assert.True(cells[0].InlineSize >= 100,
+            $"Expected col width >= 100 (break-word min-content "
+            + $"covers full word); got {cells[0].InlineSize}.");
+    }
+
+    [Fact]
+    public void Auto_layout_min_content_overflow_widens_wrapper()
+    {
+        // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 6 —
+        // when the auto-table-layout's min-content sum exceeds the
+        // wrapper's content-inline-size, the wrapper widens to
+        // match the grid's used inline-size so backgrounds /
+        // borders span the overflowing extent.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        // Two columns with <col width> forcing the column sum well
+        // past the wrapper's contentInlineSize. The intrinsic
+        // content is empty (so min-content from intrinsic = 0);
+        // the declared widths floor to 400 each → sum 800 >
+        // contentInlineSize 200.
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+
+        var col1Style = MakeStyle();
+        SetLengthPx(col1Style, PropertyId.Width, 400);
+        var col1 = Box.ForElement(BoxKind.TableColumn, col1Style, MakeElement());
+        var col2Style = MakeStyle();
+        SetLengthPx(col2Style, PropertyId.Width, 400);
+        var col2 = Box.ForElement(BoxKind.TableColumn, col2Style, MakeElement());
+
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        grid.AppendChild(col1);
+        grid.AppendChild(col2);
+
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        row.AppendChild(Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement()));
+        row.AppendChild(Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement()));
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        // Wrapper contentInlineSize = 200, grid wants 800.
+        var ctx = new FragmentainerContext(contentInlineSize: 200, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? wrapperFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.Table) { wrapperFragment = f; break; }
+        }
+        Assert.NotNull(wrapperFragment);
+        // The wrapper's InlineSize should reflect the wider grid
+        // (>= 800) — pre-Finding-6 it stayed at 200 even though the
+        // grid was 800-wide.
+        Assert.True(wrapperFragment!.Value.InlineSize >= 800,
+            $"Expected wrapper InlineSize >= 800 (widened by Finding 6); "
+            + $"got {wrapperFragment.Value.InlineSize}.");
     }
 
     [Fact]

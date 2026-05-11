@@ -8,17 +8,22 @@ Root
           TableHeaderGroup @element=thead
             TableRow @element=tr
               TableCell @element=th
-                TextRun @element=th "Quarter"
+                AnonymousBlock
+                  TextRun @element=th "Quarter"
               TableCell @element=th
-                TextRun @element=th "Revenue"
+                AnonymousBlock
+                  TextRun @element=th "Revenue"
           TableRowGroup @element=tbody
             TableRow @element=tr
               TableCell @element=td
-                TextRun @element=td "Q1"
+                AnonymousBlock
+                  TextRun @element=td "Q1"
               TableCell @element=td
-                TextRun @element=td "100"
+                AnonymousBlock
+                  TextRun @element=td "100"
             TableRow @element=tr
               TableCell @element=td
-                TextRun @element=td "Total: 100"
+                AnonymousBlock
+                  TextRun @element=td "Total: 100"
       AnonymousBlock
         TextRun @element=body "\n"

@@ -183,6 +183,14 @@ internal static class InlineLayouter
     /// <see cref="Hyphens.Auto"/>.</param>
     /// <param name="cancellationToken">Cooperative cancellation
     /// across preprocessing, itemization, shaping, and wrap.</param>
+    /// <param name="intrinsicSizingMode">Per Phase 3 Task 12 sub-cycle
+    /// 5 hardening Finding 5 — when <see langword="true"/>, the
+    /// underlying <see cref="LineBuilder.Wrap"/> downgrades
+    /// <see cref="OverflowWrap.BreakWord"/> opportunities to
+    /// <see cref="OverflowWrap.Normal"/> per CSS Text L3 §5.1
+    /// (break-word's soft opportunities don't count for min-content
+    /// sizing). Set by <c>TableLayouter.MeasureCellIntrinsicWidths</c>
+    /// during the speculative min-content cell-content layout.</param>
     /// <returns>Per Phase 3 Task 11 sub-cycle 1 review Finding #1 —
     /// the full inline-pass bundle: wrapped lines + shaped runs +
     /// preprocessed source runs. Use <see cref="InlineLayoutResult.Empty"/>-shape
@@ -207,7 +215,8 @@ internal static class InlineLayouter
         WordBreak wordBreak = WordBreak.Normal,
         Hyphens hyphens = Hyphens.Manual,
         Hyphenator? hyphenator = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool intrinsicSizingMode = false)
     {
         // Per PR #38 review fix (User #3 + Copilot #2): all argument
         // validation runs at method entry BEFORE Itemize/Shape so
@@ -242,7 +251,8 @@ internal static class InlineLayouter
                 whiteSpace,
                 "InlineLayouter.Layout: whiteSpace must be a defined WhiteSpace value.");
         }
-        if (overflowWrap is not (OverflowWrap.Normal or OverflowWrap.Anywhere))
+        if (overflowWrap is not (OverflowWrap.Normal
+            or OverflowWrap.Anywhere or OverflowWrap.BreakWord))
         {
             throw new ArgumentOutOfRangeException(nameof(overflowWrap),
                 overflowWrap,
@@ -286,7 +296,9 @@ internal static class InlineLayouter
         var fragments = LineBuilder.Wrap(
             preprocessed, shaped, availableInlineSize,
             whiteSpace, overflowWrap, wordBreak,
-            hyphens, hyphenator, cancellationToken);
+            hyphens, hyphenator, cancellationToken,
+            inlineTextPolicyPerRun: null,
+            intrinsicSizingMode: intrinsicSizingMode);
 
         // Per Phase 3 Task 11 sub-cycle 1 review Finding #1 — bundle
         // lines + shaped runs + preprocessed source so the painter
@@ -427,6 +439,14 @@ internal static class InlineLayouter
     /// <param name="paragraphDirection">Paragraph base direction.</param>
     /// <param name="hyphenator">Optional Liang hyphenator override.</param>
     /// <param name="cancellationToken">Cooperative cancellation.</param>
+    /// <param name="intrinsicSizingMode">Per Phase 3 Task 12 sub-cycle
+    /// 5 hardening Finding 5 — when <see langword="true"/>, the
+    /// underlying <see cref="LineBuilder.Wrap"/> downgrades
+    /// <see cref="OverflowWrap.BreakWord"/> opportunities to
+    /// <see cref="OverflowWrap.Normal"/> per CSS Text L3 §5.1
+    /// (break-word's soft opportunities don't count for min-content
+    /// sizing). Set by <c>TableLayouter.MeasureCellIntrinsicWidths</c>
+    /// during the speculative min-content cell-content layout.</param>
     /// <returns>Per Phase 3 Task 11 sub-cycle 1 review Finding #1 —
     /// the full inline-pass bundle.</returns>
     /// <exception cref="ArgumentNullException">Required arg is null.</exception>
@@ -442,7 +462,8 @@ internal static class InlineLayouter
         string language,
         ParagraphDirection paragraphDirection = ParagraphDirection.LeftToRight,
         Hyphenator? hyphenator = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        bool intrinsicSizingMode = false)
     {
         // Per Phase 3 Task 10 cycle 3b review (User #2 + Copilot #1)
         // — front-load all argument validation BEFORE the per-run
@@ -638,7 +659,8 @@ internal static class InlineLayouter
             policy.Hyphens,
             hyphenator,
             cancellationToken,
-            perRunPolicy);
+            perRunPolicy,
+            intrinsicSizingMode);
         return new InlineLayoutResult(lines, shaped, preprocessed);
     }
 
@@ -646,7 +668,7 @@ internal static class InlineLayouter
     /// helper used by <see cref="LayoutPerRun"/> when delegating
     /// directly to <see cref="LineBuilder.Wrap"/> with a per-run
     /// WhiteSpace array (bypasses the convenience
-    /// <see cref="Layout(IReadOnlyList{TextRun}, double, IShaperResolver, string, string, ParagraphDirection, WhiteSpace, OverflowWrap, WordBreak, Hyphens, Hyphenator?, CancellationToken)"/>
+    /// <see cref="Layout(IReadOnlyList{TextRun}, double, IShaperResolver, string, string, ParagraphDirection, WhiteSpace, OverflowWrap, WordBreak, Hyphens, Hyphenator?, CancellationToken, bool)"/>
     /// path which doesn't take the per-run array).</summary>
     private static IReadOnlyList<ShapedRun> ShapeForLayout(
         IReadOnlyList<TextRun> textRuns,

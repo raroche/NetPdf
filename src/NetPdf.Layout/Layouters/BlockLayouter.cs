@@ -256,6 +256,33 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// facade's renderer) wire a real resolver.</summary>
     private readonly IShaperResolver? _shaperResolver;
 
+    /// <summary>Per Phase 3 Task 12 sub-cycle 5 hardening Finding 5 —
+    /// when <see langword="true"/>, the inline-pass through
+    /// <c>InlineLayouter.LayoutPerRun</c> downgrades
+    /// <c>OverflowWrap.BreakWord</c> opportunities to
+    /// <c>OverflowWrap.Normal</c> per CSS Text L3 §5.1 (break-word's
+    /// soft opportunities don't count for min-content sizing).
+    /// <c>OverflowWrap.Anywhere</c> opportunities continue to fire
+    /// (the spec carves out anywhere as the only soft-opportunity
+    /// source that contributes to intrinsic sizing).
+    ///
+    /// <para>Set by <c>TableLayouter.MeasureCellIntrinsicWidths</c>
+    /// (via <see cref="SetIntrinsicSizingMode"/>) during the
+    /// speculative min-content cell-content layout so break-word
+    /// cells don't get narrowed to a single glyph. Cleared after
+    /// the speculative pass returns. The default
+    /// <see langword="false"/> means production line-wrap honors
+    /// break-word's glyph-boundary fallback as expected.</para></summary>
+    private bool _intrinsicSizingMode;
+
+    /// <summary>Per Phase 3 Task 12 sub-cycle 5 hardening Finding 5 —
+    /// set the intrinsic-sizing-mode flag for this layouter. Called
+    /// by <see cref="TableLayouter.MeasureCellIntrinsicWidths"/>
+    /// before dispatching the speculative cell-content layout, and
+    /// reset to <see langword="false"/> after. Internal so only the
+    /// layout package can flip it; not public API.</summary>
+    internal void SetIntrinsicSizingMode(bool value) => _intrinsicSizingMode = value;
+
     /// <summary>Per Phase 3 Task 8 cycle 1 — the float manager for
     /// THIS BlockLayouter's BFC scope. One instance per BlockLayouter
     /// (one per BFC root). When children have <c>float: left|right|
@@ -948,6 +975,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // arithmetic which is consistent across measure + emit.
             TableLayouter? pendingTableLayouter = null;
             var tableMeasuredContentHeight = 0.0;
+            var tableMeasuredUsedInlineSize = 0.0;
             if (child.Kind is BoxKind.Table or BoxKind.InlineTable)
             {
                 var expectedBorderBoxBlockTop = fragmentainer.UsedBlockSize + topShift;
@@ -960,6 +988,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     fragmentainer: fragmentainer,
                     layout: ref layout,
                     tableContentHeight: out tableMeasuredContentHeight,
+                    tableMeasuredUsedInlineSize: out tableMeasuredUsedInlineSize,
                     cancellationToken: cancellationToken);
                 if (pendingTableLayouter is not null)
                 {
@@ -977,6 +1006,41 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     if (tableDrivenBorderBox > borderBoxBlockSize)
                     {
                         borderBoxBlockSize = tableDrivenBorderBox;
+                    }
+
+                    // Per Phase 3 Task 12 sub-cycle 5 hardening
+                    // Finding 6 — also widen the wrapper's border-box
+                    // INLINE extent when the grid's used inline-size
+                    // exceeds the wrapper's content-inline-size. Under
+                    // auto-table-layout this fires when min-content sum
+                    // overflows the wrapper (LAYOUT-TABLE-INLINE-
+                    // OVERFLOW-001 also surfaces); under fixed-layout
+                    // it fires when declared widths sum past the
+                    // wrapper. The wrapper widens to match the grid so
+                    // backgrounds/borders/captions consistently span
+                    // the overflowing extent. Pre-fix the wrapper
+                    // stayed at borderBoxInlineSize + the grid grew
+                    // PAST it — leaving the wrapper visually narrower
+                    // than its own content. (Read the inline edges
+                    // here — they're not in scope from the outer block
+                    // dispatch which only carries block-axis padding/
+                    // border for the cursor advance.)
+                    var wrapperBorderInlineStart =
+                        child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
+                    var wrapperBorderInlineEnd =
+                        child.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
+                    var wrapperPaddingInlineStart =
+                        child.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
+                    var wrapperPaddingInlineEnd =
+                        child.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
+                    var wrapperBorderPaddingInline =
+                        wrapperBorderInlineStart + wrapperBorderInlineEnd
+                        + wrapperPaddingInlineStart + wrapperPaddingInlineEnd;
+                    var tableDrivenBorderBoxInline =
+                        tableMeasuredUsedInlineSize + wrapperBorderPaddingInline;
+                    if (tableDrivenBorderBoxInline > borderBoxInlineSize)
+                    {
+                        borderBoxInlineSize = tableDrivenBorderBoxInline;
                     }
                 }
             }
@@ -1786,6 +1850,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 {
                     Diagnostics = _diagnostics,
                 };
+                var nestedMeasuredUsedInline = 0.0;
                 nestedPendingTable = PreMeasureTableIfNeeded(
                     wrapperChild: child,
                     wrapperInlineOffset: childInlineOffset,
@@ -1794,6 +1859,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     fragmentainer: fragmentainerForMeasure,
                     layout: ref transientLayout,
                     tableContentHeight: out nestedMeasuredHeight,
+                    tableMeasuredUsedInlineSize: out nestedMeasuredUsedInline,
                     cancellationToken: cancellationToken);
                 if (nestedPendingTable is not null)
                 {
@@ -1807,6 +1873,28 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     if (tableDriven > childEffectiveBlockSize)
                     {
                         childEffectiveBlockSize = tableDriven;
+                    }
+
+                    // Per Phase 3 Task 12 sub-cycle 5 hardening
+                    // Finding 6 — widen the wrapper's INLINE border-
+                    // box when the grid's used inline-size overflows.
+                    // Same protocol as the outer loop above.
+                    var nestedBorderInlineStart =
+                        child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
+                    var nestedBorderInlineEnd =
+                        child.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
+                    var nestedPaddingInlineStart =
+                        child.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
+                    var nestedPaddingInlineEnd =
+                        child.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
+                    var nestedBorderPaddingInline =
+                        nestedBorderInlineStart + nestedBorderInlineEnd
+                        + nestedPaddingInlineStart + nestedPaddingInlineEnd;
+                    var nestedTableDrivenInline =
+                        nestedMeasuredUsedInline + nestedBorderPaddingInline;
+                    if (nestedTableDrivenInline > childBorderBoxInlineSize)
+                    {
+                        childBorderBoxInlineSize = nestedTableDrivenInline;
                     }
                 }
             }
@@ -2243,13 +2331,37 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     ///
     /// <para><b>No LINQ — manual loop.</b> Per repo's
     /// no-LINQ-in-hot-paths rule; this predicate is called once per
-    /// child per <see cref="AttemptLayout"/> iteration.</para></summary>
+    /// child per <see cref="AttemptLayout"/> iteration.</para>
+    ///
+    /// <para><b>Phase 3 Task 12 sub-cycle 5 hardening (Finding 1)</b> —
+    /// <see cref="BoxKind.TableCell"/> is now included in the allowed
+    /// outer-display kinds. Previously, when <see cref="TableLayouter"/>
+    /// invoked a nested <see cref="BlockLayouter"/> with the TableCell as
+    /// root (during <c>MeasureCellContent</c>), the cell's direct
+    /// inline-only children (a bare <c>&lt;td&gt;Description&lt;/td&gt;</c>'s
+    /// <see cref="BoxKind.TextRun"/>) were skipped — the predicate
+    /// rejected the cell kind + the block-loop only dispatched
+    /// block-level children. Production HTML like
+    /// <c>&lt;td&gt;A&lt;/td&gt;&lt;td&gt;BBBBBBBBBB&lt;/td&gt;</c>
+    /// silently contributed 0 intrinsic width, defeating auto-table-
+    /// layout's shrink-to-fit. Adding TableCell makes the
+    /// inline-only-block dispatch path fire so the cell's children lay
+    /// out as inline lines. TableCell is only ever a BlockLayouter root
+    /// when measured via <see cref="TableLayouter.MeasureCellContent"/>
+    /// — never the outer <see cref="BlockLayouter"/>'s
+    /// <c>_rootBox</c> — so the predicate's existing protection (Root
+    /// is excluded) is unaffected.</para></summary>
     private static bool IsInlineOnlyBlockContainer(Box box)
     {
         // Outer-display gate: only block-flow containers participate.
         // Root excluded — see XML doc rationale.
+        // TableCell added per Phase 3 Task 12 sub-cycle 5 hardening
+        // Finding 1 — TableLayouter dispatches the cell box itself as
+        // the nested BlockLayouter's root, so inline-only TableCell
+        // children must hit the inline-dispatch path.
         if (box.Kind is not (BoxKind.BlockContainer
-            or BoxKind.ListItem or BoxKind.AnonymousBlock))
+            or BoxKind.ListItem or BoxKind.AnonymousBlock
+            or BoxKind.TableCell))
         {
             return false;
         }
@@ -2424,7 +2536,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 language: "en",
                 paragraphDirection: ParagraphDirection.LeftToRight,
                 hyphenator: null,
-                cancellationToken: cancellationToken);
+                cancellationToken: cancellationToken,
+                // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 5
+                // — pass through the layouter's intrinsic-sizing-mode
+                // flag so the inline pass downgrades break-word
+                // opportunities for the auto-table-layout speculative
+                // min-content pass.
+                intrinsicSizingMode: _intrinsicSizingMode);
         }
         catch (NotSupportedException ex)
         {
@@ -3301,9 +3419,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         FragmentainerContext fragmentainer,
         ref LayoutContext layout,
         out double tableContentHeight,
+        out double tableMeasuredUsedInlineSize,
         CancellationToken cancellationToken)
     {
         tableContentHeight = 0;
+        tableMeasuredUsedInlineSize = 0;
         if (wrapperChild.Kind is not (BoxKind.Table or BoxKind.InlineTable))
         {
             return null;
@@ -3347,6 +3467,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // the post-Finding-1 wrapper extent).
         tableContentHeight = tableLayouter.MeasureContentHeight(
             fragmentainer, ref layout, cancellationToken);
+        // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 6 — also
+        // surface the grid's used inline-size so the caller can widen
+        // the wrapper's border-box inline extent when the grid
+        // overflows the wrapper's content-inline-size (auto-table-
+        // layout min-content overflow + fixed-layout overflow).
+        tableMeasuredUsedInlineSize = tableLayouter.MeasuredUsedInlineSize;
         return tableLayouter;
     }
 

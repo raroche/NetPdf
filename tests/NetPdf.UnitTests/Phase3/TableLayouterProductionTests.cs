@@ -470,6 +470,71 @@ public sealed class TableLayouterProductionTests
     }
 
     // ====================================================================
+    //  Phase 3 Task 12 sub-cycle 4 — table-layout: fixed + <col> widths
+    // ====================================================================
+
+    [Fact]
+    public async Task Production_table_with_fixed_layout_and_col_widths_renders_correctly()
+    {
+        // Sub-cycle 4 — through the full pipeline a
+        // table-layout: fixed table with two <col width> declarations
+        // renders cells at the declared per-column widths.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                table { table-layout: fixed; }
+            </style></head><body>
+            <table>
+              <col width="100">
+              <col width="200">
+              <tr><td>A</td><td>B</td></tr>
+            </table>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var cells = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
+        }
+        Assert.Equal(2, cells.Count);
+        Assert.Equal(100, cells[0].InlineSize);
+        Assert.Equal(200, cells[1].InlineSize);
+        Assert.Equal(0, cells[0].InlineOffset);
+        Assert.Equal(100, cells[1].InlineOffset);
+    }
+
+    [Fact]
+    public async Task Production_table_with_auto_layout_ignores_col_widths_for_now()
+    {
+        // Sub-cycle 4 — table-layout: auto (default) IGNORES <col>
+        // widths because the §3 shrink-to-fit algorithm is sub-cycle
+        // 5+ work; equal-split applies.
+        const string html = """
+            <!DOCTYPE html><html><head><style></style></head><body>
+            <table>
+              <col width="100">
+              <tr><td>A</td><td>B</td></tr>
+            </table>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var cells = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
+        }
+        Assert.Equal(2, cells.Count);
+        // contentInlineSize=600 / 2 columns ⇒ 300 each. The <col
+        // width="100"> is silently ignored by sub-cycle 4 auto mode.
+        Assert.Equal(300, cells[0].InlineSize);
+        Assert.Equal(300, cells[1].InlineSize);
+    }
+
+    // ====================================================================
     //  Pipeline driver
     // ====================================================================
 

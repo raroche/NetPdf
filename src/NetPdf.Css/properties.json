@@ -61,6 +61,7 @@
     { "name": "padding-top", "id": "PaddingTop", "type": "LengthPercentage", "default": "0", "inherit": false, "applies_to": "All", "computed": "Specified" },
     { "name": "position", "id": "Position", "type": "Keyword", "default": "static", "inherit": false, "applies_to": "All", "computed": "Specified" },
     { "name": "right", "id": "Right", "type": "LengthPercentageAuto", "default": "auto", "inherit": false, "applies_to": "Positioned", "computed": "Specified" },
+    { "name": "table-layout", "id": "TableLayout", "type": "Keyword", "default": "auto", "inherit": false, "applies_to": "TableElements", "computed": "Specified" },
     { "name": "text-align", "id": "TextAlign", "type": "Keyword", "default": "start", "inherit": true, "applies_to": "All", "computed": "Specified" },
     { "name": "text-decoration-line", "id": "TextDecorationLine", "type": "Keyword", "default": "none", "inherit": false, "applies_to": "All", "computed": "Specified" },
     { "name": "text-transform", "id": "TextTransform", "type": "Keyword", "default": "none", "inherit": true, "applies_to": "All", "computed": "Specified" },

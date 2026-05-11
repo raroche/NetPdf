@@ -2609,8 +2609,503 @@ public sealed class TableLayouterTests
     }
 
     // ====================================================================
+    //  Phase 3 Task 12 sub-cycle 4 — table-layout: fixed + <col> widths
+    // ====================================================================
+
+    [Fact]
+    public void Fixed_layout_col_width_drives_column_widths()
+    {
+        // Sub-cycle 4 — table-layout: fixed + 2 <col> elements with
+        // explicit widths drive per-column widths in Pass A. Each cell
+        // lays out at its column's offset + width.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var tableStyle = MakeStyle();
+        SetTableLayoutFixed(tableStyle);
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, tableStyle, MakeElement());
+
+        // Two <col> declarations: width 100, 200.
+        var col1Style = MakeStyle();
+        SetLengthPx(col1Style, PropertyId.Width, 100);
+        var col1 = Box.ForElement(BoxKind.TableColumn, col1Style, MakeElement());
+        var col2Style = MakeStyle();
+        SetLengthPx(col2Style, PropertyId.Width, 200);
+        var col2 = Box.ForElement(BoxKind.TableColumn, col2Style, MakeElement());
+
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        grid.AppendChild(col1);
+        grid.AppendChild(col2);
+
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cellA = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        var cellB = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        row.AppendChild(cellA);
+        row.AppendChild(cellB);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var cells = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
+        }
+        Assert.Equal(2, cells.Count);
+        Assert.Equal(100, cells[0].InlineSize);
+        Assert.Equal(200, cells[1].InlineSize);
+        Assert.Equal(0, cells[0].InlineOffset);
+        Assert.Equal(100, cells[1].InlineOffset);
+    }
+
+    [Fact]
+    public void Fixed_layout_col_with_span_applies_to_multiple_columns()
+    {
+        // Sub-cycle 4 — <col span="2" width="120"> claims columns 0 + 1
+        // with the same declared width.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var tableStyle = MakeStyle();
+        SetTableLayoutFixed(tableStyle);
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, tableStyle, MakeElement());
+
+        var colStyle = MakeStyle();
+        SetLengthPx(colStyle, PropertyId.Width, 120);
+        var col = Box.ForElement(BoxKind.TableColumn, colStyle,
+            MakeElementWithAttribute("span", "2"));
+
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        grid.AppendChild(col);
+
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cellA = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        var cellB = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        row.AppendChild(cellA);
+        row.AppendChild(cellB);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var cells = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
+        }
+        Assert.Equal(2, cells.Count);
+        Assert.Equal(120, cells[0].InlineSize);
+        Assert.Equal(120, cells[1].InlineSize);
+        Assert.Equal(0, cells[0].InlineOffset);
+        Assert.Equal(120, cells[1].InlineOffset);
+    }
+
+    [Fact]
+    public void Fixed_layout_first_row_cell_width_used_when_no_col()
+    {
+        // Sub-cycle 4 Pass B — no <col> declarations + first-row cells
+        // carry CSS width; per-column widths derive from those cell
+        // widths.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var tableStyle = MakeStyle();
+        SetTableLayoutFixed(tableStyle);
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, tableStyle, MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cellAStyle = MakeStyle();
+        SetLengthPx(cellAStyle, PropertyId.Width, 150);
+        var cellA = Box.ForElement(BoxKind.TableCell, cellAStyle, MakeElement());
+        var cellBStyle = MakeStyle();
+        SetLengthPx(cellBStyle, PropertyId.Width, 250);
+        var cellB = Box.ForElement(BoxKind.TableCell, cellBStyle, MakeElement());
+        row.AppendChild(cellA);
+        row.AppendChild(cellB);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var cells = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
+        }
+        Assert.Equal(2, cells.Count);
+        Assert.Equal(150, cells[0].InlineSize);
+        Assert.Equal(250, cells[1].InlineSize);
+        Assert.Equal(0, cells[0].InlineOffset);
+        Assert.Equal(150, cells[1].InlineOffset);
+    }
+
+    [Fact]
+    public void Fixed_layout_col_width_wins_over_first_row_cell_width()
+    {
+        // Sub-cycle 4 Pass A precedence over Pass B — <col width="100">
+        // beats the same-column first-row cell width=200.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var tableStyle = MakeStyle();
+        SetTableLayoutFixed(tableStyle);
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, tableStyle, MakeElement());
+
+        var colStyle = MakeStyle();
+        SetLengthPx(colStyle, PropertyId.Width, 100);
+        var col = Box.ForElement(BoxKind.TableColumn, colStyle, MakeElement());
+
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        grid.AppendChild(col);
+
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cellStyle = MakeStyle();
+        SetLengthPx(cellStyle, PropertyId.Width, 200);
+        var cell = Box.ForElement(BoxKind.TableCell, cellStyle, MakeElement());
+        row.AppendChild(cell);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var cells = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
+        }
+        Assert.Single(cells);
+        // The cell occupies a single column whose width came from the
+        // <col> (100), NOT the cell's own width attribute (200).
+        Assert.Equal(100, cells[0].InlineSize);
+        Assert.Equal(0, cells[0].InlineOffset);
+    }
+
+    [Fact]
+    public void Fixed_layout_undeclared_columns_equal_split_remaining()
+    {
+        // Sub-cycle 4 Pass C — 3 columns, 1 <col width="100">; the
+        // remaining 2 columns equal-split (contentInlineSize − 100) / 2.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var tableStyle = MakeStyle();
+        SetTableLayoutFixed(tableStyle);
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, tableStyle, MakeElement());
+
+        var colStyle = MakeStyle();
+        SetLengthPx(colStyle, PropertyId.Width, 100);
+        var col = Box.ForElement(BoxKind.TableColumn, colStyle, MakeElement());
+
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        grid.AppendChild(col);
+
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        // 3 cells = 3 columns; the <col> claims col 0 (100); cols 1+2
+        // share the remainder = (600 − 100) / 2 = 250 each.
+        row.AppendChild(Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement()));
+        row.AppendChild(Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement()));
+        row.AppendChild(Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement()));
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var cells = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
+        }
+        Assert.Equal(3, cells.Count);
+        Assert.Equal(100, cells[0].InlineSize);
+        Assert.Equal(250, cells[1].InlineSize);
+        Assert.Equal(250, cells[2].InlineSize);
+        Assert.Equal(0, cells[0].InlineOffset);
+        Assert.Equal(100, cells[1].InlineOffset);
+        Assert.Equal(350, cells[2].InlineOffset);
+    }
+
+    [Fact]
+    public void Fixed_layout_colspan_2_cell_spans_two_columns_widths()
+    {
+        // Sub-cycle 4 — a colspan=2 cell sums its two columns' widths.
+        // <col width="100"> + <col width="200"> + first row has a
+        // colspan=2 cell ⇒ cell inline-size = 100 + 200 = 300.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var tableStyle = MakeStyle();
+        SetTableLayoutFixed(tableStyle);
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, tableStyle, MakeElement());
+
+        var col1Style = MakeStyle();
+        SetLengthPx(col1Style, PropertyId.Width, 100);
+        var col1 = Box.ForElement(BoxKind.TableColumn, col1Style, MakeElement());
+        var col2Style = MakeStyle();
+        SetLengthPx(col2Style, PropertyId.Width, 200);
+        var col2 = Box.ForElement(BoxKind.TableColumn, col2Style, MakeElement());
+
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        grid.AppendChild(col1);
+        grid.AppendChild(col2);
+
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var spanCell = Box.ForElement(BoxKind.TableCell, MakeStyle(),
+            MakeElementWithAttribute("colspan", "2"));
+        row.AppendChild(spanCell);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? spanFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) { spanFragment = f; break; }
+        }
+        Assert.NotNull(spanFragment);
+        Assert.Equal(300, spanFragment!.Value.InlineSize);
+        Assert.Equal(0, spanFragment.Value.InlineOffset);
+    }
+
+    [Fact]
+    public void Fixed_layout_with_no_declared_widths_falls_back_to_equal_split()
+    {
+        // Sub-cycle 4 — table-layout: fixed but NO <col> declarations
+        // + NO first-row cell widths ⇒ Pass C alone equal-distributes
+        // contentInlineSize across all columns (same as auto fallback).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var tableStyle = MakeStyle();
+        SetTableLayoutFixed(tableStyle);
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, tableStyle, MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        for (var i = 0; i < 3; i++)
+        {
+            row.AppendChild(Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement()));
+        }
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 900, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var cells = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
+        }
+        Assert.Equal(3, cells.Count);
+        Assert.Equal(300, cells[0].InlineSize);
+        Assert.Equal(300, cells[1].InlineSize);
+        Assert.Equal(300, cells[2].InlineSize);
+    }
+
+    [Fact]
+    public void Auto_layout_keeps_equal_split_for_now()
+    {
+        // Sub-cycle 4 — table-layout: auto (default) IGNORES <col>
+        // widths in this sub-cycle (the auto shrink-to-fit algorithm
+        // is sub-cycle 5+). All columns get equal-split regardless of
+        // <col> declarations.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        // No table-layout: fixed — defaults to auto.
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+
+        var colStyle = MakeStyle();
+        SetLengthPx(colStyle, PropertyId.Width, 100);
+        var col = Box.ForElement(BoxKind.TableColumn, colStyle, MakeElement());
+
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        grid.AppendChild(col);
+
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        row.AppendChild(Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement()));
+        row.AppendChild(Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement()));
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var cells = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
+        }
+        Assert.Equal(2, cells.Count);
+        // Equal-split — auto ignores the <col width="100">. 600/2=300.
+        Assert.Equal(300, cells[0].InlineSize);
+        Assert.Equal(300, cells[1].InlineSize);
+    }
+
+    [Fact]
+    public void Fixed_layout_percentage_col_width_treated_as_zero()
+    {
+        // Sub-cycle 4 simplification — percentage widths on <col> are
+        // treated as 0 (sub-cycle 5+ work). The column falls through
+        // to Pass C + gets equal-distributed remainder.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var tableStyle = MakeStyle();
+        SetTableLayoutFixed(tableStyle);
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, tableStyle, MakeElement());
+
+        // <col width="20%"> — width attribute with percent suffix.
+        var col1 = Box.ForElement(BoxKind.TableColumn, MakeStyle(),
+            MakeElementWithAttribute("width", "20%"));
+
+        // <col width="200"> — explicit px width.
+        var col2Style = MakeStyle();
+        SetLengthPx(col2Style, PropertyId.Width, 200);
+        var col2 = Box.ForElement(BoxKind.TableColumn, col2Style, MakeElement());
+
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        grid.AppendChild(col1);
+        grid.AppendChild(col2);
+
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        row.AppendChild(Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement()));
+        row.AppendChild(Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement()));
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var cells = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
+        }
+        Assert.Equal(2, cells.Count);
+        // col 0 percentage ⇒ 0 ⇒ Pass C distributes remainder 600−200=400
+        // to col 0 (one undeclared column) ⇒ col 0 = 400; col 1 = 200.
+        Assert.Equal(400, cells[0].InlineSize);
+        Assert.Equal(200, cells[1].InlineSize);
+    }
+
+    [Fact]
+    public void Fixed_layout_colgroup_width_fallback_when_no_col_children()
+    {
+        // Sub-cycle 4 — <colgroup span="2" width="120"> with NO <col>
+        // children: the colgroup's own width applies to 2 consecutive
+        // columns.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var tableStyle = MakeStyle();
+        SetTableLayoutFixed(tableStyle);
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, tableStyle, MakeElement());
+
+        var groupStyle = MakeStyle();
+        SetLengthPx(groupStyle, PropertyId.Width, 120);
+        var colGroup = Box.ForElement(BoxKind.TableColumnGroup, groupStyle,
+            MakeElementWithAttribute("span", "2"));
+        // No <col> children — the colgroup's own span + width applies.
+
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        grid.AppendChild(colGroup);
+
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        row.AppendChild(Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement()));
+        row.AppendChild(Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement()));
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var cells = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
+        }
+        Assert.Equal(2, cells.Count);
+        Assert.Equal(120, cells[0].InlineSize);
+        Assert.Equal(120, cells[1].InlineSize);
+    }
+
+    // ====================================================================
     //  Tree builders + test doubles
     // ====================================================================
+
+    /// <summary>Per Phase 3 Task 12 sub-cycle 4 — set
+    /// <see cref="PropertyId.TableLayout"/> to <c>fixed</c> (keyword
+    /// index 1).</summary>
+    private static void SetTableLayoutFixed(ComputedStyle style) =>
+        style.Set(PropertyId.TableLayout, ComputedSlot.FromKeyword(1));
 
     /// <summary>Build a Root → Table → TableGrid → rows × cells tree.
     /// Each cell carries an AnonymousBlock wrapping a TextRun with

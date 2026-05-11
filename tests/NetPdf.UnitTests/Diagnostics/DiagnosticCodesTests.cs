@@ -538,6 +538,68 @@ public sealed class DiagnosticCodesTests
             NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutTableIntrinsicMeasurementBudgetExceeded001);
     }
 
+    // ============================================================
+    // Phase 3 Task 13 cycle 1 hardening Finding 5 —
+    // LAYOUT-TABLE-REWIND-NOT-SUPPORTED-001 parity.
+    // ============================================================
+
+    [Fact]
+    public void Layout_table_rewind_not_supported_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(registry,
+            @"\|\s*`?(LAYOUT-TABLE-REWIND-NOT-SUPPORTED-001)`?\s*\|\s*(\w+)\s*\|");
+        Assert.True(match.Success,
+            "LAYOUT-TABLE-REWIND-NOT-SUPPORTED-001 row not found in docs/diagnostics-codes.md");
+        Assert.Equal(DiagnosticCodes.LayoutTableRewindNotSupported001, match.Groups[1].Value);
+        Assert.Equal("Warning", match.Groups[2].Value);
+    }
+
+    [Fact]
+    public void Layout_table_rewind_not_supported_001_constant_value_is_stable()
+    {
+        Assert.Equal("LAYOUT-TABLE-REWIND-NOT-SUPPORTED-001",
+            DiagnosticCodes.LayoutTableRewindNotSupported001);
+    }
+
+    [Fact]
+    public void Layout_table_rewind_not_supported_001_facade_and_paginate_constants_agree()
+    {
+        Assert.Equal(DiagnosticCodes.LayoutTableRewindNotSupported001,
+            NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutTableRewindNotSupported001);
+    }
+
+    // ============================================================
+    // Phase 3 Task 13 cycle 1 hardening Finding 6 —
+    // LAYOUT-TABLE-ROWSPAN-CROSSES-PAGE-001 parity.
+    // ============================================================
+
+    [Fact]
+    public void Layout_table_rowspan_crosses_page_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(registry,
+            @"\|\s*`?(LAYOUT-TABLE-ROWSPAN-CROSSES-PAGE-001)`?\s*\|\s*(\w+)\s*\|");
+        Assert.True(match.Success,
+            "LAYOUT-TABLE-ROWSPAN-CROSSES-PAGE-001 row not found in docs/diagnostics-codes.md");
+        Assert.Equal(DiagnosticCodes.LayoutTableRowspanCrossesPage001, match.Groups[1].Value);
+        Assert.Equal("Warning", match.Groups[2].Value);
+    }
+
+    [Fact]
+    public void Layout_table_rowspan_crosses_page_001_constant_value_is_stable()
+    {
+        Assert.Equal("LAYOUT-TABLE-ROWSPAN-CROSSES-PAGE-001",
+            DiagnosticCodes.LayoutTableRowspanCrossesPage001);
+    }
+
+    [Fact]
+    public void Layout_table_rowspan_crosses_page_001_facade_and_paginate_constants_agree()
+    {
+        Assert.Equal(DiagnosticCodes.LayoutTableRowspanCrossesPage001,
+            NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutTableRowspanCrossesPage001);
+    }
+
     private static string LoadRegistry()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

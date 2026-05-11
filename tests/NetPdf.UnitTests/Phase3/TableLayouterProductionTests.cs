@@ -13,6 +13,7 @@ using NetPdf.Css.ComputedValues;
 using NetPdf.Css.Diagnostics;
 using NetPdf.Css.Parser;
 using NetPdf.Css.Parser.Preprocessing;
+using NetPdf.Css.Properties;
 using NetPdf.Layout.Boxes;
 using NetPdf.Layout.Inline;
 using NetPdf.Layout.Layouters;
@@ -810,6 +811,16 @@ public sealed class TableLayouterProductionTests
         // pagination sees the wrapper as an oversized block — the
         // table itself splits internally but the wrapper still
         // emits with full natural extent).
+        //
+        // Per Phase 3 Task 13 cycle 1 hardening (Finding 1) — this
+        // test continues to pin the NESTED-RECURSION ATOMIC PATH
+        // behavior; a separate test
+        // `Cycle1_production_table_as_root_child_splits_cleanly_at_outer_path`
+        // pins the OUTER path's actual multi-page splitting via a
+        // direct-constructed box tree (bypassing BoxBuilder's body
+        // wrap). Generalizing the recursion to propagate
+        // TableContinuation end-to-end is a sub-cycle 6+ deferral
+        // (see docs/deferrals.md#table-auto-fixed-spans-borders).
         const string html = """
             <!DOCTYPE html><html><head><style>
                 td > div { height: 300px; }
@@ -841,6 +852,109 @@ public sealed class TableLayouterProductionTests
         // doesn't suppress this signal in cycle 1.
         Assert.Contains(diagnostics.Diagnostics, d =>
             d.Code == PaginateDiagnosticCodes.PaginationForcedOverflow001);
+    }
+
+    [Fact]
+    public void Cycle1_production_table_as_root_child_splits_cleanly_at_outer_path()
+    {
+        // Per Phase 3 Task 13 cycle 1 hardening (Finding 1) — when
+        // the table is a DIRECT child of the BlockLayouter's
+        // rootBox (bypassing the typical `<html><body><table>` nest
+        // that BoxBuilder produces), the OUTER dispatch path runs.
+        // That path:
+        //   (a) Pre-measures the table via PreMeasureTableIfNeeded
+        //       (with `useDryRunCommittedHeight: true` per Finding 2
+        //       so the wrapper sizes to the committed-rows extent
+        //       on page 1).
+        //   (b) Emits the wrapper + invokes EmitTableInner with the
+        //       REAL break resolver (not the NoBreakBreakResolver).
+        //   (c) Sees the table return PageComplete(TableContinuation)
+        //       when rows overflow; repackages it into a
+        //       BlockContinuation with LayouterState =
+        //       TableContinuation.
+        //   (d) Returns PageComplete(BlockContinuation) for the next
+        //       page to resume from.
+        //
+        // The fix's deliverable: the table actually splits across
+        // pages instead of emitting all rows atomically + a false
+        // forced-overflow diagnostic.
+        //
+        // This test bypasses BoxBuilder's body-wrap by constructing
+        // the box tree directly: root → table → grid → row → cell.
+        // Cycle 1's documented limitation is that the nested-recursion
+        // path (reached when table is deeper than 1 level under the
+        // BlockLayouter's root) still uses the atomic fallback. The
+        // full-pipeline test
+        // `Cycle1_production_multi_page_table_does_not_crash_full_pipeline`
+        // pins that atomic behavior.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        for (var r = 0; r < 3; r++)
+        {
+            var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+            var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+            var anon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+            var bcStyle = MakeStyle();
+            SetLengthPx(bcStyle, PropertyId.Height, 300);
+            anon.AppendChild(Box.ForElement(BoxKind.BlockContainer, bcStyle, MakeElement()));
+            cell.AppendChild(anon);
+            row.AppendChild(cell);
+            grid.AppendChild(row);
+        }
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null,
+            diagnostics: diagSink,
+            shaperResolver: shaper);
+
+        // Page = 800; rows 300+300+300 = 900 → row 2 overflows.
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // Outer BlockLayouter returns PageComplete with a
+        // BlockContinuation whose LayouterState carries a
+        // TableContinuation pointing at the unfit row (row 2).
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var blockCont = Assert.IsType<BlockContinuation>(result.Continuation);
+        var tableCont = Assert.IsType<TableContinuation>(blockCont.LayouterState);
+        Assert.Equal(2, tableCont.NextRowIndex);
+
+        // Only 2 rows committed on page 1; row 2 deferred.
+        var rowCount = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableRow) rowCount++;
+        }
+        Assert.Equal(2, rowCount);
+
+        // The split is CLEAN — no forced-overflow diagnostic.
+        // (Finding 2's dry-run committed extent suppresses the
+        // outer block-flow's false signal.)
+        Assert.DoesNotContain(diagSink.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.PaginationForcedOverflow001);
+    }
+
+    private static ComputedStyle MakeStyle() => ComputedStyle.RentForExclusiveTesting();
+
+    private static void SetLengthPx(ComputedStyle style, PropertyId id, double px)
+        => style.Set(id, ComputedSlot.FromLengthPx(px));
+
+    private static IElement MakeElement()
+    {
+        var parser = new AngleSharp.Html.Parser.HtmlParser();
+        var doc = parser.ParseDocument("<div></div>");
+        return doc.CreateElement("div");
     }
 
     // ====================================================================

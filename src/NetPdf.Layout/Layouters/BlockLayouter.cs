@@ -455,6 +455,32 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         _resumeAtChildIdxAfterRewind = -1;
         var priorPagesConsumed = incomingBlock?.ConsumedBlockSize ?? 0.0;
 
+        // Per Phase 3 Task 13 cycle 1 hardening (Finding 9) — when
+        // the incoming BlockContinuation carries a TableContinuation
+        // in LayouterState, the child at ResumeAtChild MUST be a
+        // Table or InlineTable wrapper. Pre-fix, a malformed
+        // continuation (LayouterState is TableContinuation but
+        // ResumeAtChild no longer points to a table) was silently
+        // ignored — the resume page emitted as if no table-resume
+        // were pending, dropping the deferred row content. Throw
+        // here so caller bugs surface loudly rather than producing
+        // mis-laid documents.
+        if (incomingBlock?.LayouterState is TableContinuation
+            && startChildIdx >= 0
+            && startChildIdx < _rootBox.Children.Count
+            && _rootBox.Children[startChildIdx].Kind is not (BoxKind.Table or BoxKind.InlineTable))
+        {
+            throw new InvalidOperationException(
+                "BlockLayouter.AttemptLayout: incoming BlockContinuation carries "
+                + "a TableContinuation in LayouterState but the child at "
+                + $"ResumeAtChild={startChildIdx} has BoxKind."
+                + $"{_rootBox.Children[startChildIdx].Kind}, not Table or "
+                + "InlineTable. This is a layouter contract violation — the "
+                + "table-resume state can only attach to a table child. The "
+                + "dispatching layouter must produce continuations where the "
+                + "ResumeAtChild + LayouterState pair are mutually consistent.");
+        }
+
         // Snapshot UsedBlockSize at entry. Per-page extent placed by
         // THIS attempt = fragmentainer.UsedBlockSize - initialUsed.
         var initialUsed = fragmentainer.UsedBlockSize;
@@ -1038,7 +1064,17 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     incomingTableContinuation: tableContinuationForChild,
                     tableContentHeight: out tableMeasuredContentHeight,
                     tableMeasuredUsedInlineSize: out tableMeasuredUsedInlineSize,
-                    cancellationToken: cancellationToken);
+                    cancellationToken: cancellationToken,
+                    // Per Phase 3 Task 13 cycle 1 hardening (Finding 2)
+                    // — the outer dispatch path drives the OUTER block
+                    // pagination loop; it expects the wrapper to size
+                    // to ONE page's committed extent so the outer
+                    // resolver doesn't see the wrapper as oversized
+                    // when the table will split cleanly. The nested-
+                    // recursion atomic path does NOT need this (cycle
+                    // 1 keeps nested tables atomic via the
+                    // NoBreakBreakResolver).
+                    useDryRunCommittedHeight: true);
                 if (pendingTableLayouter is not null)
                 {
                     // Fold the measured content height into the
@@ -1172,6 +1208,24 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // inside `EmitBlockSubtreeRecursive`. Deferred to cycle
             // 2d.
             var subtreeBlockExtent = MeasureSubtreeVisualBlockExtent(child, cancellationToken);
+            // Per Phase 3 Task 13 cycle 1 hardening (Finding 2) — for
+            // Table / InlineTable wrappers in the OUTER dispatch path,
+            // the subtree extent must reflect the SINGLE-PAGE-COMMITTED
+            // dry-run extent (already folded into `borderBoxBlockSize`
+            // by the PreMeasureTableIfNeeded call above when
+            // `useDryRunCommittedHeight: true`). The recursive measure
+            // walks the table's natural content extent — which would
+            // include rows that defer to a future page — so we clamp
+            // it back to the wrapper's already-shrunken
+            // `borderBoxBlockSize`. Without this clamp the outer
+            // pagination sees the wrapper as oversized + emits a
+            // false PAGINATION-FORCED-OVERFLOW-001 even when the table
+            // splits cleanly internally.
+            if (pendingTableLayouter is not null
+                && subtreeBlockExtent > borderBoxBlockSize)
+            {
+                subtreeBlockExtent = borderBoxBlockSize;
+            }
             // The "effective" border-box block size for pagination +
             // cursor purposes: max of own border-box + subtree extent.
             // Equals borderBoxBlockSize for leaves; dominates for
@@ -3535,7 +3589,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         out double tableContentHeight,
         out double tableMeasuredUsedInlineSize,
         CancellationToken cancellationToken,
-        LayoutContinuation? incomingTableContinuation = null)
+        LayoutContinuation? incomingTableContinuation = null,
+        bool useDryRunCommittedHeight = false)
     {
         tableContentHeight = 0;
         tableMeasuredUsedInlineSize = 0;
@@ -3586,8 +3641,31 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // The caller is responsible for calling EmitTableInner after
         // emitting the wrapper fragment (which advances the cursor by
         // the post-Finding-1 wrapper extent).
-        tableContentHeight = tableLayouter.MeasureContentHeight(
+        var naturalContentHeight = tableLayouter.MeasureContentHeight(
             fragmentainer, ref layout, cancellationToken);
+        // Per Phase 3 Task 13 cycle 1 hardening (Finding 2) — when the
+        // wrapper is sized for a single page (= the outer dispatch
+        // path, NOT the nested-recursion atomic path) AND the table
+        // will need to split, return the COMMITTED rows' block-size
+        // for THIS page rather than the full natural extent. The
+        // outer BlockLayouter then sizes the wrapper to the committed
+        // size, suppressing the false PAGINATION-FORCED-OVERFLOW-001
+        // diagnostic that would otherwise fire (the wrapper extent
+        // would have been too tall for the page, but the table itself
+        // splits cleanly internally).
+        if (useDryRunCommittedHeight)
+        {
+            var resumeAt =
+                (incomingTableContinuation as TableContinuation)?.NextRowIndex ?? 0;
+            var dryRunCommitted = tableLayouter.DryRunCommittedBlockSize(
+                fragmentainer, resumeAt,
+                out _, out _);
+            tableContentHeight = dryRunCommitted;
+        }
+        else
+        {
+            tableContentHeight = naturalContentHeight;
+        }
         // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 6 — also
         // surface the grid's used inline-size so the caller can widen
         // the wrapper's border-box inline extent when the grid
@@ -3705,15 +3783,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             resolver,
             LayoutAttemptStrategy.LastResort,
             cancellationToken);
-        // Per Phase 3 Task 13 cycle 1 — only dispose when the table
-        // committed atomically (AllDone). When the table returns
-        // PageComplete the caller may want to keep the layouter alive
-        // for further inspection (none currently); the layouter's
-        // measure-phase state is discarded after this method anyway
-        // because the resume page constructs a fresh TableLayouter
-        // (cycle 1 doesn't carry the column-layout cache across
-        // pages). Dispose unconditionally — the layouter's state was
-        // already consumed.
+        // Per Phase 3 Task 13 cycle 1 — dispose unconditionally. The
+        // resume-page constructs a FRESH TableLayouter (cycle 1
+        // hardening Finding 8 plumbs a ColumnLayoutCache through the
+        // TableContinuation so the resume doesn't re-measure; the
+        // current layouter's per-instance buffers + diagnostic sink
+        // are no longer needed regardless of AllDone vs PageComplete).
+        // The caller has already consumed the returned LayoutAttemptResult
+        // before this line runs.
         tableLayouter.Dispose();
         return result;
     }

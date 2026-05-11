@@ -3,6 +3,8 @@
 
 using System;
 using System.Collections.Generic;
+using System.Threading;
+using AngleSharp.Dom;
 using NetPdf.Css.ComputedValues;
 using NetPdf.Css.Properties;
 using NetPdf.Layout.Boxes;
@@ -384,19 +386,17 @@ public sealed class TableLayouterTests
         Assert.Equal(1, rowCount);
         Assert.Equal(1, cellCount);
 
-        // The outer BlockLayouter still emits its own forced-overflow
-        // diagnostic because the wrapper's measured content height
-        // (1000) exceeds the fragmentainer (800) — the OUTER pagination
-        // (block-level) sees the wrapper as a single overflowing block.
-        // Cycle 1's table-row-pagination operates BELOW that level: the
-        // table itself splits correctly + emits row 0, then returns
-        // PageComplete with a TableContinuation. Cycle 2+ may suppress
-        // the outer forced-overflow when the inner table provides a
-        // clean split.
-        //
-        // The diagnostic message body identifies the BlockLayouter as
-        // the source (not TableLayouter), distinguishing it from the
-        // pre-cycle-1 table-internal "row stack exceeds page" message.
+        // Per Phase 3 Task 13 cycle 1 hardening (Finding 2) — the outer
+        // BlockLayouter no longer emits a forced-overflow diagnostic
+        // when the table splits cleanly. Pre-fix, the wrapper was sized
+        // to the FULL natural content extent (1000), exceeding the
+        // fragmentainer (800), and the outer block pagination saw it
+        // as oversized. Post-fix, the dry-run committed-extent
+        // (= 500 for one row + small caption-block adjustments) is
+        // used for the wrapper sizing, suppressing the false signal.
+        // The TableLayouter-internal forced-overflow still fires only
+        // for unsplittable single oversized rows (which isn't the case
+        // here — each row is 500 ≤ 800).
         var hasBlockLayouterOverflowDiag = false;
         var hasTableLayouterOverflowDiag = false;
         foreach (var d in diagSink.Diagnostics)
@@ -409,13 +409,15 @@ public sealed class TableLayouterTests
                     hasTableLayouterOverflowDiag = true;
             }
         }
-        Assert.True(hasBlockLayouterOverflowDiag,
-            "Expected the outer BlockLayouter's forced-overflow "
-            + "diagnostic — the wrapper is taller than the fragmentainer "
-            + "so the outer block pagination sees it as an oversized block.");
+        Assert.False(hasBlockLayouterOverflowDiag,
+            "Did NOT expect outer BlockLayouter's forced-overflow "
+            + "diagnostic — Finding 2 hardening uses the dry-run "
+            + "committed-extent for the wrapper sizing so the outer "
+            + "pagination sees a wrapper that fits the page when the "
+            + "table splits cleanly.");
         Assert.False(hasTableLayouterOverflowDiag,
             "Did NOT expect TableLayouter's own forced-overflow "
-            + "diagnostic — cycle 1 now defers overflowing rows to the "
+            + "diagnostic — cycle 1 defers overflowing rows to the "
             + "next page via TableContinuation. The table-internal "
             + "forced-overflow signals only on unsplittable single rows "
             + "taller than the fragmentainer.");
@@ -809,6 +811,564 @@ public sealed class TableLayouterTests
             caught = ex;
         }
         Assert.NotNull(caught);
+    }
+
+    // ====================================================================
+    //  Phase 3 Task 13 cycle 1 hardening review — per-finding regressions.
+    // ====================================================================
+
+    [Fact]
+    public void Cycle1Hardening_Finding7_resume_at_rows_count_emits_bottom_captions_and_returns_all_done()
+    {
+        // Per Phase 3 Task 13 cycle 1 hardening (Finding 7) — when
+        // NextRowIndex == rows.Count, the layouter treats this as the
+        // "all rows committed; emit bottom captions" case + returns
+        // AllDone. Pre-fix the rowBlockOffsets[resumeAtRow] index was
+        // OUT OF RANGE (rows.Count entries indexed 0..rows.Count-1).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var (root, table) = BuildTallRowTable(rowHeights: [100, 100]);
+        // Append a bottom caption.
+        var captionStyle = MakeStyle();
+        captionStyle.Set(PropertyId.CaptionSide, ComputedSlot.FromKeyword(1));
+        var caption = Box.ForElement(BoxKind.TableCaption, captionStyle, MakeElement());
+        var capInner = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var capInnerStyle = MakeStyle();
+        SetLengthPx(capInnerStyle, PropertyId.Height, 30);
+        capInner.AppendChild(Box.ForElement(BoxKind.BlockContainer, capInnerStyle, MakeElement()));
+        caption.AppendChild(capInner);
+        table.AppendChild(caption);
+
+        // Construct a continuation with NextRowIndex == rows.Count (= 2).
+        var cont = new TableContinuation(
+            RepeatHead: false, RepeatFoot: false,
+            NextRowIndex: 2, ConsumedBlockSize: 200);
+        using var layouter = new TableLayouter(
+            rootBox: table, sink: sink,
+            incomingContinuation: cont,
+            diagnostics: null, shaperResolver: shaper);
+        layouter.ConfigureEmission(0, 0, 600);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+        // The bottom caption emitted.
+        var captionCount = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCaption) captionCount++;
+        }
+        Assert.Equal(1, captionCount);
+        // No row fragments (all rows committed on prior pages).
+        foreach (var f in sink.Fragments)
+        {
+            Assert.NotEqual(BoxKind.TableRow, f.Box.Kind);
+        }
+    }
+
+    [Fact]
+    public void Cycle1Hardening_Finding9_LayouterState_TableContinuation_on_non_table_child_throws()
+    {
+        // Per Phase 3 Task 13 cycle 1 hardening (Finding 9) — when a
+        // BlockContinuation carries a TableContinuation in
+        // LayouterState but the child at ResumeAtChild is NOT a Table
+        // / InlineTable wrapper, BlockLayouter throws at
+        // AttemptLayout entry rather than silently ignoring the
+        // state. Pre-fix the resume page emitted as if no table-
+        // resume were pending, dropping the deferred row content.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        // Child at index 0 is a plain BlockContainer (NOT a table).
+        var nonTable = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        root.AppendChild(nonTable);
+
+        // Construct a malformed BlockContinuation with LayouterState
+        // = TableContinuation pointing at the non-table child.
+        var malformedTableCont = new TableContinuation(
+            RepeatHead: false, RepeatFoot: false,
+            NextRowIndex: 0, ConsumedBlockSize: 0);
+        var malformedBlockCont = new BlockContinuation(
+            ResumeAtChild: 0, ConsumedBlockSize: 0,
+            LayouterState: malformedTableCont);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: malformedBlockCont,
+            diagnostics: null, shaperResolver: shaper);
+
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        InvalidOperationException? caught = null;
+        try
+        {
+            layouter.AttemptLayout(
+                ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+        }
+        catch (InvalidOperationException ex)
+        {
+            caught = ex;
+        }
+        Assert.NotNull(caught);
+        Assert.Contains("TableContinuation", caught.Message);
+        Assert.Contains("not Table or", caught.Message);
+    }
+
+    [Fact]
+    public void Cycle1Hardening_Finding5_resolver_returning_rewind_emits_diagnostic_and_continues()
+    {
+        // Per Phase 3 Task 13 cycle 1 hardening (Finding 5) — when
+        // the break resolver returns BreakAction.Rewind at a row
+        // boundary, the layouter emits LAYOUT-TABLE-REWIND-NOT-
+        // SUPPORTED-001 + falls back to Continue (pre-fix the rewind
+        // was silently treated as Continue).
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var (root, table) = BuildTallRowTable(rowHeights: [100, 100]);
+
+        using var layouter = new TableLayouter(
+            rootBox: table, sink: sink,
+            incomingContinuation: null,
+            diagnostics: diagSink, shaperResolver: shaper);
+        layouter.ConfigureEmission(0, 0, 600);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new RewindResolverDouble();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // The diagnostic fired.
+        Assert.Contains(diagSink.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutTableRewindNotSupported001);
+        // Layout still completed — rows emitted.
+        var rowCount = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableRow) rowCount++;
+        }
+        Assert.Equal(2, rowCount);
+    }
+
+    [Fact]
+    public void Cycle1Hardening_Finding6_rowspan_crossing_break_forces_break_before_origin_and_emits_diagnostic()
+    {
+        // Per Phase 3 Task 13 cycle 1 hardening (Finding 6) — when a
+        // row break would cut through a rowspan cell, the layouter
+        // forces the break BEFORE the rowspan's origin row + emits
+        // LAYOUT-TABLE-ROWSPAN-CROSSES-PAGE-001 (the spanning cell
+        // stays atomic on the next page). The rolled-back rows above
+        // the rowspan-origin remain on the current page.
+        //
+        // Build: 3 rows × col-2; rowspan=2 cell at (row1, col0);
+        // rest of cells 300 tall each.
+        //   Row 0: 2 cells (col 0 + col 1), each 300 → rowHeight[0] = 300.
+        //   Row 1: 1 cell at col 0 with rowspan=2 (content 0; rows-2
+        //          and 3 carry the col-1 content); col 1 cell 300 →
+        //          rowHeight[1] = 300 (from col 1 cell).
+        //   Row 2: col 0 occupied by row-1 rowspan; col 1 cell at
+        //          (2, 1) 300 → rowHeight[2] = 300.
+        //   Page = 600.
+        //   Row 0 commits (0..300). Row 1 commits (300..600). Row 2
+        //   would extend to 900 > 600 → BreakHere. Row 1's rowspan
+        //   cell spans rows 1+2 → crosses the break.
+        //   Per Finding 6 → roll back row 1 (before row 1) + diagnostic.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+
+        // Helper: build a 300-tall cell.
+        Box MakeTallCell(IElement cellEl)
+        {
+            var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), cellEl);
+            var anon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+            var bcStyle = MakeStyle();
+            SetLengthPx(bcStyle, PropertyId.Height, 300);
+            anon.AppendChild(Box.ForElement(BoxKind.BlockContainer, bcStyle, MakeElement()));
+            cell.AppendChild(anon);
+            return cell;
+        }
+
+        // Row 0: 2 plain cells.
+        var row0 = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        row0.AppendChild(MakeTallCell(MakeElement()));
+        row0.AppendChild(MakeTallCell(MakeElement()));
+        grid.AppendChild(row0);
+
+        // Row 1: rowspan=2 cell at col 0 + plain cell at col 1.
+        var row1 = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        row1.AppendChild(MakeTallCell(MakeElementWithAttribute("rowspan", "2")));
+        row1.AppendChild(MakeTallCell(MakeElement()));
+        grid.AppendChild(row1);
+
+        // Row 2: 1 plain cell — placed at col 1 (col 0 occupied by
+        // rowspan continuation from row 1).
+        var row2 = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        row2.AppendChild(MakeTallCell(MakeElement()));
+        grid.AppendChild(row2);
+
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new TableLayouter(
+            rootBox: table, sink: sink,
+            incomingContinuation: null,
+            diagnostics: diagSink, shaperResolver: shaper);
+        layouter.ConfigureEmission(0, 0, 600);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 600);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // The diagnostic fired naming the rowspan-cell crossing.
+        Assert.Contains(diagSink.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutTableRowspanCrossesPage001);
+        // Layout returned PageComplete with the continuation pointing
+        // at the rowspan's origin row (row 1), not at the unfit row
+        // (row 2). Pre-finding-6 the continuation pointed at row 2
+        // + the rowspan cell at row 1 was committed in full,
+        // overlapping the page bottom.
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var tableCont = Assert.IsType<TableContinuation>(result.Continuation);
+        Assert.Equal(1, tableCont.NextRowIndex);
+    }
+
+    [Fact]
+    public void Cycle1Hardening_Finding3_top_caption_committed_then_oversized_first_row_defers_cleanly()
+    {
+        // Per Phase 3 Task 13 cycle 1 hardening (Finding 3) — with a
+        // top caption committed on page 1 + oversized first row,
+        // `committedNonRowContent` makes forward progress so the
+        // layouter can safely return PageComplete deferring the row
+        // to page 2. Pre-fix's check
+        // `fragmentainer.UsedBlockSize == initialUsedBlockSize`
+        // wrongly became false (= "something already on the page")
+        // EVEN WHEN nothing had been emitted, because the resolver-
+        // consult-prep bumped UsedBlockSize. Post-fix uses a typed
+        // `committedNonRowContent` flag set only when the caption
+        // actually emits.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var (root, table) = BuildTallRowTable(rowHeights: [900]); // oversized
+        // Prepend a top caption.
+        var captionStyle = MakeStyle();
+        captionStyle.Set(PropertyId.CaptionSide, ComputedSlot.FromKeyword(0));
+        var caption = Box.ForElement(BoxKind.TableCaption, captionStyle, MakeElement());
+        var capInner = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var capInnerStyle = MakeStyle();
+        SetLengthPx(capInnerStyle, PropertyId.Height, 50);
+        capInner.AppendChild(Box.ForElement(BoxKind.BlockContainer, capInnerStyle, MakeElement()));
+        caption.AppendChild(capInner);
+        table.InsertChild(0, caption);
+
+        using var layouter = new TableLayouter(
+            rootBox: table, sink: sink,
+            incomingContinuation: null,
+            diagnostics: diagSink, shaperResolver: shaper);
+        layouter.ConfigureEmission(0, 0, 600);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // PageComplete: the caption commits on page 1, the oversized
+        // row defers to page 2 where it'll force-emit as the single-
+        // oversized-row case. The cycle-1 contract is forward
+        // progress — the caption is forward progress on page 1.
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var tableCont = Assert.IsType<TableContinuation>(result.Continuation);
+        Assert.Equal(0, tableCont.NextRowIndex);
+        // The caption emitted on page 1.
+        var captionCount = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCaption) captionCount++;
+        }
+        Assert.Equal(1, captionCount);
+        // No row fragments emitted on page 1 (the oversized row
+        // deferred).
+        foreach (var f in sink.Fragments)
+        {
+            Assert.NotEqual(BoxKind.TableRow, f.Box.Kind);
+        }
+    }
+
+    [Fact]
+    public void Cycle1Hardening_Finding3_no_caption_oversized_first_row_force_emits()
+    {
+        // Per Phase 3 Task 13 cycle 1 hardening (Finding 3) — when
+        // NO non-row content is on the page AND the first row is
+        // oversized, the row force-emits (no forward-progress fallback
+        // available). This is the zero-progress fallback path the
+        // locked design specified.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var (root, table) = BuildTallRowTable(rowHeights: [900]); // oversized
+
+        using var layouter = new TableLayouter(
+            rootBox: table, sink: sink,
+            incomingContinuation: null,
+            diagnostics: diagSink, shaperResolver: shaper);
+        layouter.ConfigureEmission(0, 0, 600);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // No caption → no forward-progress fallback → force-emit
+        // the row + emit forced-overflow diagnostic.
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+        Assert.Contains(diagSink.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.PaginationForcedOverflow001
+            && d.Message.Contains("TableLayouter:"));
+    }
+
+    [Fact]
+    public void Cycle1Hardening_Finding3_contentBlockOffset_20_and_oversized_first_row_force_emits()
+    {
+        // Per Phase 3 Task 13 cycle 1 hardening (Finding 3) — when
+        // the wrapper has padding/border at the top
+        // (ConfigureEmission's contentBlockOffset > 0) AND the first
+        // row is oversized, the layouter should force-emit. The
+        // pre-fix check failed because UsedBlockSize at row 0 ==
+        // contentBlockOffset != initialUsedBlockSize (= 0).
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var (root, table) = BuildTallRowTable(rowHeights: [900]); // oversized
+
+        using var layouter = new TableLayouter(
+            rootBox: table, sink: sink,
+            incomingContinuation: null,
+            diagnostics: diagSink, shaperResolver: shaper);
+        layouter.ConfigureEmission(
+            contentInlineOffset: 0,
+            contentBlockOffset: 20, // wrapper padding pushes row stack down
+            contentInlineSize: 600);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+        Assert.Contains(diagSink.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.PaginationForcedOverflow001
+            && d.Message.Contains("TableLayouter:"));
+    }
+
+    [Fact]
+    public void Cycle1Hardening_Finding8_ColumnLayoutCache_attached_on_page_complete()
+    {
+        // Per Phase 3 Task 13 cycle 1 hardening (Finding 8) — when
+        // the table returns PageComplete, the returned
+        // TableContinuation carries a non-null ColumnLayoutCache
+        // snapshot so the resume page can skip the measure pass.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var (root, table) = BuildTallRowTable(rowHeights: [300, 300, 300]);
+
+        using var layouter = new TableLayouter(
+            rootBox: table, sink: sink,
+            incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        layouter.ConfigureEmission(0, 0, 600);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var tableCont = Assert.IsType<TableContinuation>(result.Continuation);
+        Assert.NotNull(tableCont.ColumnLayoutCache);
+    }
+
+    [Fact]
+    public void Cycle1Hardening_Finding4_row_diagnostics_flush_only_on_committed_rows()
+    {
+        // Per Phase 3 Task 13 cycle 1 hardening (Finding 4) — cell
+        // diagnostics for DEFERRED rows stay buffered for the resume
+        // page; they don't leak onto the current page.
+        //
+        // Build a 2-row table where the second row's cell content
+        // produces a diagnostic during measurement. Verify that
+        // page 1's diagnostic sink does NOT contain row-1's
+        // diagnostic; the resume page DOES contain it.
+        //
+        // The simplest way to induce a cell-internal diagnostic is
+        // an atomic inline descendant — the LAYOUT-INLINE-ATOMIC-
+        // NOT-SUPPORTED-001 fires per inline-only block that contains
+        // an atomic inline.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+
+        // Row 0 — plain 500-tall cell.
+        var row0 = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cell0 = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        var anon0 = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var bc0Style = MakeStyle();
+        SetLengthPx(bc0Style, PropertyId.Height, 500);
+        anon0.AppendChild(Box.ForElement(BoxKind.BlockContainer, bc0Style, MakeElement()));
+        cell0.AppendChild(anon0);
+        row0.AppendChild(cell0);
+        grid.AppendChild(row0);
+
+        // Row 1 — 500-tall cell whose content has an inline-only
+        // block containing an atomic inline (induces LAYOUT-INLINE-
+        // ATOMIC-NOT-SUPPORTED-001 during cell-content measurement).
+        // The AnonymousBlock is inline-only (TextRun + atomic inline,
+        // no block children) so BlockLayouter dispatches to the
+        // inline-only path which fires the diagnostic per atomic
+        // inline descendant.
+        var row1 = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cell1 = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        // Inline-only block: TextRun + atomic InlineBlockContainer
+        // children only.
+        var inlineOnly1 = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        inlineOnly1.AppendChild(Box.TextRun("X", MakeStyle()));
+        inlineOnly1.AppendChild(
+            Box.ForElement(BoxKind.InlineBlockContainer, MakeStyle(), MakeElement()));
+        cell1.AppendChild(inlineOnly1);
+        // Add a sibling block-level child to give the row some height
+        // (the inline-only block alone is short).
+        var anon1b = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var bc1Style = MakeStyle();
+        SetLengthPx(bc1Style, PropertyId.Height, 500);
+        anon1b.AppendChild(Box.ForElement(BoxKind.BlockContainer, bc1Style, MakeElement()));
+        cell1.AppendChild(anon1b);
+        row1.AppendChild(cell1);
+        grid.AppendChild(row1);
+
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        // Page 1 — only row 0 fits (500+500 > 800).
+        TableContinuation? carriedContinuation;
+        using (var page1 = new TableLayouter(table, sink, null, diagSink, shaper))
+        {
+            page1.ConfigureEmission(0, 0, 600);
+            var ctx1 = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var layoutCtx1 = new LayoutContext(ctx1) { Diagnostics = diagSink };
+            using var resolver1 = new BreakResolver();
+            var result1 = page1.AttemptLayout(
+                ctx1, ref layoutCtx1, resolver1, LayoutAttemptStrategy.LastResort);
+            carriedContinuation = Assert.IsType<TableContinuation>(result1.Continuation);
+        }
+        // Page 1's diagnostic sink should NOT contain the atomic-
+        // inline diagnostic (row 1 was deferred).
+        var page1AtomicDiagCount = 0;
+        foreach (var d in diagSink.Diagnostics)
+        {
+            if (d.Code == PaginateDiagnosticCodes.LayoutInlineAtomicNotSupported001)
+                page1AtomicDiagCount++;
+        }
+        Assert.Equal(0, page1AtomicDiagCount);
+
+        // Page 2 — row 1 commits + its diagnostic flushes now.
+        using (var page2 = new TableLayouter(table, sink, carriedContinuation, diagSink, shaper))
+        {
+            page2.ConfigureEmission(0, 0, 600);
+            var ctx2 = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var layoutCtx2 = new LayoutContext(ctx2) { Diagnostics = diagSink };
+            using var resolver2 = new BreakResolver();
+            page2.AttemptLayout(
+                ctx2, ref layoutCtx2, resolver2, LayoutAttemptStrategy.LastResort);
+        }
+        var totalAtomicDiagCount = 0;
+        foreach (var d in diagSink.Diagnostics)
+        {
+            if (d.Code == PaginateDiagnosticCodes.LayoutInlineAtomicNotSupported001)
+                totalAtomicDiagCount++;
+        }
+        // The row-1 diagnostic is now visible (flushed on page 2).
+        Assert.True(totalAtomicDiagCount >= 1,
+            "Expected at least one LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001 "
+            + "diagnostic on page 2 (row 1 committed there + flushed its "
+            + "buffered measure-pass diagnostics).");
+    }
+
+    /// <summary>Resolver double for Finding 5's regression — returns
+    /// Rewind on the first ConsiderBreakAt call, Continue afterward.
+    /// </summary>
+    private sealed class RewindResolverDouble : IBreakResolver, IDisposable
+    {
+        private int _calls;
+        private CheckpointLease _lastLease;
+
+        public BreakDecision ConsiderBreakAt(
+            BreakOpportunity opportunity, FragmentainerContext ctx)
+        {
+            _calls++;
+            if (_calls == 1)
+            {
+                // Reference a checkpoint we never registered — this
+                // is exactly the contract-violation the Finding 5
+                // diagnostic catches. The TableLayouter doesn't use
+                // RewindTo (it falls back to Continue), so the bogus
+                // value is safe for the test.
+                return new BreakDecision(BreakAction.Rewind, 0, RewindTo: null);
+            }
+            return BreakDecision.Continue;
+        }
+
+        public OptimizerResult ResolveBreaks(
+            IReadOnlyList<BreakOpportunity> opportunities,
+            FragmentainerContext ctx,
+            CancellationToken cancellationToken = default)
+            => OptimizerResult.Empty;
+
+        public void RegisterCheckpoint(CheckpointLease lease)
+        {
+            if (_lastLease.Checkpoint is not null
+                && !ReferenceEquals(_lastLease.Checkpoint, lease.Checkpoint))
+            {
+                LayoutCheckpointPool.Return(_lastLease);
+            }
+            _lastLease = lease;
+        }
+
+        public LayoutCheckpoint? GetLastCheckpoint() => _lastLease.Checkpoint;
+
+        public void Dispose()
+        {
+            if (_lastLease.Checkpoint is not null)
+            {
+                LayoutCheckpointPool.Return(_lastLease);
+                _lastLease = default;
+            }
+        }
     }
 
     /// <summary>Build a table whose rows have the specified heights —

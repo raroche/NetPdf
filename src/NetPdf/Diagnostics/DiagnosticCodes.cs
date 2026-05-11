@@ -323,5 +323,37 @@ internal static class DiagnosticCodes
     public const string LayoutTableIntrinsicMeasurementBudgetExceeded001 =
         "LAYOUT-TABLE-INTRINSIC-MEASUREMENT-BUDGET-EXCEEDED-001";
 
+    /// <summary>
+    /// Per Phase 3 Task 13 cycle 1 hardening Finding 5 — emitted by the
+    /// table layouter when the break resolver returns
+    /// <c>BreakAction.Rewind</c> at a table row boundary. Cycle 1 does
+    /// NOT register per-row checkpoints (the outer block layouter owns
+    /// the pre-table rewind frontier), so a resolver-named rewind
+    /// checkpoint inside the table is a contract violation. The
+    /// layouter falls back to <c>Continue</c> (preserving the pre-
+    /// finding behavior) + surfaces this diagnostic so authors /
+    /// integrators see the dropped rewind. Per-row checkpoint capture
+    /// is cycle 2+ scope.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string LayoutTableRewindNotSupported001 =
+        "LAYOUT-TABLE-REWIND-NOT-SUPPORTED-001";
+
+    /// <summary>
+    /// Per Phase 3 Task 13 cycle 1 hardening Finding 6 — emitted by the
+    /// table layouter when a row break would cut through a cell whose
+    /// <c>rowspan&gt;1</c> origin row commits on the current page but
+    /// whose span extends past the break. Cycle 1 keeps rowspan cells
+    /// atomic across pages: the layouter forces the break BEFORE the
+    /// rowspan origin row (the whole spanning cell stays together on
+    /// the next page) when at least one row + optional captions have
+    /// already committed on the current page; otherwise it falls back
+    /// to the existing forced-overflow path. CSS Tables L3 §11 spec-
+    /// strict rowspan distribution across pages is sub-cycle 6+ scope.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string LayoutTableRowspanCrossesPage001 =
+        "LAYOUT-TABLE-ROWSPAN-CROSSES-PAGE-001";
+
     // endregion LAYOUT-*
 }

@@ -64,18 +64,23 @@ internal sealed record InlineContinuation(
 /// <c>&lt;tfoot&gt;</c> are re-emitted on the new page (Task 13 cycle 2
 /// will set these; cycle 1 leaves them at <see langword="false"/>).
 /// <paramref name="NextRowIndex"/> identifies the next row to lay out
-/// (0-based index into the table's collected row list).
+/// (0-based index into the table's collected row list; the valid
+/// range on entry is <c>[0, rows.Count]</c> where the upper bound is
+/// the "all rows committed; emit bottom captions only" case).
 /// <paramref name="ConsumedBlockSize"/> per Phase 3 Task 13 cycle 1
 /// hardening — cumulative block-axis size committed across PRIOR pages,
 /// matching <see cref="BlockContinuation.ConsumedBlockSize"/>'s
-/// semantics. The outer dispatcher uses this to position fragments on
-/// the resume page consistent with the page-relative origin contract;
-/// future cycles may consume it for cost-model lookahead.
+/// semantics. Currently informational (recorded for cost-model
+/// lookahead in future cycles); the resume-page TableLayouter
+/// recomputes its own page-relative offsets from
+/// <paramref name="NextRowIndex"/> alone.
 /// <paramref name="ColumnLayoutCache"/> per Phase 3 plan + review fix #7
-/// — opaque cache of the table's resolved column widths so the next-
-/// page resume doesn't re-run the auto-layout pass (Task 13 cycle 1
-/// re-runs <see cref="LayoutContinuation"/> the measure pass on resume
-/// for simplicity; cycle 2 may plumb the cache here).</summary>
+/// + Task 13 cycle 1 hardening (Finding 8) — opaque cache of the
+/// table's resolved column widths + per-cell placements + intrinsic
+/// widths so the resume-page TableLayouter skips the (expensive) auto-
+/// layout pass. When non-null on resume, the layouter loads the cached
+/// values + jumps straight to the cell-content emit pass for the
+/// resumed rows.</summary>
 internal sealed record TableContinuation(
     bool RepeatHead,
     bool RepeatFoot,

@@ -101,6 +101,15 @@ Profile with BenchmarkDotNet (`tests/NetPdf.Benchmarks`) before assuming a chang
 - **`InvalidOperationException`** for state errors (calling a method when the object isn't in a valid state for that call).
 - **Don't catch and rethrow** without enriching. If you have nothing to add, let the exception propagate.
 
+### Deferrals — update [docs/deferrals.md](deferrals.md) when you add or remove one
+
+Whenever a change adds **approximated** behavior, **throws** `NotSupportedException` for a spec feature, or replaces an approximation with the real implementation, update [docs/deferrals.md](deferrals.md) in the SAME commit.
+
+- **Adding** a deferral: append a new entry under the schema (ID / Status / Behavior / Missing / Trigger / Owner files / Added / Removal condition) AND add the new ID to the `ExpectedDeferralIds` array in [`tests/NetPdf.UnitTests/Docs/DeferralsParityTests.cs`](../tests/NetPdf.UnitTests/Docs/DeferralsParityTests.cs).
+- **Picking up** a deferral: delete the entry AND remove the ID from `ExpectedDeferralIds` in the same commit. Also drop any "deferred / approximated" framing from the XML doc / code comments at the throw or approximation site.
+
+The parity test fails loudly when the doc and the test list drift apart, so the rule is mechanically enforced — but the discipline only works if you update both files in the same commit.
+
 ### Comments — default to none
 
 The system rule and the project rule: **default to writing no comments**. Identifiers explain WHAT the code does. Only comment to explain WHY when the reason isn't obvious from the code: a hidden constraint, a subtle invariant, a workaround for a specific bug, behavior that would surprise a reader.

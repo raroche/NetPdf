@@ -466,6 +466,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         _capturedFragmentainer = fragmentainer;
         _capturedDiagSink = layout.Diagnostics ?? _diagnostics;
 
+        // Per Phase 3 Task 12 sub-cycle 2 hardening (Finding 2) —
+        // clear the per-AttemptLayout nested-table content-height
+        // cache. Old entries from a prior AttemptLayout could
+        // reference a stale extent if the previous attempt's
+        // wrapperInlineSize differed. Lazily allocated when the first
+        // nested table is encountered.
+        _measuredTableContentHeightCache?.Clear();
+
         // Track whether this attempt has emitted any fragment so far.
         // Per PR #22 review fix #1 — the oversized-block forward-
         // progress path needs to know if BreakHere fires before any
@@ -1752,18 +1760,28 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // canonical body > table case from real HTML) wouldn't
             // get their wrapper sized by the row stack — siblings
             // would overlap them.
+            //
+            // Per Phase 3 Task 12 sub-cycle 2 hardening (Finding 1) —
+            // use the OUTER fragmentainer captured at AttemptLayout
+            // entry, not a synthesized `blockSize: 1`. The 1-px
+            // fragmentainer was a sub-cycle-1 stopgap that produced
+            // false PAGINATION-FORCED-OVERFLOW-001 warnings for ANY
+            // positive-height nested table + caused cell content with
+            // tall block children to hit BlockLayouter's forced-
+            // overflow path (whose continuation TableLayouter ignored,
+            // losing content).
             TableLayouter? nestedPendingTable = null;
             var nestedMeasuredHeight = 0.0;
-            if (child.Kind is BoxKind.Table or BoxKind.InlineTable)
+            if (child.Kind is BoxKind.Table or BoxKind.InlineTable
+                && _capturedFragmentainer is not null)
             {
-                // We don't have ref layout here (cycle 1 recursion
-                // doesn't thread it). Synthesize a transient
-                // LayoutContext that carries the constructor-injected
-                // diagnostics sink only — the table layouter consults
-                // the ambient sink first, falling back to its own.
-                var fragmentainerForMeasure = new FragmentainerContext(
-                    contentInlineSize: childBorderBoxInlineSize,
-                    blockSize: 1);
+                // The recursion doesn't have ref layout. Synthesize a
+                // transient LayoutContext carrying the constructor-
+                // injected diagnostics sink + the captured
+                // FragmentainerContext — the table layouter consults
+                // these for cell-content layout, deferral diagnostics,
+                // forced-overflow signals, etc.
+                var fragmentainerForMeasure = _capturedFragmentainer;
                 var transientLayout = new LayoutContext(fragmentainerForMeasure)
                 {
                     Diagnostics = _diagnostics,
@@ -1817,16 +1835,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 depth: depth + 1);
 
             // Per Phase 3 Task 12 sub-cycle 1 hardening (Finding 6 /
-            // 1) — drain the pre-measured nested table content. The
-            // recursion doesn't have a ref LayoutContext so we
-            // synthesize one carrying the constructor's diagnostic
-            // sink + the same fragmentainer shape; the table layouter
-            // uses these for the deferral diagnostics.
-            if (nestedPendingTable is not null)
+            // 1) + sub-cycle 2 hardening (Finding 1) — drain the pre-
+            // measured nested table content. The recursion doesn't
+            // have a ref LayoutContext so we synthesize one carrying
+            // the constructor's diagnostic sink + the OUTER
+            // fragmentainer captured at AttemptLayout entry; the
+            // table layouter uses these for deferral diagnostics +
+            // forced-overflow signals + cell-content layout.
+            if (nestedPendingTable is not null && _capturedFragmentainer is not null)
             {
-                var fragmentainerForEmit = new FragmentainerContext(
-                    contentInlineSize: childBorderBoxInlineSize,
-                    blockSize: 1);
+                var fragmentainerForEmit = _capturedFragmentainer;
                 var emitLayout = new LayoutContext(fragmentainerForEmit)
                 {
                     Diagnostics = _diagnostics,
@@ -2030,6 +2048,20 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// AttemptLayout entry; the ambient diagnostic sink for nested-
     /// float overflow emission.</summary>
     private IPaginateDiagnosticsSink? _capturedDiagSink;
+
+    /// <summary>Per Phase 3 Task 12 sub-cycle 2 hardening (Finding 2)
+    /// — per-AttemptLayout cache of nested-table CONTENT HEIGHT
+    /// measurements. Keyed by the Table / InlineTable wrapper
+    /// <see cref="Box"/>. The recursive measure pass
+    /// (<see cref="MeasureSubtreeVisualBlockExtentRecursive"/>)
+    /// populates the entry the first time it encounters a table
+    /// wrapper so subsequent visits within the same outer-walk reuse
+    /// the cached height instead of re-running the cell content
+    /// layout. (The emit recursion still constructs its own
+    /// <see cref="TableLayouter"/> with the wrapper's real offsets;
+    /// re-measuring there is symmetric with the existing duplicate-
+    /// walk pattern.) Cleared at AttemptLayout entry.</summary>
+    private Dictionary<Box, double>? _measuredTableContentHeightCache;
 
     private void EmitFloat(
         Box child,
@@ -3073,9 +3105,54 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             return Math.Max(parentBorderBoxBlockSize, inlineMargined);
         }
 
-        // Non-flow block kinds (Table/Flex/Grid/Replaced) are atomic
-        // to the BlockLayouter — their inner geometry belongs to a
-        // dedicated layouter. Return own size.
+        // Per Phase 3 Task 12 sub-cycle 2 hardening (Finding 2) —
+        // Table / InlineTable wrappers contribute the row-stack height
+        // ON TOP of their own border-box-from-style. Pre-Finding-2 the
+        // measure pass returned only the wrapper's own border-box
+        // (style-derived height = 0 for auto), so a parent block whose
+        // pagination decision depends on a nested table's true visual
+        // extent (e.g., a div that should force a page break because
+        // its embedded table is taller than the page remainder) would
+        // see 0 from the measure pass + skip the break.
+        if (parent.Kind is BoxKind.Table or BoxKind.InlineTable
+            && _capturedFragmentainer is not null)
+        {
+            // Compute the wrapper's content-inline-size (the only
+            // geometry the table measure consumes). Inline offsets are
+            // unknown here — the emit recursion supplies real ones via
+            // its own PreMeasureTableIfNeeded call. Cache by Box so
+            // the recursion doesn't re-measure on revisits within the
+            // same outer walk.
+            var tBorderInlineStart = parent.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
+            var tPaddingInlineStart = parent.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
+            var tBorderInlineEnd = parent.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
+            var tPaddingInlineEnd = parent.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
+            // The wrapper's border-box inline size isn't directly
+            // known to this recursion either; treat the BFC content-
+            // inline-size as the available inline space. The emit pass
+            // will use the actual wrapper-derived size; an over-
+            // estimate of the column width here may yield a slight
+            // under-estimate of row height (cells lay out wider than
+            // they actually will, so wraps land later) which is a
+            // safe-side error for the pagination break decision
+            // (rounds toward NOT breaking — the emit pass then ships
+            // the exact geometry).
+            var wrapperInlineSize = _bfcContentInlineSize;
+            var contentInlineSize = Math.Max(0,
+                wrapperInlineSize - tBorderInlineStart - tPaddingInlineStart
+                - tBorderInlineEnd - tPaddingInlineEnd);
+            var contentHeight = MeasureNestedTableContentExtent(
+                parent, contentInlineSize, cancellationToken);
+            var wrapperBorderPaddingBlock = pBorderStart + pPaddingStart
+                + pPaddingEnd + pBorderEnd;
+            var tableDriven = contentHeight + wrapperBorderPaddingBlock;
+            return Math.Max(parentBorderBoxBlockSize, tableDriven);
+        }
+
+        // Non-flow block kinds (Flex/Grid/Replaced) are atomic to the
+        // BlockLayouter — their inner geometry belongs to a dedicated
+        // layouter. Return own size. (Tables were special-cased above
+        // — Finding 2.)
         if (!IsBlockFlowContainerOwnedByBlockLayouter(parent))
         {
             return parentBorderBoxBlockSize;
@@ -3271,6 +3348,68 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         tableContentHeight = tableLayouter.MeasureContentHeight(
             fragmentainer, ref layout, cancellationToken);
         return tableLayouter;
+    }
+
+    /// <summary>Per Phase 3 Task 12 sub-cycle 2 hardening (Finding 2)
+    /// — light-weight, offsets-agnostic measure of a nested table's
+    /// content block extent. Called from
+    /// <see cref="MeasureSubtreeVisualBlockExtentRecursive"/> so the
+    /// outer block-flow pagination decision sees the table's true
+    /// visual extent.
+    ///
+    /// <para>The wrapper's content-inline-offset / content-block-
+    /// offset aren't known at measure-recursion time; they're
+    /// computed only during the emit walk. We pass placeholder zeros
+    /// to <see cref="TableLayouter.ConfigureEmission"/> — the
+    /// MeasureContentHeight call doesn't write to the outer sink so
+    /// the placeholders never reach the painter. The returned extent
+    /// depends only on <paramref name="contentInlineSize"/> (it
+    /// drives the equal-column split + cell content layout).</para>
+    ///
+    /// <para>Cached per <paramref name="wrapper"/> Box in
+    /// <see cref="_measuredTableContentHeightCache"/> so repeated
+    /// visits from the same outer walk don't re-run cell content
+    /// layout. Cache cleared at AttemptLayout entry.</para></summary>
+    private double MeasureNestedTableContentExtent(
+        Box wrapper,
+        double contentInlineSize,
+        CancellationToken cancellationToken)
+    {
+        _measuredTableContentHeightCache ??= new Dictionary<Box, double>();
+        if (_measuredTableContentHeightCache.TryGetValue(wrapper, out var cached))
+        {
+            return cached;
+        }
+        if (contentInlineSize <= 0 || _capturedFragmentainer is null)
+        {
+            _measuredTableContentHeightCache[wrapper] = 0;
+            return 0;
+        }
+
+        using var transientLayouter = new TableLayouter(
+            rootBox: wrapper,
+            sink: _sink,
+            incomingContinuation: null,
+            diagnostics: _diagnostics,
+            shaperResolver: _shaperResolver);
+        // Placeholder offsets (0/0) — MeasureContentHeight doesn't
+        // write to the outer sink so the wrapper-anchor irrelevance
+        // is safe. The cell-content inline translation baked into
+        // each MeasuringFragmentSink uses these offsets, but the
+        // buffers are discarded when the transient layouter goes
+        // out of scope (Dispose drops the buffers).
+        transientLayouter.ConfigureEmission(
+            contentInlineOffset: 0,
+            contentBlockOffset: 0,
+            contentInlineSize: contentInlineSize);
+        var transientLayout = new LayoutContext(_capturedFragmentainer)
+        {
+            Diagnostics = _diagnostics,
+        };
+        var contentHeight = transientLayouter.MeasureContentHeight(
+            _capturedFragmentainer, ref transientLayout, cancellationToken);
+        _measuredTableContentHeightCache[wrapper] = contentHeight;
+        return contentHeight;
     }
 
     /// <summary>Per Phase 3 Task 12 sub-cycle 1 hardening (Finding 1)

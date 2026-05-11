@@ -17,7 +17,7 @@ using Xunit;
 namespace NetPdf.UnitTests.Phase3;
 
 /// <summary>
-/// Phase 3 Task 12 sub-cycle 1 — TableLayouter Hello-World tests.
+/// Phase 3 Task 12 sub-cycles 1 + 2 — TableLayouter tests.
 /// Constructs Table → TableGrid → TableRow → TableCell hierarchies
 /// directly (bypassing BoxBuilder) so each test can pin a precise
 /// structural shape + verify the layouter's row/cell emit math.
@@ -29,17 +29,20 @@ namespace NetPdf.UnitTests.Phase3;
 /// resolver lets cell content render real glyphs when a test exercises
 /// the inline-only-block dispatch inside cells.</para>
 ///
-/// <para><b>Sub-cycle 1 deferrals exercised here</b> (each test pins
-/// the deferred behavior or its diagnostic):
+/// <para><b>Behaviors exercised here:</b>
 /// <list type="bullet">
-///   <item>colspan / rowspan attributes — silently ignored;
-///   <c>LAYOUT-TABLE-FEATURE-UNSUPPORTED-001</c> diagnostic fires.</item>
-///   <item>Multi-page splitting within a table — sub-cycle 1 emits
-///   all rows on the current page;
-///   <c>PAGINATION-FORCED-OVERFLOW-001</c> diagnostic fires when the
-///   row stack exceeds the page bottom.</item>
-///   <item>Auto / fixed column-width algorithms — sub-cycle 1 uses
-///   equal-split; tests assert the equal-split offsets.</item>
+///   <item>Sub-cycle 2 colspan / rowspan via the 2D occupancy-grid
+///   algorithm — placement, equal-split column widths, row-height
+///   distribution.</item>
+///   <item>Multi-page splitting within a table — emits all rows on
+///   the current page; <c>PAGINATION-FORCED-OVERFLOW-001</c>
+///   diagnostic fires when the row stack exceeds the page bottom
+///   (multi-fragmentainer table splitting is deferred — see
+///   <c>docs/deferrals.md#table-auto-fixed-spans-borders</c>).</item>
+///   <item>Auto / fixed column-width algorithms still use the equal-
+///   split approximation; tests assert the equal-split offsets.</item>
+///   <item>Caption deferral diagnostic + sanitized caption text
+///   snippets in the diagnostic message.</item>
 /// </list></para>
 /// </summary>
 public sealed class TableLayouterTests
@@ -1134,6 +1137,495 @@ public sealed class TableLayouterTests
         Assert.Equal(0, abcFrag.Value.InlineOffset);
         Assert.Equal(200, zeroFrag!.Value.InlineSize);
         Assert.Equal(200, zeroFrag.Value.InlineOffset);
+    }
+
+    // ====================================================================
+    //  Phase 3 Task 12 sub-cycle 2 hardening review — Findings 1–7
+    // ====================================================================
+
+    [Fact]
+    public void Hardening_Finding1_nested_table_does_not_emit_forced_overflow_for_tall_cell_blocks()
+    {
+        // Per Finding 1 — a body > table where one cell contains TWO
+        // tall <div> children. Pre-fix the recursion's pre-measure
+        // path synthesized a `blockSize: 1` fragmentainer; the cell's
+        // 200-px tall blocks tripped BlockLayouter's forced-overflow
+        // PageComplete + TableLayouter discarded the continuation,
+        // losing content + emitting a false PAGINATION-FORCED-
+        // OVERFLOW-001.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        // Root → Div → Table → Grid → Row → Cell → 2 tall block divs.
+        var root = Box.CreateRoot(MakeStyle());
+        var outerDiv = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+
+        var tallStyle1 = MakeStyle();
+        SetLengthPx(tallStyle1, PropertyId.Height, 100);
+        var tallDiv1 = Box.ForElement(BoxKind.BlockContainer, tallStyle1, MakeElement());
+
+        var tallStyle2 = MakeStyle();
+        SetLengthPx(tallStyle2, PropertyId.Height, 100);
+        var tallDiv2 = Box.ForElement(BoxKind.BlockContainer, tallStyle2, MakeElement());
+
+        cell.AppendChild(tallDiv1);
+        cell.AppendChild(tallDiv2);
+        row.AppendChild(cell);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        outerDiv.AppendChild(table);
+        root.AppendChild(outerDiv);
+
+        using var layouter = new BlockLayouter(root, sink, null, diagSink, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // No forced-overflow diagnostic.
+        var hasOverflowDiag = diagSink.Diagnostics.Exists(d =>
+            d.Code == PaginateDiagnosticCodes.PaginationForcedOverflow001);
+        Assert.False(hasOverflowDiag,
+            "Pre-Finding-1 the synthesized 1px fragmentainer tripped the forced-overflow path.");
+
+        // Both tall divs land in the emitted fragments.
+        var hasTallDiv1 = false;
+        var hasTallDiv2 = false;
+        foreach (var f in sink.Fragments)
+        {
+            if (ReferenceEquals(f.Box, tallDiv1)) hasTallDiv1 = true;
+            if (ReferenceEquals(f.Box, tallDiv2)) hasTallDiv2 = true;
+        }
+        Assert.True(hasTallDiv1, "First tall div was dropped by the table recursion.");
+        Assert.True(hasTallDiv2, "Second tall div was dropped by the table recursion.");
+    }
+
+    [Fact]
+    public void Hardening_Finding2_recursive_measure_pass_reports_table_content_extent()
+    {
+        // Per Finding 2 — a div containing a tall table + a following
+        // paragraph. The recursive measure pass must include the
+        // table's content extent so the div's reported subtree extent
+        // covers the table rows (not just the wrapper border-box).
+        // Pre-fix: subtree extent reported only the wrapper's own 0-
+        // px border-box, so the div under-counted by the full row
+        // stack.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+
+        // Outer div wraps the table.
+        var divStyle = MakeStyle();
+        var outerDiv = Box.ForElement(BoxKind.BlockContainer, divStyle, MakeElement());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        var inner = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var blockStyle = MakeStyle();
+        SetLengthPx(blockStyle, PropertyId.Height, 150);
+        var block = Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement());
+        inner.AppendChild(block);
+        cell.AppendChild(inner);
+        row.AppendChild(cell);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        outerDiv.AppendChild(table);
+        root.AppendChild(outerDiv);
+
+        // Sibling paragraph after the div.
+        var siblingStyle = MakeStyle();
+        SetLengthPx(siblingStyle, PropertyId.Height, 50);
+        var sibling = Box.ForElement(BoxKind.BlockContainer, siblingStyle, MakeElement());
+        root.AppendChild(sibling);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // The sibling block must land below the table's content area
+        // (BlockOffset >= 150). Pre-Finding-2 the recursive measure
+        // reported 0 for the table, so the sibling overlapped at 0.
+        BoxFragment? siblingFrag = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (ReferenceEquals(f.Box, sibling)) { siblingFrag = f; break; }
+        }
+        Assert.NotNull(siblingFrag);
+        Assert.True(siblingFrag!.Value.BlockOffset >= 150,
+            $"Sibling at BlockOffset={siblingFrag.Value.BlockOffset} must be below 150 (table content extent).");
+    }
+
+    [Fact]
+    public void Hardening_Finding3_three_phase_emit_groups_rows_then_cells_then_content()
+    {
+        // Per Finding 3 — for a multi-row table with rowspan, the outer
+        // sink's emit order must be: ALL rows, then ALL cells, then ALL
+        // cell content. Pre-fix the loop emitted row → cells-at-row →
+        // content per row; a rowspan cell's content from row 0 flushed
+        // before row 1's background, allowing row 1 to paint over it.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        // 3-row × 2-column table with a rowspan=3 cell at (0,0).
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+
+        // Row 0 — rowspan=3 first cell + plain second cell.
+        var row0 = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var spanCell = Box.ForElement(BoxKind.TableCell, MakeStyle(),
+            MakeElementWithAttribute("rowspan", "3"));
+        // Give the spanning cell some content so it has a real
+        // content fragment after FlushTo.
+        var spanAnon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        spanAnon.AppendChild(Box.TextRun("S", MakeStyle()));
+        spanCell.AppendChild(spanAnon);
+        var row0Plain = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        row0.AppendChild(spanCell);
+        row0.AppendChild(row0Plain);
+        grid.AppendChild(row0);
+
+        // Row 1 + Row 2 — single second-column cell each.
+        var row1 = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var row1Cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        row1.AppendChild(row1Cell);
+        grid.AppendChild(row1);
+
+        var row2 = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var row2Cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        row2.AppendChild(row2Cell);
+        grid.AppendChild(row2);
+
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // Find last-row + first-cell indices.
+        var firstRowIdx = -1;
+        var lastRowIdx = -1;
+        var firstCellIdx = -1;
+        var lastCellIdx = -1;
+        var firstContentIdx = -1;
+        for (var i = 0; i < sink.Fragments.Count; i++)
+        {
+            var b = sink.Fragments[i].Box;
+            if (b.Kind == BoxKind.TableRow)
+            {
+                if (firstRowIdx < 0) firstRowIdx = i;
+                lastRowIdx = i;
+            }
+            else if (b.Kind == BoxKind.TableCell)
+            {
+                if (firstCellIdx < 0) firstCellIdx = i;
+                lastCellIdx = i;
+            }
+            else if (ReferenceEquals(b, spanAnon) && firstContentIdx < 0)
+            {
+                firstContentIdx = i;
+            }
+        }
+        Assert.True(firstRowIdx >= 0 && lastRowIdx >= 0, "no row fragments");
+        Assert.True(firstCellIdx >= 0 && lastCellIdx >= 0, "no cell fragments");
+        Assert.True(firstContentIdx >= 0, "spanning cell content not emitted");
+        // Per Finding 3 — ALL rows precede ALL cells.
+        Assert.True(lastRowIdx < firstCellIdx,
+            $"Finding 3 violation: row at {lastRowIdx} must precede first cell at {firstCellIdx}.");
+        // ALL cells precede ALL content.
+        Assert.True(lastCellIdx < firstContentIdx,
+            $"Finding 3 violation: last cell at {lastCellIdx} must precede first content at {firstContentIdx}.");
+    }
+
+    [Fact]
+    public void Hardening_Finding4_colspan_1000_is_bounded()
+    {
+        // Per Finding 4 — a single-row table with a single colspan=1000
+        // cell must complete in bounded time + memory (no 65M hash
+        // insertions). We assert via a tight runtime bound (under 1s
+        // on any reasonable machine) + that the column count = 1000.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(),
+            MakeElementWithAttribute("colspan", "1000"));
+        row.AppendChild(cell);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 1000, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+        stopwatch.Stop();
+
+        // Generous 1000ms bound — the algorithm should clear in
+        // microseconds on a modern machine.
+        Assert.True(stopwatch.ElapsedMilliseconds < 1000,
+            $"colspan=1000 took {stopwatch.ElapsedMilliseconds}ms — placement should be O(1) per row.");
+
+        // The cell fragment exists with inline-size = 1000 (one row,
+        // contentInlineSize=1000, columnCount=1000, columnWidth=1).
+        BoxFragment? cellFrag = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) { cellFrag = f; break; }
+        }
+        Assert.NotNull(cellFrag);
+        Assert.Equal(1000, cellFrag!.Value.InlineSize);
+    }
+
+    [Fact]
+    public void Hardening_Finding4_slot_budget_diagnostic_fires_on_oversize_table()
+    {
+        // Per Finding 4 — two cells with very large spans cross the
+        // 1,000,000-slot budget; the second cell is capped at 1×1 +
+        // LAYOUT-TABLE-SLOT-BUDGET-EXCEEDED-001 fires.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+
+        // First cell: 500 × 1000 = 500_000 slots (under budget).
+        var row0 = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var bigCell1 = Box.ForElement(BoxKind.TableCell, MakeStyle(),
+            MakeElementWithAttribute("rowspan", "500"));
+        bigCell1.SourceElement!.SetAttribute("colspan", "1000");
+        row0.AppendChild(bigCell1);
+        grid.AppendChild(row0);
+
+        // Second row's cell: another 500 × 1000 = 500_000 → total
+        // 1,000,000 exactly. The third cell forces budget exceeded.
+        var row1 = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var bigCell2 = Box.ForElement(BoxKind.TableCell, MakeStyle(),
+            MakeElementWithAttribute("rowspan", "500"));
+        bigCell2.SourceElement!.SetAttribute("colspan", "1000");
+        row1.AppendChild(bigCell2);
+        grid.AppendChild(row1);
+
+        var row2 = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var bigCell3 = Box.ForElement(BoxKind.TableCell, MakeStyle(),
+            MakeElementWithAttribute("rowspan", "500"));
+        bigCell3.SourceElement!.SetAttribute("colspan", "1000");
+        row2.AppendChild(bigCell3);
+        grid.AppendChild(row2);
+
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, diagSink, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 1000, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var budgetDiag = diagSink.Diagnostics.Find(d =>
+            d.Code == PaginateDiagnosticCodes.LayoutTableSlotBudgetExceeded001);
+        Assert.True(budgetDiag.Code == PaginateDiagnosticCodes.LayoutTableSlotBudgetExceeded001,
+            "Expected LAYOUT-TABLE-SLOT-BUDGET-EXCEEDED-001 diagnostic.");
+    }
+
+    [Fact]
+    public void Hardening_Finding6_rowspan_zero_clamps_to_one_and_emits_unsupported()
+    {
+        // Per Finding 6 — rowspan="0" / colspan="0" carry HTML5 §4.9.11
+        // "remainder of row-group / column-group" semantics that are
+        // currently deferred. The parser clamps to 1 + emits a
+        // LAYOUT-TABLE-FEATURE-UNSUPPORTED-001 with the axis info.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(),
+            MakeElementWithAttribute("rowspan", "0"));
+        row.AppendChild(cell);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, diagSink, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var rowspanZeroDiag = diagSink.Diagnostics.Find(d =>
+            d.Code == PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001
+            && d.Message.Contains("rowspan=\"0\""));
+        Assert.True(rowspanZeroDiag.Code == PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001,
+            "Expected LAYOUT-TABLE-FEATURE-UNSUPPORTED-001 with rowspan=\"0\" wording.");
+    }
+
+    [Fact]
+    public void Hardening_Finding6_colspan_zero_clamps_to_one_and_emits_unsupported()
+    {
+        // Mirror of the rowspan=0 case for colspan=0.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(),
+            MakeElementWithAttribute("colspan", "0"));
+        row.AppendChild(cell);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, diagSink, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var colspanZeroDiag = diagSink.Diagnostics.Find(d =>
+            d.Code == PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001
+            && d.Message.Contains("colspan=\"0\""));
+        Assert.True(colspanZeroDiag.Code == PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001,
+            "Expected LAYOUT-TABLE-FEATURE-UNSUPPORTED-001 with colspan=\"0\" wording.");
+    }
+
+    [Fact]
+    public void Hardening_Finding7_caption_text_is_sanitized_for_control_chars()
+    {
+        // Per Finding 7 — caption text with embedded C0 control chars
+        // (U+0001, U+001B) must be sanitized in the diagnostic
+        // message (replaced with U+FFFD so terminal escape injection
+        // can't take over a log sink).
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var caption = Box.ForElement(BoxKind.TableCaption, MakeStyle(), MakeElement());
+        // U+0001 (SOH) + U+001B (ESC, the start of an ANSI sequence)
+        // before "Report".
+        // Build the malicious caption text via explicit char codes so
+        // the source stays portable through editors / formatters.
+        var maliciousText = "Re" + (char)0x01 + "po" + (char)0x1B + "rt";
+        caption.AppendChild(Box.TextRun(maliciousText, MakeStyle()));
+        table.AppendChild(caption);
+
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        row.AppendChild(cell);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, diagSink, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var captionDiag = diagSink.Diagnostics.Find(d =>
+            d.Code == PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001
+            && d.Message.Contains("caption"));
+        Assert.True(captionDiag.Code == PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001,
+            "Expected LAYOUT-TABLE-FEATURE-UNSUPPORTED-001 caption diagnostic.");
+        // Control chars must NOT appear verbatim. Each was replaced
+        // with U+FFFD by DiagnosticTextSanitizer.Sanitize. Build the
+        // assertion strings from char codes — using a literal control
+        // char in source can drift through formatters.
+        var sohString = new string((char)0x01, 1);
+        var escString = new string((char)0x1B, 1);
+        Assert.False(captionDiag.Message.Contains(sohString),
+            $"Expected SOH (U+0001) to be sanitized. Message hex: {ToHex(captionDiag.Message)}");
+        Assert.False(captionDiag.Message.Contains(escString),
+            $"Expected ESC (U+001B) to be sanitized. Message hex: {ToHex(captionDiag.Message)}");
+        Assert.Contains("�", captionDiag.Message);
+        // Surrounding text fragments survive intact.
+        Assert.Contains("Re", captionDiag.Message);
+        Assert.Contains("rt", captionDiag.Message);
+
+        static string ToHex(string s)
+        {
+            var sb = new System.Text.StringBuilder(s.Length * 4);
+            foreach (var ch in s) sb.Append(((int)ch).ToString("X4")).Append(' ');
+            return sb.ToString();
+        }
+    }
+
+    [Fact]
+    public void Hardening_Finding5_buffering_diagnostic_sink_drains_on_flush()
+    {
+        // Per Finding 5 — direct unit test of the buffering sink:
+        // diagnostics emitted into it are NOT visible to the target
+        // until FlushTo runs. Test the contract on the sink itself
+        // rather than the table-internal wiring (which is exercised
+        // indirectly by all the other Finding 5 + 7 tests above).
+        var underlying = new RecordingDiagnosticsSink();
+        var buffering = new BufferingDiagnosticsSink();
+
+        buffering.Emit(new PaginateDiagnostic(
+            PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001,
+            "buffered-message-1",
+            PaginateDiagnosticSeverity.Warning));
+        buffering.Emit(new PaginateDiagnostic(
+            PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001,
+            "buffered-message-2",
+            PaginateDiagnosticSeverity.Warning));
+
+        // Pre-flush — underlying sees nothing.
+        Assert.Empty(underlying.Diagnostics);
+        Assert.Equal(2, buffering.Buffered.Count);
+
+        buffering.FlushTo(underlying);
+        Assert.Equal(2, underlying.Diagnostics.Count);
+        Assert.Equal("buffered-message-1", underlying.Diagnostics[0].Message);
+        Assert.Equal("buffered-message-2", underlying.Diagnostics[1].Message);
+        // Buffer cleared on flush.
+        Assert.Empty(buffering.Buffered);
+
+        // Discard path — emit some, then discard, then verify target
+        // sees nothing.
+        var discardable = new BufferingDiagnosticsSink();
+        discardable.Emit(new PaginateDiagnostic(
+            PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001,
+            "should-not-leak",
+            PaginateDiagnosticSeverity.Warning));
+        discardable.Discard();
+        discardable.FlushTo(underlying);
+        Assert.Equal(2, underlying.Diagnostics.Count); // unchanged
     }
 
     // ====================================================================

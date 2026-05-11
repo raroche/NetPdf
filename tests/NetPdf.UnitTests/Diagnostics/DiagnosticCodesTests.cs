@@ -445,6 +445,37 @@ public sealed class DiagnosticCodesTests
             NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001);
     }
 
+    // ============================================================
+    // Phase 3 Task 12 sub-cycle 2 hardening Finding 4 —
+    // LAYOUT-TABLE-SLOT-BUDGET-EXCEEDED-001 parity.
+    // ============================================================
+
+    [Fact]
+    public void Layout_table_slot_budget_exceeded_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(registry,
+            @"\|\s*`?(LAYOUT-TABLE-SLOT-BUDGET-EXCEEDED-001)`?\s*\|\s*(\w+)\s*\|");
+        Assert.True(match.Success,
+            "LAYOUT-TABLE-SLOT-BUDGET-EXCEEDED-001 row not found in docs/diagnostics-codes.md");
+        Assert.Equal(DiagnosticCodes.LayoutTableSlotBudgetExceeded001, match.Groups[1].Value);
+        Assert.Equal("Warning", match.Groups[2].Value);
+    }
+
+    [Fact]
+    public void Layout_table_slot_budget_exceeded_001_constant_value_is_stable()
+    {
+        Assert.Equal("LAYOUT-TABLE-SLOT-BUDGET-EXCEEDED-001",
+            DiagnosticCodes.LayoutTableSlotBudgetExceeded001);
+    }
+
+    [Fact]
+    public void Layout_table_slot_budget_exceeded_001_facade_and_paginate_constants_agree()
+    {
+        Assert.Equal(DiagnosticCodes.LayoutTableSlotBudgetExceeded001,
+            NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutTableSlotBudgetExceeded001);
+    }
+
     private static string LoadRegistry()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

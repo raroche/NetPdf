@@ -277,5 +277,19 @@ internal static class DiagnosticCodes
     /// </summary>
     public const string LayoutTableFeatureUnsupported001 = "LAYOUT-TABLE-FEATURE-UNSUPPORTED-001";
 
+    /// <summary>
+    /// Per Phase 3 Task 12 sub-cycle 2 hardening Finding 4 — emitted
+    /// by the table layouter when a table's cumulative
+    /// <c>rowspan × colspan</c> slot count would exceed the
+    /// 1,000,000 slot DoS budget. Cells crossing the budget are
+    /// capped at <c>rowspan = colspan = 1</c>; the table still
+    /// renders (truncated geometry, not dropped content). Defends
+    /// against hostile HTML where legal attribute values (e.g.,
+    /// <c>rowspan="65534" colspan="1000"</c> on multiple cells) would
+    /// force unbounded CPU + memory work in the placement pass.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string LayoutTableSlotBudgetExceeded001 = "LAYOUT-TABLE-SLOT-BUDGET-EXCEEDED-001";
+
     // endregion LAYOUT-*
 }

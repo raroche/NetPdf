@@ -303,15 +303,19 @@ grepping the ID).
   TableGrid child (malformed box tree) emits
   `LAYOUT-TABLE-FEATURE-UNSUPPORTED-001` (NOT a pagination overflow
   code — the anomaly is structural).
-- **Missing** — Per CSS Tables L3: §3 auto-layout algorithm
-  (shrink-to-fit column widths via min/max-content), §3.5
+- **Missing** — Per CSS Tables L3 + HTML5 §4.9.11: §3 auto-layout
+  algorithm (shrink-to-fit column widths via min/max-content), §3.5
   fixed-layout algorithm (column widths from `<col>` + first-row
   cell widths), §6.3 border-collapse model + `border-spacing`,
   §11 caption box, §6.4 column-group widths, §11 spec-strict
   rowspan distribution-proportional algorithm (sub-cycle 2 uses
-  naive last-row-of-span distribution), per-page header / footer
-  repeat, multi-fragmentainer table splitting + row-level
-  `break-inside: avoid`, RTL writing modes / row reversal.
+  naive last-row-of-span distribution), HTML5 §4.9.11 `rowspan="0"`
+  / `colspan="0"` "spans the remainder of the row-group /
+  column-group" semantics (sub-cycle 2 clamps to 1 + emits a
+  deferral diagnostic via `LAYOUT-TABLE-FEATURE-UNSUPPORTED-001`),
+  per-page header / footer repeat, multi-fragmentainer table
+  splitting + row-level `break-inside: avoid`, RTL writing modes /
+  row reversal.
 - **Trigger** — corpus invoice needs proper column widths
   (typical), OR a user-reported case where a table renders with
   equal columns when it shouldn't.

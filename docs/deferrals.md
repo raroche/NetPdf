@@ -263,6 +263,66 @@ grepping the ID).
 
 ---
 
+## table-auto-fixed-spans-borders
+
+- **ID** — `table-auto-fixed-spans-borders`
+- **Status** — `approximated`.
+- **Behavior** — `TableLayouter` (Phase 3 Task 12 sub-cycle 1) walks
+  the Table → TableGrid → row → cell hierarchy via a two-phase
+  protocol — a pre-measure pass populates per-row cell content
+  heights (via nested `BlockLayouter`s buffering into per-cell
+  `MeasuringFragmentSink`s) so the wrapper's border-box block extent
+  reflects the measured table content (preventing siblings from
+  overlapping when CSS `height: auto`); then an emit pass walks the
+  rows + emits row → cell → cell-content fragments in paint-safe
+  order (cell backgrounds / borders paint UNDER text glyphs). Each
+  nested cell-content `BlockLayouter` runs against a FRESH
+  `BreakResolver` scoped to that cell, isolating the outer table's
+  checkpoint state from cell-internal pagination. Columns split
+  equally across the wrapper's content inline-size (max cell count
+  across rows). No table-layout: auto / fixed algorithm distinction,
+  no `border-collapse`, no `colspan` / `rowspan` merging, no
+  `<thead>` / `<tfoot>` repetition across pages, no `<col>` widths,
+  no multi-page splitting within a single table, no RTL flips.
+  Captions (`<caption>`) are skipped + emit
+  `LAYOUT-TABLE-FEATURE-UNSUPPORTED-001` with the caption text in
+  the diagnostic message (so authors see what is being dropped).
+  Tables that overflow the page emit
+  `PAGINATION-FORCED-OVERFLOW-001`; cells carrying `colspan` /
+  `rowspan` attributes emit `LAYOUT-TABLE-FEATURE-UNSUPPORTED-001`
+  (the attribute is ignored, each cell occupies one column / one
+  row); a Table wrapper with no TableGrid child (malformed box tree)
+  emits `LAYOUT-TABLE-FEATURE-UNSUPPORTED-001` (NOT a pagination
+  overflow code — the anomaly is structural).
+- **Missing** — Per CSS Tables L3: §3 auto-layout algorithm
+  (shrink-to-fit column widths via min/max-content), §3.5
+  fixed-layout algorithm (column widths from `<col>` + first-row
+  cell widths), §6.3 border-collapse model + `border-spacing`,
+  cell merging (`colspan` / `rowspan`), §11 caption box, §6.4
+  column-group widths, per-page header / footer repeat,
+  multi-fragmentainer table splitting + row-level
+  `break-inside: avoid`, RTL writing modes / row reversal.
+- **Trigger** — corpus invoice needs proper column widths
+  (typical), OR a user-reported case where a table renders with
+  equal columns when it shouldn't.
+- **Owner files** —
+  - `src/NetPdf.Layout/Layouters/TableLayouter.cs` — replace the
+    equal-split algorithm with the auto + fixed layout passes;
+    add the collapsed-borders model; add span resolution +
+    caption handling + col widths + per-page header repeat +
+    multi-page row splitting.
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs::DispatchTableInnerIfNeeded`
+    — thread the per-cell metrics into the wrapper's auto-height
+    resolution (sub-cycle 1 leaves wrapper height as the explicit
+    style value).
+- **Added** — Phase 3 Task 12 sub-cycle 1 (this branch).
+- **Removal condition** — Tables render with proper column widths
+  from `<col>` / `<th>` / `table-layout: fixed` first-row widths;
+  `colspan` / `rowspan` work; borders collapse correctly; thead /
+  tfoot repeat across pages; rows can split across pages.
+
+---
+
 ## fuzzing-infrastructure
 
 - **ID** — `fuzzing-infrastructure`

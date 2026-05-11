@@ -72,4 +72,18 @@ internal static class PaginateDiagnosticCodes
     /// <c>NetPdf.DiagnosticCodes.LayoutInlineUnsupported001</c>.
     /// Severity: <see cref="PaginateDiagnosticSeverity.Warning"/>.</summary>
     public const string LayoutInlineUnsupported001 = "LAYOUT-INLINE-UNSUPPORTED-001";
+
+    /// <summary>Per Phase 3 Task 12 sub-cycle 1 — emitted by
+    /// <c>TableLayouter</c> when the input box tree exercises a CSS
+    /// Tables L3 feature the sub-cycle 1 algorithm doesn't yet
+    /// implement (currently: <c>colspan</c> / <c>rowspan</c> cell
+    /// merging; sub-cycle 2 will add table-layout: auto / fixed,
+    /// border-collapse, captions, &lt;col&gt; widths, header/footer
+    /// repetition across pages). The table renders with the feature
+    /// silently ignored. See
+    /// <c>docs/deferrals.md#table-auto-fixed-spans-borders</c> for
+    /// the full deferral list. Mirrors
+    /// <c>NetPdf.DiagnosticCodes.LayoutTableFeatureUnsupported001</c>.
+    /// Severity: <see cref="PaginateDiagnosticSeverity.Warning"/>.</summary>
+    public const string LayoutTableFeatureUnsupported001 = "LAYOUT-TABLE-FEATURE-UNSUPPORTED-001";
 }

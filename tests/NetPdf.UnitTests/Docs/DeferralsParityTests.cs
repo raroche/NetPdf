@@ -47,6 +47,7 @@ public sealed class DeferralsParityTests
         "phase-4-painter-wiring",
         "fuzzing-infrastructure",
         "inline-atomic-boxes",
+        "table-auto-fixed-spans-borders",
     };
 
     [Fact]

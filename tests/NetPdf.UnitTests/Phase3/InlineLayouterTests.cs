@@ -168,7 +168,7 @@ public class InlineLayouterTests
             resolver: resolver,
             scriptIso15924: LatnScript,
             language: EnLang);
-        Assert.Empty(result);
+        Assert.Empty(result.Lines);
     }
 
     // --- End-to-end chain ----------------------------------------
@@ -180,8 +180,8 @@ public class InlineLayouterTests
         var sourceRuns = new List<TextRun> { new("AAA", MakeStyle()) };
         var result = InlineLayouter.Layout(sourceRuns, 100, resolver, LatnScript, EnLang);
 
-        Assert.Single(result);
-        var line = result[0];
+        Assert.Single(result.Lines);
+        var line = result.Lines[0];
         Assert.NotEmpty(line.Slices);
         var totalGlyphs = 0;
         foreach (var s in line.Slices) totalGlyphs += s.GlyphLength;
@@ -195,8 +195,8 @@ public class InlineLayouterTests
         var sourceRuns = new List<TextRun> { new("AAA AAA", MakeStyle()) };
         var result = InlineLayouter.Layout(sourceRuns, 25, resolver, LatnScript, EnLang);
 
-        Assert.Equal(2, result.Length);
-        Assert.False(result[0].EndsWithMandatoryBreak);
+        Assert.Equal(2, result.Lines.Length);
+        Assert.False(result.Lines[0].EndsWithMandatoryBreak);
     }
 
     [Fact]
@@ -210,8 +210,8 @@ public class InlineLayouterTests
         var result = InlineLayouter.Layout(sourceRuns, 1000, resolver, LatnScript, EnLang,
             whiteSpace: WhiteSpace.Pre);
 
-        Assert.Equal(2, result.Length);
-        Assert.True(result[0].EndsWithMandatoryBreak);
+        Assert.Equal(2, result.Lines.Length);
+        Assert.True(result.Lines[0].EndsWithMandatoryBreak);
     }
 
     [Fact]
@@ -225,8 +225,8 @@ public class InlineLayouterTests
         };
         var result = InlineLayouter.Layout(sourceRuns, 1000, resolver, LatnScript, EnLang);
 
-        Assert.Single(result);
-        Assert.Equal(2, result[0].Slices.Length);
+        Assert.Single(result.Lines);
+        Assert.Equal(2, result.Lines[0].Slices.Length);
     }
 
     // --- White-space preprocessing wired into facade (User #1) ---
@@ -242,9 +242,9 @@ public class InlineLayouterTests
         var result = InlineLayouter.Layout(sourceRuns, 1000, resolver, LatnScript, EnLang,
             whiteSpace: WhiteSpace.Normal);
 
-        Assert.Single(result);
+        Assert.Single(result.Lines);
         var totalGlyphs = 0;
-        foreach (var s in result[0].Slices) totalGlyphs += s.GlyphLength;
+        foreach (var s in result.Lines[0].Slices) totalGlyphs += s.GlyphLength;
         // After preprocessing "A  B" → "A B" — 3 glyphs (A, space, B).
         Assert.Equal(3, totalGlyphs);
     }
@@ -262,7 +262,7 @@ public class InlineLayouterTests
         var result = InlineLayouter.Layout(sourceRuns, 1000, resolver, LatnScript, EnLang,
             whiteSpace: WhiteSpace.Normal);
 
-        Assert.Single(result);
+        Assert.Single(result.Lines);
     }
 
     [Fact]
@@ -279,9 +279,9 @@ public class InlineLayouterTests
         var result = InlineLayouter.Layout(sourceRuns, 1000, resolver, LatnScript, EnLang,
             whiteSpace: WhiteSpace.Normal);
 
-        Assert.Single(result);
+        Assert.Single(result.Lines);
         var totalGlyphs = 0;
-        foreach (var s in result[0].Slices) totalGlyphs += s.GlyphLength;
+        foreach (var s in result.Lines[0].Slices) totalGlyphs += s.GlyphLength;
         // After collapse: "A " + "B" = "A B" — 3 glyphs. Without
         // preprocessing the boundary, two spaces would survive.
         Assert.Equal(3, totalGlyphs);
@@ -297,8 +297,8 @@ public class InlineLayouterTests
         var result = InlineLayouter.Layout(sourceRuns, 1000, resolver, LatnScript, EnLang,
             whiteSpace: WhiteSpace.PreLine);
 
-        Assert.Equal(2, result.Length);
-        Assert.True(result[0].EndsWithMandatoryBreak);
+        Assert.Equal(2, result.Lines.Length);
+        Assert.True(result.Lines[0].EndsWithMandatoryBreak);
     }
 
     [Fact]
@@ -310,9 +310,9 @@ public class InlineLayouterTests
         var result = InlineLayouter.Layout(sourceRuns, 1000, resolver, LatnScript, EnLang,
             whiteSpace: WhiteSpace.Pre);
 
-        Assert.Single(result);
+        Assert.Single(result.Lines);
         var totalGlyphs = 0;
-        foreach (var s in result[0].Slices) totalGlyphs += s.GlyphLength;
+        foreach (var s in result.Lines[0].Slices) totalGlyphs += s.GlyphLength;
         // Pre preserves both spaces: A + SP + SP + B = 4 glyphs.
         Assert.Equal(4, totalGlyphs);
     }
@@ -325,9 +325,9 @@ public class InlineLayouterTests
         var result = InlineLayouter.Layout(sourceRuns, 1000, resolver, LatnScript, EnLang,
             whiteSpace: WhiteSpace.PreWrap);
 
-        Assert.Single(result);
+        Assert.Single(result.Lines);
         var totalGlyphs = 0;
-        foreach (var s in result[0].Slices) totalGlyphs += s.GlyphLength;
+        foreach (var s in result.Lines[0].Slices) totalGlyphs += s.GlyphLength;
         Assert.Equal(4, totalGlyphs);
     }
 
@@ -341,7 +341,7 @@ public class InlineLayouterTests
         var result = InlineLayouter.Layout(sourceRuns, 25, resolver, LatnScript, EnLang,
             whiteSpace: WhiteSpace.NoWrap);
 
-        Assert.Single(result);
+        Assert.Single(result.Lines);
     }
 
     [Fact]
@@ -352,7 +352,7 @@ public class InlineLayouterTests
         var result = InlineLayouter.Layout(sourceRuns, 15, resolver, LatnScript, EnLang,
             overflowWrap: OverflowWrap.Anywhere);
 
-        Assert.True(result.Length >= 3);
+        Assert.True(result.Lines.Length >= 3);
     }
 
     [Fact]
@@ -363,7 +363,7 @@ public class InlineLayouterTests
         var result = InlineLayouter.Layout(sourceRuns, 15, resolver, LatnScript, EnLang,
             wordBreak: WordBreak.BreakAll);
 
-        Assert.True(result.Length >= 3);
+        Assert.True(result.Lines.Length >= 3);
     }
 
     [Fact]
@@ -374,7 +374,7 @@ public class InlineLayouterTests
         var result = InlineLayouter.Layout(sourceRuns, 30, resolver, LatnScript, EnLang,
             hyphens: Hyphens.Auto);
 
-        Assert.True(result.Length >= 2);
+        Assert.True(result.Lines.Length >= 2);
     }
 
     [Fact]
@@ -389,8 +389,8 @@ public class InlineLayouterTests
         var result = InlineLayouter.Layout(sourceRuns, 22, resolver, LatnScript, EnLang,
             hyphens: Hyphens.Manual);
 
-        Assert.Equal(2, result.Length);
-        Assert.True(result[0].EndsWithHyphenationBreak);
+        Assert.Equal(2, result.Lines.Length);
+        Assert.True(result.Lines[0].EndsWithHyphenationBreak);
     }
 
     // --- Cancellation --------------------------------------------

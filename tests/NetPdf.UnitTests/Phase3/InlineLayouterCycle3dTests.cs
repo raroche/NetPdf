@@ -205,21 +205,21 @@ public sealed class InlineLayouterCycle3dTests
             availableInlineSize: 1000, resolver, LatnScript, EnLang);
 
         // Available 1000 → single line.
-        Assert.Single(result);
-        Assert.Equal(2, result[0].Slices.Length);
+        Assert.Single(result.Lines);
+        Assert.Equal(2, result.Lines[0].Slices.Length);
         // Slice 0: SR0 [0..4) — Normal "AAA " (4 glyphs, trailing SP
         // not stripped because not last run).
-        Assert.Equal(0, result[0].Slices[0].ShapedRunIndex);
-        Assert.Equal(0, result[0].Slices[0].GlyphStart);
-        Assert.Equal(4, result[0].Slices[0].GlyphLength);
+        Assert.Equal(0, result.Lines[0].Slices[0].ShapedRunIndex);
+        Assert.Equal(0, result.Lines[0].Slices[0].GlyphStart);
+        Assert.Equal(4, result.Lines[0].Slices[0].GlyphLength);
         // Slice 1: SR1 [0..4) — Pre " BBB" (4 glyphs, leading SP
         // preserved).
-        Assert.Equal(1, result[0].Slices[1].ShapedRunIndex);
-        Assert.Equal(0, result[0].Slices[1].GlyphStart);
-        Assert.Equal(4, result[0].Slices[1].GlyphLength);
+        Assert.Equal(1, result.Lines[0].Slices[1].ShapedRunIndex);
+        Assert.Equal(0, result.Lines[0].Slices[1].GlyphStart);
+        Assert.Equal(4, result.Lines[0].Slices[1].GlyphLength);
         // Total advance: "AAA " = 3×6 + 7.2 = 25.2; " BBB" = 7.2 + 18 = 25.2.
         Assert.Equal(2 * (3 * LetterAdvance + SpaceAdvance),
-            result[0].TotalAdvance, precision: 4);
+            result.Lines[0].TotalAdvance, precision: 4);
     }
 
     [Fact]
@@ -242,12 +242,12 @@ public sealed class InlineLayouterCycle3dTests
         var result = InlineLayouter.LayoutPerRun(sourceRuns,
             availableInlineSize: 1000, resolver, LatnScript, EnLang);
 
-        Assert.Single(result);
-        Assert.Equal(2, result[0].Slices.Length);
-        Assert.Equal(0, result[0].Slices[0].ShapedRunIndex);
-        Assert.Equal(3, result[0].Slices[0].GlyphLength); // "AAA"
-        Assert.Equal(1, result[0].Slices[1].ShapedRunIndex);
-        Assert.Equal(4, result[0].Slices[1].GlyphLength); // " BBB"
+        Assert.Single(result.Lines);
+        Assert.Equal(2, result.Lines[0].Slices.Length);
+        Assert.Equal(0, result.Lines[0].Slices[0].ShapedRunIndex);
+        Assert.Equal(3, result.Lines[0].Slices[0].GlyphLength); // "AAA"
+        Assert.Equal(1, result.Lines[0].Slices[1].ShapedRunIndex);
+        Assert.Equal(4, result.Lines[0].Slices[1].GlyphLength); // " BBB"
     }
 
     [Fact]
@@ -269,10 +269,10 @@ public sealed class InlineLayouterCycle3dTests
         var result = InlineLayouter.LayoutPerRun(sourceRuns,
             availableInlineSize: 1000, resolver, LatnScript, EnLang);
 
-        Assert.Single(result);
-        Assert.Equal(2, result[0].Slices.Length);
-        Assert.Equal(4, result[0].Slices[0].GlyphLength); // "AAA "
-        Assert.Equal(3, result[0].Slices[1].GlyphLength); // "BBB"
+        Assert.Single(result.Lines);
+        Assert.Equal(2, result.Lines[0].Slices.Length);
+        Assert.Equal(4, result.Lines[0].Slices[0].GlyphLength); // "AAA "
+        Assert.Equal(3, result.Lines[0].Slices[1].GlyphLength); // "BBB"
     }
 
     [Fact]
@@ -293,10 +293,10 @@ public sealed class InlineLayouterCycle3dTests
         var result = InlineLayouter.LayoutPerRun(sourceRuns,
             availableInlineSize: 1000, resolver, LatnScript, EnLang);
 
-        Assert.Single(result);
-        Assert.Equal(2, result[0].Slices.Length);
-        Assert.Equal(3, result[0].Slices[0].GlyphLength); // "AAA"
-        Assert.Equal(4, result[0].Slices[1].GlyphLength); // " BBB" preserved
+        Assert.Single(result.Lines);
+        Assert.Equal(2, result.Lines[0].Slices.Length);
+        Assert.Equal(3, result.Lines[0].Slices[0].GlyphLength); // "AAA"
+        Assert.Equal(4, result.Lines[0].Slices[1].GlyphLength); // " BBB" preserved
     }
 
     [Fact]
@@ -317,14 +317,14 @@ public sealed class InlineLayouterCycle3dTests
         var result = InlineLayouter.LayoutPerRun(sourceRuns,
             availableInlineSize: 1000, resolver, LatnScript, EnLang);
 
-        Assert.Single(result);
-        Assert.Equal(2, result[0].Slices.Length);
+        Assert.Single(result.Lines);
+        Assert.Equal(2, result.Lines[0].Slices.Length);
         // Slice 0: Pre "AA  " → 4 glyphs (preserved).
-        Assert.Equal(0, result[0].Slices[0].ShapedRunIndex);
-        Assert.Equal(4, result[0].Slices[0].GlyphLength);
+        Assert.Equal(0, result.Lines[0].Slices[0].ShapedRunIndex);
+        Assert.Equal(4, result.Lines[0].Slices[0].GlyphLength);
         // Slice 1: Normal "  BB" → collapsed to " BB" → 3 glyphs.
-        Assert.Equal(1, result[0].Slices[1].ShapedRunIndex);
-        Assert.Equal(3, result[0].Slices[1].GlyphLength);
+        Assert.Equal(1, result.Lines[0].Slices[1].ShapedRunIndex);
+        Assert.Equal(3, result.Lines[0].Slices[1].GlyphLength);
     }
 
     [Fact]
@@ -347,7 +347,7 @@ public sealed class InlineLayouterCycle3dTests
         };
         var result = InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver,
             LatnScript, EnLang);
-        Assert.NotEmpty(result);
+        Assert.NotEmpty(result.Lines);
     }
 
     [Fact]
@@ -368,7 +368,7 @@ public sealed class InlineLayouterCycle3dTests
         };
         var result = InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver,
             LatnScript, EnLang);
-        Assert.NotEmpty(result);
+        Assert.NotEmpty(result.Lines);
     }
 
     // --- Cycle 3d sub-cycle 4: per-source-run hyphens tests ------
@@ -406,10 +406,10 @@ public sealed class InlineLayouterCycle3dTests
         // uniform Hyphens=None case for Run 1: 7 glyphs of Run 1
         // (3 B + 1 SH-zero-advance + 3 B = 36 px) overflow as one
         // line (no internal candidates).
-        Assert.True(result.Length >= 1);
+        Assert.True(result.Lines.Length >= 1);
         // No line ends with a hyphenation break (the soft hyphen in
         // the None run was demoted).
-        foreach (var line in result)
+        foreach (var line in result.Lines)
         {
             Assert.False(line.EndsWithHyphenationBreak,
                 "No line should end with a hyphenation break — the SH " +
@@ -444,7 +444,7 @@ public sealed class InlineLayouterCycle3dTests
         // Expect at least one line to end with a hyphenation break
         // (the SH in the Manual run was honored).
         var anyHyphenationBreak = false;
-        foreach (var line in result)
+        foreach (var line in result.Lines)
         {
             if (line.EndsWithHyphenationBreak)
             {
@@ -476,8 +476,8 @@ public sealed class InlineLayouterCycle3dTests
             availableInlineSize: 30, resolver, LatnScript, EnLang);
 
         // Auto + Liang patterns split "hyphenation".
-        Assert.True(result.Length >= 2,
-            $"Uniform Auto should split 'hyphenation' via Liang; got {result.Length} lines.");
+        Assert.True(result.Lines.Length >= 2,
+            $"Uniform Auto should split 'hyphenation' via Liang; got {result.Lines.Length} lines.");
     }
 
     [Fact]
@@ -549,19 +549,19 @@ public sealed class InlineLayouterCycle3dTests
         // EndsWithHyphenationBreak=true). Position 5 was suppressed
         // by Finding #1's per-position gate — without it, line
         // geometry would differ.
-        Assert.True(result.Length >= 2);
+        Assert.True(result.Lines.Length >= 2);
         // Line 0 ends with a hyphenation break (the Auto-run Liang
         // position is honored).
-        Assert.True(result[0].EndsWithHyphenationBreak,
+        Assert.True(result.Lines[0].EndsWithHyphenationBreak,
             "Line 0 should end with a hyphenation break at the " +
             "Auto-run Liang position.");
         // Line 0's drawable contains the first 2 glyphs ("hy") from
         // Run 0 — pinning the geometry to prove Finding #1 didn't
         // suppress the in-Auto break.
-        Assert.Single(result[0].Slices);
-        Assert.Equal(0, result[0].Slices[0].ShapedRunIndex);
-        Assert.Equal(0, result[0].Slices[0].GlyphStart);
-        Assert.Equal(2, result[0].Slices[0].GlyphLength);
+        Assert.Single(result.Lines[0].Slices);
+        Assert.Equal(0, result.Lines[0].Slices[0].ShapedRunIndex);
+        Assert.Equal(0, result.Lines[0].Slices[0].GlyphStart);
+        Assert.Equal(2, result.Lines[0].Slices[0].GlyphLength);
     }
 
     [Fact]
@@ -595,14 +595,14 @@ public sealed class InlineLayouterCycle3dTests
         // 50.4 > 50). Position-1 Liang in None-run is suppressed.
         // Position-5 (after "phen", concat pos 5) in Auto-run is
         // honored — wrap snaps there. Line 0 = "hyphen" (6 chars).
-        Assert.True(result.Length >= 2);
-        Assert.True(result[0].EndsWithHyphenationBreak,
+        Assert.True(result.Lines.Length >= 2);
+        Assert.True(result.Lines[0].EndsWithHyphenationBreak,
             "Line 0 should end at the in-Auto Liang break " +
             "(position 5 = end of 'hyphen').");
         // Line 0 contains 6 glyphs across 2 slices (Run 0: 2 'h'+'y',
         // Run 1: 4 'phen').
         var line0Glyphs = 0;
-        foreach (var s in result[0].Slices) line0Glyphs += s.GlyphLength;
+        foreach (var s in result.Lines[0].Slices) line0Glyphs += s.GlyphLength;
         Assert.Equal(6, line0Glyphs);
     }
 
@@ -640,9 +640,9 @@ public sealed class InlineLayouterCycle3dTests
         // Auto runs cover positions 0-1 (hy) + 3-11 (phenation).
         // Pre-fix: SH would suppress all Liang. Post-fix: Liang
         // applies and finds breaks in the Auto segments.
-        Assert.True(result.Length >= 2,
+        Assert.True(result.Lines.Length >= 2,
             $"Expected ≥ 2 lines (Auto Liang break in the longer " +
-            $"segment should fire); got {result.Length}. Pre-fix " +
+            $"segment should fire); got {result.Lines.Length}. Pre-fix " +
             $"would yield 1 overflowing line because the disabled " +
             $"SH suppressed all Liang.");
     }
@@ -673,15 +673,15 @@ public sealed class InlineLayouterCycle3dTests
         // suppressed. Position 5 in Auto is kept but doesn't
         // satisfy budget 30 (would need 6 chars × 7.2 = 43.2 px
         // line). So wrap may fire later or overflow.
-        Assert.True(result.Length >= 1);
+        Assert.True(result.Lines.Length >= 1);
         // Line 0 should not be just "hy" (2 glyphs) — that would
         // mean the Manual segment's Liang fired, which is wrong.
         var line0Glyphs = 0;
-        foreach (var s in result[0].Slices) line0Glyphs += s.GlyphLength;
-        Assert.True(line0Glyphs != 2 || !result[0].EndsWithHyphenationBreak,
+        foreach (var s in result.Lines[0].Slices) line0Glyphs += s.GlyphLength;
+        Assert.True(line0Glyphs != 2 || !result.Lines[0].EndsWithHyphenationBreak,
             $"Line 0 = 2 glyphs + EndsWithHyphenationBreak would " +
             $"mean the Manual segment's Liang fired (wrong). " +
-            $"Got {line0Glyphs} glyphs, EndsWithHyphenationBreak={result[0].EndsWithHyphenationBreak}.");
+            $"Got {line0Glyphs} glyphs, EndsWithHyphenationBreak={result.Lines[0].EndsWithHyphenationBreak}.");
     }
 
     // --- Cycle 3d sub-cycle 3: per-glyph word-break tests -------
@@ -725,27 +725,27 @@ public sealed class InlineLayouterCycle3dTests
             availableInlineSize: 18, resolver, LatnScript, EnLang);
 
         // 3 lines: Run 0 stays whole, Run 1 splits per BreakAll.
-        Assert.Equal(3, result.Length);
+        Assert.Equal(3, result.Lines.Length);
 
         // Line 0: 3 'A' glyphs from Run 0 (trailing SP trimmed at
         // wrap boundary per Normal collapse).
-        Assert.Single(result[0].Slices);
-        Assert.Equal(0, result[0].Slices[0].ShapedRunIndex);
-        Assert.Equal(0, result[0].Slices[0].GlyphStart);
-        Assert.Equal(3, result[0].Slices[0].GlyphLength);
+        Assert.Single(result.Lines[0].Slices);
+        Assert.Equal(0, result.Lines[0].Slices[0].ShapedRunIndex);
+        Assert.Equal(0, result.Lines[0].Slices[0].GlyphStart);
+        Assert.Equal(3, result.Lines[0].Slices[0].GlyphLength);
 
         // Line 1: 3 'B' glyphs from Run 1 (BreakAll wrap at glyph 3).
-        Assert.Single(result[1].Slices);
-        Assert.Equal(1, result[1].Slices[0].ShapedRunIndex);
-        Assert.Equal(0, result[1].Slices[0].GlyphStart);
-        Assert.Equal(3, result[1].Slices[0].GlyphLength);
+        Assert.Single(result.Lines[1].Slices);
+        Assert.Equal(1, result.Lines[1].Slices[0].ShapedRunIndex);
+        Assert.Equal(0, result.Lines[1].Slices[0].GlyphStart);
+        Assert.Equal(3, result.Lines[1].Slices[0].GlyphLength);
 
         // Line 2: last 'B' glyph from Run 1 (mandatory at end).
-        Assert.Single(result[2].Slices);
-        Assert.Equal(1, result[2].Slices[0].ShapedRunIndex);
-        Assert.Equal(3, result[2].Slices[0].GlyphStart);
-        Assert.Equal(1, result[2].Slices[0].GlyphLength);
-        Assert.True(result[2].EndsWithMandatoryBreak);
+        Assert.Single(result.Lines[2].Slices);
+        Assert.Equal(1, result.Lines[2].Slices[0].ShapedRunIndex);
+        Assert.Equal(3, result.Lines[2].Slices[0].GlyphStart);
+        Assert.Equal(1, result.Lines[2].Slices[0].GlyphLength);
+        Assert.True(result.Lines[2].EndsWithMandatoryBreak);
     }
 
     [Fact]
@@ -767,7 +767,7 @@ public sealed class InlineLayouterCycle3dTests
 
         // BreakAll lets every glyph boundary be a soft break →
         // 2 glyphs (12 px) fits → wrap at glyph 2.
-        Assert.Equal(2, result.Length);
+        Assert.Equal(2, result.Lines.Length);
     }
 
     // --- Cycle 3d sub-cycle 3 review hardening tests --------------
@@ -805,10 +805,10 @@ public sealed class InlineLayouterCycle3dTests
             availableInlineSize: 12, resolver, LatnScript, EnLang);
 
         // Run 0 splits per BreakAll; Run 1 stays whole overflowing.
-        Assert.True(result.Length >= 3,
-            $"Expected at least 3 lines (Run 0 splits, Run 1 overflows); got {result.Length}.");
+        Assert.True(result.Lines.Length >= 3,
+            $"Expected at least 3 lines (Run 0 splits, Run 1 overflows); got {result.Lines.Length}.");
         // Last line is Run 1's full "BBBB" (no internal BreakAll).
-        var lastLine = result[result.Length - 1];
+        var lastLine = result.Lines[result.Lines.Length - 1];
         Assert.True(lastLine.EndsWithMandatoryBreak);
         Assert.Single(lastLine.Slices);
         Assert.Equal(1, lastLine.Slices[0].ShapedRunIndex);
@@ -850,26 +850,26 @@ public sealed class InlineLayouterCycle3dTests
         // - Run 1 (BreakAll) splits per its own upgrades.
         //   3 letters (18 px) fits; 4 overflows. Split at glyph 6.
         //   Emit [4..6] = "BBB". Then [7..7] = "B" mandatory.
-        Assert.Equal(3, result.Length);
+        Assert.Equal(3, result.Lines.Length);
 
         // Line 0: full Run 0 "AAAA" (4 glyphs).
-        Assert.Single(result[0].Slices);
-        Assert.Equal(0, result[0].Slices[0].ShapedRunIndex);
-        Assert.Equal(0, result[0].Slices[0].GlyphStart);
-        Assert.Equal(4, result[0].Slices[0].GlyphLength);
+        Assert.Single(result.Lines[0].Slices);
+        Assert.Equal(0, result.Lines[0].Slices[0].ShapedRunIndex);
+        Assert.Equal(0, result.Lines[0].Slices[0].GlyphStart);
+        Assert.Equal(4, result.Lines[0].Slices[0].GlyphLength);
 
         // Line 1: Run 1 first 3 'B's.
-        Assert.Single(result[1].Slices);
-        Assert.Equal(1, result[1].Slices[0].ShapedRunIndex);
-        Assert.Equal(0, result[1].Slices[0].GlyphStart);
-        Assert.Equal(3, result[1].Slices[0].GlyphLength);
+        Assert.Single(result.Lines[1].Slices);
+        Assert.Equal(1, result.Lines[1].Slices[0].ShapedRunIndex);
+        Assert.Equal(0, result.Lines[1].Slices[0].GlyphStart);
+        Assert.Equal(3, result.Lines[1].Slices[0].GlyphLength);
 
         // Line 2: Run 1 last 'B', mandatory.
-        Assert.Single(result[2].Slices);
-        Assert.Equal(1, result[2].Slices[0].ShapedRunIndex);
-        Assert.Equal(3, result[2].Slices[0].GlyphStart);
-        Assert.Equal(1, result[2].Slices[0].GlyphLength);
-        Assert.True(result[2].EndsWithMandatoryBreak);
+        Assert.Single(result.Lines[2].Slices);
+        Assert.Equal(1, result.Lines[2].Slices[0].ShapedRunIndex);
+        Assert.Equal(3, result.Lines[2].Slices[0].GlyphStart);
+        Assert.Equal(1, result.Lines[2].Slices[0].GlyphLength);
+        Assert.True(result.Lines[2].EndsWithMandatoryBreak);
     }
 
     [Fact]
@@ -901,13 +901,13 @@ public sealed class InlineLayouterCycle3dTests
         // WordBreak=BreakAll would have upgraded them. Run 0 stays
         // as one overflowing line; Run 1 wraps separately (the SP
         // at glyph 8 provides a wrap candidate).
-        Assert.True(result.Length >= 2);
+        Assert.True(result.Lines.Length >= 2);
         // Line 0 contains all 8 'A' glyphs from Run 0 — NoWrap
         // semantics + the cross-run wrap at the SP boundary.
-        Assert.True(result[0].Slices.Length >= 1);
-        Assert.Equal(0, result[0].Slices[0].ShapedRunIndex);
-        Assert.Equal(0, result[0].Slices[0].GlyphStart);
-        Assert.Equal(8, result[0].Slices[0].GlyphLength);
+        Assert.True(result.Lines[0].Slices.Length >= 1);
+        Assert.Equal(0, result.Lines[0].Slices[0].ShapedRunIndex);
+        Assert.Equal(0, result.Lines[0].Slices[0].GlyphStart);
+        Assert.Equal(8, result.Lines[0].Slices[0].GlyphLength);
     }
 
     [Fact]
@@ -1103,31 +1103,31 @@ public sealed class InlineLayouterCycle3dTests
         // (no anywhere fire inside normal-overflow-wrap), then Run 1
         // splits at each glyph boundary (anywhere on every same-run
         // pair).
-        Assert.Equal(6, result.Length);
+        Assert.Equal(6, result.Lines.Length);
 
         // Line 0: full Run 0 (4 'A' glyphs). 4 letters × 6.0 = 24 px
         // (overflowing 10 budget — kept together because Run 0 is not
         // overflow-wrap:anywhere).
-        Assert.Single(result[0].Slices);
-        Assert.Equal(0, result[0].Slices[0].ShapedRunIndex);
-        Assert.Equal(0, result[0].Slices[0].GlyphStart);
-        Assert.Equal(4, result[0].Slices[0].GlyphLength);
-        Assert.Equal(4 * LetterAdvance, result[0].TotalAdvance, precision: 4);
+        Assert.Single(result.Lines[0].Slices);
+        Assert.Equal(0, result.Lines[0].Slices[0].ShapedRunIndex);
+        Assert.Equal(0, result.Lines[0].Slices[0].GlyphStart);
+        Assert.Equal(4, result.Lines[0].Slices[0].GlyphLength);
+        Assert.Equal(4 * LetterAdvance, result.Lines[0].TotalAdvance, precision: 4);
 
         // Lines 1-5: each is a single 'B' glyph from Run 1 (anywhere
         // forced break at every glyph pair). Line 5 is the final
         // mandatory-break line.
         for (var i = 0; i < 5; i++)
         {
-            var line = result[1 + i];
+            var line = result.Lines[1 + i];
             Assert.Single(line.Slices);
             Assert.Equal(1, line.Slices[0].ShapedRunIndex);
             Assert.Equal(i, line.Slices[0].GlyphStart);
             Assert.Equal(1, line.Slices[0].GlyphLength);
             Assert.Equal(LetterAdvance, line.TotalAdvance, precision: 4);
         }
-        Assert.False(result[0].EndsWithMandatoryBreak);
-        Assert.True(result[5].EndsWithMandatoryBreak);
+        Assert.False(result.Lines[0].EndsWithMandatoryBreak);
+        Assert.True(result.Lines[5].EndsWithMandatoryBreak);
     }
 
     [Fact]
@@ -1157,12 +1157,12 @@ public sealed class InlineLayouterCycle3dTests
         var result = InlineLayouter.LayoutPerRun(sourceRuns,
             availableInlineSize: 10, resolver, LatnScript, EnLang);
 
-        Assert.Equal(6, result.Length);
+        Assert.Equal(6, result.Lines.Length);
 
         // Lines 0..4: Each a single 'A' glyph from Run 0.
         for (var i = 0; i < 5; i++)
         {
-            var line = result[i];
+            var line = result.Lines[i];
             Assert.Single(line.Slices);
             Assert.Equal(0, line.Slices[0].ShapedRunIndex);
             Assert.Equal(i, line.Slices[0].GlyphStart);
@@ -1171,12 +1171,12 @@ public sealed class InlineLayouterCycle3dTests
         }
 
         // Line 5: Full Run 1 "BBBB" (4 glyphs, overflowing).
-        Assert.Single(result[5].Slices);
-        Assert.Equal(1, result[5].Slices[0].ShapedRunIndex);
-        Assert.Equal(0, result[5].Slices[0].GlyphStart);
-        Assert.Equal(4, result[5].Slices[0].GlyphLength);
-        Assert.Equal(4 * LetterAdvance, result[5].TotalAdvance, precision: 4);
-        Assert.True(result[5].EndsWithMandatoryBreak);
+        Assert.Single(result.Lines[5].Slices);
+        Assert.Equal(1, result.Lines[5].Slices[0].ShapedRunIndex);
+        Assert.Equal(0, result.Lines[5].Slices[0].GlyphStart);
+        Assert.Equal(4, result.Lines[5].Slices[0].GlyphLength);
+        Assert.Equal(4 * LetterAdvance, result.Lines[5].TotalAdvance, precision: 4);
+        Assert.True(result.Lines[5].EndsWithMandatoryBreak);
     }
 
     // --- Cycle 3d sub-cycle 2 review hardening tests ---------------
@@ -1211,10 +1211,10 @@ public sealed class InlineLayouterCycle3dTests
         // rules the combining mark glyph has XAdvance = 0 (positioned
         // via XOffset relative to the base char), so each cluster's
         // SliceAdvance is just the base 'A' advance (6.0 px).
-        Assert.Equal(3, result.Length);
+        Assert.Equal(3, result.Lines.Length);
         for (var i = 0; i < 3; i++)
         {
-            var line = result[i];
+            var line = result.Lines[i];
             Assert.Single(line.Slices);
             Assert.Equal(0, line.Slices[0].ShapedRunIndex);
             Assert.Equal(i * 2, line.Slices[0].GlyphStart);
@@ -1224,9 +1224,9 @@ public sealed class InlineLayouterCycle3dTests
         }
         // Final line ends with mandatory (LB3); earlier lines end via
         // anywhere snap-back.
-        Assert.False(result[0].EndsWithMandatoryBreak);
-        Assert.False(result[1].EndsWithMandatoryBreak);
-        Assert.True(result[2].EndsWithMandatoryBreak);
+        Assert.False(result.Lines[0].EndsWithMandatoryBreak);
+        Assert.False(result.Lines[1].EndsWithMandatoryBreak);
+        Assert.True(result.Lines[2].EndsWithMandatoryBreak);
     }
 
     [Fact]
@@ -1260,14 +1260,14 @@ public sealed class InlineLayouterCycle3dTests
 
         // Single overflowing line — neither run allows wrapping +
         // the boundary between them is not a valid anywhere site.
-        Assert.Single(result);
-        Assert.Equal(2, result[0].Slices.Length);
-        Assert.Equal(0, result[0].Slices[0].ShapedRunIndex);
-        Assert.Equal(0, result[0].Slices[0].GlyphStart);
-        Assert.Equal(5, result[0].Slices[0].GlyphLength);
-        Assert.Equal(1, result[0].Slices[1].ShapedRunIndex);
-        Assert.Equal(0, result[0].Slices[1].GlyphStart);
-        Assert.Equal(5, result[0].Slices[1].GlyphLength);
+        Assert.Single(result.Lines);
+        Assert.Equal(2, result.Lines[0].Slices.Length);
+        Assert.Equal(0, result.Lines[0].Slices[0].ShapedRunIndex);
+        Assert.Equal(0, result.Lines[0].Slices[0].GlyphStart);
+        Assert.Equal(5, result.Lines[0].Slices[0].GlyphLength);
+        Assert.Equal(1, result.Lines[0].Slices[1].ShapedRunIndex);
+        Assert.Equal(0, result.Lines[0].Slices[1].GlyphStart);
+        Assert.Equal(5, result.Lines[0].Slices[1].GlyphLength);
     }
 
     [Fact]
@@ -1290,10 +1290,10 @@ public sealed class InlineLayouterCycle3dTests
         var result = InlineLayouter.LayoutPerRun(sourceRuns,
             availableInlineSize: 10, resolver, LatnScript, EnLang);
 
-        Assert.Single(result);
-        Assert.Equal(2, result[0].Slices.Length);
-        Assert.Equal(5, result[0].Slices[0].GlyphLength);
-        Assert.Equal(5, result[0].Slices[1].GlyphLength);
+        Assert.Single(result.Lines);
+        Assert.Equal(2, result.Lines[0].Slices.Length);
+        Assert.Equal(5, result.Lines[0].Slices[0].GlyphLength);
+        Assert.Equal(5, result.Lines[0].Slices[1].GlyphLength);
     }
 
     [Fact]
@@ -1324,16 +1324,16 @@ public sealed class InlineLayouterCycle3dTests
 
         // Run 0 splits into 5 single-glyph lines; Run 1 stays whole
         // as one overflowing line at the end.
-        Assert.Equal(6, result.Length);
+        Assert.Equal(6, result.Lines.Length);
         for (var i = 0; i < 5; i++)
         {
-            Assert.Single(result[i].Slices);
-            Assert.Equal(0, result[i].Slices[0].ShapedRunIndex);
-            Assert.Equal(1, result[i].Slices[0].GlyphLength);
+            Assert.Single(result.Lines[i].Slices);
+            Assert.Equal(0, result.Lines[i].Slices[0].ShapedRunIndex);
+            Assert.Equal(1, result.Lines[i].Slices[0].GlyphLength);
         }
-        Assert.Single(result[5].Slices);
-        Assert.Equal(1, result[5].Slices[0].ShapedRunIndex);
-        Assert.Equal(5, result[5].Slices[0].GlyphLength);
+        Assert.Single(result.Lines[5].Slices);
+        Assert.Equal(1, result.Lines[5].Slices[0].ShapedRunIndex);
+        Assert.Equal(5, result.Lines[5].Slices[0].GlyphLength);
     }
 
     [Fact]
@@ -1438,17 +1438,17 @@ public sealed class InlineLayouterCycle3dTests
         var result = InlineLayouter.LayoutPerRun(sourceRuns,
             availableInlineSize: 30, resolver, LatnScript, EnLang);
 
-        Assert.Equal(2, result.Length);
+        Assert.Equal(2, result.Lines.Length);
         // --- Line 0: "AAA " (4 glyphs, trailing SP preserved per
         // PreWrap semantics — Rec #1 fix).
-        Assert.False(result[0].EndsWithMandatoryBreak);
-        Assert.Single(result[0].Slices);
-        Assert.Equal(0, result[0].Slices[0].ShapedRunIndex);
-        Assert.Equal(0, result[0].Slices[0].GlyphStart);
-        Assert.Equal(4, result[0].Slices[0].GlyphLength);
+        Assert.False(result.Lines[0].EndsWithMandatoryBreak);
+        Assert.Single(result.Lines[0].Slices);
+        Assert.Equal(0, result.Lines[0].Slices[0].ShapedRunIndex);
+        Assert.Equal(0, result.Lines[0].Slices[0].GlyphStart);
+        Assert.Equal(4, result.Lines[0].Slices[0].GlyphLength);
         // Total advance INCLUDES the preserved trailing SP.
         Assert.Equal(3 * LetterAdvance + SpaceAdvance,
-            result[0].TotalAdvance, precision: 4);
+            result.Lines[0].TotalAdvance, precision: 4);
     }
 
     [Fact]
@@ -1486,11 +1486,11 @@ public sealed class InlineLayouterCycle3dTests
 
         // Line 0: NoWrap stays whole (5 glyphs). Pre-fix anywhere
         // would have split inside it.
-        Assert.True(result.Length >= 1);
-        Assert.Single(result[0].Slices);
-        Assert.Equal(0, result[0].Slices[0].ShapedRunIndex);
-        Assert.Equal(0, result[0].Slices[0].GlyphStart);
-        Assert.Equal(5, result[0].Slices[0].GlyphLength);
+        Assert.True(result.Lines.Length >= 1);
+        Assert.Single(result.Lines[0].Slices);
+        Assert.Equal(0, result.Lines[0].Slices[0].ShapedRunIndex);
+        Assert.Equal(0, result.Lines[0].Slices[0].GlyphStart);
+        Assert.Equal(5, result.Lines[0].Slices[0].GlyphLength);
     }
 
     [Fact]
@@ -1512,11 +1512,11 @@ public sealed class InlineLayouterCycle3dTests
         var result = InlineLayouter.LayoutPerRun(sourceRuns,
             availableInlineSize: 10, resolver, LatnScript, EnLang);
 
-        Assert.True(result.Length >= 1);
+        Assert.True(result.Lines.Length >= 1);
         // First slice is the entire 5-glyph Pre run, not split.
-        Assert.Equal(0, result[0].Slices[0].ShapedRunIndex);
-        Assert.Equal(0, result[0].Slices[0].GlyphStart);
-        Assert.Equal(5, result[0].Slices[0].GlyphLength);
+        Assert.Equal(0, result.Lines[0].Slices[0].ShapedRunIndex);
+        Assert.Equal(0, result.Lines[0].Slices[0].GlyphStart);
+        Assert.Equal(5, result.Lines[0].Slices[0].GlyphLength);
     }
 
     [Fact]

@@ -36,7 +36,7 @@ public sealed class InlineLayouterCycle3bTests
         using var resolver = new TestShaperResolver();
         var result = InlineLayouter.LayoutPerRun(
             Array.Empty<TextRun>(), 100, resolver, LatnScript, EnLang);
-        Assert.Empty(result);
+        Assert.Empty(result.Lines);
     }
 
     [Fact]
@@ -53,7 +53,7 @@ public sealed class InlineLayouterCycle3bTests
         };
         var result = InlineLayouter.LayoutPerRun(sourceRuns, 1000, resolver,
             LatnScript, EnLang);
-        Assert.Single(result);
+        Assert.Single(result.Lines);
     }
 
     [Fact]
@@ -71,7 +71,7 @@ public sealed class InlineLayouterCycle3bTests
         var result = InlineLayouter.LayoutPerRun(sourceRuns, 25, resolver,
             LatnScript, EnLang);
         // NoWrap → single overflowing line (would be 2 lines under Normal).
-        Assert.Single(result);
+        Assert.Single(result.Lines);
     }
 
     [Fact]
@@ -95,7 +95,7 @@ public sealed class InlineLayouterCycle3bTests
         // Should not throw; result depends on wrap logic.
         var result = InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver,
             LatnScript, EnLang);
-        Assert.NotEmpty(result);
+        Assert.NotEmpty(result.Lines);
     }
 
     [Fact]
@@ -122,7 +122,7 @@ public sealed class InlineLayouterCycle3bTests
 
         var result = InlineLayouter.LayoutPerRun(sourceRuns, 15, resolver,
             LatnScript, EnLang);
-        Assert.NotEmpty(result);
+        Assert.NotEmpty(result.Lines);
     }
 
     [Fact]
@@ -145,7 +145,7 @@ public sealed class InlineLayouterCycle3bTests
 
         var result = InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver,
             LatnScript, EnLang);
-        Assert.NotEmpty(result);
+        Assert.NotEmpty(result.Lines);
     }
 
     [Fact]
@@ -156,7 +156,7 @@ public sealed class InlineLayouterCycle3bTests
         var sourceRuns = new List<TextRun> { new("AAA", MakeStyleWithNoWrap()) };
         var result = InlineLayouter.LayoutPerRun(sourceRuns, 1000, resolver,
             LatnScript, EnLang);
-        Assert.Single(result);
+        Assert.Single(result.Lines);
     }
 
     // --- Cycle 3b post-PR-41 review hardening tests ------------
@@ -237,7 +237,7 @@ public sealed class InlineLayouterCycle3bTests
         // Should not throw; uses sNormal's policy.
         var result = InlineLayouter.LayoutPerRun(sourceRuns, 1000, resolver,
             LatnScript, EnLang);
-        Assert.Single(result);
+        Assert.Single(result.Lines);
     }
 
     [Fact]
@@ -253,7 +253,7 @@ public sealed class InlineLayouterCycle3bTests
         };
         var result = InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver,
             LatnScript, EnLang);
-        Assert.Empty(result);
+        Assert.Empty(result.Lines);
     }
 
     [Fact]
@@ -271,7 +271,7 @@ public sealed class InlineLayouterCycle3bTests
         };
         var result = InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver,
             LatnScript, EnLang);
-        Assert.NotEmpty(result);
+        Assert.NotEmpty(result.Lines);
     }
 
     // --- Helpers --------------------------------------------------

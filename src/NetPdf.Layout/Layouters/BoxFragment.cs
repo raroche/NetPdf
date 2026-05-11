@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
 using NetPdf.Layout.Boxes;
+using NetPdf.Layout.Inline;
 
 namespace NetPdf.Layout.Layouters;
 
@@ -14,6 +15,23 @@ namespace NetPdf.Layout.Layouters;
 /// <see cref="IBlockFragmentSink"/> as the layouter walks the box
 /// tree. Phase 4 (paint) consumes the emitted fragment list +
 /// resolves it to PDF content streams.</para>
+///
+/// <para><b>Per Phase 3 Task 11 cycle 1 sub-cycle 1 — inline content
+/// integration.</b> The new <see cref="InlineLayout"/> field carries
+/// the <see cref="InlineLayoutResult"/> for fragments emitted by
+/// <c>BlockLayouter.LayoutInlineContent</c> (block containers whose
+/// children are entirely inline-level). Null for pure-block
+/// fragments — backwards compatible with cycles 1-2c that emitted
+/// border-box-only rectangles. The painter (Phase 4) consumes the
+/// bundle's <see cref="InlineLayoutResult.Lines"/> +
+/// <see cref="InlineLayoutResult.ShapedRuns"/> +
+/// <see cref="InlineLayoutResult.PreprocessedRuns"/> to position
+/// shaped-glyph slices at successive baselines inside the fragment's
+/// border box. Per sub-cycle 1 review Finding #1 — bundling the
+/// glyph data with the lines (instead of returning bare
+/// <c>LineFragment[]</c>) is mandatory because each line's slices
+/// only carry indices into the <c>ShapedRuns</c> array; the painter
+/// needs the array itself to resolve actual glyphs.</para>
 ///
 /// <para><b>Per Phase 3 Task 7 cycle 1 PR #22 review fix #3 +
 /// Copilot #2 — geometry IS the BORDER BOX</b> (not the margin
@@ -81,9 +99,23 @@ namespace NetPdf.Layout.Layouters;
 /// axis (CSS px). Excludes margin.</param>
 /// <param name="BlockSize">Border-box extent along the block
 /// axis (CSS px). Excludes margin.</param>
+/// <param name="InlineLayout">Per Phase 3 Task 11 cycle 1 sub-cycle 1
+/// review Finding #1 — the inline pass result (lines + shaped runs +
+/// preprocessed source runs) for inline-only block fragments produced
+/// by <c>BlockLayouter.LayoutInlineContent</c>. The painter (Phase 4)
+/// resolves each line's <see cref="ShapedRunSlice"/> via
+/// <see cref="InlineLayoutResult.ShapedRuns"/>[<see cref="ShapedRunSlice.ShapedRunIndex"/>]
+/// + walks the slice's glyph range; per-glyph styling is read from
+/// the source <see cref="TextRun"/> at
+/// <see cref="InlineLayoutResult.PreprocessedRuns"/>[<see cref="ItemizedRun.SourceTextRunIndex"/>].
+/// <see langword="null"/> for pure-block fragments (cycles 1-2c
+/// output, plus block containers whose children are themselves
+/// block-level). Empty inline content produces no fragment at
+/// all.</param>
 internal readonly record struct BoxFragment(
     Box Box,
     double InlineOffset,
     double BlockOffset,
     double InlineSize,
-    double BlockSize);
+    double BlockSize,
+    InlineLayoutResult? InlineLayout = null);

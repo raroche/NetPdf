@@ -268,21 +268,32 @@ grepping the ID).
 - **ID** — `table-auto-fixed-spans-borders`
 - **Status** — `approximated`.
 - **Behavior** — `TableLayouter` (Phase 3 Task 12 sub-cycle 1) walks
-  the Table → TableGrid → row → cell hierarchy, splits the wrapper's
-  content-inline-size equally across columns (max cell count across
-  rows), stacks rows vertically, dispatches each cell's content
-  through a nested `BlockLayouter` whose emitted fragments are
-  forwarded through a `MeasuringFragmentSink` so cell-content
-  fragments land at fragmentainer coordinates + the row height
-  resolves to the tallest cell. No table-layout: auto / fixed
-  algorithm distinction, no `border-collapse`, no `colspan` /
-  `rowspan` merging, no `<thead>` / `<tfoot>` repetition across
-  pages, no captions, no `<col>` widths, no multi-page splitting
-  within a single table, no RTL flips. Tables that overflow the
-  page emit `PAGINATION-FORCED-OVERFLOW-001`; cells carrying
-  `colspan` / `rowspan` attributes emit
-  `LAYOUT-TABLE-FEATURE-UNSUPPORTED-001` (the attribute is
-  ignored, each cell occupies one column / one row).
+  the Table → TableGrid → row → cell hierarchy via a two-phase
+  protocol — a pre-measure pass populates per-row cell content
+  heights (via nested `BlockLayouter`s buffering into per-cell
+  `MeasuringFragmentSink`s) so the wrapper's border-box block extent
+  reflects the measured table content (preventing siblings from
+  overlapping when CSS `height: auto`); then an emit pass walks the
+  rows + emits row → cell → cell-content fragments in paint-safe
+  order (cell backgrounds / borders paint UNDER text glyphs). Each
+  nested cell-content `BlockLayouter` runs against a FRESH
+  `BreakResolver` scoped to that cell, isolating the outer table's
+  checkpoint state from cell-internal pagination. Columns split
+  equally across the wrapper's content inline-size (max cell count
+  across rows). No table-layout: auto / fixed algorithm distinction,
+  no `border-collapse`, no `colspan` / `rowspan` merging, no
+  `<thead>` / `<tfoot>` repetition across pages, no `<col>` widths,
+  no multi-page splitting within a single table, no RTL flips.
+  Captions (`<caption>`) are skipped + emit
+  `LAYOUT-TABLE-FEATURE-UNSUPPORTED-001` with the caption text in
+  the diagnostic message (so authors see what is being dropped).
+  Tables that overflow the page emit
+  `PAGINATION-FORCED-OVERFLOW-001`; cells carrying `colspan` /
+  `rowspan` attributes emit `LAYOUT-TABLE-FEATURE-UNSUPPORTED-001`
+  (the attribute is ignored, each cell occupies one column / one
+  row); a Table wrapper with no TableGrid child (malformed box tree)
+  emits `LAYOUT-TABLE-FEATURE-UNSUPPORTED-001` (NOT a pagination
+  overflow code — the anomaly is structural).
 - **Missing** — Per CSS Tables L3: §3 auto-layout algorithm
   (shrink-to-fit column widths via min/max-content), §3.5
   fixed-layout algorithm (column widths from `<col>` + first-row

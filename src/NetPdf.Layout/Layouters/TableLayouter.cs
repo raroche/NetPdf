@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Text;
 using System.Threading;
 using NetPdf.Css.Properties;
 using NetPdf.Layout.Boxes;
@@ -24,14 +25,27 @@ namespace NetPdf.Layout.Layouters;
 /// <see cref="BoxFragment"/> per row + per cell into the same
 /// <see cref="IBlockFragmentSink"/> the outer block layouter uses.
 ///
-/// <para><b>Invariant.</b> The outer wrapper's
-/// <see cref="BoxFragment"/> is emitted by the parent
-/// <see cref="BlockLayouter"/> using the standard block-flow path
-/// (the placeholder-emit at the
-/// <see cref="BoxKind.Table"/> / <see cref="BoxKind.InlineTable"/>
-/// outer-display contract). This layouter is dispatched AFTER that
-/// emit + adds the inner row/cell fragments at fragmentainer-relative
-/// offsets so the painter sees the complete table geometry.</para>
+/// <para><b>Two-phase protocol (post-Finding-1 hardening).</b> The
+/// layouter exposes a public <see cref="MeasureContentHeight"/> method
+/// that pre-computes the row stack height WITHOUT forwarding fragments
+/// to the outer sink. The dispatching <see cref="BlockLayouter"/> calls
+/// <see cref="MeasureContentHeight"/> BEFORE emitting the wrapper
+/// fragment so it can size the wrapper's border-box block extent to
+/// <c>max(cssHeight, tableContentHeight)</c>; the wrapper's emitted
+/// extent then drives <see cref="FragmentainerContext.UsedBlockSize"/>
+/// (siblings of the table no longer overlap its content). After the
+/// wrapper fragment lands, <see cref="AttemptLayout"/> consumes the
+/// cached per-row measurements + emits row/cell fragments + flushes
+/// the buffered cell content in paint-safe order.</para>
+///
+/// <para><b>Paint-safe emit order (post-Finding-2 hardening).</b>
+/// Sub-cycle 1 buffered cell content in
+/// <see cref="MeasuringFragmentSink"/> during the measure phase. The
+/// emit phase: emit the row fragment, then for each cell emit the
+/// cell fragment, then drain its buffered content fragments via
+/// <see cref="MeasuringFragmentSink.FlushTo"/>. This produces the
+/// painter-friendly order row → cell → cell-content so backgrounds /
+/// borders paint UNDER the text glyphs.</para>
 ///
 /// <para><b>Sub-cycle 1 algorithm (equal-column "Hello World"):</b></para>
 /// <list type="number">
@@ -42,9 +56,13 @@ namespace NetPdf.Layout.Layouters;
 ///   into <see cref="BoxKind.TableRowGroup"/> /
 ///   <see cref="BoxKind.TableHeaderGroup"/> /
 ///   <see cref="BoxKind.TableFooterGroup"/> to collect their
-///   <see cref="BoxKind.TableRow"/> children. Captions, column groups,
-///   columns are SKIPPED (sub-cycle 1 deferral —
-///   see <c>docs/deferrals.md#table-auto-fixed-spans-borders</c>).</item>
+///   <see cref="BoxKind.TableRow"/> children. Captions ARE detected
+///   under the wrapper (per BoxBuilder Rec 5) but their content is
+///   skipped + a <c>LAYOUT-TABLE-FEATURE-UNSUPPORTED-001</c>
+///   diagnostic fires with the caption text snippet so authors see
+///   what's being dropped (sub-cycle 1 deferral — see
+///   <c>docs/deferrals.md#table-auto-fixed-spans-borders</c>).
+///   Column groups and columns are skipped silently.</item>
 ///   <item>Compute the column count = max number of
 ///   <see cref="BoxKind.TableCell"/> children across all collected
 ///   rows. Sub-cycle 1 assumes no <c>colspan</c>: cell count == column
@@ -53,17 +71,15 @@ namespace NetPdf.Layout.Layouters;
 ///   <c>columnWidth = contentInlineSize / columnCount</c>. No
 ///   author column widths, no shrink-to-fit, no min/max content
 ///   sizing (auto + fixed layout algorithms deferred).</item>
-///   <item>For each row in document order: measure each cell's
-///   content extent via a nested <see cref="BlockLayouter"/> with a
-///   <see cref="MeasuringFragmentSink"/> wrapping the outer sink;
-///   the row height is the maximum measured cell extent. Emit one
-///   row <see cref="BoxFragment"/> spanning the full inline width +
-///   computed row height, then one cell <see cref="BoxFragment"/> per
-///   cell at the column offset + with the row height. The cell's
-///   inner content fragments have already been written to the outer
-///   sink by the nested measurement pass.</item>
-///   <item>Advance <see cref="FragmentainerContext.UsedBlockSize"/> by
-///   the row height as the row is committed.</item>
+///   <item>Measure pass: for each row, lay out each cell's content
+///   into a per-cell <see cref="MeasuringFragmentSink"/> that BUFFERS
+///   the translated fragments. Track the per-cell maximum block
+///   extent; the row height is the maximum across cells. Cache the
+///   measurements + buffers on the layouter.</item>
+///   <item>Emit pass (when <see cref="AttemptLayout"/> runs): emit the
+///   row fragment, then for each cell emit the cell fragment, then
+///   drain the cell's buffered content into the outer sink. Advance
+///   the row cursor.</item>
 /// </list>
 ///
 /// <para><b>Sub-cycle 1 deferrals</b> (see
@@ -78,8 +94,9 @@ namespace NetPdf.Layout.Layouters;
 ///   <item><c>colspan</c> / <c>rowspan</c> cell merging.</item>
 ///   <item><c>&lt;thead&gt;</c> / <c>&lt;tfoot&gt;</c> repetition
 ///   across pages.</item>
-///   <item>Captions (<see cref="BoxKind.TableCaption"/>) — skipped
-///   silently in sub-cycle 1.</item>
+///   <item>Captions (<see cref="BoxKind.TableCaption"/>) — content is
+///   skipped + a diagnostic emits with a snippet of the caption text
+///   so authors see what is being dropped.</item>
 ///   <item><c>&lt;col&gt;</c> / <c>&lt;colgroup&gt;</c> column-specific
 ///   widths.</item>
 ///   <item>Multi-fragmentainer table splitting (rows that cross
@@ -100,6 +117,13 @@ namespace NetPdf.Layout.Layouters;
 /// anyway. Multi-page table splitting (rows that defer to the
 /// next page) is sub-cycle 2 work.</para>
 ///
+/// <para><b>Per-cell break-resolver isolation (post-Finding-3 hardening).</b>
+/// Each cell-content layout dispatches a <see cref="BlockLayouter"/>
+/// with a FRESH <see cref="BreakResolver"/> instance scoped to that
+/// cell. The outer resolver's checkpoint state is never touched by
+/// cell-internal pagination — preserving the outer table's rewind /
+/// resume contract.</para>
+///
 /// <para><b>Cancellation.</b> The token is propagated to the nested
 /// <see cref="BlockLayouter"/> for cell content + checked between
 /// rows + cells. A long-running deeply-nested cell layout responds
@@ -109,7 +133,11 @@ internal sealed class TableLayouter : ILayouter, IDisposable
 {
     private readonly Box _rootBox;
     private readonly IBlockFragmentSink _sink;
-    private readonly LayoutContinuation? _incomingContinuation;
+    // _incomingContinuation field removed per PR #49 Copilot review +
+    // PR #49 hardening — the constructor validates the parameter is
+    // null (sub-cycle 1 rejects mid-table resume) + then has no
+    // further use for it. Sub-cycle 2 will re-introduce as a real
+    // TableContinuation when multi-page row splitting lands.
     private readonly IPaginateDiagnosticsSink? _diagnostics;
     private readonly IShaperResolver? _shaperResolver;
 
@@ -171,7 +199,8 @@ internal sealed class TableLayouter : ILayouter, IDisposable
 
         _rootBox = rootBox;
         _sink = sink;
-        _incomingContinuation = incomingContinuation;
+        // incomingContinuation discarded after the null-validation
+        // above. See field-removal comment + Copilot review on PR #49.
         _diagnostics = diagnostics;
         _shaperResolver = shaperResolver;
     }
@@ -212,6 +241,42 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     private double _contentInlineSize;
     private bool _emissionConfigured;
 
+    // ====================================================================
+    //  Cached measure-phase state (Finding 1 + 2 hardening).
+    //  MeasureContentHeight populates these; AttemptLayout consumes them.
+    //  Two-phase protocol: dispatcher calls MeasureContentHeight first to
+    //  size the wrapper border-box, then AttemptLayout to commit emits.
+    // ====================================================================
+
+    /// <summary>Per-row measurement record produced by
+    /// <see cref="MeasureContentHeight"/> and consumed by
+    /// <see cref="AttemptLayout"/>. Stores the row's height + per-cell
+    /// content buffers in document order (TableCell-only).</summary>
+    private readonly struct RowMeasurement
+    {
+        public RowMeasurement(
+            Box row,
+            double rowHeight,
+            List<MeasuringFragmentSink> cellBuffers)
+        {
+            Row = row;
+            RowHeight = rowHeight;
+            CellBuffers = cellBuffers;
+        }
+        public Box Row { get; }
+        public double RowHeight { get; }
+        public List<MeasuringFragmentSink> CellBuffers { get; }
+    }
+
+    private bool _measureDone;
+    private double _measuredContentHeight;
+    private int _measuredColumnCount;
+    private double _measuredColumnWidth;
+    private List<RowMeasurement>? _measuredRows;
+    private bool _measuredSawColspan;
+    private List<Box>? _measuredCaptions; // wrapper-direct caption children
+    private bool _measuredMissingGrid;
+
     /// <inheritdoc />
     public LayoutAttemptResult AttemptLayout(
         FragmentainerContext fragmentainer,
@@ -233,173 +298,49 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                 + "layouter knows where to anchor the rows.");
         }
 
-        // Locate the TableGrid child. Per CSS Tables L3 §2.1 the
-        // wrapper always carries exactly one TableGrid + zero-or-more
-        // TableCaption children; BoxBuilder's table fixup synthesizes
-        // the grid even when the source HTML has no explicit one.
-        var grid = FindTableGrid(_rootBox);
-        if (grid is null)
+        // Two-phase protocol: dispatcher should have called
+        // MeasureContentHeight first. If it didn't, run the measure
+        // pass lazily now — keeps direct-construction call sites (older
+        // tests) working without the explicit pre-measure step.
+        if (!_measureDone)
         {
-            // Defensive — should not happen in well-formed trees. The
-            // outer fragment was already emitted; we just have no inner
-            // content to add.
-            OptimizingBreakResolver.SafeEmit(
-                layout.Diagnostics ?? _diagnostics,
-                new PaginateDiagnostic(
-                    PaginateDiagnosticCodes.PaginationForcedOverflow001,
-                    "TableLayouter: Table wrapper has no TableGrid child. "
-                    + "Box-generation invariant violated — the inner grid "
-                    + "should always be synthesized by BoxBuilder's table "
-                    + "fixup. Emitting the outer wrapper only; no rows "
-                    + "produced.",
-                    PaginateDiagnosticSeverity.Warning));
+            _ = MeasureContentHeight(fragmentainer, ref layout, cancellationToken);
+        }
+
+        // Emit caption diagnostics + missing-grid diagnostic first.
+        EmitDeferralDiagnostics(ref layout);
+
+        if (_measuredMissingGrid)
+        {
             return LayoutAttemptResult.AllDone(cost: 0);
         }
 
-        // Collect rows in document order (recursing into row groups).
-        var rows = new List<Box>();
-        CollectRows(grid, rows, cancellationToken);
-
-        if (rows.Count == 0)
+        var rows = _measuredRows;
+        if (rows is null || rows.Count == 0)
         {
-            // Empty table — no rows. AllDone, nothing emitted beyond
-            // the wrapper.
             return LayoutAttemptResult.AllDone(cost: 0);
         }
 
-        // Column count = max number of TableCell children across rows.
-        // Sub-cycle 1 assumes no colspan, so this equals row.Children
-        // count filtered by Kind == TableCell.
-        var columnCount = 0;
-        var sawColspanAttribute = false;
-        for (var r = 0; r < rows.Count; r++)
+        if (_measuredColumnCount == 0 || _measuredColumnWidth <= 0)
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            var cellCount = 0;
-            var row = rows[r];
-            for (var i = 0; i < row.Children.Count; i++)
-            {
-                var ch = row.Children[i];
-                if (ch.Kind == BoxKind.TableCell)
-                {
-                    cellCount++;
-                    // Defer colspan/rowspan — emit a single diagnostic
-                    // when any cell carries the attribute. See
-                    // docs/deferrals.md#table-auto-fixed-spans-borders.
-                    if (!sawColspanAttribute && HasSpanAttribute(ch))
-                    {
-                        sawColspanAttribute = true;
-                    }
-                }
-            }
-            if (cellCount > columnCount)
-            {
-                columnCount = cellCount;
-            }
-        }
-
-        if (sawColspanAttribute)
-        {
-            OptimizingBreakResolver.SafeEmit(
-                layout.Diagnostics ?? _diagnostics,
-                new PaginateDiagnostic(
-                    PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001,
-                    "TableLayouter: a TableCell carries a colspan or "
-                    + "rowspan attribute, which sub-cycle 1 ignores (each "
-                    + "cell occupies exactly one column / one row). See "
-                    + "docs/deferrals.md#table-auto-fixed-spans-borders.",
-                    PaginateDiagnosticSeverity.Warning));
-        }
-
-        if (columnCount == 0)
-        {
-            // Rows exist but contain no cells. Nothing useful to emit.
             return LayoutAttemptResult.AllDone(cost: 0);
         }
 
-        // Equal-split column width. Sub-cycle 1 — no <col> widths, no
-        // auto algorithm, no fixed algorithm.
-        var columnWidth = _contentInlineSize / columnCount;
-        if (columnWidth <= 0)
-        {
-            // Defensive — wrapper has zero content area. Nothing to
-            // emit (rows would be 0-width).
-            return LayoutAttemptResult.AllDone(cost: 0);
-        }
-
-        // Walk rows + emit row + cell fragments.
+        var columnWidth = _measuredColumnWidth;
         var rowCursorBlock = _contentBlockOffset;
-        var emittedRowExtent = 0.0;
         var overflowDiagnosed = false;
+
         for (var r = 0; r < rows.Count; r++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var row = rows[r];
+            var rowMeasure = rows[r];
+            var row = rowMeasure.Row;
+            var rowHeight = rowMeasure.RowHeight;
 
-            // Compute each cell's content extent via a nested
-            // BlockLayouter measure pass; track the row height as the
-            // max across cells. Reserve a per-row buffer + walk twice
-            // (measure → emit) to keep the per-cell offset arithmetic
-            // simple. Sub-cycle 2 may inline the two passes when
-            // pagination kicks in.
-            var cellCount = CountTableCells(row);
-            if (cellCount == 0)
-            {
-                // Empty row — no cells. Skip without advancing the
-                // cursor (sub-cycle 1 simplification; CSS would still
-                // reserve some min-height per Tables L3 §11.5.4).
-                continue;
-            }
-
-            // Measure each cell's content extent into a per-cell array,
-            // forwarding the cell's INNER fragments to the outer sink.
-            // The measuring sink applies the cell's offsets to every
-            // emitted fragment so the painter receives them in
-            // fragmentainer coordinates.
-            //
-            // Per sub-cycle 1 algorithm (step 5): the measure pass
-            // RUNS the cell's content layout into the outer sink. We
-            // capture the max-block extent so the row height can wrap
-            // around the tallest cell.
-            var cellMeasurements = new double[cellCount];
-            var visibleCellIndex = 0;
-            for (var i = 0; i < row.Children.Count; i++)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var ch = row.Children[i];
-                if (ch.Kind != BoxKind.TableCell)
-                {
-                    continue;
-                }
-                var cellInlineOffset = _contentInlineOffset
-                    + (visibleCellIndex * columnWidth);
-                var cellBlockOffset = rowCursorBlock;
-                cellMeasurements[visibleCellIndex] = LayoutCellContent(
-                    cellBox: ch,
-                    cellInlineOffset: cellInlineOffset,
-                    cellBlockOffset: cellBlockOffset,
-                    cellInlineSize: columnWidth,
-                    fragmentainer: fragmentainer,
-                    layout: ref layout,
-                    resolver: resolver,
-                    cancellationToken: cancellationToken);
-                visibleCellIndex++;
-            }
-
-            // Row height = max measured cell extent. Sub-cycle 1 — a
-            // zero-height row is legal (an empty cell row), so don't
-            // clamp to a minimum.
-            var rowHeight = 0.0;
-            for (var c = 0; c < cellMeasurements.Length; c++)
-            {
-                if (cellMeasurements[c] > rowHeight)
-                {
-                    rowHeight = cellMeasurements[c];
-                }
-            }
-
-            // Emit row fragment first (the row's geometry spans the
-            // full content-inline-size + the computed row height).
+            // Emit row fragment FIRST (paint-safe order: backgrounds
+            // before content). Sub-cycle 1 simplification — a zero-cell
+            // row produces no measurement entry so we don't reach here
+            // for an empty row.
             _sink.Emit(new BoxFragment(
                 Box: row,
                 InlineOffset: _contentInlineOffset,
@@ -407,12 +348,12 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                 InlineSize: _contentInlineSize,
                 BlockSize: rowHeight));
 
-            // Emit each cell fragment with the computed row height
-            // (cells stretch to the row's height per CSS Tables L3
-            // §11.5.5, which sub-cycle 1 approximates as "row height
-            // == max cell content extent" without separate cell
-            // intrinsic-height resolution).
-            visibleCellIndex = 0;
+            // For each cell in document order: emit the cell fragment,
+            // then drain its buffered content fragments via FlushTo.
+            // This produces the paint-safe order row → cell → cell-
+            // content (text under cell backgrounds/borders).
+            var cellBuffers = rowMeasure.CellBuffers;
+            var visibleCellIndex = 0;
             for (var i = 0; i < row.Children.Count; i++)
             {
                 var ch = row.Children[i];
@@ -428,28 +369,25 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                     BlockOffset: rowCursorBlock,
                     InlineSize: columnWidth,
                     BlockSize: rowHeight));
+
+                // Drain the cell's buffered content fragments. The
+                // measure pass already translated them into
+                // fragmentainer coordinates relative to the cell's
+                // origin captured at measure time — which we deliberately
+                // anchored to (_contentInlineOffset + visibleCellIndex *
+                // columnWidth, rowCursorBlock). Since the row cursor
+                // matches the measure-time anchor by construction
+                // (we walk rows in the same order MeasureContentHeight
+                // did), the translated offsets are correct.
+                var buffer = cellBuffers[visibleCellIndex];
+                buffer.FlushTo(_sink);
                 visibleCellIndex++;
             }
 
-            // Advance cursors.
             rowCursorBlock += rowHeight;
-            emittedRowExtent += rowHeight;
 
             // Forced-overflow detection (sub-cycle 1: emit anyway).
-            // The dispatch site (BlockLayouter) reserved page space
-            // for the wrapper's own border-box height; if the
-            // measured cells push the table BEYOND the page bottom,
-            // the rest of the rows still emit (atomic table semantics
-            // for sub-cycle 1) but a diagnostic fires so consumers
-            // know the table overflowed. Multi-page splitting is
-            // sub-cycle 2.
-            //
-            // The threshold is the fragmentainer's absolute block-axis
-            // bottom (= BlockSize, since fragmentainer block-axis
-            // starts at 0). `rowCursorBlock` is in the same
-            // fragmentainer-relative space (we anchored it at
-            // _contentBlockOffset which itself is fragmentainer-
-            // relative).
+            // Sub-cycle 2 will split rows across pages.
             if (!overflowDiagnosed && rowCursorBlock > fragmentainer.BlockSize)
             {
                 overflowDiagnosed = true;
@@ -468,19 +406,246 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             }
         }
 
-        // Sub-cycle 1 — the outer BlockLayouter already advanced
-        // UsedBlockSize by the wrapper's own border-box block size.
-        // Adding the row extent on top would double-count the
-        // wrapper's height-from-style (when set) or expand correctly
-        // for an auto-height table. Sub-cycle 1 takes the SIMPLER
-        // path: leave UsedBlockSize as the outer BlockLayouter set
-        // it. This matches the BlockLayouter cycle-2c "subtree-aware
-        // measure" semantic — the wrapper itself reports its own
-        // border-box size + leaves the per-cell extent for the
-        // dedicated layouter. Sub-cycle 2 will refine the wrapper's
-        // auto-height resolution to track the row extent.
-
         return LayoutAttemptResult.AllDone(cost: 0);
+    }
+
+    /// <summary>Per Phase 3 Task 12 sub-cycle 1 hardening (Finding 1) —
+    /// pre-compute the total row-stack block extent for the table's
+    /// content area, WITHOUT forwarding fragments to the outer sink.
+    /// The dispatching <see cref="BlockLayouter"/> calls this BEFORE
+    /// emitting the wrapper fragment so it can size the wrapper's
+    /// border-box block extent to <c>max(cssHeight, tableContentHeight)</c>;
+    /// the wrapper's emitted extent then drives
+    /// <see cref="FragmentainerContext.UsedBlockSize"/>, preventing
+    /// siblings from overlapping the table's rows.
+    ///
+    /// <para>Per Finding 2 — cell-content layout uses a buffering
+    /// <see cref="MeasuringFragmentSink"/>; the buffers are retained
+    /// on this layouter for the subsequent emit pass to drain via
+    /// <see cref="MeasuringFragmentSink.FlushTo"/>.</para>
+    ///
+    /// <para>Per Finding 3 — each cell-content layout dispatches
+    /// against a FRESH <see cref="BreakResolver"/> scoped to that cell
+    /// so the outer resolver's checkpoint state is preserved
+    /// untouched.</para>
+    ///
+    /// <para>Idempotent — calling twice returns the cached value
+    /// without re-running the cell layouts.</para>
+    /// </summary>
+    /// <returns>Total content block-axis height (sum of row heights;
+    /// 0 when no rows are present or the wrapper has no
+    /// <see cref="BoxKind.TableGrid"/> child).</returns>
+    public double MeasureContentHeight(
+        FragmentainerContext fragmentainer,
+        ref LayoutContext layout,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(fragmentainer);
+        cancellationToken.ThrowIfCancellationRequested();
+
+        if (_measureDone)
+        {
+            return _measuredContentHeight;
+        }
+
+        if (!_emissionConfigured)
+        {
+            throw new InvalidOperationException(
+                "TableLayouter.MeasureContentHeight was called before "
+                + "ConfigureEmission. The dispatching BlockLayouter must "
+                + "supply the wrapper's content-area geometry (specifically "
+                + "the content inline-size) so the layouter can split "
+                + "columns + measure cell content.");
+        }
+
+        // Collect captions (direct wrapper children) for the deferral
+        // diagnostic emitted from AttemptLayout. Per BoxBuilder Rec 5
+        // captions stay at the wrapper level (NOT inside the grid).
+        _measuredCaptions = CollectCaptions(_rootBox);
+
+        // Locate the TableGrid child.
+        var grid = FindTableGrid(_rootBox);
+        if (grid is null)
+        {
+            _measuredMissingGrid = true;
+            _measureDone = true;
+            return 0;
+        }
+
+        // Collect rows in document order (recursing into row groups).
+        var rows = new List<Box>();
+        CollectRows(grid, rows, cancellationToken);
+
+        if (rows.Count == 0)
+        {
+            _measureDone = true;
+            return 0;
+        }
+
+        // Column count = max number of TableCell children across rows.
+        // Sub-cycle 1 assumes no colspan, so this equals row.Children
+        // count filtered by Kind == TableCell.
+        var columnCount = 0;
+        var sawColspanAttribute = false;
+        for (var r = 0; r < rows.Count; r++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var cellCount = 0;
+            var row = rows[r];
+            for (var i = 0; i < row.Children.Count; i++)
+            {
+                var ch = row.Children[i];
+                if (ch.Kind == BoxKind.TableCell)
+                {
+                    cellCount++;
+                    if (!sawColspanAttribute && HasSpanAttribute(ch))
+                    {
+                        sawColspanAttribute = true;
+                    }
+                }
+            }
+            if (cellCount > columnCount)
+            {
+                columnCount = cellCount;
+            }
+        }
+
+        _measuredColumnCount = columnCount;
+        _measuredSawColspan = sawColspanAttribute;
+
+        if (columnCount == 0)
+        {
+            _measureDone = true;
+            return 0;
+        }
+
+        var columnWidth = _contentInlineSize / columnCount;
+        _measuredColumnWidth = columnWidth;
+        if (columnWidth <= 0)
+        {
+            _measureDone = true;
+            return 0;
+        }
+
+        // Per-row measure: layout each cell into a buffering
+        // MeasuringFragmentSink, derive row height = max cell extent.
+        var measured = new List<RowMeasurement>(capacity: rows.Count);
+        var totalContentHeight = 0.0;
+        var rowAnchorBlock = _contentBlockOffset;
+        for (var r = 0; r < rows.Count; r++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var row = rows[r];
+            var cellCount = CountTableCells(row);
+            if (cellCount == 0)
+            {
+                // Empty row — no measurement recorded (skipped during
+                // emit). Sub-cycle 1 simplification; CSS would still
+                // reserve some min-height per Tables L3 §11.5.4.
+                continue;
+            }
+
+            var cellBuffers = new List<MeasuringFragmentSink>(capacity: cellCount);
+            var rowHeight = 0.0;
+            var visibleCellIndex = 0;
+            for (var i = 0; i < row.Children.Count; i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var ch = row.Children[i];
+                if (ch.Kind != BoxKind.TableCell)
+                {
+                    continue;
+                }
+                var cellInlineOffset = _contentInlineOffset
+                    + (visibleCellIndex * columnWidth);
+                var cellBlockOffset = rowAnchorBlock;
+                var buffer = MeasureCellContent(
+                    cellBox: ch,
+                    cellInlineOffset: cellInlineOffset,
+                    cellBlockOffset: cellBlockOffset,
+                    cellInlineSize: columnWidth,
+                    fragmentainer: fragmentainer,
+                    layout: ref layout,
+                    cancellationToken: cancellationToken);
+                cellBuffers.Add(buffer);
+                if (buffer.MaxBlockExtentFromCellOrigin > rowHeight)
+                {
+                    rowHeight = buffer.MaxBlockExtentFromCellOrigin;
+                }
+                visibleCellIndex++;
+            }
+
+            measured.Add(new RowMeasurement(row, rowHeight, cellBuffers));
+            totalContentHeight += rowHeight;
+            rowAnchorBlock += rowHeight;
+        }
+
+        _measuredRows = measured;
+        _measuredContentHeight = totalContentHeight;
+        _measureDone = true;
+        return totalContentHeight;
+    }
+
+    /// <summary>Emit the deferral / structural-anomaly diagnostics
+    /// recorded during measure. Called from <see cref="AttemptLayout"/>
+    /// once the dispatcher has committed to running the emit pass; we
+    /// don't emit during measure because the measure pass may be
+    /// called speculatively (e.g., from a wrapper-sizing pre-pass).
+    /// </summary>
+    private void EmitDeferralDiagnostics(ref LayoutContext layout)
+    {
+        var sink = layout.Diagnostics ?? _diagnostics;
+        if (sink is null)
+        {
+            return;
+        }
+
+        if (_measuredMissingGrid)
+        {
+            // Per Finding 5 — this is a malformed-box-tree anomaly, NOT
+            // a pagination overflow. Use the table-specific feature-
+            // unsupported code so consumers don't see a misleading
+            // overflow signal.
+            OptimizingBreakResolver.SafeEmit(
+                sink,
+                new PaginateDiagnostic(
+                    PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001,
+                    "TableLayouter: Table wrapper has no TableGrid child — "
+                    + "malformed box tree from BoxBuilder. Table content "
+                    + "silently dropped. This is a box-generation invariant "
+                    + "violation, not a pagination overflow.",
+                    PaginateDiagnosticSeverity.Warning));
+        }
+
+        if (_measuredSawColspan)
+        {
+            OptimizingBreakResolver.SafeEmit(
+                sink,
+                new PaginateDiagnostic(
+                    PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001,
+                    "TableLayouter: a TableCell carries a colspan or "
+                    + "rowspan attribute, which sub-cycle 1 ignores (each "
+                    + "cell occupies exactly one column / one row). See "
+                    + "docs/deferrals.md#table-auto-fixed-spans-borders.",
+                    PaginateDiagnosticSeverity.Warning));
+        }
+
+        if (_measuredCaptions is { Count: > 0 } captions)
+        {
+            for (var i = 0; i < captions.Count; i++)
+            {
+                var captionText = ExtractCaptionTextSnippet(captions[i]);
+                OptimizingBreakResolver.SafeEmit(
+                    sink,
+                    new PaginateDiagnostic(
+                        PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001,
+                        $"TableLayouter: table caption skipped — sub-cycle 1 "
+                        + $"does not yet lay out caption content. Caption "
+                        + $"text: \"{captionText}\". See "
+                        + "docs/deferrals.md#table-auto-fixed-spans-borders.",
+                        PaginateDiagnosticSeverity.Warning));
+            }
+        }
     }
 
     /// <summary>Sub-cycle 1 — find the wrapper's
@@ -499,13 +664,75 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         return null;
     }
 
+    /// <summary>Per Finding 4 — collect the wrapper's direct
+    /// <see cref="BoxKind.TableCaption"/> children. Per BoxBuilder
+    /// Rec 5 captions are kept under the wrapper (NOT inside the
+    /// grid) so this walks the wrapper, not the grid.</summary>
+    private static List<Box> CollectCaptions(Box wrapper)
+    {
+        var captions = new List<Box>();
+        for (var i = 0; i < wrapper.Children.Count; i++)
+        {
+            if (wrapper.Children[i].Kind == BoxKind.TableCaption)
+            {
+                captions.Add(wrapper.Children[i]);
+            }
+        }
+        return captions;
+    }
+
+    /// <summary>Per Finding 4 — extract a short text snippet from a
+    /// caption box for inclusion in the deferral diagnostic. Walks the
+    /// caption's descendants collecting TextRun text content, capped
+    /// at 80 characters. The snippet lets authors identify WHICH
+    /// caption is being dropped when a document has multiple
+    /// tables.</summary>
+    private static string ExtractCaptionTextSnippet(Box caption)
+    {
+        const int MaxLength = 80;
+        var sb = new StringBuilder(capacity: MaxLength + 8);
+        WalkForText(caption, sb, MaxLength);
+        var raw = sb.ToString();
+        // Collapse any embedded line breaks so the diagnostic stays
+        // on one line.
+        return raw.Replace('\n', ' ').Replace('\r', ' ').Trim();
+
+        static void WalkForText(Box box, StringBuilder sb, int cap)
+        {
+            if (sb.Length >= cap) return;
+            if (box.Kind == BoxKind.TextRun)
+            {
+                var text = box.Text;
+                if (text.Length == 0) return;
+                var remaining = cap - sb.Length;
+                if (text.Length <= remaining)
+                {
+                    sb.Append(text);
+                }
+                else
+                {
+                    sb.Append(text, 0, remaining);
+                    sb.Append('…');
+                }
+                return;
+            }
+            for (var i = 0; i < box.Children.Count; i++)
+            {
+                if (sb.Length >= cap) return;
+                WalkForText(box.Children[i], sb, cap);
+            }
+        }
+    }
+
     /// <summary>Sub-cycle 1 — walk <paramref name="grid"/>'s children
     /// in document order, appending every <see cref="BoxKind.TableRow"/>
     /// (including those nested inside <see cref="BoxKind.TableRowGroup"/>
     /// / <see cref="BoxKind.TableHeaderGroup"/> /
     /// <see cref="BoxKind.TableFooterGroup"/>) to
     /// <paramref name="rows"/>. Captions, column groups, columns are
-    /// skipped — those are sub-cycle 2+ work.</summary>
+    /// skipped — captions live at the wrapper level (Finding 4
+    /// handles them); column groups + columns are sub-cycle 2+
+    /// work.</summary>
     private static void CollectRows(Box grid, List<Box> rows, CancellationToken cancellationToken)
     {
         for (var i = 0; i < grid.Children.Count; i++)
@@ -586,11 +813,15 @@ internal sealed class TableLayouter : ILayouter, IDisposable
 
     /// <summary>Sub-cycle 1 — lay out <paramref name="cellBox"/>'s
     /// inner content via a nested <see cref="BlockLayouter"/>,
-    /// forwarding the emitted fragments to the outer sink with an
-    /// offset translation so the cell's content lands inside the
-    /// column. Returns the cell's measured content block-axis extent
-    /// (= max <c>BlockOffset + BlockSize</c> across the cell's emitted
-    /// fragments, relative to <paramref name="cellBlockOffset"/>).</summary>
+    /// BUFFERING the translated fragments in a
+    /// <see cref="MeasuringFragmentSink"/> for later flush. Returns
+    /// the buffer (carrying both the measured extent + the buffered
+    /// fragments).
+    ///
+    /// <para>Per Finding 3 — the nested <see cref="BlockLayouter"/>
+    /// runs against a FRESH <see cref="BreakResolver"/> scoped to the
+    /// cell so the outer resolver's checkpoint state is preserved.
+    /// </para></summary>
     /// <param name="cellBox">The <see cref="BoxKind.TableCell"/>
     /// box. The nested BlockLayouter treats this as a fresh root —
     /// its children lay out within the cell's allocated column.</param>
@@ -605,21 +836,15 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     /// accounting separate from the outer.</param>
     /// <param name="layout">The outer layout context (carries the
     /// diagnostic sink + counter state).</param>
-    /// <param name="resolver">The outer break resolver — sub-cycle 1
-    /// uses the same instance for the inner layout (cells don't
-    /// trigger page breaks; the inner layouter consults but the
-    /// resolver's verdicts don't change the outer table's
-    /// pagination).</param>
     /// <param name="cancellationToken">Propagated to the inner
     /// layouter.</param>
-    private double LayoutCellContent(
+    private MeasuringFragmentSink MeasureCellContent(
         Box cellBox,
         double cellInlineOffset,
         double cellBlockOffset,
         double cellInlineSize,
         FragmentainerContext fragmentainer,
         ref LayoutContext layout,
-        IBreakResolver resolver,
         CancellationToken cancellationToken)
     {
         // The cell is a block-flow container. Wrap it in a Root box
@@ -635,7 +860,7 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         // "best effort" pass — no pagination splitting within a cell.
 
         var measuringSink = new MeasuringFragmentSink(
-            outerSink: _sink,
+            outerSinkBaselineCursor: _sink.Cursor,
             inlineOffsetTranslation: cellInlineOffset,
             blockOffsetTranslation: cellBlockOffset);
 
@@ -667,52 +892,64 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             diagnostics: _diagnostics,
             shaperResolver: _shaperResolver);
 
+        // Per Finding 3 — fresh BreakResolver scoped to the cell. The
+        // outer resolver's checkpoint state is preserved untouched —
+        // cell-internal pagination never modifies the outer table's
+        // rewind / resume contract. The cell resolver's Dispose
+        // releases any last-held checkpoint lease back to the pool.
+        using var cellResolver = new BreakResolver();
+
         // Sub-cycle 1 — best-effort layout into the cell's column.
         // The inner LastResort strategy keeps the inner layouter
         // from returning NeedsRewind (which sub-cycle 1 has no path
-        // to handle inside a cell). Outer pagination is unchanged
-        // since the cell content's overflow is the outer table's
-        // problem, not the cell's.
+        // to handle inside a cell).
         _ = cellLayouter.AttemptLayout(
-            cellFragmentainer, ref innerLayout, resolver,
+            cellFragmentainer, ref innerLayout, cellResolver,
             LayoutAttemptStrategy.LastResort, cancellationToken);
 
-        // The measuring sink tracked the max block extent (relative
-        // to the cell's origin) across every forwarded fragment.
-        return measuringSink.MaxBlockExtentFromCellOrigin;
+        return measuringSink;
     }
 
-    /// <summary>Per Phase 3 Task 12 sub-cycle 1 — fragment sink wrapper
-    /// that (a) translates inline + block offsets from the cell's
-    /// origin space into fragmentainer coordinates, (b) tracks the
-    /// maximum block extent observed (for row-height computation), and
-    /// (c) forwards translated fragments to the outer sink.
+    /// <summary>Per Phase 3 Task 12 sub-cycle 1 hardening (Finding 2) —
+    /// fragment sink that BUFFERS emitted fragments (translating
+    /// offsets from the cell's origin into fragmentainer coordinates)
+    /// for later flush via <see cref="FlushTo"/>.
     ///
-    /// <para><b>Rollback contract.</b> The inner <see cref="BlockLayouter"/>
-    /// may call <see cref="IFragmentSink.RollbackTo"/> if it rewinds.
-    /// We translate the inner cursor into the outer sink's cursor by
-    /// remembering the outer cursor at our creation + restoring to
-    /// that baseline plus the inner offset on rollback. Sub-cycle 1
-    /// doesn't drive rewinds inside cells (LastResort strategy
-    /// suppresses them), but the wrapper still honors the contract
-    /// for forwards compatibility.</para></summary>
-    private sealed class MeasuringFragmentSink : IBlockFragmentSink
+    /// <para>Pre-Finding-2 the sink forwarded translated fragments to
+    /// the outer sink during measure, which produced a paint order
+    /// where cell content fragments preceded the row + cell border-box
+    /// fragments — so cell backgrounds / borders would paint OVER
+    /// the text. Post-Finding-2 the sink retains the translated
+    /// fragments in an internal list; the emit phase emits the row
+    /// fragment, then the cell fragment, then calls
+    /// <see cref="FlushTo"/> to drain the buffered content. The
+    /// resulting outer-sink order — row → cell → cell content — is
+    /// paint-safe.</para>
+    ///
+    /// <para><b>Rollback contract.</b> The inner
+    /// <see cref="BlockLayouter"/> may call
+    /// <see cref="IFragmentSink.RollbackTo"/> if it rewinds. Sub-
+    /// cycle 1 uses the inner LastResort strategy which suppresses
+    /// rewinds, so the rollback path isn't reached in practice. The
+    /// sink still honors the contract — truncating the buffer to the
+    /// requested cursor; the MaxBlockExtentFromCellOrigin field is
+    /// left stale (over-estimated) per the documented sub-cycle 1
+    /// approximation.</para></summary>
+    internal sealed class MeasuringFragmentSink : IBlockFragmentSink
     {
-        private readonly IBlockFragmentSink _outerSink;
         private readonly double _inlineTranslation;
         private readonly double _blockTranslation;
         private readonly int _outerCursorBaseline;
-        private int _innerEmitCount;
+        private readonly List<BoxFragment> _buffered = new();
 
         public MeasuringFragmentSink(
-            IBlockFragmentSink outerSink,
+            int outerSinkBaselineCursor,
             double inlineOffsetTranslation,
             double blockOffsetTranslation)
         {
-            _outerSink = outerSink;
             _inlineTranslation = inlineOffsetTranslation;
             _blockTranslation = blockOffsetTranslation;
-            _outerCursorBaseline = outerSink.Cursor;
+            _outerCursorBaseline = outerSinkBaselineCursor;
         }
 
         /// <summary>Maximum block extent (BlockOffset + BlockSize)
@@ -721,7 +958,12 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         /// the row-height computation.</summary>
         public double MaxBlockExtentFromCellOrigin { get; private set; }
 
-        public int Cursor => _innerEmitCount;
+        /// <summary>Per Finding 2 — the cursor is the count of
+        /// BUFFERED fragments, not a baselined outer cursor. The
+        /// inner BlockLayouter's checkpoint capture uses this to
+        /// record its emit point; rollback truncates the buffer to
+        /// that point.</summary>
+        public int Cursor => _buffered.Count;
 
         public void Emit(BoxFragment fragment)
         {
@@ -744,31 +986,62 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             {
                 MaxBlockExtentFromCellOrigin = innerBottom;
             }
-            _outerSink.Emit(translated);
-            _innerEmitCount++;
+            _buffered.Add(translated);
         }
 
         public void RollbackTo(int cursor)
         {
             // Sub-cycle 1 — the inner LastResort strategy suppresses
-            // NeedsRewind, so this path isn't reached in practice. The
-            // outer sink's RollbackTo accepts a cursor in OUTER index
-            // space; translate via the baseline captured at
-            // construction.
-            if (cursor < 0 || cursor > _innerEmitCount)
+            // NeedsRewind, so this path isn't reached in practice.
+            // Per Finding 2 we now truncate the buffer rather than
+            // calling back to an outer sink (the outer sink doesn't
+            // see anything from this measure pass until FlushTo).
+            if (cursor < 0 || cursor > _buffered.Count)
             {
                 throw new ArgumentOutOfRangeException(nameof(cursor),
                     $"MeasuringFragmentSink.RollbackTo: inner cursor "
-                    + $"{cursor} out of range [0, {_innerEmitCount}].");
+                    + $"{cursor} out of range [0, {_buffered.Count}].");
             }
-            _outerSink.RollbackTo(_outerCursorBaseline + cursor);
-            _innerEmitCount = cursor;
+            if (cursor < _buffered.Count)
+            {
+                _buffered.RemoveRange(cursor, _buffered.Count - cursor);
+            }
             // Recomputing MaxBlockExtentFromCellOrigin after a partial
             // rollback would require re-scanning forwarded fragments —
             // not worth it for the sub-cycle-1 unreachable path; we
             // leave the value stale, accepting that a rolled-back cell
             // measure is over-estimated. Documented for sub-cycle 2.
         }
+
+        /// <summary>Per Finding 2 — drain the buffered fragments to
+        /// <paramref name="target"/> in document order, then clear the
+        /// buffer. Called by <see cref="AttemptLayout"/> after the
+        /// row + cell fragments have been emitted so the outer sink
+        /// receives them in paint-safe order (row → cell → cell
+        /// content).</summary>
+        public void FlushTo(IBlockFragmentSink target)
+        {
+            ArgumentNullException.ThrowIfNull(target);
+            for (var i = 0; i < _buffered.Count; i++)
+            {
+                target.Emit(_buffered[i]);
+            }
+            _buffered.Clear();
+        }
+
+        /// <summary>Per Finding 2 — exposed for diagnostics / tests
+        /// that need to inspect the buffered fragments without
+        /// flushing. Returns a snapshot count + the buffer reference
+        /// for read-only walks. Production callers should use
+        /// <see cref="FlushTo"/>.</summary>
+        internal IReadOnlyList<BoxFragment> Buffered => _buffered;
+
+        /// <summary>The outer-sink cursor at the moment this measure
+        /// sink was created. Currently unused (sub-cycle 1 doesn't
+        /// drive rewinds inside cells), but retained for sub-cycle 2
+        /// resume semantics where a partial cell flush would need to
+        /// translate buffer cursors into outer cursors.</summary>
+        internal int OuterCursorBaseline => _outerCursorBaseline;
     }
 
     /// <summary>No-op disposer for symmetry with

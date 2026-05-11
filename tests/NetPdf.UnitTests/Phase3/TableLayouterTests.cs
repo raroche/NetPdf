@@ -450,6 +450,277 @@ public sealed class TableLayouterTests
     }
 
     // ====================================================================
+    //  Phase 3 Task 12 sub-cycle 1 post-PR-49 hardening review tests
+    //  (Findings 1-5; Finding 6 lives in TableLayouterProductionTests.cs).
+    // ====================================================================
+
+    [Fact]
+    public void Finding1_table_height_feeds_wrapper_so_following_sibling_does_not_overlap()
+    {
+        // Per Finding 1 — pre-PR-49 the wrapper fragment was emitted
+        // with BlockSize = 0 (auto-height returns 0 from
+        // ReadLengthPxOrZero), so siblings overlapped the table rows.
+        // Post-fix the wrapper's border-box is sized to the measured
+        // table content height; the following sibling lands BELOW
+        // the table.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        // Build: root -> [table (one row, one cell with 100-tall block),
+        //                 following paragraph (50-tall block)]
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        var cellAnon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var cellInnerStyle = MakeStyle();
+        SetLengthPx(cellInnerStyle, PropertyId.Height, 100);
+        var cellInner = Box.ForElement(BoxKind.BlockContainer, cellInnerStyle, MakeElement());
+        cellAnon.AppendChild(cellInner);
+        cell.AppendChild(cellAnon);
+        row.AppendChild(cell);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        var followStyle = MakeStyle();
+        SetLengthPx(followStyle, PropertyId.Height, 50);
+        var follow = Box.ForElement(BoxKind.BlockContainer, followStyle, MakeElement());
+        root.AppendChild(follow);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // Find the table wrapper + the follow-block fragments.
+        BoxFragment? tableFragment = null;
+        BoxFragment? followFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (ReferenceEquals(f.Box, table)) tableFragment = f;
+            if (ReferenceEquals(f.Box, follow)) followFragment = f;
+        }
+        Assert.NotNull(tableFragment);
+        Assert.NotNull(followFragment);
+
+        // Table wrapper now has the measured content height in its
+        // border-box block extent (pre-fix this was 0).
+        Assert.True(tableFragment!.Value.BlockSize >= 100,
+            $"Expected wrapper BlockSize ≥ 100 (cell content), got {tableFragment.Value.BlockSize}.");
+
+        // The following paragraph lands BELOW the table's bottom edge —
+        // no overlap.
+        var tableBottom = tableFragment.Value.BlockOffset + tableFragment.Value.BlockSize;
+        Assert.True(followFragment!.Value.BlockOffset >= tableBottom,
+            $"Sibling overlap: follow.BlockOffset={followFragment.Value.BlockOffset} < "
+            + $"tableBottom={tableBottom}.");
+    }
+
+    [Fact]
+    public void Finding1_MeasureContentHeight_is_idempotent()
+    {
+        // Per Finding 1 spec — MeasureContentHeight must be idempotent;
+        // calling twice returns the same value from cache (no re-running
+        // of cell layouts).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+        var (_, table) = BuildTable(rowCount: 2, columnCount: 2,
+            cellTextRun: "X", style: () => MakeStyle());
+
+        using var tableLayouter = new TableLayouter(
+            rootBox: table, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        tableLayouter.ConfigureEmission(
+            contentInlineOffset: 0, contentBlockOffset: 0, contentInlineSize: 600);
+
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+
+        var first = tableLayouter.MeasureContentHeight(ctx, ref layoutCtx);
+        var second = tableLayouter.MeasureContentHeight(ctx, ref layoutCtx);
+
+        Assert.Equal(first, second);
+        Assert.True(first > 0, "Expected a positive measured height for a non-empty table.");
+    }
+
+    [Fact]
+    public void Finding2_emit_order_is_row_then_cell_then_cell_content()
+    {
+        // Per Finding 2 — paint-safe order requires row → cell → cell
+        // content. Build a 1x1 table with a TextRun in the cell; assert
+        // the outer sink saw row before cell before content.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        var cellAnon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        cellAnon.AppendChild(Box.TextRun("Hello", MakeStyle()));
+        cell.AppendChild(cellAnon);
+        row.AppendChild(cell);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // Find indices of the row + cell + cell-content fragments. The
+        // cell content is the AnonymousBlock fragment whose box is the
+        // anon under the cell.
+        int rowIdx = -1, cellIdx = -1, cellContentIdx = -1;
+        for (var i = 0; i < sink.Fragments.Count; i++)
+        {
+            var b = sink.Fragments[i].Box;
+            if (b.Kind == BoxKind.TableRow && rowIdx < 0) rowIdx = i;
+            else if (b.Kind == BoxKind.TableCell && cellIdx < 0) cellIdx = i;
+            else if (ReferenceEquals(b, cellAnon) && cellContentIdx < 0) cellContentIdx = i;
+        }
+
+        Assert.True(rowIdx >= 0, "row fragment not emitted");
+        Assert.True(cellIdx >= 0, "cell fragment not emitted");
+        Assert.True(cellContentIdx >= 0, "cell-content fragment not emitted");
+
+        // Paint-safe order: row before cell, cell before content.
+        Assert.True(rowIdx < cellIdx,
+            $"Row at index {rowIdx} must precede cell at index {cellIdx} for paint-safe order.");
+        Assert.True(cellIdx < cellContentIdx,
+            $"Cell at index {cellIdx} must precede cell content at index {cellContentIdx} "
+            + "for paint-safe order (cell background under text).");
+    }
+
+    [Fact]
+    public void Finding3_cell_layout_does_not_alter_outer_resolver_checkpoint_state()
+    {
+        // Per Finding 3 — the nested BlockLayouter for cell content
+        // must use a FRESH BreakResolver scoped to the cell. The outer
+        // resolver's checkpoint state must be IDENTICAL before and
+        // after the table dispatch.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+        var (root, _) = BuildTable(rowCount: 2, columnCount: 2,
+            cellTextRun: "X", style: () => MakeStyle());
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+
+        // Use a custom resolver that snapshots its registered-checkpoint
+        // count + last-registered identity at every Register. After the
+        // table layout, neither value should reflect cell-internal
+        // checkpoints (only the outer wrapper's checkpoints, which is
+        // exactly 1 — the wrapper-level checkpoint registered by
+        // BlockLayouter when entering the table child).
+        var capturingResolver = new CapturingResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, capturingResolver, LayoutAttemptStrategy.LastResort);
+
+        // The number of checkpoints registered against the outer
+        // resolver matches the count of block-level children processed
+        // BY THE OUTER LAYOUTER (= 1, the Table wrapper). Pre-fix the
+        // cells' inner BlockLayouter would also register against this
+        // resolver, inflating the count by 4 (one per cell).
+        Assert.Equal(1, capturingResolver.RegisterCount);
+        capturingResolver.Dispose();
+    }
+
+    [Fact]
+    public void Finding4_caption_emits_diagnostic_with_text_snippet()
+    {
+        // Per Finding 4 — captions are silently dropped pre-fix; post-
+        // fix the layouter emits LAYOUT-TABLE-FEATURE-UNSUPPORTED-001
+        // with the caption text in the message.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        // Caption is a DIRECT child of the wrapper (per BoxBuilder).
+        var caption = Box.ForElement(BoxKind.TableCaption, MakeStyle(), MakeElement());
+        caption.AppendChild(Box.TextRun("Annual Report 2026", MakeStyle()));
+        table.AppendChild(caption);
+
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        row.AppendChild(cell);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, diagSink, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var captionDiag = diagSink.Diagnostics.Find(d =>
+            d.Code == PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001
+            && d.Message.Contains("caption"));
+        Assert.True(captionDiag.Code == PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001,
+            "Expected a LAYOUT-TABLE-FEATURE-UNSUPPORTED-001 diagnostic mentioning 'caption'.");
+        Assert.Contains("Annual Report 2026", captionDiag.Message);
+    }
+
+    [Fact]
+    public void Finding5_missing_TableGrid_emits_feature_unsupported_not_overflow()
+    {
+        // Per Finding 5 — pre-fix a Table wrapper with no TableGrid
+        // child emitted PAGINATION-FORCED-OVERFLOW-001 (a pagination
+        // code for what is actually a malformed-box-tree anomaly).
+        // Post-fix the code is LAYOUT-TABLE-FEATURE-UNSUPPORTED-001
+        // (which carries the table-specific signal that something is
+        // wrong with the table's box structure).
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        // Construct a Table wrapper WITHOUT a TableGrid child.
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, diagSink, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var hasFeatureDiag = false;
+        var hasOverflowDiag = false;
+        foreach (var d in diagSink.Diagnostics)
+        {
+            if (d.Code == PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001
+                && d.Message.Contains("no TableGrid"))
+            {
+                hasFeatureDiag = true;
+            }
+            if (d.Code == PaginateDiagnosticCodes.PaginationForcedOverflow001)
+            {
+                hasOverflowDiag = true;
+            }
+        }
+
+        Assert.True(hasFeatureDiag,
+            "Expected LAYOUT-TABLE-FEATURE-UNSUPPORTED-001 for missing TableGrid child.");
+        Assert.False(hasOverflowDiag,
+            "Did NOT expect PAGINATION-FORCED-OVERFLOW-001 for malformed table tree.");
+    }
+
+    // ====================================================================
     //  Tree builders + test doubles
     // ====================================================================
 
@@ -536,5 +807,34 @@ public sealed class TableLayouterTests
         private readonly HbShaper _shaper = new(SyntheticFont.Build(), fontSizePx: 12);
         public HbShaper Resolve(ComputedStyle style) => _shaper;
         public void Dispose() => _shaper.Dispose();
+    }
+
+    /// <summary>Per Finding 3 — counting resolver that wraps a real
+    /// <see cref="BreakResolver"/> + records every RegisterCheckpoint
+    /// call. Used to assert the outer resolver isn't polluted by
+    /// nested cell-layout checkpoints.</summary>
+    private sealed class CapturingResolver : IBreakResolver, System.IDisposable
+    {
+        private readonly BreakResolver _inner = new();
+        public int RegisterCount { get; private set; }
+
+        public BreakDecision ConsiderBreakAt(BreakOpportunity opportunity, FragmentainerContext ctx)
+            => _inner.ConsiderBreakAt(opportunity, ctx);
+
+        public OptimizerResult ResolveBreaks(
+            System.Collections.Generic.IReadOnlyList<BreakOpportunity> opportunities,
+            FragmentainerContext ctx,
+            System.Threading.CancellationToken cancellationToken = default)
+            => _inner.ResolveBreaks(opportunities, ctx, cancellationToken);
+
+        public void RegisterCheckpoint(CheckpointLease lease)
+        {
+            RegisterCount++;
+            _inner.RegisterCheckpoint(lease);
+        }
+
+        public LayoutCheckpoint? GetLastCheckpoint() => _inner.GetLastCheckpoint();
+
+        public void Dispose() => _inner.Dispose();
     }
 }

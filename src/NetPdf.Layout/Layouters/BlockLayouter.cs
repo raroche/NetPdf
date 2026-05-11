@@ -916,6 +916,63 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             var borderBoxInlineSize = Math.Max(0,
                 availInlineSize - marginInlineStart - marginInlineEnd);
 
+            // Per Phase 3 Task 12 sub-cycle 1 hardening (Finding 1) —
+            // for Table / InlineTable wrappers, pre-measure the
+            // table's row-stack content height so the wrapper's
+            // border-box block extent reflects the auto-height
+            // content (CSS `height: auto` returns 0 from
+            // ReadLengthPxOrZero, so without this fold-in siblings
+            // would overlap the table). The TableLayouter caches the
+            // per-row measurements + buffered cell content; we hand
+            // the same instance to EmitTableInner AFTER the wrapper
+            // fragment is emitted so it doesn't redo the work.
+            //
+            // The pre-measure needs the wrapper's content-block
+            // top-left + content-inline-size to anchor cell
+            // measurements; we feed it the EXPECTED border-box
+            // top-left for the Continue path (= UsedBlockSize +
+            // topShift). The forced-overflow path uses the same
+            // expected anchor — its actual wrapperBlockOffset equals
+            // UsedBlockSize + topShift too (see forcedOverflow* below).
+            // The cell-content offsets are translated from the cell-
+            // local origin captured during the buffer FlushTo pass,
+            // so the absolute anchor matters only for the row cursor
+            // arithmetic which is consistent across measure + emit.
+            TableLayouter? pendingTableLayouter = null;
+            var tableMeasuredContentHeight = 0.0;
+            if (child.Kind is BoxKind.Table or BoxKind.InlineTable)
+            {
+                var expectedBorderBoxBlockTop = fragmentainer.UsedBlockSize + topShift;
+                var inFlowInlineOffsetForTable = availInlineStart + marginInlineStart;
+                pendingTableLayouter = PreMeasureTableIfNeeded(
+                    wrapperChild: child,
+                    wrapperInlineOffset: inFlowInlineOffsetForTable,
+                    wrapperBlockOffsetExpected: expectedBorderBoxBlockTop,
+                    wrapperInlineSize: borderBoxInlineSize,
+                    fragmentainer: fragmentainer,
+                    layout: ref layout,
+                    tableContentHeight: out tableMeasuredContentHeight,
+                    cancellationToken: cancellationToken);
+                if (pendingTableLayouter is not null)
+                {
+                    // Fold the measured content height into the
+                    // wrapper's border-box block size. Per CSS Tables
+                    // L3 table-wrapper sizing is content-driven for
+                    // auto-height; explicit CSS height acts as a
+                    // floor. The wrapper's content-area extent is the
+                    // table content (rows), so add the wrapper's own
+                    // border + padding around it.
+                    var wrapperBorderPaddingBlock =
+                        borderStart + paddingStart + paddingEnd + borderEnd;
+                    var tableDrivenBorderBox =
+                        tableMeasuredContentHeight + wrapperBorderPaddingBlock;
+                    if (tableDrivenBorderBox > borderBoxBlockSize)
+                    {
+                        borderBoxBlockSize = tableDrivenBorderBox;
+                    }
+                }
+            }
+
             // Per cycle 2c post-PR-29 review #7 — `marginBoxBlockSize`
             // (= `topShift + borderBoxBlockSize + marginEnd`) was
             // removed. Cycle 2c introduced the subtree-aware
@@ -1099,6 +1156,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 _prevBlockMarginEndAfterRewind = decision.RewindTo.PrevBlockMarginEnd;
                 _hasPriorAdjoiningBlockAfterRewind = decision.RewindTo.HasAdjoiningBlockOnEntry;
                 _hasRewindCollapseState = true;
+                // Per Finding 1 — release the pre-measured TableLayouter
+                // on the Rewind early-return so we don't leak the
+                // measure-phase state. The retry constructs a fresh
+                // one (and re-measures).
+                pendingTableLayouter?.Dispose();
                 return LayoutAttemptResult.NeedsRewind(decision.RewindTo, decision.Cost);
             }
 
@@ -1194,16 +1256,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         parentInlineSize: borderBoxInlineSize,
                         cancellationToken: cancellationToken,
                         depth: 1);
-                    // Per Phase 3 Task 12 sub-cycle 1 — dispatch into
-                    // TableLayouter for the inner rows/cells when the
-                    // emitted block is a Table or InlineTable wrapper.
-                    // The wrapper's outer fragment is already emitted
-                    // above; TableLayouter only adds rows + cells.
-                    DispatchTableInnerIfNeeded(
-                        child,
-                        wrapperBlockOffset: forcedOverflowChildBlockOffset,
-                        wrapperInlineOffset: forcedOverflowInlineOffset,
-                        wrapperInlineSize: borderBoxInlineSize,
+                    // Per Phase 3 Task 12 sub-cycle 1 hardening
+                    // (Finding 1) — drain the pre-measured table
+                    // content into the outer sink. The wrapper's
+                    // outer fragment is already emitted above (with
+                    // a border-box size that includes the measured
+                    // table content height); EmitTableInner only
+                    // appends the row + cell fragments + flushes the
+                    // buffered cell content in paint-safe order.
+                    EmitTableInner(
+                        pendingTableLayouter,
                         fragmentainer: fragmentainer,
                         layout: ref layout,
                         resolver: resolver,
@@ -1266,6 +1328,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // `initialUsed` (= UsedBlockSize at THIS entry), which
                 // on rewind retries reflects the mid-page restore
                 // cursor, undercounting the page extent.
+                // Per Finding 1 — release the pre-measured TableLayouter
+                // on the normal-break early-return; the retry on the
+                // next page will reconstruct + remeasure.
+                pendingTableLayouter?.Dispose();
                 return LayoutAttemptResult.PageComplete(
                     new BlockContinuation(
                         ResumeAtChild: childIdx,
@@ -1313,18 +1379,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 parentInlineSize: borderBoxInlineSize,
                 cancellationToken: cancellationToken,
                 depth: 1);
-            // Per Phase 3 Task 12 sub-cycle 1 — dispatch into
-            // TableLayouter for the inner rows/cells when the emitted
-            // block is a Table or InlineTable wrapper. The wrapper's
-            // outer fragment is already emitted above; TableLayouter
-            // only adds rows + cells. EmitBlockSubtreeRecursive's own
-            // predicate gate skips Table inner content (the inner
-            // geometry belongs to TableLayouter, not BlockLayouter).
-            DispatchTableInnerIfNeeded(
-                child,
-                wrapperBlockOffset: blockOffset,
-                wrapperInlineOffset: inFlowInlineOffset,
-                wrapperInlineSize: borderBoxInlineSize,
+            // Per Phase 3 Task 12 sub-cycle 1 hardening (Finding 1) —
+            // drain the pre-measured table content into the outer
+            // sink. The wrapper's outer fragment is already emitted
+            // above (with a border-box size that includes the
+            // measured table content height); EmitTableInner only
+            // appends the row + cell fragments + flushes the buffered
+            // cell content in paint-safe order.
+            // EmitBlockSubtreeRecursive's own predicate gate skips
+            // Table inner content (the inner geometry belongs to
+            // TableLayouter, not BlockLayouter).
+            EmitTableInner(
+                pendingTableLayouter,
                 fragmentainer: fragmentainer,
                 layout: ref layout,
                 resolver: resolver,
@@ -1677,6 +1743,56 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             var childBlockOffset = contentTop + childCursor + topShift;
             var childInlineOffset = contentLeft + marginInlineStart;
 
+            // Per Phase 3 Task 12 sub-cycle 1 hardening (Finding 6 /
+            // 1) — for nested Table / InlineTable wrappers, pre-
+            // measure the table content + fold it into the wrapper's
+            // border-box block size (same protocol the outer
+            // AttemptLayout loop uses). Without this, tables that
+            // appear deeper than the layouter's root (e.g., the
+            // canonical body > table case from real HTML) wouldn't
+            // get their wrapper sized by the row stack — siblings
+            // would overlap them.
+            TableLayouter? nestedPendingTable = null;
+            var nestedMeasuredHeight = 0.0;
+            if (child.Kind is BoxKind.Table or BoxKind.InlineTable)
+            {
+                // We don't have ref layout here (cycle 1 recursion
+                // doesn't thread it). Synthesize a transient
+                // LayoutContext that carries the constructor-injected
+                // diagnostics sink only — the table layouter consults
+                // the ambient sink first, falling back to its own.
+                var fragmentainerForMeasure = new FragmentainerContext(
+                    contentInlineSize: childBorderBoxInlineSize,
+                    blockSize: 1);
+                var transientLayout = new LayoutContext(fragmentainerForMeasure)
+                {
+                    Diagnostics = _diagnostics,
+                };
+                nestedPendingTable = PreMeasureTableIfNeeded(
+                    wrapperChild: child,
+                    wrapperInlineOffset: childInlineOffset,
+                    wrapperBlockOffsetExpected: childBlockOffset,
+                    wrapperInlineSize: childBorderBoxInlineSize,
+                    fragmentainer: fragmentainerForMeasure,
+                    layout: ref transientLayout,
+                    tableContentHeight: out nestedMeasuredHeight,
+                    cancellationToken: cancellationToken);
+                if (nestedPendingTable is not null)
+                {
+                    var wrapperBorderPaddingBlock =
+                        borderStart + paddingStart + paddingEnd + borderEnd;
+                    var tableDriven = nestedMeasuredHeight + wrapperBorderPaddingBlock;
+                    if (tableDriven > childBorderBoxBlockSize)
+                    {
+                        childBorderBoxBlockSize = tableDriven;
+                    }
+                    if (tableDriven > childEffectiveBlockSize)
+                    {
+                        childEffectiveBlockSize = tableDriven;
+                    }
+                }
+            }
+
             // Fragment records the BORDER box (not subtree extent) —
             // the subtree extent is for cursor advance only. Per
             // cycle 2b, the painter sees the border box; descendants
@@ -1699,6 +1815,30 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 parentInlineSize: childBorderBoxInlineSize,
                 cancellationToken: cancellationToken,
                 depth: depth + 1);
+
+            // Per Phase 3 Task 12 sub-cycle 1 hardening (Finding 6 /
+            // 1) — drain the pre-measured nested table content. The
+            // recursion doesn't have a ref LayoutContext so we
+            // synthesize one carrying the constructor's diagnostic
+            // sink + the same fragmentainer shape; the table layouter
+            // uses these for the deferral diagnostics.
+            if (nestedPendingTable is not null)
+            {
+                var fragmentainerForEmit = new FragmentainerContext(
+                    contentInlineSize: childBorderBoxInlineSize,
+                    blockSize: 1);
+                var emitLayout = new LayoutContext(fragmentainerForEmit)
+                {
+                    Diagnostics = _diagnostics,
+                };
+                using var nestedResolver = new BreakResolver();
+                EmitTableInner(
+                    nestedPendingTable,
+                    fragmentainer: fragmentainerForEmit,
+                    layout: ref emitLayout,
+                    resolver: nestedResolver,
+                    cancellationToken: cancellationToken);
+            }
 
             // Per cycle-2b post-PR-28 review #1 — SIGNED cursor advance.
             // Negative margins legitimately produce overlap; clamping
@@ -3055,42 +3195,41 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         return maxExtent;
     }
 
-    /// <summary>Per Phase 3 Task 12 sub-cycle 1 — dispatch into
-    /// <see cref="TableLayouter"/> when <paramref name="wrapperChild"/>
-    /// is a <see cref="BoxKind.Table"/> or
-    /// <see cref="BoxKind.InlineTable"/>. The wrapper's outer
-    /// <see cref="BoxFragment"/> has already been emitted by the
-    /// caller; this method appends the inner row + cell fragments at
-    /// fragmentainer-relative offsets inside the wrapper's content
-    /// area.
+    /// <summary>Per Phase 3 Task 12 sub-cycle 1 hardening (Finding 1)
+    /// — pre-measure phase for <see cref="BoxKind.Table"/> /
+    /// <see cref="BoxKind.InlineTable"/> wrappers. Returns a
+    /// configured <see cref="TableLayouter"/> with cached per-row
+    /// measurements + the total row-stack content height, OR
+    /// <see langword="null"/> when <paramref name="wrapperChild"/>
+    /// is not a table wrapper.
     ///
-    /// <para>The wrapper's content-area top-left is computed from the
-    /// wrapper's border-box top-left (= <paramref name="wrapperBlockOffset"/>
-    /// + border-block-start + padding-block-start, similarly for
-    /// inline). The wrapper's content-area inline extent is
-    /// <paramref name="wrapperInlineSize"/> - border-inline - padding-
-    /// inline (clamped non-negative). Sub-cycle 1 reads
-    /// border/padding from the wrapper's style via the same physical-
-    /// axis helpers as the block path (no logical-axis support yet
-    /// — see cycle 3 TODO).</para>
+    /// <para>The caller uses the returned content height to size the
+    /// wrapper's border-box block extent (= <c>max(cssHeight,
+    /// tableContentHeight)</c>) BEFORE emitting the wrapper fragment;
+    /// the wrapper's emitted extent then drives
+    /// <see cref="FragmentainerContext.UsedBlockSize"/>, preventing
+    /// siblings from overlapping the table.</para>
     ///
-    /// <para>No-op when <paramref name="wrapperChild"/> is not a
-    /// Table or InlineTable wrapper — the predicate keeps the call
-    /// site simple at the cost of an extra branch on every emitted
-    /// block.</para></summary>
-    private void DispatchTableInnerIfNeeded(
+    /// <para>The returned <see cref="TableLayouter"/> is then passed
+    /// to <see cref="EmitTableInner"/> (alongside the final wrapper
+    /// geometry) to run the emit pass. The two-step protocol avoids
+    /// double-construction of <see cref="TableLayouter"/> (one for
+    /// measure + another for emit).</para>
+    /// </summary>
+    private TableLayouter? PreMeasureTableIfNeeded(
         Box wrapperChild,
-        double wrapperBlockOffset,
         double wrapperInlineOffset,
+        double wrapperBlockOffsetExpected,
         double wrapperInlineSize,
         FragmentainerContext fragmentainer,
         ref LayoutContext layout,
-        IBreakResolver resolver,
+        out double tableContentHeight,
         CancellationToken cancellationToken)
     {
+        tableContentHeight = 0;
         if (wrapperChild.Kind is not (BoxKind.Table or BoxKind.InlineTable))
         {
-            return;
+            return null;
         }
 
         // Compute the wrapper's content-box top-left + inline extent.
@@ -3106,14 +3245,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
 
         var contentInlineOffset = wrapperInlineOffset
             + borderInlineStart + paddingInlineStart;
-        var contentBlockOffset = wrapperBlockOffset
+        var contentBlockOffset = wrapperBlockOffsetExpected
             + borderBlockStart + paddingBlockStart;
         var contentInlineSize = Math.Max(0,
             wrapperInlineSize
             - borderInlineStart - paddingInlineStart
             - borderInlineEnd - paddingInlineEnd);
 
-        using var tableLayouter = new TableLayouter(
+        var tableLayouter = new TableLayouter(
             rootBox: wrapperChild,
             sink: _sink,
             incomingContinuation: null,
@@ -3123,12 +3262,55 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             contentInlineOffset: contentInlineOffset,
             contentBlockOffset: contentBlockOffset,
             contentInlineSize: contentInlineSize);
-        _ = tableLayouter.AttemptLayout(
-            fragmentainer,
-            ref layout,
-            resolver,
-            LayoutAttemptStrategy.LastResort,
-            cancellationToken);
+
+        // Per Finding 1 — run measure NOW so the caller can fold the
+        // measured content extent into the wrapper's border-box size.
+        // The caller is responsible for calling EmitTableInner after
+        // emitting the wrapper fragment (which advances the cursor by
+        // the post-Finding-1 wrapper extent).
+        tableContentHeight = tableLayouter.MeasureContentHeight(
+            fragmentainer, ref layout, cancellationToken);
+        return tableLayouter;
+    }
+
+    /// <summary>Per Phase 3 Task 12 sub-cycle 1 hardening (Finding 1)
+    /// — emit phase for <see cref="BoxKind.Table"/> /
+    /// <see cref="BoxKind.InlineTable"/> wrappers. The caller has
+    /// already emitted the wrapper fragment + advanced the cursor by
+    /// the wrapper's border-box extent. This method runs the
+    /// cached-measurement-driven emit pass that appends the row +
+    /// cell fragments + flushes the buffered cell content in paint-
+    /// safe order.
+    ///
+    /// <para>No-op when <paramref name="tableLayouter"/> is
+    /// <see langword="null"/> — the predicate keeps the call site
+    /// simple (the same site handles both table + non-table children
+    /// uniformly).</para></summary>
+    private static void EmitTableInner(
+        TableLayouter? tableLayouter,
+        FragmentainerContext fragmentainer,
+        ref LayoutContext layout,
+        IBreakResolver resolver,
+        CancellationToken cancellationToken)
+    {
+        if (tableLayouter is null)
+        {
+            return;
+        }
+
+        try
+        {
+            _ = tableLayouter.AttemptLayout(
+                fragmentainer,
+                ref layout,
+                resolver,
+                LayoutAttemptStrategy.LastResort,
+                cancellationToken);
+        }
+        finally
+        {
+            tableLayouter.Dispose();
+        }
     }
 
     /// <summary>Per PR #22 review fix #2 — release the final

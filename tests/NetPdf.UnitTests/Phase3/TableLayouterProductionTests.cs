@@ -130,31 +130,97 @@ public sealed class TableLayouterProductionTests
     }
 
     [Fact]
-    public async Task Table_with_caption_emits_feature_diagnostic()
+    public async Task Production_table_with_top_caption_renders_via_full_pipeline()
     {
-        // Per Finding 4 regression — a real <caption> element must
-        // surface a LAYOUT-TABLE-FEATURE-UNSUPPORTED-001 diagnostic
-        // with the caption text in the message.
+        // Phase 3 Task 12 sub-cycle 3 — a real <caption> element
+        // lays out as a TableCaption fragment above the rows (default
+        // caption-side: top). Replaces the sub-cycle 1
+        // Table_with_caption_emits_feature_diagnostic regression
+        // which asserted the now-removed deferral diagnostic.
+        //
+        // The caption text is wrapped in a <div> with an explicit
+        // height so the test isn't sensitive to the synthetic font's
+        // line metrics — same pattern as
+        // <see cref="Table_cell_with_real_inline_text_lays_out_via_inline_only_block"/>.
         const string html = """
-            <!DOCTYPE html><html><head><style></style></head><body>
+            <!DOCTYPE html><html><head><style>
+                caption > div { height: 20px; }
+            </style></head><body>
             <table>
-              <caption>Q1 2026 Revenue</caption>
+              <caption><div>Q1 2026 Revenue</div></caption>
               <tr><td>X</td></tr>
             </table>
             </body></html>
             """;
 
-        var (_, diagnostics, _) = await RenderViaFullPipelineAsync(html);
+        var (sink, diagnostics, _) = await RenderViaFullPipelineAsync(html);
 
-        var captionDiag = diagnostics.Diagnostics.FirstOrDefault(d =>
+        // No LAYOUT-TABLE-FEATURE-UNSUPPORTED-001 mentioning
+        // "caption" — sub-cycle 3 stopped emitting the diagnostic.
+        Assert.DoesNotContain(diagnostics.Diagnostics, d =>
             d.Code == PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001
             && d.Message.Contains("caption"));
-        Assert.True(
-            captionDiag.Code == PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001,
-            "Expected LAYOUT-TABLE-FEATURE-UNSUPPORTED-001 diagnostic with 'caption' "
-            + "in message via the full pipeline.");
-        Assert.Contains("Q1 2026 Revenue", captionDiag.Message);
-        Assert.Equal(PaginateDiagnosticSeverity.Warning, captionDiag.Severity);
+
+        // The TableCaption fragment lands ABOVE the TableRow.
+        BoxFragment? captionFragment = null;
+        BoxFragment? rowFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCaption && captionFragment is null)
+                captionFragment = f;
+            else if (f.Box.Kind == BoxKind.TableRow && rowFragment is null)
+                rowFragment = f;
+        }
+        Assert.NotNull(captionFragment);
+        Assert.NotNull(rowFragment);
+        Assert.True(captionFragment!.Value.BlockOffset < rowFragment!.Value.BlockOffset,
+            $"Expected caption (BlockOffset={captionFragment.Value.BlockOffset}) to "
+            + $"render ABOVE row (BlockOffset={rowFragment.Value.BlockOffset}).");
+    }
+
+    [Fact]
+    public async Task Production_table_with_bottom_caption_renders_below_rows()
+    {
+        // Phase 3 Task 12 sub-cycle 3 — caption-side: bottom flips
+        // the caption to render AFTER the row stack.
+        //
+        // Caption text wrapped in a <div> with a known height so
+        // the test isn't sensitive to synthetic-font line metrics
+        // (same pattern as the cell-text-with-known-height tests).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                caption { caption-side: bottom; }
+                caption > div { height: 18px; }
+                td > div { height: 30px; }
+            </style></head><body>
+            <table>
+              <caption><div>Footer note</div></caption>
+              <tr><td><div>X</div></td></tr>
+            </table>
+            </body></html>
+            """;
+
+        var (sink, diagnostics, _) = await RenderViaFullPipelineAsync(html);
+
+        // No caption deferral diagnostic — sub-cycle 3 lays it out.
+        Assert.DoesNotContain(diagnostics.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001
+            && d.Message.Contains("caption"));
+
+        // Caption appears AFTER the last row's bottom edge.
+        BoxFragment? captionFragment = null;
+        BoxFragment? lastRowFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCaption) captionFragment = f;
+            else if (f.Box.Kind == BoxKind.TableRow) lastRowFragment = f;
+        }
+        Assert.NotNull(captionFragment);
+        Assert.NotNull(lastRowFragment);
+        var lastRowBottom = lastRowFragment!.Value.BlockOffset + lastRowFragment.Value.BlockSize;
+        Assert.True(captionFragment!.Value.BlockOffset >= lastRowBottom,
+            $"Expected bottom caption (BlockOffset={captionFragment.Value.BlockOffset}) "
+            + $"to render AT OR BELOW last row's bottom ({lastRowBottom}).");
     }
 
     [Fact]

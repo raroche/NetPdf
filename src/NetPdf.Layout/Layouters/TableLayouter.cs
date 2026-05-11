@@ -3,7 +3,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Text;
 using System.Threading;
 using NetPdf.Css.Properties;
 using NetPdf.Layout.Boxes;
@@ -76,13 +75,15 @@ namespace NetPdf.Layout.Layouters;
 ///   into <see cref="BoxKind.TableRowGroup"/> /
 ///   <see cref="BoxKind.TableHeaderGroup"/> /
 ///   <see cref="BoxKind.TableFooterGroup"/> to collect their
-///   <see cref="BoxKind.TableRow"/> children. Captions ARE detected
-///   under the wrapper (per BoxBuilder Rec 5) but their content is
-///   skipped + a <c>LAYOUT-TABLE-FEATURE-UNSUPPORTED-001</c>
-///   diagnostic fires with the caption text snippet so authors see
-///   what's being dropped (deferred behavior — see
-///   <c>docs/deferrals.md#table-auto-fixed-spans-borders</c>).
-///   Column groups and columns are skipped silently.</item>
+///   <see cref="BoxKind.TableRow"/> children. <b>Sub-cycle 3:</b>
+///   captions (<see cref="BoxKind.TableCaption"/>) detected under the
+///   wrapper (per BoxBuilder Rec 5) are now LAID OUT as block-level
+///   boxes above (<c>caption-side: top</c>, default) or below
+///   (<c>caption-side: bottom</c>) the row stack — see
+///   <see cref="MeasureCaptions"/> + Phase 0 / Phase D emits in
+///   <see cref="AttemptLayout"/>. The sub-cycle 1 + 2 deferral
+///   diagnostic for captions is gone. Column groups and columns are
+///   still skipped silently.</item>
 ///   <item><b>Sub-cycle 2:</b> place cells onto a 2D occupancy grid
 ///   (<see cref="CellPlacement"/>) using the HTML5 forming-a-table
 ///   algorithm — for each row, advance a column cursor past slots
@@ -124,9 +125,6 @@ namespace NetPdf.Layout.Layouters;
 ///   §6.3.</item>
 ///   <item><c>&lt;thead&gt;</c> / <c>&lt;tfoot&gt;</c> repetition
 ///   across pages.</item>
-///   <item>Captions (<see cref="BoxKind.TableCaption"/>) — content is
-///   skipped + a diagnostic emits with a snippet of the caption text
-///   so authors see what is being dropped.</item>
 ///   <item><c>&lt;col&gt;</c> / <c>&lt;colgroup&gt;</c> column-specific
 ///   widths.</item>
 ///   <item>Multi-fragmentainer table splitting (rows that cross
@@ -349,13 +347,56 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         public double RowHeight { get; }
     }
 
+    /// <summary>Per Phase 3 Task 12 sub-cycle 3 — measurement record
+    /// for one <see cref="BoxKind.TableCaption"/> attached as a direct
+    /// child of the wrapper. CSS Tables L3 §11.5.1–§11.5.2: a caption
+    /// is laid out as a block-level box above (<c>caption-side: top</c>,
+    /// default) or below (<c>caption-side: bottom</c>) the table grid.
+    /// Inline-size matches the wrapper's content-inline-size (sub-cycle
+    /// 3 doesn't yet ship auto-table-layout, so wrapper content-inline-
+    /// size = grid's outer inline-size); block-size is the caption's
+    /// content extent measured via a nested <see cref="BlockLayouter"/>
+    /// into a buffered <see cref="MeasuringFragmentSink"/>.</summary>
+    private readonly struct CaptionMeasurement
+    {
+        public CaptionMeasurement(
+            Box caption,
+            CaptionSide side,
+            MeasuringFragmentSink contentBuffer,
+            BufferingDiagnosticsSink? diagnosticsBuffer,
+            double contentBlockExtent)
+        {
+            Caption = caption;
+            Side = side;
+            ContentBuffer = contentBuffer;
+            DiagnosticsBuffer = diagnosticsBuffer;
+            ContentBlockExtent = contentBlockExtent;
+        }
+        public Box Caption { get; }
+        public CaptionSide Side { get; }
+        public MeasuringFragmentSink ContentBuffer { get; }
+        public BufferingDiagnosticsSink? DiagnosticsBuffer { get; }
+        public double ContentBlockExtent { get; }
+    }
+
     private bool _measureDone;
     private double _measuredContentHeight;
     private int _measuredColumnCount;
     private double _measuredColumnWidth;
     private List<RowMeasurement>? _measuredRows;
     private List<CellPlacement>? _measuredPlacements;
-    private List<Box>? _measuredCaptions; // wrapper-direct caption children
+    // Per Phase 3 Task 12 sub-cycle 3 — caption measurements live
+    // alongside the row + cell measurements; sub-cycle 1 + 2 captured
+    // only the raw caption Box for the deferral-diagnostic snippet,
+    // sub-cycle 3 captures the buffered content + block extent + side
+    // for the Phase 0 / Phase D emit passes.
+    private List<CaptionMeasurement>? _measuredCaptionList;
+    // Per Phase 3 Task 12 sub-cycle 3 — pre-summed top + bottom caption
+    // block-extents so the AttemptLayout emit pass doesn't re-scan the
+    // caption list. The row stack's block origin in the wrapper's
+    // content area is contentBlockOffset + _measuredTopCaptionsTotal.
+    private double _measuredTopCaptionsTotal;
+    private double _measuredBottomCaptionsTotal;
     private bool _measuredMissingGrid;
     // Per Finding 6 — cells whose rowspan / colspan attribute parsed as
     // exactly 0 (HTML5 §4.9.11 "remainder" semantic), captured during
@@ -403,32 +444,18 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         // Emit caption diagnostics + missing-grid diagnostic first.
         EmitDeferralDiagnostics(ref layout);
 
-        if (_measuredMissingGrid)
-        {
-            return LayoutAttemptResult.AllDone(cost: 0);
-        }
-
         var rows = _measuredRows;
-        if (rows is null || rows.Count == 0)
-        {
-            return LayoutAttemptResult.AllDone(cost: 0);
-        }
-
-        if (_measuredColumnCount == 0 || _measuredColumnWidth <= 0)
-        {
-            return LayoutAttemptResult.AllDone(cost: 0);
-        }
-
-        var columnWidth = _measuredColumnWidth;
         var placements = _measuredPlacements ?? new List<CellPlacement>(0);
+        var captions = _measuredCaptionList;
 
-        // Per Finding 5 — flush each cell's BufferingDiagnosticsSink to
-        // the outer diagnostic sink now that AttemptLayout has committed
-        // to running the emit pass. Before this commit, cell-internal
-        // diagnostics from the measure pass are buffered — if the outer
-        // resolver had rewound + discarded this layouter's work the
-        // buffer would have been dropped + the user would not see
-        // diagnostics for never-emitted fragments.
+        // Per Finding 5 — flush each cell's + caption's
+        // BufferingDiagnosticsSink to the outer diagnostic sink now
+        // that AttemptLayout has committed to running the emit pass.
+        // Before this commit, cell / caption-internal diagnostics from
+        // the measure pass are buffered — if the outer resolver had
+        // rewound + discarded this layouter's work the buffer would
+        // have been dropped + the user would not see diagnostics for
+        // never-emitted fragments.
         var commitDiagSink = layout.Diagnostics ?? _diagnostics;
         if (commitDiagSink is not null)
         {
@@ -436,15 +463,89 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             {
                 placements[pIdx].DiagnosticsBuffer?.FlushTo(commitDiagSink);
             }
+            if (captions is { Count: > 0 })
+            {
+                for (var i = 0; i < captions.Count; i++)
+                {
+                    captions[i].DiagnosticsBuffer?.FlushTo(commitDiagSink);
+                }
+            }
         }
+
+        // Per Phase 3 Task 12 sub-cycle 3 — Phase 0: emit top-side
+        // captions BEFORE the row stack. Stacks vertically in
+        // document order at the wrapper's content-box origin. The
+        // captions span the wrapper's content-inline-size (CSS Tables
+        // L3 §11.5.1).
+        //
+        // Why emit captions even when the grid is missing? Authors
+        // who hand-craft a malformed table tree still see their
+        // caption text. The missing-grid diagnostic above flags the
+        // structural anomaly so they can fix it.
+        var topCaptionCursor = _contentBlockOffset;
+        if (captions is { Count: > 0 })
+        {
+            for (var i = 0; i < captions.Count; i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var c = captions[i];
+                if (c.Side != CaptionSide.Top) continue;
+                _sink.Emit(new BoxFragment(
+                    Box: c.Caption,
+                    InlineOffset: _contentInlineOffset,
+                    BlockOffset: topCaptionCursor,
+                    InlineSize: _contentInlineSize,
+                    BlockSize: c.ContentBlockExtent));
+                c.ContentBuffer.FlushTo(_sink, topCaptionCursor);
+                topCaptionCursor += c.ContentBlockExtent;
+            }
+        }
+
+        // If the grid is missing or empty there are no rows / cells /
+        // bottom captions to emit. The wrapper still gets its visual
+        // height from MeasureContentHeight (which folded in the caption
+        // totals); the early-return here just skips the row/cell + Phase
+        // D emits. Bottom captions ARE emitted below for the no-grid
+        // path so authors who attach <caption> + nothing else still
+        // see their caption text.
+        if (_measuredMissingGrid || rows is null || rows.Count == 0
+            || _measuredColumnCount == 0 || _measuredColumnWidth <= 0)
+        {
+            // Phase D — even with no rows, render bottom captions
+            // immediately after the top-caption stack so they don't
+            // get visually orphaned.
+            var bottomCursor = topCaptionCursor;
+            if (captions is { Count: > 0 })
+            {
+                for (var i = 0; i < captions.Count; i++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var c = captions[i];
+                    if (c.Side != CaptionSide.Bottom) continue;
+                    _sink.Emit(new BoxFragment(
+                        Box: c.Caption,
+                        InlineOffset: _contentInlineOffset,
+                        BlockOffset: bottomCursor,
+                        InlineSize: _contentInlineSize,
+                        BlockSize: c.ContentBlockExtent));
+                    c.ContentBuffer.FlushTo(_sink, bottomCursor);
+                    bottomCursor += c.ContentBlockExtent;
+                }
+            }
+            return LayoutAttemptResult.AllDone(cost: 0);
+        }
+
+        var columnWidth = _measuredColumnWidth;
 
         // Per Finding 3 — emit in three phases for the WHOLE table so
         // the painter sees backgrounds before borders before content
         // across all rows AND across all cells regardless of rowspan.
         //
+        //   Phase 0 (sub-cycle 3): top-caption fragments — see above.
         //   Phase A: row fragments for ALL rows.
         //   Phase B: cell fragments for ALL cells (only at origin).
         //   Phase C: cell-content fragments via FlushTo.
+        //   Phase D (sub-cycle 3): bottom-caption fragments — see below.
         //
         // Pre-Finding-3 the loop emitted row → cells-at-this-row →
         // content for each row in turn; a rowspan cell anchored at
@@ -460,9 +561,14 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         // Per Copilot perf #2 — pre-compute a prefix-sum row-end array
         // so a rowspan cell's block extent is a single subtraction
         // instead of a `for k in 0..RowSpan` loop.
+        //
+        // Per sub-cycle 3 — the row cursor starts AFTER the top
+        // captions, not at the wrapper's content origin. The top-
+        // caption emit pass updated `topCaptionCursor` to track the
+        // running offset; we anchor the row stack there.
         var rowBlockOffsets = new double[rows.Count];
         var rowEndBlockOffset = new double[rows.Count + 1];
-        var rowCursorBlock = _contentBlockOffset;
+        var rowCursorBlock = topCaptionCursor;
         rowEndBlockOffset[0] = rowCursorBlock;
         for (var r = 0; r < rows.Count; r++)
         {
@@ -546,12 +652,36 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             }
         }
 
-        // Forced-overflow detection — emit once if the row stack
+        // Per Phase 3 Task 12 sub-cycle 3 — Phase D: emit bottom-side
+        // captions AFTER the row stack. Stacks vertically in document
+        // order. Starts at the row-stack bottom (= rowEndBlockOffset
+        // at index rows.Count).
+        var bottomCaptionCursor = rowEndBlockOffset[rows.Count];
+        if (captions is { Count: > 0 })
+        {
+            for (var i = 0; i < captions.Count; i++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var c = captions[i];
+                if (c.Side != CaptionSide.Bottom) continue;
+                _sink.Emit(new BoxFragment(
+                    Box: c.Caption,
+                    InlineOffset: _contentInlineOffset,
+                    BlockOffset: bottomCaptionCursor,
+                    InlineSize: _contentInlineSize,
+                    BlockSize: c.ContentBlockExtent));
+                c.ContentBuffer.FlushTo(_sink, bottomCaptionCursor);
+                bottomCaptionCursor += c.ContentBlockExtent;
+            }
+        }
+
+        // Forced-overflow detection — emit once if the total table
+        // content (top captions + row stack + bottom captions)
         // extends past the fragmentainer block-size. Multi-page table
         // splitting is deferred — see
         // docs/deferrals.md#table-auto-fixed-spans-borders.
-        var totalRowsBottom = rowEndBlockOffset[rows.Count];
-        if (totalRowsBottom > fragmentainer.BlockSize)
+        var tableBottom = bottomCaptionCursor;
+        if (tableBottom > fragmentainer.BlockSize)
         {
             OptimizingBreakResolver.SafeEmit(
                 layout.Diagnostics ?? _diagnostics,
@@ -559,10 +689,10 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                     PaginateDiagnosticCodes.PaginationForcedOverflow001,
                     $"TableLayouter: table on fragmentainer page index "
                     + $"{fragmentainer.PageIndex} overflows page block-"
-                    + $"size {fragmentainer.BlockSize:0.##} (rows extend to "
-                    + $"{totalRowsBottom:0.##}). The layouter commits all "
-                    + "rows anyway; multi-fragmentainer splitting is "
-                    + "deferred — see "
+                    + $"size {fragmentainer.BlockSize:0.##} (table content "
+                    + $"extends to {tableBottom:0.##}). The layouter commits "
+                    + "all rows + captions anyway; multi-fragmentainer "
+                    + "splitting is deferred — see "
                     + "docs/deferrals.md#table-auto-fixed-spans-borders.",
                     PaginateDiagnosticSeverity.Warning));
         }
@@ -619,10 +749,23 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                 + "columns + measure cell content.");
         }
 
-        // Collect captions (direct wrapper children) for the deferral
-        // diagnostic emitted from AttemptLayout. Per BoxBuilder Rec 5
-        // captions stay at the wrapper level (NOT inside the grid).
-        _measuredCaptions = CollectCaptions(_rootBox);
+        // Per Phase 3 Task 12 sub-cycle 3 — collect captions (direct
+        // wrapper children) + lay each one out via a nested
+        // BlockLayouter into a buffered MeasuringFragmentSink. Captions
+        // ARE block-level boxes with the wrapper's content-inline-size
+        // (CSS Tables L3 §11.5.1) — auto-table-layout's column-aware
+        // grid-width pass is deferred so grid-outer-inline-size =
+        // wrapper-content-inline-size for sub-cycle 3.
+        //
+        // The measured caption list + top/bottom totals are folded
+        // into the table content height returned by this method. The
+        // AttemptLayout emit phase consumes the list directly.
+        // sub-cycle 1 + 2's diagnostic-only path is gone — the
+        // LAYOUT-TABLE-FEATURE-UNSUPPORTED-001 code now fires only for
+        // missing-TableGrid + span=0 deferral.
+        _measuredCaptionList = MeasureCaptions(
+            _rootBox, fragmentainer, ref layout, cancellationToken,
+            out _measuredTopCaptionsTotal, out _measuredBottomCaptionsTotal);
 
         // Locate the TableGrid child.
         var grid = FindTableGrid(_rootBox);
@@ -630,17 +773,29 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         {
             _measuredMissingGrid = true;
             _measureDone = true;
-            return 0;
+            // Captions still contribute to the total even if the grid
+            // is missing — they were laid out as standalone block boxes.
+            _measuredContentHeight =
+                _measuredTopCaptionsTotal + _measuredBottomCaptionsTotal;
+            return _measuredContentHeight;
         }
 
         // Collect rows in document order (recursing into row groups).
         var rows = new List<Box>();
         CollectRows(grid, rows, cancellationToken);
 
+        // Per Phase 3 Task 12 sub-cycle 3 — captions still contribute
+        // to the content height even when the grid has zero rows /
+        // columns / column width. Compute the caption-only total once
+        // for the early-return paths below.
+        var captionOnlyHeight =
+            _measuredTopCaptionsTotal + _measuredBottomCaptionsTotal;
+
         if (rows.Count == 0)
         {
             _measureDone = true;
-            return 0;
+            _measuredContentHeight = captionOnlyHeight;
+            return captionOnlyHeight;
         }
 
         // Sub-cycle 2 — place cells onto a 2D occupancy grid using the
@@ -661,7 +816,8 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         if (columnCount == 0)
         {
             _measureDone = true;
-            return 0;
+            _measuredContentHeight = captionOnlyHeight;
+            return captionOnlyHeight;
         }
 
         var columnWidth = _contentInlineSize / columnCount;
@@ -669,7 +825,8 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         if (columnWidth <= 0)
         {
             _measureDone = true;
-            return 0;
+            _measuredContentHeight = captionOnlyHeight;
+            return captionOnlyHeight;
         }
 
         // Sub-cycle 2 — measure each cell's content into its buffer.
@@ -771,17 +928,25 @@ internal sealed class TableLayouter : ILayouter, IDisposable
 
         // Materialize the per-row RowMeasurement list + total height.
         var measured = new List<RowMeasurement>(capacity: rows.Count);
-        var totalContentHeight = 0.0;
+        var rowStackHeight = 0.0;
         for (var r = 0; r < rows.Count; r++)
         {
             measured.Add(new RowMeasurement(rows[r], rowHeights[r]));
-            totalContentHeight += rowHeights[r];
+            rowStackHeight += rowHeights[r];
         }
 
         _measuredRows = measured;
-        _measuredContentHeight = totalContentHeight;
+        // Per Phase 3 Task 12 sub-cycle 3 — the table's total content
+        // height includes the top-caption stack + row stack + bottom-
+        // caption stack. The wrapper's auto-height resolution in
+        // BlockLayouter consumes this single total via the existing
+        // MeasureContentHeight contract; the emit phase splits it
+        // back into per-section offsets via _measuredTopCaptionsTotal.
+        _measuredContentHeight = _measuredTopCaptionsTotal
+            + rowStackHeight
+            + _measuredBottomCaptionsTotal;
         _measureDone = true;
-        return totalContentHeight;
+        return _measuredContentHeight;
     }
 
     /// <summary>Per Finding 4 — DoS-resistant cap on the cumulative
@@ -1080,9 +1245,12 @@ internal sealed class TableLayouter : ILayouter, IDisposable
 
         // Sub-cycle 2 — the colspan / rowspan deferral diagnostic is
         // gone; the 2D occupancy-grid algorithm now correctly merges
-        // cells. The LAYOUT-TABLE-FEATURE-UNSUPPORTED-001 code stays
-        // in the diagnostic catalog because captions + the missing-
-        // TableGrid anomaly still emit it.
+        // cells. Sub-cycle 3 — the caption deferral diagnostic is also
+        // gone; captions are laid out per CSS Tables L3 §11.5 (see
+        // MeasureCaptions + Phase 0 / Phase D emits). The
+        // LAYOUT-TABLE-FEATURE-UNSUPPORTED-001 code stays in the
+        // diagnostic catalog because the missing-TableGrid anomaly +
+        // the rowspan="0" / colspan="0" deferral still emit it.
 
         // Per Finding 6 — rowspan="0" / colspan="0" HTML5 §4.9.11
         // "remainder of row-group / column-group" semantics aren't
@@ -1130,31 +1298,14 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                     PaginateDiagnosticSeverity.Warning));
         }
 
-        if (_measuredCaptions is { Count: > 0 } captions)
-        {
-            for (var i = 0; i < captions.Count; i++)
-            {
-                // Per Finding 7 — sanitize the caption text snippet
-                // before it flows into the diagnostic message. Author-
-                // controlled caption content can carry C0/C1 control
-                // chars (ANSI escape injection / log-parser confusion)
-                // that ExtractCaptionTextSnippet (line-break-only
-                // collapse) wouldn't catch.
-                var captionText = NetPdf.Css.Diagnostics.DiagnosticTextSanitizer.Sanitize(
-                    ExtractCaptionTextSnippet(captions[i]),
-                    maxLength: 80);
-                OptimizingBreakResolver.SafeEmit(
-                    sink,
-                    new PaginateDiagnostic(
-                        PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001,
-                        $"TableLayouter: table caption skipped — captions are "
-                        + $"not yet laid out per CSS Tables L3 §11; sub-cycle "
-                        + $"3 work — see "
-                        + $"docs/deferrals.md#table-auto-fixed-spans-borders. "
-                        + $"Caption text: \"{captionText}\".",
-                        PaginateDiagnosticSeverity.Warning));
-            }
-        }
+        // Per Phase 3 Task 12 sub-cycle 3 — captions are now laid out
+        // for real (see MeasureCaptions + Phase 0 / Phase D emits in
+        // AttemptLayout). The caption-emits-LAYOUT-TABLE-FEATURE-
+        // UNSUPPORTED-001 path is gone; the code itself stays in the
+        // diagnostic catalog (still triggered by missing-TableGrid +
+        // span=0 deferral above). Caption-internal diagnostics are
+        // flushed via the per-caption BufferingDiagnosticsSink at
+        // emit-commit time (mirrors the cell-content contract).
     }
 
     /// <summary>Sub-cycle 1 — find the wrapper's
@@ -1173,64 +1324,177 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         return null;
     }
 
-    /// <summary>Per Finding 4 — collect the wrapper's direct
-    /// <see cref="BoxKind.TableCaption"/> children. Per BoxBuilder
-    /// Rec 5 captions are kept under the wrapper (NOT inside the
-    /// grid) so this walks the wrapper, not the grid.</summary>
-    private static List<Box> CollectCaptions(Box wrapper)
+    /// <summary>Per Phase 3 Task 12 sub-cycle 3 — walk the wrapper's
+    /// direct children for <see cref="BoxKind.TableCaption"/> boxes,
+    /// laying each one out via a nested <see cref="BlockLayouter"/>
+    /// into a buffered <see cref="MeasuringFragmentSink"/>. The
+    /// returned list preserves document order; each entry carries the
+    /// caption Box, its resolved <see cref="CaptionSide"/>, its
+    /// buffered content fragments, and its measured block-extent.
+    /// The two <c>out</c> totals sum the block extents of all top-
+    /// side / bottom-side captions for the emit-pass offset arithmetic.
+    ///
+    /// <para><b>Per BoxBuilder Rec 5</b> captions stay as DIRECT
+    /// children of the wrapper (NOT inside the grid) so this walks
+    /// the wrapper, not the grid.</para>
+    ///
+    /// <para><b>Per CSS Tables L3 §11.5.1.</b> Caption inline-size =
+    /// wrapper content-inline-size. Sub-cycle 3 doesn't yet ship
+    /// auto-table-layout, so the grid's outer inline-size and the
+    /// wrapper's content-inline-size are equal; this matches the
+    /// spec's requirement that "the caption box's used inline-size is
+    /// equal to the outer inline-size of the table grid". When auto-
+    /// table-layout lands (sub-cycle 4+) this helper will need to
+    /// switch to the grid's outer inline-size — captured here as a
+    /// TODO inline.</para>
+    ///
+    /// <para><b>Per Finding 3 (sub-cycle 1).</b> Each caption-content
+    /// layout dispatches against a FRESH <see cref="BreakResolver"/>
+    /// scoped to the caption so the outer resolver's checkpoint state
+    /// is preserved untouched — same isolation contract as cells.</para>
+    /// </summary>
+    private List<CaptionMeasurement>? MeasureCaptions(
+        Box wrapper,
+        FragmentainerContext fragmentainer,
+        ref LayoutContext layout,
+        CancellationToken cancellationToken,
+        out double topCaptionsTotal,
+        out double bottomCaptionsTotal)
     {
-        var captions = new List<Box>();
+        topCaptionsTotal = 0;
+        bottomCaptionsTotal = 0;
+
+        List<CaptionMeasurement>? list = null;
         for (var i = 0; i < wrapper.Children.Count; i++)
         {
-            if (wrapper.Children[i].Kind == BoxKind.TableCaption)
+            cancellationToken.ThrowIfCancellationRequested();
+            var ch = wrapper.Children[i];
+            if (ch.Kind != BoxKind.TableCaption) continue;
+
+            // CSS Tables L3 §11.5.2 — caption-side is inherited;
+            // default is `top`. CSS Logical Properties 1 §4.4 admits
+            // writing-mode-relative `block-start` / `block-end`
+            // (mapped to top/bottom under LTR horizontal writing
+            // mode by ReadCaptionSide; RTL + vertical modes deferred
+            // to sub-cycle 4+).
+            var side = ch.Style.ReadCaptionSide();
+
+            // The caption is laid out at the wrapper's content-inline-
+            // size. Inline offset for buffered fragments is the
+            // content-inline-offset (= wrapper's content-box inline-
+            // start edge) so the caption text aligns with the cell
+            // grid below / above.
+            //
+            // TODO sub-cycle 4 — once auto-table-layout ships, swap
+            // this for the grid's outer inline-size (which can be
+            // narrower than the wrapper's content-inline-size when
+            // columns are intrinsically narrower than the wrapper).
+            var (buffer, diagBuffer, blockExtent) = MeasureCaptionContent(
+                captionBox: ch,
+                captionInlineOffset: _contentInlineOffset,
+                captionInlineSize: _contentInlineSize,
+                fragmentainer: fragmentainer,
+                layout: ref layout,
+                cancellationToken: cancellationToken);
+
+            list ??= new List<CaptionMeasurement>(capacity: 2);
+            list.Add(new CaptionMeasurement(
+                caption: ch,
+                side: side,
+                contentBuffer: buffer,
+                diagnosticsBuffer: diagBuffer,
+                contentBlockExtent: blockExtent));
+
+            if (side == CaptionSide.Bottom)
             {
-                captions.Add(wrapper.Children[i]);
+                bottomCaptionsTotal += blockExtent;
+            }
+            else
+            {
+                topCaptionsTotal += blockExtent;
             }
         }
-        return captions;
+
+        return list;
     }
 
-    /// <summary>Per Finding 4 — extract a short text snippet from a
-    /// caption box for inclusion in the deferral diagnostic. Walks the
-    /// caption's descendants collecting TextRun text content, capped
-    /// at 80 characters. The snippet lets authors identify WHICH
-    /// caption is being dropped when a document has multiple
-    /// tables.</summary>
-    private static string ExtractCaptionTextSnippet(Box caption)
+    /// <summary>Per Phase 3 Task 12 sub-cycle 3 — lay out
+    /// <paramref name="captionBox"/>'s inner content via a nested
+    /// <see cref="BlockLayouter"/>, BUFFERING the translated
+    /// fragments in a <see cref="MeasuringFragmentSink"/> for later
+    /// flush. Mirrors <see cref="MeasureCellContent"/>'s contract —
+    /// fresh inner break resolver, buffered diagnostics sink, deferred
+    /// block translation — the only differences are (1) the inline
+    /// translation = wrapper content-inline-offset (caption spans the
+    /// full wrapper content width), (2) no rowspan distribution is
+    /// involved so the buffered block translation can be applied
+    /// directly by FlushTo with the caption's final block origin.
+    /// </summary>
+    private (MeasuringFragmentSink Buffer, BufferingDiagnosticsSink? DiagnosticsBuffer, double BlockExtent) MeasureCaptionContent(
+        Box captionBox,
+        double captionInlineOffset,
+        double captionInlineSize,
+        FragmentainerContext fragmentainer,
+        ref LayoutContext layout,
+        CancellationToken cancellationToken)
     {
-        const int MaxLength = 80;
-        var sb = new StringBuilder(capacity: MaxLength + 8);
-        WalkForText(caption, sb, MaxLength);
-        var raw = sb.ToString();
-        // Collapse any embedded line breaks so the diagnostic stays
-        // on one line.
-        return raw.Replace('\n', ' ').Replace('\r', ' ').Trim();
+        // Pass 0 for the block translation — the caption's final
+        // block origin is known only after the row-stack heights
+        // settle (because the row stack's offset depends on the top-
+        // caption total, which is THIS measure pass). The emit pass
+        // calls FlushTo with the caption's finalized block origin.
+        var measuringSink = new MeasuringFragmentSink(
+            outerSinkBaselineCursor: _sink.Cursor,
+            inlineOffsetTranslation: captionInlineOffset,
+            blockOffsetTranslation: 0);
 
-        static void WalkForText(Box box, StringBuilder sb, int cap)
+        // The caption's content area inline-extent matches the
+        // wrapper's content-inline-size. Sub-cycle 3 doesn't yet
+        // subtract caption-side padding/border (the caption box's own
+        // margins / padding / border are taken from its style on the
+        // emit fragment). For typical authoring this is good enough;
+        // refinement is sub-cycle 4 work.
+        var captionFragmentainer = new FragmentainerContext(
+            contentInlineSize: captionInlineSize,
+            blockSize: Math.Max(fragmentainer.BlockSize, 1));
+
+        // Per Finding 5 (sub-cycle 1) — wrap the ambient diagnostic
+        // sink in a BufferingDiagnosticsSink so caption-internal
+        // diagnostics don't leak when the outer resolver discards the
+        // table. Same flushing contract as cells: FlushTo on commit;
+        // Discard on rewind.
+        BufferingDiagnosticsSink? diagBuffer = null;
+        IPaginateDiagnosticsSink? captionDiagnosticSink = layout.Diagnostics ?? _diagnostics;
+        if (captionDiagnosticSink is not null)
         {
-            if (sb.Length >= cap) return;
-            if (box.Kind == BoxKind.TextRun)
-            {
-                var text = box.Text;
-                if (text.Length == 0) return;
-                var remaining = cap - sb.Length;
-                if (text.Length <= remaining)
-                {
-                    sb.Append(text);
-                }
-                else
-                {
-                    sb.Append(text, 0, remaining);
-                    sb.Append('…');
-                }
-                return;
-            }
-            for (var i = 0; i < box.Children.Count; i++)
-            {
-                if (sb.Length >= cap) return;
-                WalkForText(box.Children[i], sb, cap);
-            }
+            diagBuffer = new BufferingDiagnosticsSink();
+            captionDiagnosticSink = diagBuffer;
         }
+
+        var innerLayout = new LayoutContext(captionFragmentainer)
+        {
+            Diagnostics = captionDiagnosticSink,
+            WritingMode = layout.WritingMode,
+            IsRtl = layout.IsRtl,
+        };
+
+        using var captionLayouter = new BlockLayouter(
+            rootBox: captionBox,
+            sink: measuringSink,
+            incomingContinuation: null,
+            diagnostics: captionDiagnosticSink,
+            shaperResolver: _shaperResolver);
+
+        // Per Finding 3 (sub-cycle 1) — fresh BreakResolver scoped to
+        // the caption so the outer resolver's checkpoint state is
+        // preserved untouched.
+        using var captionResolver = new BreakResolver();
+
+        _ = captionLayouter.AttemptLayout(
+            captionFragmentainer, ref innerLayout, captionResolver,
+            LayoutAttemptStrategy.LastResort, cancellationToken);
+
+        return (measuringSink, diagBuffer, measuringSink.MaxBlockExtentFromCellOrigin);
     }
 
     /// <summary>Sub-cycle 1 — walk <paramref name="grid"/>'s children

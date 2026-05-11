@@ -640,11 +640,14 @@ public sealed class TableLayouterTests
     }
 
     [Fact]
-    public void Finding4_caption_emits_diagnostic_with_text_snippet()
+    public void Caption_no_longer_emits_LAYOUT_TABLE_FEATURE_UNSUPPORTED_001()
     {
-        // Per Finding 4 — captions are silently dropped pre-fix; post-
-        // fix the layouter emits LAYOUT-TABLE-FEATURE-UNSUPPORTED-001
-        // with the caption text in the message.
+        // Renamed + inverted from sub-cycle 1 Finding 4 test
+        // (Finding4_caption_emits_diagnostic_with_text_snippet).
+        // Sub-cycle 1 + 2 emitted LAYOUT-TABLE-FEATURE-UNSUPPORTED-001
+        // for captions to surface the deferral; sub-cycle 3 lays
+        // captions out for real (CSS Tables L3 §11.5), so the
+        // diagnostic must NOT fire.
         var sink = new RecordingFragmentSink();
         var diagSink = new RecordingDiagnosticsSink();
         using var shaper = new SyntheticShaperResolver();
@@ -671,12 +674,21 @@ public sealed class TableLayouterTests
 
         layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
 
-        var captionDiag = diagSink.Diagnostics.Find(d =>
+        // No LAYOUT-TABLE-FEATURE-UNSUPPORTED-001 diagnostic for the
+        // caption path. (The code itself stays in the catalog —
+        // missing-TableGrid + span=0 still emit it — so we look
+        // specifically for the "caption" message text.)
+        Assert.DoesNotContain(diagSink.Diagnostics, d =>
             d.Code == PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001
             && d.Message.Contains("caption"));
-        Assert.True(captionDiag.Code == PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001,
-            "Expected a LAYOUT-TABLE-FEATURE-UNSUPPORTED-001 diagnostic mentioning 'caption'.");
-        Assert.Contains("Annual Report 2026", captionDiag.Message);
+
+        // The caption is actually laid out — a TableCaption fragment
+        // appears in the sink with a positive InlineSize matching the
+        // table content width (600).
+        var captionFragment = sink.Fragments.Find(f => f.Box.Kind == BoxKind.TableCaption);
+        Assert.True(captionFragment.Box?.Kind == BoxKind.TableCaption,
+            "Expected a TableCaption fragment emitted by the layouter.");
+        Assert.Equal(600, captionFragment.InlineSize);
     }
 
     [Fact]
@@ -1521,12 +1533,18 @@ public sealed class TableLayouterTests
     }
 
     [Fact]
-    public void Hardening_Finding7_caption_text_is_sanitized_for_control_chars()
+    public void Caption_with_control_chars_renders_without_diagnostic()
     {
-        // Per Finding 7 — caption text with embedded C0 control chars
-        // (U+0001, U+001B) must be sanitized in the diagnostic
-        // message (replaced with U+FFFD so terminal escape injection
-        // can't take over a log sink).
+        // Sub-cycle 3 — pre-sub-cycle-3 a caption with control chars
+        // would surface a sanitized snippet inside a LAYOUT-TABLE-
+        // FEATURE-UNSUPPORTED-001 diagnostic. Sub-cycle 3 lays the
+        // caption out for real; the original sub-cycle 1 hardening
+        // (Finding 7) sanitization no longer applies because the
+        // caption text never flows through a diagnostic message.
+        //
+        // This test guards against a regression where control-char
+        // captions would crash or trigger a stale code path; the
+        // caption simply emits a fragment + no diagnostic.
         var sink = new RecordingFragmentSink();
         var diagSink = new RecordingDiagnosticsSink();
         using var shaper = new SyntheticShaperResolver();
@@ -1535,9 +1553,9 @@ public sealed class TableLayouterTests
         var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
         var caption = Box.ForElement(BoxKind.TableCaption, MakeStyle(), MakeElement());
         // U+0001 (SOH) + U+001B (ESC, the start of an ANSI sequence)
-        // before "Report".
-        // Build the malicious caption text via explicit char codes so
-        // the source stays portable through editors / formatters.
+        // embedded in the caption text. Build it via explicit char
+        // codes so the source stays portable through editors /
+        // formatters.
         var maliciousText = "Re" + (char)0x01 + "po" + (char)0x1B + "rt";
         caption.AppendChild(Box.TextRun(maliciousText, MakeStyle()));
         table.AppendChild(caption);
@@ -1557,32 +1575,17 @@ public sealed class TableLayouterTests
 
         layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
 
-        var captionDiag = diagSink.Diagnostics.Find(d =>
+        // No caption-message-bearing LAYOUT-TABLE-FEATURE-UNSUPPORTED-
+        // 001 diagnostic — the layout path doesn't dump caption text
+        // into a diagnostic message anymore.
+        Assert.DoesNotContain(diagSink.Diagnostics, d =>
             d.Code == PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001
             && d.Message.Contains("caption"));
-        Assert.True(captionDiag.Code == PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001,
-            "Expected LAYOUT-TABLE-FEATURE-UNSUPPORTED-001 caption diagnostic.");
-        // Control chars must NOT appear verbatim. Each was replaced
-        // with U+FFFD by DiagnosticTextSanitizer.Sanitize. Build the
-        // assertion strings from char codes — using a literal control
-        // char in source can drift through formatters.
-        var sohString = new string((char)0x01, 1);
-        var escString = new string((char)0x1B, 1);
-        Assert.False(captionDiag.Message.Contains(sohString),
-            $"Expected SOH (U+0001) to be sanitized. Message hex: {ToHex(captionDiag.Message)}");
-        Assert.False(captionDiag.Message.Contains(escString),
-            $"Expected ESC (U+001B) to be sanitized. Message hex: {ToHex(captionDiag.Message)}");
-        Assert.Contains("�", captionDiag.Message);
-        // Surrounding text fragments survive intact.
-        Assert.Contains("Re", captionDiag.Message);
-        Assert.Contains("rt", captionDiag.Message);
 
-        static string ToHex(string s)
-        {
-            var sb = new System.Text.StringBuilder(s.Length * 4);
-            foreach (var ch in s) sb.Append(((int)ch).ToString("X4")).Append(' ');
-            return sb.ToString();
-        }
+        // The caption fragment is emitted with the correct geometry.
+        var captionFragment = sink.Fragments.Find(f => f.Box.Kind == BoxKind.TableCaption);
+        Assert.True(captionFragment.Box?.Kind == BoxKind.TableCaption,
+            "Expected a TableCaption fragment for the control-char caption.");
     }
 
     [Fact]
@@ -1626,6 +1629,452 @@ public sealed class TableLayouterTests
         discardable.Discard();
         discardable.FlushTo(underlying);
         Assert.Equal(2, underlying.Diagnostics.Count); // unchanged
+    }
+
+    // ====================================================================
+    //  Phase 3 Task 12 sub-cycle 3 — table caption layout
+    // ====================================================================
+
+    [Fact]
+    public void Caption_top_renders_above_rows()
+    {
+        // CSS Tables L3 §11.5.2 — caption-side: top (default) lays
+        // the caption ABOVE the row stack. Verify the caption's
+        // BlockOffset < row 0's BlockOffset + caption spans the
+        // wrapper's content-inline-size.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+
+        var captionStyle = MakeStyle();
+        // Explicit caption-side: top (also the default; this verifies
+        // the keyword pipeline carries the value through to the
+        // layout-side reader).
+        captionStyle.Set(PropertyId.CaptionSide, ComputedSlot.FromKeyword(0));
+        var caption = Box.ForElement(BoxKind.TableCaption, captionStyle, MakeElement());
+        var captionInner = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var captionInnerStyle = MakeStyle();
+        SetLengthPx(captionInnerStyle, PropertyId.Height, 25);
+        var captionBlock = Box.ForElement(BoxKind.BlockContainer, captionInnerStyle, MakeElement());
+        captionInner.AppendChild(captionBlock);
+        caption.AppendChild(captionInner);
+        table.AppendChild(caption);
+
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        var cellInner = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var cellInnerStyle = MakeStyle();
+        SetLengthPx(cellInnerStyle, PropertyId.Height, 40);
+        var cellBlock = Box.ForElement(BoxKind.BlockContainer, cellInnerStyle, MakeElement());
+        cellInner.AppendChild(cellBlock);
+        cell.AppendChild(cellInner);
+        row.AppendChild(cell);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? captionFragment = null;
+        BoxFragment? rowFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCaption && captionFragment is null)
+                captionFragment = f;
+            else if (f.Box.Kind == BoxKind.TableRow && rowFragment is null)
+                rowFragment = f;
+        }
+        Assert.NotNull(captionFragment);
+        Assert.NotNull(rowFragment);
+        // Caption sits above the row.
+        Assert.True(captionFragment!.Value.BlockOffset < rowFragment!.Value.BlockOffset,
+            $"Top caption (BlockOffset={captionFragment.Value.BlockOffset}) "
+            + $"must precede row (BlockOffset={rowFragment.Value.BlockOffset}).");
+        // Caption spans the wrapper's content-inline-size (= 600 with
+        // zero padding/border on the wrapper in this test).
+        Assert.Equal(600, captionFragment.Value.InlineSize);
+        Assert.Equal(0, captionFragment.Value.InlineOffset);
+        // Row pushed down by the caption height (25).
+        Assert.Equal(25, rowFragment.Value.BlockOffset);
+    }
+
+    [Fact]
+    public void Caption_bottom_renders_below_rows()
+    {
+        // CSS Tables L3 §11.5.2 — caption-side: bottom lays the
+        // caption AFTER the row stack. Verify the caption's
+        // BlockOffset >= last row's BlockOffset + BlockSize.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+
+        var captionStyle = MakeStyle();
+        // Keyword index 1 == bottom (per KeywordResolver order: top,
+        // bottom, block-start, block-end, inline-start, inline-end).
+        captionStyle.Set(PropertyId.CaptionSide, ComputedSlot.FromKeyword(1));
+        var caption = Box.ForElement(BoxKind.TableCaption, captionStyle, MakeElement());
+        var captionInner = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var captionInnerStyle = MakeStyle();
+        SetLengthPx(captionInnerStyle, PropertyId.Height, 20);
+        var captionBlock = Box.ForElement(BoxKind.BlockContainer, captionInnerStyle, MakeElement());
+        captionInner.AppendChild(captionBlock);
+        caption.AppendChild(captionInner);
+        table.AppendChild(caption);
+
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        var cellInner = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var cellInnerStyle = MakeStyle();
+        SetLengthPx(cellInnerStyle, PropertyId.Height, 50);
+        var cellBlock = Box.ForElement(BoxKind.BlockContainer, cellInnerStyle, MakeElement());
+        cellInner.AppendChild(cellBlock);
+        cell.AppendChild(cellInner);
+        row.AppendChild(cell);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? captionFragment = null;
+        BoxFragment? rowFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCaption) captionFragment = f;
+            else if (f.Box.Kind == BoxKind.TableRow) rowFragment = f;
+        }
+        Assert.NotNull(captionFragment);
+        Assert.NotNull(rowFragment);
+        // Row anchors at top of content area; caption sits AFTER the
+        // last row.
+        Assert.Equal(0, rowFragment!.Value.BlockOffset);
+        var lastRowBottom = rowFragment.Value.BlockOffset + rowFragment.Value.BlockSize;
+        Assert.True(captionFragment!.Value.BlockOffset >= lastRowBottom,
+            $"Bottom caption (BlockOffset={captionFragment.Value.BlockOffset}) "
+            + $"must render AT OR BELOW last row's bottom ({lastRowBottom}).");
+    }
+
+    [Fact]
+    public void Multiple_top_captions_stack_vertically()
+    {
+        // CSS Tables L3 §11.5.1 — multiple captions stack in document
+        // order. Verify the second caption's BlockOffset >
+        // first's BlockOffset + BlockSize.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+
+        // Two top-side captions, each carrying a known-height inner
+        // block.
+        for (var i = 0; i < 2; i++)
+        {
+            var captionStyle = MakeStyle();
+            captionStyle.Set(PropertyId.CaptionSide, ComputedSlot.FromKeyword(0)); // top
+            var caption = Box.ForElement(BoxKind.TableCaption, captionStyle, MakeElement());
+            var inner = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+            var innerStyle = MakeStyle();
+            SetLengthPx(innerStyle, PropertyId.Height, 15 + (i * 5)); // 15, 20
+            var block = Box.ForElement(BoxKind.BlockContainer, innerStyle, MakeElement());
+            inner.AppendChild(block);
+            caption.AppendChild(inner);
+            table.AppendChild(caption);
+        }
+
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        var cellInner = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var cellInnerStyle = MakeStyle();
+        SetLengthPx(cellInnerStyle, PropertyId.Height, 30);
+        var cellBlock = Box.ForElement(BoxKind.BlockContainer, cellInnerStyle, MakeElement());
+        cellInner.AppendChild(cellBlock);
+        cell.AppendChild(cellInner);
+        row.AppendChild(cell);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // Collect caption fragments in document order.
+        var captionFragments = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCaption)
+            {
+                captionFragments.Add(f);
+            }
+        }
+        Assert.Equal(2, captionFragments.Count);
+
+        // The first caption's block extent = 15. Second caption
+        // starts at first.BlockOffset + first.BlockSize = 0 + 15 = 15.
+        Assert.Equal(0, captionFragments[0].BlockOffset);
+        Assert.True(captionFragments[1].BlockOffset
+                >= captionFragments[0].BlockOffset + captionFragments[0].BlockSize,
+            "Second caption must stack after the first.");
+        Assert.Equal(15, captionFragments[1].BlockOffset);
+    }
+
+    [Fact]
+    public void Caption_content_renders_via_nested_BlockLayouter()
+    {
+        // Sub-cycle 3 — verify the caption's content layouts through
+        // the nested BlockLayouter dispatch. The caption carries an
+        // AnonymousBlock > TextRun "Hello" which exercises the inline-
+        // only-block detection inside the caption layout. The captured
+        // inline fragment is buffered + flushed via the caption's
+        // MeasuringFragmentSink.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+
+        var captionStyle = MakeStyle();
+        captionStyle.Set(PropertyId.CaptionSide, ComputedSlot.FromKeyword(0));
+        var caption = Box.ForElement(BoxKind.TableCaption, captionStyle, MakeElement());
+        // AnonymousBlock > TextRun "Hello" — the inline-only-block
+        // shape the nested BlockLayouter dispatches.
+        var anon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        anon.AppendChild(Box.TextRun("Hello", MakeStyle()));
+        caption.AppendChild(anon);
+        table.AppendChild(caption);
+
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        row.AppendChild(cell);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // Caption fragment is emitted.
+        var captionFragment = sink.Fragments.Find(f => f.Box.Kind == BoxKind.TableCaption);
+        Assert.True(captionFragment.Box?.Kind == BoxKind.TableCaption,
+            "Expected a TableCaption fragment.");
+
+        // The caption's inner AnonymousBlock content fragment is
+        // buffered + flushed via FlushTo — the caption isn't a stub.
+        // Search the sink for a fragment whose InlineLayout has shaped
+        // glyphs.
+        var anyShapedInCaption = false;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.InlineLayout is not { Lines.Length: > 0 } inlineLayout) continue;
+            foreach (var run in inlineLayout.ShapedRuns)
+            {
+                if (run.Glyphs.Length > 0) { anyShapedInCaption = true; break; }
+            }
+            if (anyShapedInCaption) break;
+        }
+        Assert.True(anyShapedInCaption,
+            "Expected at least one shaped glyph in the caption's content (proves "
+            + "the nested BlockLayouter ran inside the caption).");
+    }
+
+    [Fact]
+    public void Caption_block_extent_feeds_into_table_total_height()
+    {
+        // Sub-cycle 3 — MeasureContentHeight must return a total
+        // that includes top + bottom caption heights + row stack.
+        // Build a known-sized example: top-caption=10, row=30,
+        // bottom-caption=15 ⇒ total = 55.
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+
+        // Top caption.
+        var topStyle = MakeStyle();
+        topStyle.Set(PropertyId.CaptionSide, ComputedSlot.FromKeyword(0));
+        var topCaption = Box.ForElement(BoxKind.TableCaption, topStyle, MakeElement());
+        var topInner = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var topInnerStyle = MakeStyle();
+        SetLengthPx(topInnerStyle, PropertyId.Height, 10);
+        topInner.AppendChild(Box.ForElement(BoxKind.BlockContainer, topInnerStyle, MakeElement()));
+        topCaption.AppendChild(topInner);
+        table.AppendChild(topCaption);
+
+        // Grid + 1 row × 1 cell carrying a 30-tall block.
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        var cellInner = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var cellInnerStyle = MakeStyle();
+        SetLengthPx(cellInnerStyle, PropertyId.Height, 30);
+        cellInner.AppendChild(Box.ForElement(BoxKind.BlockContainer, cellInnerStyle, MakeElement()));
+        cell.AppendChild(cellInner);
+        row.AppendChild(cell);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+
+        // Bottom caption.
+        var botStyle = MakeStyle();
+        botStyle.Set(PropertyId.CaptionSide, ComputedSlot.FromKeyword(1));
+        var botCaption = Box.ForElement(BoxKind.TableCaption, botStyle, MakeElement());
+        var botInner = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var botInnerStyle = MakeStyle();
+        SetLengthPx(botInnerStyle, PropertyId.Height, 15);
+        botInner.AppendChild(Box.ForElement(BoxKind.BlockContainer, botInnerStyle, MakeElement()));
+        botCaption.AppendChild(botInner);
+        table.AppendChild(botCaption);
+
+        root.AppendChild(table);
+
+        // Construct a TableLayouter directly + call MeasureContentHeight.
+        var sink = new RecordingFragmentSink();
+        using var tableLayouter = new TableLayouter(
+            rootBox: table,
+            sink: sink,
+            incomingContinuation: null,
+            diagnostics: null,
+            shaperResolver: shaper);
+        tableLayouter.ConfigureEmission(
+            contentInlineOffset: 0,
+            contentBlockOffset: 0,
+            contentInlineSize: 600);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        var total = tableLayouter.MeasureContentHeight(ctx, ref layoutCtx);
+
+        // top (10) + row (30) + bottom (15) = 55.
+        Assert.Equal(55, total);
+    }
+
+    [Fact]
+    public void Caption_with_default_no_caption_side_falls_back_to_top()
+    {
+        // Sub-cycle 3 — when caption-side isn't set at all, the
+        // layout reader defaults to Top. Verify the caption lands
+        // above the row even without an explicit caption-side keyword.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+
+        // No caption-side property on the caption — fallback to Top.
+        var caption = Box.ForElement(BoxKind.TableCaption, MakeStyle(), MakeElement());
+        var captionInner = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var captionInnerStyle = MakeStyle();
+        SetLengthPx(captionInnerStyle, PropertyId.Height, 18);
+        captionInner.AppendChild(Box.ForElement(BoxKind.BlockContainer, captionInnerStyle, MakeElement()));
+        caption.AppendChild(captionInner);
+        table.AppendChild(caption);
+
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        row.AppendChild(cell);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? captionFragment = null;
+        BoxFragment? rowFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCaption && captionFragment is null)
+                captionFragment = f;
+            else if (f.Box.Kind == BoxKind.TableRow && rowFragment is null)
+                rowFragment = f;
+        }
+        Assert.NotNull(captionFragment);
+        Assert.NotNull(rowFragment);
+        Assert.True(captionFragment!.Value.BlockOffset < rowFragment!.Value.BlockOffset,
+            "Default caption-side falls back to Top so the caption sits above the row.");
+    }
+
+    [Fact]
+    public void Caption_block_start_maps_to_top()
+    {
+        // Sub-cycle 3 — the writing-mode-relative keyword
+        // `block-start` maps to physical `top` under LTR horizontal
+        // writing mode. Sub-cycle 4+ will route this through the
+        // writing-mode resolver; sub-cycle 3 short-circuits to top.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+
+        var captionStyle = MakeStyle();
+        // Keyword index 2 == block-start.
+        captionStyle.Set(PropertyId.CaptionSide, ComputedSlot.FromKeyword(2));
+        var caption = Box.ForElement(BoxKind.TableCaption, captionStyle, MakeElement());
+        var captionInner = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var captionInnerStyle = MakeStyle();
+        SetLengthPx(captionInnerStyle, PropertyId.Height, 12);
+        captionInner.AppendChild(Box.ForElement(BoxKind.BlockContainer, captionInnerStyle, MakeElement()));
+        caption.AppendChild(captionInner);
+        table.AppendChild(caption);
+
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        row.AppendChild(cell);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? captionFragment = null;
+        BoxFragment? rowFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCaption && captionFragment is null)
+                captionFragment = f;
+            else if (f.Box.Kind == BoxKind.TableRow && rowFragment is null)
+                rowFragment = f;
+        }
+        Assert.NotNull(captionFragment);
+        Assert.NotNull(rowFragment);
+        Assert.True(captionFragment!.Value.BlockOffset < rowFragment!.Value.BlockOffset,
+            "block-start under LTR horizontal mode resolves to top.");
     }
 
     // ====================================================================

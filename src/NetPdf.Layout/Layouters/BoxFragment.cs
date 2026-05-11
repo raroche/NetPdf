@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
 using NetPdf.Layout.Boxes;
+using NetPdf.Layout.Inline;
 
 namespace NetPdf.Layout.Layouters;
 
@@ -14,6 +15,16 @@ namespace NetPdf.Layout.Layouters;
 /// <see cref="IBlockFragmentSink"/> as the layouter walks the box
 /// tree. Phase 4 (paint) consumes the emitted fragment list +
 /// resolves it to PDF content streams.</para>
+///
+/// <para><b>Per Phase 3 Task 11 cycle 1 sub-cycle 1 — inline content
+/// integration.</b> The new <see cref="InlineLines"/> field carries
+/// the wrapped <see cref="LineFragment"/>[] for fragments emitted by
+/// <c>BlockLayouter.LayoutInlineContent</c> (block containers whose
+/// children are entirely inline-level). Null for pure-block
+/// fragments — backwards compatible with cycles 1-2c that emitted
+/// border-box-only rectangles. The painter (Phase 4) consumes the
+/// line array to position shaped-glyph slices at successive baselines
+/// inside the fragment's border box.</para>
 ///
 /// <para><b>Per Phase 3 Task 7 cycle 1 PR #22 review fix #3 +
 /// Copilot #2 — geometry IS the BORDER BOX</b> (not the margin
@@ -81,9 +92,20 @@ namespace NetPdf.Layout.Layouters;
 /// axis (CSS px). Excludes margin.</param>
 /// <param name="BlockSize">Border-box extent along the block
 /// axis (CSS px). Excludes margin.</param>
+/// <param name="InlineLines">Per Phase 3 Task 11 cycle 1 sub-cycle 1
+/// — the wrapped line array for inline-only block fragments
+/// produced by <c>BlockLayouter.LayoutInlineContent</c>. Each
+/// <see cref="LineFragment"/> carries one wrapped line's
+/// <c>ShapedRunSlice</c>s in document order; the painter (Phase 4)
+/// positions these at successive baselines inside the fragment's
+/// border box. <see langword="null"/> for pure-block fragments
+/// (cycles 1-2c output, plus block containers whose children are
+/// themselves block-level). Non-null + length 0 isn't a valid
+/// state — empty inline content produces no fragment at all.</param>
 internal readonly record struct BoxFragment(
     Box Box,
     double InlineOffset,
     double BlockOffset,
     double InlineSize,
-    double BlockSize);
+    double BlockSize,
+    LineFragment[]? InlineLines = null);

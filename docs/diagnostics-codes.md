@@ -104,6 +104,14 @@ Severity levels:
 
 ---
 
+## LAYOUT-* — Layout
+
+| Code | Severity | Meaning |
+|---|---|---|
+| `LAYOUT-INLINE-SKIPPED-NO-SHAPER-RESOLVER-001` | Warning | A block container with inline-level children was encountered, but the layouter was constructed without an inline shaper resolver. The inline children are skipped (rendered as empty space) so layout can still complete. Production callers wire a shaper resolver when constructing the renderer; the diagnostic exists for test harnesses and tooling that drive the layouter directly. Per Phase 3 Task 11 cycle 1 sub-cycle 1. |
+
+---
+
 ## INTERNAL-* — Internal/unexpected
 
 | Code | Severity | Meaning |

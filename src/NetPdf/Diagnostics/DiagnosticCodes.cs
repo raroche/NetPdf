@@ -217,4 +217,21 @@ internal static class DiagnosticCodes
     public const string PaginationForcedOverflow001 = "PAGINATION-FORCED-OVERFLOW-001";
 
     // endregion PAGINATION-*
+
+    // region LAYOUT-*
+
+    /// <summary>
+    /// Per Phase 3 Task 11 cycle 1 sub-cycle 1 — emitted by the block
+    /// layouter when a block container with inline-level children is
+    /// encountered but the pipeline did not supply an inline shaper
+    /// resolver. The inline children are skipped (rendered as empty
+    /// space, equivalent to the pre-sub-cycle-1 behavior) so layout
+    /// can still complete. Production callers wire a shaper resolver
+    /// when constructing the renderer; the diagnostic exists for
+    /// test harnesses and tooling that drive the layouter directly.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string LayoutInlineSkippedNoShaperResolver001 = "LAYOUT-INLINE-SKIPPED-NO-SHAPER-RESOLVER-001";
+
+    // endregion LAYOUT-*
 }

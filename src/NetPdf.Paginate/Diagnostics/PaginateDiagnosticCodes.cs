@@ -35,4 +35,14 @@ internal static class PaginateDiagnosticCodes
     /// Mirrors <c>NetPdf.DiagnosticCodes.PaginationForcedOverflow001</c>.
     /// Severity: <see cref="PaginateDiagnosticSeverity.Warning"/>.</summary>
     public const string PaginationForcedOverflow001 = "PAGINATION-FORCED-OVERFLOW-001";
+
+    /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 — emitted by
+    /// <c>BlockLayouter</c> when an inline-only block container is
+    /// encountered but the layouter was constructed without an
+    /// <c>IShaperResolver</c>. The block's inline children are skipped
+    /// (fragmentainer cursor + margin-collapse chain reset as if the
+    /// children were unrenderable), preserving the pre-sub-cycle-1
+    /// behavior. Mirrors <c>NetPdf.DiagnosticCodes.LayoutInlineSkippedNoShaperResolver001</c>.
+    /// Severity: <see cref="PaginateDiagnosticSeverity.Warning"/>.</summary>
+    public const string LayoutInlineSkippedNoShaperResolver001 = "LAYOUT-INLINE-SKIPPED-NO-SHAPER-RESOLVER-001";
 }

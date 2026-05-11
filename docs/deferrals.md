@@ -218,6 +218,51 @@ grepping the ID).
 
 ---
 
+## inline-atomic-boxes
+
+- **ID** — `inline-atomic-boxes`
+- **Status** — `approximated` (skip + diagnostic).
+- **Behavior** — `BlockLayouter.CollectInlineTextRuns` recognizes
+  inline-level atomic boxes (`BoxKind.InlineBlockContainer`,
+  `InlineFlexContainer`, `InlineGridContainer`, `InlineTable`,
+  `InlineReplacedElement`) but currently SKIPS their content. Each
+  skipped occurrence emits the
+  `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001` diagnostic (Warning) so
+  callers see the gap rather than silently mis-rendering.
+- **Missing** — Per CSS Inline L3, atomic inline boxes participate
+  in the inline formatting context as opaque units: their intrinsic
+  width/height contributes to line-box advance + line-box block
+  extent, the surrounding text shapes around them, and they're
+  positioned on the baseline (or whatever `vertical-align`
+  resolves to). The line builder needs an "atomic inline glyph"
+  primitive carrying box-fragment width + ascent/descent so wrap
+  decisions account for it. Replaced elements specifically need
+  intrinsic-sizing via the existing `ImageSafetyValidator` /
+  `FontSafetyValidator` resolved intrinsic dimensions.
+- **Trigger** — corpus needs inline-block / inline-replaced
+  content (typical use case: `<img>` inline in a paragraph, or
+  `display: inline-block` styled spans), OR a user-reported case
+  where atomic inline content disappears.
+- **Owner files** —
+  - `src/NetPdf.Layout/Inline/LineBuilder.cs` — define an "atomic
+    glyph" primitive (or extend `ShapedGlyph` with an atomic-box
+    payload) that wrap decisions treat as a single non-breakable
+    unit with its own advance + ascent/descent.
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs::CollectInlineTextRuns`
+    — convert each atomic inline box into the new primitive
+    instead of emitting the warning + skip.
+  - `src/NetPdf.Layout/Inline/InlineLayouter.cs::LayoutPerRun` —
+    pass atomic primitives through to `LineBuilder.Wrap`.
+- **Added** — Phase 3 Task 11 sub-cycle 1 review Finding #4
+  (this branch).
+- **Removal condition** — `CollectInlineTextRuns` no longer emits
+  `LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001`; atomic inline boxes
+  participate in line layout as opaque advances; a test renders
+  a paragraph with an inline `<img>` and the image's geometry is
+  preserved in the emitted fragments.
+
+---
+
 ## fuzzing-infrastructure
 
 - **ID** — `fuzzing-infrastructure`

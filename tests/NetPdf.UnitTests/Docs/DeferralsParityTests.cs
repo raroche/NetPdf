@@ -46,6 +46,7 @@ public sealed class DeferralsParityTests
         "rtl-fragment-reversal",
         "phase-4-painter-wiring",
         "fuzzing-infrastructure",
+        "inline-atomic-boxes",
     };
 
     [Fact]

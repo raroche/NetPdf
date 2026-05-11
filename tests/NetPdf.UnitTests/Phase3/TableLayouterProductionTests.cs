@@ -182,12 +182,113 @@ public sealed class TableLayouterProductionTests
     }
 
     [Fact]
-    public async Task Table_with_colspan_emits_feature_diagnostic_via_full_pipeline()
+    public async Task Production_colspan_table_renders_correctly()
     {
-        // Per the existing colspan unit test, but exercised through
-        // the full pipeline. The DOM round-trip must preserve the
-        // colspan attribute on the cell's source element so the
-        // TableLayouter's HasSpanAttribute check fires.
+        // Phase 3 Task 12 sub-cycle 2 — through the full pipeline a
+        // colspan="2" cell renders with inline-size = 2 × columnWidth.
+        // The table has 2 columns total (max occupied column + 1 = 2);
+        // contentInlineSize = 600 ⇒ columnWidth = 300; the header cell
+        // is 600 wide.
+        const string html = """
+            <!DOCTYPE html><html><head><style></style></head><body>
+            <table>
+              <tr><td colspan="2">Header</td></tr>
+              <tr><td>A</td><td>B</td></tr>
+            </table>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var rowCount = sink.Fragments.Count(f => f.Box.Kind == BoxKind.TableRow);
+        var cellCount = sink.Fragments.Count(f => f.Box.Kind == BoxKind.TableCell);
+        Assert.Equal(2, rowCount);
+        Assert.Equal(3, cellCount); // 1 header cell + 2 plain cells
+
+        // The header cell — the cell whose source element has
+        // colspan="2". InlineSize must equal 2 × columnWidth = 600.
+        BoxFragment? headerFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell
+                && f.Box.SourceElement?.GetAttribute("colspan") == "2")
+            {
+                headerFragment = f;
+                break;
+            }
+        }
+        Assert.NotNull(headerFragment);
+        Assert.Equal(600, headerFragment!.Value.InlineSize);
+        Assert.Equal(0, headerFragment.Value.InlineOffset);
+    }
+
+    [Fact]
+    public async Task Production_rowspan_table_renders_correctly()
+    {
+        // Phase 3 Task 12 sub-cycle 2 — through the full pipeline a
+        // rowspan="2" cell renders with BlockSize covering both row
+        // heights; the second row's plain cell anchors at col 1.
+        // The cell content uses a <div height=30> to give each cell
+        // a determinate row height (the synthetic font's line metrics
+        // also contribute; we just need positive row heights).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                td > div { height: 30px; }
+            </style></head><body>
+            <table>
+              <tr><td rowspan="2"><div></div></td><td><div></div></td></tr>
+              <tr><td><div></div></td></tr>
+            </table>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        // Locate the rowspan cell.
+        BoxFragment? spanFragment = null;
+        BoxFragment? row1NonSpanFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind != BoxKind.TableCell) continue;
+            var rs = f.Box.SourceElement?.GetAttribute("rowspan");
+            if (rs == "2")
+            {
+                spanFragment = f;
+            }
+            else if (f.BlockOffset > 0)
+            {
+                // The row-1 plain cell sits AFTER row 0 — its
+                // BlockOffset is positive.
+                row1NonSpanFragment = f;
+            }
+        }
+        Assert.NotNull(spanFragment);
+        Assert.NotNull(row1NonSpanFragment);
+
+        // The rowspan cell's BlockSize covers BOTH row heights. Each
+        // row's natural height is at least the 30px <div>.
+        Assert.True(spanFragment!.Value.BlockSize >= 60,
+            $"Expected rowspan cell BlockSize ≥ 60 (= 2 × 30px row), "
+            + $"got {spanFragment.Value.BlockSize}.");
+        Assert.Equal(0, spanFragment.Value.BlockOffset);
+
+        // Row 1's plain cell anchors at column 1 (col 0 is occupied
+        // by the rowspan continuation). The 2-column table has
+        // columnWidth = 300 (contentInlineSize=600), so the row-1
+        // cell's inline offset must be 300 — NOT 0.
+        Assert.Equal(300, row1NonSpanFragment!.Value.InlineOffset);
+        Assert.Equal(300, row1NonSpanFragment.Value.InlineSize);
+    }
+
+    [Fact]
+    public async Task Production_colspan_rowspan_no_longer_diagnoses()
+    {
+        // Sub-cycle 2 — through the full pipeline the colspan
+        // attribute path must NOT produce
+        // LAYOUT-TABLE-FEATURE-UNSUPPORTED-001 because cell merging
+        // works. The code stays in the catalog (captions still emit
+        // it) so this regression specifically checks the colspan
+        // message path.
         const string html = """
             <!DOCTYPE html><html><head><style></style></head><body>
             <table>
@@ -198,9 +299,12 @@ public sealed class TableLayouterProductionTests
 
         var (_, diagnostics, _) = await RenderViaFullPipelineAsync(html);
 
-        Assert.Contains(diagnostics.Diagnostics, d =>
+        Assert.DoesNotContain(diagnostics.Diagnostics, d =>
             d.Code == PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001
             && d.Message.Contains("colspan"));
+        Assert.DoesNotContain(diagnostics.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001
+            && d.Message.Contains("rowspan"));
     }
 
     [Fact]

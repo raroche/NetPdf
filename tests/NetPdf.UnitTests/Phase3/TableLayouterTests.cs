@@ -268,11 +268,14 @@ public sealed class TableLayouterTests
     }
 
     [Fact]
-    public void Table_with_colspan_attribute_emits_feature_unsupported_diagnostic()
+    public void Colspan_rowspan_no_longer_emits_LAYOUT_TABLE_FEATURE_UNSUPPORTED_001()
     {
-        // A cell carries colspan="2"; sub-cycle 1 silently ignores it
-        // (treats it as a 1-column cell) + emits the deferred-feature
-        // diagnostic. The render still produces row/cell fragments.
+        // Sub-cycle 2 — the colspan / rowspan attribute path no longer
+        // emits LAYOUT-TABLE-FEATURE-UNSUPPORTED-001 (the 2D occupancy-
+        // grid algorithm now correctly merges cells). This is the
+        // regression test for the diagnostic removal: the table from
+        // the old "Table_with_colspan_attribute_emits_feature_unsupported_diagnostic"
+        // shape must NOT trigger the feature-unsupported code.
         var sink = new RecordingFragmentSink();
         var diagSink = new RecordingDiagnosticsSink();
         using var shaper = new SyntheticShaperResolver();
@@ -298,20 +301,19 @@ public sealed class TableLayouterTests
         layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
             LayoutAttemptStrategy.LastResort);
 
-        // The deferred-feature diagnostic fired.
-        var hasFeatureDiag = false;
+        // No LAYOUT-TABLE-FEATURE-UNSUPPORTED-001 (the cell-merging
+        // path now works). The code itself stays in the catalog —
+        // captions + missing-TableGrid still emit it — so this
+        // assertion specifically guards against the colspan emit path.
         foreach (var d in diagSink.Diagnostics)
         {
-            if (d.Code == PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001)
-            {
-                hasFeatureDiag = true;
-                Assert.Equal(PaginateDiagnosticSeverity.Warning, d.Severity);
-                break;
-            }
+            Assert.False(
+                d.Code == PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001,
+                "Sub-cycle 2 no longer emits LAYOUT-TABLE-FEATURE-UNSUPPORTED-001 "
+                + "for colspan / rowspan — the 2D occupancy-grid algorithm "
+                + "renders span cells correctly. Diagnostic message: "
+                + d.Message);
         }
-        Assert.True(hasFeatureDiag,
-            "Expected LAYOUT-TABLE-FEATURE-UNSUPPORTED-001 diagnostic when a "
-            + "cell carries a colspan attribute (sub-cycle 1 deferral).");
     }
 
     [Fact]
@@ -718,6 +720,420 @@ public sealed class TableLayouterTests
             "Expected LAYOUT-TABLE-FEATURE-UNSUPPORTED-001 for missing TableGrid child.");
         Assert.False(hasOverflowDiag,
             "Did NOT expect PAGINATION-FORCED-OVERFLOW-001 for malformed table tree.");
+    }
+
+    // ====================================================================
+    //  Phase 3 Task 12 sub-cycle 2 — colspan / rowspan cell merging
+    // ====================================================================
+
+    [Fact]
+    public void Colspan_2_cell_spans_two_columns()
+    {
+        // 2-row, 4-column table where the first cell of row 1 has
+        // colspan=2. Expected geometry (contentInlineSize=600,
+        // columnCount=4 ⇒ columnWidth=150):
+        //   Row 0: cell0(colspan=2, col=0..1, width=300) +
+        //          cell1(col=2)            + cell2(col=3)
+        //   Row 1: cell0(col=0) + cell1(col=1) + cell2(col=2) + cell3(col=3)
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+
+        // Row 0 — first cell carries colspan=2.
+        var row0 = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var spanCell = Box.ForElement(BoxKind.TableCell, MakeStyle(),
+            MakeElementWithAttribute("colspan", "2"));
+        row0.AppendChild(spanCell);
+        row0.AppendChild(Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement()));
+        row0.AppendChild(Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement()));
+        grid.AppendChild(row0);
+
+        // Row 1 — 4 plain cells.
+        var row1 = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        for (var i = 0; i < 4; i++)
+        {
+            row1.AppendChild(Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement()));
+        }
+        grid.AppendChild(row1);
+
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // Find cells in document order — they're emitted row-by-row,
+        // so the first 3 TableCell fragments belong to row 0 (the
+        // colspan cell + its 2 plain neighbors) and the next 4 to
+        // row 1.
+        var cellFragments = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) cellFragments.Add(f);
+        }
+        Assert.Equal(7, cellFragments.Count); // 3 in row 0 + 4 in row 1
+
+        // The first row-0 cell is the span cell.
+        Assert.Same(spanCell, cellFragments[0].Box);
+        // columnWidth = 600 / 4 = 150 → colspan=2 cell width = 300.
+        Assert.Equal(300, cellFragments[0].InlineSize);
+        Assert.Equal(0, cellFragments[0].InlineOffset);
+
+        // The remaining row-0 cells anchor at columns 2 + 3
+        // (offsets 300 + 450).
+        Assert.Equal(300, cellFragments[1].InlineOffset);
+        Assert.Equal(150, cellFragments[1].InlineSize);
+        Assert.Equal(450, cellFragments[2].InlineOffset);
+        Assert.Equal(150, cellFragments[2].InlineSize);
+
+        // Row 1's 4 cells anchor at columns 0..3.
+        Assert.Equal(0, cellFragments[3].InlineOffset);
+        Assert.Equal(150, cellFragments[3].InlineSize);
+        Assert.Equal(150, cellFragments[4].InlineOffset);
+        Assert.Equal(300, cellFragments[5].InlineOffset);
+        Assert.Equal(450, cellFragments[6].InlineOffset);
+    }
+
+    [Fact]
+    public void Rowspan_2_cell_spans_two_rows()
+    {
+        // 2-row, 2-column table where the first cell carries rowspan=2.
+        // Row layout:
+        //   Row 0: spanCell(col=0,rowspan=2) + plainCell(col=1)
+        //   Row 1: plainCell(col=1)            <-- col 0 is occupied
+        //                                          by the rowspan cell
+        //
+        // Expected: spanCell.BlockSize = row0.height + row1.height.
+        //           Row 1's plain cell anchors at col 1, not col 0.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+
+        // Row 0 — span cell + a 60-tall plain cell.
+        var row0 = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var spanCell = Box.ForElement(BoxKind.TableCell, MakeStyle(),
+            MakeElementWithAttribute("rowspan", "2"));
+        row0.AppendChild(spanCell);
+        var row0PlainCell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        var row0Anon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var row0Style = MakeStyle();
+        SetLengthPx(row0Style, PropertyId.Height, 60);
+        var row0Block = Box.ForElement(BoxKind.BlockContainer, row0Style, MakeElement());
+        row0Anon.AppendChild(row0Block);
+        row0PlainCell.AppendChild(row0Anon);
+        row0.AppendChild(row0PlainCell);
+        grid.AppendChild(row0);
+
+        // Row 1 — one plain cell with 80-tall content.
+        var row1 = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var row1Cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        var row1Anon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var row1Style = MakeStyle();
+        SetLengthPx(row1Style, PropertyId.Height, 80);
+        var row1Block = Box.ForElement(BoxKind.BlockContainer, row1Style, MakeElement());
+        row1Anon.AppendChild(row1Block);
+        row1Cell.AppendChild(row1Anon);
+        row1.AppendChild(row1Cell);
+        grid.AppendChild(row1);
+
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // Find the span cell + the row1 plain cell.
+        BoxFragment? spanCellFragment = null;
+        BoxFragment? row1CellFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (ReferenceEquals(f.Box, spanCell)) spanCellFragment = f;
+            if (ReferenceEquals(f.Box, row1Cell)) row1CellFragment = f;
+        }
+        Assert.NotNull(spanCellFragment);
+        Assert.NotNull(row1CellFragment);
+
+        // Row heights — row0 = max(rowspan=1 content) = 60 (the plain
+        // cell), row1 = 80. Span cell extends 60 → 140 covers
+        // content; no extension needed.
+        // Span cell block extent = 60 + 80 = 140.
+        Assert.Equal(140, spanCellFragment!.Value.BlockSize);
+        Assert.Equal(0, spanCellFragment.Value.BlockOffset);
+
+        // Row 1's plain cell sits at column 1 (column 0 is occupied
+        // by the rowspan cell). columnWidth = 400 / 2 = 200.
+        Assert.Equal(200, row1CellFragment!.Value.InlineOffset);
+        Assert.Equal(200, row1CellFragment.Value.InlineSize);
+        Assert.Equal(60, row1CellFragment.Value.BlockOffset); // after row 0
+    }
+
+    [Fact]
+    public void Colspan_and_rowspan_combined()
+    {
+        // 2-row, 2-column table where the first cell of row 0 has
+        // BOTH colspan=2 + rowspan=2. The table grid has only that
+        // single anchored cell (no other cells fit in the 2x2 grid
+        // because the spanning cell occupies all four slots).
+        // Expected: cell width = 2 × columnWidth, cell block extent =
+        // row0 + row1 heights, no other cell fragments.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+
+        // Row 0 — single colspan=2,rowspan=2 cell with 100-tall content.
+        var row0 = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var element = MakeElement();
+        element.SetAttribute("colspan", "2");
+        element.SetAttribute("rowspan", "2");
+        var spanCell = Box.ForElement(BoxKind.TableCell, MakeStyle(), element);
+        var anon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var spanStyle = MakeStyle();
+        SetLengthPx(spanStyle, PropertyId.Height, 100);
+        var spanBlock = Box.ForElement(BoxKind.BlockContainer, spanStyle, MakeElement());
+        anon.AppendChild(spanBlock);
+        spanCell.AppendChild(anon);
+        row0.AppendChild(spanCell);
+        grid.AppendChild(row0);
+
+        // Row 1 — empty (no cells fit; the rowspan continuation
+        // covers both columns).
+        var row1 = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        grid.AppendChild(row1);
+
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? spanFragment = null;
+        var cellCount = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell)
+            {
+                cellCount++;
+                if (ReferenceEquals(f.Box, spanCell)) spanFragment = f;
+            }
+        }
+        Assert.NotNull(spanFragment);
+        Assert.Equal(1, cellCount); // only the colspan+rowspan cell
+
+        // colSpan=2 ⇒ inline-size = 2 × (400/2) = 400.
+        Assert.Equal(400, spanFragment!.Value.InlineSize);
+        Assert.Equal(0, spanFragment.Value.InlineOffset);
+
+        // rowspan=2 — row heights pass A finds row 0 = 0 (no
+        // rowspan=1 cells) + row 1 = 0. Pass B sees the 100-tall
+        // span cell exceeds sum(0, 0)=0, extends row 1 to 100.
+        // Span cell block size = 0 + 100 = 100.
+        Assert.Equal(100, spanFragment.Value.BlockSize);
+    }
+
+    [Fact]
+    public void Rowspan_cell_content_taller_than_natural_rows_extends_last_row()
+    {
+        // 3-row, 2-column table where col 0 of row 0 has rowspan=3
+        // + 300-tall content. Each of rows 1 + 2 has one 50-tall cell
+        // in col 1.
+        // Pass A: rowHeights = [0, 50, 50] (row 0 has no rowspan=1
+        // cell). Pass B: span cell extent 300 > sum(0,50,50)=100,
+        // excess 200 lands on rowHeights[0 + 3 - 1 = 2] → 250.
+        // Span cell block size = 0 + 50 + 250 = 300 (covers content).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+
+        // Row 0 — single rowspan=3 cell with 300-tall content.
+        var row0 = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var spanCell = Box.ForElement(BoxKind.TableCell, MakeStyle(),
+            MakeElementWithAttribute("rowspan", "3"));
+        var spanAnon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var spanStyle = MakeStyle();
+        SetLengthPx(spanStyle, PropertyId.Height, 300);
+        var spanBlock = Box.ForElement(BoxKind.BlockContainer, spanStyle, MakeElement());
+        spanAnon.AppendChild(spanBlock);
+        spanCell.AppendChild(spanAnon);
+        row0.AppendChild(spanCell);
+        grid.AppendChild(row0);
+
+        // Rows 1 + 2 — each has one 50-tall plain cell at col 1.
+        for (var r = 1; r <= 2; r++)
+        {
+            var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+            var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+            var anon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Height, 50);
+            var block = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            anon.AppendChild(block);
+            cell.AppendChild(anon);
+            row.AppendChild(cell);
+            grid.AppendChild(row);
+        }
+
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // Span cell block size must cover its 300px content.
+        BoxFragment? spanFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (ReferenceEquals(f.Box, spanCell)) { spanFragment = f; break; }
+        }
+        Assert.NotNull(spanFragment);
+        Assert.Equal(300, spanFragment!.Value.BlockSize);
+
+        // The third row's fragment must be 250 tall (50 natural + 200
+        // excess from pass B); locate it by being the last TableRow
+        // in document order.
+        var rowFragments = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableRow) rowFragments.Add(f);
+        }
+        Assert.Equal(3, rowFragments.Count);
+        Assert.Equal(0, rowFragments[0].BlockSize);   // row 0 has no rowspan=1 cell
+        Assert.Equal(50, rowFragments[1].BlockSize);  // row 1 natural height
+        Assert.Equal(250, rowFragments[2].BlockSize); // row 2 = 50 + 200 excess
+    }
+
+    [Fact]
+    public void Colspan_overflowing_row_extends_column_count()
+    {
+        // Row 0 has 2 plain cells. Row 1's first cell has colspan=4.
+        // Column count = max occupied column + 1 = 4 (row 1 fills
+        // columns 0..3). Row 0 keeps its 2 cells at columns 0 + 1;
+        // columns 2 + 3 are empty in row 0.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+
+        // Row 0 — 2 cells.
+        var row0 = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        row0.AppendChild(Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement()));
+        row0.AppendChild(Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement()));
+        grid.AppendChild(row0);
+
+        // Row 1 — single colspan=4 cell.
+        var row1 = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var spanCell = Box.ForElement(BoxKind.TableCell, MakeStyle(),
+            MakeElementWithAttribute("colspan", "4"));
+        row1.AppendChild(spanCell);
+        grid.AppendChild(row1);
+
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 800, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // columnCount=4 ⇒ columnWidth = 800 / 4 = 200.
+        // Row 0 plain cells must be 200 wide each.
+        // Row 1 span cell must be 800 wide (4 × 200).
+        // Document order: row 0's 2 cells, then row 1's 1 span cell.
+        var cellFragments = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) cellFragments.Add(f);
+        }
+        Assert.Equal(3, cellFragments.Count);
+
+        Assert.Equal(200, cellFragments[0].InlineSize);
+        Assert.Equal(0, cellFragments[0].InlineOffset);
+        Assert.Equal(200, cellFragments[1].InlineSize);
+        Assert.Equal(200, cellFragments[1].InlineOffset);
+
+        // The colspan=4 cell is in document order #3.
+        Assert.Same(spanCell, cellFragments[2].Box);
+        Assert.Equal(800, cellFragments[2].InlineSize);
+        Assert.Equal(0, cellFragments[2].InlineOffset);
+    }
+
+    [Fact]
+    public void Cells_with_invalid_colspan_attribute_fall_back_to_1()
+    {
+        // colspan="abc" + colspan="0" both clamp to 1 per the locked
+        // design (HTML5's "colspan=0 means rest of row" semantic is
+        // sub-cycle 3+ work; sub-cycle 2 simplifies to "any
+        // out-of-range value → 1").
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var cellAbc = Box.ForElement(BoxKind.TableCell, MakeStyle(),
+            MakeElementWithAttribute("colspan", "abc"));
+        var cellZero = Box.ForElement(BoxKind.TableCell, MakeStyle(),
+            MakeElementWithAttribute("colspan", "0"));
+        row.AppendChild(cellAbc);
+        row.AppendChild(cellZero);
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // columnCount = 2 (both cells fell back to colspan=1). Each
+        // cell is 200 wide; cellAbc at col 0, cellZero at col 1.
+        BoxFragment? abcFrag = null, zeroFrag = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (ReferenceEquals(f.Box, cellAbc)) abcFrag = f;
+            if (ReferenceEquals(f.Box, cellZero)) zeroFrag = f;
+        }
+        Assert.NotNull(abcFrag);
+        Assert.NotNull(zeroFrag);
+        Assert.Equal(200, abcFrag!.Value.InlineSize);
+        Assert.Equal(0, abcFrag.Value.InlineOffset);
+        Assert.Equal(200, zeroFrag!.Value.InlineSize);
+        Assert.Equal(200, zeroFrag.Value.InlineOffset);
     }
 
     // ====================================================================

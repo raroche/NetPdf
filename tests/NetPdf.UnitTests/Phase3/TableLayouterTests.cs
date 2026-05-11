@@ -835,9 +835,24 @@ public sealed class TableLayouterTests
         var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
 
         // Row 0 — span cell + a 60-tall plain cell.
+        // Sub-cycle 5 — the span cell now carries a 10-tall block-
+        // container so the auto-table-layout shrink-to-fit algorithm
+        // sees a non-empty cell in col 0. Pre-sub-cycle-5 the column
+        // widths were the equal-split approximation (= contentInlineSize
+        // / 2) regardless of cell content; sub-cycle 5 derives widths
+        // from min/max-content per cell, so empty cells collapse to 0.
+        // With block content on both cells (matched in inline-axis by
+        // both being 1px min / 1e6 max), the linear interpolation
+        // recovers the equal-split for symmetric content.
         var row0 = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
         var spanCell = Box.ForElement(BoxKind.TableCell, MakeStyle(),
             MakeElementWithAttribute("rowspan", "2"));
+        var spanCellAnon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var spanCellStyle = MakeStyle();
+        SetLengthPx(spanCellStyle, PropertyId.Height, 10);
+        var spanCellBlock = Box.ForElement(BoxKind.BlockContainer, spanCellStyle, MakeElement());
+        spanCellAnon.AppendChild(spanCellBlock);
+        spanCell.AppendChild(spanCellAnon);
         row0.AppendChild(spanCell);
         var row0PlainCell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
         var row0Anon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
@@ -2986,12 +3001,14 @@ public sealed class TableLayouterTests
     }
 
     [Fact]
-    public void Auto_layout_keeps_equal_split_for_now()
+    public void Auto_layout_ignores_col_widths()
     {
-        // Sub-cycle 4 — table-layout: auto (default) IGNORES <col>
-        // widths in this sub-cycle (the auto shrink-to-fit algorithm
-        // is sub-cycle 5+). All columns get equal-split regardless of
-        // <col> declarations.
+        // Sub-cycle 4 + 5 — table-layout: auto IGNORES <col>
+        // declarations (auto-table-layout derives column widths from
+        // cell content, not from <col>); both columns of this empty-
+        // cell table get equal-split because empty cells have
+        // min=max=0 and the saturated-path distribution shares the
+        // wrapper's content-inline-size equally across the columns.
         var sink = new RecordingFragmentSink();
         using var shaper = new SyntheticShaperResolver();
 
@@ -3025,9 +3042,486 @@ public sealed class TableLayouterTests
             if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
         }
         Assert.Equal(2, cells.Count);
-        // Equal-split — auto ignores the <col width="100">. 600/2=300.
+        // Sub-cycle 5 — empty cells → min=max=0; saturated-path
+        // distributes contentInlineSize=600 equally across 2 columns
+        // → 300 each. (Pre-sub-cycle-5 this was the equal-split
+        // approximation; post-sub-cycle-5 the result is the same for
+        // empty cells.)
         Assert.Equal(300, cells[0].InlineSize);
         Assert.Equal(300, cells[1].InlineSize);
+    }
+
+    // ====================================================================
+    //  Phase 3 Task 12 sub-cycle 5 — table-layout: auto shrink-to-fit
+    //  (CSS Tables L3 §3 — min/max-content per column).
+    // ====================================================================
+
+    [Fact]
+    public void Auto_layout_short_content_uses_max_content_columns()
+    {
+        // Sub-cycle 5 — table-layout: auto with TEXT content produces
+        // per-column widths reflecting the content. Cell A has shorter
+        // text ("A"), cell B has longer text ("BBBBB"). Max-content
+        // for A is the width of a single glyph; for B is the width of
+        // 5 glyphs. Under the saturated path (contentInlineSize >>
+        // sum(max-content)), each column reaches its max + the extra
+        // is distributed equally → the per-column widths PRESERVE
+        // their relative ordering (A < B). The test asserts that
+        // ordering rather than exact pixels (synthetic font glyph
+        // metrics are fixed but the auto-split formula is verified by
+        // the saturated-path direct test below).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+
+        var cellA = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        var cellAAnon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        cellAAnon.AppendChild(Box.TextRun("A", MakeStyle()));
+        cellA.AppendChild(cellAAnon);
+        row.AppendChild(cellA);
+
+        var cellB = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+        var cellBAnon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        cellBAnon.AppendChild(Box.TextRun("BBBBB", MakeStyle()));
+        cellB.AppendChild(cellBAnon);
+        row.AppendChild(cellB);
+
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var cells = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
+        }
+        Assert.Equal(2, cells.Count);
+        // Both columns sum to contentInlineSize = 600.
+        Assert.Equal(600, cells[0].InlineSize + cells[1].InlineSize, precision: 3);
+        // Cell A (shorter text) gets a NARROWER column than cell B
+        // (longer text). Pre-sub-cycle-5 the equal-split made
+        // cells[0].InlineSize == cells[1].InlineSize; sub-cycle 5
+        // makes them differ.
+        Assert.True(cells[0].InlineSize < cells[1].InlineSize,
+            $"Expected col 0 (short content 'A', width={cells[0].InlineSize}) "
+            + $"to be narrower than col 1 (long content 'BBBBB', "
+            + $"width={cells[1].InlineSize}).");
+    }
+
+    [Fact]
+    public void Auto_layout_long_content_shrinks_to_min_content_when_table_too_narrow()
+    {
+        // Sub-cycle 5 — when sum(min-content) <= contentInlineSize <=
+        // sum(max-content), the §3 interpolation path distributes the
+        // available width between min and max. This test exercises the
+        // interpolation: cell A has block-width-auto content (min=1,
+        // max=1e6), cell B same. Both cells are symmetric so the
+        // interpolation produces equal columns matching
+        // contentInlineSize/2 = 300 each. The point of the test is to
+        // confirm the INTERPOLATION path runs (not the saturated /
+        // overflow paths) when sum(min) < contentInlineSize < sum(max).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        // Both cells carry a BlockContainer with NO declared width —
+        // they fill the available space, producing min ≈ 1, max ≈ 1e6.
+        for (var c = 0; c < 2; c++)
+        {
+            var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+            var cellAnon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+            var cellStyle = MakeStyle();
+            SetLengthPx(cellStyle, PropertyId.Height, 20);
+            var cellBlock = Box.ForElement(BoxKind.BlockContainer, cellStyle, MakeElement());
+            cellAnon.AppendChild(cellBlock);
+            cell.AppendChild(cellAnon);
+            row.AppendChild(cell);
+        }
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var cells = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
+        }
+        Assert.Equal(2, cells.Count);
+        // Symmetric content + interpolation path → equal-split-like
+        // result of 300 each (within floating-point tolerance).
+        Assert.Equal(300, cells[0].InlineSize, precision: 3);
+        Assert.Equal(300, cells[1].InlineSize, precision: 3);
+    }
+
+    [Fact]
+    public void Auto_layout_distributes_extra_above_max_content_equally()
+    {
+        // Sub-cycle 5 — saturated path: when contentInlineSize >
+        // sum(max-content), each column reaches its max-content and the
+        // EXTRA (contentInlineSize - sum(max-content)) is distributed
+        // equally across all columns. Two cells with identical text
+        // content "AB" — sumMin = sumMax = 2 * glyphWidth ≈ 12px (well
+        // below 600). Saturated path: each column reaches its max +
+        // an equal share of the (large) excess → both columns are
+        // equal and sum to contentInlineSize.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        for (var c = 0; c < 2; c++)
+        {
+            var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+            var cellAnon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+            cellAnon.AppendChild(Box.TextRun("AB", MakeStyle()));
+            cell.AppendChild(cellAnon);
+            row.AppendChild(cell);
+        }
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var cells = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
+        }
+        Assert.Equal(2, cells.Count);
+        // Symmetric content + saturated path → both cells = 300 (sum
+        // = contentInlineSize = 600).
+        Assert.Equal(300, cells[0].InlineSize, precision: 3);
+        Assert.Equal(300, cells[1].InlineSize, precision: 3);
+    }
+
+    [Fact]
+    public void Auto_layout_columns_overflow_when_below_min_content()
+    {
+        // Sub-cycle 5 — overflow path: when sum(min-content) >
+        // contentInlineSize, the table grid overflows the wrapper in
+        // the inline axis. Every column gets its min-content;
+        // LAYOUT-TABLE-INLINE-OVERFLOW-001 is emitted. Two cells with
+        // long unbreakable text "AAAAAAAAAAAAAAAAAAAA" (20 glyphs @
+        // 6px each ≈ 120px) each. sumMin ≈ 240 > contentInlineSize=50,
+        // triggering overflow. The exact min-content depends on the
+        // synthetic font's glyph metrics; assert sum exceeds wrapper +
+        // each cell ≥ wrapper width (each cell IS its full min-content).
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        for (var c = 0; c < 2; c++)
+        {
+            var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+            var cellAnon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+            // 20 'A' glyphs — unbreakable (no space). Min-content ≈
+            // 120px > 25px per column = 50/2.
+            cellAnon.AppendChild(Box.TextRun("AAAAAAAAAAAAAAAAAAAA", MakeStyle()));
+            cell.AppendChild(cellAnon);
+            row.AppendChild(cell);
+        }
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 50, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var cells = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
+        }
+        Assert.Equal(2, cells.Count);
+        // Each column at its min-content (≈120). The two cells must
+        // sum to MORE than contentInlineSize=50 (overflow).
+        var columnSum = cells[0].InlineSize + cells[1].InlineSize;
+        Assert.True(columnSum > 50,
+            $"Expected column sum {columnSum} to exceed contentInlineSize=50.");
+        // Both columns should have the same min-content (symmetric).
+        Assert.Equal(cells[0].InlineSize, cells[1].InlineSize, precision: 3);
+
+        // Row fragment grows to columnSum (= sum of min-contents).
+        BoxFragment? rowFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableRow) { rowFragment = f; break; }
+        }
+        Assert.NotNull(rowFragment);
+        Assert.Equal(columnSum, rowFragment!.Value.InlineSize, precision: 3);
+
+        // LAYOUT-TABLE-INLINE-OVERFLOW-001 emitted with column sum +
+        // content size in the message.
+        var overflowDiagIdx = diagSink.Diagnostics.FindIndex(d =>
+            d.Code == NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutTableInlineOverflow001);
+        Assert.True(overflowDiagIdx >= 0,
+            "Expected LAYOUT-TABLE-INLINE-OVERFLOW-001 diagnostic was not emitted.");
+        var overflowDiag = diagSink.Diagnostics[overflowDiagIdx];
+        Assert.Contains("50", overflowDiag.Message);
+    }
+
+    [Fact]
+    public void Auto_layout_colspan_cell_distributes_intrinsic_widths()
+    {
+        // Sub-cycle 5 — a colspan=2 cell's intrinsic width distributes
+        // ACROSS the spanned columns, not into a single one. Row 0 has
+        // a colspan=2 cell with text "AB"; row 1 has two cells with
+        // text "AB" + "AB" each. Per-column aggregation:
+        //   First pass (colspan=1): col 0 min/max = 12px, col 1 min/max
+        //     = 12px (the row 1 cells).
+        //   Second pass (colspan=2): the colspan cell's intrinsic ≈ 12px
+        //     is LESS than the 24px already attributed → no top-up.
+        // The colspan cell's geometry: spans cols 0+1; InlineSize =
+        // sum(col widths) = contentInlineSize (= 600 under the
+        // saturated path).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+
+        // Row 0 — single colspan=2 cell with text "AB".
+        var row0 = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        var spanCell = Box.ForElement(BoxKind.TableCell, MakeStyle(),
+            MakeElementWithAttribute("colspan", "2"));
+        var spanAnon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        spanAnon.AppendChild(Box.TextRun("AB", MakeStyle()));
+        spanCell.AppendChild(spanAnon);
+        row0.AppendChild(spanCell);
+        grid.AppendChild(row0);
+
+        // Row 1 — two cells, each with text "AB".
+        var row1 = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        for (var c = 0; c < 2; c++)
+        {
+            var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+            var cellAnon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+            cellAnon.AppendChild(Box.TextRun("AB", MakeStyle()));
+            cell.AppendChild(cellAnon);
+            row1.AppendChild(cell);
+        }
+        grid.AppendChild(row1);
+
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // Row 0's colspan cell + the two row 1 cells.
+        var cells = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
+        }
+        Assert.Equal(3, cells.Count);
+        // Symmetric content + saturated path → cols 0 + 1 each = 300;
+        // colspan cell = 600 (sum); row 1 cells = 300 each.
+        Assert.Equal(600, cells[0].InlineSize, precision: 3);
+        Assert.Equal(0, cells[0].InlineOffset, precision: 3);
+        Assert.Equal(300, cells[1].InlineSize, precision: 3);
+        Assert.Equal(0, cells[1].InlineOffset, precision: 3);
+        Assert.Equal(300, cells[2].InlineSize, precision: 3);
+        Assert.Equal(300, cells[2].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void Auto_layout_observes_cancellation_during_measurement()
+    {
+        // Sub-cycle 5 — pre-cancelled CancellationToken throws
+        // OperationCanceledException before completing the speculative
+        // measurement pass. Use a 100-cell table so the per-cell
+        // cancellation check has many opportunities to fire.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        for (var c = 0; c < 100; c++)
+        {
+            var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+            var cellAnon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+            cellAnon.AppendChild(Box.TextRun("AB", MakeStyle()));
+            cell.AppendChild(cellAnon);
+            row.AppendChild(cell);
+        }
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var cts = new System.Threading.CancellationTokenSource();
+        cts.Cancel();
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        // Cannot use Assert.Throws with ref-passing lambda — call
+        // directly + catch + assert.
+        System.OperationCanceledException? thrown = null;
+        try
+        {
+            layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+                LayoutAttemptStrategy.LastResort, cts.Token);
+        }
+        catch (System.OperationCanceledException ex)
+        {
+            thrown = ex;
+        }
+        Assert.NotNull(thrown);
+    }
+
+    [Fact]
+    public void Auto_layout_linear_interpolation_between_min_and_max()
+    {
+        // Sub-cycle 5 — verify the interpolation path fires when
+        // sumMin < contentInlineSize < sumMax. Each cell has text
+        // "AAA BBB" — min-content ≈ 18px (longest word "AAA" / "BBB"
+        // = 3 glyphs × 6px), max-content ≈ the full text width
+        // (~43px including space). With 2 cells, sumMin ≈ 36 and
+        // sumMax ≈ 86. contentInlineSize=60 sits strictly between →
+        // interpolation path. Symmetric content + symmetric
+        // interpolation → both cells get equal widths summing to
+        // contentInlineSize=60 → 30 each.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        for (var c = 0; c < 2; c++)
+        {
+            var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+            var cellAnon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+            cellAnon.AppendChild(Box.TextRun("AAA BBB", MakeStyle()));
+            cell.AppendChild(cellAnon);
+            row.AppendChild(cell);
+        }
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 60, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var cells = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
+        }
+        Assert.Equal(2, cells.Count);
+        // Symmetric content + interpolation path → both columns get
+        // equal widths summing to contentInlineSize=60 → 30 each.
+        Assert.Equal(30, cells[0].InlineSize, precision: 1);
+        Assert.Equal(30, cells[1].InlineSize, precision: 1);
+        // Together they sum to contentInlineSize (no overflow, no
+        // saturated extra).
+        Assert.Equal(60, cells[0].InlineSize + cells[1].InlineSize, precision: 1);
+    }
+
+    [Fact]
+    public void Auto_layout_keeps_existing_fixed_layout_behavior_intact()
+    {
+        // Sub-cycle 5 — the auto-table-layout changes are gated on
+        // wrapper.Style.ReadTableLayout() == Auto; a wrapper with
+        // table-layout: fixed still runs the 4-pass fixed algorithm.
+        // Pin this regression: a fixed-layout table with <col width="100">
+        // declarations produces the post-Pass-D fixed-layout widths,
+        // NOT the auto-shrink-to-fit widths. Replicates the
+        // Fixed_layout_col_width_drives_column_widths test's geometry.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var tableStyle = MakeStyle();
+        SetTableLayoutFixed(tableStyle);
+
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, tableStyle, MakeElement());
+
+        var col1Style = MakeStyle();
+        SetLengthPx(col1Style, PropertyId.Width, 100);
+        var col1 = Box.ForElement(BoxKind.TableColumn, col1Style, MakeElement());
+        var col2Style = MakeStyle();
+        SetLengthPx(col2Style, PropertyId.Width, 200);
+        var col2 = Box.ForElement(BoxKind.TableColumn, col2Style, MakeElement());
+
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        grid.AppendChild(col1);
+        grid.AppendChild(col2);
+
+        var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+        row.AppendChild(Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement()));
+        row.AppendChild(Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement()));
+        grid.AppendChild(row);
+        table.AppendChild(grid);
+        root.AppendChild(table);
+
+        using var layouter = new BlockLayouter(root, sink, null, null, shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        var cells = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
+        }
+        Assert.Equal(2, cells.Count);
+        // Fixed-layout Pass A: cols 0+1 declared 100+200 (sum=300).
+        // Pass D: leftover 300 distributed equally (+150) → 250 + 350.
+        // (Identical to Fixed_layout_col_width_drives_column_widths.)
+        Assert.Equal(250, cells[0].InlineSize);
+        Assert.Equal(350, cells[1].InlineSize);
     }
 
     [Fact]

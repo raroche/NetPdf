@@ -513,9 +513,12 @@ public sealed class TableLayouterProductionTests
     [Fact]
     public async Task Production_table_with_auto_layout_ignores_col_widths_for_now()
     {
-        // Sub-cycle 4 — table-layout: auto (default) IGNORES <col>
-        // widths because the §3 shrink-to-fit algorithm is sub-cycle
-        // 5+ work; equal-split applies.
+        // Sub-cycle 4 + 5 — table-layout: auto (default) IGNORES <col>
+        // widths (the §3 shrink-to-fit algorithm derives widths from
+        // cell content, not from <col>). The two cells have single-
+        // letter text "A" + "B" which produce identical (symmetric)
+        // intrinsic widths in the synthetic shaper — saturated path
+        // distributes the extra equally → both cells = 300.
         const string html = """
             <!DOCTYPE html><html><head><style></style></head><body>
             <table>
@@ -533,10 +536,112 @@ public sealed class TableLayouterProductionTests
             if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
         }
         Assert.Equal(2, cells.Count);
-        // contentInlineSize=600 / 2 columns ⇒ 300 each. The <col
-        // width="100"> is silently ignored by sub-cycle 4 auto mode.
+        // Symmetric content + saturated path → contentInlineSize=600
+        // split equally → 300 each. The <col width="100"> is silently
+        // ignored by auto mode.
         Assert.Equal(300, cells[0].InlineSize);
         Assert.Equal(300, cells[1].InlineSize);
+    }
+
+    // ====================================================================
+    //  Phase 3 Task 12 sub-cycle 5 — table-layout: auto shrink-to-fit
+    //  (CSS Tables L3 §3 — min/max-content per column).
+    // ====================================================================
+
+    [Fact]
+    public async Task Production_auto_layout_with_real_text_renders_per_content()
+    {
+        // Sub-cycle 5 — the production pipeline (HTML → BoxBuilder →
+        // BlockLayouter → TableLayouter) produces ASYMMETRIC column
+        // widths under table-layout: auto when cell content has
+        // different intrinsic widths. The shorter cell ("A") gets a
+        // narrower column than the longer cell ("BBBBBBBBBB"). Both
+        // must sum to contentInlineSize.
+        //
+        // Wrap each cell's text in an explicit <div> so BoxBuilder
+        // produces a BlockContainer child whose only descendant is
+        // the TextRun — that's exactly the inline-only-block shape
+        // the inline-dispatch path detects (mirrors
+        // <see cref="Table_cell_with_real_inline_text_lays_out_via_inline_only_block"/>).
+        // Without the <div> wrapper BoxBuilder may emit text directly
+        // as a child of the TableCell + the inline-only-block dispatch
+        // wouldn't fire (the cell itself is the wrapper not an inline
+        // container).
+        const string html = """
+            <!DOCTYPE html><html><head><style></style></head><body>
+            <table><tr><td><div>A</div></td><td><div>BBBBBBBBBB</div></td></tr></table>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var cells = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
+        }
+        Assert.Equal(2, cells.Count);
+        // Combined widths cover the wrapper's content-inline-size
+        // (600 from the test fixture).
+        Assert.Equal(600, cells[0].InlineSize + cells[1].InlineSize, precision: 3);
+        // Column 0 (shorter content) is narrower than column 1
+        // (longer content) — the §3 shrink-to-fit derives widths
+        // from intrinsic content extents.
+        Assert.True(cells[0].InlineSize < cells[1].InlineSize,
+            $"Expected col 0 ('A', width={cells[0].InlineSize}) to be "
+            + $"narrower than col 1 ('BBBBBBBBBB', width={cells[1].InlineSize}). "
+            + "Pre-sub-cycle-5 they would have been equal (300/300 from "
+            + "the equal-split approximation).");
+    }
+
+    [Fact]
+    public async Task Production_auto_layout_invoice_style_columns()
+    {
+        // Sub-cycle 5 — a typical invoice-style 4-column layout: a
+        // narrow "Qty" column with single-digit content + a wider
+        // "Description" column with multi-word content + an "Amount"
+        // column + a "Date" column. Under auto-table-layout the
+        // description column should be the widest (its max-content
+        // is the longest text), and the qty column should be one of
+        // the narrowest. Asserted as ORDERING invariants, not exact
+        // pixels (synthetic shaper widths are fixed but the test
+        // covers the behavioral contract).
+        const string html = """
+            <!DOCTYPE html><html><head><style></style></head><body>
+            <table>
+              <tr>
+                <td><div>1</div></td>
+                <td><div>AAAAAAAA BBBBBBBB AAAAAAAA</div></td>
+                <td><div>AA</div></td>
+                <td><div>AA</div></td>
+              </tr>
+            </table>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var cells = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCell) cells.Add(f);
+        }
+        Assert.Equal(4, cells.Count);
+        // The Description column (cell 1) is the widest — it has the
+        // longest max-content.
+        Assert.True(cells[1].InlineSize > cells[0].InlineSize,
+            $"Expected description col (width={cells[1].InlineSize}) "
+            + $"to be wider than qty col (width={cells[0].InlineSize}).");
+        Assert.True(cells[1].InlineSize > cells[2].InlineSize,
+            $"Expected description col (width={cells[1].InlineSize}) "
+            + $"to be wider than amount col (width={cells[2].InlineSize}).");
+        Assert.True(cells[1].InlineSize > cells[3].InlineSize,
+            $"Expected description col (width={cells[1].InlineSize}) "
+            + $"to be wider than date col (width={cells[3].InlineSize}).");
+        // The four columns sum to contentInlineSize = 600.
+        var totalWidth = cells[0].InlineSize + cells[1].InlineSize
+            + cells[2].InlineSize + cells[3].InlineSize;
+        Assert.Equal(600, totalWidth, precision: 3);
     }
 
     // ====================================================================

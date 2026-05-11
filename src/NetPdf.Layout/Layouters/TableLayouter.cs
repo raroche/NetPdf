@@ -14,16 +14,33 @@ using NetPdf.Paginate.Diagnostics;
 namespace NetPdf.Layout.Layouters;
 
 /// <summary>
-/// Per Phase 3 Task 12 sub-cycle 1 + plan §"TableLayouter" — Hello-World
-/// table layouter. Walks the inner content of a <see cref="BoxKind.Table"/>
-/// (or <see cref="BoxKind.InlineTable"/>) wrapper: finds the
-/// <see cref="BoxKind.TableGrid"/>, collects table rows (recursing into
-/// row groups), splits the content-inline-size equally across the
-/// columns implied by the maximum row width, stacks rows vertically,
-/// dispatches each cell's content through a nested
+/// Per Phase 3 Task 12 sub-cycle 1 + 2 + plan §"TableLayouter" —
+/// Hello-World table layouter. Walks the inner content of a
+/// <see cref="BoxKind.Table"/> (or <see cref="BoxKind.InlineTable"/>)
+/// wrapper: finds the <see cref="BoxKind.TableGrid"/>, collects table
+/// rows (recursing into row groups), splits the content-inline-size
+/// equally across the columns implied by the placed cell grid, stacks
+/// rows vertically, dispatches each cell's content through a nested
 /// <see cref="BlockLayouter"/> for recursive layout, and emits one
 /// <see cref="BoxFragment"/> per row + per cell into the same
 /// <see cref="IBlockFragmentSink"/> the outer block layouter uses.
+///
+/// <para><b>Sub-cycle 2 — <c>colspan</c> / <c>rowspan</c> cell
+/// merging.</b> Cell placement uses the CSS Tables L3 §3 + HTML5
+/// "Forming a table" 2D occupancy-grid algorithm: each row walks
+/// left-to-right with a column cursor; for each cell, the cursor
+/// advances past any slots already occupied by rowspan cells from
+/// previous rows, then the cell anchors at the cursor and marks its
+/// <c>rowspan × colspan</c> slot rectangle as occupied. Column count =
+/// max(occupiedColIndex + 1) across all rows. Spanning cells receive
+/// <c>colspan × columnWidth</c> of inline space + their block size
+/// sums all rowHeights they cover. Row heights start as
+/// <c>max(content extent)</c> over <c>rowspan=1</c> cells; for
+/// <c>rowspan&gt;1</c> cells (processed in pass 2, sorted by ascending
+/// rowspan), any excess content above the natural row-height sum lands
+/// on the LAST row of the span — a deterministic naive distribution.
+/// The CSS Tables L3 spec-strict distribution-proportional algorithm
+/// is sub-cycle 3 work.</para>
 ///
 /// <para><b>Two-phase protocol (post-Finding-1 hardening).</b> The
 /// layouter exposes a public <see cref="MeasureContentHeight"/> method
@@ -38,16 +55,19 @@ namespace NetPdf.Layout.Layouters;
 /// cached per-row measurements + emits row/cell fragments + flushes
 /// the buffered cell content in paint-safe order.</para>
 ///
-/// <para><b>Paint-safe emit order (post-Finding-2 hardening).</b>
-/// Sub-cycle 1 buffered cell content in
-/// <see cref="MeasuringFragmentSink"/> during the measure phase. The
-/// emit phase: emit the row fragment, then for each cell emit the
-/// cell fragment, then drain its buffered content fragments via
-/// <see cref="MeasuringFragmentSink.FlushTo"/>. This produces the
-/// painter-friendly order row → cell → cell-content so backgrounds /
-/// borders paint UNDER the text glyphs.</para>
+/// <para><b>Paint-safe emit order (post-Finding-2 + Finding-3
+/// hardening).</b> Sub-cycle 1 buffered cell content in
+/// <see cref="MeasuringFragmentSink"/> during the measure phase.
+/// Sub-cycle 2 + Finding 3 split the emit into THREE table-wide
+/// phases — all row fragments first, then all cell fragments
+/// (anchored at their origin), then all cell content via
+/// <see cref="MeasuringFragmentSink.FlushTo"/>. The whole-table
+/// ordering guarantees a row r+1 background can never paint over
+/// a rowspan cell's content anchored at row r (Finding 3 pre-fix:
+/// the previous row-major loop flushed row r's rowspan-cell content
+/// before emitting row r+1's background).</para>
 ///
-/// <para><b>Sub-cycle 1 algorithm (equal-column "Hello World"):</b></para>
+/// <para><b>Algorithm (post-sub-cycle 2):</b></para>
 /// <list type="number">
 ///   <item>Locate the wrapper's <see cref="BoxKind.TableGrid"/> child.
 ///   If missing (defensive — <c>BoxBuilder</c>'s table fixup is supposed
@@ -60,29 +80,40 @@ namespace NetPdf.Layout.Layouters;
 ///   under the wrapper (per BoxBuilder Rec 5) but their content is
 ///   skipped + a <c>LAYOUT-TABLE-FEATURE-UNSUPPORTED-001</c>
 ///   diagnostic fires with the caption text snippet so authors see
-///   what's being dropped (sub-cycle 1 deferral — see
+///   what's being dropped (deferred behavior — see
 ///   <c>docs/deferrals.md#table-auto-fixed-spans-borders</c>).
 ///   Column groups and columns are skipped silently.</item>
-///   <item>Compute the column count = max number of
-///   <see cref="BoxKind.TableCell"/> children across all collected
-///   rows. Sub-cycle 1 assumes no <c>colspan</c>: cell count == column
-///   count for each row.</item>
+///   <item><b>Sub-cycle 2:</b> place cells onto a 2D occupancy grid
+///   (<see cref="CellPlacement"/>) using the HTML5 forming-a-table
+///   algorithm — for each row, advance a column cursor past slots
+///   already occupied by rowspan continuations from earlier rows, then
+///   anchor the cell at the cursor with its <c>colspan × rowspan</c>
+///   slot rectangle marked occupied. The column count = max occupied
+///   column index + 1 across all rows.</item>
 ///   <item>Split the available inline-size equally:
 ///   <c>columnWidth = contentInlineSize / columnCount</c>. No
 ///   author column widths, no shrink-to-fit, no min/max content
-///   sizing (auto + fixed layout algorithms deferred).</item>
-///   <item>Measure pass: for each row, lay out each cell's content
-///   into a per-cell <see cref="MeasuringFragmentSink"/> that BUFFERS
-///   the translated fragments. Track the per-cell maximum block
-///   extent; the row height is the maximum across cells. Cache the
-///   measurements + buffers on the layouter.</item>
-///   <item>Emit pass (when <see cref="AttemptLayout"/> runs): emit the
-///   row fragment, then for each cell emit the cell fragment, then
-///   drain the cell's buffered content into the outer sink. Advance
-///   the row cursor.</item>
+///   sizing (auto + fixed layout algorithms still deferred).</item>
+///   <item>Measure pass: for each cell at its origin, lay out its
+///   content into a <see cref="MeasuringFragmentSink"/> that BUFFERS
+///   fragments with an inline translation baked in but a deferred
+///   block translation. Track the per-cell maximum block extent.</item>
+///   <item>Row height pass: <c>rowHeight[r] = max(content extent)</c>
+///   over cells with <c>rowspan=1</c> anchored at row <c>r</c>. Then
+///   a second pass for cells with <c>rowspan&gt;1</c> (processed
+///   ascending rowspan): if
+///   <c>sum(rowHeight[originRow..originRow+rowspan-1]) &lt; cellContent</c>,
+///   add the excess to <c>rowHeight[originRow+rowspan-1]</c> (the last
+///   row of the span). Deterministic + simple; spec-strict
+///   distribution-proportional algorithm is sub-cycle 3.</item>
+///   <item>Emit pass (when <see cref="AttemptLayout"/> runs): for each
+///   row, emit the row fragment + the cell fragments anchored at that
+///   row (skipping continuation slots from previous rows' rowspans),
+///   then flush each cell's buffered content with the finalized block
+///   translation applied. Advance the row cursor.</item>
 /// </list>
 ///
-/// <para><b>Sub-cycle 1 deferrals</b> (see
+/// <para><b>Remaining deferrals</b> (see
 /// <c>docs/deferrals.md#table-auto-fixed-spans-borders</c>):</para>
 /// <list type="bullet">
 ///   <item>CSS Tables L3 §3 auto-table-layout column-width algorithm
@@ -91,7 +122,6 @@ namespace NetPdf.Layout.Layouters;
 ///   widths from <c>&lt;col&gt;</c> + first-row cell widths).</item>
 ///   <item>Border-collapse model + <c>border-spacing</c> per
 ///   §6.3.</item>
-///   <item><c>colspan</c> / <c>rowspan</c> cell merging.</item>
 ///   <item><c>&lt;thead&gt;</c> / <c>&lt;tfoot&gt;</c> repetition
 ///   across pages.</item>
 ///   <item>Captions (<see cref="BoxKind.TableCaption"/>) — content is
@@ -101,9 +131,12 @@ namespace NetPdf.Layout.Layouters;
 ///   widths.</item>
 ///   <item>Multi-fragmentainer table splitting (rows that cross
 ///   pages). If the table doesn't fit on the current fragmentainer,
-///   sub-cycle 1 emits all rows anyway + a forced-overflow
+///   the layouter emits all rows anyway + a forced-overflow
 ///   diagnostic.</item>
 ///   <item>Right-to-left tables / writing-mode flips.</item>
+///   <item>Spec-strict CSS Tables L3 rowspan distribution-proportional
+///   algorithm. Sub-cycle 2 uses a naive "extra height to the last
+///   row of the span" approach.</item>
 /// </list>
 ///
 /// <para><b>Pagination scope.</b> Like
@@ -111,11 +144,12 @@ namespace NetPdf.Layout.Layouters;
 /// TableLayouter is invoked AFTER the outer-loop's resolver
 /// consultation + checkpoint capture for the table wrapper. The
 /// outer loop has already decided to commit the table on this
-/// fragmentainer. Sub-cycle 1 does NOT consult the resolver inside
-/// the table; rows that overflow the page emit a single
-/// <c>PAGINATION-FORCED-OVERFLOW-001</c> diagnostic + commit
-/// anyway. Multi-page table splitting (rows that defer to the
-/// next page) is sub-cycle 2 work.</para>
+/// fragmentainer. The current implementation does NOT consult the
+/// resolver inside the table; rows that overflow the page emit a
+/// single <c>PAGINATION-FORCED-OVERFLOW-001</c> diagnostic + commit
+/// anyway. Multi-page table splitting (rows that defer to the next
+/// page) is deferred — see
+/// <c>docs/deferrals.md#table-auto-fixed-spans-borders</c>.</para>
 ///
 /// <para><b>Per-cell break-resolver isolation (post-Finding-3 hardening).</b>
 /// Each cell-content layout dispatches a <see cref="BlockLayouter"/>
@@ -151,9 +185,11 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     /// row + cell fragments inside.</param>
     /// <param name="sink">The same sink the caller uses — row + cell
     /// fragments append after the wrapper fragment.</param>
-    /// <param name="incomingContinuation">Reserved for sub-cycle 2 multi-
-    /// page resume. Sub-cycle 1 accepts <see langword="null"/> only
-    /// (anything else throws).</param>
+    /// <param name="incomingContinuation">Reserved for future multi-page
+    /// row resume (deferred — see
+    /// <c>docs/deferrals.md#table-auto-fixed-spans-borders</c>). The
+    /// constructor accepts <see langword="null"/> only; any non-null
+    /// value throws.</param>
     /// <param name="diagnostics">Diagnostic sink for the
     /// <c>PAGINATION-FORCED-OVERFLOW-001</c> + structural-anomaly
     /// codes.</param>
@@ -163,7 +199,8 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     /// <exception cref="ArgumentException">When
     /// <paramref name="rootBox"/> is not a Table or InlineTable wrapper,
     /// or when <paramref name="incomingContinuation"/> is non-null
-    /// (sub-cycle 1 resume not yet supported).</exception>
+    /// (multi-page resume not yet supported — see
+    /// <c>docs/deferrals.md#table-auto-fixed-spans-borders</c>).</exception>
     public TableLayouter(
         Box rootBox,
         IBlockFragmentSink sink,
@@ -185,12 +222,12 @@ internal sealed class TableLayouter : ILayouter, IDisposable
 
         if (incomingContinuation is not null)
         {
-            // Sub-cycle 2 will define a TableContinuation that resumes
-            // at a given row index. Sub-cycle 1 doesn't yet support
+            // A future TableContinuation will resume at a given row
+            // index. The current implementation doesn't yet support
             // mid-table page resume — fail loud so the caller surfaces
             // the missing capability instead of silently restarting.
             throw new ArgumentException(
-                "TableLayouter sub-cycle 1 does not yet support resume-after-"
+                "TableLayouter does not yet support resume-after-"
                 + "PageComplete (multi-fragmentainer table splitting is "
                 + "deferred — see docs/deferrals.md#table-auto-fixed-spans-borders). "
                 + "Pass null incomingContinuation.",
@@ -248,24 +285,68 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     //  size the wrapper border-box, then AttemptLayout to commit emits.
     // ====================================================================
 
-    /// <summary>Per-row measurement record produced by
-    /// <see cref="MeasureContentHeight"/> and consumed by
-    /// <see cref="AttemptLayout"/>. Stores the row's height + per-cell
-    /// content buffers in document order (TableCell-only).</summary>
+    /// <summary>Sub-cycle 2 — placement record produced by the 2D
+    /// occupancy-grid algorithm. Each <see cref="BoxKind.TableCell"/>
+    /// in the table corresponds to exactly one
+    /// <see cref="CellPlacement"/> anchored at
+    /// (<see cref="OriginRow"/>, <see cref="OriginCol"/>); the cell
+    /// also occupies the slot rectangle
+    /// <c>[OriginRow..OriginRow+RowSpan-1] × [OriginCol..OriginCol+ColSpan-1]</c>.
+    /// Continuation slots (non-origin slots inside the rectangle) are
+    /// marked occupied in the local occupancy grid built by
+    /// <see cref="PlaceCellsOntoGrid"/> but have no
+    /// <see cref="CellPlacement"/> record of their own — the emit
+    /// pass skips them.
+    ///
+    /// <para>Per Finding 5 — <see cref="DiagnosticsBuffer"/> captures
+    /// the cell's per-content-layout diagnostics; flushed to the
+    /// outer sink in <see cref="AttemptLayout"/>'s emit pass so
+    /// uncommitted measure-pass diagnostics don't leak when the
+    /// outer resolver discards the table.</para></summary>
+    private readonly struct CellPlacement
+    {
+        public CellPlacement(
+            Box cell,
+            int originRow,
+            int originCol,
+            int rowSpan,
+            int colSpan,
+            MeasuringFragmentSink contentBuffer,
+            BufferingDiagnosticsSink? diagnosticsBuffer,
+            double contentBlockExtent)
+        {
+            Cell = cell;
+            OriginRow = originRow;
+            OriginCol = originCol;
+            RowSpan = rowSpan;
+            ColSpan = colSpan;
+            ContentBuffer = contentBuffer;
+            DiagnosticsBuffer = diagnosticsBuffer;
+            ContentBlockExtent = contentBlockExtent;
+        }
+        public Box Cell { get; }
+        public int OriginRow { get; }
+        public int OriginCol { get; }
+        public int RowSpan { get; }
+        public int ColSpan { get; }
+        public MeasuringFragmentSink ContentBuffer { get; }
+        public BufferingDiagnosticsSink? DiagnosticsBuffer { get; }
+        public double ContentBlockExtent { get; }
+    }
+
+    /// <summary>Per-row record (post-sub-cycle 2) — stores the row's
+    /// finalized height. Per-cell placements are stored in
+    /// <see cref="_measuredPlacements"/> rather than per-row because a
+    /// rowspan cell logically belongs to multiple rows.</summary>
     private readonly struct RowMeasurement
     {
-        public RowMeasurement(
-            Box row,
-            double rowHeight,
-            List<MeasuringFragmentSink> cellBuffers)
+        public RowMeasurement(Box row, double rowHeight)
         {
             Row = row;
             RowHeight = rowHeight;
-            CellBuffers = cellBuffers;
         }
         public Box Row { get; }
         public double RowHeight { get; }
-        public List<MeasuringFragmentSink> CellBuffers { get; }
     }
 
     private bool _measureDone;
@@ -273,9 +354,21 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     private int _measuredColumnCount;
     private double _measuredColumnWidth;
     private List<RowMeasurement>? _measuredRows;
-    private bool _measuredSawColspan;
+    private List<CellPlacement>? _measuredPlacements;
     private List<Box>? _measuredCaptions; // wrapper-direct caption children
     private bool _measuredMissingGrid;
+    // Per Finding 6 — cells whose rowspan / colspan attribute parsed as
+    // exactly 0 (HTML5 §4.9.11 "remainder" semantic), captured during
+    // PlaceCellsOntoGrid + drained as deferral diagnostics from
+    // EmitDeferralDiagnostics. Each entry records the cell + which
+    // axis (`true` = rowspan, `false` = colspan).
+    private List<(Box Cell, bool IsRowspan)>? _measuredSpanZeroNotes;
+    // Per Finding 4 — true when PlaceCellsOntoGrid exceeded the
+    // MaxOccupiedSlots budget + capped subsequent cells at
+    // colspan = rowspan = 1. Drained as a LAYOUT-TABLE-SLOT-BUDGET-
+    // EXCEEDED-001 diagnostic from EmitDeferralDiagnostics.
+    private bool _measuredSlotBudgetExceeded;
+    private long _measuredSlotsUsed;
 
     /// <inheritdoc />
     public LayoutAttemptResult AttemptLayout(
@@ -327,83 +420,151 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         }
 
         var columnWidth = _measuredColumnWidth;
-        var rowCursorBlock = _contentBlockOffset;
-        var overflowDiagnosed = false;
+        var placements = _measuredPlacements ?? new List<CellPlacement>(0);
 
+        // Per Finding 5 — flush each cell's BufferingDiagnosticsSink to
+        // the outer diagnostic sink now that AttemptLayout has committed
+        // to running the emit pass. Before this commit, cell-internal
+        // diagnostics from the measure pass are buffered — if the outer
+        // resolver had rewound + discarded this layouter's work the
+        // buffer would have been dropped + the user would not see
+        // diagnostics for never-emitted fragments.
+        var commitDiagSink = layout.Diagnostics ?? _diagnostics;
+        if (commitDiagSink is not null)
+        {
+            for (var pIdx = 0; pIdx < placements.Count; pIdx++)
+            {
+                placements[pIdx].DiagnosticsBuffer?.FlushTo(commitDiagSink);
+            }
+        }
+
+        // Per Finding 3 — emit in three phases for the WHOLE table so
+        // the painter sees backgrounds before borders before content
+        // across all rows AND across all cells regardless of rowspan.
+        //
+        //   Phase A: row fragments for ALL rows.
+        //   Phase B: cell fragments for ALL cells (only at origin).
+        //   Phase C: cell-content fragments via FlushTo.
+        //
+        // Pre-Finding-3 the loop emitted row → cells-at-this-row →
+        // content for each row in turn; a rowspan cell anchored at
+        // row r flushed its content immediately, then row r+1's
+        // background painted over it.
+        //
+        // Per Copilot perf #1 — group placements by origin row so the
+        // Phase B + Phase C loops don't iterate the full placements
+        // list per row (O(R × P) → O(R + P)). The document-order
+        // sequence inside each group is preserved by walking
+        // placements once + appending to its origin-row bucket.
+        //
+        // Per Copilot perf #2 — pre-compute a prefix-sum row-end array
+        // so a rowspan cell's block extent is a single subtraction
+        // instead of a `for k in 0..RowSpan` loop.
+        var rowBlockOffsets = new double[rows.Count];
+        var rowEndBlockOffset = new double[rows.Count + 1];
+        var rowCursorBlock = _contentBlockOffset;
+        rowEndBlockOffset[0] = rowCursorBlock;
+        for (var r = 0; r < rows.Count; r++)
+        {
+            rowBlockOffsets[r] = rowCursorBlock;
+            rowCursorBlock += rows[r].RowHeight;
+            rowEndBlockOffset[r + 1] = rowCursorBlock;
+        }
+
+        // Group placements by origin row. Each row's bucket preserves
+        // document order because we walk placements in document order.
+        // Empty rows get null buckets (no allocation cost).
+        var placementsByRow = new List<CellPlacement>?[rows.Count];
+        for (var pIdx = 0; pIdx < placements.Count; pIdx++)
+        {
+            var p = placements[pIdx];
+            var bucket = placementsByRow[p.OriginRow];
+            if (bucket is null)
+            {
+                bucket = new List<CellPlacement>(capacity: 2);
+                placementsByRow[p.OriginRow] = bucket;
+            }
+            bucket.Add(p);
+        }
+
+        // Phase A — emit row fragments for every row. Even an "empty"
+        // row gets a (degenerate) fragment because its rowHeight may
+        // be 0 (rowspan continuation slots from earlier rows kept the
+        // row in the row list).
         for (var r = 0; r < rows.Count; r++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var rowMeasure = rows[r];
-            var row = rowMeasure.Row;
-            var rowHeight = rowMeasure.RowHeight;
-
-            // Emit row fragment FIRST (paint-safe order: backgrounds
-            // before content). Sub-cycle 1 simplification — a zero-cell
-            // row produces no measurement entry so we don't reach here
-            // for an empty row.
             _sink.Emit(new BoxFragment(
-                Box: row,
+                Box: rowMeasure.Row,
                 InlineOffset: _contentInlineOffset,
-                BlockOffset: rowCursorBlock,
+                BlockOffset: rowBlockOffsets[r],
                 InlineSize: _contentInlineSize,
-                BlockSize: rowHeight));
+                BlockSize: rowMeasure.RowHeight));
+        }
 
-            // For each cell in document order: emit the cell fragment,
-            // then drain its buffered content fragments via FlushTo.
-            // This produces the paint-safe order row → cell → cell-
-            // content (text under cell backgrounds/borders).
-            var cellBuffers = rowMeasure.CellBuffers;
-            var visibleCellIndex = 0;
-            for (var i = 0; i < row.Children.Count; i++)
+        // Phase B — emit cell fragments for every placement anchored
+        // in each row, in document order across rows. Sizing uses the
+        // prefix-sum to compute block extent in O(1).
+        for (var r = 0; r < rows.Count; r++)
+        {
+            var bucket = placementsByRow[r];
+            if (bucket is null) continue;
+            cancellationToken.ThrowIfCancellationRequested();
+            for (var i = 0; i < bucket.Count; i++)
             {
-                var ch = row.Children[i];
-                if (ch.Kind != BoxKind.TableCell)
-                {
-                    continue;
-                }
+                var placement = bucket[i];
                 var cellInlineOffset = _contentInlineOffset
-                    + (visibleCellIndex * columnWidth);
+                    + (placement.OriginCol * columnWidth);
+                var cellInlineSize = placement.ColSpan * columnWidth;
+                var cellBlockOffset = rowBlockOffsets[r];
+                var cellBlockSize =
+                    rowEndBlockOffset[placement.OriginRow + placement.RowSpan]
+                    - rowEndBlockOffset[placement.OriginRow];
                 _sink.Emit(new BoxFragment(
-                    Box: ch,
+                    Box: placement.Cell,
                     InlineOffset: cellInlineOffset,
-                    BlockOffset: rowCursorBlock,
-                    InlineSize: columnWidth,
-                    BlockSize: rowHeight));
-
-                // Drain the cell's buffered content fragments. The
-                // measure pass already translated them into
-                // fragmentainer coordinates relative to the cell's
-                // origin captured at measure time — which we deliberately
-                // anchored to (_contentInlineOffset + visibleCellIndex *
-                // columnWidth, rowCursorBlock). Since the row cursor
-                // matches the measure-time anchor by construction
-                // (we walk rows in the same order MeasureContentHeight
-                // did), the translated offsets are correct.
-                var buffer = cellBuffers[visibleCellIndex];
-                buffer.FlushTo(_sink);
-                visibleCellIndex++;
+                    BlockOffset: cellBlockOffset,
+                    InlineSize: cellInlineSize,
+                    BlockSize: cellBlockSize));
             }
+        }
 
-            rowCursorBlock += rowHeight;
-
-            // Forced-overflow detection (sub-cycle 1: emit anyway).
-            // Sub-cycle 2 will split rows across pages.
-            if (!overflowDiagnosed && rowCursorBlock > fragmentainer.BlockSize)
+        // Phase C — drain each cell's buffered content fragments via
+        // FlushTo with the cell's finalized block origin. The
+        // resulting outer-sink order (across all rows, all cells, all
+        // content) is paint-safe: rows → cells → cell content.
+        for (var r = 0; r < rows.Count; r++)
+        {
+            var bucket = placementsByRow[r];
+            if (bucket is null) continue;
+            cancellationToken.ThrowIfCancellationRequested();
+            for (var i = 0; i < bucket.Count; i++)
             {
-                overflowDiagnosed = true;
-                OptimizingBreakResolver.SafeEmit(
-                    layout.Diagnostics ?? _diagnostics,
-                    new PaginateDiagnostic(
-                        PaginateDiagnosticCodes.PaginationForcedOverflow001,
-                        $"TableLayouter: table on fragmentainer page index "
-                        + $"{fragmentainer.PageIndex} overflows page block-"
-                        + $"size {fragmentainer.BlockSize:0.##} (rows extend to "
-                        + $"{rowCursorBlock:0.##}). Sub-cycle 1 commits all "
-                        + "rows anyway; multi-fragmentainer splitting is "
-                        + "deferred — see "
-                        + "docs/deferrals.md#table-auto-fixed-spans-borders.",
-                        PaginateDiagnosticSeverity.Warning));
+                var placement = bucket[i];
+                placement.ContentBuffer.FlushTo(_sink, rowBlockOffsets[r]);
             }
+        }
+
+        // Forced-overflow detection — emit once if the row stack
+        // extends past the fragmentainer block-size. Multi-page table
+        // splitting is deferred — see
+        // docs/deferrals.md#table-auto-fixed-spans-borders.
+        var totalRowsBottom = rowEndBlockOffset[rows.Count];
+        if (totalRowsBottom > fragmentainer.BlockSize)
+        {
+            OptimizingBreakResolver.SafeEmit(
+                layout.Diagnostics ?? _diagnostics,
+                new PaginateDiagnostic(
+                    PaginateDiagnosticCodes.PaginationForcedOverflow001,
+                    $"TableLayouter: table on fragmentainer page index "
+                    + $"{fragmentainer.PageIndex} overflows page block-"
+                    + $"size {fragmentainer.BlockSize:0.##} (rows extend to "
+                    + $"{totalRowsBottom:0.##}). The layouter commits all "
+                    + "rows anyway; multi-fragmentainer splitting is "
+                    + "deferred — see "
+                    + "docs/deferrals.md#table-auto-fixed-spans-borders.",
+                    PaginateDiagnosticSeverity.Warning));
         }
 
         return LayoutAttemptResult.AllDone(cost: 0);
@@ -482,36 +643,20 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             return 0;
         }
 
-        // Column count = max number of TableCell children across rows.
-        // Sub-cycle 1 assumes no colspan, so this equals row.Children
-        // count filtered by Kind == TableCell.
-        var columnCount = 0;
-        var sawColspanAttribute = false;
-        for (var r = 0; r < rows.Count; r++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var cellCount = 0;
-            var row = rows[r];
-            for (var i = 0; i < row.Children.Count; i++)
-            {
-                var ch = row.Children[i];
-                if (ch.Kind == BoxKind.TableCell)
-                {
-                    cellCount++;
-                    if (!sawColspanAttribute && HasSpanAttribute(ch))
-                    {
-                        sawColspanAttribute = true;
-                    }
-                }
-            }
-            if (cellCount > columnCount)
-            {
-                columnCount = cellCount;
-            }
-        }
+        // Sub-cycle 2 — place cells onto a 2D occupancy grid using the
+        // HTML5 forming-a-table algorithm. PlaceCells produces the
+        // CellPlacement list + the column count = max occupied
+        // column + 1 across rows.
+        var placements = new List<CellPlacement>();
+        var spanZeroNotes = new List<(Box Cell, bool IsRowspan)>();
+        var (columnCount, slotBudgetExceeded, slotsUsed) =
+            PlaceCellsOntoGrid(rows, placements, spanZeroNotes, cancellationToken);
 
         _measuredColumnCount = columnCount;
-        _measuredSawColspan = sawColspanAttribute;
+        _measuredPlacements = placements;
+        _measuredSpanZeroNotes = spanZeroNotes.Count > 0 ? spanZeroNotes : null;
+        _measuredSlotBudgetExceeded = slotBudgetExceeded;
+        _measuredSlotsUsed = slotsUsed;
 
         if (columnCount == 0)
         {
@@ -527,63 +672,379 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             return 0;
         }
 
-        // Per-row measure: layout each cell into a buffering
-        // MeasuringFragmentSink, derive row height = max cell extent.
-        var measured = new List<RowMeasurement>(capacity: rows.Count);
-        var totalContentHeight = 0.0;
-        var rowAnchorBlock = _contentBlockOffset;
-        for (var r = 0; r < rows.Count; r++)
+        // Sub-cycle 2 — measure each cell's content into its buffer.
+        // The buffer captures the inline translation (the cell's column
+        // origin) at Emit time but defers the block translation until
+        // FlushTo — because the block origin depends on the row's
+        // height which can't be finalized until all cells are measured
+        // (rowspan cells in particular force a second-pass distribution
+        // that may extend row heights).
+        for (var pIdx = 0; pIdx < placements.Count; pIdx++)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            var row = rows[r];
-            var cellCount = CountTableCells(row);
-            if (cellCount == 0)
-            {
-                // Empty row — no measurement recorded (skipped during
-                // emit). Sub-cycle 1 simplification; CSS would still
-                // reserve some min-height per Tables L3 §11.5.4.
-                continue;
-            }
+            var placement = placements[pIdx];
+            var cellInlineOffset = _contentInlineOffset
+                + (placement.OriginCol * columnWidth);
+            var cellInlineSize = placement.ColSpan * columnWidth;
+            var (buffer, diagBuffer) = MeasureCellContent(
+                cellBox: placement.Cell,
+                cellInlineOffset: cellInlineOffset,
+                cellInlineSize: cellInlineSize,
+                fragmentainer: fragmentainer,
+                layout: ref layout,
+                cancellationToken: cancellationToken);
+            placements[pIdx] = new CellPlacement(
+                cell: placement.Cell,
+                originRow: placement.OriginRow,
+                originCol: placement.OriginCol,
+                rowSpan: placement.RowSpan,
+                colSpan: placement.ColSpan,
+                contentBuffer: buffer,
+                diagnosticsBuffer: diagBuffer,
+                contentBlockExtent: buffer.MaxBlockExtentFromCellOrigin);
+        }
 
-            var cellBuffers = new List<MeasuringFragmentSink>(capacity: cellCount);
-            var rowHeight = 0.0;
-            var visibleCellIndex = 0;
-            for (var i = 0; i < row.Children.Count; i++)
+        // Sub-cycle 2 — row-height pass.
+        //   Pass A: rowHeight[r] = max content extent over cells with
+        //           rowspan=1 anchored at row r.
+        //   Pass B: for each cell with rowspan>1 (ascending rowspan),
+        //           extend rowHeight[originRow+rowspan-1] with any
+        //           excess content height not covered by the natural
+        //           row-height sum across the cell's span.
+        //
+        // Why ascending rowspan in pass B? So shorter-span cells
+        // settle the heights of the rows they cover before longer-
+        // span cells consult those heights. This is NOT the CSS
+        // Tables L3 §11 distribution-proportional algorithm — that's
+        // sub-cycle 3 work — but it's deterministic + simple.
+        var rowHeights = new double[rows.Count];
+        for (var pIdx = 0; pIdx < placements.Count; pIdx++)
+        {
+            var placement = placements[pIdx];
+            if (placement.RowSpan != 1) continue;
+            if (placement.ContentBlockExtent > rowHeights[placement.OriginRow])
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                var ch = row.Children[i];
-                if (ch.Kind != BoxKind.TableCell)
-                {
-                    continue;
-                }
-                var cellInlineOffset = _contentInlineOffset
-                    + (visibleCellIndex * columnWidth);
-                var cellBlockOffset = rowAnchorBlock;
-                var buffer = MeasureCellContent(
-                    cellBox: ch,
-                    cellInlineOffset: cellInlineOffset,
-                    cellBlockOffset: cellBlockOffset,
-                    cellInlineSize: columnWidth,
-                    fragmentainer: fragmentainer,
-                    layout: ref layout,
-                    cancellationToken: cancellationToken);
-                cellBuffers.Add(buffer);
-                if (buffer.MaxBlockExtentFromCellOrigin > rowHeight)
-                {
-                    rowHeight = buffer.MaxBlockExtentFromCellOrigin;
-                }
-                visibleCellIndex++;
+                rowHeights[placement.OriginRow] = placement.ContentBlockExtent;
             }
+        }
 
-            measured.Add(new RowMeasurement(row, rowHeight, cellBuffers));
-            totalContentHeight += rowHeight;
-            rowAnchorBlock += rowHeight;
+        // Collect rowspan>1 placement indices + sort by ascending
+        // RowSpan. Manual selection-style sort to avoid LINQ
+        // (hot-path discipline — CLAUDE.md cross-cutting rule 5).
+        var spanIndices = new List<int>();
+        for (var pIdx = 0; pIdx < placements.Count; pIdx++)
+        {
+            if (placements[pIdx].RowSpan > 1)
+            {
+                spanIndices.Add(pIdx);
+            }
+        }
+        // Simple insertion sort by RowSpan (typically very few span
+        // cells per table).
+        for (var i = 1; i < spanIndices.Count; i++)
+        {
+            var k = spanIndices[i];
+            var kSpan = placements[k].RowSpan;
+            var j = i - 1;
+            while (j >= 0 && placements[spanIndices[j]].RowSpan > kSpan)
+            {
+                spanIndices[j + 1] = spanIndices[j];
+                j--;
+            }
+            spanIndices[j + 1] = k;
+        }
+
+        for (var s = 0; s < spanIndices.Count; s++)
+        {
+            var placement = placements[spanIndices[s]];
+            var spanned = 0.0;
+            for (var k = 0; k < placement.RowSpan; k++)
+            {
+                spanned += rowHeights[placement.OriginRow + k];
+            }
+            if (placement.ContentBlockExtent > spanned)
+            {
+                rowHeights[placement.OriginRow + placement.RowSpan - 1]
+                    += (placement.ContentBlockExtent - spanned);
+            }
+        }
+
+        // Materialize the per-row RowMeasurement list + total height.
+        var measured = new List<RowMeasurement>(capacity: rows.Count);
+        var totalContentHeight = 0.0;
+        for (var r = 0; r < rows.Count; r++)
+        {
+            measured.Add(new RowMeasurement(rows[r], rowHeights[r]));
+            totalContentHeight += rowHeights[r];
         }
 
         _measuredRows = measured;
         _measuredContentHeight = totalContentHeight;
         _measureDone = true;
         return totalContentHeight;
+    }
+
+    /// <summary>Per Finding 4 — DoS-resistant cap on the cumulative
+    /// <c>rowspan × colspan</c> slot count for one table. Legal HTML
+    /// attribute values give a single cell up to
+    /// <c>65534 × 1000 = ~65M</c> slots; without a cap a hostile
+    /// author can force unbounded CPU + memory work in the placement
+    /// pass. 1M is generous for legitimate documents (a 1000-row × 1000-
+    /// column matrix) yet keeps placement bounded.</summary>
+    private const long MaxOccupiedSlots = 1_000_000;
+
+    /// <summary>Sub-cycle 2 + Finding 4 + 6 — place each cell onto the
+    /// 2D occupancy grid via the HTML5 "Forming a table" algorithm
+    /// (CSS Tables L3 §3). For each row in document order: reset a
+    /// column cursor to 0; for each <see cref="BoxKind.TableCell"/>
+    /// child of the row, advance the cursor past any slots occupied by
+    /// rowspan continuations from earlier rows, then anchor the cell at
+    /// the cursor + mark its <c>rowspan × colspan</c> slot rectangle as
+    /// occupied.
+    ///
+    /// <para><b>Per Finding 4 hardening:</b></para>
+    /// <list type="bullet">
+    ///   <item><b>Interval-list occupancy</b> — per-row occupied
+    ///     ranges stored as a sorted <c>List&lt;(startCol, endCol)&gt;</c>.
+    ///     Slot-query = binary search; range insertion = merge with
+    ///     adjacent intervals. Drops the per-cell complexity from
+    ///     O(rowspan × colspan) hash insertions to O(rowspan × log).</item>
+    ///   <item><b>Slot budget</b> — cumulative <c>rowspan × colspan</c>
+    ///     across cells is bounded at <see cref="MaxOccupiedSlots"/>
+    ///     (1M). Cells crossing the budget are capped at
+    ///     <c>rowspan = colspan = 1</c>; the caller emits
+    ///     <c>LAYOUT-TABLE-SLOT-BUDGET-EXCEEDED-001</c>.</item>
+    ///   <item><b>Current-row optimization</b> — rowspan continuations
+    ///     only mark slots in the ROWS BELOW the origin. The current
+    ///     row's own colspan slots are skipped naturally by the column
+    ///     cursor advancing past <c>colSpan</c>; marking them in the
+    ///     occupancy list would be redundant work.</item>
+    ///   <item><b>Cancellation</b> — checked per row-iteration so a
+    ///     budget-respecting but slow placement still responds to
+    ///     cancellation.</item>
+    /// </list>
+    /// <para>Per Finding 6 — cells whose rowspan / colspan attribute
+    /// parsed as exactly <c>0</c> (HTML5 §4.9.11 "remainder" semantic
+    /// — currently deferred) are appended to <paramref name="spanZeroNotes"/>
+    /// for the caller to surface as
+    /// <c>LAYOUT-TABLE-FEATURE-UNSUPPORTED-001</c> diagnostics.</para>
+    /// </summary>
+    /// <returns>Tuple <c>(columnCount, slotBudgetExceeded, slotsUsed)</c>.
+    /// <c>columnCount</c> = max(occupied column index) + 1 across all
+    /// rows; 0 when no cells were placed.</returns>
+    private static (int columnCount, bool slotBudgetExceeded, long slotsUsed) PlaceCellsOntoGrid(
+        List<Box> rows,
+        List<CellPlacement> placements,
+        List<(Box Cell, bool IsRowspan)> spanZeroNotes,
+        CancellationToken cancellationToken)
+    {
+        // occupancy[r] = sorted, non-overlapping interval list of
+        // occupied column ranges in row r. Each interval is
+        // [startCol, endColExclusive). Lazily allocated so empty rows
+        // stay cheap.
+        var occupancy = new List<(int StartCol, int EndColExclusive)>?[rows.Count];
+
+        var columnCount = 0;
+        long slotsUsed = 0;
+        var slotBudgetExceeded = false;
+        for (var r = 0; r < rows.Count; r++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var row = rows[r];
+            var colCursor = 0;
+            for (var i = 0; i < row.Children.Count; i++)
+            {
+                var ch = row.Children[i];
+                if (ch.Kind != BoxKind.TableCell)
+                {
+                    continue;
+                }
+                var (rowSpan, colSpan, rowSpanWasZero, colSpanWasZero) = ReadSpans(ch);
+                if (rowSpanWasZero) spanZeroNotes.Add((ch, IsRowspan: true));
+                if (colSpanWasZero) spanZeroNotes.Add((ch, IsRowspan: false));
+
+                // Per Finding 4 — slot budget check. Compute the
+                // cell's contribution PRE-clamping (since the clamp
+                // below changes the placement geometry). Past the cap,
+                // cap the cell to 1×1 + flag the budget-exceeded
+                // condition for the deferral diagnostic emit. Don't
+                // crash — truncate.
+                var rowSpanForBudget = rowSpan;
+                var colSpanForBudget = colSpan;
+                long cellSlots;
+                if (slotBudgetExceeded)
+                {
+                    rowSpanForBudget = 1;
+                    colSpanForBudget = 1;
+                    cellSlots = 1;
+                }
+                else
+                {
+                    cellSlots = (long)rowSpanForBudget * colSpanForBudget;
+                    if (slotsUsed + cellSlots > MaxOccupiedSlots)
+                    {
+                        slotBudgetExceeded = true;
+                        rowSpanForBudget = 1;
+                        colSpanForBudget = 1;
+                        cellSlots = 1;
+                    }
+                }
+                slotsUsed += cellSlots;
+
+                // Advance past slots already occupied by earlier rows'
+                // rowspan continuations.
+                var rowOccupancy = occupancy[r];
+                if (rowOccupancy is not null)
+                {
+                    while (IntervalListContains(rowOccupancy, colCursor))
+                    {
+                        colCursor++;
+                    }
+                }
+
+                // Anchor at (r, colCursor) + mark the slot rectangle.
+                placements.Add(new CellPlacement(
+                    cell: ch,
+                    originRow: r,
+                    originCol: colCursor,
+                    rowSpan: rowSpanForBudget,
+                    colSpan: colSpanForBudget,
+                    contentBuffer: null!, // assigned during measure pass
+                    diagnosticsBuffer: null,
+                    contentBlockExtent: 0));
+
+                // Per Finding 4 #3 — only mark ROWS BELOW the origin
+                // for rowspan>1 (the current row's own colspan slots
+                // are skipped naturally by the column cursor advancing
+                // past colSpan). For rowspan=1 cells nothing needs
+                // marking in the occupancy list — the cursor advance
+                // covers the current row.
+                if (rowSpanForBudget > 1)
+                {
+                    for (var rr = 1; rr < rowSpanForBudget; rr++)
+                    {
+                        var targetRow = r + rr;
+                        if (targetRow >= rows.Count)
+                        {
+                            // rowSpan extends past the table — HTML5
+                            // §4.9.11 step 14 clamps to the available
+                            // rows. We bail out of the marking loop;
+                            // the placement's recorded rowSpan is
+                            // clamped below.
+                            break;
+                        }
+                        var slotList = occupancy[targetRow];
+                        if (slotList is null)
+                        {
+                            slotList = new List<(int, int)>(capacity: 4);
+                            occupancy[targetRow] = slotList;
+                        }
+                        IntervalListInsert(slotList, colCursor, colCursor + colSpanForBudget);
+                    }
+                }
+
+                // Track the max column index observed (= colCursor +
+                // colSpanForBudget - 1; columnCount = max + 1).
+                var maxColInThisCell = colCursor + colSpanForBudget;
+                if (maxColInThisCell > columnCount)
+                {
+                    columnCount = maxColInThisCell;
+                }
+
+                colCursor += colSpanForBudget;
+            }
+        }
+
+        // If a cell's recorded rowSpan exceeded the table's row count,
+        // clamp it now so the emit pass's
+        // rowHeights[originRow+rowSpan-1] access stays in-bounds.
+        for (var i = 0; i < placements.Count; i++)
+        {
+            var p = placements[i];
+            if (p.OriginRow + p.RowSpan > rows.Count)
+            {
+                var clampedSpan = rows.Count - p.OriginRow;
+                if (clampedSpan < 1) clampedSpan = 1;
+                placements[i] = new CellPlacement(
+                    cell: p.Cell,
+                    originRow: p.OriginRow,
+                    originCol: p.OriginCol,
+                    rowSpan: clampedSpan,
+                    colSpan: p.ColSpan,
+                    contentBuffer: p.ContentBuffer,
+                    diagnosticsBuffer: p.DiagnosticsBuffer,
+                    contentBlockExtent: p.ContentBlockExtent);
+            }
+        }
+
+        return (columnCount, slotBudgetExceeded, slotsUsed);
+    }
+
+    /// <summary>Per Finding 4 — binary-search the per-row sorted
+    /// interval list for the rightmost interval whose
+    /// <c>StartCol &lt;= col</c>; if found, the slot at <paramref name="col"/>
+    /// is occupied iff <c>col &lt; EndColExclusive</c>. Intervals are
+    /// kept sorted + non-overlapping by
+    /// <see cref="IntervalListInsert"/>.</summary>
+    private static bool IntervalListContains(
+        List<(int StartCol, int EndColExclusive)> list, int col)
+    {
+        // Standard binary search for the rightmost StartCol <= col.
+        var lo = 0;
+        var hi = list.Count - 1;
+        var candidate = -1;
+        while (lo <= hi)
+        {
+            var mid = lo + ((hi - lo) >> 1);
+            if (list[mid].StartCol <= col)
+            {
+                candidate = mid;
+                lo = mid + 1;
+            }
+            else
+            {
+                hi = mid - 1;
+            }
+        }
+        if (candidate < 0) return false;
+        return col < list[candidate].EndColExclusive;
+    }
+
+    /// <summary>Per Finding 4 — insert <c>[startCol, endColExclusive)</c>
+    /// into the sorted, non-overlapping interval list, merging with
+    /// any adjacent / overlapping intervals so the list invariant
+    /// (sorted by <c>StartCol</c>, no two intervals touch or overlap)
+    /// is preserved. The list is mutated in place. Empty input
+    /// (<c>startCol &gt;= endColExclusive</c>) is a no-op.</summary>
+    private static void IntervalListInsert(
+        List<(int StartCol, int EndColExclusive)> list,
+        int startCol, int endColExclusive)
+    {
+        if (startCol >= endColExclusive) return;
+        // Find the first interval whose EndColExclusive >= startCol
+        // (anything earlier is strictly to the left + doesn't touch
+        // the new range; anything later potentially merges).
+        var insertAt = 0;
+        while (insertAt < list.Count && list[insertAt].EndColExclusive < startCol)
+        {
+            insertAt++;
+        }
+        // From insertAt forward, merge every interval whose StartCol
+        // <= endColExclusive (touching = merge to coalesce the list).
+        var mergedStart = startCol;
+        var mergedEnd = endColExclusive;
+        var removeUpTo = insertAt; // exclusive
+        while (removeUpTo < list.Count && list[removeUpTo].StartCol <= mergedEnd)
+        {
+            if (list[removeUpTo].StartCol < mergedStart) mergedStart = list[removeUpTo].StartCol;
+            if (list[removeUpTo].EndColExclusive > mergedEnd) mergedEnd = list[removeUpTo].EndColExclusive;
+            removeUpTo++;
+        }
+        if (removeUpTo > insertAt)
+        {
+            list.RemoveRange(insertAt, removeUpTo - insertAt);
+        }
+        list.Insert(insertAt, (mergedStart, mergedEnd));
     }
 
     /// <summary>Emit the deferral / structural-anomaly diagnostics
@@ -617,16 +1078,55 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                     PaginateDiagnosticSeverity.Warning));
         }
 
-        if (_measuredSawColspan)
+        // Sub-cycle 2 — the colspan / rowspan deferral diagnostic is
+        // gone; the 2D occupancy-grid algorithm now correctly merges
+        // cells. The LAYOUT-TABLE-FEATURE-UNSUPPORTED-001 code stays
+        // in the diagnostic catalog because captions + the missing-
+        // TableGrid anomaly still emit it.
+
+        // Per Finding 6 — rowspan="0" / colspan="0" HTML5 §4.9.11
+        // "remainder of row-group / column-group" semantics aren't
+        // implemented; PlaceCellsOntoGrid clamped them to 1 + recorded
+        // each occurrence here for surfacing as a deferral diagnostic.
+        if (_measuredSpanZeroNotes is { Count: > 0 } spanZeroNotes)
+        {
+            for (var i = 0; i < spanZeroNotes.Count; i++)
+            {
+                var (cell, isRowspan) = spanZeroNotes[i];
+                var axis = isRowspan ? "rowspan" : "colspan";
+                var cellSnippet = NetPdf.Css.Diagnostics.DiagnosticTextSanitizer.Sanitize(
+                    cell.SourceElement?.TagName ?? "<anonymous>",
+                    maxLength: 40);
+                OptimizingBreakResolver.SafeEmit(
+                    sink,
+                    new PaginateDiagnostic(
+                        PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001,
+                        $"TableLayouter: {axis}=\"0\" on <{cellSnippet}> cell "
+                        + "clamped to 1 — HTML5 §4.9.11 \"spans remainder of "
+                        + "row-group / column-group\" semantics are deferred. "
+                        + "See docs/deferrals.md#table-auto-fixed-spans-borders.",
+                        PaginateDiagnosticSeverity.Warning));
+            }
+        }
+
+        // Per Finding 4 — slot-budget exceeded; PlaceCellsOntoGrid capped
+        // subsequent cells at rowspan = colspan = 1 once the cumulative
+        // span product crossed MaxOccupiedSlots. The table still renders
+        // but spans past the cap were truncated.
+        if (_measuredSlotBudgetExceeded)
         {
             OptimizingBreakResolver.SafeEmit(
                 sink,
                 new PaginateDiagnostic(
-                    PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001,
-                    "TableLayouter: a TableCell carries a colspan or "
-                    + "rowspan attribute, which sub-cycle 1 ignores (each "
-                    + "cell occupies exactly one column / one row). See "
-                    + "docs/deferrals.md#table-auto-fixed-spans-borders.",
+                    PaginateDiagnosticCodes.LayoutTableSlotBudgetExceeded001,
+                    $"TableLayouter: cumulative rowspan x colspan slot count "
+                    + $"exceeded the {MaxOccupiedSlots} DoS budget "
+                    + $"(reached {_measuredSlotsUsed}). Subsequent cells were "
+                    + "capped at rowspan = colspan = 1 — the table still "
+                    + "renders but the author's recorded spans past the cap "
+                    + "were truncated. This guard defends against hostile "
+                    + "HTML with attribute values like "
+                    + "rowspan=\"65534\" colspan=\"1000\".",
                     PaginateDiagnosticSeverity.Warning));
         }
 
@@ -634,15 +1134,24 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         {
             for (var i = 0; i < captions.Count; i++)
             {
-                var captionText = ExtractCaptionTextSnippet(captions[i]);
+                // Per Finding 7 — sanitize the caption text snippet
+                // before it flows into the diagnostic message. Author-
+                // controlled caption content can carry C0/C1 control
+                // chars (ANSI escape injection / log-parser confusion)
+                // that ExtractCaptionTextSnippet (line-break-only
+                // collapse) wouldn't catch.
+                var captionText = NetPdf.Css.Diagnostics.DiagnosticTextSanitizer.Sanitize(
+                    ExtractCaptionTextSnippet(captions[i]),
+                    maxLength: 80);
                 OptimizingBreakResolver.SafeEmit(
                     sink,
                     new PaginateDiagnostic(
                         PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001,
-                        $"TableLayouter: table caption skipped — sub-cycle 1 "
-                        + $"does not yet lay out caption content. Caption "
-                        + $"text: \"{captionText}\". See "
-                        + "docs/deferrals.md#table-auto-fixed-spans-borders.",
+                        $"TableLayouter: table caption skipped — captions are "
+                        + $"not yet laid out per CSS Tables L3 §11; sub-cycle "
+                        + $"3 work — see "
+                        + $"docs/deferrals.md#table-auto-fixed-spans-borders. "
+                        + $"Caption text: \"{captionText}\".",
                         PaginateDiagnosticSeverity.Warning));
             }
         }
@@ -767,51 +1276,89 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         }
     }
 
-    /// <summary>Sub-cycle 1 — count the <see cref="BoxKind.TableCell"/>
-    /// children of <paramref name="row"/>. Used to pre-allocate the
-    /// per-row measurement buffer.</summary>
-    private static int CountTableCells(Box row)
-    {
-        var count = 0;
-        for (var i = 0; i < row.Children.Count; i++)
-        {
-            if (row.Children[i].Kind == BoxKind.TableCell)
-            {
-                count++;
-            }
-        }
-        return count;
-    }
-
-    /// <summary>Sub-cycle 1 — detect whether <paramref name="cell"/>'s
-    /// source element carries a <c>colspan</c> or <c>rowspan</c>
-    /// attribute. The attribute is read directly from the DOM (the
-    /// CSS counterparts <c>table-column-span</c> /
-    /// <c>table-row-span</c> aren't part of the cascade yet — they're
-    /// HTML attribute mapped). Used purely for the deferral
-    /// diagnostic.</summary>
-    private static bool HasSpanAttribute(Box cell)
+    /// <summary>Sub-cycle 2 + Finding 6 — read the <c>rowspan</c> +
+    /// <c>colspan</c> values off <paramref name="cell"/>'s source HTML
+    /// element. The attribute is read directly from the DOM (the CSS
+    /// counterparts <c>table-column-span</c> / <c>table-row-span</c>
+    /// aren't part of the cascade yet — they're HTML attribute mapped
+    /// per HTML5 §4.9.11).
+    ///
+    /// <para>Per HTML5 spec ranges:</para>
+    /// <list type="bullet">
+    ///   <item><c>colspan</c> defaults to 1; valid range
+    ///     <c>[1, 1000]</c>. The special value <c>0</c> per HTML5
+    ///     §4.9.11 means "spans all remaining columns in the column
+    ///     group" — currently deferred (see
+    ///     <c>docs/deferrals.md#table-auto-fixed-spans-borders</c>);
+    ///     the caller emits
+    ///     <c>LAYOUT-TABLE-FEATURE-UNSUPPORTED-001</c> + clamps to 1.
+    ///     Other out-of-range / non-numeric values fall back to 1.</item>
+    ///   <item><c>rowspan</c> defaults to 1; valid range
+    ///     <c>[1, 65534]</c>. The special value <c>0</c> per HTML5
+    ///     §4.9.11 means "spans all remaining rows in the row group
+    ///     / table section" — currently deferred; the caller emits
+    ///     <c>LAYOUT-TABLE-FEATURE-UNSUPPORTED-001</c> + clamps to 1.
+    ///     Other out-of-range / non-numeric values fall back to 1.</item>
+    /// </list>
+    /// <para>Anonymous cells (no <see cref="Box.SourceElement"/>) get
+    /// the default <c>(1, 1)</c> spans with both <c>zero</c> flags
+    /// false.</para></summary>
+    /// <returns>Tuple <c>(rowSpan, colSpan, rowSpanWasZero,
+    /// colSpanWasZero)</c>. The two boolean flags signal that the
+    /// underlying attribute parsed as <c>0</c> + was clamped to 1
+    /// (Finding 6 deferral diagnostic); other clamps don't surface a
+    /// diagnostic.</returns>
+    private static (int rowSpan, int colSpan, bool rowSpanWasZero, bool colSpanWasZero) ReadSpans(Box cell)
     {
         var el = cell.SourceElement;
         if (el is null)
         {
-            return false;
+            return (1, 1, false, false);
         }
-        // AngleSharp surfaces HTML attributes via GetAttribute.
-        var colspan = el.GetAttribute("colspan");
-        if (!string.IsNullOrEmpty(colspan) && colspan != "1")
-        {
-            return true;
-        }
-        var rowspan = el.GetAttribute("rowspan");
-        if (!string.IsNullOrEmpty(rowspan) && rowspan != "1")
-        {
-            return true;
-        }
-        return false;
+        var (colSpan, colSpanWasZero) = ParseSpanAttribute(
+            el.GetAttribute("colspan"),
+            maxValue: 1000);
+        var (rowSpan, rowSpanWasZero) = ParseSpanAttribute(
+            el.GetAttribute("rowspan"),
+            maxValue: 65534);
+        return (rowSpan, colSpan, rowSpanWasZero, colSpanWasZero);
     }
 
-    /// <summary>Sub-cycle 1 — lay out <paramref name="cellBox"/>'s
+    /// <summary>Sub-cycle 2 + Finding 6 — parse a colspan / rowspan
+    /// attribute value into an integer span, defaulting to 1 on
+    /// null/empty, non-numeric, or out-of-range input. The
+    /// <c>wasZero</c> flag is true when the attribute parsed to
+    /// exactly <c>0</c> + was clamped to 1 (HTML5 §4.9.11 "remainder"
+    /// semantics — currently deferred; the caller surfaces a
+    /// <c>LAYOUT-TABLE-FEATURE-UNSUPPORTED-001</c> diagnostic so
+    /// authors see the unimplemented semantic).</summary>
+    private static (int value, bool wasZero) ParseSpanAttribute(string? raw, int maxValue)
+    {
+        if (string.IsNullOrEmpty(raw))
+        {
+            return (1, false);
+        }
+        if (!int.TryParse(raw, System.Globalization.NumberStyles.Integer,
+            System.Globalization.CultureInfo.InvariantCulture, out var n))
+        {
+            return (1, false);
+        }
+        if (n == 0)
+        {
+            // HTML5 §4.9.11 — span="0" means "spans the remainder of
+            // the row group / column group". Currently deferred (see
+            // docs/deferrals.md#table-auto-fixed-spans-borders); the
+            // caller clamps to 1 + emits the deferral diagnostic. Other
+            // less-than-1 values (negative numbers) silently fall back
+            // to 1 because HTML5 treats them as malformed.
+            return (1, true);
+        }
+        if (n < 1) return (1, false);
+        if (n > maxValue) return (maxValue, false);
+        return (n, false);
+    }
+
+    /// <summary>Sub-cycle 1 + 2 — lay out <paramref name="cellBox"/>'s
     /// inner content via a nested <see cref="BlockLayouter"/>,
     /// BUFFERING the translated fragments in a
     /// <see cref="MeasuringFragmentSink"/> for later flush. Returns
@@ -821,16 +1368,24 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     /// <para>Per Finding 3 — the nested <see cref="BlockLayouter"/>
     /// runs against a FRESH <see cref="BreakResolver"/> scoped to the
     /// cell so the outer resolver's checkpoint state is preserved.
-    /// </para></summary>
+    /// </para>
+    ///
+    /// <para><b>Sub-cycle 2 — deferred block translation.</b> Pre-
+    /// sub-cycle-2 the cell's block-axis origin was baked into the
+    /// buffered fragments at Emit time; sub-cycle 2 defers it because
+    /// rowspan distribution can extend row heights AFTER the measure
+    /// pass observes content extents. The buffer applies inline
+    /// translation eagerly at Emit, but block translation is added at
+    /// <see cref="MeasuringFragmentSink.FlushTo"/> time once row
+    /// heights have been finalized.</para></summary>
     /// <param name="cellBox">The <see cref="BoxKind.TableCell"/>
     /// box. The nested BlockLayouter treats this as a fresh root —
     /// its children lay out within the cell's allocated column.</param>
     /// <param name="cellInlineOffset">Inline-axis position of the
-    /// cell's column-start edge in fragmentainer coordinates.</param>
-    /// <param name="cellBlockOffset">Block-axis position of the
-    /// cell's top edge in fragmentainer coordinates.</param>
+    /// cell's column-start edge in fragmentainer coordinates. Baked
+    /// into the buffer at Emit time.</param>
     /// <param name="cellInlineSize">Inline extent of the cell's
-    /// column.</param>
+    /// column (colspan-aware — colspan=N gives N × columnWidth).</param>
     /// <param name="fragmentainer">The outer fragmentainer; the nested
     /// layouter uses a scoped temporary to keep its own pagination
     /// accounting separate from the outer.</param>
@@ -838,10 +1393,9 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     /// diagnostic sink + counter state).</param>
     /// <param name="cancellationToken">Propagated to the inner
     /// layouter.</param>
-    private MeasuringFragmentSink MeasureCellContent(
+    private (MeasuringFragmentSink Buffer, BufferingDiagnosticsSink? DiagnosticsBuffer) MeasureCellContent(
         Box cellBox,
         double cellInlineOffset,
-        double cellBlockOffset,
         double cellInlineSize,
         FragmentainerContext fragmentainer,
         ref LayoutContext layout,
@@ -859,10 +1413,16 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         // Per sub-cycle 1 the cell content is treated as a single
         // "best effort" pass — no pagination splitting within a cell.
 
+        // Sub-cycle 2 — pass 0 for the block translation. The block
+        // origin can't be finalized until row-height distribution
+        // completes (because rowspan cells may extend row heights
+        // after the measure pass observes all content extents). The
+        // emit pass passes the final cellBlockOffset to FlushTo,
+        // which adds it to each buffered fragment's BlockOffset.
         var measuringSink = new MeasuringFragmentSink(
             outerSinkBaselineCursor: _sink.Cursor,
             inlineOffsetTranslation: cellInlineOffset,
-            blockOffsetTranslation: cellBlockOffset);
+            blockOffsetTranslation: 0);
 
         // Per CSS Tables L3 §11.5.3 — cell content lays out within the
         // cell's content area. Sub-cycle 1 doesn't yet read the cell's
@@ -875,12 +1435,30 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             contentInlineSize: cellInlineSize,
             blockSize: Math.Max(fragmentainer.BlockSize, 1));
 
-        // The inner layout context carries forward the ambient
+        // Per Finding 5 — wrap the ambient diagnostic sink in a
+        // BufferingDiagnosticsSink. Cell-internal diagnostics (e.g.,
+        // a LAYOUT-INLINE-UNSUPPORTED-001 from a deeply-nested cell
+        // content TextRun) are captured here + flushed only when the
+        // outer AttemptLayout commits the table. If the outer resolver
+        // discards the table (rewind / retry), the buffer is dropped
+        // without leaking the cell-level emissions to the user. The
+        // wrap is conditional on having a real ambient sink — anonymous
+        // tables driven from tests that omit the diagnostic sink land
+        // here with a null target + nothing to wrap.
+        BufferingDiagnosticsSink? diagBuffer = null;
+        IPaginateDiagnosticsSink? cellDiagnosticSink = layout.Diagnostics ?? _diagnostics;
+        if (cellDiagnosticSink is not null)
+        {
+            diagBuffer = new BufferingDiagnosticsSink();
+            cellDiagnosticSink = diagBuffer;
+        }
+
+        // The inner layout context carries forward the BUFFERED
         // diagnostic sink + writing mode but starts with the cell's
         // own available extents.
         var innerLayout = new LayoutContext(cellFragmentainer)
         {
-            Diagnostics = layout.Diagnostics ?? _diagnostics,
+            Diagnostics = cellDiagnosticSink,
             WritingMode = layout.WritingMode,
             IsRtl = layout.IsRtl,
         };
@@ -889,7 +1467,7 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             rootBox: cellBox,
             sink: measuringSink,
             incomingContinuation: null,
-            diagnostics: _diagnostics,
+            diagnostics: cellDiagnosticSink,
             shaperResolver: _shaperResolver);
 
         // Per Finding 3 — fresh BreakResolver scoped to the cell. The
@@ -907,7 +1485,7 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             cellFragmentainer, ref innerLayout, cellResolver,
             LayoutAttemptStrategy.LastResort, cancellationToken);
 
-        return measuringSink;
+        return (measuringSink, diagBuffer);
     }
 
     /// <summary>Per Phase 3 Task 12 sub-cycle 1 hardening (Finding 2) —
@@ -1018,13 +1596,31 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         /// buffer. Called by <see cref="AttemptLayout"/> after the
         /// row + cell fragments have been emitted so the outer sink
         /// receives them in paint-safe order (row → cell → cell
-        /// content).</summary>
-        public void FlushTo(IBlockFragmentSink target)
+        /// content).
+        ///
+        /// <para><b>Sub-cycle 2 — deferred block translation.</b>
+        /// <paramref name="additionalBlockOffset"/> is added to each
+        /// buffered fragment's <c>BlockOffset</c> at flush time. This
+        /// supports the rowspan distribution algorithm in
+        /// <see cref="MeasureContentHeight"/>: cells are measured with
+        /// a placeholder block translation (=0) baked into their
+        /// buffer; the row-height pass then computes the final cell
+        /// block origins; the emit pass calls
+        /// <c>FlushTo(target, finalCellBlockOffset)</c> to apply the
+        /// translation. Callers that already baked the block
+        /// translation into the buffer at Emit time can pass 0 (the
+        /// default).</para></summary>
+        public void FlushTo(IBlockFragmentSink target, double additionalBlockOffset = 0)
         {
             ArgumentNullException.ThrowIfNull(target);
             for (var i = 0; i < _buffered.Count; i++)
             {
-                target.Emit(_buffered[i]);
+                var f = _buffered[i];
+                if (additionalBlockOffset != 0)
+                {
+                    f = f with { BlockOffset = f.BlockOffset + additionalBlockOffset };
+                }
+                target.Emit(f);
             }
             _buffered.Clear();
         }

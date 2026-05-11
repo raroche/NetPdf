@@ -267,8 +267,8 @@ grepping the ID).
 
 - **ID** — `table-auto-fixed-spans-borders`
 - **Status** — `approximated`.
-- **Behavior** — `TableLayouter` (Phase 3 Task 12 sub-cycle 1) walks
-  the Table → TableGrid → row → cell hierarchy via a two-phase
+- **Behavior** — `TableLayouter` (Phase 3 Task 12 sub-cycles 1 + 2)
+  walks the Table → TableGrid → row → cell hierarchy via a two-phase
   protocol — a pre-measure pass populates per-row cell content
   heights (via nested `BlockLayouter`s buffering into per-cell
   `MeasuringFragmentSink`s) so the wrapper's border-box block extent
@@ -279,29 +279,43 @@ grepping the ID).
   nested cell-content `BlockLayouter` runs against a FRESH
   `BreakResolver` scoped to that cell, isolating the outer table's
   checkpoint state from cell-internal pagination. Columns split
-  equally across the wrapper's content inline-size (max cell count
-  across rows). No table-layout: auto / fixed algorithm distinction,
-  no `border-collapse`, no `colspan` / `rowspan` merging, no
-  `<thead>` / `<tfoot>` repetition across pages, no `<col>` widths,
-  no multi-page splitting within a single table, no RTL flips.
-  Captions (`<caption>`) are skipped + emit
+  equally across the wrapper's content inline-size (column count =
+  max occupied column index + 1 from the cell-placement grid).
+  Spans (`colspan` / `rowspan`) work via the 2D occupancy-grid
+  algorithm (CSS Tables L3 §3 + HTML5 forming-a-table) — each row
+  walks a column cursor left-to-right, skipping slots occupied by
+  rowspan continuations from earlier rows, then anchors the cell at
+  the cursor with its `rowspan × colspan` slot rectangle marked
+  occupied; spanning cells receive `colspan × columnWidth` inline +
+  sum of covered rowHeights block; row heights start as
+  `max(content extent)` over `rowspan=1` cells and a second pass
+  (ascending rowspan) lands any excess from `rowspan>1` cells on
+  the LAST row of the span. The CSS Tables L3 §11 spec-strict
+  distribution-proportional algorithm is sub-cycle 3 work. No
+  `table-layout: auto` / `fixed` algorithm distinction, no
+  `border-collapse`, no `<thead>` / `<tfoot>` repetition across
+  pages, no `<col>` widths, no multi-page splitting within a single
+  table, no RTL flips. Captions (`<caption>`) are skipped + emit
   `LAYOUT-TABLE-FEATURE-UNSUPPORTED-001` with the caption text in
   the diagnostic message (so authors see what is being dropped).
   Tables that overflow the page emit
-  `PAGINATION-FORCED-OVERFLOW-001`; cells carrying `colspan` /
-  `rowspan` attributes emit `LAYOUT-TABLE-FEATURE-UNSUPPORTED-001`
-  (the attribute is ignored, each cell occupies one column / one
-  row); a Table wrapper with no TableGrid child (malformed box tree)
-  emits `LAYOUT-TABLE-FEATURE-UNSUPPORTED-001` (NOT a pagination
-  overflow code — the anomaly is structural).
-- **Missing** — Per CSS Tables L3: §3 auto-layout algorithm
-  (shrink-to-fit column widths via min/max-content), §3.5
+  `PAGINATION-FORCED-OVERFLOW-001`; a Table wrapper with no
+  TableGrid child (malformed box tree) emits
+  `LAYOUT-TABLE-FEATURE-UNSUPPORTED-001` (NOT a pagination overflow
+  code — the anomaly is structural).
+- **Missing** — Per CSS Tables L3 + HTML5 §4.9.11: §3 auto-layout
+  algorithm (shrink-to-fit column widths via min/max-content), §3.5
   fixed-layout algorithm (column widths from `<col>` + first-row
   cell widths), §6.3 border-collapse model + `border-spacing`,
-  cell merging (`colspan` / `rowspan`), §11 caption box, §6.4
-  column-group widths, per-page header / footer repeat,
-  multi-fragmentainer table splitting + row-level
-  `break-inside: avoid`, RTL writing modes / row reversal.
+  §11 caption box, §6.4 column-group widths, §11 spec-strict
+  rowspan distribution-proportional algorithm (sub-cycle 2 uses
+  naive last-row-of-span distribution), HTML5 §4.9.11 `rowspan="0"`
+  / `colspan="0"` "spans the remainder of the row-group /
+  column-group" semantics (sub-cycle 2 clamps to 1 + emits a
+  deferral diagnostic via `LAYOUT-TABLE-FEATURE-UNSUPPORTED-001`),
+  per-page header / footer repeat, multi-fragmentainer table
+  splitting + row-level `break-inside: avoid`, RTL writing modes /
+  row reversal.
 - **Trigger** — corpus invoice needs proper column widths
   (typical), OR a user-reported case where a table renders with
   equal columns when it shouldn't.
@@ -315,11 +329,14 @@ grepping the ID).
     — thread the per-cell metrics into the wrapper's auto-height
     resolution (sub-cycle 1 leaves wrapper height as the explicit
     style value).
-- **Added** — Phase 3 Task 12 sub-cycle 1 (this branch).
+- **Added** — Phase 3 Task 12 sub-cycle 1; sub-cycle 2 added
+  `colspan` / `rowspan` cell merging.
 - **Removal condition** — Tables render with proper column widths
   from `<col>` / `<th>` / `table-layout: fixed` first-row widths;
-  `colspan` / `rowspan` work; borders collapse correctly; thead /
-  tfoot repeat across pages; rows can split across pages.
+  borders collapse correctly; thead / tfoot repeat across pages;
+  rows can split across pages; captions actually lay out; and the
+  CSS Tables L3 §11 spec-strict rowspan distribution-proportional
+  algorithm replaces sub-cycle 2's naive last-row distribution.
 
 ---
 

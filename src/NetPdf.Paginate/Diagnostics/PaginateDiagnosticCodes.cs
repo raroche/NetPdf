@@ -86,4 +86,18 @@ internal static class PaginateDiagnosticCodes
     /// <c>NetPdf.DiagnosticCodes.LayoutTableFeatureUnsupported001</c>.
     /// Severity: <see cref="PaginateDiagnosticSeverity.Warning"/>.</summary>
     public const string LayoutTableFeatureUnsupported001 = "LAYOUT-TABLE-FEATURE-UNSUPPORTED-001";
+
+    /// <summary>Per Phase 3 Task 12 sub-cycle 2 hardening Finding 4 —
+    /// emitted by <c>TableLayouter</c> when a table's cumulative
+    /// <c>rowspan × colspan</c> slot count would exceed the
+    /// <c>MaxOccupiedSlots</c> DoS guard (1M slots). Cells crossing
+    /// the budget are capped at <c>rowspan = colspan = 1</c>; the
+    /// table still renders (truncated geometry, not dropped content)
+    /// but the author's recorded spans were ignored. Defends against
+    /// hostile HTML where legal attribute values (e.g.,
+    /// <c>rowspan="65534" colspan="1000"</c>) could force unbounded
+    /// CPU + memory work in the placement pass. Mirrors
+    /// <c>NetPdf.DiagnosticCodes.LayoutTableSlotBudgetExceeded001</c>.
+    /// Severity: <see cref="PaginateDiagnosticSeverity.Warning"/>.</summary>
+    public const string LayoutTableSlotBudgetExceeded001 = "LAYOUT-TABLE-SLOT-BUDGET-EXCEEDED-001";
 }

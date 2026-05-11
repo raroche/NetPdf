@@ -154,26 +154,37 @@ namespace NetPdf.Layout.Layouters;
 ///   §6.3.</item>
 ///   <item><c>&lt;thead&gt;</c> / <c>&lt;tfoot&gt;</c> repetition
 ///   across pages.</item>
-///   <item>Multi-fragmentainer table splitting (rows that cross
-///   pages). If the table doesn't fit on the current fragmentainer,
-///   the layouter emits all rows anyway + a forced-overflow
-///   diagnostic.</item>
+///   <item>Multi-fragmentainer ROW-INTERNAL splitting (one row whose
+///   content is taller than the remaining page is committed in full
+///   + the existing forced-overflow diagnostic fires; cycle 2+ may
+///   split row content across pages).</item>
 ///   <item>Right-to-left tables / writing-mode flips.</item>
 ///   <item>Spec-strict CSS Tables L3 rowspan distribution-proportional
 ///   algorithm. Sub-cycle 2 uses a naive "extra height to the last
 ///   row of the span" approach.</item>
+///   <item>Nested-recursion continuation propagation past a single
+///   depth — Task 13 cycle 1 hardening (Finding 1) carries
+///   <see cref="TableContinuation"/> through
+///   <see cref="BlockLayouter.EmitBlockSubtreeRecursive"/> when the
+///   table is a DIRECT descendant of the just-emitted top-level
+///   block (recursion depth = 1); deeper nesting falls back to the
+///   atomic <see cref="NoBreakBreakResolver"/>. Sub-cycle 6+ may
+///   generalize.</item>
 /// </list>
 ///
-/// <para><b>Pagination scope.</b> Like
-/// <see cref="BlockLayouter.EmitBlockSubtreeRecursive"/>, the
-/// TableLayouter is invoked AFTER the outer-loop's resolver
-/// consultation + checkpoint capture for the table wrapper. The
-/// outer loop has already decided to commit the table on this
-/// fragmentainer. The current implementation does NOT consult the
-/// resolver inside the table; rows that overflow the page emit a
-/// single <c>PAGINATION-FORCED-OVERFLOW-001</c> diagnostic + commit
-/// anyway. Multi-page table splitting (rows that defer to the next
-/// page) is deferred — see
+/// <para><b>Pagination scope.</b> Per Phase 3 Task 13 cycle 1, the
+/// layouter NOW consults the break resolver between rows: rows that
+/// don't fit on the current fragmentainer are deferred to a
+/// <see cref="TableContinuation"/> via
+/// <see cref="LayoutAttemptResult.PageComplete"/>. The outer
+/// <see cref="BlockLayouter"/> propagates the continuation through
+/// its <see cref="BlockContinuation.LayouterState"/> slot.
+/// <c>PAGINATION-FORCED-OVERFLOW-001</c> still fires for the
+/// degenerate single-oversized-row case (a row taller than the
+/// fragmentainer is unsplittable in cycle 1 — committed in full +
+/// the existing forced-overflow diagnostic surfaces it). Row-INTERNAL
+/// splitting + per-row <c>break-inside: avoid</c> support are cycle
+/// 2+ scope — see
 /// <c>docs/deferrals.md#table-auto-fixed-spans-borders</c>.</para>
 ///
 /// <para><b>Per-cell break-resolver isolation (post-Finding-3 hardening).</b>
@@ -192,11 +203,14 @@ internal sealed class TableLayouter : ILayouter, IDisposable
 {
     private readonly Box _rootBox;
     private readonly IBlockFragmentSink _sink;
-    // _incomingContinuation field removed per PR #49 Copilot review +
-    // PR #49 hardening — the constructor validates the parameter is
-    // null (sub-cycle 1 rejects mid-table resume) + then has no
-    // further use for it. Sub-cycle 2 will re-introduce as a real
-    // TableContinuation when multi-page row splitting lands.
+    // Per Phase 3 Task 13 cycle 1 — re-introduced for multi-page row
+    // splitting. The constructor accepts a TableContinuation (only) +
+    // stores it here; AttemptLayout resumes at NextRowIndex on
+    // entry. Sub-cycle 2 (Task 13 cycle 2) will consume the RepeatHead /
+    // RepeatFoot flags for <thead> / <tfoot> repetition; cycle 1 leaves
+    // them at false. Pre-Task-13, the field was eliminated + the
+    // constructor parameter was null-validated.
+    private readonly TableContinuation? _incomingTableContinuation;
     private readonly IPaginateDiagnosticsSink? _diagnostics;
     private readonly IShaperResolver? _shaperResolver;
 
@@ -210,11 +224,12 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     /// row + cell fragments inside.</param>
     /// <param name="sink">The same sink the caller uses — row + cell
     /// fragments append after the wrapper fragment.</param>
-    /// <param name="incomingContinuation">Reserved for future multi-page
-    /// row resume (deferred — see
-    /// <c>docs/deferrals.md#table-auto-fixed-spans-borders</c>). The
-    /// constructor accepts <see langword="null"/> only; any non-null
-    /// value throws.</param>
+    /// <param name="incomingContinuation">Per Phase 3 Task 13 cycle 1 —
+    /// when non-null MUST be a <see cref="TableContinuation"/>; the
+    /// layouter resumes at
+    /// <see cref="TableContinuation.NextRowIndex"/>. Any other
+    /// non-null continuation type throws. <see langword="null"/> means
+    /// "first-page emit / no resume".</param>
     /// <param name="diagnostics">Diagnostic sink for the
     /// <c>PAGINATION-FORCED-OVERFLOW-001</c> + structural-anomaly
     /// codes.</param>
@@ -223,9 +238,19 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     /// content layout.</param>
     /// <exception cref="ArgumentException">When
     /// <paramref name="rootBox"/> is not a Table or InlineTable wrapper,
-    /// or when <paramref name="incomingContinuation"/> is non-null
-    /// (multi-page resume not yet supported — see
-    /// <c>docs/deferrals.md#table-auto-fixed-spans-borders</c>).</exception>
+    /// or when <paramref name="incomingContinuation"/> is non-null and
+    /// not a <see cref="TableContinuation"/> (cycle 1 accepts only
+    /// table-shaped continuations).</exception>
+    /// <exception cref="ArgumentOutOfRangeException">Per Phase 3 Task 13
+    /// cycle 1 — when <paramref name="incomingContinuation"/>'s
+    /// <see cref="TableContinuation.NextRowIndex"/> is negative
+    /// (defensive validation; the actual upper bound depends on the
+    /// row count which isn't known until the measure pass — the
+    /// out-of-range upper bound is validated in
+    /// <see cref="AttemptLayout"/>). The valid range on entry is
+    /// <c>[0, rows.Count]</c> where <c>NextRowIndex == rows.Count</c>
+    /// is the "all rows committed; emit bottom captions only" case
+    /// (Finding 7 hardening — explicit early-return path).</exception>
     public TableLayouter(
         Box rootBox,
         IBlockFragmentSink sink,
@@ -245,24 +270,43 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                 nameof(rootBox));
         }
 
-        if (incomingContinuation is not null)
+        // Per Phase 3 Task 13 cycle 1 — accept TableContinuation (only).
+        // Pre-cycle-1 the constructor rejected any non-null continuation.
+        if (incomingContinuation is not null and not TableContinuation)
         {
-            // A future TableContinuation will resume at a given row
-            // index. The current implementation doesn't yet support
-            // mid-table page resume — fail loud so the caller surfaces
-            // the missing capability instead of silently restarting.
             throw new ArgumentException(
-                "TableLayouter does not yet support resume-after-"
-                + "PageComplete (multi-fragmentainer table splitting is "
-                + "deferred — see docs/deferrals.md#table-auto-fixed-spans-borders). "
-                + "Pass null incomingContinuation.",
+                $"TableLayouter expects a TableContinuation; got "
+                + $"{incomingContinuation.GetType().Name}. The wrong "
+                + "continuation type would silently restart from the first "
+                + "row + likely duplicate / drop content. Pass either null "
+                + "(first-page emit) or a TableContinuation produced by a "
+                + "prior AttemptLayout call.",
                 nameof(incomingContinuation));
+        }
+        if (incomingContinuation is TableContinuation tc)
+        {
+            if (tc.NextRowIndex < 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(incomingContinuation),
+                    $"TableContinuation.NextRowIndex={tc.NextRowIndex} "
+                    + "is negative. Resume indices must be 0-based "
+                    + "non-negative integers (the upper-bound row-count "
+                    + "check runs in AttemptLayout once the measure pass "
+                    + "has determined the row list).");
+            }
+            if (!double.IsFinite(tc.ConsumedBlockSize) || tc.ConsumedBlockSize < 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(incomingContinuation),
+                    $"TableContinuation.ConsumedBlockSize={tc.ConsumedBlockSize} "
+                    + "must be finite + non-negative.");
+            }
         }
 
         _rootBox = rootBox;
         _sink = sink;
-        // incomingContinuation discarded after the null-validation
-        // above. See field-removal comment + Copilot review on PR #49.
+        _incomingTableContinuation = incomingContinuation as TableContinuation;
         _diagnostics = diagnostics;
         _shaperResolver = shaperResolver;
     }
@@ -328,7 +372,7 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     /// outer sink in <see cref="AttemptLayout"/>'s emit pass so
     /// uncommitted measure-pass diagnostics don't leak when the
     /// outer resolver discards the table.</para></summary>
-    private readonly struct CellPlacement
+    internal readonly struct CellPlacement
     {
         public CellPlacement(
             Box cell,
@@ -363,7 +407,7 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     /// finalized height. Per-cell placements are stored in
     /// <see cref="_measuredPlacements"/> rather than per-row because a
     /// rowspan cell logically belongs to multiple rows.</summary>
-    private readonly struct RowMeasurement
+    internal readonly struct RowMeasurement
     {
         public RowMeasurement(Box row, double rowHeight)
         {
@@ -403,7 +447,7 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     /// margin SUM, not by collapse. Sub-cycle 4+ may revisit when the
     /// general BlockLayouter margin-collapse infrastructure becomes
     /// reusable here.</para></summary>
-    private readonly struct CaptionMeasurement
+    internal readonly struct CaptionMeasurement
     {
         public CaptionMeasurement(
             Box caption,
@@ -582,6 +626,115 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     /// size when it exceeds the wrapper.</para></summary>
     internal double MeasuredUsedInlineSize => _measuredUsedInlineSize;
 
+    /// <summary>Per Phase 3 Task 13 cycle 1 hardening (Finding 2) —
+    /// dry-run pagination simulation to estimate the block-axis extent
+    /// the table will commit on the current page WITHOUT actually
+    /// running the emit pass. The dispatching BlockLayouter uses this
+    /// to size the wrapper's border-box block extent to the
+    /// per-page-committed size rather than the natural total — when
+    /// the table will split across pages, the wrapper on page 1 should
+    /// only reserve space for the rows that commit on page 1, NOT the
+    /// full natural extent. This suppresses the outer block-flow's
+    /// false PAGINATION-FORCED-OVERFLOW-001 diagnostic when the table
+    /// itself splits cleanly.
+    ///
+    /// <para>Algorithm: walk the measured rows from
+    /// <paramref name="resumeAtRow"/>; for each row compute the
+    /// page-relative top + chunk; stop when the row would overflow the
+    /// fragmentainer block-size (= "this row's bottom would exceed
+    /// page bottom"). Return the cumulative block extent of the
+    /// committed-rows-on-this-page window + top captions on the first
+    /// page + bottom captions on the last page.</para>
+    ///
+    /// <para><b>needsSplitting</b> out param tells the caller whether
+    /// the table will return PageComplete on this attempt — useful for
+    /// suppressing the outer forced-overflow diagnostic.</para>
+    /// </summary>
+    internal double DryRunCommittedBlockSize(
+        FragmentainerContext fragmentainer,
+        int resumeAtRow,
+        out bool needsSplitting,
+        out bool willForceOverflowOnSingleRow)
+    {
+        needsSplitting = false;
+        willForceOverflowOnSingleRow = false;
+        if (!_measureDone || _measuredRows is null || _measuredRows.Count == 0)
+        {
+            // Degenerate paths (missing grid / zero rows / zero
+            // columns) — fall back to the measured content height.
+            return _measuredContentHeight;
+        }
+        var rows = _measuredRows;
+        if (resumeAtRow > rows.Count)
+        {
+            // Caller bug — let AttemptLayout throw with the proper
+            // ArgumentOutOfRangeException; here just return the
+            // total.
+            return _measuredContentHeight;
+        }
+        if (resumeAtRow == rows.Count)
+        {
+            // All rows already emitted; only bottom captions on this
+            // page (Finding 7's NextRowIndex == rows.Count case).
+            return _measuredBottomCaptionsTotal;
+        }
+        var isFirstPage = resumeAtRow == 0;
+        // page-relative origin of row resumeAtRow: 0 + top captions on
+        // first page; just 0 on resume pages (top captions skipped).
+        // Note: "page-relative" here is RELATIVE TO THE WRAPPER'S
+        // CONTENT-BOX ORIGIN (= the table's local frame), not the
+        // fragmentainer's content origin. The remaining block size
+        // available for rows is the page's BlockSize minus the
+        // fragmentainer's UsedBlockSize at AttemptLayout entry minus
+        // the wrapper's own border + padding block-start.
+        var topCaptionsBlock = isFirstPage ? _measuredTopCaptionsTotal : 0.0;
+        var rowStackOriginInFragmentainer =
+            fragmentainer.UsedBlockSize + (_contentBlockOffset - _contentBlockOffset) // = UsedBlockSize
+            + topCaptionsBlock;
+        // The actual logic the row-pagination loop uses:
+        //   fragmentainer.UsedBlockSize = rowBlockOffsets[r]
+        //   chunk = rows[r].RowHeight
+        //   if rowBlockOffsets[r] + chunk > fragmentainer.BlockSize
+        //     defer this row.
+        // We replicate that here without mutating fragmentainer state.
+        var pageBlockSize = fragmentainer.BlockSize;
+        var cursorInFragmentainer = rowStackOriginInFragmentainer;
+        var committedRowsBlock = 0.0;
+        var lastCommittedRowExclusive = resumeAtRow;
+        for (var r = resumeAtRow; r < rows.Count; r++)
+        {
+            var chunk = rows[r].RowHeight;
+            // Match BreakResolver: "if I add chunk to used, does it
+            // exceed BlockSize?" — return BreakHere when:
+            // cursor + chunk > pageBlockSize.
+            if (cursorInFragmentainer + chunk > pageBlockSize)
+            {
+                // If THIS is the first row AND nothing's committed,
+                // the row force-emits (single-oversized-row case).
+                if (r == resumeAtRow
+                    && !(isFirstPage && _measuredTopCaptionsTotal > 0))
+                {
+                    willForceOverflowOnSingleRow = true;
+                    committedRowsBlock += chunk;
+                    lastCommittedRowExclusive = r + 1;
+                }
+                else
+                {
+                    needsSplitting = true;
+                }
+                break;
+            }
+            committedRowsBlock += chunk;
+            cursorInFragmentainer += chunk;
+            lastCommittedRowExclusive = r + 1;
+        }
+        // Bottom captions only on the last page (= committed all rows).
+        var committedBottomCaptions = lastCommittedRowExclusive == rows.Count
+            ? _measuredBottomCaptionsTotal
+            : 0.0;
+        return topCaptionsBlock + committedRowsBlock + committedBottomCaptions;
+    }
+
     /// <inheritdoc />
     public LayoutAttemptResult AttemptLayout(
         FragmentainerContext fragmentainer,
@@ -651,6 +804,88 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         var placements = _measuredPlacements ?? new List<CellPlacement>(0);
         var captions = _measuredCaptionList;
 
+        // Per Phase 3 Task 13 cycle 1 — resume-state derivation. The
+        // incoming TableContinuation names the row to RESUME AT;
+        // priorConsumedBlock tracks cumulative across-page block-size
+        // (mirrors BlockContinuation.ConsumedBlockSize). Top captions
+        // emit only on the first page (resumeAtRow == 0); bottom
+        // captions only on the last page (the loop completes all rows
+        // without a BreakHere return).
+        //
+        // Per Phase 3 Task 13 cycle 1 hardening (Finding 7) — the
+        // upper bound is INCLUSIVE: NextRowIndex == rows.Count means
+        // "all rows already committed on prior pages; this resume
+        // page emits bottom captions only". Strict > rows.Count is
+        // the caller-bug case (the row list shrunk between pages, or
+        // the dispatching layouter produced a malformed continuation).
+        var resumeAtRow = _incomingTableContinuation?.NextRowIndex ?? 0;
+        var priorConsumedBlock = _incomingTableContinuation?.ConsumedBlockSize ?? 0.0;
+        if (rows is not null && resumeAtRow > rows.Count)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(_incomingTableContinuation),
+                $"TableContinuation.NextRowIndex={resumeAtRow} is past the "
+                + $"row count ({rows.Count}). The dispatching layouter must "
+                + "produce continuations with NextRowIndex in [0, rows.Count].");
+        }
+        var isFirstPage = resumeAtRow == 0;
+        // Finding 7 — NextRowIndex == rows.Count: all rows already
+        // committed on prior pages. Emit the bottom captions (if any)
+        // at the wrapper's content-block-offset (no row stack on this
+        // page) + return AllDone. Indexing `rowBlockOffsets[resumeAtRow]`
+        // below would be OUT-OF-RANGE — the rowBlockOffsets array has
+        // rows.Count entries, indexed 0..rows.Count-1.
+        if (rows is not null && resumeAtRow == rows.Count && rows.Count > 0)
+        {
+            // Flush any per-cell + per-caption diagnostic buffers
+            // (mirrors the main commit-diagnostics block below — the
+            // resume page still wants to surface measure-pass diags
+            // for content that committed on prior pages but produced
+            // diagnostics the outer sink hasn't seen yet).
+            var allDoneCommitDiagSink = layout.Diagnostics ?? _diagnostics;
+            if (allDoneCommitDiagSink is not null)
+            {
+                for (var pIdx = 0; pIdx < placements.Count; pIdx++)
+                {
+                    placements[pIdx].DiagnosticsBuffer?.FlushTo(allDoneCommitDiagSink);
+                }
+                if (captions is { Count: > 0 })
+                {
+                    for (var i = 0; i < captions.Count; i++)
+                    {
+                        captions[i].DiagnosticsBuffer?.FlushTo(allDoneCommitDiagSink);
+                    }
+                }
+            }
+            var allDoneUsedInlineSize = _measuredUsedInlineSize > 0
+                ? _measuredUsedInlineSize
+                : _contentInlineSize;
+            var allDoneBottomCursor = _contentBlockOffset;
+            if (captions is { Count: > 0 })
+            {
+                for (var i = 0; i < captions.Count; i++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var c = captions[i];
+                    if (c.Side != CaptionSide.Bottom) continue;
+                    allDoneBottomCursor += c.MarginBlockStart;
+                    var borderBoxBlockOffset = allDoneBottomCursor;
+                    var borderBoxBlockSize = c.BorderBoxBlockSize;
+                    _sink.Emit(new BoxFragment(
+                        Box: c.Caption,
+                        InlineOffset: _contentInlineOffset,
+                        BlockOffset: borderBoxBlockOffset,
+                        InlineSize: allDoneUsedInlineSize,
+                        BlockSize: borderBoxBlockSize));
+                    var contentBlockOriginInFragmentainer =
+                        borderBoxBlockOffset + c.BorderBlockStart + c.PaddingBlockStart;
+                    c.ContentBuffer.FlushTo(_sink, contentBlockOriginInFragmentainer);
+                    allDoneBottomCursor += borderBoxBlockSize + c.MarginBlockEnd;
+                }
+            }
+            return LayoutAttemptResult.AllDone(cost: 0);
+        }
+
         // Sub-cycle 4 hardening (Finding 1) — used inline-size is the
         // post-Pass-D column sum (= max(columnSum, contentInlineSize)).
         // Row + caption fragments use THIS value for their InlineSize
@@ -665,27 +900,24 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             ? _measuredUsedInlineSize
             : _contentInlineSize;
 
-        // Per Finding 5 — flush each cell's + caption's
-        // BufferingDiagnosticsSink to the outer diagnostic sink now
-        // that AttemptLayout has committed to running the emit pass.
-        // Before this commit, cell / caption-internal diagnostics from
-        // the measure pass are buffered — if the outer resolver had
-        // rewound + discarded this layouter's work the buffer would
-        // have been dropped + the user would not see diagnostics for
-        // never-emitted fragments.
+        // Per Finding 5 + Task 13 cycle 1 hardening (Finding 4) —
+        // flush each cell's + caption's BufferingDiagnosticsSink to
+        // the outer diagnostic sink at COMMIT time. Pre-finding-4,
+        // ALL cell + caption diagnostics flushed eagerly here before
+        // the row-pagination loop. That leaked diagnostics for cells
+        // in deferred rows onto the current page AND duplicated them
+        // on the resume page. Post-fix: top-caption diagnostics flush
+        // here (Phase 0 only on isFirstPage); per-row cell diagnostics
+        // flush inside EmitRowWindow AFTER each row commits; bottom-
+        // caption diagnostics flush at Phase D below.
         var commitDiagSink = layout.Diagnostics ?? _diagnostics;
-        if (commitDiagSink is not null)
+        if (commitDiagSink is not null && isFirstPage && captions is { Count: > 0 })
         {
-            for (var pIdx = 0; pIdx < placements.Count; pIdx++)
+            for (var i = 0; i < captions.Count; i++)
             {
-                placements[pIdx].DiagnosticsBuffer?.FlushTo(commitDiagSink);
-            }
-            if (captions is { Count: > 0 })
-            {
-                for (var i = 0; i < captions.Count; i++)
-                {
-                    captions[i].DiagnosticsBuffer?.FlushTo(commitDiagSink);
-                }
+                var c = captions[i];
+                if (c.Side != CaptionSide.Top) continue;
+                c.DiagnosticsBuffer?.FlushTo(commitDiagSink);
             }
         }
 
@@ -707,8 +939,20 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         // caption's CONTENT BOX (= fragment top + border-block-start
         // + padding-block-start), advance by border-box + margin-
         // block-end.
+        //
+        // Per Phase 3 Task 13 cycle 1 — top captions emit ONLY on
+        // the first page (when resumeAtRow == 0 / isFirstPage). On
+        // resume pages the captions were already committed; the row
+        // cursor starts at the wrapper's content-block-offset.
+        //
+        // Per Phase 3 Task 13 cycle 1 hardening (Finding 3 + Copilot
+        // #1) — track whether non-row content (top captions) has
+        // committed on the current page so the zero-progress detector
+        // in the row-pagination loop knows a single oversized row
+        // following a top caption is NOT zero-progress.
         var topCaptionCursor = _contentBlockOffset;
-        if (captions is { Count: > 0 })
+        var committedNonRowContent = false;
+        if (isFirstPage && captions is { Count: > 0 })
         {
             for (var i = 0; i < captions.Count; i++)
             {
@@ -731,6 +975,7 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                     borderBoxBlockOffset + c.BorderBlockStart + c.PaddingBlockStart;
                 c.ContentBuffer.FlushTo(_sink, contentBlockOriginInFragmentainer);
                 topCaptionCursor += borderBoxBlockSize + c.MarginBlockEnd;
+                committedNonRowContent = true;
             }
         }
 
@@ -765,8 +1010,15 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             // + MarginBlockEnd to the cursor; the fragment's
             // BlockSize = BorderBoxBlockSize; content flushes into
             // the caption's content box.
+            //
+            // Per Phase 3 Task 13 cycle 1 — for a captions-only /
+            // empty-row-stack table the whole emit lands on a single
+            // page; resumeAtRow > 0 is rejected above so this branch
+            // is the first + last page simultaneously. Emit bottom
+            // captions only when isFirstPage (defensive; resumeAtRow >
+            // 0 is impossible here).
             var bottomCursor = topCaptionCursor;
-            if (captions is { Count: > 0 })
+            if (isFirstPage && captions is { Count: > 0 })
             {
                 for (var i = 0; i < captions.Count; i++)
                 {
@@ -786,6 +1038,15 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                         borderBoxBlockOffset + c.BorderBlockStart + c.PaddingBlockStart;
                     c.ContentBuffer.FlushTo(_sink, contentBlockOriginInFragmentainer);
                     bottomCursor += borderBoxBlockSize + c.MarginBlockEnd;
+                    // Per Phase 3 Task 13 cycle 1 hardening (Finding
+                    // 4) — flush bottom caption diagnostics here in
+                    // the no-grid / empty-grid path (top caption
+                    // diagnostics already flushed at AttemptLayout
+                    // entry).
+                    if (commitDiagSink is not null)
+                    {
+                        c.DiagnosticsBuffer?.FlushTo(commitDiagSink);
+                    }
                 }
             }
             // Sub-cycle 3 hardening (Finding 4) — the no-grid /
@@ -812,8 +1073,8 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         // across all rows AND across all cells regardless of rowspan.
         //
         //   Phase 0 (sub-cycle 3): top-caption fragments — see above.
-        //   Phase A: row fragments for ALL rows.
-        //   Phase B: cell fragments for ALL cells (only at origin).
+        //   Phase A: row fragments for the COMMITTED row window.
+        //   Phase B: cell fragments for the same window (only at origin).
         //   Phase C: cell-content fragments via FlushTo.
         //   Phase D (sub-cycle 3): bottom-caption fragments — see below.
         //
@@ -836,9 +1097,17 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         // captions, not at the wrapper's content origin. The top-
         // caption emit pass updated `topCaptionCursor` to track the
         // running offset; we anchor the row stack there.
+        //
+        // Per Phase 3 Task 13 cycle 1 — row-stack offsets are computed
+        // RELATIVE TO the natural row-stack origin (the top-caption
+        // cursor on page 1, the wrapper content-block-offset on
+        // resume pages). Cycle 1 keeps rows ATOMIC (no row-internal
+        // split); the row's content always emits at the same
+        // page-relative anchor we measured during the measure pass.
+        var rowStackOrigin = topCaptionCursor;
         var rowBlockOffsets = new double[rows.Count];
         var rowEndBlockOffset = new double[rows.Count + 1];
-        var rowCursorBlock = topCaptionCursor;
+        var rowCursorBlock = rowStackOrigin;
         rowEndBlockOffset[0] = rowCursorBlock;
         for (var r = 0; r < rows.Count; r++)
         {
@@ -863,78 +1132,323 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             bucket.Add(p);
         }
 
-        // Phase A — emit row fragments for every row. Even an "empty"
-        // row gets a (degenerate) fragment because its rowHeight may
-        // be 0 (rowspan continuation slots from earlier rows kept the
-        // row in the row list).
+        // Per Phase 3 Task 13 cycle 1 — row-level pagination loop.
+        // Walk rows from `resumeAtRow`, consulting the break resolver
+        // BEFORE committing each row. The resolver returns BreakHere
+        // when adding the next row's chunk would overflow the
+        // fragmentainer; on BreakHere we defer the row + subsequent
+        // rows to a continuation. The exception is when the row is
+        // the FIRST row to commit on this page (rowsEmittedOnPage ==
+        // 0 + UsedBlockSize at top-of-page): a single oversized row
+        // can't fit anywhere, so we emit it anyway + let the existing
+        // PAGINATION-FORCED-OVERFLOW-001 diagnostic surface the issue
+        // (matches BlockLayouter's forward-progress pattern).
         //
-        // Sub-cycle 4 hardening (Finding 1) — row InlineSize is
-        // `usedInlineSize` (= max(columnSum, contentInlineSize)) so
-        // the row background spans the actual column extent. Pre-fix
-        // the value was `_contentInlineSize` which left gaps when
-        // declared widths summed below the wrapper or clipped backgrounds
-        // when they exceeded.
-        for (var r = 0; r < rows.Count; r++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var rowMeasure = rows[r];
-            _sink.Emit(new BoxFragment(
-                Box: rowMeasure.Row,
-                InlineOffset: _contentInlineOffset,
-                BlockOffset: rowBlockOffsets[r],
-                InlineSize: usedInlineSize,
-                BlockSize: rowMeasure.RowHeight));
-        }
+        // The resolver also returns BreakHere on author-forced breaks
+        // (CSS Fragmentation L3 §3.1's `break-before: page` etc.).
+        // Cycle 1 doesn't yet propagate forced-break metadata from
+        // the row Box; cycle 2+ may consult ComputedStyle.BreakBefore
+        // here.
+        //
+        // The break-resolver `UsedBlockSize` is per-fragmentainer for
+        // the streaming path (per IBreakResolver.ConsiderBreakAt's
+        // contract). The chunk size is the next row's row-height —
+        // table rows are atomic in cycle 1, so the chunk equals the
+        // row's full measured height.
+        //
+        // NOTE: A row whose rowspan cell extends past the row's own
+        // height is sized via rowEndBlockOffset[r+1] - rowBlockOffsets[r]
+        // = rows[r].RowHeight (the second pass already redistributed
+        // the spanned-cell overflow to the LAST row of the span). So
+        // breaking at row r doesn't truncate a rowspan-cell mid-render
+        // as long as the entire span has been kept atomic — which it
+        // is in cycle 1 (rowspan distribution happens during measure;
+        // we don't re-split here).
+        //
+        // The break-resolver's `UsedBlockSize` for the candidate-r
+        // opportunity is the page-relative offset where row r would
+        // be PLACED. Because we want consistent break decisions
+        // regardless of whether the table is the only content on the
+        // page, we pass the actual `fragmentainer.UsedBlockSize` plus
+        // the page-relative offset from the wrapper's content origin
+        // to row r's top. The `chunkBlockSize` is row r's measured
+        // height. (The resolver then sees: "if I add chunk to used,
+        // does it exceed BlockSize?" — the correct overflow check.)
+        var commitFromRow = resumeAtRow;
+        var lastCommittedRowExclusive = resumeAtRow;
+        var rowsEmittedOnPage = 0;
+        // Snapshot UsedBlockSize at entry so we can:
+        //  (a) detect "top of page" for the forced-overflow forward-
+        //      progress fallback (matches BlockLayouter's
+        //      `initialUsed` + `atTopOfPage` logic), and
+        //  (b) restore fragmentainer.UsedBlockSize after the
+        //      pagination loop. The loop advances UsedBlockSize as
+        //      each row commits so the resolver's RemainingBlockSize
+        //      check decreases correctly; the outer BlockLayouter
+        //      expects UsedBlockSize at AT-TABLE-ENTRY-state for its
+        //      own marginBoxBlockSizeForCursor advance to be
+        //      authoritative (= it bumps UsedBlockSize by the
+        //      wrapper's full margin-box-block-size after the table
+        //      emit). Pre-restore the wrapper's advance would
+        //      double-count the rows.
+        var initialUsedBlockSize = fragmentainer.UsedBlockSize;
 
-        // Phase B — emit cell fragments for every placement anchored
-        // in each row, in document order across rows. Sizing uses the
-        // prefix-sum to compute block extent in O(1).
-        for (var r = 0; r < rows.Count; r++)
+        // Per Phase 3 Task 13 cycle 1 — the resume page reinterprets
+        // the measured `rowBlockOffsets` as page-relative WITH A
+        // DELTA. The measure pass anchored row 0 at `_contentBlockOffset`
+        // (page 1 origin). On resume, the resumed row should
+        // effectively start at `rowStackOrigin` (= `_contentBlockOffset`
+        // since top captions are skipped). The cell + row fragments
+        // already in `rowBlockOffsets[]` are page-1-coordinates; on
+        // resume we shift them by `-resumeRowOffsetShift` so the
+        // emitted fragments land at the correct page-relative
+        // position. Conceptually `rowBlockOffsets'[r] = rowBlockOffsets[r] -
+        // resumeRowOffsetShift` for the resume page.
+        //
+        // resumeRowOffsetShift = rowBlockOffsets[resumeAtRow] -
+        // rowStackOrigin. On page 1 (resumeAtRow=0) this is 0 (no
+        // shift). On a resume page with rowStackOrigin matching the
+        // wrapper's content-block-offset for THAT page, the shift
+        // re-anchors row resumeAtRow at the new origin.
+        var resumeRowOffsetShift = resumeAtRow == 0
+            ? 0.0
+            : rowBlockOffsets[resumeAtRow] - rowStackOrigin;
+
+        // Shift rowBlockOffsets + rowEndBlockOffset by
+        // -resumeRowOffsetShift so the rest of the emit math is
+        // identical to page 1. Only the indices >= resumeAtRow are
+        // emitted; the [0, resumeAtRow) entries are unused this page
+        // (we shift the whole array anyway for simplicity).
+        if (resumeRowOffsetShift != 0)
         {
-            var bucket = placementsByRow[r];
-            if (bucket is null) continue;
-            cancellationToken.ThrowIfCancellationRequested();
-            for (var i = 0; i < bucket.Count; i++)
+            for (var r = 0; r < rowBlockOffsets.Length; r++)
             {
-                var placement = bucket[i];
-                var cellInlineOffset = _contentInlineOffset
-                    + columnOffsetsLocal[placement.OriginCol];
-                var cellInlineSize =
-                    columnOffsetsLocal[placement.OriginCol + placement.ColSpan]
-                    - columnOffsetsLocal[placement.OriginCol];
-                var cellBlockOffset = rowBlockOffsets[r];
-                var cellBlockSize =
-                    rowEndBlockOffset[placement.OriginRow + placement.RowSpan]
-                    - rowEndBlockOffset[placement.OriginRow];
-                _sink.Emit(new BoxFragment(
-                    Box: placement.Cell,
-                    InlineOffset: cellInlineOffset,
-                    BlockOffset: cellBlockOffset,
-                    InlineSize: cellInlineSize,
-                    BlockSize: cellBlockSize));
+                rowBlockOffsets[r] -= resumeRowOffsetShift;
+            }
+            for (var r = 0; r < rowEndBlockOffset.Length; r++)
+            {
+                rowEndBlockOffset[r] -= resumeRowOffsetShift;
             }
         }
 
-        // Phase C — drain each cell's buffered content fragments via
-        // FlushTo with the cell's finalized block origin. The
-        // resulting outer-sink order (across all rows, all cells, all
-        // content) is paint-safe: rows → cells → cell content.
-        for (var r = 0; r < rows.Count; r++)
+        // Bring UsedBlockSize up to the row-stack origin so the
+        // resolver's RemainingBlockSize on the first opportunity
+        // reflects the actual space available below the captions +
+        // wrapper edges. Restored to initialUsedBlockSize before
+        // return.
+        fragmentainer.UsedBlockSize = rowStackOrigin;
+
+        for (var r = resumeAtRow; r < rows.Count; r++)
         {
-            var bucket = placementsByRow[r];
-            if (bucket is null) continue;
             cancellationToken.ThrowIfCancellationRequested();
-            for (var i = 0; i < bucket.Count; i++)
+            // Compute the page-relative offset for THIS row's top.
+            // After the resumeRowOffsetShift normalization above,
+            // `rowBlockOffsets[r]` is fragmentainer-absolute (= the
+            // same coordinate space as `fragmentainer.UsedBlockSize`).
+            //
+            // Update fragmentainer.UsedBlockSize to the candidate
+            // row's top so the resolver's RemainingBlockSize check
+            // reflects "remaining space below this row's top". The
+            // resolver then sees chunkBlockSize ≤ RemainingBlockSize
+            // ⟺ rowBottom ≤ BlockSize, the correct fit-check.
+            fragmentainer.UsedBlockSize = rowBlockOffsets[r];
+            var pageRelativeRowTop = rowBlockOffsets[r];
+            var chunkBlockSize = rows[r].RowHeight;
+
+            // Per Phase 3 review fix #2 — block-axis naming. Use the
+            // TableRowBoundary class so the cost model's penalty
+            // matrix keys correctly (currently identical to
+            // BlockBoundary, but distinct for future cost tuning).
+            var opportunity = new BreakOpportunity(
+                UsedBlockSize: pageRelativeRowTop,
+                ChunkBlockSize: chunkBlockSize,
+                Class: BreakOpportunityClass.TableRowBoundary,
+                ForceBreak: false,
+                AvoidBreak: false,
+                ForceParity: PageParity.Any,
+                LinesBeforeBreak: 0,
+                StrandsHeading: false,
+                SplitsFlexOrGridLine: false,
+                ParagraphId: 0);
+            var decision = resolver.ConsiderBreakAt(opportunity, fragmentainer);
+
+            // Per Phase 3 Task 13 cycle 1 hardening (Finding 5) —
+            // surface Rewind as a diagnostic instead of silently
+            // dropping it. TableLayouter doesn't register per-row
+            // checkpoints (the outer BlockLayouter owns the table's
+            // rewind frontier through the pre-table-emit checkpoint),
+            // so a resolver returning Rewind names a checkpoint the
+            // table never registered — that's a contract violation
+            // worth surfacing. Fallback behavior is unchanged: we
+            // treat it as Continue (fail open). Per-row checkpoint
+            // capture for break-inside: avoid is cycle 2+ scope.
+            if (decision.Action == BreakAction.Rewind)
             {
-                var placement = bucket[i];
-                placement.ContentBuffer.FlushTo(_sink, rowBlockOffsets[r]);
+                OptimizingBreakResolver.SafeEmit(
+                    layout.Diagnostics ?? _diagnostics,
+                    new PaginateDiagnostic(
+                        PaginateDiagnosticCodes.LayoutTableRewindNotSupported001,
+                        $"TableLayouter: break resolver returned Rewind at row "
+                        + $"boundary {r} (rowspan-aware row count = {rows.Count}). "
+                        + "Cycle 1 doesn't register per-row checkpoints — the "
+                        + "rewind target would name a checkpoint the table never "
+                        + "captured. Falling back to Continue (the row commits "
+                        + "in place). Per-row checkpoint capture for "
+                        + "break-inside: avoid is cycle 2+ scope. See "
+                        + "docs/deferrals.md#table-auto-fixed-spans-borders.",
+                        PaginateDiagnosticSeverity.Warning));
+                // Synthesize a Continue so the rest of the loop sees
+                // the fall-back path (commit the row).
+                decision = new BreakDecision(BreakAction.Continue, 0, RewindTo: null);
             }
+
+            if (decision.Action == BreakAction.BreakHere)
+            {
+                // The current row doesn't fit. Two subcases:
+                //   (a) This is the FIRST row on the page AND we're
+                //       at the top of the fragmentainer (nothing
+                //       emitted yet by THIS table OR by upstream
+                //       siblings). The row is unsplittable + larger
+                //       than the page; emit anyway (forced-overflow
+                //       forward progress). The PAGINATION-FORCED-
+                //       OVERFLOW-001 diagnostic fires via
+                //       EmitOverflowDiagnosticIfNeeded below.
+                //   (b) Otherwise: defer this row + the rest to a
+                //       continuation. Bottom captions only emit on
+                //       the LAST page (when the loop completes
+                //       naturally); we skip them here.
+                var nothingEmittedThisPage = rowsEmittedOnPage == 0
+                    && !committedNonRowContent;
+                if (!nothingEmittedThisPage)
+                {
+                    // Per Phase 3 Task 13 cycle 1 hardening (Finding 6) —
+                    // detect rowspan cells whose origin row commits on
+                    // this page but whose span extends past the break
+                    // (i.e., OriginRow < r AND OriginRow + RowSpan > r).
+                    // Such a cell would be emitted at its FULL natural
+                    // extent on the origin page + the continuation row
+                    // would re-emit with the spanning cell missing —
+                    // visual overflow + missing geometry. Locked design:
+                    // force the break BEFORE the rowspan's origin row
+                    // (cell stays atomic on the next page) + emit
+                    // LAYOUT-TABLE-ROWSPAN-CROSSES-PAGE-001. If forcing
+                    // before the origin row would leave nothing
+                    // committed on the current page, fall through to
+                    // the forced-overflow path on the original row
+                    // (single-oversized-row semantics).
+                    var minOriginRow = int.MaxValue;
+                    var minOriginRowSpan = 0;
+                    for (var pIdx = 0; pIdx < placements.Count; pIdx++)
+                    {
+                        var p = placements[pIdx];
+                        if (p.RowSpan > 1
+                            && p.OriginRow >= commitFromRow
+                            && p.OriginRow < r
+                            && p.OriginRow + p.RowSpan > r)
+                        {
+                            if (p.OriginRow < minOriginRow)
+                            {
+                                minOriginRow = p.OriginRow;
+                                minOriginRowSpan = p.RowSpan;
+                            }
+                        }
+                    }
+                    var rowspanCrossing = minOriginRow != int.MaxValue;
+                    var rolledBackForRowspan = false;
+                    if (rowspanCrossing)
+                    {
+                        // Force the break before the rowspan's origin
+                        // row, IF doing so still leaves at least one
+                        // committed row OR caption content on this
+                        // page (= forward progress). Otherwise fall
+                        // through to the forced-overflow path.
+                        var rolledBackEmittedRows = minOriginRow - commitFromRow;
+                        if (rolledBackEmittedRows > 0 || committedNonRowContent)
+                        {
+                            lastCommittedRowExclusive = minOriginRow;
+                            rolledBackForRowspan = true;
+                            OptimizingBreakResolver.SafeEmit(
+                                layout.Diagnostics ?? _diagnostics,
+                                new PaginateDiagnostic(
+                                    PaginateDiagnosticCodes.LayoutTableRowspanCrossesPage001,
+                                    $"TableLayouter: rowspan cell at origin row "
+                                    + $"{minOriginRow} (rowspan={minOriginRowSpan}) "
+                                    + $"would cross the page boundary at row {r}. "
+                                    + "Cycle 1 keeps rowspan cells atomic across "
+                                    + "pages — the break is forced BEFORE row "
+                                    + $"{minOriginRow} so the spanning cell stays "
+                                    + "together on the next page. CSS Tables L3 "
+                                    + "§11 spec-strict rowspan distribution across "
+                                    + "pages is sub-cycle 6+ scope. See "
+                                    + "docs/deferrals.md#table-auto-fixed-spans-borders.",
+                                    PaginateDiagnosticSeverity.Warning));
+                        }
+                    }
+
+                    // Subcase (b) — return PageComplete with a
+                    // TableContinuation pointing at the unfit row.
+                    // The committed window is [resumeAtRow,
+                    // lastCommittedRowExclusive); the resume window
+                    // is [r, rows.Count) — OR, after Finding 6's
+                    // rowspan rollback, [minOriginRow, rows.Count).
+                    var resumeRowForContinuation =
+                        rolledBackForRowspan ? minOriginRow : r;
+                    EmitRowWindow(
+                        rows!, placements, placementsByRow, columnOffsetsLocal!,
+                        rowBlockOffsets, rowEndBlockOffset, usedInlineSize,
+                        windowStart: commitFromRow,
+                        windowEndExclusive: lastCommittedRowExclusive,
+                        cancellationToken,
+                        diagSink: commitDiagSink);
+                    var consumedThisAttempt =
+                        (lastCommittedRowExclusive > commitFromRow
+                            ? rowEndBlockOffset[lastCommittedRowExclusive] - rowBlockOffsets[commitFromRow]
+                            : 0.0)
+                        + (rowStackOrigin - _contentBlockOffset); // include top captions on first page
+                    var nextContinuation = new TableContinuation(
+                        RepeatHead: false,
+                        RepeatFoot: false,
+                        NextRowIndex: resumeRowForContinuation,
+                        ConsumedBlockSize: priorConsumedBlock + consumedThisAttempt,
+                        ColumnLayoutCache: BuildColumnLayoutCache());
+                    // Restore fragmentainer.UsedBlockSize so the outer
+                    // BlockLayouter's wrapper-advance arithmetic
+                    // (marginBoxBlockSizeForCursor) doesn't double-
+                    // count the rows we already advanced through. See
+                    // the "snapshot UsedBlockSize at entry" comment
+                    // above for the contract.
+                    fragmentainer.UsedBlockSize = initialUsedBlockSize;
+                    return LayoutAttemptResult.PageComplete(
+                        nextContinuation, cost: decision.Cost);
+                }
+                // Subcase (a): fall through to emit r anyway.
+            }
+
+            // Continue / forced-overflow forward progress — commit
+            // this row. The actual emission happens in a single batch
+            // after the loop (EmitRowWindow) so the paint-safe order
+            // (rows → cells → content) holds across the entire
+            // committed window. We just advance the cursor here.
+            lastCommittedRowExclusive = r + 1;
+            rowsEmittedOnPage++;
         }
+
+        // Loop completed without BreakHere — all remaining rows
+        // commit on this page. Emit the committed window. Per Finding
+        // 4, pass the diagnostic sink so per-row cell diagnostics flush
+        // alongside their committed content.
+        EmitRowWindow(
+            rows!, placements, placementsByRow, columnOffsetsLocal!,
+            rowBlockOffsets, rowEndBlockOffset, usedInlineSize,
+            windowStart: commitFromRow,
+            windowEndExclusive: lastCommittedRowExclusive,
+            cancellationToken,
+            diagSink: commitDiagSink);
 
         // Per Phase 3 Task 12 sub-cycle 3 — Phase D: emit bottom-side
         // captions AFTER the row stack. Stacks vertically in document
         // order. Starts at the row-stack bottom (= rowEndBlockOffset
-        // at index rows.Count).
+        // at index lastCommittedRowExclusive).
         //
         // Sub-cycle 3 hardening (Finding 1) — same margin-box cursor
         // algorithm as the top-caption pass; each caption's
@@ -942,7 +1456,18 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         // BorderBoxBlockSize, content flushes into the caption's
         // content-box (= fragment top + border-block-start + padding-
         // block-start).
-        var bottomCaptionCursor = rowEndBlockOffset[rows.Count];
+        //
+        // Per Phase 3 Task 13 cycle 1 — bottom captions ONLY emit on
+        // the LAST page, defined as "all rows committed without a
+        // BreakHere return". The PageComplete branch above returns
+        // before reaching this code so the captions stay buffered
+        // for the resume page.
+        //
+        // Per Phase 3 Task 13 cycle 1 hardening (Finding 4) — also
+        // flush each bottom caption's buffered diagnostics on the
+        // LAST page (where they commit). Pre-finding-4 these
+        // diagnostics flushed eagerly at AttemptLayout entry.
+        var bottomCaptionCursor = rowEndBlockOffset[lastCommittedRowExclusive];
         if (captions is { Count: > 0 })
         {
             for (var i = 0; i < captions.Count; i++)
@@ -963,14 +1488,23 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                     borderBoxBlockOffset + c.BorderBlockStart + c.PaddingBlockStart;
                 c.ContentBuffer.FlushTo(_sink, contentBlockOriginInFragmentainer);
                 bottomCaptionCursor += borderBoxBlockSize + c.MarginBlockEnd;
+                if (commitDiagSink is not null)
+                {
+                    c.DiagnosticsBuffer?.FlushTo(commitDiagSink);
+                }
             }
         }
 
         // Forced-overflow detection — emit once if the total table
         // content (top captions + row stack + bottom captions)
         // extends past the fragmentainer block-size. Multi-page table
-        // splitting is deferred — see
-        // docs/deferrals.md#table-auto-fixed-spans-borders.
+        // splitting is HANDLED above for the typical case; this
+        // diagnostic now fires only on the LAST page when:
+        //   (a) a single row was taller than the fragmentainer +
+        //       fell into the forced-overflow forward-progress branch
+        //       (subcase (a) of BreakHere handling), or
+        //   (b) the bottom-caption block + row stack overflowed past
+        //       the fragmentainer.
         //
         // Sub-cycle 3 hardening (Finding 4) — extracted into
         // EmitOverflowDiagnosticIfNeeded so the early-return paths
@@ -979,7 +1513,211 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         EmitOverflowDiagnosticIfNeeded(
             fragmentainer, bottomCaptionCursor, ref layout);
 
+        // Restore fragmentainer.UsedBlockSize so the outer
+        // BlockLayouter's wrapper-advance arithmetic doesn't double-
+        // count the rows. See the "snapshot UsedBlockSize at entry"
+        // comment in the pagination loop for the contract.
+        fragmentainer.UsedBlockSize = initialUsedBlockSize;
         return LayoutAttemptResult.AllDone(cost: 0);
+    }
+
+    /// <summary>Per Phase 3 Task 13 cycle 1 — emit the row + cell +
+    /// content fragments for the row window
+    /// <c>[windowStart, windowEndExclusive)</c>. Walks the three
+    /// paint-safe phases (Phase A row backgrounds → Phase B cell
+    /// backgrounds → Phase C cell content) over the committed window
+    /// only. Pre-cycle-1 the loops walked the FULL rows list; the
+    /// cycle 1 split lets the row-pagination loop commit a partial
+    /// window when the resolver returns BreakHere for the unfit row.
+    ///
+    /// <para>A rowspan cell anchored inside the window but spanning
+    /// PAST <paramref name="windowEndExclusive"/> is currently
+    /// emitted at its FULL natural extent (the same extent the
+    /// measure pass computed). Cycle 1 keeps cells atomic — a
+    /// rowspan cell that would overflow the page bottom is committed
+    /// in full + the existing forced-overflow diagnostic fires.
+    /// Cycle 2+ may split rowspan cells across pages by computing a
+    /// truncated block-size for cells whose
+    /// <c>OriginRow + RowSpan &gt; windowEndExclusive</c>.</para>
+    /// </summary>
+    private void EmitRowWindow(
+        List<RowMeasurement> rows,
+        List<CellPlacement> placements,
+        List<CellPlacement>?[] placementsByRow,
+        double[] columnOffsets,
+        double[] rowBlockOffsets,
+        double[] rowEndBlockOffset,
+        double usedInlineSize,
+        int windowStart,
+        int windowEndExclusive,
+        CancellationToken cancellationToken,
+        IPaginateDiagnosticsSink? diagSink = null)
+    {
+        if (windowEndExclusive <= windowStart) return;
+
+        // Phase A — row fragments for the committed window. Even an
+        // "empty" row gets a (degenerate) fragment because its
+        // rowHeight may be 0 (rowspan continuation slots from
+        // earlier rows kept the row in the row list).
+        for (var r = windowStart; r < windowEndExclusive; r++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var rowMeasure = rows[r];
+            _sink.Emit(new BoxFragment(
+                Box: rowMeasure.Row,
+                InlineOffset: _contentInlineOffset,
+                BlockOffset: rowBlockOffsets[r],
+                InlineSize: usedInlineSize,
+                BlockSize: rowMeasure.RowHeight));
+        }
+
+        // Phase B — cell fragments for placements ANCHORED in the
+        // window. A placement whose OriginRow falls in [windowStart,
+        // windowEndExclusive) emits its cell fragment at its full
+        // natural extent (rowspan cells preserved unsplit per cycle
+        // 1's atomic-cell semantics; see method XML doc).
+        for (var r = windowStart; r < windowEndExclusive; r++)
+        {
+            var bucket = placementsByRow[r];
+            if (bucket is null) continue;
+            cancellationToken.ThrowIfCancellationRequested();
+            for (var i = 0; i < bucket.Count; i++)
+            {
+                var placement = bucket[i];
+                var cellInlineOffset = _contentInlineOffset
+                    + columnOffsets[placement.OriginCol];
+                var cellInlineSize =
+                    columnOffsets[placement.OriginCol + placement.ColSpan]
+                    - columnOffsets[placement.OriginCol];
+                var cellBlockOffset = rowBlockOffsets[r];
+                var cellBlockSize =
+                    rowEndBlockOffset[placement.OriginRow + placement.RowSpan]
+                    - rowEndBlockOffset[placement.OriginRow];
+                _sink.Emit(new BoxFragment(
+                    Box: placement.Cell,
+                    InlineOffset: cellInlineOffset,
+                    BlockOffset: cellBlockOffset,
+                    InlineSize: cellInlineSize,
+                    BlockSize: cellBlockSize));
+            }
+        }
+
+        // Phase C — drain each cell's buffered content fragments via
+        // FlushTo. Paint-safe order across the window: rows → cells
+        // → cell content.
+        //
+        // Per Phase 3 Task 13 cycle 1 hardening (Finding 4) — also
+        // flush each committed cell's buffered diagnostics here so
+        // diagnostics for cells in deferred rows stay buffered for
+        // the resume page rather than leaking onto the current page.
+        for (var r = windowStart; r < windowEndExclusive; r++)
+        {
+            var bucket = placementsByRow[r];
+            if (bucket is null) continue;
+            cancellationToken.ThrowIfCancellationRequested();
+            for (var i = 0; i < bucket.Count; i++)
+            {
+                var placement = bucket[i];
+                placement.ContentBuffer.FlushTo(_sink, rowBlockOffsets[r]);
+                if (diagSink is not null)
+                {
+                    placement.DiagnosticsBuffer?.FlushTo(diagSink);
+                }
+            }
+        }
+        // Suppress unused-parameter warning when placements is reserved
+        // for future content-side row-window-specific logic (e.g.,
+        // cycle 2's rowspan truncation).
+        _ = placements;
+    }
+
+    /// <summary>Per Phase 3 Task 13 cycle 1 hardening (Finding 8) —
+    /// snapshot of the table's measure-pass state attached to a
+    /// <see cref="TableContinuation"/> on <see cref="LayoutAttemptOutcome.PageComplete"/>.
+    /// The resume-page <see cref="TableLayouter"/> loads the cache + skips
+    /// the (expensive) re-measurement pass — column widths, cell
+    /// placements, per-cell content buffers, captions, and rowspan-aware
+    /// row heights are all reusable across pages because they don't
+    /// depend on the fragmentainer's page-relative origin (which is the
+    /// only thing that changes between pages).
+    ///
+    /// <para><b>Mutability contract.</b> The cache is meant to be a
+    /// snapshot captured at <c>PageComplete</c>-emission time. The
+    /// resume-page layouter reads but does NOT mutate these collections
+    /// — they may be shared with the source layouter (which is
+    /// disposed after the current page's emit, so no aliasing hazard
+    /// in practice). The <see cref="CellPlacement.ContentBuffer"/> and
+    /// <see cref="CaptionMeasurement.ContentBuffer"/> buffers ARE
+    /// mutated by <see cref="MeasuringFragmentSink.FlushTo"/> on each
+    /// flush; each cell + caption flushes AT MOST ONCE across all pages
+    /// (committed once and only once), so the buffer lifecycle is
+    /// well-defined: deferred cells / captions on page N still have
+    /// their content buffered for page N+1.</para></summary>
+    internal sealed class ColumnLayoutCache
+    {
+        public ColumnLayoutCache(
+            int columnCount,
+            double[] columnWidths,
+            double[] columnOffsets,
+            List<RowMeasurement> measuredRows,
+            List<CellPlacement> measuredPlacements,
+            List<CaptionMeasurement>? measuredCaptions,
+            double measuredTopCaptionsTotal,
+            double measuredBottomCaptionsTotal,
+            double measuredUsedInlineSize,
+            double measuredContentHeight)
+        {
+            ColumnCount = columnCount;
+            ColumnWidths = columnWidths;
+            ColumnOffsets = columnOffsets;
+            MeasuredRows = measuredRows;
+            MeasuredPlacements = measuredPlacements;
+            MeasuredCaptions = measuredCaptions;
+            MeasuredTopCaptionsTotal = measuredTopCaptionsTotal;
+            MeasuredBottomCaptionsTotal = measuredBottomCaptionsTotal;
+            MeasuredUsedInlineSize = measuredUsedInlineSize;
+            MeasuredContentHeight = measuredContentHeight;
+        }
+        public int ColumnCount { get; }
+        public double[] ColumnWidths { get; }
+        public double[] ColumnOffsets { get; }
+        public List<RowMeasurement> MeasuredRows { get; }
+        public List<CellPlacement> MeasuredPlacements { get; }
+        public List<CaptionMeasurement>? MeasuredCaptions { get; }
+        public double MeasuredTopCaptionsTotal { get; }
+        public double MeasuredBottomCaptionsTotal { get; }
+        public double MeasuredUsedInlineSize { get; }
+        public double MeasuredContentHeight { get; }
+    }
+
+    /// <summary>Per Phase 3 Task 13 cycle 1 hardening (Finding 8) —
+    /// build a <see cref="ColumnLayoutCache"/> from the current
+    /// layouter's measure-phase state. Called by <see cref="AttemptLayout"/>
+    /// when returning <see cref="LayoutAttemptOutcome.PageComplete"/>
+    /// + attached to the new <see cref="TableContinuation"/>. Returns
+    /// <see langword="null"/> when the measure pass didn't populate
+    /// the cache-relevant fields (degenerate paths — missing-grid,
+    /// zero-row, etc.).</summary>
+    private ColumnLayoutCache? BuildColumnLayoutCache()
+    {
+        if (_measuredRows is null
+            || _measuredPlacements is null
+            || _measuredColumnWidths is null
+            || _measuredColumnOffsets is null)
+        {
+            return null;
+        }
+        return new ColumnLayoutCache(
+            columnCount: _measuredColumnCount,
+            columnWidths: _measuredColumnWidths,
+            columnOffsets: _measuredColumnOffsets,
+            measuredRows: _measuredRows,
+            measuredPlacements: _measuredPlacements,
+            measuredCaptions: _measuredCaptionList,
+            measuredTopCaptionsTotal: _measuredTopCaptionsTotal,
+            measuredBottomCaptionsTotal: _measuredBottomCaptionsTotal,
+            measuredUsedInlineSize: _measuredUsedInlineSize,
+            measuredContentHeight: _measuredContentHeight);
     }
 
     /// <summary>Per Phase 3 Task 12 sub-cycle 3 hardening (Finding 4) —
@@ -1066,6 +1804,31 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                 + "supply the wrapper's content-area geometry (specifically "
                 + "the content inline-size) so the layouter can split "
                 + "columns + measure cell content.");
+        }
+
+        // Per Phase 3 Task 13 cycle 1 hardening (Finding 8) — load
+        // the cached measure-phase state from the incoming
+        // TableContinuation's ColumnLayoutCache, if any. Skips the
+        // measure pass entirely on resume pages — column widths +
+        // cell placements + per-cell buffered content + row heights
+        // are all reusable across pages (they don't depend on the
+        // page-relative origin which is the only thing that changes
+        // between pages).
+        if (_incomingTableContinuation?.ColumnLayoutCache
+            is ColumnLayoutCache cachedColumnLayout)
+        {
+            _measuredColumnCount = cachedColumnLayout.ColumnCount;
+            _measuredColumnWidths = cachedColumnLayout.ColumnWidths;
+            _measuredColumnOffsets = cachedColumnLayout.ColumnOffsets;
+            _measuredRows = cachedColumnLayout.MeasuredRows;
+            _measuredPlacements = cachedColumnLayout.MeasuredPlacements;
+            _measuredCaptionList = cachedColumnLayout.MeasuredCaptions;
+            _measuredTopCaptionsTotal = cachedColumnLayout.MeasuredTopCaptionsTotal;
+            _measuredBottomCaptionsTotal = cachedColumnLayout.MeasuredBottomCaptionsTotal;
+            _measuredUsedInlineSize = cachedColumnLayout.MeasuredUsedInlineSize;
+            _measuredContentHeight = cachedColumnLayout.MeasuredContentHeight;
+            _measureDone = true;
+            return _measuredContentHeight;
         }
 
         // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 6 —
@@ -3675,7 +4438,15 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     /// is never replaced in practice, but the no-break resolver
     /// honors the contract so future caption-internal work that does
     /// register checkpoints doesn't leak leases.</para></summary>
-    private sealed class NoBreakBreakResolver : IBreakResolver
+    /// <summary>Per Phase 3 Task 13 cycle 1 — exposed at internal scope
+    /// so <see cref="BlockLayouter"/>'s nested-recursion path can use
+    /// the same "always Continue" semantics for nested tables. The
+    /// nested path can't propagate <see cref="TableContinuation"/>
+    /// back up through the recursion (cycle 1 deferral); using the
+    /// no-break resolver makes nested tables behave atomically + the
+    /// existing forced-overflow diagnostic fires for over-tall ones.
+    /// </summary>
+    internal sealed class NoBreakBreakResolver : IBreakResolver
     {
         private CheckpointLease _lastLease;
 

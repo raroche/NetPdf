@@ -293,8 +293,27 @@ grepping the ID).
   the LAST row of the span. The CSS Tables L3 §11 spec-strict
   distribution-proportional algorithm is sub-cycle 5+ work. No
   `border-collapse`, no `<thead>` / `<tfoot>` repetition across
-  pages, no multi-page splitting within a single table, no RTL
-  flips. **Sub-cycle 3 — captions (`<caption>`) lay
+  pages, no RTL
+  flips. **Task 13 cycle 1 — multi-page row splitting at row
+  boundaries.** When the row stack exceeds the fragmentainer
+  block-size, the table now consults the break resolver before
+  each row + returns `PageComplete(TableContinuation)` for the
+  first row that doesn't fit; the dispatching `BlockLayouter`
+  stashes the `TableContinuation` in `BlockContinuation.LayouterState`
+  + the next-page `BlockLayouter` re-constructs a `TableLayouter`
+  with the captured continuation to emit the remaining rows.
+  Captions emit only on their respective edge page (top on
+  page 1; bottom on the last page). A single oversized row taller
+  than the fragmentainer falls back to forced-overflow forward
+  progress + emits the `PAGINATION-FORCED-OVERFLOW-001`
+  diagnostic. **Limitation** — the OUTER `BlockLayouter` child
+  loop integrates the continuation propagation, but the
+  `EmitBlockSubtreeRecursive` nested-walk path (= the typical
+  `<html><body><table>` shape from real HTML) keeps tables
+  ATOMIC: the recursion has no continuation-emission route, so
+  nested tables emit every row on the same page + rely on the
+  existing forced-overflow diagnostic for over-tall cases. Task 13
+  cycle 2+ may generalize the recursion. **Sub-cycle 3 — captions (`<caption>`) lay
   out as block fragments above (`caption-side: top`, default) or
   below (`caption-side: bottom`) the table grid; caption inline-
   size = table wrapper's content-inline-size; the writing-mode-
@@ -380,7 +399,12 @@ grepping the ID).
   column widths; full grid/table used-inline-size reconciliation for
   content-shrink scenarios; §6.3 border-collapse + border-spacing;
   §6.4 column-group widths beyond Pass A fallback; per-page
-  header/footer repeat (Task 13); multi-fragmentainer row splitting;
+  `<thead>` / `<tfoot>` repeat (Task 13 cycle 2); nested-recursion
+  table-continuation propagation (Task 13 cycle 1 ships outer-loop
+  row splitting + nested tables stay atomic with forced-overflow
+  fallback; cycle 2+ may generalize); row-internal splitting (a
+  single row taller than the fragmentainer is currently atomic +
+  triggers forced-overflow);
   §11 spec-strict rowspan distribution-proportional algorithm;
   CSS Tables L3 §3 spec-strict proportional-weight column-width
   distribution (sub-cycle 5 ships a deterministic linear-interpolation
@@ -417,13 +441,18 @@ grepping the ID).
   - `src/NetPdf.Layout/Layouters/TableLayouter.cs` — sub-cycle 5
     shipped the CSS Tables L3 §3 auto-table-layout shrink-to-fit
     algorithm via per-cell min/max content speculative measurement +
-    linear-interpolation distribution. Remaining: spec-strict §11
-    rowspan distribution-proportional algorithm; §6.3 border-collapse
-    model + `border-spacing`; per-page `<thead>` / `<tfoot>`
-    repetition; multi-fragmentainer row splitting + row-level
-    `break-inside: avoid`; RTL writing modes / row reversal /
-    caption inline-axis keyword routing; HTML5 colspan='0'/
-    rowspan='0' remainder semantics; percentage column widths.
+    linear-interpolation distribution. Task 13 cycle 1 added multi-
+    page row splitting via resolver-driven row-level pagination +
+    `TableContinuation` resume contract (outer-loop integrated;
+    nested-recursion path uses the new `NoBreakBreakResolver` to
+    keep nested tables atomic — cycle 2+ may generalize).
+    Remaining: spec-strict §11 rowspan distribution-proportional
+    algorithm; §6.3 border-collapse model + `border-spacing`; per-
+    page `<thead>` / `<tfoot>` repetition (Task 13 cycle 2);
+    row-internal splitting + row-level `break-inside: avoid`; RTL
+    writing modes / row reversal / caption inline-axis keyword
+    routing; HTML5 colspan='0'/rowspan='0' remainder semantics;
+    percentage column widths.
   - `src/NetPdf.Layout/Layouters/BlockLayouter.cs::PreMeasureTableIfNeeded`
     — sub-cycle 5 hardening Finding 6 now consumes the table's
     `MeasuredUsedInlineSize` to widen the wrapper's border-box
@@ -454,6 +483,16 @@ grepping the ID).
   carve-out (break-word's soft opportunities don't count for min-
   content); (Finding 6) caption inline-size matches the grid's
   used inline-size + wrapper widens when the grid overflows.
+  Phase 3 Task 13 cycle 1 added multi-page row splitting at row
+  boundaries: the table consults the break resolver before each
+  row + returns `PageComplete(TableContinuation(NextRowIndex))`
+  when the next row would overflow; the dispatching
+  `BlockLayouter` stashes the `TableContinuation` in
+  `BlockContinuation.LayouterState` so the resume page can
+  re-construct a fresh `TableLayouter` with the carried
+  continuation. Top captions emit only on the first page; bottom
+  captions only on the last. Nested-recursion tables stay atomic
+  via the new `NoBreakBreakResolver` (cycle 2+ deferral).
 - **Removal condition** — All "Missing" items above are
   implemented: percentage column widths; §6.3 border-collapse +
   border-spacing; per-page header/footer repeat; multi-fragmentainer

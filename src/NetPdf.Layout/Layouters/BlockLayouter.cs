@@ -345,6 +345,15 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     private bool _hasPriorAdjoiningBlockAfterRewind;
     private bool _hasRewindCollapseState;
 
+    /// <summary>Per Phase 3 Task 13 cycle 1 — one-shot consumption flag
+    /// for the incoming <see cref="TableContinuation"/> piggy-backed on
+    /// <see cref="BlockContinuation.LayouterState"/>. The continuation
+    /// applies to the FIRST table child encountered after resume (=
+    /// the child the prior page deferred at); subsequent table children
+    /// in the same attempt start fresh. Reset on every AttemptLayout
+    /// entry (line `_consumedIncomingTableContinuation = false`).</summary>
+    private bool _consumedIncomingTableContinuation;
+
     /// <summary>Construct a layouter for <paramref name="rootBox"/>'s
     /// block children, emitting fragments into <paramref name="sink"/>.
     /// <paramref name="incomingContinuation"/> resumes a multi-page
@@ -446,6 +455,32 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         _resumeAtChildIdxAfterRewind = -1;
         var priorPagesConsumed = incomingBlock?.ConsumedBlockSize ?? 0.0;
 
+        // Per Phase 3 Task 13 cycle 1 hardening (Finding 9) — when
+        // the incoming BlockContinuation carries a TableContinuation
+        // in LayouterState, the child at ResumeAtChild MUST be a
+        // Table or InlineTable wrapper. Pre-fix, a malformed
+        // continuation (LayouterState is TableContinuation but
+        // ResumeAtChild no longer points to a table) was silently
+        // ignored — the resume page emitted as if no table-resume
+        // were pending, dropping the deferred row content. Throw
+        // here so caller bugs surface loudly rather than producing
+        // mis-laid documents.
+        if (incomingBlock?.LayouterState is TableContinuation
+            && startChildIdx >= 0
+            && startChildIdx < _rootBox.Children.Count
+            && _rootBox.Children[startChildIdx].Kind is not (BoxKind.Table or BoxKind.InlineTable))
+        {
+            throw new InvalidOperationException(
+                "BlockLayouter.AttemptLayout: incoming BlockContinuation carries "
+                + "a TableContinuation in LayouterState but the child at "
+                + $"ResumeAtChild={startChildIdx} has BoxKind."
+                + $"{_rootBox.Children[startChildIdx].Kind}, not Table or "
+                + "InlineTable. This is a layouter contract violation — the "
+                + "table-resume state can only attach to a table child. The "
+                + "dispatching layouter must produce continuations where the "
+                + "ResumeAtChild + LayouterState pair are mutually consistent.");
+        }
+
         // Snapshot UsedBlockSize at entry. Per-page extent placed by
         // THIS attempt = fragmentainer.UsedBlockSize - initialUsed.
         var initialUsed = fragmentainer.UsedBlockSize;
@@ -500,6 +535,15 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // wrapperInlineSize differed. Lazily allocated when the first
         // nested table is encountered.
         _measuredTableContentHeightCache?.Clear();
+
+        // Per Phase 3 Task 13 cycle 1 — reset the one-shot
+        // table-continuation-consumption flag for the current attempt.
+        // The incoming BlockContinuation.LayouterState (if it's a
+        // TableContinuation) gets consumed by the first table child
+        // we encounter at the resumed index; subsequent table children
+        // start fresh. On rewind retries the flag goes back to false
+        // so the retry resumes the same way.
+        _consumedIncomingTableContinuation = false;
 
         // Track whether this attempt has emitted any fragment so far.
         // Per PR #22 review fix #1 — the oversized-block forward-
@@ -980,6 +1024,36 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             {
                 var expectedBorderBoxBlockTop = fragmentainer.UsedBlockSize + topShift;
                 var inFlowInlineOffsetForTable = availInlineStart + marginInlineStart;
+                // Per Phase 3 Task 13 cycle 1 — if the incoming
+                // continuation carries a TableContinuation in its
+                // LayouterState AND we're at the table child it
+                // resumed (childIdx == incomingBlock?.ResumeAtChild),
+                // pass it through to the new TableLayouter so it
+                // resumes at the correct row. This is the resume side
+                // of the row-pagination contract — the PageComplete
+                // side stashes the TableContinuation in
+                // BlockContinuation.LayouterState; the resume side
+                // unpacks + dispatches.
+                //
+                // Consume the TableContinuation (set the local to
+                // null) so subsequent table children in the SAME loop
+                // attempt don't accidentally inherit it. Only the
+                // resumed child gets it. The outer call to
+                // AttemptLayout is one-shot — but the caller may
+                // re-enter on rewind, in which case the constructor's
+                // _incomingContinuation still has the original
+                // BlockContinuation. Per cycle 1 we tolerate that:
+                // the rewind frontier is captured BEFORE the table
+                // emit + restoring it discards the partial emission
+                // (so the retry pays for a fresh table emit anyway).
+                LayoutContinuation? tableContinuationForChild = null;
+                if (incomingBlock?.LayouterState is TableContinuation incomingTableCont
+                    && childIdx == incomingBlock.ResumeAtChild
+                    && !_consumedIncomingTableContinuation)
+                {
+                    tableContinuationForChild = incomingTableCont;
+                    _consumedIncomingTableContinuation = true;
+                }
                 pendingTableLayouter = PreMeasureTableIfNeeded(
                     wrapperChild: child,
                     wrapperInlineOffset: inFlowInlineOffsetForTable,
@@ -987,9 +1061,20 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     wrapperInlineSize: borderBoxInlineSize,
                     fragmentainer: fragmentainer,
                     layout: ref layout,
+                    incomingTableContinuation: tableContinuationForChild,
                     tableContentHeight: out tableMeasuredContentHeight,
                     tableMeasuredUsedInlineSize: out tableMeasuredUsedInlineSize,
-                    cancellationToken: cancellationToken);
+                    cancellationToken: cancellationToken,
+                    // Per Phase 3 Task 13 cycle 1 hardening (Finding 2)
+                    // — the outer dispatch path drives the OUTER block
+                    // pagination loop; it expects the wrapper to size
+                    // to ONE page's committed extent so the outer
+                    // resolver doesn't see the wrapper as oversized
+                    // when the table will split cleanly. The nested-
+                    // recursion atomic path does NOT need this (cycle
+                    // 1 keeps nested tables atomic via the
+                    // NoBreakBreakResolver).
+                    useDryRunCommittedHeight: true);
                 if (pendingTableLayouter is not null)
                 {
                     // Fold the measured content height into the
@@ -1123,6 +1208,24 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // inside `EmitBlockSubtreeRecursive`. Deferred to cycle
             // 2d.
             var subtreeBlockExtent = MeasureSubtreeVisualBlockExtent(child, cancellationToken);
+            // Per Phase 3 Task 13 cycle 1 hardening (Finding 2) — for
+            // Table / InlineTable wrappers in the OUTER dispatch path,
+            // the subtree extent must reflect the SINGLE-PAGE-COMMITTED
+            // dry-run extent (already folded into `borderBoxBlockSize`
+            // by the PreMeasureTableIfNeeded call above when
+            // `useDryRunCommittedHeight: true`). The recursive measure
+            // walks the table's natural content extent — which would
+            // include rows that defer to a future page — so we clamp
+            // it back to the wrapper's already-shrunken
+            // `borderBoxBlockSize`. Without this clamp the outer
+            // pagination sees the wrapper as oversized + emits a
+            // false PAGINATION-FORCED-OVERFLOW-001 even when the table
+            // splits cleanly internally.
+            if (pendingTableLayouter is not null
+                && subtreeBlockExtent > borderBoxBlockSize)
+            {
+                subtreeBlockExtent = borderBoxBlockSize;
+            }
             // The "effective" border-box block size for pagination +
             // cursor purposes: max of own border-box + subtree extent.
             // Equals borderBoxBlockSize for leaves; dominates for
@@ -1336,7 +1439,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     // table content height); EmitTableInner only
                     // appends the row + cell fragments + flushes the
                     // buffered cell content in paint-safe order.
-                    EmitTableInner(
+                    var tableInnerResult = EmitTableInner(
                         pendingTableLayouter,
                         fragmentainer: fragmentainer,
                         layout: ref layout,
@@ -1380,11 +1483,28 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     var forcedOverflowCost = alreadyOverflowPenalized
                         ? decision.Cost
                         : decision.Cost + CostModel.BreakInsideAvoidViolation;
+                    // Per Phase 3 Task 13 cycle 1 — if the table
+                    // itself returned PageComplete (partial row
+                    // emission), stash the TableContinuation in the
+                    // outer BlockContinuation's LayouterState so the
+                    // next page's BlockLayouter knows to resume the
+                    // table at the right row. The outer resume point
+                    // is THIS child (the table wrapper), not the next
+                    // one — because the wrapper still has unemitted
+                    // rows; the resume page constructs a fresh
+                    // TableLayouter with the carried TableContinuation
+                    // + re-uses the wrapper Box.
+                    var tableCont = tableInnerResult.Continuation as TableContinuation;
+                    var (forcedResumeAtChild, forcedLayouterState) =
+                        tableCont is not null
+                            ? (childIdx, (object?)tableCont)
+                            : (childIdx + 1, (object?)null);
                     return LayoutAttemptResult.PageComplete(
                         new BlockContinuation(
-                            ResumeAtChild: childIdx + 1,
+                            ResumeAtChild: forcedResumeAtChild,
                             ConsumedBlockSize: priorPagesConsumed
-                                + (fragmentainer.UsedBlockSize - _pageStartUsedBlockSize)),
+                                + (fragmentainer.UsedBlockSize - _pageStartUsedBlockSize),
+                            LayouterState: forcedLayouterState),
                         cost: forcedOverflowCost);
                 }
 
@@ -1461,7 +1581,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // EmitBlockSubtreeRecursive's own predicate gate skips
             // Table inner content (the inner geometry belongs to
             // TableLayouter, not BlockLayouter).
-            EmitTableInner(
+            var tableInnerResultContinue = EmitTableInner(
                 pendingTableLayouter,
                 fragmentainer: fragmentainer,
                 layout: ref layout,
@@ -1485,6 +1605,38 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // index. See the forced-overflow path for the contract
             // rationale.
             lastEmittedIdx = childIdx;
+
+            // Per Phase 3 Task 13 cycle 1 — if the table returned
+            // PageComplete (partial row emission), short-circuit the
+            // outer loop + propagate. The resume page constructs a
+            // fresh TableLayouter with the carried TableContinuation
+            // (stashed in BlockContinuation.LayouterState) and emits
+            // the remaining rows. The wrapper's outer fragment has
+            // already been emitted; the resume page does NOT re-emit
+            // it (BlockLayouter's child-index resume points AT the
+            // wrapper child, but the table-resume path inside the
+            // resumed BlockLayouter skips the wrapper re-emit when
+            // the LayouterState is a TableContinuation).
+            //
+            // Cycle 1's resume contract: ResumeAtChild = childIdx (the
+            // wrapper Box) + LayouterState = TableContinuation. The
+            // resume BlockLayouter sees both + dispatches the
+            // continuation through PreMeasureTableIfNeeded's resume
+            // path before iterating children further. Cycle 2+ may
+            // generalize by promoting LayouterState to a typed
+            // "nested-layouter-state" subtype for the same pattern
+            // across flex / grid / multi-col layouters.
+            var continueTableCont = tableInnerResultContinue.Continuation as TableContinuation;
+            if (continueTableCont is not null)
+            {
+                return LayoutAttemptResult.PageComplete(
+                    new BlockContinuation(
+                        ResumeAtChild: childIdx,
+                        ConsumedBlockSize: priorPagesConsumed
+                            + (fragmentainer.UsedBlockSize - _pageStartUsedBlockSize),
+                        LayouterState: continueTableCont),
+                    cost: tableInnerResultContinue.Cost);
+            }
         }
 
         // All children laid out — no more pages needed.
@@ -1937,8 +2089,24 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 {
                     Diagnostics = _diagnostics,
                 };
-                using var nestedResolver = new BreakResolver();
-                EmitTableInner(
+                // Per Phase 3 Task 13 cycle 1 — use the NoBreakBreakResolver
+                // so the nested table emits ATOMICALLY (= every row
+                // commits on this page). The subtree-walk recursion
+                // has no continuation-emission path (cycle 2b's
+                // recursion is atomic — descendants commit on the
+                // same page as the parent + overflow surfaces via
+                // the forced-overflow diagnostic). With the regular
+                // BreakResolver the nested table would split at row-
+                // boundaries + return PageComplete, but the
+                // recursion has nowhere to send the continuation;
+                // unemitted rows would be silently dropped. The no-
+                // break resolver suppresses the split + lets the
+                // existing PAGINATION-FORCED-OVERFLOW-001 diagnostic
+                // surface the over-tall case. Cycle 2+ may
+                // generalize the subtree-walk to carry continuations
+                // end-to-end.
+                using var nestedResolver = new TableLayouter.NoBreakBreakResolver();
+                _ = EmitTableInner(
                     nestedPendingTable,
                     fragmentainer: fragmentainerForEmit,
                     layout: ref emitLayout,
@@ -3420,7 +3588,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         ref LayoutContext layout,
         out double tableContentHeight,
         out double tableMeasuredUsedInlineSize,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        LayoutContinuation? incomingTableContinuation = null,
+        bool useDryRunCommittedHeight = false)
     {
         tableContentHeight = 0;
         tableMeasuredUsedInlineSize = 0;
@@ -3449,10 +3619,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             - borderInlineStart - paddingInlineStart
             - borderInlineEnd - paddingInlineEnd);
 
+        // Per Phase 3 Task 13 cycle 1 — thread the carried
+        // TableContinuation (if any) through to the new TableLayouter.
+        // The continuation came from a prior page's TableLayouter
+        // returning PageComplete(TableContinuation) stashed in the
+        // outer BlockContinuation.LayouterState; this method's
+        // dispatch point unpacks it + passes through here.
         var tableLayouter = new TableLayouter(
             rootBox: wrapperChild,
             sink: _sink,
-            incomingContinuation: null,
+            incomingContinuation: incomingTableContinuation,
             diagnostics: _diagnostics,
             shaperResolver: _shaperResolver);
         tableLayouter.ConfigureEmission(
@@ -3465,8 +3641,31 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // The caller is responsible for calling EmitTableInner after
         // emitting the wrapper fragment (which advances the cursor by
         // the post-Finding-1 wrapper extent).
-        tableContentHeight = tableLayouter.MeasureContentHeight(
+        var naturalContentHeight = tableLayouter.MeasureContentHeight(
             fragmentainer, ref layout, cancellationToken);
+        // Per Phase 3 Task 13 cycle 1 hardening (Finding 2) — when the
+        // wrapper is sized for a single page (= the outer dispatch
+        // path, NOT the nested-recursion atomic path) AND the table
+        // will need to split, return the COMMITTED rows' block-size
+        // for THIS page rather than the full natural extent. The
+        // outer BlockLayouter then sizes the wrapper to the committed
+        // size, suppressing the false PAGINATION-FORCED-OVERFLOW-001
+        // diagnostic that would otherwise fire (the wrapper extent
+        // would have been too tall for the page, but the table itself
+        // splits cleanly internally).
+        if (useDryRunCommittedHeight)
+        {
+            var resumeAt =
+                (incomingTableContinuation as TableContinuation)?.NextRowIndex ?? 0;
+            var dryRunCommitted = tableLayouter.DryRunCommittedBlockSize(
+                fragmentainer, resumeAt,
+                out _, out _);
+            tableContentHeight = dryRunCommitted;
+        }
+        else
+        {
+            tableContentHeight = naturalContentHeight;
+        }
         // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 6 — also
         // surface the grid's used inline-size so the caller can widen
         // the wrapper's border-box inline extent when the grid
@@ -3551,7 +3750,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// <see langword="null"/> — the predicate keeps the call site
     /// simple (the same site handles both table + non-table children
     /// uniformly).</para></summary>
-    private static void EmitTableInner(
+    private static LayoutAttemptResult EmitTableInner(
         TableLayouter? tableLayouter,
         FragmentainerContext fragmentainer,
         ref LayoutContext layout,
@@ -3560,22 +3759,40 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     {
         if (tableLayouter is null)
         {
-            return;
+            return LayoutAttemptResult.AllDone(cost: 0);
         }
 
-        try
-        {
-            _ = tableLayouter.AttemptLayout(
-                fragmentainer,
-                ref layout,
-                resolver,
-                LayoutAttemptStrategy.LastResort,
-                cancellationToken);
-        }
-        finally
-        {
-            tableLayouter.Dispose();
-        }
+        // Per Phase 3 Task 13 cycle 1 — propagate the table's emit
+        // result. Pre-cycle-1 the result was discarded because the
+        // table always emitted atomically. Now the table may return
+        // PageComplete(TableContinuation) when its rows overflow; the
+        // BlockLayouter dispatch site repackages this into its own
+        // BlockContinuation with the TableContinuation stashed in
+        // LayouterState so the resume page can re-construct the
+        // TableLayouter with the resume row.
+        //
+        // Per the existing contract, this call uses LastResort strategy
+        // because the OUTER BlockLayouter dispatch already committed to
+        // emitting the wrapper fragment + advanced its cursor past it
+        // (= the table can't return NeedsRewind without dirtying the
+        // outer-emitted wrapper). Cycle 2+ may relax the contract by
+        // capturing a pre-table-emit checkpoint on the outer layouter.
+        var result = tableLayouter.AttemptLayout(
+            fragmentainer,
+            ref layout,
+            resolver,
+            LayoutAttemptStrategy.LastResort,
+            cancellationToken);
+        // Per Phase 3 Task 13 cycle 1 — dispose unconditionally. The
+        // resume-page constructs a FRESH TableLayouter (cycle 1
+        // hardening Finding 8 plumbs a ColumnLayoutCache through the
+        // TableContinuation so the resume doesn't re-measure; the
+        // current layouter's per-instance buffers + diagnostic sink
+        // are no longer needed regardless of AllDone vs PageComplete).
+        // The caller has already consumed the returned LayoutAttemptResult
+        // before this line runs.
+        tableLayouter.Dispose();
+        return result;
     }
 
     /// <summary>Per PR #22 review fix #2 — release the final

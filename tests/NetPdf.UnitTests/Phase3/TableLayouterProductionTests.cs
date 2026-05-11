@@ -783,6 +783,66 @@ public sealed class TableLayouterProductionTests
         Assert.Equal(wrapper!.Value.InlineSize, row!.Value.InlineSize, precision: 3);
     }
 
+    [Fact]
+    public async Task Cycle1_production_multi_page_table_does_not_crash_full_pipeline()
+    {
+        // Per Phase 3 Task 13 cycle 1 — end-to-end regression test
+        // that a real HTML table with rows that would overflow the
+        // fragmentainer block-size flows through the full pipeline
+        // without crashing. Cycle 1 ships the TableLayouter-internal
+        // multi-page row splitting (covered by the direct-
+        // construction unit tests in TableLayouterTests.cs); the
+        // BlockLayouter's OUTER child loop integrates the
+        // TableContinuation propagation when the table is a direct
+        // child of the root. But typical HTML wraps `<table>` inside
+        // `<html> > <body>`, so the table is reached via
+        // EmitBlockSubtreeRecursive's nested walk — and cycle 1
+        // keeps that recursive path ATOMIC (= the existing forced-
+        // overflow diagnostic fires for over-tall nested tables).
+        // Cycle 2+ may generalize the recursion to propagate
+        // continuations end-to-end.
+        //
+        // This test pins: (a) the full pipeline doesn't throw on a
+        // multi-page table HTML input, (b) the table fragments are
+        // emitted (= the row-pagination code path runs through the
+        // recursion's EmitTableInner call), (c) the PAGINATION-
+        // FORCED-OVERFLOW-001 diagnostic fires (the outer block
+        // pagination sees the wrapper as an oversized block — the
+        // table itself splits internally but the wrapper still
+        // emits with full natural extent).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                td > div { height: 300px; }
+            </style></head><body>
+            <table>
+              <tr><td><div></div></td></tr>
+              <tr><td><div></div></td></tr>
+              <tr><td><div></div></td></tr>
+            </table>
+            </body></html>
+            """;
+
+        var (sink, diagnostics, _) = await RenderViaFullPipelineAsync(html);
+
+        // All 3 rows committed (cycle 1's nested-recursion path
+        // stays atomic — rows commit on page 1 even though the
+        // total stack exceeds the fragmentainer). Cycle 2+ may
+        // propagate the TableContinuation through the recursion.
+        var rowCount = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableRow) rowCount++;
+        }
+        Assert.Equal(3, rowCount);
+
+        // The outer BlockLayouter emits PAGINATION-FORCED-OVERFLOW-001
+        // because the wrapper's measured content exceeds the
+        // fragmentainer block-size. The inner table-row splitting
+        // doesn't suppress this signal in cycle 1.
+        Assert.Contains(diagnostics.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.PaginationForcedOverflow001);
+    }
+
     // ====================================================================
     //  Pipeline driver
     // ====================================================================

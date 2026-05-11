@@ -624,22 +624,36 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     hasPriorAdjoiningBlock,
                     lastEmittedIdx,
                     emittedThisAttempt,
+                    out var inlineFragmentEmitted,
                     cancellationToken);
                 if (inlineDispatchResult.HasValue)
                 {
                     return inlineDispatchResult.Value;
                 }
-                // Successful emit (or graceful skip via diagnostic).
-                // Same margin-collapse reset as the non-block-level
-                // skip: the inline-only block emits a line box that
-                // breaks adjacency with neighboring block siblings.
-                // Sub-cycle 2 will honor the inline-only block's
-                // marginTop / marginBottom + integrate with the
-                // collapse chain.
+                // Successful emit OR graceful skip via diagnostic.
+                // Margin-collapse reset matches the non-block-level
+                // skip: the inline-only block (when emitted) creates
+                // a line box that breaks adjacency per CSS 2.1 §8.3.1;
+                // a skipped block-without-a-fragment also resets
+                // because pagination treats the block as having been
+                // processed.
+                //
+                // Per PR #48 review Copilot — `lastEmittedIdx` +
+                // `emittedThisAttempt` only update when an actual
+                // fragment was emitted (not on the null-resolver /
+                // empty-content / NotSupportedException-caught skip
+                // paths). Without this guard, the forced-overflow
+                // detector at line ~2420 (which reads
+                // `emittedThisAttempt == 0 && atTopOfPage`) would
+                // false-negative when prior children only contributed
+                // diagnostics + skips.
                 hasPriorAdjoiningBlock = false;
                 prevBlockMarginEnd = 0;
-                lastEmittedIdx = childIdx;
-                emittedThisAttempt++;
+                if (inlineFragmentEmitted)
+                {
+                    lastEmittedIdx = childIdx;
+                    emittedThisAttempt++;
+                }
                 continue;
             }
 
@@ -2297,8 +2311,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         bool hasPriorAdjoiningBlock,
         int lastEmittedIdx,
         int emittedThisAttempt,
+        out bool emitted,
         CancellationToken cancellationToken)
     {
+        // Per PR #48 review Copilot — the caller must NOT bump
+        // `lastEmittedIdx` + `emittedThisAttempt` on skip paths
+        // (null shaper resolver, empty content, NotSupportedException
+        // caught). Each return point assigns `emitted` explicitly
+        // so downstream pagination decisions see the truthful
+        // "did this child put a fragment on the page" state.
+        emitted = false;
         cancellationToken.ThrowIfCancellationRequested();
 
         var metrics = ReadInlineOnlyBlockMetrics(inlineOnlyBlock);
@@ -2441,6 +2463,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     blockOffsetFromContentOrigin: fragmentainer.UsedBlockSize + topShift);
                 fragmentainer.UsedBlockSize = Math.Max(0,
                     fragmentainer.UsedBlockSize + marginBoxBlockSizeForCursor);
+                emitted = true;
                 var alreadyOverflowPenalized =
                     chunkForBreakCheck > fragmentainer.BlockSize;
                 var forcedOverflowCost = alreadyOverflowPenalized
@@ -2469,6 +2492,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             blockOffsetFromContentOrigin: fragmentainer.UsedBlockSize + topShift);
         fragmentainer.UsedBlockSize = Math.Max(0,
             fragmentainer.UsedBlockSize + marginBoxBlockSizeForCursor);
+        emitted = true;
         return null;
     }
 

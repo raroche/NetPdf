@@ -50,7 +50,7 @@ public sealed class InlineLayouterCycle3Tests
             scriptIso15924: LatnScript,
             language: EnLang);
 
-        Assert.Single(result);
+        Assert.Single(result.Lines);
     }
 
     [Fact]
@@ -69,7 +69,7 @@ public sealed class InlineLayouterCycle3Tests
             language: EnLang);
 
         // NoWrap suppresses soft-wrap — should be 1 line not 2.
-        Assert.Single(result);
+        Assert.Single(result.Lines);
     }
 
     [Fact]
@@ -86,7 +86,7 @@ public sealed class InlineLayouterCycle3Tests
             language: EnLang);
 
         // Anywhere splits unbreakable run.
-        Assert.True(result.Length >= 3);
+        Assert.True(result.Lines.Length >= 3);
     }
 
     [Fact]
@@ -102,7 +102,7 @@ public sealed class InlineLayouterCycle3Tests
             scriptIso15924: LatnScript,
             language: EnLang);
 
-        Assert.True(result.Length >= 3);
+        Assert.True(result.Lines.Length >= 3);
     }
 
     [Fact]
@@ -119,7 +119,7 @@ public sealed class InlineLayouterCycle3Tests
             language: EnLang);
 
         // Auto + Liang patterns split "hyphenation".
-        Assert.True(result.Length >= 2);
+        Assert.True(result.Lines.Length >= 2);
     }
 
     [Fact]
@@ -139,7 +139,7 @@ public sealed class InlineLayouterCycle3Tests
 
         // word-break:break-word → folds to overflow-wrap:anywhere
         // → splits unbreakable run.
-        Assert.True(result.Length >= 3);
+        Assert.True(result.Lines.Length >= 3);
     }
 
     [Fact]
@@ -182,8 +182,8 @@ public sealed class InlineLayouterCycle3Tests
         // the run-level NoWrap is ignored.
         // Cycle 3b fix: would honor run-level NoWrap, producing
         // fewer lines.
-        Assert.True(result.Length >= 2,
-            $"Cycle 3 uniform-policy: containing-block Normal allows wrap; got {result.Length} lines.");
+        Assert.True(result.Lines.Length >= 2,
+            $"Cycle 3 uniform-policy: containing-block Normal allows wrap; got {result.Lines.Length} lines.");
     }
 
     // --- Helpers --------------------------------------------------

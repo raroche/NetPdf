@@ -324,6 +324,96 @@ public sealed class DiagnosticCodesTests
             DiagnosticCodes.CssPseudoSuppressedOnReplaced001);
     }
 
+    // ============================================================
+    // Phase 3 Task 11 cycle 1 sub-cycle 1 — LAYOUT-* diagnostic
+    // parity. The existing constant for
+    // LAYOUT-INLINE-SKIPPED-NO-SHAPER-RESOLVER-001 shipped without
+    // a parity test (Finding #7 hardening review); the new
+    // LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001 (Finding #4) +
+    // LAYOUT-INLINE-UNSUPPORTED-001 (Finding #6) ship with parity
+    // tests from the start.
+    // ============================================================
+
+    [Fact]
+    public void Layout_inline_skipped_no_shaper_resolver_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(registry,
+            @"\|\s*`?(LAYOUT-INLINE-SKIPPED-NO-SHAPER-RESOLVER-001)`?\s*\|\s*(\w+)\s*\|");
+        Assert.True(match.Success,
+            "LAYOUT-INLINE-SKIPPED-NO-SHAPER-RESOLVER-001 row not found in docs/diagnostics-codes.md");
+        Assert.Equal(DiagnosticCodes.LayoutInlineSkippedNoShaperResolver001,
+            match.Groups[1].Value);
+        Assert.Equal("Warning", match.Groups[2].Value);
+    }
+
+    [Fact]
+    public void Layout_inline_skipped_no_shaper_resolver_001_constant_value_is_stable()
+    {
+        Assert.Equal("LAYOUT-INLINE-SKIPPED-NO-SHAPER-RESOLVER-001",
+            DiagnosticCodes.LayoutInlineSkippedNoShaperResolver001);
+    }
+
+    [Fact]
+    public void Layout_inline_skipped_no_shaper_resolver_001_facade_and_paginate_constants_agree()
+    {
+        Assert.Equal(DiagnosticCodes.LayoutInlineSkippedNoShaperResolver001,
+            NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutInlineSkippedNoShaperResolver001);
+    }
+
+    [Fact]
+    public void Layout_inline_atomic_not_supported_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(registry,
+            @"\|\s*`?(LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001)`?\s*\|\s*(\w+)\s*\|");
+        Assert.True(match.Success,
+            "LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001 row not found in docs/diagnostics-codes.md");
+        Assert.Equal(DiagnosticCodes.LayoutInlineAtomicNotSupported001,
+            match.Groups[1].Value);
+        Assert.Equal("Warning", match.Groups[2].Value);
+    }
+
+    [Fact]
+    public void Layout_inline_atomic_not_supported_001_constant_value_is_stable()
+    {
+        Assert.Equal("LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001",
+            DiagnosticCodes.LayoutInlineAtomicNotSupported001);
+    }
+
+    [Fact]
+    public void Layout_inline_atomic_not_supported_001_facade_and_paginate_constants_agree()
+    {
+        Assert.Equal(DiagnosticCodes.LayoutInlineAtomicNotSupported001,
+            NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutInlineAtomicNotSupported001);
+    }
+
+    [Fact]
+    public void Layout_inline_unsupported_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(registry,
+            @"\|\s*`?(LAYOUT-INLINE-UNSUPPORTED-001)`?\s*\|\s*(\w+)\s*\|");
+        Assert.True(match.Success,
+            "LAYOUT-INLINE-UNSUPPORTED-001 row not found in docs/diagnostics-codes.md");
+        Assert.Equal(DiagnosticCodes.LayoutInlineUnsupported001, match.Groups[1].Value);
+        Assert.Equal("Warning", match.Groups[2].Value);
+    }
+
+    [Fact]
+    public void Layout_inline_unsupported_001_constant_value_is_stable()
+    {
+        Assert.Equal("LAYOUT-INLINE-UNSUPPORTED-001",
+            DiagnosticCodes.LayoutInlineUnsupported001);
+    }
+
+    [Fact]
+    public void Layout_inline_unsupported_001_facade_and_paginate_constants_agree()
+    {
+        Assert.Equal(DiagnosticCodes.LayoutInlineUnsupported001,
+            NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutInlineUnsupported001);
+    }
+
     private static string LoadRegistry()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

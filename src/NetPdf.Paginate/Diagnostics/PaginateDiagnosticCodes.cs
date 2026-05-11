@@ -45,4 +45,31 @@ internal static class PaginateDiagnosticCodes
     /// behavior. Mirrors <c>NetPdf.DiagnosticCodes.LayoutInlineSkippedNoShaperResolver001</c>.
     /// Severity: <see cref="PaginateDiagnosticSeverity.Warning"/>.</summary>
     public const string LayoutInlineSkippedNoShaperResolver001 = "LAYOUT-INLINE-SKIPPED-NO-SHAPER-RESOLVER-001";
+
+    /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 hardening
+    /// review Finding #4 — emitted by <c>BlockLayouter</c> when the
+    /// inline content of an inline-only block contains an atomic
+    /// inline descendant (<c>BoxKind.InlineBlockContainer</c> /
+    /// <c>BoxKind.InlineFlexContainer</c> /
+    /// <c>BoxKind.InlineGridContainer</c> / <c>BoxKind.InlineTable</c>
+    /// / <c>BoxKind.InlineReplacedElement</c>). Sub-cycle 1 skips
+    /// the atomic inline in the resulting line; sub-cycle 2 will
+    /// integrate the dedicated layouter for each kind via an
+    /// intrinsic-sizing seam. Mirrors
+    /// <c>NetPdf.DiagnosticCodes.LayoutInlineAtomicNotSupported001</c>.
+    /// Severity: <see cref="PaginateDiagnosticSeverity.Warning"/>.</summary>
+    public const string LayoutInlineAtomicNotSupported001 = "LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001";
+
+    /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 hardening
+    /// review Finding #6 — emitted by <c>BlockLayouter</c> when
+    /// <c>InlineLayouter.LayoutPerRun</c> throws
+    /// <see cref="System.NotSupportedException"/> for a configuration
+    /// the inline layouter doesn't yet support (e.g., per-source-
+    /// TextRun <c>word-break: keep-all</c> mismatch — CJK semantics
+    /// need UAX #24 script detection). The inline-only block emits
+    /// no fragment + the block layouter advances past it (same
+    /// chain-reset semantics as the no-resolver skip). Mirrors
+    /// <c>NetPdf.DiagnosticCodes.LayoutInlineUnsupported001</c>.
+    /// Severity: <see cref="PaginateDiagnosticSeverity.Warning"/>.</summary>
+    public const string LayoutInlineUnsupported001 = "LAYOUT-INLINE-UNSUPPORTED-001";
 }

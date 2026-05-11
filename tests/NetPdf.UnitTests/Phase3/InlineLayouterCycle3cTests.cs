@@ -68,11 +68,11 @@ public sealed class InlineLayouterCycle3cTests
             availableInlineSize: 25, resolver, LatnScript, EnLang);
 
         // Exactly 2 lines.
-        Assert.Equal(2, result.Length);
+        Assert.Equal(2, result.Lines.Length);
 
         // --- Line 0: "AAA" (3 letters from source run 0, trailing
         // SP trimmed at the wrap boundary per CSS Text L3 §4.1.2).
-        var line0 = result[0];
+        var line0 = result.Lines[0];
         Assert.False(line0.EndsWithMandatoryBreak);
         Assert.Single(line0.Slices);
         Assert.Equal(0, line0.Slices[0].ShapedRunIndex);
@@ -83,7 +83,7 @@ public sealed class InlineLayouterCycle3cTests
 
         // --- Line 1: full "BBB BBB" from source run 1 — NoWrap span
         // stays together, the inner SP's Allowed opp was downgraded.
-        var line1 = result[1];
+        var line1 = result.Lines[1];
         Assert.Single(line1.Slices);
         Assert.Equal(1, line1.Slices[0].ShapedRunIndex);
         Assert.Equal(0, line1.Slices[0].GlyphStart);
@@ -121,14 +121,14 @@ public sealed class InlineLayouterCycle3cTests
 
         // 2 lines proves the Normal run's Allowed opp was honored
         // (would be a single overflowing line if Rec #2 wasn't fixed).
-        Assert.Equal(2, result.Length);
+        Assert.Equal(2, result.Lines.Length);
 
         // --- Line 0 spans BOTH shaped runs: SR0 [0..4) (all of "BBB ")
         // + SR1 [0..3) ("AAA"). SP at end of SR0 (concat pos 3) is
         // NOT at a wrap point (its Allowed was downgraded under
         // NoWrap), so it's kept in the line. Wrap snaps at the SP
         // INSIDE SR1 (concat pos 7), with that SP trimmed.
-        var line0 = result[0];
+        var line0 = result.Lines[0];
         Assert.False(line0.EndsWithMandatoryBreak);
         Assert.Equal(2, line0.Slices.Length);
         Assert.Equal(0, line0.Slices[0].ShapedRunIndex);
@@ -142,7 +142,7 @@ public sealed class InlineLayouterCycle3cTests
             line0.TotalAdvance, precision: 4);
 
         // --- Line 1: SR1 [4..7) ("AAA").
-        var line1 = result[1];
+        var line1 = result.Lines[1];
         Assert.Single(line1.Slices);
         Assert.Equal(1, line1.Slices[0].ShapedRunIndex);
         Assert.Equal(4, line1.Slices[0].GlyphStart);
@@ -165,15 +165,15 @@ public sealed class InlineLayouterCycle3cTests
             availableInlineSize: 25, resolver, LatnScript, EnLang);
 
         // NoWrap → single overflowing line.
-        Assert.Single(result);
-        Assert.True(result[0].EndsWithMandatoryBreak);
-        Assert.Equal(2, result[0].Slices.Length);
-        Assert.Equal(0, result[0].Slices[0].ShapedRunIndex);
-        Assert.Equal(0, result[0].Slices[0].GlyphStart);
-        Assert.Equal(7, result[0].Slices[0].GlyphLength); // "AAA AAA"
-        Assert.Equal(1, result[0].Slices[1].ShapedRunIndex);
-        Assert.Equal(0, result[0].Slices[1].GlyphStart);
-        Assert.Equal(4, result[0].Slices[1].GlyphLength); // " BBB"
+        Assert.Single(result.Lines);
+        Assert.True(result.Lines[0].EndsWithMandatoryBreak);
+        Assert.Equal(2, result.Lines[0].Slices.Length);
+        Assert.Equal(0, result.Lines[0].Slices[0].ShapedRunIndex);
+        Assert.Equal(0, result.Lines[0].Slices[0].GlyphStart);
+        Assert.Equal(7, result.Lines[0].Slices[0].GlyphLength); // "AAA AAA"
+        Assert.Equal(1, result.Lines[0].Slices[1].ShapedRunIndex);
+        Assert.Equal(0, result.Lines[0].Slices[1].GlyphStart);
+        Assert.Equal(4, result.Lines[0].Slices[1].GlyphLength); // " BBB"
     }
 
     [Fact]
@@ -195,7 +195,7 @@ public sealed class InlineLayouterCycle3cTests
         };
         var result = InlineLayouter.LayoutPerRun(sourceRuns, 15, resolver,
             LatnScript, EnLang);
-        Assert.NotEmpty(result);
+        Assert.NotEmpty(result.Lines);
     }
 
     [Fact]
@@ -213,7 +213,7 @@ public sealed class InlineLayouterCycle3cTests
         };
         var result = InlineLayouter.LayoutPerRun(sourceRuns, 100, resolver,
             LatnScript, EnLang);
-        Assert.NotEmpty(result);
+        Assert.NotEmpty(result.Lines);
     }
 
     [Fact]
@@ -311,18 +311,18 @@ public sealed class InlineLayouterCycle3cTests
         var result = InlineLayouter.LayoutPerRun(sourceRuns,
             availableInlineSize: 1000, resolver, LatnScript, EnLang);
 
-        Assert.Single(result);
+        Assert.Single(result.Lines);
         // After Normal collapse: "AAA " (4 glyphs) + "BBB" (3 glyphs)
         // = 7 glyphs total. If the buggy PreWrap-everywhere preprocess
         // had run, we'd see "AAA  " (5 glyphs) + "BBB" = 8.
-        Assert.Equal(2, result[0].Slices.Length);
-        Assert.Equal(0, result[0].Slices[0].ShapedRunIndex);
-        Assert.Equal(4, result[0].Slices[0].GlyphLength);
-        Assert.Equal(1, result[0].Slices[1].ShapedRunIndex);
-        Assert.Equal(3, result[0].Slices[1].GlyphLength);
+        Assert.Equal(2, result.Lines[0].Slices.Length);
+        Assert.Equal(0, result.Lines[0].Slices[0].ShapedRunIndex);
+        Assert.Equal(4, result.Lines[0].Slices[0].GlyphLength);
+        Assert.Equal(1, result.Lines[0].Slices[1].ShapedRunIndex);
+        Assert.Equal(3, result.Lines[0].Slices[1].GlyphLength);
         // Total advance: "AAA " = 3×6 + 7.2 = 25.2, "BBB" = 18, sum 43.2.
         Assert.Equal(3 * LetterAdvance + SpaceAdvance + 3 * LetterAdvance,
-            result[0].TotalAdvance, precision: 4);
+            result.Lines[0].TotalAdvance, precision: 4);
     }
 
     [Fact]
@@ -342,12 +342,12 @@ public sealed class InlineLayouterCycle3cTests
         var result = InlineLayouter.LayoutPerRun(sourceRuns,
             availableInlineSize: 1000, resolver, LatnScript, EnLang);
 
-        Assert.Single(result);
-        Assert.Equal(2, result[0].Slices.Length);
-        Assert.Equal(0, result[0].Slices[0].ShapedRunIndex);
-        Assert.Equal(4, result[0].Slices[0].GlyphLength);
-        Assert.Equal(1, result[0].Slices[1].ShapedRunIndex);
-        Assert.Equal(3, result[0].Slices[1].GlyphLength);
+        Assert.Single(result.Lines);
+        Assert.Equal(2, result.Lines[0].Slices.Length);
+        Assert.Equal(0, result.Lines[0].Slices[0].ShapedRunIndex);
+        Assert.Equal(4, result.Lines[0].Slices[0].GlyphLength);
+        Assert.Equal(1, result.Lines[0].Slices[1].ShapedRunIndex);
+        Assert.Equal(3, result.Lines[0].Slices[1].GlyphLength);
     }
 
     // --- Helpers --------------------------------------------------

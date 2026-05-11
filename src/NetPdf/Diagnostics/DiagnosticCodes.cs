@@ -233,5 +233,33 @@ internal static class DiagnosticCodes
     /// </summary>
     public const string LayoutInlineSkippedNoShaperResolver001 = "LAYOUT-INLINE-SKIPPED-NO-SHAPER-RESOLVER-001";
 
+    /// <summary>
+    /// Per Phase 3 Task 11 cycle 1 sub-cycle 1 hardening review
+    /// Finding #4 — emitted by the block layouter when an inline-only
+    /// block contains an atomic inline descendant
+    /// (<c>inline-block</c>, <c>inline-flex</c>, <c>inline-grid</c>,
+    /// <c>inline-table</c>, <c>inline replaced</c>) whose dedicated
+    /// layout pipeline has not yet shipped. The atomic inline is
+    /// skipped in the line; surrounding text continues to render.
+    /// Sub-cycle 2 will inject atomic-inline placeholders into the
+    /// line via per-layouter intrinsic-sizing hooks.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string LayoutInlineAtomicNotSupported001 = "LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001";
+
+    /// <summary>
+    /// Per Phase 3 Task 11 cycle 1 sub-cycle 1 hardening review
+    /// Finding #6 — emitted by the block layouter when the inline
+    /// pass throws <see cref="System.NotSupportedException"/> for a
+    /// configuration the inline layouter doesn't yet support (e.g.,
+    /// per-source-TextRun <c>word-break: keep-all</c> mismatch — CJK
+    /// semantics need UAX #24 script detection). The inline-only
+    /// block emits no fragment + the block layouter continues with
+    /// the next child; the exception message is carried in the
+    /// diagnostic's <c>MessageDetail</c>.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string LayoutInlineUnsupported001 = "LAYOUT-INLINE-UNSUPPORTED-001";
+
     // endregion LAYOUT-*
 }

@@ -183,9 +183,11 @@ internal static class InlineLayouter
     /// <see cref="Hyphens.Auto"/>.</param>
     /// <param name="cancellationToken">Cooperative cancellation
     /// across preprocessing, itemization, shaping, and wrap.</param>
-    /// <returns>One <see cref="LineFragment"/> per wrapped line in
-    /// document order. Empty when <paramref name="sourceTextRuns"/>
-    /// is empty or contains only empty strings.</returns>
+    /// <returns>Per Phase 3 Task 11 sub-cycle 1 review Finding #1 —
+    /// the full inline-pass bundle: wrapped lines + shaped runs +
+    /// preprocessed source runs. Use <see cref="InlineLayoutResult.Empty"/>-shape
+    /// when <paramref name="sourceTextRuns"/> is empty or contains
+    /// only empty strings.</returns>
     /// <exception cref="ArgumentNullException">A required argument is
     /// <see langword="null"/>.</exception>
     /// <exception cref="ArgumentOutOfRangeException">
@@ -193,7 +195,7 @@ internal static class InlineLayouter
     /// non-finite, or any of the enum args has an undefined value.</exception>
     /// <exception cref="System.OperationCanceledException">
     /// <paramref name="cancellationToken"/> was canceled.</exception>
-    public static LineFragment[] Layout(
+    public static InlineLayoutResult Layout(
         IReadOnlyList<TextRun> sourceTextRuns,
         double availableInlineSize,
         IShaperResolver resolver,
@@ -286,7 +288,10 @@ internal static class InlineLayouter
             whiteSpace, overflowWrap, wordBreak,
             hyphens, hyphenator, cancellationToken);
 
-        return fragments;
+        // Per Phase 3 Task 11 sub-cycle 1 review Finding #1 — bundle
+        // lines + shaped runs + preprocessed source so the painter
+        // can resolve slice → glyph and slice → source-run-style.
+        return new InlineLayoutResult(fragments, shaped, preprocessed);
     }
 
     /// <summary>Per Phase 3 Task 10 cycle 3 — convenience overload
@@ -348,9 +353,9 @@ internal static class InlineLayouter
     /// <param name="hyphenator">Optional Liang hyphenator override
     /// for <see cref="Hyphens.Auto"/>.</param>
     /// <param name="cancellationToken">Cooperative cancellation.</param>
-    /// <returns>One <see cref="LineFragment"/> per wrapped line in
-    /// document order.</returns>
-    public static LineFragment[] Layout(
+    /// <returns>Per Phase 3 Task 11 sub-cycle 1 review Finding #1 —
+    /// the full inline-pass bundle.</returns>
+    public static InlineLayoutResult Layout(
         IReadOnlyList<TextRun> sourceTextRuns,
         double availableInlineSize,
         IShaperResolver resolver,
@@ -422,13 +427,14 @@ internal static class InlineLayouter
     /// <param name="paragraphDirection">Paragraph base direction.</param>
     /// <param name="hyphenator">Optional Liang hyphenator override.</param>
     /// <param name="cancellationToken">Cooperative cancellation.</param>
-    /// <returns>One <see cref="LineFragment"/> per wrapped line.</returns>
+    /// <returns>Per Phase 3 Task 11 sub-cycle 1 review Finding #1 —
+    /// the full inline-pass bundle.</returns>
     /// <exception cref="ArgumentNullException">Required arg is null.</exception>
     /// <exception cref="NotSupportedException">Source TextRuns have
     /// non-uniform <see cref="InlineTextPolicy"/> values where
     /// overflow-wrap / word-break / hyphens differ (per-glyph
     /// metadata for those 3 deferred to a subsequent cycle).</exception>
-    public static LineFragment[] LayoutPerRun(
+    public static InlineLayoutResult LayoutPerRun(
         IReadOnlyList<TextRun> sourceTextRuns,
         double availableInlineSize,
         IShaperResolver resolver,
@@ -614,12 +620,17 @@ internal static class InlineLayouter
             ? policy.WhiteSpace
             : WhiteSpace.Normal;
 
-        return LineBuilder.Wrap(
+        // Per Phase 3 Task 11 sub-cycle 1 review Finding #1 — capture
+        // the shaped runs locally so we can hand them back alongside
+        // the wrapped lines. Cycle 3d's bare LineFragment[] return
+        // hid the slice→glyph index relationship.
+        var shaped = ShapeForLayout(
             preprocessed,
-            ShapeForLayout(
-                preprocessed,
-                resolver, scriptIso15924, language, paragraphDirection,
-                cancellationToken),
+            resolver, scriptIso15924, language, paragraphDirection,
+            cancellationToken);
+        var lines = LineBuilder.Wrap(
+            preprocessed,
+            shaped,
             availableInlineSize,
             wrapWhiteSpace,
             policy.OverflowWrap,
@@ -628,6 +639,7 @@ internal static class InlineLayouter
             hyphenator,
             cancellationToken,
             perRunPolicy);
+        return new InlineLayoutResult(lines, shaped, preprocessed);
     }
 
     /// <summary>Per Phase 3 Task 10 cycle 3c — itemize + shape

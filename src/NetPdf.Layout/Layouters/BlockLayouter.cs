@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading;
+using NetPdf.Css.ComputedValues;
 using NetPdf.Css.Properties;
 using NetPdf.Layout.Boxes;
 using NetPdf.Layout.Inline;
@@ -242,12 +243,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 — optional
     /// inline shaper resolver. When non-null, <see cref="AttemptLayout"/>
     /// dispatches block containers whose children are entirely
-    /// inline-level into <see cref="LayoutInlineContent"/> which runs
-    /// the <see cref="InlineLayouter.LayoutPerRun"/> pipeline + emits
-    /// one <see cref="BoxFragment"/> carrying the wrapped
-    /// <see cref="LineFragment"/>[] in its <see cref="BoxFragment.InlineLines"/>
-    /// field. When null, inline-only blocks are skipped as in
-    /// cycles 1-2c (a single <c>LAYOUT-INLINE-SKIPPED-NO-SHAPER-RESOLVER-001</c>
+    /// inline-level into <see cref="DispatchInlineOnlyBlock"/> which
+    /// runs the <see cref="InlineLayouter.LayoutPerRun"/> pipeline +
+    /// emits one <see cref="BoxFragment"/> carrying the
+    /// <see cref="InlineLayoutResult"/> in its
+    /// <see cref="BoxFragment.InlineLayout"/> field. When null,
+    /// inline-only blocks are skipped as in cycles 1-2c (a single
+    /// <c>LAYOUT-INLINE-SKIPPED-NO-SHAPER-RESOLVER-001</c>
     /// diagnostic is emitted per skipped block when a diagnostic sink
     /// is available). Default null preserves backwards compatibility
     /// with all existing call sites; production callers (the
@@ -331,8 +333,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// <paramref name="shaperResolver"/> is the inline shaping seam.
     /// When supplied, block containers whose children are entirely
     /// inline-level are dispatched through
-    /// <see cref="InlineLayouter.LayoutPerRun"/>; the wrapped lines
-    /// are carried on the emitted <see cref="BoxFragment.InlineLines"/>.
+    /// <see cref="InlineLayouter.LayoutPerRun"/>; the inline result
+    /// is carried on the emitted <see cref="BoxFragment.InlineLayout"/>.
     /// When null (default — back-compat with cycles 1-2c), inline-only
     /// blocks are skipped + a single
     /// <c>LAYOUT-INLINE-SKIPPED-NO-SHAPER-RESOLVER-001</c> diagnostic
@@ -535,31 +537,46 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // <span>s, or an AnonymousBlock synthesized around an
             // inline run). Dispatch through LayoutInlineContent which
             // runs the InlineLayouter pipeline + emits ONE BoxFragment
-            // carrying the wrapped LineFragment[] in InlineLines.
+            // carrying the inline pass result in InlineLayout.
             //
-            // <b>Sub-cycle 1 scope.</b> Inline-only blocks are
-            // treated as zero-margin / zero-border / zero-padding
-            // atomic units sized to the wrapped-line bounding box.
-            // Margin collapse with adjacent block siblings is
-            // intentionally NOT honored at this seam — the line-box
-            // creation breaks adjacency per CSS 2.1 §8.3.1 (same as
-            // the non-block-level skip above resets the chain). Floats
-            // around the inline-only block are similarly deferred —
-            // the inline content uses the full content-inline range
-            // (cycle 2 of Task 8 already handles in-flow blocks
-            // flowing around floats; cycle 3 will handle inline
-            // content wrapping around floats per CSS 2.2 §9.5).
+            // <b>Sub-cycle 1 hardening review (this revision) — Findings
+            // 3, 5, 6.</b>
+            // <list type="bullet">
+            //   <item>Finding 5 — the inline-only block now honors its
+            //   own margins / borders / padding / width. Lines are
+            //   placed at the BLOCK's content-box origin (inside its
+            //   padding + border); the emitted BoxFragment's
+            //   geometry is the BORDER box, matching the regular
+            //   block path.</item>
+            //   <item>Finding 3 — the resolver is consulted at the
+            //   candidate-break boundary BEFORE the emit, with a
+            //   captured checkpoint, mirroring the in-flow block
+            //   dispatch below. Inline content that overflows the
+            //   fragmentainer triggers the same forced-overflow
+            //   diagnostic path; mid-page resolver verdicts (Rewind,
+            //   PageComplete) propagate through the standard
+            //   <see cref="LayoutAttemptResult"/> envelope.</item>
+            //   <item>Finding 6 — <see cref="System.NotSupportedException"/>
+            //   from the inline pass (e.g., per-source-TextRun
+            //   <c>word-break: keep-all</c> mismatch — CJK semantics
+            //   deferred) is now caught + degraded to a Warning
+            //   diagnostic + the inline-only block skipped, same
+            //   chain-reset semantics as the no-resolver skip.</item>
+            // </list>
             //
-            // <b>Deferrals tracked for sub-cycle 2:</b>
+            // <b>Deferrals still tracked for sub-cycle 2+:</b>
             //   * Mixed block + inline children inside ONE BFC
             //     (BoxBuilder's AnonymousBlock wrapper guarantees the
             //     dispatch sees all-block or all-inline children today;
             //     a future cycle widens this).
-            //   * Margin / border / padding on the inline-only block
-            //     itself.
-            //   * Widows / orphans (CSS Fragmentation L3 §4.3).
-            //   * `line-height` from ComputedStyle (placeholder
-            //     1.2 × font-size used here).
+            //   * Margin collapse between the inline-only block + its
+            //     adjacent block siblings (sub-cycle 1 still resets
+            //     the chain; CSS 2.1 §8.3.1 says the line box breaks
+            //     adjacency — correct but conservative).
+            //   * Widows / orphans (CSS Fragmentation L3 §4.3) +
+            //     per-line splitting at fragmentainer boundary
+            //     (sub-cycle 1 atomic — the whole inline-only block
+            //     commits on one page or forced-overflow).
             //   * `text-align` / `vertical-align`.
             //   * RTL fragment-level slice reversal.
             if (IsInlineOnlyBlockContainer(child))
@@ -589,22 +606,35 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     continue;
                 }
 
-                // Resolver present — run the inline pass.
-                // Sub-cycle 1: inline content occupies the entire
-                // available inline range (no float reduction yet) +
-                // anchors at the BFC origin (no marginInlineStart).
-                LayoutInlineContent(
+                // Run the box-model + pagination-aware dispatch. The
+                // helper returns a non-null LayoutAttemptResult when
+                // the outer loop must return immediately (PageComplete
+                // / NeedsRewind). Null means "fragment emitted (or
+                // skipped via diagnostic), continue with the next
+                // child".
+                var inlineDispatchResult = DispatchInlineOnlyBlock(
                     child,
-                    availableInlineSize: fragmentainer.ContentInlineSize,
-                    inFlowInlineOffset: 0,
-                    blockOffsetStart: fragmentainer.UsedBlockSize,
+                    childIdx,
                     fragmentainer,
+                    ref layout,
+                    resolver,
+                    initialUsed,
+                    priorPagesConsumed,
+                    prevBlockMarginEnd,
+                    hasPriorAdjoiningBlock,
+                    lastEmittedIdx,
+                    emittedThisAttempt,
                     cancellationToken);
+                if (inlineDispatchResult.HasValue)
+                {
+                    return inlineDispatchResult.Value;
+                }
+                // Successful emit (or graceful skip via diagnostic).
                 // Same margin-collapse reset as the non-block-level
                 // skip: the inline-only block emits a line box that
                 // breaks adjacency with neighboring block siblings.
                 // Sub-cycle 2 will honor the inline-only block's
-                // own marginTop / marginBottom + integrate with the
+                // marginTop / marginBottom + integrate with the
                 // collapse chain.
                 hasPriorAdjoiningBlock = false;
                 prevBlockMarginEnd = 0;
@@ -1462,6 +1492,59 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 continue;
             }
 
+            // Per Phase 3 Task 11 cycle 1 sub-cycle 1 hardening
+            // review Finding #2 — inline-only block descendants. A
+            // nested <p> inside a <div> (the canonical case) is an
+            // inline-only block whose CONTENT must run through the
+            // inline pass + emit a fragment with InlineLayout set.
+            // Pre-Finding-2 the recursion treated nested inline-only
+            // blocks as if they were ordinary leaf blocks — emitting
+            // a fragment with no InlineLayout — so painter glyph
+            // resolution silently failed.
+            //
+            // The recursive path doesn't consult the resolver
+            // (Finding #3's pagination integration is owned by the
+            // outer loop's measure pass via
+            // MeasureSubtreeVisualBlockExtent). Atomic-inline +
+            // NotSupported diagnostics are routed through the
+            // captured diagnostic sink.
+            if (_shaperResolver is not null && IsInlineOnlyBlockContainer(child))
+            {
+                // First, compute the topShift the same way as the
+                // regular block path below: collapse with prior +
+                // honor clearance. For inline-only blocks the line
+                // box breaks adjacency, so the chain is reset (same
+                // rule as the main loop's reset). topShift is the
+                // block's own marginTop.
+                var inlineOnlyMarginStart = child.Style.ReadLengthPxOrZero(PropertyId.MarginTop);
+
+                var emittedExtent = EmitInlineOnlyBlockInRecursion(
+                    child,
+                    parentContentInlineSize: contentInlineSize,
+                    // Inline-axis offset: the parent's content-area
+                    // left edge in fragmentainer coords; the helper
+                    // adds the block's own marginInlineStart.
+                    inlineOffsetFromContentOrigin: contentLeft,
+                    // Block-axis offset: contentTop + childCursor
+                    // gives the line-box start position INSIDE the
+                    // parent's content area; add the inline-only
+                    // block's marginTop to land at the border-box
+                    // top edge.
+                    blockOffsetFromContentOrigin: contentTop + childCursor
+                        + inlineOnlyMarginStart,
+                    cancellationToken);
+                // Inline-only block resets the margin-collapse chain
+                // per CSS 2.1 §8.3.1 (the line box breaks adjacency).
+                hasPrior = false;
+                prevMarginEnd = 0;
+                // Advance the recursive cursor by the block's full
+                // margin-box extent (marginTop + borderBox +
+                // marginBottom). EmitInlineOnlyBlockInRecursion
+                // returns that value.
+                childCursor += emittedExtent;
+                continue;
+            }
+
             // Per Phase 3 Task 8 cycle 1 post-PR-30 review (P1 #4) —
             // nested clear resolution. A non-floating block inside the
             // recursion with `clear: ...` clears past relevant float
@@ -1936,7 +2019,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// block (e.g., an empty <c>&lt;p&gt;&lt;/p&gt;</c>) has nothing
     /// to wrap; routing it through the inline-content path produces
     /// an empty TextRun array which
-    /// <see cref="LayoutInlineContent"/> short-circuits to "emit
+    /// <see cref="DispatchInlineOnlyBlock"/> short-circuits to "emit
     /// nothing". Letting the existing block-level dispatch handle
     /// childless blocks preserves the cycle-1-2c behavior (placeholder
     /// fragment at the block's own border-box size from
@@ -1968,163 +2051,641 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         return true;
     }
 
-    /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 — run the
-    /// inline pass for <paramref name="inlineOnlyBlock"/> + emit one
-    /// <see cref="BoxFragment"/> carrying the wrapped lines.
+    /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 hardening
+    /// review Finding #5 — read the inline-only block's box-model
+    /// extents (margins, borders, padding, declared width) into a
+    /// single struct so the dispatch site + the measure pass share
+    /// one source of truth.</summary>
+    /// <remarks>Sub-cycle 1's reads parallel the in-flow block
+    /// dispatch but ARE NOT yet a refactor of the in-flow path's
+    /// inline-style reads (that's a larger
+    /// <c>BlockChildMetrics</c> extraction tracked in the existing
+    /// TODO atop <see cref="EmitBlockSubtreeRecursive"/>). Cycle 3
+    /// will fold both call sites into the shared struct.</remarks>
+    private readonly record struct InlineOnlyBlockMetrics(
+        double MarginInlineStart,
+        double MarginInlineEnd,
+        double MarginBlockStart,
+        double MarginBlockEnd,
+        double BorderInlineStart,
+        double BorderInlineEnd,
+        double BorderBlockStart,
+        double BorderBlockEnd,
+        double PaddingInlineStart,
+        double PaddingInlineEnd,
+        double PaddingBlockStart,
+        double PaddingBlockEnd,
+        double DeclaredWidthPx,    // 0 when `width: auto` (default)
+        double LineHeightOverridePx); // 0 sentinel = use font-size × 1.2
+
+    private static InlineOnlyBlockMetrics ReadInlineOnlyBlockMetrics(Box block) =>
+        new(
+            MarginInlineStart: block.Style.ReadLengthPxOrZero(PropertyId.MarginLeft),
+            MarginInlineEnd: block.Style.ReadLengthPxOrZero(PropertyId.MarginRight),
+            MarginBlockStart: block.Style.ReadLengthPxOrZero(PropertyId.MarginTop),
+            MarginBlockEnd: block.Style.ReadLengthPxOrZero(PropertyId.MarginBottom),
+            BorderInlineStart: block.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth),
+            BorderInlineEnd: block.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth),
+            BorderBlockStart: block.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth),
+            BorderBlockEnd: block.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth),
+            PaddingInlineStart: block.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft),
+            PaddingInlineEnd: block.Style.ReadLengthPxOrZero(PropertyId.PaddingRight),
+            PaddingBlockStart: block.Style.ReadLengthPxOrZero(PropertyId.PaddingTop),
+            PaddingBlockEnd: block.Style.ReadLengthPxOrZero(PropertyId.PaddingBottom),
+            DeclaredWidthPx: block.Style.ReadLengthPxOrZero(PropertyId.Width),
+            // line-height: read from the block's own style (sub-cycle
+            // 1 simple rule — uniform across the block). Sub-cycle 2
+            // will read per-TextRun + apply the CSS Text L3 strut
+            // rule (max of constituent runs' line-heights).
+            LineHeightOverridePx: block.Style.ReadLengthPxOrZero(PropertyId.LineHeight));
+
+    /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 — compute the
+    /// inline-only block's full pre-emit picture: the inline pass
+    /// result + the geometry the fragment will be drawn with. Used
+    /// by both <see cref="DispatchInlineOnlyBlock"/> (the main-loop
+    /// path that needs the metrics for resolver consultation +
+    /// emit) AND <see cref="EmitInlineOnlyBlockInRecursion"/> (the
+    /// recursive-subtree path per Finding #2 that emits at a
+    /// caller-provided position without resolver consultation).
     ///
-    /// <para><b>Sub-cycle 1 scope.</b> The block's inline descendants
-    /// are walked in document order; <see cref="BoxKind.TextRun"/>
-    /// leaves with non-empty text are collected into
-    /// <see cref="NetPdf.Layout.Inline.TextRun"/> records and passed
-    /// to <see cref="InlineLayouter.LayoutPerRun"/>. Non-text inline
-    /// kinds (<see cref="BoxKind.InlineBox"/> containers and their
-    /// descendants) are recursed into; replaced / atomic inlines
-    /// (<see cref="BoxKind.InlineBlockContainer"/>,
-    /// <see cref="BoxKind.InlineReplacedElement"/>,
-    /// <see cref="BoxKind.LineBreak"/>, etc.) are skipped as TODOs.</para>
+    /// <para>Returns <see langword="null"/> when the inline pass
+    /// produces no content (no TextRuns OR all collapse to empty
+    /// after preprocessing) — caller emits NO fragment.</para>
     ///
-    /// <para><b>Block-axis sizing.</b> Sub-cycle 1 uses
-    /// <c>lineHeight = font-size × 1.2</c> as a placeholder; CSS
-    /// <c>line-height</c> property wiring is deferred. The emitted
-    /// fragment's <see cref="BoxFragment.BlockSize"/> is
-    /// <c>lineCount × lineHeight</c>; the fragmentainer cursor
-    /// advances by the same amount.</para>
-    ///
-    /// <para><b>Script + language.</b> Sub-cycle 1 hard-codes
-    /// <c>"Latn"</c> + <c>"en"</c> per the task spec — UAX #24
-    /// script detection + BCP 47 language selection are deferred per
-    /// <c>docs/deferrals.md</c>.</para>
-    ///
-    /// <para><b>Empty input.</b> When no TextRun descendants
-    /// contribute glyphs (an empty paragraph, or one containing only
-    /// whitespace-collapsed runs that produce no shaped output), the
-    /// method emits NO fragment + does not advance the cursor.</para></summary>
-    /// <param name="inlineOnlyBlock">The block container whose
-    /// children are all inline-level (validated by the caller via
-    /// <see cref="IsInlineOnlyBlockContainer"/>).</param>
-    /// <param name="availableInlineSize">Maximum inline-axis size for
-    /// a wrapped line, in CSS px. Caller supplies the float-adjusted
-    /// (or full content-area) range.</param>
-    /// <param name="inFlowInlineOffset">Inline-axis offset of the
-    /// emitted fragment's border-box inline-start edge from the
-    /// fragmentainer's content-area origin.</param>
-    /// <param name="blockOffsetStart">Block-axis offset of the
-    /// emitted fragment's border-box block-start edge from the
-    /// fragmentainer's content-area origin.</param>
-    /// <param name="fragmentainer">The active fragmentainer. The
-    /// method advances <see cref="FragmentainerContext.UsedBlockSize"/>
-    /// by the emitted fragment's block extent.</param>
-    /// <param name="cancellationToken">Cooperative cancellation
-    /// threaded through to <see cref="InlineLayouter.LayoutPerRun"/>.</param>
-    private void LayoutInlineContent(
+    /// <para>The <c>NotSupported</c> branch returns a sentinel +
+    /// the diagnostic is emitted by the caller (which has access to
+    /// the layout's diagnostic sink). Caller treats sentinel the
+    /// same as "no content" (no fragment, advance loop).</para></summary>
+    private InlineOnlyBlockComputation? ComputeInlineOnlyBlockLayout(
         Box inlineOnlyBlock,
-        double availableInlineSize,
-        double inFlowInlineOffset,
-        double blockOffsetStart,
-        FragmentainerContext fragmentainer,
+        InlineOnlyBlockMetrics metrics,
+        double containingInlineSize,
+        out string? notSupportedMessage,
+        out int atomicInlineSkipCount,
         CancellationToken cancellationToken)
     {
+        notSupportedMessage = null;
+        atomicInlineSkipCount = 0;
         cancellationToken.ThrowIfCancellationRequested();
 
-        // Collect inline TextRuns by walking the descendants in
-        // document order. Sub-cycle 1 handles BoxKind.TextRun leaves
-        // only; nested InlineBox containers recurse so their TextRun
-        // descendants flow into the same paragraph.
-        var textRuns = new List<NetPdf.Layout.Inline.TextRun>();
-        CollectInlineTextRuns(inlineOnlyBlock, textRuns, cancellationToken);
+        // Resolve the border-box inline size. CSS 2.1 §10.3.3 maps
+        // `width` (the content-box inline size) to the border box
+        // via border + padding. Sub-cycle 1 handles the simple case:
+        //   * `width` set explicitly → border-box = width + borders
+        //     + padding (clamped non-negative).
+        //   * `width: auto` (DeclaredWidthPx == 0 here because
+        //     ReadLengthPxOrZero returns 0 for auto in cycle 1) →
+        //     border-box = full available content area minus
+        //     inline margins (the in-flow-fill behavior).
+        // True `auto` resolution per §10.3.3 (with the margin
+        // distribution algorithm) lands in cycle 3 of the BLOCK
+        // layouter; sub-cycle 1's approximation matches the
+        // regular block path's current cycle-1 behavior.
+        double borderBoxInlineSize;
+        if (metrics.DeclaredWidthPx > 0)
+        {
+            borderBoxInlineSize = Math.Max(0,
+                metrics.DeclaredWidthPx
+                + metrics.BorderInlineStart + metrics.BorderInlineEnd
+                + metrics.PaddingInlineStart + metrics.PaddingInlineEnd);
+        }
+        else
+        {
+            borderBoxInlineSize = Math.Max(0,
+                containingInlineSize
+                - metrics.MarginInlineStart - metrics.MarginInlineEnd);
+        }
+        // Inline-pass available size = the content-box inline range.
+        var contentInlineSize = Math.Max(0,
+            borderBoxInlineSize
+            - metrics.BorderInlineStart - metrics.BorderInlineEnd
+            - metrics.PaddingInlineStart - metrics.PaddingInlineEnd);
+        if (contentInlineSize <= 0)
+        {
+            // Negative or zero content area → no lines can fit. The
+            // inline layouter would throw on availableInlineSize<=0
+            // anyway; emit no fragment cleanly. (Real CSS would
+            // still render glyphs that exceed the box; sub-cycle 1
+            // takes the simple route.)
+            return null;
+        }
 
+        // Collect inline TextRuns by walking the descendants in
+        // document order. Per Finding #4 — atomic inlines are
+        // counted so the caller can emit ONE LAYOUT-INLINE-ATOMIC-
+        // NOT-SUPPORTED-001 diagnostic per skipped atomic; LineBreak
+        // boxes inject a synthetic LF TextRun; Marker boxes recurse
+        // (their child TextRun for bullet/number text).
+        var textRuns = new List<NetPdf.Layout.Inline.TextRun>();
+        atomicInlineSkipCount = CollectInlineTextRuns(
+            inlineOnlyBlock, textRuns, inlineOnlyBlock.Style,
+            cancellationToken);
+
+        InlineLayoutResult inlineResult;
         if (textRuns.Count == 0)
         {
             // Per the spec — no contributing text means no fragment +
             // no cursor advance. (An inline-only block with only
             // whitespace-collapsed runs, e.g., a <p> &lt;span&gt;&lt;/span&gt;,
             // hits this path.)
-            return;
+            return null;
         }
 
         // Sub-cycle 1 — hard-coded script + language (UAX #24 +
-        // BCP 47 plumbing deferred per docs/deferrals.md).
+        // BCP 47 plumbing deferred).
         // _shaperResolver is guaranteed non-null by the caller's
         // IsInlineOnlyBlockContainer gate + the diagnostic branch.
-        var lines = InlineLayouter.LayoutPerRun(
-            sourceTextRuns: textRuns,
-            availableInlineSize: availableInlineSize,
-            resolver: _shaperResolver!,
-            scriptIso15924: "Latn",
-            language: "en",
-            paragraphDirection: ParagraphDirection.LeftToRight,
-            hyphenator: null,
-            cancellationToken: cancellationToken);
+        // Per Finding #6 — wrap with try/catch so per-source-TextRun
+        // mismatches that still throw (KeepAll) degrade to a Warning
+        // diagnostic instead of bringing the block layouter down.
+        try
+        {
+            inlineResult = InlineLayouter.LayoutPerRun(
+                sourceTextRuns: textRuns,
+                availableInlineSize: contentInlineSize,
+                resolver: _shaperResolver!,
+                scriptIso15924: "Latn",
+                language: "en",
+                paragraphDirection: ParagraphDirection.LeftToRight,
+                hyphenator: null,
+                cancellationToken: cancellationToken);
+        }
+        catch (NotSupportedException ex)
+        {
+            notSupportedMessage = ex.Message;
+            return null;
+        }
 
-        if (lines.Length == 0)
+        if (inlineResult.Lines.Length == 0)
         {
             // Possible when every collected TextRun's text collapses
             // to nothing under white-space processing (e.g., a
             // single-space TextRun with white-space:normal becomes
             // empty after start-of-paragraph trimming). Same
             // emit-nothing path as the no-TextRuns case.
-            return;
+            return null;
         }
 
-        // Sub-cycle 1 placeholder line-height: 1.2 × font-size.
-        // CSS Text L3 §3 + CSS Inline L3 §3.5 say the used
-        // `line-height` is the COMPUTED value (`normal` keyword →
-        // font's intrinsic line metric); reading the keyword + the
-        // font metric tables is sub-cycle 2 work. Until then 1.2 is
-        // the de-facto Web default for `line-height: normal` across
-        // major UAs.
-        var fontSizePx = inlineOnlyBlock.Style.ReadLengthPxOrDefault(
-            PropertyId.FontSize, defaultPx: 16);
-        var lineHeight = fontSizePx * 1.2;
-        var blockSize = lines.Length * lineHeight;
+        // Per Finding #5 — line-height honoring. Use the block's
+        // declared line-height when non-zero; fall back to
+        // 1.2 × font-size for `line-height: normal`. CSS Text L3 §3
+        // + CSS Inline L3 §3.5 say the used `line-height` is the
+        // COMPUTED value (`normal` → font's intrinsic line metric);
+        // reading the keyword + the font metric tables remains
+        // sub-cycle 2 work — 1.2 is the de-facto Web default for
+        // `line-height: normal` across major UAs.
+        double lineHeight;
+        if (metrics.LineHeightOverridePx > 0)
+        {
+            lineHeight = metrics.LineHeightOverridePx;
+        }
+        else
+        {
+            var fontSizePx = inlineOnlyBlock.Style.ReadLengthPxOrDefault(
+                PropertyId.FontSize, defaultPx: 16);
+            lineHeight = fontSizePx * 1.2;
+        }
+        var contentBlockSize = inlineResult.Lines.Length * lineHeight;
+        var borderBoxBlockSize = contentBlockSize
+            + metrics.BorderBlockStart + metrics.PaddingBlockStart
+            + metrics.PaddingBlockEnd + metrics.BorderBlockEnd;
 
-        _sink.Emit(new BoxFragment(
-            Box: inlineOnlyBlock,
-            InlineOffset: inFlowInlineOffset,
-            BlockOffset: blockOffsetStart,
-            InlineSize: availableInlineSize,
-            BlockSize: blockSize,
-            InlineLines: lines));
-
-        fragmentainer.UsedBlockSize = Math.Max(0,
-            fragmentainer.UsedBlockSize + blockSize);
+        return new InlineOnlyBlockComputation(
+            InlineResult: inlineResult,
+            BorderBoxInlineSize: borderBoxInlineSize,
+            BorderBoxBlockSize: borderBoxBlockSize,
+            ContentBlockSize: contentBlockSize);
     }
 
-    /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 — depth-first
-    /// document-order walk that collects every contributing
+    /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 — bundle the
+    /// pre-emit metrics carried out of
+    /// <see cref="ComputeInlineOnlyBlockLayout"/>. Geometry is
+    /// border-box-only (matches <see cref="BoxFragment"/>'s
+    /// contract).</summary>
+    private readonly record struct InlineOnlyBlockComputation(
+        InlineLayoutResult InlineResult,
+        double BorderBoxInlineSize,
+        double BorderBoxBlockSize,
+        double ContentBlockSize);
+
+    /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 hardening
+    /// review Findings 3 + 5 + 6 — main-loop dispatch for an
+    /// inline-only block container. Honors the block's box model
+    /// (margins / borders / padding / width) for geometry; consults
+    /// the resolver via <see cref="BreakOpportunity.Block"/> with a
+    /// captured checkpoint; falls back to a Warning diagnostic +
+    /// no-emit on <see cref="System.NotSupportedException"/> from
+    /// the inline pass.
+    ///
+    /// <para>Returns <see langword="null"/> on the Continue path
+    /// (fragment emitted or graceful skip) — the outer loop
+    /// advances + continues. Returns a non-null
+    /// <see cref="LayoutAttemptResult"/> on the
+    /// <see cref="BreakAction.Rewind"/> / forced-overflow
+    /// <see cref="BreakAction.BreakHere"/> / clean
+    /// <see cref="BreakAction.BreakHere"/> paths — the outer loop
+    /// must return immediately.</para></summary>
+    private LayoutAttemptResult? DispatchInlineOnlyBlock(
+        Box inlineOnlyBlock,
+        int childIdx,
+        FragmentainerContext fragmentainer,
+        ref LayoutContext layout,
+        IBreakResolver resolver,
+        double initialUsed,
+        double priorPagesConsumed,
+        double prevBlockMarginEnd,
+        bool hasPriorAdjoiningBlock,
+        int lastEmittedIdx,
+        int emittedThisAttempt,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        var metrics = ReadInlineOnlyBlockMetrics(inlineOnlyBlock);
+        // Sub-cycle 1 — inline-only blocks reset the margin chain
+        // (the line box breaks adjacency per CSS 2.1 §8.3.1), so
+        // the block's own marginBlockStart applies in full without
+        // collapse arithmetic. This matches the cycle 1 behavior;
+        // cycle 2 will integrate with the collapse chain.
+        var topShift = metrics.MarginBlockStart;
+        var computation = ComputeInlineOnlyBlockLayout(
+            inlineOnlyBlock,
+            metrics,
+            containingInlineSize: fragmentainer.ContentInlineSize,
+            out var notSupportedMessage,
+            out var atomicInlineSkipCount,
+            cancellationToken);
+
+        // Emit atomic-inline skip diagnostics BEFORE the dispatch
+        // outcome — they fire regardless of whether the line pass
+        // produced anything. One per skipped atomic inline so
+        // consumers can pinpoint each.
+        if (atomicInlineSkipCount > 0)
+        {
+            var diagSink = layout.Diagnostics ?? _diagnostics;
+            OptimizingBreakResolver.SafeEmit(diagSink, new PaginateDiagnostic(
+                PaginateDiagnosticCodes.LayoutInlineAtomicNotSupported001,
+                $"BlockLayouter: inline-only block container at child "
+                + $"index {childIdx} contained {atomicInlineSkipCount} atomic "
+                + "inline descendant(s) (inline-block / inline-flex / "
+                + "inline-grid / inline-table / inline-replaced) — sub-cycle 1 "
+                + "skips them in the resulting line. Sub-cycle 2 will inject "
+                + "atomic-inline placeholders via per-layouter intrinsic-sizing "
+                + "hooks.",
+                PaginateDiagnosticSeverity.Warning));
+        }
+
+        if (notSupportedMessage is not null)
+        {
+            // Finding 6 — NotSupportedException from the inline
+            // pass. Degrade to a Warning diagnostic + skip without
+            // emitting a fragment. The block layouter advances past
+            // the block (same chain-reset semantics as the no-
+            // resolver skip).
+            var diagSink = layout.Diagnostics ?? _diagnostics;
+            OptimizingBreakResolver.SafeEmit(diagSink, new PaginateDiagnostic(
+                PaginateDiagnosticCodes.LayoutInlineUnsupported001,
+                $"BlockLayouter: inline pass for inline-only block at child "
+                + $"index {childIdx} threw NotSupportedException + the inline "
+                + "content was dropped. Detail: " + notSupportedMessage,
+                PaginateDiagnosticSeverity.Warning));
+            return null;
+        }
+
+        if (computation is null)
+        {
+            // No inline content (empty TextRuns OR all collapsed to
+            // empty). No fragment emitted, no cursor advance.
+            return null;
+        }
+
+        var comp = computation.Value;
+
+        // Finding 3 — pagination integration. Mirror the in-flow
+        // block dispatch: capture a checkpoint at the candidate-
+        // break boundary, consult the resolver with the FULL margin-
+        // box block extent (chunk size), handle Rewind /
+        // forced-overflow / clean PageComplete.
+        var marginBoxBlockSizeForCursor = topShift + comp.BorderBoxBlockSize
+            + metrics.MarginBlockEnd;
+        var visualBlockExtent = comp.BorderBoxBlockSize
+            + Math.Max(0, topShift)
+            + Math.Max(0, metrics.MarginBlockEnd);
+        var chunkForBreakCheck = Math.Max(
+            Math.Max(0, marginBoxBlockSizeForCursor),
+            visualBlockExtent);
+
+        // Push the FloatManager state into the fragmentainer slot
+        // BEFORE the checkpoint captures it (same invariant as the
+        // in-flow path — see Phase 3 Task 8 cycle 1 post-PR-30
+        // review P0 #1).
+        fragmentainer.FloatManagerState = _floatManager.Snapshot();
+
+        var newLease = LayoutCheckpointPool.Rent();
+        newLease.Checkpoint!.Capture(
+            fragmentainer,
+            in layout,
+            fragmentOutputCursor: _sink.Cursor,
+            lastEmittedChildIndex: lastEmittedIdx,
+            incomingContinuation: _incomingContinuation,
+            pageCounterValue: layout.ReadCounter("page"),
+            prevBlockMarginEnd: prevBlockMarginEnd,
+            hasAdjoiningBlockOnEntry: hasPriorAdjoiningBlock);
+        resolver.RegisterCheckpoint(newLease);
+        _activeLease = newLease;
+
+        var opportunity = BreakOpportunity.Block(
+            usedBlockSize: fragmentainer.UsedBlockSize,
+            chunkBlockSize: chunkForBreakCheck);
+        var decision = resolver.ConsiderBreakAt(opportunity, fragmentainer);
+
+        if (decision.Action == BreakAction.Rewind)
+        {
+            if (decision.RewindTo is null)
+            {
+                throw new InvalidOperationException(
+                    "Resolver returned BreakAction.Rewind without a RewindTo "
+                    + "checkpoint. This violates the IBreakResolver contract — "
+                    + "Rewind requires the resolver to name a checkpoint.");
+            }
+            _resumeAtChildIdxAfterRewind = decision.RewindTo.LastEmittedChildIndex + 1;
+            _prevBlockMarginEndAfterRewind = decision.RewindTo.PrevBlockMarginEnd;
+            _hasPriorAdjoiningBlockAfterRewind = decision.RewindTo.HasAdjoiningBlockOnEntry;
+            _hasRewindCollapseState = true;
+            return LayoutAttemptResult.NeedsRewind(decision.RewindTo, decision.Cost);
+        }
+
+        if (decision.Action == BreakAction.BreakHere)
+        {
+            var nothingEmittedThisAttempt = emittedThisAttempt == 0;
+            var atTopOfPage = fragmentainer.UsedBlockSize == initialUsed;
+            if (nothingEmittedThisAttempt && atTopOfPage)
+            {
+                // Forced overflow — the inline content is taller
+                // than the fragmentainer. Same loud-fail semantics
+                // as the in-flow path: emit anyway + diagnostic.
+                var diagSink = layout.Diagnostics ?? _diagnostics;
+                OptimizingBreakResolver.SafeEmit(diagSink, new PaginateDiagnostic(
+                    PaginateDiagnosticCodes.PaginationForcedOverflow001,
+                    $"BlockLayouter: forced overflow on fragmentainer page index "
+                    + $"{fragmentainer.PageIndex}, inline-only block at child "
+                    + $"index {childIdx} — inline content border-box height="
+                    + $"{comp.BorderBoxBlockSize:0.##} (margin-box="
+                    + $"{marginBoxBlockSizeForCursor:0.##}) is taller than the "
+                    + $"fragmentainer (block-size={fragmentainer.BlockSize:0.##}). "
+                    + "Committed anyway to make pagination progress.",
+                    PaginateDiagnosticSeverity.Warning));
+                EmitInlineOnlyBlockFragment(
+                    inlineOnlyBlock, metrics, comp,
+                    inlineOffsetFromContentOrigin: 0,
+                    blockOffsetFromContentOrigin: fragmentainer.UsedBlockSize + topShift);
+                fragmentainer.UsedBlockSize = Math.Max(0,
+                    fragmentainer.UsedBlockSize + marginBoxBlockSizeForCursor);
+                var alreadyOverflowPenalized =
+                    chunkForBreakCheck > fragmentainer.BlockSize;
+                var forcedOverflowCost = alreadyOverflowPenalized
+                    ? decision.Cost
+                    : decision.Cost + CostModel.BreakInsideAvoidViolation;
+                return LayoutAttemptResult.PageComplete(
+                    new BlockContinuation(
+                        ResumeAtChild: childIdx + 1,
+                        ConsumedBlockSize: priorPagesConsumed
+                            + (fragmentainer.UsedBlockSize - _pageStartUsedBlockSize)),
+                    cost: forcedOverflowCost);
+            }
+            // Normal page break — content earlier on this page.
+            return LayoutAttemptResult.PageComplete(
+                new BlockContinuation(
+                    ResumeAtChild: childIdx,
+                    ConsumedBlockSize: priorPagesConsumed
+                        + (fragmentainer.UsedBlockSize - _pageStartUsedBlockSize)),
+                cost: decision.Cost);
+        }
+
+        // BreakAction.Continue — emit + advance.
+        EmitInlineOnlyBlockFragment(
+            inlineOnlyBlock, metrics, comp,
+            inlineOffsetFromContentOrigin: 0,
+            blockOffsetFromContentOrigin: fragmentainer.UsedBlockSize + topShift);
+        fragmentainer.UsedBlockSize = Math.Max(0,
+            fragmentainer.UsedBlockSize + marginBoxBlockSizeForCursor);
+        return null;
+    }
+
+    /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 — emit one
+    /// <see cref="BoxFragment"/> for the inline-only block at the
+    /// supplied border-box offset. Used by both the main-loop
+    /// dispatch (after resolver consultation) AND the recursive
+    /// subtree dispatch (Finding #2). Geometry is the BORDER box on
+    /// both axes.</summary>
+    /// <param name="inlineOnlyBlock">The block (caller validated
+    /// inline-only).</param>
+    /// <param name="metrics">Pre-read box-model extents.</param>
+    /// <param name="comp">Pre-computed inline-pass result + border-
+    /// box sizes.</param>
+    /// <param name="inlineOffsetFromContentOrigin">Inline-axis
+    /// position of the BLOCK's BORDER-BOX inline-start edge from
+    /// the fragmentainer's content-area origin. Caller adds
+    /// <c>marginInlineStart</c> in the in-flow case OR the
+    /// containing parent's content-area inline offset in the
+    /// recursive case.</param>
+    /// <param name="blockOffsetFromContentOrigin">Block-axis
+    /// position of the BLOCK's BORDER-BOX block-start edge from
+    /// the fragmentainer's content-area origin (= post-marginTop
+    /// in the in-flow case).</param>
+    private void EmitInlineOnlyBlockFragment(
+        Box inlineOnlyBlock,
+        InlineOnlyBlockMetrics metrics,
+        InlineOnlyBlockComputation comp,
+        double inlineOffsetFromContentOrigin,
+        double blockOffsetFromContentOrigin)
+    {
+        // Border-box inline-start offset = caller-supplied offset +
+        // marginInlineStart. The caller's offset is already in the
+        // block's "stacking-context" coordinate space (border-box
+        // top-left). For the in-flow case the inline anchor was
+        // computed in <see cref="DispatchInlineOnlyBlock"/> as 0
+        // (no flow-around yet for inline-only blocks per the cycle
+        // 1 sub-cycle 1 deferral) + marginInlineStart applied here.
+        var fragmentInlineOffset = inlineOffsetFromContentOrigin
+            + metrics.MarginInlineStart;
+        _sink.Emit(new BoxFragment(
+            Box: inlineOnlyBlock,
+            InlineOffset: fragmentInlineOffset,
+            BlockOffset: blockOffsetFromContentOrigin,
+            InlineSize: comp.BorderBoxInlineSize,
+            BlockSize: comp.BorderBoxBlockSize,
+            InlineLayout: comp.InlineResult));
+    }
+
+    /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 hardening
+    /// review Finding #2 — emit the inline-only block fragment from
+    /// the recursive subtree walker
+    /// (<see cref="EmitBlockSubtreeRecursive"/>). Computes the
+    /// inline pass + emits at the caller-supplied content-area-
+    /// relative position. The recursive caller has already chosen
+    /// the in-parent-content-area offset via its own stacking +
+    /// margin-collapse arithmetic; this helper just runs the
+    /// inline pass + emits.
+    ///
+    /// <para><b>Pagination scope.</b> The recursive path does NOT
+    /// consult the resolver (the outer-loop's measure pass already
+    /// reserved page space via
+    /// <see cref="MeasureSubtreeVisualBlockExtent"/>). If the
+    /// inline content overflows the parent, the outer-loop's
+    /// forced-overflow path fires per existing cycle 2c semantics.
+    /// True mid-subtree splitting is sub-cycle 2 work.</para>
+    ///
+    /// <para><b>NotSupportedException + atomic-inline diagnostics.</b>
+    /// Routed through the captured diagnostic sink (set at
+    /// AttemptLayout entry); same diagnostic codes as the main-loop
+    /// dispatch.</para></summary>
+    /// <returns>The total block-axis extent the recursive caller
+    /// should advance its child cursor by (= computed border-box
+    /// block size when content was emitted; 0 when the inline pass
+    /// produced nothing).</returns>
+    private double EmitInlineOnlyBlockInRecursion(
+        Box inlineOnlyBlock,
+        double parentContentInlineSize,
+        double inlineOffsetFromContentOrigin,
+        double blockOffsetFromContentOrigin,
+        CancellationToken cancellationToken)
+    {
+        var metrics = ReadInlineOnlyBlockMetrics(inlineOnlyBlock);
+        var computation = ComputeInlineOnlyBlockLayout(
+            inlineOnlyBlock,
+            metrics,
+            containingInlineSize: parentContentInlineSize,
+            out var notSupportedMessage,
+            out var atomicInlineSkipCount,
+            cancellationToken);
+
+        if (atomicInlineSkipCount > 0)
+        {
+            OptimizingBreakResolver.SafeEmit(_capturedDiagSink, new PaginateDiagnostic(
+                PaginateDiagnosticCodes.LayoutInlineAtomicNotSupported001,
+                $"BlockLayouter: inline-only block container (recursive subtree) "
+                + $"contained {atomicInlineSkipCount} atomic inline descendant(s) "
+                + "(inline-block / inline-flex / inline-grid / inline-table / "
+                + "inline-replaced) — sub-cycle 1 skips them in the resulting line.",
+                PaginateDiagnosticSeverity.Warning));
+        }
+
+        if (notSupportedMessage is not null)
+        {
+            OptimizingBreakResolver.SafeEmit(_capturedDiagSink, new PaginateDiagnostic(
+                PaginateDiagnosticCodes.LayoutInlineUnsupported001,
+                $"BlockLayouter: inline pass for inline-only block (recursive "
+                + "subtree) threw NotSupportedException + the inline content "
+                + "was dropped. Detail: " + notSupportedMessage,
+                PaginateDiagnosticSeverity.Warning));
+            return 0;
+        }
+
+        if (computation is null)
+        {
+            return 0;
+        }
+
+        var comp = computation.Value;
+        EmitInlineOnlyBlockFragment(
+            inlineOnlyBlock, metrics, comp,
+            inlineOffsetFromContentOrigin,
+            blockOffsetFromContentOrigin);
+        // Total block-axis cursor advance for the recursive caller =
+        // marginBlockStart + borderBoxBlockSize + marginBlockEnd.
+        // The recursive caller's stacking does not apply collapse
+        // for inline-only blocks (line box breaks adjacency — same
+        // rule as the main loop).
+        return metrics.MarginBlockStart + comp.BorderBoxBlockSize
+            + metrics.MarginBlockEnd;
+    }
+
+    /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 — measure
+    /// the inline-only block's visual block-axis extent without
+    /// emitting. Used by
+    /// <see cref="MeasureSubtreeVisualBlockExtentRecursive"/>'s
+    /// Finding #2 fix so containers with inline-only descendants
+    /// reserve correct page space at pagination time.</summary>
+    private double MeasureInlineOnlyBlockExtent(
+        Box inlineOnlyBlock,
+        double parentContentInlineSize,
+        CancellationToken cancellationToken)
+    {
+        var metrics = ReadInlineOnlyBlockMetrics(inlineOnlyBlock);
+        var computation = ComputeInlineOnlyBlockLayout(
+            inlineOnlyBlock,
+            metrics,
+            containingInlineSize: parentContentInlineSize,
+            out _,
+            out _,
+            cancellationToken);
+        if (computation is null)
+        {
+            return 0;
+        }
+        var comp = computation.Value;
+        // Return the margin-box block-axis extent so the parent's
+        // measure pass reserves enough page space (matches the
+        // in-flow block path's measure semantics).
+        return metrics.MarginBlockStart + comp.BorderBoxBlockSize
+            + metrics.MarginBlockEnd;
+    }
+
+    /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 hardening
+    /// review Finding #4 — depth-first document-order walk that
+    /// collects every contributing
     /// <see cref="BoxKind.TextRun"/> descendant into
     /// <paramref name="textRuns"/>. Skips empty-text TextRun boxes
     /// (no glyphs would be produced) + recurses into
-    /// <see cref="BoxKind.InlineBox"/> wrappers so their contained
-    /// runs flow into the same paragraph.
+    /// <see cref="BoxKind.InlineBox"/> /
+    /// <see cref="BoxKind.AnonymousInline"/> wrappers so their
+    /// contained runs flow into the same paragraph.
     ///
-    /// <para><b>Sub-cycle 1 TODOs</b> (deferred to subsequent
-    /// sub-cycles):</para>
+    /// <para><b>Sub-cycle 1 hardening review Finding #4 (this
+    /// revision):</b>
     /// <list type="bullet">
-    ///   <item><see cref="BoxKind.InlineReplacedElement"/> — atomic
-    ///   inline image / video; needs an inline-replaced placeholder
-    ///   glyph or a real shaping integration with the image's
-    ///   intrinsic dimensions.</item>
-    ///   <item><see cref="BoxKind.InlineBlockContainer"/> +
-    ///   <see cref="BoxKind.InlineFlexContainer"/> +
-    ///   <see cref="BoxKind.InlineGridContainer"/> +
-    ///   <see cref="BoxKind.InlineTable"/> — atomic inlines whose
-    ///   inner content lays out via a dedicated layouter; the result
-    ///   is then injected into the line as an opaque metric box.</item>
-    ///   <item><see cref="BoxKind.LineBreak"/> — <c>&lt;br&gt;</c>;
-    ///   should inject a mandatory-break TextRun (a synthetic
-    ///   "\n" with white-space:pre-line semantics) but sub-cycle 1
-    ///   skips it.</item>
-    ///   <item><see cref="BoxKind.AnonymousInline"/> + nested mixed
-    ///   structures — recursed today (treated as InlineBox-like
-    ///   wrappers); the box-tree producer should already have
-    ///   normalized these but defensive recursion is cheap.</item>
-    /// </list></summary>
-    private static void CollectInlineTextRuns(
+    ///   <item><see cref="BoxKind.LineBreak"/> (<c>&lt;br&gt;</c>) —
+    ///   injects a synthetic TextRun containing <c>"\n"</c> with the
+    ///   parent block's style. <see cref="LineBuilder.Wrap"/> already
+    ///   honors LF as a mandatory wrap point via its
+    ///   <c>IsMandatoryLineBreakControl</c> handling (CSS Text L3
+    ///   §3.2 / UAX #14 segment breaks).</item>
+    ///   <item><see cref="BoxKind.Marker"/> (list bullets / numbers
+    ///   per Lists L3 §3.1) — recurses into the marker's children
+    ///   (typically a single TextRun for the bullet text "•" or
+    ///   list number "1."). The marker's OWN style is used as the
+    ///   TextRun's style when injecting.</item>
+    ///   <item>Atomic inlines
+    ///   (<see cref="BoxKind.InlineBlockContainer"/> /
+    ///   <see cref="BoxKind.InlineFlexContainer"/> /
+    ///   <see cref="BoxKind.InlineGridContainer"/> /
+    ///   <see cref="BoxKind.InlineTable"/> /
+    ///   <see cref="BoxKind.InlineReplacedElement"/>) — counted +
+    ///   the caller emits one LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001
+    ///   diagnostic per skipped atomic. Sub-cycle 2 will inject an
+    ///   atomic-inline placeholder line metric box via a per-
+    ///   layouter intrinsic-sizing seam.</item>
+    /// </list>
+    /// </para></summary>
+    /// <param name="parent">The current parent box being walked.</param>
+    /// <param name="textRuns">The accumulator; runs are appended in
+    /// document order.</param>
+    /// <param name="parentBlockStyle">The inline-only block's own
+    /// style. Used for the synthetic <c>"\n"</c> TextRun on
+    /// <see cref="BoxKind.LineBreak"/> so the mandatory break
+    /// inherits font / line metrics from the surrounding block.</param>
+    /// <param name="cancellationToken">Cooperative cancellation.</param>
+    /// <returns>Count of atomic-inline descendants skipped; caller
+    /// emits one diagnostic per skip (or one aggregated diagnostic
+    /// for the total count).</returns>
+    private static int CollectInlineTextRuns(
         Box parent,
         List<NetPdf.Layout.Inline.TextRun> textRuns,
+        ComputedStyle parentBlockStyle,
         CancellationToken cancellationToken)
     {
+        var skipCount = 0;
         for (var i = 0; i < parent.Children.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -2145,20 +2706,57 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     // the LEAF's style (cascade-resolved), so the
                     // wrapper's own style doesn't need separate
                     // propagation at the LayoutPerRun seam.
-                    CollectInlineTextRuns(child, textRuns, cancellationToken);
+                    skipCount += CollectInlineTextRuns(
+                        child, textRuns, parentBlockStyle, cancellationToken);
                     break;
-                // Sub-cycle 1 TODOs — see XML doc.
+                case BoxKind.LineBreak:
+                    // Per Finding #4 — inject a synthetic LINE
+                    // SEPARATOR (U+2028) TextRun. LineBuilder's
+                    // CSS Text L3 mandatory-break handling
+                    // (IsMandatoryLineBreakControl) treats U+2028
+                    // as a UAX #14 Mandatory break so the wrap
+                    // pass emits a fresh line at this point.
+                    // <para><b>Why U+2028 instead of LF (U+000A)?</b>
+                    // Under <c>white-space: normal</c> (the default
+                    // for typical paragraphs) the preprocessor
+                    // <see cref="LineBuilder.PreprocessTextRunsPerRun"/>
+                    // collapses LF (along with SP, TAB, CR, FF) into
+                    // a single space + strips it across run
+                    // boundaries — so an injected "\n" would NEVER
+                    // reach the wrap pass as a mandatory break. U+2028
+                    // is NOT in the CSS whitespace set
+                    // (<c>IsCssWhiteSpace</c> in LineBuilder), so it
+                    // survives the preprocess + is honored as a
+                    // mandatory break at wrap time. The synthetic run
+                    // carries the inline-only block's style so font /
+                    // line metrics match the surrounding paragraph.</para>
+                    textRuns.Add(new NetPdf.Layout.Inline.TextRun(
+                        "\u2028", parentBlockStyle));
+                    break;
+                case BoxKind.Marker:
+                    // Per Finding #4 — list-item markers (Lists L3
+                    // §3.1) contain their bullet/number content as
+                    // child TextRuns. Recurse into the marker so its
+                    // text flows into the line. Marker's OWN style
+                    // applies (font-family, color may differ from
+                    // surrounding block style per the UA stylesheet
+                    // for list-style-type) — use the marker's style,
+                    // not the block's.
+                    skipCount += CollectInlineTextRuns(
+                        child, textRuns, child.Style, cancellationToken);
+                    break;
+                // Atomic inlines — sub-cycle 2 TODOs.
                 case BoxKind.InlineReplacedElement:
                 case BoxKind.InlineBlockContainer:
                 case BoxKind.InlineFlexContainer:
                 case BoxKind.InlineGridContainer:
                 case BoxKind.InlineTable:
-                case BoxKind.LineBreak:
-                    // Skip — leaves no contribution to the line.
-                    // Sub-cycle 2+ work; placeholder behavior is
-                    // "render as if the atomic inline isn't there"
-                    // which is consistent with the cycle 1-2c
-                    // skip-non-block behavior for the same kinds.
+                    // Per Finding #4 — count + caller emits one
+                    // LAYOUT-INLINE-ATOMIC-NOT-SUPPORTED-001
+                    // diagnostic per skip. Sub-cycle 1 still skips
+                    // the atomic — sub-cycle 2 will inject a
+                    // placeholder line metric box.
+                    skipCount++;
                     break;
                 default:
                     // Defensive: a block-level descendant inside an
@@ -2169,6 +2767,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     break;
             }
         }
+        return skipCount;
     }
 
     /// <summary>Per cycle-2b post-PR-28 review #2 + Copilot #1 — DoS
@@ -2250,6 +2849,35 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         var pHeight = parent.Style.ReadLengthPxOrZero(PropertyId.Height);
         var parentBorderBoxBlockSize = pBorderStart + pPaddingStart + pHeight
             + pPaddingEnd + pBorderEnd;
+
+        // Per Phase 3 Task 11 cycle 1 sub-cycle 1 hardening review
+        // Finding #2 — inline-only blocks contribute their wrapped-
+        // line block extent on top of the box-model border/padding/
+        // height. Pre-Finding-2 the measure pass returned only the
+        // own border-box size, ignoring inline content entirely —
+        // the outer-loop's pagination dispatch would reserve no
+        // page space for inline paragraphs + the painter would
+        // silently clip when a too-tall paragraph hit the page
+        // boundary.
+        //
+        // The shaper resolver gate matches the dispatch site —
+        // without a resolver the inline pass is skipped (no
+        // contribution to the extent).
+        //
+        // Perf note: this runs the inline pass during the measure
+        // walk; the dispatch site then runs it AGAIN at emit time.
+        // Sub-cycle 2 will cache the result; sub-cycle 1's
+        // correct-but-slow path mirrors the existing
+        // EmitBlockSubtreeRecursive vs. MeasureSubtreeVisualBlockExtent
+        // duplicate-walk pattern.
+        if (_shaperResolver is not null && IsInlineOnlyBlockContainer(parent))
+        {
+            var inlineMargined = MeasureInlineOnlyBlockExtent(
+                parent,
+                parentContentInlineSize: _bfcContentInlineSize,
+                cancellationToken);
+            return Math.Max(parentBorderBoxBlockSize, inlineMargined);
+        }
 
         // Non-flow block kinds (Table/Flex/Grid/Replaced) are atomic
         // to the BlockLayouter — their inner geometry belongs to a

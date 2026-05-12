@@ -1137,6 +1137,112 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 }
             }
 
+            // Per Phase 3 Task 14 cycle 1 hardening (Findings 1 + 2) —
+            // multicol container pre-measure. For multicol containers,
+            // grow `borderBoxBlockSize` to fit the columnized content
+            // extent. This serves two purposes:
+            //   (1) Finding 2 — when the container has `height: auto`,
+            //       `borderBoxBlockSize` reflects ONLY the wrapper's
+            //       border + padding (CSS height = 0 for auto). The
+            //       wrapper's painted size would be ~0 px; the cursor
+            //       advance (which uses the subtree-aware extent fix
+            //       in MeasureSubtreeVisualBlockExtentRecursive) is
+            //       correct, but the wrapper fragment is painted
+            //       smaller than its content. Growing borderBoxBlockSize
+            //       here makes the wrapper visually contain the columns.
+            //   (2) Finding 1 — the pre-measured columnized extent is
+            //       also surfaced to the outer pagination decision via
+            //       the subtree-aware measure. The cursor advance below
+            //       uses the columnized extent (not the serial sum) so
+            //       siblings after the multicol don't overlap.
+            //
+            // For auto-height multicol the per-column block-size is
+            // derived from the fragmentainer's REMAINING block-space
+            // (= fragmentainer.BlockSize - UsedBlockSize - wrapper's
+            // vertical border + padding). This is the "fill the
+            // available page space columnwise" semantics CSS
+            // Multi-column L1 §3.5 describes for an auto-height
+            // multicol container.
+            //
+            // <b>Caveat: 2× cost.</b> The pre-measure runs a full
+            // dry-run multicol layout against a discarding sink; the
+            // subsequent emit pass re-runs it against the real outer
+            // sink. Acceptable for cycle 2 hardening; sub-cycle 3+
+            // may cache the result per Box.
+            if (IsMulticolContainer(child))
+            {
+                var multicolWrapperBorderBlockStart =
+                    child.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
+                var multicolWrapperPaddingBlockStart =
+                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingTop);
+                var multicolWrapperBorderBlockEnd =
+                    child.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
+                var multicolWrapperPaddingBlockEnd =
+                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingBottom);
+                var multicolWrapperBorderInlineStart =
+                    child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
+                var multicolWrapperPaddingInlineStart =
+                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
+                var multicolWrapperBorderInlineEnd =
+                    child.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
+                var multicolWrapperPaddingInlineEnd =
+                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
+                var multicolWrapperBorderPaddingBlock =
+                    multicolWrapperBorderBlockStart + multicolWrapperPaddingBlockStart
+                    + multicolWrapperBorderBlockEnd + multicolWrapperPaddingBlockEnd;
+                var multicolContentInlineSizeForMeasure = Math.Max(1.0,
+                    borderBoxInlineSize
+                    - multicolWrapperBorderInlineStart - multicolWrapperPaddingInlineStart
+                    - multicolWrapperBorderInlineEnd - multicolWrapperPaddingInlineEnd);
+                // Per Finding 2 — derive the per-column block-size from
+                // the fragmentainer's remaining block-space when the
+                // wrapper has height: auto. Without this the per-
+                // column block-size would be the wrapper's content-
+                // block-size minus border/padding = 0 px (or 1 px
+                // after the clamp inside MulticolLayouter), and the
+                // multicol immediately force-overflows.
+                double multicolContentBlockSizeForMeasure;
+                if (IsHeightAuto(child))
+                {
+                    // hypothetical block top = where the wrapper's
+                    // border-box would land (after margin collapse).
+                    // Available remaining = fragmentainer's block-size
+                    // - hypothetical top - wrapper's vertical border +
+                    // padding (the columns sit INSIDE the wrapper's
+                    // content area).
+                    var hypotheticalTop = fragmentainer.UsedBlockSize + topShift;
+                    var remaining = fragmentainer.BlockSize - hypotheticalTop
+                        - multicolWrapperBorderPaddingBlock;
+                    multicolContentBlockSizeForMeasure = Math.Max(1.0, remaining);
+                }
+                else
+                {
+                    multicolContentBlockSizeForMeasure = Math.Max(1.0,
+                        borderBoxBlockSize - multicolWrapperBorderPaddingBlock);
+                }
+
+                var multicolMeasuredColumnExtent = PreMeasureMulticolColumnExtent(
+                    child,
+                    contentInlineSize: multicolContentInlineSizeForMeasure,
+                    contentBlockSize: multicolContentBlockSizeForMeasure,
+                    fragmentainer: fragmentainer,
+                    layout: ref layout,
+                    cancellationToken: cancellationToken);
+
+                // Grow borderBoxBlockSize so the painted wrapper
+                // visually contains the columns. For auto-height the
+                // grown value is just the columnized extent + border/
+                // padding; for explicit-height it's the max of the CSS
+                // height + the columnized extent + border/padding (the
+                // wrapper grows when columns overflow the CSS height).
+                var multicolDrivenBorderBox =
+                    multicolMeasuredColumnExtent + multicolWrapperBorderPaddingBlock;
+                if (multicolDrivenBorderBox > borderBoxBlockSize)
+                {
+                    borderBoxBlockSize = multicolDrivenBorderBox;
+                }
+            }
+
             // Per cycle 2c post-PR-29 review #7 — `marginBoxBlockSize`
             // (= `topShift + borderBoxBlockSize + marginEnd`) was
             // removed. Cycle 2c introduced the subtree-aware
@@ -1597,10 +1703,31 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     borderBoxInlineSize
                     - multicolBorderInlineStart - multicolPaddingInlineStart
                     - multicolBorderInlineEnd - multicolPaddingInlineEnd);
-                var multicolContentBlockSize = Math.Max(1.0,
-                    borderBoxBlockSize
-                    - multicolBorderBlockStart - multicolPaddingBlockStart
-                    - multicolBorderBlockEnd - multicolPaddingBlockEnd);
+                // Per Phase 3 Task 14 cycle 1 hardening (Finding 2) —
+                // when the wrapper has height: auto, derive the per-
+                // column block-size from the fragmentainer's REMAINING
+                // block-space (mirrors the pre-measure path above so
+                // emit + measure agree). Pre-fix the per-column block-
+                // size came from borderBoxBlockSize - border/padding —
+                // which for height:auto is ~0 → the multicol
+                // immediately force-overflowed + truncated all content.
+                double multicolContentBlockSize;
+                if (IsHeightAuto(child))
+                {
+                    var multicolWrapperBorderPaddingBlockEmit =
+                        multicolBorderBlockStart + multicolPaddingBlockStart
+                        + multicolBorderBlockEnd + multicolPaddingBlockEnd;
+                    var remaining = fragmentainer.BlockSize - blockOffset
+                        - multicolWrapperBorderPaddingBlockEmit;
+                    multicolContentBlockSize = Math.Max(1.0, remaining);
+                }
+                else
+                {
+                    multicolContentBlockSize = Math.Max(1.0,
+                        borderBoxBlockSize
+                        - multicolBorderBlockStart - multicolPaddingBlockStart
+                        - multicolBorderBlockEnd - multicolPaddingBlockEnd);
+                }
                 var multicolContentInlineOffset =
                     inFlowInlineOffset + multicolBorderInlineStart + multicolPaddingInlineStart;
                 var multicolContentBlockOffset =
@@ -2218,6 +2345,74 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 }
             }
 
+            // Per Phase 3 Task 14 cycle 1 hardening (Findings 1 + 2) —
+            // nested multicol wrapper pre-measure. Mirrors the outer
+            // dispatch path's pre-measure: grow childBorderBoxBlockSize
+            // (the wrapper's painted block extent) to fit the columnized
+            // content. Without this:
+            //   (a) for height:auto multicol nested inside the recursion
+            //       the wrapper is painted at ~0 px (CSS height = 0);
+            //   (b) for explicit-height multicol whose columns overflow,
+            //       the wrapper's painted size doesn't reflect the
+            //       actual content extent.
+            if (IsMulticolContainer(child) && _capturedFragmentainer is not null)
+            {
+                var nMcBorderBlockStart =
+                    child.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
+                var nMcPaddingBlockStart =
+                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingTop);
+                var nMcBorderBlockEnd =
+                    child.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
+                var nMcPaddingBlockEnd =
+                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingBottom);
+                var nMcBorderInlineStart =
+                    child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
+                var nMcPaddingInlineStart =
+                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
+                var nMcBorderInlineEnd =
+                    child.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
+                var nMcPaddingInlineEnd =
+                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
+                var nMcBorderPaddingBlock = nMcBorderBlockStart + nMcPaddingBlockStart
+                    + nMcBorderBlockEnd + nMcPaddingBlockEnd;
+                var nMcContentInlineSize = Math.Max(1.0,
+                    childBorderBoxInlineSize
+                    - nMcBorderInlineStart - nMcPaddingInlineStart
+                    - nMcBorderInlineEnd - nMcPaddingInlineEnd);
+                double nMcContentBlockSize;
+                if (IsHeightAuto(child))
+                {
+                    var remaining = _capturedFragmentainer.BlockSize - childBlockOffset
+                        - nMcBorderPaddingBlock;
+                    nMcContentBlockSize = Math.Max(1.0, remaining);
+                }
+                else
+                {
+                    nMcContentBlockSize = Math.Max(1.0,
+                        childBorderBoxBlockSize - nMcBorderPaddingBlock);
+                }
+                var nMcMeasureLayout = new LayoutContext(_capturedFragmentainer)
+                {
+                    Diagnostics = _diagnostics,
+                };
+                var nMcColumnExtent = PreMeasureMulticolColumnExtent(
+                    child,
+                    contentInlineSize: nMcContentInlineSize,
+                    contentBlockSize: nMcContentBlockSize,
+                    fragmentainer: _capturedFragmentainer,
+                    layout: ref nMcMeasureLayout,
+                    cancellationToken: cancellationToken);
+                var nMcDriven = nMcColumnExtent + nMcBorderPaddingBlock;
+                if (nMcDriven > childBorderBoxBlockSize)
+                {
+                    childBorderBoxBlockSize = nMcDriven;
+                }
+                if (nMcDriven > childEffectiveBlockSize)
+                {
+                    childEffectiveBlockSize = nMcDriven;
+                }
+            }
+
             // Fragment records the BORDER box (not subtree extent) —
             // the subtree extent is for cursor advance only. Per
             // cycle 2b, the painter sees the border box; descendants
@@ -2252,9 +2447,24 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     childBorderBoxInlineSize
                     - nestedMulticolBorderInlineStart - nestedMulticolPaddingInlineStart
                     - nestedMulticolBorderInlineEnd - nestedMulticolPaddingInlineEnd);
-                var nestedMulticolContentBlockSize = Math.Max(1.0,
-                    childBorderBoxBlockSize
-                    - borderStart - paddingStart - paddingEnd - borderEnd);
+                // Per Phase 3 Task 14 cycle 1 hardening (Finding 2) —
+                // when the wrapper has height: auto, derive the per-
+                // column block-size from the captured fragmentainer's
+                // REMAINING block-space. Mirrors the outer dispatch
+                // path so emit + measure agree.
+                double nestedMulticolContentBlockSize;
+                if (IsHeightAuto(child) && _capturedFragmentainer is not null)
+                {
+                    var nestedRemaining = _capturedFragmentainer.BlockSize - childBlockOffset
+                        - borderStart - paddingStart - paddingEnd - borderEnd;
+                    nestedMulticolContentBlockSize = Math.Max(1.0, nestedRemaining);
+                }
+                else
+                {
+                    nestedMulticolContentBlockSize = Math.Max(1.0,
+                        childBorderBoxBlockSize
+                        - borderStart - paddingStart - paddingEnd - borderEnd);
+                }
                 var nestedMulticolContentInlineOffset =
                     childInlineOffset
                     + nestedMulticolBorderInlineStart + nestedMulticolPaddingInlineStart;
@@ -3782,6 +3992,62 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             return parentBorderBoxBlockSize;
         }
 
+        // Per Phase 3 Task 14 cycle 1 hardening (Finding 1) — multicol
+        // containers contribute the COLUMNIZED extent, not the serial
+        // sum of their children. Without this branch the children walk
+        // below stacks the multicol's children serially → reports a
+        // serial total that grossly overestimates the actual columnized
+        // block extent (a 2-column container with two 90-px children
+        // reports ~180 px instead of the columnized ~90 px). The outer
+        // cursor-advance + outer pagination then reserve false blank
+        // space + dispatch wrong page breaks for siblings AFTER the
+        // multicol container.
+        //
+        // The pre-measure runs a dry-run multicol layout against a
+        // discarding sink + returns the maximum column-relative
+        // BlockOffset+BlockSize reached. The result is folded with the
+        // wrapper's border + padding to produce the wrapper's true
+        // visual block extent.
+        if (IsMulticolContainer(parent) && _capturedFragmentainer is not null)
+        {
+            var mBorderInlineStart = parent.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
+            var mPaddingInlineStart = parent.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
+            var mBorderInlineEnd = parent.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
+            var mPaddingInlineEnd = parent.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
+            var multicolWrapperInlineSize = _bfcContentInlineSize;
+            var multicolContentInlineSize = Math.Max(1.0,
+                multicolWrapperInlineSize - mBorderInlineStart - mPaddingInlineStart
+                - mBorderInlineEnd - mPaddingInlineEnd);
+            // For the measure pass we don't know the wrapper's actual
+            // CSS height vs. fragmentainer-remaining; use the CSS
+            // height when explicit, else the captured fragmentainer's
+            // total block-size as a generous upper bound (the dry-run
+            // only reports the actual used extent, not the bound).
+            var multicolContentBlockBound = IsHeightAuto(parent)
+                ? _capturedFragmentainer.BlockSize
+                : Math.Max(1.0,
+                    pHeight); // = ReadLengthPxOrZero(Height); auto returned 0 but we just gated out.
+            // Synthesize a transient layout context for the
+            // measure-time recursion. The captured outer layout
+            // (LayoutContext) isn't accessible here; the discarding
+            // sink doesn't write to the outer sink so the absolute
+            // anchors don't matter.
+            var measureLayout = new LayoutContext(_capturedFragmentainer)
+            {
+                Diagnostics = _diagnostics,
+            };
+            var columnExtent = PreMeasureMulticolColumnExtent(
+                parent,
+                contentInlineSize: multicolContentInlineSize,
+                contentBlockSize: multicolContentBlockBound,
+                fragmentainer: _capturedFragmentainer,
+                layout: ref measureLayout,
+                cancellationToken: cancellationToken);
+            var wrapperBorderPadding = pBorderStart + pPaddingStart + pPaddingEnd + pBorderEnd;
+            var multicolVisualExtent = columnExtent + wrapperBorderPadding;
+            return Math.Max(parentBorderBoxBlockSize, multicolVisualExtent);
+        }
+
         // Walk block-level children, computing the deepest bottom-edge
         // reached. Children's content area top is at (border + padding)
         // from parent's border-box top.
@@ -4073,6 +4339,185 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             _capturedFragmentainer, ref transientLayout, cancellationToken);
         _measuredTableContentHeightCache[wrapper] = contentHeight;
         return contentHeight;
+    }
+
+    /// <summary>Per Phase 3 Task 14 cycle 1 hardening (Finding 1) —
+    /// dry-run measure of a multicol container's actual columnized
+    /// block extent (= the MAXIMUM block-axis position reached by any
+    /// per-column content fragment, NOT the serial sum of the
+    /// container's children).
+    ///
+    /// <para>Pre-fix: <see cref="MeasureSubtreeVisualBlockExtentRecursive"/>
+    /// walked a multicol container's children as if they stacked
+    /// serially, returning the sum of their block-axis extents. For a
+    /// 2-column container with two 90-px children, the serial sum was
+    /// ~180 px while the actual columnized layout (90 px in column 0 +
+    /// 90 px in column 1) reaches only ~90 px in the block axis. The
+    /// outer cursor advance + outer pagination decision saw the false
+    /// 180 px → reserved blank space + dispatched wrong page breaks
+    /// for siblings AFTER the multicol container.</para>
+    ///
+    /// <para>Post-fix: this helper constructs a transient
+    /// <see cref="MulticolLayouter"/> with a DISCARDING sink + runs
+    /// AttemptLayout against a synthetic fragmentainer sized to the
+    /// container's allocated content-block-size; the discarding sink
+    /// records the maximum BlockOffset + BlockSize reached by any
+    /// emitted fragment. The maximum block-extent reached is the
+    /// columnized height (= the longest column).</para>
+    ///
+    /// <para><b>Caveat: 2× cost.</b> Cycle 1 hardening doesn't cache;
+    /// each multicol container is measured + emitted twice (once
+    /// against the discarding sink, once against the real outer sink).
+    /// Sub-cycle 2+ may cache the measurement per Box similarly to
+    /// <see cref="MeasureNestedTableContentExtent"/>.</para>
+    ///
+    /// <para>Returns the columnized content-block extent — DOES NOT
+    /// include the wrapper's own border + padding. The caller folds in
+    /// the wrapper-axis border + padding to get the full border-box
+    /// extent (mirrors the table wrapper pattern in
+    /// <see cref="PreMeasureTableIfNeeded"/>).</para></summary>
+    /// <param name="multicolContainer">The multicol container box
+    /// (must satisfy <see cref="IsMulticolContainer"/>; the caller is
+    /// the gate).</param>
+    /// <param name="contentInlineSize">The container's content-box
+    /// inline extent (border-box minus border + padding inline).</param>
+    /// <param name="contentBlockSize">The container's content-box
+    /// block extent that the layouter should fit the columns into.
+    /// For <c>height: auto</c> containers the caller passes the
+    /// fragmentainer-derived available block-size (Finding 2); for
+    /// explicit-height containers it's the CSS height.</param>
+    /// <param name="fragmentainer">The outer fragmentainer (for
+    /// non-finite-geometry diagnostic threading + carrying the
+    /// pagination context).</param>
+    /// <param name="layout">The outer layout context (carries the
+    /// ambient diagnostics sink).</param>
+    /// <param name="cancellationToken">Threaded into the dry-run
+    /// layouter so a long-running content measurement responds to
+    /// cancellation.</param>
+    /// <returns>The maximum block-axis extent reached by any column,
+    /// measured RELATIVE TO THE CONTAINER'S CONTENT-BOX TOP. Returns
+    /// 0 when the container has no in-flow content.</returns>
+    private double PreMeasureMulticolColumnExtent(
+        Box multicolContainer,
+        double contentInlineSize,
+        double contentBlockSize,
+        FragmentainerContext fragmentainer,
+        ref LayoutContext layout,
+        CancellationToken cancellationToken)
+    {
+        if (contentInlineSize <= 0 || contentBlockSize <= 0)
+        {
+            return 0;
+        }
+
+        var discardingSink = new MulticolDiscardingMeasureSink();
+        using var dryRunLayouter = new MulticolLayouter(
+            rootBox: multicolContainer,
+            sink: discardingSink,
+            incomingContinuation: null,
+            diagnostics: null,
+            shaperResolver: _shaperResolver);
+        // ConfigureEmission anchors the COLUMN content in the OUTER
+        // fragmentainer's coordinate space; for the dry-run the
+        // absolute anchors don't matter (the discarding sink reads
+        // BlockOffset relative to whatever anchor we pass). Anchor at
+        // 0,0 so the measured max BlockOffset is the column-relative
+        // extent we want to return.
+        dryRunLayouter.ConfigureEmission(
+            contentInlineOffset: 0,
+            contentBlockOffset: 0,
+            contentInlineSize: contentInlineSize,
+            contentBlockSize: contentBlockSize);
+
+        // Synthetic outer fragmentainer for the dry-run. The
+        // BlockSize is generous (= the supplied contentBlockSize)
+        // since each column's sub-fragmentainer uses contentBlockSize
+        // as its own block-size; the outer fragmentainer's size only
+        // matters for the discarded forced-overflow diagnostic.
+        var dryRunFragmentainer = new FragmentainerContext(
+            contentInlineSize: contentInlineSize,
+            blockSize: contentBlockSize);
+        // Use a fresh dry-run resolver so the outer resolver isn't
+        // polluted by per-column measurement checkpoints. Pass a
+        // null-diagnostics layout context so the dry-run's
+        // forced-overflow diagnostic (if any) doesn't double-emit.
+        var dryRunLayout = new LayoutContext(dryRunFragmentainer)
+        {
+            Diagnostics = null,
+        };
+        using var dryRunResolver = new BreakResolver();
+        _ = dryRunLayouter.AttemptLayout(
+            dryRunFragmentainer,
+            ref dryRunLayout,
+            dryRunResolver,
+            LayoutAttemptStrategy.LastResort,
+            cancellationToken);
+
+        return discardingSink.MaxColumnBlockExtent;
+    }
+
+    /// <summary>Per Phase 3 Task 14 cycle 1 hardening (Finding 1) —
+    /// discarding sink for the dry-run multicol pre-measure. Records
+    /// the maximum (BlockOffset + BlockSize) seen for any emitted
+    /// fragment — that maximum is the columnized block extent
+    /// (= the longest column's bottom edge in the container's
+    /// content-box coordinate space, because
+    /// <see cref="PreMeasureMulticolColumnExtent"/> anchors the
+    /// emission at 0,0).
+    ///
+    /// <para>Drops the fragments themselves; the caller only needs
+    /// the extent. Rollback is a no-op since dry-run pagination
+    /// never asks for one (the dry-run uses a fresh BreakResolver
+    /// that doesn't know about earlier checkpoints).</para></summary>
+    private sealed class MulticolDiscardingMeasureSink : IBlockFragmentSink
+    {
+        private int _cursor;
+
+        public double MaxColumnBlockExtent { get; private set; }
+
+        public int Cursor => _cursor;
+
+        public void Emit(BoxFragment fragment)
+        {
+            _cursor++;
+            // Anchored at 0,0 so BlockOffset is column-relative.
+            var bottom = fragment.BlockOffset + fragment.BlockSize;
+            if (bottom > MaxColumnBlockExtent)
+            {
+                MaxColumnBlockExtent = bottom;
+            }
+        }
+
+        public void RollbackTo(int cursor)
+        {
+            // The dry-run uses a fresh BreakResolver so the resolver
+            // never names a pre-existing checkpoint; this method is
+            // unreachable in practice. Defensive no-op for forward-
+            // compat with future multi-step measure paths.
+            if (cursor < _cursor)
+            {
+                _cursor = cursor;
+            }
+        }
+    }
+
+    /// <summary>Per Phase 3 Task 14 cycle 1 hardening (Finding 2) —
+    /// predicate distinguishing <c>height: auto</c> from an explicit
+    /// <c>height: 0</c> or <c>height: &lt;positive px&gt;</c> on a
+    /// box's computed style. Returns <see langword="true"/> when the
+    /// height slot's tag is anything OTHER than
+    /// <see cref="ComputedSlotTag.LengthPx"/> (= the keyword <c>auto</c>,
+    /// or unset).
+    ///
+    /// <para>The pre-cycle-3 <see cref="ComputedStyleLayoutExtensions.ReadLengthPxOrZero"/>
+    /// path returns 0 for BOTH <c>auto</c> AND explicit <c>0px</c>;
+    /// callers that need to distinguish these cases (Finding 2's
+    /// auto-height multicol path) read the slot directly via this
+    /// predicate.</para></summary>
+    private static bool IsHeightAuto(Box box)
+    {
+        var slot = box.Style.Get(PropertyId.Height);
+        return slot.Tag != ComputedSlotTag.LengthPx;
     }
 
     /// <summary>Per Phase 3 Task 12 sub-cycle 1 hardening (Finding 1)

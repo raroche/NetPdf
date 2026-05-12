@@ -347,14 +347,38 @@ public sealed class MulticolLayouterTests
     [Fact]
     public void MulticolLayouter_rejects_non_MulticolContinuation_incoming()
     {
-        // The constructor accepts MulticolContinuation OR null.
-        // Other continuation kinds throw.
+        // Per Phase 3 Task 14 cycle 1 hardening (Finding 5) — the
+        // constructor REJECTS any non-null incomingContinuation
+        // (cycle 1 doesn't yet support resume). A BlockContinuation is
+        // one example of a non-null shape; the test asserts the
+        // rejection on this wrong-type input.
         var sink = new RecordingFragmentSink();
         var box = BuildMulticolContainer(columnCount: 2);
         var continuation = new BlockContinuation(ResumeAtChild: 0, ConsumedBlockSize: 0);
 
         Assert.Throws<ArgumentException>(() =>
             new MulticolLayouter(box, sink, incomingContinuation: continuation));
+    }
+
+    [Fact]
+    public void Multicol_rejects_non_null_continuation_until_subcycle_2()
+    {
+        // Per Phase 3 Task 14 cycle 1 hardening (Finding 5) — even
+        // a NULL-typed MulticolContinuation (the "right shape" for
+        // sub-cycle 2's resume contract) is rejected by cycle 1's
+        // constructor. Pre-fix the constructor stored a non-null
+        // MulticolContinuation in `_incomingContinuation` but never
+        // read it from AttemptLayout, so accidental resume restarted
+        // from column 0 + duplicated content. Sub-cycle 2 will
+        // re-introduce a `_incomingContinuation` field + read it for
+        // the multi-page multicol resume.
+        var sink = new RecordingFragmentSink();
+        var box = BuildMulticolContainer(columnCount: 2);
+        var continuation = new MulticolContinuation(NextColumnIndex: 0);
+
+        var ex = Assert.Throws<ArgumentException>(() =>
+            new MulticolLayouter(box, sink, incomingContinuation: continuation));
+        Assert.Contains("Sub-cycle 1 does not yet support resume", ex.Message);
     }
 
     [Fact]
@@ -517,6 +541,179 @@ public sealed class MulticolLayouterTests
             thrown = ex;
         }
         Assert.NotNull(thrown);
+    }
+
+    // ====================================================================
+    //  Phase 3 Task 14 cycle 1 hardening — Finding 1 (no-overlap),
+    //  Finding 2 (auto-height), Finding 4 (non-finite geometry)
+    // ====================================================================
+
+    [Fact]
+    public void Multicol_followed_by_paragraph_does_not_overlap()
+    {
+        // Per Phase 3 Task 14 cycle 1 hardening (Finding 1) — when a
+        // multicol container is followed by a sibling block, the
+        // sibling must land at the COLUMNIZED bottom edge (= max
+        // column extent), not the SERIAL sum of multicol children.
+        // For a 2-column 232-px-wide container with two 90-px-tall
+        // children (each filling a column) + container height=100,
+        // the columnized bottom is at ~100 px. Pre-fix the cursor
+        // advance used the serial subtree extent (~180 px from sum of
+        // children) → the next sibling landed at ~180 px, leaving
+        // 80 px of false blank space. Post-fix: the next sibling
+        // lands at the columnized end.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var multicol = BuildMulticolContainer(columnCount: 2);
+        SetLengthPx(multicol.Style, PropertyId.Height, 100);
+        // Two children, each 90 tall — each fills one column.
+        for (var i = 0; i < 2; i++)
+        {
+            var s = MakeStyle();
+            SetLengthPx(s, PropertyId.Height, 90);
+            multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, s, MakeElement()));
+        }
+        // The sibling that follows the multicol.
+        var siblingStyle = MakeStyle();
+        SetLengthPx(siblingStyle, PropertyId.Height, 50);
+        var sibling = Box.ForElement(BoxKind.BlockContainer, siblingStyle, MakeElement());
+        root.AppendChild(multicol);
+        root.AppendChild(sibling);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 232, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? siblingFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == sibling) siblingFragment = f;
+        }
+        Assert.NotNull(siblingFragment);
+        // Sibling should land at the multicol container's bottom (100,
+        // = height). NOT at 180 (= serial sum of 90 + 90).
+        Assert.True(siblingFragment!.Value.BlockOffset <= 110,
+            $"Sibling BlockOffset {siblingFragment.Value.BlockOffset} > 110 — "
+            + "multicol cursor advance is still using serial sum of "
+            + "children (Finding 1 regression).");
+        // And > 0 — should land BELOW the multicol container.
+        Assert.True(siblingFragment.Value.BlockOffset >= 90,
+            $"Sibling BlockOffset {siblingFragment.Value.BlockOffset} < 90 — "
+            + "sibling overlapping multicol content.");
+    }
+
+    [Fact]
+    public void Multicol_auto_height_derives_column_size_from_fragmentainer_remaining()
+    {
+        // Per Phase 3 Task 14 cycle 1 hardening (Finding 2) — when a
+        // multicol container has `height: auto` (= no Height set on
+        // the style), the per-column block-size MUST be derived from
+        // the fragmentainer's REMAINING block-space, NOT the wrapper's
+        // ~0 px content-block-size (which auto produces). Pre-fix the
+        // per-column block-size was 1 px (post-clamp), so the
+        // multicol immediately force-overflowed + truncated content.
+        // Post-fix: the columns get the available page space.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var multicol = BuildMulticolContainer(columnCount: 2);
+        // No Height set → height: auto.
+        var childStyle = MakeStyle();
+        SetLengthPx(childStyle, PropertyId.Height, 200);
+        var child = Box.ForElement(BoxKind.BlockContainer, childStyle, MakeElement());
+        multicol.AppendChild(child);
+        root.AppendChild(multicol);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: diagSink,
+            shaperResolver: shaper);
+        // Plenty of fragmentainer space (800 px); the 200-px child
+        // should fit easily in column 0 if auto-height is honored.
+        var ctx = new FragmentainerContext(contentInlineSize: 232, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        // Child should be emitted (= fit in column 0). Pre-fix:
+        // forced overflow + truncated → no child fragment.
+        BoxFragment? childFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == child) childFragment = f;
+        }
+        Assert.NotNull(childFragment);
+        // No forced-overflow diagnostic — content fits in column 0.
+        foreach (var d in diagSink.Diagnostics)
+        {
+            Assert.NotEqual(
+                PaginateDiagnosticCodes.LayoutMulticolForcedOverflow001,
+                d.Code);
+        }
+    }
+
+    [Fact]
+    public void Multicol_with_non_finite_column_gap_clamps_and_emits_diagnostic()
+    {
+        // Per Phase 3 Task 14 cycle 1 hardening (Finding 4) — when
+        // (columnCount - 1) * columnGap overflows to ±Infinity,
+        // MulticolLayouter clamps columnGap so totalGap < containerInlineSize / 2
+        // + emits LAYOUT-MULTICOL-NON-FINITE-GEOMETRY-001. Pre-fix the
+        // arithmetic propagated ±Inf into the per-column offset cascade.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+
+        // Inject a pathological column-gap via direct style mutation —
+        // the CSS resolver's gate would normally reject 1e300 px (it
+        // overflows float32), but we bypass via the typed-slot API to
+        // exercise the layouter's defensive clamp.
+        var multicol = BuildMulticolContainer(columnCount: 3);
+        multicol.Style.Set(PropertyId.ColumnGap, ComputedSlot.FromLengthPx(1e30));
+
+        using var layouter = new MulticolLayouter(
+            rootBox: multicol, sink: sink, incomingContinuation: null,
+            diagnostics: diagSink);
+        layouter.ConfigureEmission(
+            contentInlineOffset: 0,
+            contentBlockOffset: 0,
+            contentInlineSize: 232,
+            contentBlockSize: 100);
+
+        var ctx = new FragmentainerContext(contentInlineSize: 232, blockSize: 100);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        // The non-finite-geometry diagnostic should fire.
+        var hasNonFinite = false;
+        foreach (var d in diagSink.Diagnostics)
+        {
+            if (d.Code == PaginateDiagnosticCodes.LayoutMulticolNonFiniteGeometry001
+                && d.Severity == PaginateDiagnosticSeverity.Warning)
+            {
+                hasNonFinite = true;
+                break;
+            }
+        }
+        Assert.True(hasNonFinite,
+            "Expected LAYOUT-MULTICOL-NON-FINITE-GEOMETRY-001 when "
+            + "(columnCount - 1) * columnGap overflows. Diagnostics: "
+            + string.Join("; ", FormatDiagnostics(diagSink.Diagnostics)));
     }
 
     // ====================================================================

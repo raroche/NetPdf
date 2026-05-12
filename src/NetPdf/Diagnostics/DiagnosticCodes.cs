@@ -392,5 +392,21 @@ internal static class DiagnosticCodes
     public const string LayoutMulticolForcedOverflow001 =
         "LAYOUT-MULTICOL-FORCED-OVERFLOW-001";
 
+    /// <summary>
+    /// Per Phase 3 Task 14 cycle 1 hardening (Finding 4) — emitted by
+    /// the multicol layouter when an arithmetic combination of
+    /// <c>column-count</c> + <c>column-gap</c> would produce
+    /// non-finite per-column inline-axis geometry (e.g.,
+    /// <c>column-gap: 1e300</c> with 100 columns drives
+    /// <c>totalGap = (N-1) * columnGap</c> past <c>double.MaxValue</c>
+    /// → <c>Infinity</c>). The layouter clamps the bad value to a
+    /// sane cap (column-gap is forced to a value that keeps
+    /// <c>totalGap &lt; containerInlineSize / 2</c>) so emission can
+    /// continue.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string LayoutMulticolNonFiniteGeometry001 =
+        "LAYOUT-MULTICOL-NON-FINITE-GEOMETRY-001";
+
     // endregion LAYOUT-*
 }

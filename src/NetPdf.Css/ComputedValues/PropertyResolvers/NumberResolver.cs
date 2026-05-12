@@ -76,6 +76,24 @@ internal static class NumberResolver
                 "negative value not allowed for this property", location);
             return ResolverResult.Invalid();
         }
+        // Per Phase 3 Task 14 cycle 1 hardening (Finding 3) —
+        // column-count is spec'd as positive integer per CSS
+        // Multi-column L1 §3.2 ("The legal values of column-count are
+        // auto + <integer> with integer > 0"). Zero + negative fall
+        // back to auto (= the layouter sees the slot as a non-Integer
+        // tag via ReadColumnCount + the BlockLayouter dispatch skips
+        // MulticolLayouter). Without this gate `column-count: 0` would
+        // produce an Integer slot with value 0; ReadColumnCount
+        // already rejects that (`n >= 1`), but emitting the diagnostic
+        // here surfaces the author error rather than silently treating
+        // it as auto.
+        if (propertyId == PropertyId.ColumnCount && n < 1)
+        {
+            Emit(diagnostics, propertyName, value,
+                "column-count requires a positive integer (>= 1) per CSS Multi-column L1 §3.2",
+                location);
+            return ResolverResult.Invalid();
+        }
         return ResolverResult.Resolved(ComputedSlot.FromInteger(n));
     }
 

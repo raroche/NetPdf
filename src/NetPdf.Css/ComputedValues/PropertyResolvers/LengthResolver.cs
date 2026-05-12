@@ -76,10 +76,14 @@ internal static class LengthResolver
         //   - column-gap:   <length> | normal
         // Both are Length-typed (not LengthPercentageAuto / TextSpacing)
         // because they don't admit percentages OR the broader keyword
-        // sets. The cycle-1 layouter reads these via
-        // <c>ComputedStyleLayoutExtensions.ReadColumnGap</c> /
-        // <c>ReadColumnWidth</c> which treat a non-LengthPx slot as the
-        // initial keyword.
+        // sets. The cycle-1 layouter reads column-gap via
+        // <c>ComputedStyleLayoutExtensions.ReadColumnGap</c>, which
+        // treats a non-LengthPx slot as the initial keyword (= 16 px
+        // hard-coded). <c>column-width</c> is parsed + cascades but
+        // is unused by cycle 1 — sub-cycle 2+ adds the
+        // column-width-derived column count + a corresponding
+        // <c>ReadColumnWidth</c> extension; the Keyword-slot encoding
+        // here is forward-compat for that work.
         if (TryMatchMulticolKeyword(value, propertyId, out var multicolKeywordSlot))
             return ResolverResult.Resolved(multicolKeywordSlot);
 
@@ -189,10 +193,11 @@ internal static class LengthResolver
     /// Both are Length-typed (not LengthPercentageAuto / TextSpacing
     /// where the generic <see cref="TryMatchKeyword"/> already admits
     /// the keyword) so a per-PropertyId gate is the cleanest extension.
-    /// The layouter reads these slots via
-    /// <c>ComputedStyleLayoutExtensions.ReadColumnGap</c> /
-    /// <c>ReadColumnWidth</c> + treats a Keyword slot as the initial
-    /// value.</summary>
+    /// The layouter reads <c>column-gap</c> via
+    /// <c>ComputedStyleLayoutExtensions.ReadColumnGap</c> + treats a
+    /// Keyword slot as the initial value. <c>column-width</c> is
+    /// parsed but unused by cycle 1 (sub-cycle 2+ ships the
+    /// column-width-derived count + the matching reader extension).</summary>
     private static bool TryMatchMulticolKeyword(
         string value, PropertyId propertyId, out ComputedSlot slot)
     {

@@ -304,4 +304,58 @@ public sealed class LengthResolverTests
         Assert.Contains(sink.Diagnostics, d =>
             d.Code == CssDiagnosticCodes.CssPropertyValueInvalid001);
     }
+
+    // ============================================================
+    // Phase 3 Task 14 cycle 1 hardening (Finding 3) — column-gap +
+    // column-width non-negative (CSS Multi-column L1 §3.1 + §6.1)
+    // ============================================================
+
+    [Fact]
+    public void Column_gap_negative_is_rejected()
+    {
+        // CSS Multi-column L1 §6.1 — column-gap admits non-negative
+        // <length> | normal. A negative value falls back to the
+        // initial keyword (normal) + emits CSS-PROPERTY-VALUE-INVALID-001.
+        var sink = new CapturingSink();
+        var result = LengthResolver.Resolve("-10px", PropertyType.Length,
+            PropertyId.ColumnGap, "column-gap", sink, default);
+        Assert.True(result.IsInvalid);
+        Assert.Contains(sink.Diagnostics, d =>
+            d.Code == CssDiagnosticCodes.CssPropertyValueInvalid001 &&
+            d.Message.Contains("negative", System.StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Column_width_negative_is_rejected()
+    {
+        // CSS Multi-column L1 §3.1 — column-width admits non-negative
+        // <length> | auto. A negative value falls back to auto + emits
+        // CSS-PROPERTY-VALUE-INVALID-001.
+        var sink = new CapturingSink();
+        var result = LengthResolver.Resolve("-50px", PropertyType.Length,
+            PropertyId.ColumnWidth, "column-width", sink, default);
+        Assert.True(result.IsInvalid);
+        Assert.Contains(sink.Diagnostics, d =>
+            d.Code == CssDiagnosticCodes.CssPropertyValueInvalid001 &&
+            d.Message.Contains("negative", System.StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Column_gap_zero_is_accepted()
+    {
+        // Zero is non-negative + a valid length per CSS Values L4 §6.2.
+        var result = LengthResolver.Resolve("0px", PropertyType.Length,
+            PropertyId.ColumnGap, "column-gap", null, default);
+        Assert.True(result.IsResolved);
+        Assert.Equal(0.0, result.Slot.AsLengthPx(), 3);
+    }
+
+    [Fact]
+    public void Column_gap_positive_is_accepted()
+    {
+        var result = LengthResolver.Resolve("32px", PropertyType.Length,
+            PropertyId.ColumnGap, "column-gap", null, default);
+        Assert.True(result.IsResolved);
+        Assert.Equal(32.0, result.Slot.AsLengthPx(), 3);
+    }
 }

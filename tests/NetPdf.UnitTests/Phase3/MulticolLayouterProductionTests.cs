@@ -131,6 +131,125 @@ public sealed class MulticolLayouterProductionTests
         Assert.Equal(expectedColumnWidth + 16.0, itemFragments[1].InlineOffset, precision: 3);
     }
 
+    [Fact]
+    public async Task Production_multicol_followed_by_paragraph_no_overlap()
+    {
+        // Per Phase 3 Task 14 cycle 1 hardening (Finding 1) — when a
+        // multicol container is followed by a sibling block, the
+        // sibling must NOT overlap the multicol's columnized content.
+        // Pre-fix the outer cursor advance summed the serial subtree
+        // extent (~180 px from two 90-px children); the trailing
+        // paragraph then jumped to 180 px leaving false blank space.
+        // This test pins the corrected behavior end-to-end through
+        // the production pipeline.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .multicol {
+                    column-count: 2;
+                    width: 200px;
+                    height: 100px;
+                }
+                .item { height: 90px; }
+                .after { height: 50px; }
+            </style></head><body>
+            <div class="multicol">
+              <div class="item"></div>
+              <div class="item"></div>
+            </div>
+            <div class="after"></div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        BoxFragment? multicolFragment = null;
+        BoxFragment? afterFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind != BoxKind.BlockContainer) continue;
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class");
+            if (classAttr == "multicol") multicolFragment = f;
+            else if (classAttr == "after") afterFragment = f;
+        }
+        Assert.NotNull(multicolFragment);
+        Assert.NotNull(afterFragment);
+
+        // The .after block must land at the multicol's bottom or
+        // below (= no overlap). The multicol declares height: 100,
+        // so the after block should land at ~100 px. Pre-fix it
+        // landed at ~180 px (false blank space from serial sum).
+        var multicolBottom = multicolFragment!.Value.BlockOffset
+            + multicolFragment.Value.BlockSize;
+        Assert.True(afterFragment!.Value.BlockOffset >= multicolBottom - 1.0,
+            $".after at {afterFragment.Value.BlockOffset} overlaps multicol "
+            + $"(ending at {multicolBottom}).");
+        // And the offset shouldn't be wildly past the multicol bottom
+        // (within ~10 px slack for any rounding).
+        Assert.True(afterFragment.Value.BlockOffset < multicolBottom + 10.0,
+            $".after at {afterFragment.Value.BlockOffset} leaves false blank "
+            + $"space below multicol (ending at {multicolBottom}) — "
+            + "cursor advance is using serial sum of children "
+            + "(Finding 1 regression).");
+    }
+
+    [Fact]
+    public async Task Production_multicol_without_explicit_height_renders_full_column_space()
+    {
+        // Per Phase 3 Task 14 cycle 1 hardening (Finding 2) — when
+        // a multicol container has no explicit height (= height: auto),
+        // the per-column block-size derives from the fragmentainer's
+        // REMAINING block-space so columns fill the available page.
+        // Pre-fix the per-column block-size was ~0 → 1 px (post-clamp)
+        // → multicol force-overflowed immediately + truncated all
+        // content.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .multicol {
+                    column-count: 2;
+                    width: 400px;
+                    /* No height — height: auto. */
+                }
+                .item { height: 200px; }
+            </style></head><body>
+            <div class="multicol">
+              <div class="item"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, diagnostics, _) = await RenderViaFullPipelineAsync(html);
+
+        // The .item should be emitted (in column 0). Pre-fix the
+        // multicol force-overflowed because the per-column block-size
+        // was 1 px; no .item fragment would emit.
+        var hasItem = false;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.SourceElement is null) continue;
+            if (f.Box.SourceElement.GetAttribute("class") == "item")
+            {
+                hasItem = true;
+                break;
+            }
+        }
+        Assert.True(hasItem,
+            "Expected the .item child to be emitted in the auto-height "
+            + "multicol's column 0. Pre-fix it was truncated by the "
+            + "forced-overflow path. Diagnostics: "
+            + string.Join("; ", diagnostics.Diagnostics.Select(d =>
+                $"[{d.Code}] {d.Message}")));
+
+        // And NO forced-overflow diagnostic (content fits in column 0).
+        foreach (var d in diagnostics.Diagnostics)
+        {
+            Assert.NotEqual(
+                PaginateDiagnosticCodes.LayoutMulticolForcedOverflow001,
+                d.Code);
+        }
+    }
+
     // ====================================================================
     //  Pipeline driver — mirrors TableLayouterProductionTests.
     // ====================================================================

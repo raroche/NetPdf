@@ -107,4 +107,52 @@ public sealed class NumberResolverTests
         Assert.True(result.IsInvalid);
         Assert.Single(sink.Diagnostics);
     }
+
+    // ============================================================
+    // Phase 3 Task 14 cycle 1 hardening (Finding 3) — column-count
+    // positive integer enforcement per CSS Multi-column L1 §3.2
+    // ============================================================
+
+    [Fact]
+    public void Column_count_zero_is_rejected_by_resolver()
+    {
+        // column-count: 0 is not a positive integer. Pre-fix the
+        // resolver accepted the value (Integer with n=0) + the
+        // BlockLayouter dispatch silently skipped multicol (the >=2
+        // gate excluded it); post-fix the resolver emits
+        // CSS-PROPERTY-VALUE-INVALID-001 + falls back to invalid.
+        var sink = new CapturingSink();
+        var result = NumberResolver.ResolveInteger(
+            "0", PropertyId.ColumnCount, "column-count", sink, default);
+        Assert.True(result.IsInvalid);
+        Assert.Contains(sink.Diagnostics, d =>
+            d.Code == CssDiagnosticCodes.CssPropertyValueInvalid001);
+    }
+
+    [Fact]
+    public void Column_count_negative_is_rejected()
+    {
+        // column-count: -5 is negative; the resolver rejects via the
+        // positive-integer gate.
+        var sink = new CapturingSink();
+        var result = NumberResolver.ResolveInteger(
+            "-5", PropertyId.ColumnCount, "column-count", sink, default);
+        Assert.True(result.IsInvalid);
+        Assert.Contains(sink.Diagnostics, d =>
+            d.Code == CssDiagnosticCodes.CssPropertyValueInvalid001);
+    }
+
+    [Fact]
+    public void Column_count_one_is_accepted()
+    {
+        // column-count: 1 is a valid positive integer. The
+        // BlockLayouter dispatch gate (>= 2) is the layer that
+        // decides to skip multicol for column-count: 1; the resolver
+        // accepts it.
+        var result = NumberResolver.ResolveInteger(
+            "1", PropertyId.ColumnCount, "column-count", null, default);
+        Assert.True(result.IsResolved);
+        Assert.Equal(ComputedSlotTag.Integer, result.Slot.Tag);
+        Assert.Equal(1, result.Slot.AsInteger());
+    }
 }

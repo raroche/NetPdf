@@ -44,9 +44,13 @@ namespace NetPdf.Layout.Layouters;
 ///   + columnGap)</c>. The block-axis offset is also translated by
 ///   <c>columnBlockOffset</c> (the multicol container's content-box
 ///   block-start in the outer fragmentainer's coordinate space).</item>
-///   <item>When the LAST column returns
+///   <item>When any non-last column returns
 ///   <see cref="LayoutAttemptOutcome.PageComplete"/> (= content
-///   overflows the N columns), surfaces
+///   overflows the current column), the layouter advances to the next
+///   column carrying the previous column's
+///   <see cref="BlockContinuation"/> as the resume point. When the
+///   LAST column STILL returns PageComplete (= even N columns
+///   weren't enough), surfaces
 ///   <c>LAYOUT-MULTICOL-FORCED-OVERFLOW-001</c> + discards the
 ///   continuation. Multi-page multicol (the outer multicol box
 ///   fragmenting across pages so the overflow continues on the next
@@ -96,12 +100,11 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
 
     private readonly Box _rootBox;
     private readonly IBlockFragmentSink _sink;
-    // Per Phase 3 Task 14 cycle 1 — reserved for sub-cycle 2 multi-
-    // page multicol. Cycle 1 accepts a null continuation only;
-    // non-null `MulticolContinuation` instances pass the type-check
-    // for forward-compat but cycle 1 never actually consumes them
-    // (the constructor's stored value isn't read in AttemptLayout).
-    private readonly MulticolContinuation? _incomingContinuation;
+    // Per Phase 3 Task 14 cycle 1 hardening (Finding 5) — the
+    // constructor REJECTS non-null continuations until sub-cycle 2
+    // ships multi-page multicol. Cycle 1 doesn't carry a stored
+    // continuation field; sub-cycle 2 will re-introduce one + read
+    // it inside AttemptLayout's resume path.
     private readonly IPaginateDiagnosticsSink? _diagnostics;
     private readonly IShaperResolver? _shaperResolver;
 
@@ -132,9 +135,13 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
     /// <param name="sink">The same sink the caller uses; the per-
     /// column fragments append after the multicol wrapper fragment
     /// (which the caller has already emitted).</param>
-    /// <param name="incomingContinuation">Per cycle 1 — null only.
-    /// Sub-cycle 2 will accept a <see cref="MulticolContinuation"/>
-    /// for the multi-page multicol resume.</param>
+    /// <param name="incomingContinuation">Per cycle 1 hardening
+    /// (Finding 5) — null only. Sub-cycle 2 will accept a
+    /// <see cref="MulticolContinuation"/> for the multi-page multicol
+    /// resume; until then a non-null value (of ANY type) throws so
+    /// callers don't accidentally restart from column 0 + duplicate
+    /// content. Mirrors <see cref="TableLayouter"/>'s cycle 1
+    /// non-null-continuation rejection pattern.</param>
     /// <param name="diagnostics">Diagnostic sink for the
     /// <c>LAYOUT-MULTICOL-FORCED-OVERFLOW-001</c> code.</param>
     /// <param name="shaperResolver">Optional inline shaper resolver
@@ -145,8 +152,8 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
     /// <exception cref="ArgumentException">When
     /// <paramref name="rootBox"/> does not declare a positive
     /// integer <c>column-count</c>, OR when
-    /// <paramref name="incomingContinuation"/> is non-null and not a
-    /// <see cref="MulticolContinuation"/>.</exception>
+    /// <paramref name="incomingContinuation"/> is non-null
+    /// (cycle 1 does not yet support resume).</exception>
     public MulticolLayouter(
         Box rootBox,
         IBlockFragmentSink sink,
@@ -172,26 +179,31 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
                 nameof(rootBox));
         }
 
-        // Per Phase 3 Task 14 cycle 1 — accept MulticolContinuation
-        // (only). Cycle 1 doesn't actually consume it (no multi-page
-        // multicol yet); the type-check exists so callers wiring
-        // sub-cycle 2's resume contract pass the right shape.
-        if (incomingContinuation is not null and not MulticolContinuation)
+        // Per Phase 3 Task 14 cycle 1 hardening (Finding 5) — REJECT
+        // any non-null continuation until sub-cycle 2 wires up
+        // multi-page multicol. Pre-fix the constructor accepted
+        // MulticolContinuation instances + silently discarded them
+        // in AttemptLayout (the stored field was never read), so an
+        // accidental resume would restart from column 0 +
+        // duplicate / drop content. Mirrors TableLayouter's cycle 1
+        // pattern (which initially rejected non-null
+        // TableContinuation before sub-cycle 2 implemented resume).
+        if (incomingContinuation is not null)
         {
             throw new ArgumentException(
-                "MulticolLayouter expects a MulticolContinuation; got "
-                + $"{incomingContinuation.GetType().Name}. The wrong "
-                + "continuation type would silently restart from "
-                + "column 0 + likely duplicate content. Pass either "
-                + "null (first-page / single-page emit) or a "
-                + "MulticolContinuation produced by a prior "
-                + "AttemptLayout call.",
+                "Sub-cycle 1 does not yet support resume after "
+                + "PageComplete. MulticolLayouter rejects any non-null "
+                + "incomingContinuation (got "
+                + $"{incomingContinuation.GetType().Name}) so callers "
+                + "don't accidentally restart from column 0 + duplicate "
+                + "content. Multi-page multicol via "
+                + "MulticolContinuation is sub-cycle 2+ scope. See "
+                + "docs/deferrals.md#multicol-balancing-pagination.",
                 nameof(incomingContinuation));
         }
 
         _rootBox = rootBox;
         _sink = sink;
-        _incomingContinuation = incomingContinuation as MulticolContinuation;
         _diagnostics = diagnostics;
         _shaperResolver = shaperResolver;
     }
@@ -283,9 +295,59 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
         // column-count: 100). Cycle 1 intentionally doesn't surface
         // a diagnostic for this clamp — sub-cycle 2 may add one
         // alongside the column-width path.
+        //
+        // Per Phase 3 Task 14 cycle 1 hardening (Finding 4) —
+        // non-finite geometry guard. Per-column inline-size is
+        // clamped to a positive finite value below (the existing
+        // `< 1.0` floor handles the underflow case), but `totalGap`
+        // and the per-column inline-offset arithmetic
+        // (`c * (perColumnInlineSize + columnGap)`) can blow up to
+        // ±Infinity for individually-finite operands when columnGap
+        // is astronomically large (e.g., column-gap: 1e300 with
+        // 100 columns). Pre-fix the layouter happily computed those
+        // and propagated ±Inf through the column emission cascade,
+        // which then NaN-poisoned downstream pagination arithmetic.
+        // Post-fix: detect the blow-up at this entry point + clamp
+        // columnGap so totalGap stays below half the container's
+        // inline size; emit
+        // LAYOUT-MULTICOL-NON-FINITE-GEOMETRY-001 (Warning) so
+        // authors / integrators see the clamp.
         var totalGap = (columnCount - 1) * columnGap;
+        if (!double.IsFinite(totalGap)
+            || totalGap >= _contentInlineSize)
+        {
+            // Clamp columnGap so totalGap < contentInlineSize / 2.
+            // For columnCount==1 there's no gap arithmetic; the
+            // outer `columnCount > 1` guard means columnCount >= 2
+            // in this branch (the constructor's >= 1 check passes
+            // through 1 + the BlockLayouter dispatch only fires for
+            // >= 2; defensive `(columnCount - 1)` denominator handles
+            // the 1 case anyway).
+            var divisor = Math.Max(1, columnCount - 1);
+            var clampedGap = (_contentInlineSize / 2.0) / divisor;
+            // Ensure the clamped gap is itself finite + non-negative.
+            if (!double.IsFinite(clampedGap) || clampedGap < 0)
+            {
+                clampedGap = 0;
+            }
+            OptimizingBreakResolver.SafeEmit(
+                layout.Diagnostics ?? _diagnostics,
+                new PaginateDiagnostic(
+                    PaginateDiagnosticCodes.LayoutMulticolNonFiniteGeometry001,
+                    "MulticolLayouter: non-finite column geometry "
+                    + $"(columnGap={columnGap}, columnCount="
+                    + $"{columnCount}, contentInlineSize="
+                    + $"{_contentInlineSize:0.##}, totalGap="
+                    + $"{totalGap}). Clamping columnGap to "
+                    + $"{clampedGap:0.##} so per-column inline geometry "
+                    + "stays finite. Rendered output may differ "
+                    + "visually from author intent.",
+                    PaginateDiagnosticSeverity.Warning));
+            columnGap = clampedGap;
+            totalGap = (columnCount - 1) * columnGap;
+        }
         var perColumnInlineSize = (_contentInlineSize - totalGap) / columnCount;
-        if (perColumnInlineSize < 1.0)
+        if (!double.IsFinite(perColumnInlineSize) || perColumnInlineSize < 1.0)
         {
             perColumnInlineSize = 1.0;
         }
@@ -306,8 +368,19 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
 
             // Per-column inline offset in the outer fragmentainer's
             // coordinate space.
+            //
+            // Per Phase 3 Task 14 cycle 1 hardening (Finding 4) —
+            // defensive finite guard. With the columnGap clamp above
+            // both columnGap + perColumnInlineSize are finite, so the
+            // product is finite; the defensive guard catches any
+            // future change that could introduce a non-finite
+            // operand here.
             var columnInlineOffset =
                 _contentInlineOffset + columnIdx * (perColumnInlineSize + columnGap);
+            if (!double.IsFinite(columnInlineOffset))
+            {
+                columnInlineOffset = _contentInlineOffset;
+            }
 
             // Translating sink: each fragment the nested BlockLayouter
             // emits with InlineOffset relative to its OWN sub-

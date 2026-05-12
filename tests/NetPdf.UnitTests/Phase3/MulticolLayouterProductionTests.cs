@@ -250,6 +250,168 @@ public sealed class MulticolLayouterProductionTests
         }
     }
 
+    [Fact]
+    public async Task Cycle2_production_multi_page_multicol_via_full_pipeline()
+    {
+        // Per Phase 3 Task 14 cycle 2 — end-to-end regression test
+        // that a real HTML multicol with content that overflows N
+        // columns flows through the full pipeline without crashing.
+        // Cycle 2 ships the MulticolLayouter-internal multi-page
+        // splitting (covered by the direct-construction unit tests
+        // in MulticolLayouterTests.cs); the BlockLayouter's OUTER
+        // child loop integrates the MulticolContinuation propagation
+        // when the multicol is a direct child of the root. Typical
+        // HTML wraps `<div class=multicol>` inside `<html> > <body>`,
+        // so the multicol is reached via EmitBlockSubtreeRecursive's
+        // nested walk — and cycle 2 keeps that recursive path beyond
+        // depth==1 ATOMIC (= the forced-overflow diagnostic fires
+        // for over-tall nested multicols, mirroring Task 13 cycle 1's
+        // table pattern). Sub-cycle 3+ may generalize the recursion
+        // to propagate continuations end-to-end through deeper
+        // nesting.
+        //
+        // This test pins: (a) the full pipeline doesn't throw on a
+        // multi-page multicol HTML input; (b) the multicol fragments
+        // are emitted (= the MulticolLayouter runs through the
+        // recursion's dispatch); (c) the
+        // LAYOUT-MULTICOL-FORCED-OVERFLOW-001 diagnostic fires (the
+        // multicol overflowed N columns AND the depth>=2 recursive
+        // dispatch can't propagate — so cycle 2 surfaces the
+        // truncation rather than silently dropping it).
+        //
+        // A separate `Cycle2_production_multicol_as_root_child_splits_cleanly`
+        // direct-construction test below exercises the depth==1
+        // propagation that the full HTML pipeline can't (HTML+BODY
+        // adds two wrapper levels).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .multicol {
+                    column-count: 2;
+                    width: 232px;
+                    height: 100px;
+                }
+                .item { height: 80px; }
+            </style></head><body>
+            <div class="multicol">
+              <div class="item"></div>
+              <div class="item"></div>
+              <div class="item"></div>
+              <div class="item"></div>
+              <div class="item"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, diagnostics, _) = await RenderViaFullPipelineAsync(html);
+
+        // The pipeline didn't crash; verify fragments were emitted.
+        var hasMulticolFragment = false;
+        var itemFragmentCount = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind != BoxKind.BlockContainer) continue;
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var cls = srcEl.GetAttribute("class");
+            if (cls == "multicol") hasMulticolFragment = true;
+            else if (cls == "item") itemFragmentCount++;
+        }
+        Assert.True(hasMulticolFragment,
+            "Multicol wrapper fragment should be emitted.");
+        // At least 2 items should land (cols 0 + 1 on the first
+        // page); the remaining ones are truncated per the deep-
+        // nesting atomic policy.
+        Assert.True(itemFragmentCount >= 2,
+            $"Expected at least 2 .item fragments on page 1; got {itemFragmentCount}.");
+
+        // The forced-overflow diagnostic must fire — deep-nested
+        // multicol can't propagate cycle 2's PageComplete + truncates.
+        var hasForcedOverflow = false;
+        foreach (var d in diagnostics.Diagnostics)
+        {
+            if (d.Code == PaginateDiagnosticCodes.LayoutMulticolForcedOverflow001)
+            {
+                hasForcedOverflow = true;
+                break;
+            }
+        }
+        Assert.True(hasForcedOverflow,
+            "Expected LAYOUT-MULTICOL-FORCED-OVERFLOW-001 for deep-"
+            + "nested multicol overflow (HTML > BODY > multicol). "
+            + "Diagnostics: "
+            + string.Join("; ", diagnostics.Diagnostics.Select(d =>
+                $"[{d.Code}] {d.Message}")));
+    }
+
+    [Fact]
+    public void Cycle2_production_multicol_as_root_child_splits_cleanly()
+    {
+        // Per Phase 3 Task 14 cycle 2 — full-pipeline propagation
+        // test. The HTML > BODY wrapping in real documents puts the
+        // multicol at recursion depth 2 (where cycle 2 single-level
+        // propagation can't reach); this test exercises the depth==1
+        // propagation path by placing the multicol as a DIRECT child
+        // of the root. Mirrors Task 13 cycle 1's
+        // `Cycle1_production_table_as_root_child_splits_cleanly_at_outer_path`
+        // pattern.
+        //
+        // Setup: 2-column multicol 100 tall + 4 children of 80 each.
+        // Expected: PageComplete(BlockContinuation(LayouterState=
+        // MulticolContinuation(NextChildIndex=2))).
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rootStyle = ComputedStyle.RentForExclusiveTesting();
+        var root = Box.CreateRoot(rootStyle);
+        var multicolStyle = ComputedStyle.RentForExclusiveTesting();
+        multicolStyle.Set(PropertyId.ColumnCount, ComputedSlot.FromInteger(2));
+        var multicolElem = MakeElement();
+        var multicol = Box.ForElement(BoxKind.BlockContainer, multicolStyle, multicolElem);
+        for (var i = 0; i < 4; i++)
+        {
+            var s = ComputedStyle.RentForExclusiveTesting();
+            s.Set(PropertyId.Height, ComputedSlot.FromLengthPx(80));
+            var c = Box.ForElement(BoxKind.BlockContainer, s, MakeElement());
+            multicol.AppendChild(c);
+        }
+        // Set explicit height: 100 on the multicol so the column
+        // block-size is 100.
+        multicolStyle.Set(PropertyId.Height, ComputedSlot.FromLengthPx(100));
+        root.AppendChild(multicol);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: diagSink,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 232, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var blockCont = Assert.IsType<BlockContinuation>(result.Continuation);
+        var mcCont = Assert.IsType<MulticolContinuation>(blockCont.LayouterState);
+        Assert.Equal(2, mcCont.NextChildIndex);
+
+        // The forced-overflow diagnostic must NOT fire — clean split.
+        foreach (var d in diagSink.Diagnostics)
+        {
+            Assert.NotEqual(
+                PaginateDiagnosticCodes.LayoutMulticolForcedOverflow001,
+                d.Code);
+        }
+    }
+
+    private static AngleSharp.Dom.IElement MakeElement()
+    {
+        var parser = new AngleSharp.Html.Parser.HtmlParser();
+        var doc = parser.ParseDocument("<div></div>");
+        return doc.CreateElement("div");
+    }
+
     // ====================================================================
     //  Pipeline driver — mirrors TableLayouterProductionTests.
     // ====================================================================

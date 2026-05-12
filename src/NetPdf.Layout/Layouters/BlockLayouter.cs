@@ -354,6 +354,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// entry (line `_consumedIncomingTableContinuation = false`).</summary>
     private bool _consumedIncomingTableContinuation;
 
+    /// <summary>Per Phase 3 Task 14 cycle 2 — one-shot consumption flag
+    /// for the incoming <see cref="MulticolContinuation"/> piggy-backed
+    /// on <see cref="BlockContinuation.LayouterState"/>. Same semantics
+    /// as <see cref="_consumedIncomingTableContinuation"/> but for the
+    /// multicol-resume contract: the carried continuation applies to
+    /// the FIRST multicol child encountered after resume; subsequent
+    /// multicol children in the same attempt start fresh. Reset on
+    /// every AttemptLayout entry.</summary>
+    private bool _consumedIncomingMulticolContinuation;
+
     /// <summary>Construct a layouter for <paramref name="rootBox"/>'s
     /// block children, emitting fragments into <paramref name="sink"/>.
     /// <paramref name="incomingContinuation"/> resumes a multi-page
@@ -488,6 +498,33 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 + "pair are mutually consistent.");
         }
 
+        // Per Phase 3 Task 14 cycle 2 — symmetric validation for an
+        // incoming MulticolContinuation in LayouterState. The child at
+        // ResumeAtChild MUST be a multicol container OR a block-flow
+        // container that recursively contains the multicol (single-
+        // level nested propagation). Out-of-range / null-children
+        // bounds are tolerated to allow the resume page to detect
+        // "all done" cases — the validation kicks in only when the
+        // index points at a concrete child.
+        if (incomingBlock?.LayouterState is MulticolContinuation
+            && startChildIdx >= 0
+            && startChildIdx < _rootBox.Children.Count
+            && !IsMulticolContainer(_rootBox.Children[startChildIdx])
+            && !IsBlockFlowContainerOwnedByBlockLayouter(_rootBox.Children[startChildIdx]))
+        {
+            throw new InvalidOperationException(
+                "BlockLayouter.AttemptLayout: incoming BlockContinuation carries "
+                + "a MulticolContinuation in LayouterState but the child at "
+                + $"ResumeAtChild={startChildIdx} has BoxKind."
+                + $"{_rootBox.Children[startChildIdx].Kind} (column-count="
+                + $"{_rootBox.Children[startChildIdx].Style.ReadColumnCount()}), "
+                + "which is neither a multicol container nor a block-flow "
+                + "container that could contain one. The dispatching "
+                + "layouter must produce continuations where the "
+                + "ResumeAtChild + LayouterState pair are mutually "
+                + "consistent. Per Phase 3 Task 14 cycle 2 resume contract.");
+        }
+
         // Snapshot UsedBlockSize at entry. Per-page extent placed by
         // THIS attempt = fragmentainer.UsedBlockSize - initialUsed.
         var initialUsed = fragmentainer.UsedBlockSize;
@@ -551,6 +588,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // start fresh. On rewind retries the flag goes back to false
         // so the retry resumes the same way.
         _consumedIncomingTableContinuation = false;
+
+        // Per Phase 3 Task 14 cycle 2 — same reset for the multicol-
+        // resume one-shot flag. The carried MulticolContinuation (if
+        // any) feeds into the FIRST multicol child encountered at the
+        // resumed index; subsequent multicol children in the same
+        // attempt start fresh.
+        _consumedIncomingMulticolContinuation = false;
 
         // Track whether this attempt has emitted any fragment so far.
         // Per PR #22 review fix #1 — the oversized-block forward-
@@ -1733,10 +1777,28 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 var multicolContentBlockOffset =
                     blockOffset + multicolBorderBlockStart + multicolPaddingBlockStart;
 
+                // Per Phase 3 Task 14 cycle 2 — multi-page multicol
+                // resume. When the incoming BlockContinuation carries
+                // a MulticolContinuation in LayouterState AND we're
+                // at the multicol child it deferred at, pass the
+                // MulticolContinuation through to the new
+                // MulticolLayouter so it resumes at the correct
+                // child + nested layouter state. The carried
+                // continuation is one-shot: subsequent multicol
+                // children in the same attempt start fresh.
+                MulticolContinuation? multicolContinuationForChild = null;
+                if (incomingBlock?.LayouterState is MulticolContinuation incomingMulticolCont
+                    && childIdx == incomingBlock.ResumeAtChild
+                    && !_consumedIncomingMulticolContinuation)
+                {
+                    multicolContinuationForChild = incomingMulticolCont;
+                    _consumedIncomingMulticolContinuation = true;
+                }
+
                 using var multicolLayouter = new MulticolLayouter(
                     rootBox: child,
                     sink: _sink,
-                    incomingContinuation: null,
+                    incomingContinuation: multicolContinuationForChild,
                     diagnostics: _diagnostics,
                     shaperResolver: _shaperResolver);
                 multicolLayouter.ConfigureEmission(
@@ -1749,7 +1811,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // multicol's per-column pagination. Mirrors
                 // TableLayouter's per-cell resolver isolation.
                 using var multicolResolver = new BreakResolver();
-                _ = multicolLayouter.AttemptLayout(
+                var multicolResult = multicolLayouter.AttemptLayout(
                     fragmentainer,
                     ref layout,
                     multicolResolver,
@@ -1766,9 +1828,31 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 emittedThisAttempt++;
                 lastEmittedIdx = childIdx;
 
+                // Per Phase 3 Task 14 cycle 2 — propagate
+                // PageComplete(MulticolContinuation) up. The wrapper's
+                // outer fragment has already been emitted; the resume
+                // page's BlockLayouter sees a BlockContinuation whose
+                // LayouterState is the MulticolContinuation +
+                // dispatches it back to MulticolLayouter via the
+                // resume contract above. Mirrors Task 13 cycle 1's
+                // PageComplete(BlockContinuation(LayouterState=TableContinuation))
+                // pattern.
+                if (multicolResult.Outcome == LayoutAttemptOutcome.PageComplete
+                    && multicolResult.Continuation is MulticolContinuation mcCont)
+                {
+                    return LayoutAttemptResult.PageComplete(
+                        new BlockContinuation(
+                            ResumeAtChild: childIdx,
+                            ConsumedBlockSize: priorPagesConsumed
+                                + (fragmentainer.UsedBlockSize - _pageStartUsedBlockSize),
+                            LayouterState: mcCont),
+                        cost: multicolResult.Cost);
+                }
+
                 // Skip the rest of the regular Continue path for
-                // this child; the multicol's inner content has been
-                // emitted in full (cycle 1 is single-page atomic).
+                // this child; the multicol's inner content was
+                // committed in full on this page (AllDone) — or
+                // truncated via the forced-overflow fallback.
                 continue;
             }
 
@@ -1811,6 +1895,21 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 nestedIncomingTc = incTcNested;
                 _consumedIncomingTableContinuation = true;
             }
+            // Per Phase 3 Task 14 cycle 2 — symmetric forward of an
+            // incoming MulticolContinuation through the recursion. A
+            // multicol that is a depth==1 descendant of `child` (e.g.
+            // `<body><div column-count: 2>`) gets the carried
+            // continuation when ResumeAtChild matches.
+            MulticolContinuation? nestedIncomingMcCont = null;
+            MulticolContinuation? nestedMulticolContFromRecursion = null;
+            if (incomingBlock?.LayouterState is MulticolContinuation incMcNested
+                && childIdx == incomingBlock.ResumeAtChild
+                && !_consumedIncomingMulticolContinuation
+                && !IsMulticolContainer(child))
+            {
+                nestedIncomingMcCont = incMcNested;
+                _consumedIncomingMulticolContinuation = true;
+            }
             EmitBlockSubtreeRecursive(
                 child,
                 parentBlockOffset: blockOffset,
@@ -1821,7 +1920,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 propagatingResolver: resolver,
                 propagatingFragmentainer: fragmentainer,
                 incomingTableContinuationAtDepth1: nestedIncomingTc,
-                onTablePageComplete: tc => nestedTableContFromRecursion = tc);
+                onTablePageComplete: tc => nestedTableContFromRecursion = tc,
+                incomingMulticolContinuationAtDepth1: nestedIncomingMcCont,
+                onMulticolPageComplete: mc => nestedMulticolContFromRecursion = mc);
 
             // Per Finding 1 — if a depth-1 nested table returned
             // PageComplete, propagate up. The wrapper child's own
@@ -1842,6 +1943,19 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         ConsumedBlockSize: priorPagesConsumed
                             + (fragmentainer.UsedBlockSize - _pageStartUsedBlockSize),
                         LayouterState: nestedTableContFromRecursion),
+                    cost: 0);
+            }
+
+            // Per Phase 3 Task 14 cycle 2 — same propagation pattern
+            // for a depth==1 nested multicol returning PageComplete.
+            if (nestedMulticolContFromRecursion is not null)
+            {
+                return LayoutAttemptResult.PageComplete(
+                    new BlockContinuation(
+                        ResumeAtChild: childIdx,
+                        ConsumedBlockSize: priorPagesConsumed
+                            + (fragmentainer.UsedBlockSize - _pageStartUsedBlockSize),
+                        LayouterState: nestedMulticolContFromRecursion),
                     cost: 0);
             }
 
@@ -1997,7 +2111,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         IBreakResolver? propagatingResolver = null,
         FragmentainerContext? propagatingFragmentainer = null,
         TableContinuation? incomingTableContinuationAtDepth1 = null,
-        Action<TableContinuation>? onTablePageComplete = null)
+        Action<TableContinuation>? onTablePageComplete = null,
+        MulticolContinuation? incomingMulticolContinuationAtDepth1 = null,
+        Action<MulticolContinuation>? onMulticolPageComplete = null)
     {
         // Per cycle-2b post-PR-28 review #2 + Copilot #1 — DoS
         // protection. Untrusted HTML can construct pathologically
@@ -2471,10 +2587,24 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 var nestedMulticolContentBlockOffset =
                     childBlockOffset + borderStart + paddingStart;
 
+                // Per Phase 3 Task 14 cycle 2 — at recursion depth==1
+                // the incoming MulticolContinuation (if any) is
+                // intended for THIS multicol child. Pass it through;
+                // consume on first match so siblings don't accidentally
+                // inherit it. Mirrors the depth==1
+                // incomingTableContinuationAtDepth1 pattern (Task 13
+                // cycle 2 hardening Finding 1).
+                MulticolContinuation? incomingForThisMulticol = null;
+                if (depth == 1 && incomingMulticolContinuationAtDepth1 is not null)
+                {
+                    incomingForThisMulticol = incomingMulticolContinuationAtDepth1;
+                    incomingMulticolContinuationAtDepth1 = null;
+                }
+
                 using var nestedMulticolLayouter = new MulticolLayouter(
                     rootBox: child,
                     sink: _sink,
-                    incomingContinuation: null,
+                    incomingContinuation: incomingForThisMulticol,
                     diagnostics: _diagnostics,
                     shaperResolver: _shaperResolver);
                 nestedMulticolLayouter.ConfigureEmission(
@@ -2488,18 +2618,60 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // constructor's diagnostic sink. Mirrors the nested-
                 // table dispatch above (Phase 3 Task 12 sub-cycle 2
                 // Finding 1).
+                LayoutAttemptResult? nestedMulticolResult = null;
                 if (_capturedFragmentainer is not null)
                 {
                     var nestedMulticolLayoutCtx = new LayoutContext(_capturedFragmentainer)
                     {
                         Diagnostics = _diagnostics,
                     };
-                    _ = nestedMulticolLayouter.AttemptLayout(
+                    nestedMulticolResult = nestedMulticolLayouter.AttemptLayout(
                         _capturedFragmentainer,
                         ref nestedMulticolLayoutCtx,
                         nestedMulticolResolver,
                         LayoutAttemptStrategy.LastResort,
                         cancellationToken);
+                }
+
+                // Per Phase 3 Task 14 cycle 2 — propagate
+                // PageComplete(MulticolContinuation) up. The
+                // single-level propagation pattern from Task 13
+                // cycle 2 hardening Finding 1 applies: at depth==1,
+                // capture the continuation via the callback so the
+                // outer main loop can wrap it in a BlockContinuation.
+                // Deeper nesting (depth >= 2) still falls through
+                // atomically — but cycle 2 emits the forced-overflow
+                // diagnostic so the content-loss is surfaced (sub-
+                // cycle 3+ may generalize multi-level propagation).
+                if (nestedMulticolResult is { Outcome: LayoutAttemptOutcome.PageComplete }
+                    && nestedMulticolResult.Value.Continuation is MulticolContinuation mcCont)
+                {
+                    if (depth == 1 && onMulticolPageComplete is not null)
+                    {
+                        onMulticolPageComplete(mcCont);
+                    }
+                    else
+                    {
+                        // Deep-nested multicol can't propagate. Emit
+                        // the forced-overflow diagnostic so the
+                        // truncated remainder is surfaced to the
+                        // integrator.
+                        OptimizingBreakResolver.SafeEmit(
+                            _diagnostics,
+                            new PaginateDiagnostic(
+                                PaginateDiagnosticCodes.LayoutMulticolForcedOverflow001,
+                                $"BlockLayouter recursion (depth={depth}): nested "
+                                + $"multicol container at child index "
+                                + $"{mcCont.NextChildIndex} overflowed across "
+                                + $"pages but cycle 2's recursion-continuation "
+                                + $"propagation handles only depth==1 (single-"
+                                + $"level) — deeper nesting stays atomic. The "
+                                + $"remaining content is truncated. Sub-cycle "
+                                + $"3+ may generalize multi-level propagation. "
+                                + $"See docs/deferrals.md#multicol-balancing-"
+                                + $"pagination.",
+                                PaginateDiagnosticSeverity.Warning));
+                    }
                 }
 
                 // Advance the cursor + bookkeeping; skip the
@@ -2540,7 +2712,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 propagatingResolver: propagatingResolver,
                 propagatingFragmentainer: propagatingFragmentainer,
                 incomingTableContinuationAtDepth1: incomingTableContinuationAtDepth1,
-                onTablePageComplete: onTablePageComplete);
+                onTablePageComplete: onTablePageComplete,
+                incomingMulticolContinuationAtDepth1: incomingMulticolContinuationAtDepth1,
+                onMulticolPageComplete: onMulticolPageComplete);
 
             // Per Phase 3 Task 12 sub-cycle 1 hardening (Finding 6 /
             // 1) + sub-cycle 2 hardening (Finding 1) — drain the pre-

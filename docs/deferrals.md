@@ -542,9 +542,11 @@ grepping the ID).
 ## multicol-balancing-pagination
 
 - **ID** — `multicol-balancing-pagination`
-- **Status** — `approximated` (Hello World cycle 1 ships fixed-column-
-  count + equal-split + naive overflow-diagnostic).
-- **Behavior** — `MulticolLayouter` (Phase 3 Task 14 cycle 1)
+- **Status** — `approximated` (cycles 1-2 ship fixed-column-count +
+  equal-split + single-level multi-page splitting; balancing +
+  column-width auto-count + column rules + `column-span: all` remain
+  cycle 3+ scope).
+- **Behavior** — `MulticolLayouter` (Phase 3 Task 14 cycles 1-2)
   recognizes a block container with `column-count: N` (integer ≥ 2)
   as a multicol container. Detection is via
   `ComputedStyle.ReadColumnCount()` from BoxBuilder-produced
@@ -567,23 +569,41 @@ grepping the ID).
   sized to the container's border-box; per-column content fragments
   land INSIDE it via a `ColumnFragmentSink` decorator that
   translates each emitted `InlineOffset` by `columnIndex × (per-
-  ColumnInlineSize + columnGap)`. When all N columns fill + content
-  still remains, the LAST column's overflowing
-  `BlockContinuation` is discarded + a
-  `LAYOUT-MULTICOL-FORCED-OVERFLOW-001` diagnostic surfaces with
-  the column count + per-column block-size + the deferred-child
-  index from the truncated continuation. **The outer multicol box
-  itself is single-page atomic** — when it doesn't fit on the
-  current fragmentainer the parent `BlockLayouter`'s standard
-  forced-overflow path handles it (no multi-page multicol).
+  ColumnInlineSize + columnGap)`.
+- **Cycle 2 multi-page multicol** — when content overflows N
+  columns on the current page, `MulticolLayouter` packages the
+  LAST-column's overflowing `BlockContinuation` into a
+  `MulticolContinuation(NextChildIndex, ConsumedBlockSize,
+  PerChildLayouterState)` + returns `PageComplete`. The dispatching
+  `BlockLayouter` wraps that in
+  `BlockContinuation(ResumeAtChild=multicolChildIdx,
+  LayouterState=MulticolContinuation)` so the next-page
+  `BlockLayouter` invocation re-dispatches the multicol with the
+  carried continuation. The resume page's `MulticolLayouter`
+  unpacks `PerChildLayouterState` as the FIRST column's nested
+  `incomingContinuation` — content resumes at the exact child the
+  prior page deferred at (mirrors Task 13 cycle 1's row-pagination
+  pattern for tables). `LAYOUT-MULTICOL-FORCED-OVERFLOW-001` is
+  SUPPRESSED for clean multi-page splits; it fires only when (a) a
+  resume page can't make forward progress (single-oversized-child
+  fallback) OR (b) the multicol is at recursion depth ≥ 2 inside
+  `EmitBlockSubtreeRecursive` where cycle 2's single-level
+  propagation can't reach (e.g., `html > body > div.multicol` from
+  real HTML — the recursion's
+  `incomingMulticolContinuationAtDepth1` + `onMulticolPageComplete`
+  hooks fire only at depth==1, mirroring Task 13 cycle 2
+  hardening's `TableContinuation` pattern).
 - **Missing** —
-  - **Multi-page multicol** (CSS Fragmentation L3 §3 + CSS Multi-column
-    L1 §3.5): the outer multicol container fragmenting across pages
-    so the overflowing content continues on the next page rather
-    than truncating. The `MulticolContinuation` type is reserved
-    but never produced by cycle 1; sub-cycle 2 will plumb it
-    through the dispatch chain mirroring how Task 13 added
-    `TableContinuation` via `BlockContinuation.LayouterState`.
+  - **Multi-level recursive multicol propagation**: cycle 2's
+    single-level (depth==1) propagation handles multicol as a
+    direct descendant of the layouter's root or as a depth-1
+    descendant via the recursion's single-level callback. For
+    multicols nested deeper (e.g., the canonical `html > body >
+    div.multicol` case from BoxBuilder output) the recursive
+    `PageComplete` can't propagate; cycle 2 surfaces the truncation
+    via the forced-overflow diagnostic. Sub-cycle 3+ may generalize
+    by promoting the `LayouterState` propagation seam to a typed
+    "nested-layouter-state" subtype that flows through any depth.
   - **Column balancing** (`column-fill: balance` — CSS Multi-column
     L1 §3.4): cycle 1 fills columns left-to-right serially; columns
     aren't balanced to roughly-equal heights.
@@ -608,25 +628,29 @@ grepping the ID).
     block-level break properties (which the inner BlockLayouter
     already supports) apply.
 - **Trigger** — corpus needs a multi-column layout, OR a user-reported
-  case where multicol content vanishes (= cycle 1's truncation
-  fires the diagnostic).
+  case where multicol content vanishes (= the forced-overflow
+  diagnostic fires).
 - **Owner files** —
-  - `src/NetPdf.Layout/Layouters/MulticolLayouter.cs` — cycle 1
-    implementation; sub-cycle 2 will add multi-page multicol +
-    balancing + column-width-driven counting.
+  - `src/NetPdf.Layout/Layouters/MulticolLayouter.cs` — cycles 1-2
+    implementation; cycle 2 adds the multi-page resume path via
+    `MulticolContinuation`. Sub-cycle 3+ will add balancing +
+    column-width-driven counting + column rules.
   - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — the dispatch
     site that recognizes multicol containers + invokes
-    `MulticolLayouter`.
+    `MulticolLayouter`; cycle 2 adds the
+    `MulticolContinuation`-via-`BlockContinuation.LayouterState`
+    propagation pattern (main loop + recursion's depth==1 callback).
   - `src/NetPdf.Paginate/LayoutContinuation.cs::MulticolContinuation`
-    — reserved continuation type; cycle 1 doesn't produce it.
-- **Added** — Phase 3 Task 14 cycle 1 (this branch).
-- **Removal condition** — `MulticolLayouter` no longer emits
-  `LAYOUT-MULTICOL-FORCED-OVERFLOW-001` for content that fits in
-  any multicol container; multi-page multicol works (the outer
-  multicol box fragments cleanly across pages); column balancing
-  (`column-fill: balance`) ships; `column-width` derives column
-  count when `column-count` is `auto`; column rules paint;
-  `column-span: all` works.
+    — cycle 1 reserved the type; cycle 2 expands it to the
+    `(NextChildIndex, ConsumedBlockSize, PerChildLayouterState)`
+    contract.
+- **Added** — Phase 3 Task 14 cycle 1; expanded in cycle 2 (this
+  branch).
+- **Removal condition** — multi-level recursive multicol propagation
+  ships (deep-nested multicols fragment cleanly without the
+  diagnostic); column balancing (`column-fill: balance`) ships;
+  `column-width` derives column count when `column-count` is `auto`;
+  column rules paint; `column-span: all` works.
 
 ---
 

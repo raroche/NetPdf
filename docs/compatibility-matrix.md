@@ -40,7 +40,7 @@ Phase column shows the milestone in which the feature first ships.
 | `position: fixed` | ✅ | 3 | Repeated on every page. |
 | `position: sticky` | ❌ | post-v1 | Emits `CSS-POSITION-STICKY-UNSUPPORTED-001`. |
 | Tables (auto + fixed layout, border-collapse, span) | ✅ | 3 | |
-| Multi-column (`column-count`, `column-width`) | ✅ | 3 | |
+| Multi-column (`column-count`, `column-width`) | 🧪 | 3 | Partial / approximated per Phase 3 Task 14 cycle 1. `column-count` ships (equal-column split, serial fill, forced-overflow diagnostic). `column-width` parsed + cascaded but unused at layout time (cycle 2+ ships derivation). Column balancing (`column-fill: balance`), `column-span: all`, painted column rules, multi-page multicol (the multicol container fragmenting across pages) all deferred. See [docs/deferrals.md#multicol-balancing-pagination](deferrals.md#multicol-balancing-pagination). |
 | Flexbox (CSS Flexible Box Layout L1) | ✅ | 3 | Full L1 spec. |
 | CSS Grid (Level 1) | ✅ | 3 | Track sizing with `auto`/`fr`/`minmax`/`fit-content`/`repeat`/`auto-fill`/`auto-fit`; sparse + dense auto-placement; `grid-template-areas`. |
 | CSS Grid Level 2 (subgrid) | ❌ | post-v1 | Parsed only; emits `CSS-SUBGRID-UNSUPPORTED-001`. Roadmap v1.3. |

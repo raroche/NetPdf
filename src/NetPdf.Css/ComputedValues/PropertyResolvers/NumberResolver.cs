@@ -49,6 +49,21 @@ internal static class NumberResolver
         ICssDiagnosticsSink? diagnostics,
         CssSourceLocation location)
     {
+        // Per Phase 3 Task 14 cycle 1 — column-count admits <c>auto</c>
+        // as a keyword (CSS Multi-column L1 §3.2 — "the number of
+        // columns is determined by column-width"). v1 stores this as
+        // a Keyword slot so the multicol-layouter dispatch's
+        // <c>ReadColumnCount</c> extension can distinguish "auto"
+        // from a positive integer + skip the multicol path. Other
+        // Integer-typed properties don't currently admit a keyword;
+        // when a future property does, expand this gate or refactor
+        // into a per-property table.
+        if (propertyId == PropertyId.ColumnCount
+            && value.Equals("auto", System.StringComparison.OrdinalIgnoreCase))
+        {
+            return ResolverResult.Resolved(ComputedSlot.FromKeyword(0));
+        }
+
         if (!int.TryParse(value, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var n))
         {
             Emit(diagnostics, propertyName, value,
@@ -59,6 +74,24 @@ internal static class NumberResolver
         {
             Emit(diagnostics, propertyName, value,
                 "negative value not allowed for this property", location);
+            return ResolverResult.Invalid();
+        }
+        // Per Phase 3 Task 14 cycle 1 hardening (Finding 3) —
+        // column-count is spec'd as positive integer per CSS
+        // Multi-column L1 §3.2 ("The legal values of column-count are
+        // auto + <integer> with integer > 0"). Zero + negative fall
+        // back to auto (= the layouter sees the slot as a non-Integer
+        // tag via ReadColumnCount + the BlockLayouter dispatch skips
+        // MulticolLayouter). Without this gate `column-count: 0` would
+        // produce an Integer slot with value 0; ReadColumnCount
+        // already rejects that (`n >= 1`), but emitting the diagnostic
+        // here surfaces the author error rather than silently treating
+        // it as auto.
+        if (propertyId == PropertyId.ColumnCount && n < 1)
+        {
+            Emit(diagnostics, propertyName, value,
+                "column-count requires a positive integer (>= 1) per CSS Multi-column L1 §3.2",
+                location);
             return ResolverResult.Invalid();
         }
         return ResolverResult.Resolved(ComputedSlot.FromInteger(n));

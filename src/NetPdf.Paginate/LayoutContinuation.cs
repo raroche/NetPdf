@@ -107,3 +107,35 @@ internal sealed record FlexContinuation(
 internal sealed record GridContinuation(
     int RowIndex,
     object? TrackSizingCache = null) : LayoutContinuation;
+
+/// <summary>Per Phase 3 Task 14 cycle 1 — multicol container split
+/// across pages. CSS Multi-column L1 §2 defines the multicol container
+/// as a block formatting context whose in-flow children flow through
+/// N parallel columns (sub-fragmentainers) before continuing to the
+/// next page. Cycle 1 ships a Hello World multicol with explicit
+/// <c>column-count</c>; multi-page multicol (the outer multicol box
+/// fragmented across pages) + column balancing + <c>column-width</c>
+/// auto-count + <c>column-span: all</c> + column rules are sub-cycle
+/// 2+ scope per <c>docs/deferrals.md#multicol-balancing-pagination</c>.
+///
+/// <para><b>Cycle 1 placeholder.</b> The continuation type is reserved
+/// so the LayouterState seam exists when sub-cycle 2 ships multi-page
+/// multicol. Cycle 1's <c>MulticolLayouter</c> never produces a
+/// non-null <see cref="MulticolContinuation"/>: it commits all content
+/// it can on the current page + emits
+/// <c>LAYOUT-MULTICOL-FORCED-OVERFLOW-001</c> when content overflows
+/// the N columns. Sub-cycle 2 will populate
+/// <paramref name="NextColumnIndex"/> +
+/// <see cref="LayouterState"/> with the nested BlockLayouter's
+/// resume state.</para>
+///
+/// <para><paramref name="NextColumnIndex"/> identifies the next column
+/// to start emitting into when the outer multicol box resumes on the
+/// next page. <paramref name="LayouterState"/> per Phase 3 review fix
+/// #7 — opaque state (e.g., the in-progress
+/// <see cref="BlockContinuation"/> from the column that overflowed)
+/// for the resume page to feed back into the inner BlockLayouter.</para>
+/// </summary>
+internal sealed record MulticolContinuation(
+    int NextColumnIndex,
+    object? LayouterState = null) : LayoutContinuation;

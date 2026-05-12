@@ -230,6 +230,19 @@ internal static class KeywordResolver
         // docs/deferrals.md#table-auto-fixed-spans-borders).
         b[PropertyId.TableLayout] = T("auto", "fixed");
 
+        // column-fill — CSS Multi-column L1 §3.4. Cycle 1 parses the
+        // value but doesn't act on it — columns fill serially
+        // regardless. Sub-cycle 2+ will honor `balance` /
+        // `balance-all`. See
+        // docs/deferrals.md#multicol-balancing-pagination.
+        b[PropertyId.ColumnFill] = T("balance", "balance-all", "auto");
+
+        // column-rule-style — CSS Multi-column L1 §5.2. Uses the
+        // same keyword set as border-style (CSS Backgrounds &
+        // Borders 3 §4.4). Cycle 1 parses but doesn't paint the
+        // column rule.
+        b[PropertyId.ColumnRuleStyle] = borderStyle;
+
         // text-align — CSS Text 3 §7.1.
         b[PropertyId.TextAlign] = T("start", "end", "left", "right", "center", "justify",
             "match-parent", "justify-all");

@@ -631,6 +631,68 @@ public sealed class DiagnosticCodesTests
             NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutTableHeaderFooterOversized001);
     }
 
+    // ============================================================
+    // Phase 3 Task 14 cycle 1 —
+    // LAYOUT-MULTICOL-FORCED-OVERFLOW-001 parity.
+    // ============================================================
+
+    [Fact]
+    public void Layout_multicol_forced_overflow_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(registry,
+            @"\|\s*`?(LAYOUT-MULTICOL-FORCED-OVERFLOW-001)`?\s*\|\s*(\w+)\s*\|");
+        Assert.True(match.Success,
+            "LAYOUT-MULTICOL-FORCED-OVERFLOW-001 row not found in docs/diagnostics-codes.md");
+        Assert.Equal(DiagnosticCodes.LayoutMulticolForcedOverflow001, match.Groups[1].Value);
+        Assert.Equal("Warning", match.Groups[2].Value);
+    }
+
+    [Fact]
+    public void Layout_multicol_forced_overflow_001_constant_value_is_stable()
+    {
+        Assert.Equal("LAYOUT-MULTICOL-FORCED-OVERFLOW-001",
+            DiagnosticCodes.LayoutMulticolForcedOverflow001);
+    }
+
+    [Fact]
+    public void Layout_multicol_forced_overflow_001_facade_and_paginate_constants_agree()
+    {
+        Assert.Equal(DiagnosticCodes.LayoutMulticolForcedOverflow001,
+            NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutMulticolForcedOverflow001);
+    }
+
+    // ============================================================
+    // Phase 3 Task 14 cycle 1 hardening (Finding 4) —
+    // LAYOUT-MULTICOL-NON-FINITE-GEOMETRY-001 parity.
+    // ============================================================
+
+    [Fact]
+    public void Layout_multicol_non_finite_geometry_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(registry,
+            @"\|\s*`?(LAYOUT-MULTICOL-NON-FINITE-GEOMETRY-001)`?\s*\|\s*(\w+)\s*\|");
+        Assert.True(match.Success,
+            "LAYOUT-MULTICOL-NON-FINITE-GEOMETRY-001 row not found in docs/diagnostics-codes.md");
+        Assert.Equal(DiagnosticCodes.LayoutMulticolNonFiniteGeometry001, match.Groups[1].Value);
+        Assert.Equal("Warning", match.Groups[2].Value);
+    }
+
+    [Fact]
+    public void Layout_multicol_non_finite_geometry_001_constant_value_is_stable()
+    {
+        Assert.Equal("LAYOUT-MULTICOL-NON-FINITE-GEOMETRY-001",
+            DiagnosticCodes.LayoutMulticolNonFiniteGeometry001);
+    }
+
+    [Fact]
+    public void Layout_multicol_non_finite_geometry_001_facade_and_paginate_constants_agree()
+    {
+        Assert.Equal(DiagnosticCodes.LayoutMulticolNonFiniteGeometry001,
+            NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutMulticolNonFiniteGeometry001);
+    }
+
     private static string LoadRegistry()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

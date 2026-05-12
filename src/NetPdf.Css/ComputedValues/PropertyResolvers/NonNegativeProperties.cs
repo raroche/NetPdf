@@ -53,5 +53,13 @@ internal static class NonNegativeProperties
         PropertyId.MaxWidth, PropertyId.MaxHeight,
         // flex-grow / flex-shrink — Flexbox 1 §7.1
         PropertyId.FlexGrow, PropertyId.FlexShrink,
+        // Per Phase 3 Task 14 cycle 1 hardening (Finding 3) — multicol
+        // length properties (CSS Multi-column L1 §3.1 + §6.1).
+        // column-width specifies the IDEAL inline-size of each column;
+        // column-gap specifies the inline-axis gutter between columns.
+        // The spec admits no negative values; a negative value falls
+        // back to the property's initial value (auto / normal) + emits
+        // CSS-PROPERTY-VALUE-INVALID-001.
+        PropertyId.ColumnWidth, PropertyId.ColumnGap,
     }.ToFrozenSet();
 }

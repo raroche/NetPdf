@@ -539,6 +539,97 @@ grepping the ID).
 
 ---
 
+## multicol-balancing-pagination
+
+- **ID** — `multicol-balancing-pagination`
+- **Status** — `approximated` (Hello World cycle 1 ships fixed-column-
+  count + equal-split + naive overflow-diagnostic).
+- **Behavior** — `MulticolLayouter` (Phase 3 Task 14 cycle 1)
+  recognizes a block container with `column-count: N` (integer ≥ 2)
+  as a multicol container. Detection is via
+  `ComputedStyle.ReadColumnCount()` from BoxBuilder-produced
+  `BlockContainer` boxes; there is no dedicated `BoxKind.Multicol*` —
+  multicol is a layout-time concept layered on top of regular block
+  containers, mirroring how CSS encodes it as a property on the
+  block-level box. `BlockLayouter` dispatches into
+  `MulticolLayouter` for such children; the layouter computes the
+  per-column inline size as
+  `(containerContentInlineSize - (N-1) × columnGap) / N` (columnGap
+  defaults to 16 px when not declared — `normal` per CSS Multi-column
+  L1 §6.1 resolves to 1em, hard-coded for cycle 1), constructs a
+  sub-fragmentainer per column with `contentInlineSize =
+  perColumnInlineSize` + `blockSize = containerContentBlockSize`,
+  and runs a nested `BlockLayouter` per column. When the nested
+  layouter returns `PageComplete(BlockContinuation)` (column
+  overflow), the continuation is fed into the NEXT column's nested
+  `BlockLayouter` as `incomingContinuation` so emission resumes at
+  the deferred child. The outer multicol box emits ONE `BoxFragment`
+  sized to the container's border-box; per-column content fragments
+  land INSIDE it via a `ColumnFragmentSink` decorator that
+  translates each emitted `InlineOffset` by `columnIndex × (per-
+  ColumnInlineSize + columnGap)`. When all N columns fill + content
+  still remains, the LAST column's overflowing
+  `BlockContinuation` is discarded + a
+  `LAYOUT-MULTICOL-FORCED-OVERFLOW-001` diagnostic surfaces with
+  the column count + per-column block-size + the deferred-child
+  index from the truncated continuation. **The outer multicol box
+  itself is single-page atomic** — when it doesn't fit on the
+  current fragmentainer the parent `BlockLayouter`'s standard
+  forced-overflow path handles it (no multi-page multicol).
+- **Missing** —
+  - **Multi-page multicol** (CSS Fragmentation L3 §3 + CSS Multi-column
+    L1 §3.5): the outer multicol container fragmenting across pages
+    so the overflowing content continues on the next page rather
+    than truncating. The `MulticolContinuation` type is reserved
+    but never produced by cycle 1; sub-cycle 2 will plumb it
+    through the dispatch chain mirroring how Task 13 added
+    `TableContinuation` via `BlockContinuation.LayouterState`.
+  - **Column balancing** (`column-fill: balance` — CSS Multi-column
+    L1 §3.4): cycle 1 fills columns left-to-right serially; columns
+    aren't balanced to roughly-equal heights.
+  - **`column-width` + automatic column count** (CSS Multi-column L1
+    §3.1): cycle 1 reads `column-count` only. When `column-width` is
+    declared without `column-count`, sub-cycle 2 will compute
+    `N = floor((containerContentInlineSize + columnGap) /
+    (column-width + columnGap))`.
+  - **`column-span: all`** (CSS Multi-column L1 §4): a child with
+    `column-span: all` spans across all columns; cycle 1 has no
+    column-span machinery.
+  - **Column rules** (`column-rule-*` — CSS Multi-column L1 §5):
+    the painter would draw a rule line between adjacent columns at
+    the column gap's midpoint. Cycle 1 emits no rule fragments;
+    the properties parse + cascade but have no painted effect.
+  - **`column-gap` font-relative resolution**: cycle 1 hard-codes
+    16 px for the `normal` initial value; sub-cycle 2 will resolve
+    against the cascaded `font-size`.
+  - **Fragmentation interaction** (`break-before` / `break-after` /
+    `break-inside: avoid-column`): the cycle-1 `BlockLayouter`-as-
+    column doesn't honor avoid-column constraints; only the regular
+    block-level break properties (which the inner BlockLayouter
+    already supports) apply.
+- **Trigger** — corpus needs a multi-column layout, OR a user-reported
+  case where multicol content vanishes (= cycle 1's truncation
+  fires the diagnostic).
+- **Owner files** —
+  - `src/NetPdf.Layout/Layouters/MulticolLayouter.cs` — cycle 1
+    implementation; sub-cycle 2 will add multi-page multicol +
+    balancing + column-width-driven counting.
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — the dispatch
+    site that recognizes multicol containers + invokes
+    `MulticolLayouter`.
+  - `src/NetPdf.Paginate/LayoutContinuation.cs::MulticolContinuation`
+    — reserved continuation type; cycle 1 doesn't produce it.
+- **Added** — Phase 3 Task 14 cycle 1 (this branch).
+- **Removal condition** — `MulticolLayouter` no longer emits
+  `LAYOUT-MULTICOL-FORCED-OVERFLOW-001` for content that fits in
+  any multicol container; multi-page multicol works (the outer
+  multicol box fragments cleanly across pages); column balancing
+  (`column-fill: balance`) ships; `column-width` derives column
+  count when `column-count` is `auto`; column rules paint;
+  `column-span: all` works.
+
+---
+
 ## fuzzing-infrastructure
 
 - **ID** — `fuzzing-infrastructure`

@@ -1371,6 +1371,539 @@ public sealed class TableLayouterTests
         }
     }
 
+    // ====================================================================
+    //  Phase 3 Task 13 cycle 2 — <thead> / <tfoot> per-page repeat tests.
+    // ====================================================================
+
+    [Fact]
+    public void Cycle2_table_with_thead_repeats_header_on_each_page()
+    {
+        // 1 header row (200) + 4 body rows (200 each); page = 700.
+        // Page 1: header at 0..200; body 0 at 200..400; body 1 at 400..600;
+        //         body 2 would go to 600..800 > 700 → defer.
+        //         Wait: footerStackHeight = 0, so body fits when
+        //         rowTop + height <= BlockSize.
+        //         Page 1 budget = 700 - 200 (header) = 500 for body.
+        //         Body 0 at 200..400 (delta 200) — fits.
+        //         Body 1 at 400..600 (delta 200) — fits.
+        //         Body 2 would be at 600..800 — but 800 > 700 → defer.
+        //         Wait: the budget check is "rowBottom + footerHeight <= BlockSize".
+        //         600 + 0 <= 700 ✓ for body 1, OK.
+        //         800 + 0 = 800 > 700, defer body 2.
+        // Page 1: header + body 0, 1. Page 2: header (REPEATED) + body 2, 3.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+        var (root, table) = BuildTheadTfootTable(
+            headerRowHeights: [200], bodyRowHeights: [200, 200, 200, 200], footerRowHeights: System.Array.Empty<double>());
+
+        TableContinuation? carriedContinuation = null;
+        using (var page1 = new TableLayouter(table, sink, null, null, shaper))
+        {
+            page1.ConfigureEmission(0, 0, 600);
+            var ctx1 = new FragmentainerContext(contentInlineSize: 600, blockSize: 700);
+            var layoutCtx1 = new LayoutContext(ctx1);
+            using var resolver1 = new BreakResolver();
+            var result1 = page1.AttemptLayout(
+                ctx1, ref layoutCtx1, resolver1, LayoutAttemptStrategy.LastResort);
+            Assert.Equal(LayoutAttemptOutcome.PageComplete, result1.Outcome);
+            carriedContinuation = Assert.IsType<TableContinuation>(result1.Continuation);
+            Assert.True(carriedContinuation.RepeatHead);
+            Assert.False(carriedContinuation.RepeatFoot);
+        }
+        // Page 1 row count: 1 header + 2 body = 3.
+        var page1Rows = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableRow) page1Rows++;
+        }
+        Assert.Equal(3, page1Rows);
+
+        // Page 2 — header repeats; bodies 2 + 3 commit.
+        var page2BaselineCount = sink.Fragments.Count;
+        using (var page2 = new TableLayouter(table, sink, carriedContinuation, null, shaper))
+        {
+            page2.ConfigureEmission(0, 0, 600);
+            var ctx2 = new FragmentainerContext(contentInlineSize: 600, blockSize: 700);
+            var layoutCtx2 = new LayoutContext(ctx2);
+            using var resolver2 = new BreakResolver();
+            var result2 = page2.AttemptLayout(
+                ctx2, ref layoutCtx2, resolver2, LayoutAttemptStrategy.LastResort);
+            Assert.Equal(LayoutAttemptOutcome.AllDone, result2.Outcome);
+        }
+        // Page 2 row count: 1 header (REPEATED) + 2 body = 3.
+        var page2Rows = 0;
+        for (var i = page2BaselineCount; i < sink.Fragments.Count; i++)
+        {
+            if (sink.Fragments[i].Box.Kind == BoxKind.TableRow) page2Rows++;
+        }
+        Assert.Equal(3, page2Rows);
+    }
+
+    [Fact]
+    public void Cycle2_table_with_tfoot_repeats_footer_on_each_page()
+    {
+        // 4 body rows (200 each) + 1 footer row (200); page = 700.
+        // Budget per page: 700 - 0 (header) - 200 (footer) = 500 for body.
+        // Body 0 at 0..200, body 1 at 200..400, body 2 at 400..600 with
+        // footer reservation: bodyEnd + footer = 600 + 200 = 800 > 700 → defer.
+        // Actually let's recalc:
+        //   Page 1: budget remaining for body 0 = 700 - 200 (footer) = 500 (cursor 0 + 200 + 200 <= 500 ✓)
+        //   Body 0 commits at 0..200; cursor 200; budget remaining 300.
+        //   Body 1 at 200..400 ; cursor 400; 400 + 200 = 600 <= 700 ✓.
+        //   Body 2 at 400..600 ; cursor 600; 600 + 200 = 800 > 700 → defer.
+        // Page 1: body 0, 1 + footer. Page 2: body 2, 3 + footer.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+        var (root, table) = BuildTheadTfootTable(
+            headerRowHeights: System.Array.Empty<double>(),
+            bodyRowHeights: [200, 200, 200, 200],
+            footerRowHeights: [200]);
+
+        TableContinuation? carriedContinuation = null;
+        using (var page1 = new TableLayouter(table, sink, null, null, shaper))
+        {
+            page1.ConfigureEmission(0, 0, 600);
+            var ctx1 = new FragmentainerContext(contentInlineSize: 600, blockSize: 700);
+            var layoutCtx1 = new LayoutContext(ctx1);
+            using var resolver1 = new BreakResolver();
+            var result1 = page1.AttemptLayout(
+                ctx1, ref layoutCtx1, resolver1, LayoutAttemptStrategy.LastResort);
+            Assert.Equal(LayoutAttemptOutcome.PageComplete, result1.Outcome);
+            carriedContinuation = Assert.IsType<TableContinuation>(result1.Continuation);
+            Assert.False(carriedContinuation.RepeatHead);
+            Assert.True(carriedContinuation.RepeatFoot);
+        }
+        // Page 1 row count: 2 body + 1 footer = 3.
+        var page1Rows = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableRow) page1Rows++;
+        }
+        Assert.Equal(3, page1Rows);
+
+        var page2BaselineCount = sink.Fragments.Count;
+        using (var page2 = new TableLayouter(table, sink, carriedContinuation, null, shaper))
+        {
+            page2.ConfigureEmission(0, 0, 600);
+            var ctx2 = new FragmentainerContext(contentInlineSize: 600, blockSize: 700);
+            var layoutCtx2 = new LayoutContext(ctx2);
+            using var resolver2 = new BreakResolver();
+            var result2 = page2.AttemptLayout(
+                ctx2, ref layoutCtx2, resolver2, LayoutAttemptStrategy.LastResort);
+            Assert.Equal(LayoutAttemptOutcome.AllDone, result2.Outcome);
+        }
+        // Page 2: 2 body + 1 footer (REPEATED) = 3.
+        var page2Rows = 0;
+        for (var i = page2BaselineCount; i < sink.Fragments.Count; i++)
+        {
+            if (sink.Fragments[i].Box.Kind == BoxKind.TableRow) page2Rows++;
+        }
+        Assert.Equal(3, page2Rows);
+    }
+
+    [Fact]
+    public void Cycle2_table_with_thead_and_tfoot_repeats_both()
+    {
+        // 1 header (150) + 4 body (150 each) + 1 footer (150); page = 600.
+        // Per-page budget for body = 600 - 150 (header) - 150 (footer) = 300.
+        // bodyAnchor = 150; first body at 150..300.
+        //   Body 0: 150 + 150 = 300; 300 + 150 (footer reservation) = 450 <= 600 ✓
+        //   Body 1: cursor 300; 300 + 150 = 450; 450 + 150 = 600 <= 600 ✓
+        //   Body 2: cursor 450; 450 + 150 = 600; 600 + 150 = 750 > 600 → defer.
+        // Page 1: header + body 0, 1 + footer = 4 rows.
+        // Page 2: header (REPEATED) + body 2, 3 + footer (REPEATED) = 4 rows.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+        var (root, table) = BuildTheadTfootTable(
+            headerRowHeights: [150], bodyRowHeights: [150, 150, 150, 150], footerRowHeights: [150]);
+
+        TableContinuation? carriedContinuation = null;
+        using (var page1 = new TableLayouter(table, sink, null, null, shaper))
+        {
+            page1.ConfigureEmission(0, 0, 600);
+            var ctx1 = new FragmentainerContext(contentInlineSize: 600, blockSize: 600);
+            var layoutCtx1 = new LayoutContext(ctx1);
+            using var resolver1 = new BreakResolver();
+            var result1 = page1.AttemptLayout(
+                ctx1, ref layoutCtx1, resolver1, LayoutAttemptStrategy.LastResort);
+            Assert.Equal(LayoutAttemptOutcome.PageComplete, result1.Outcome);
+            carriedContinuation = Assert.IsType<TableContinuation>(result1.Continuation);
+            Assert.True(carriedContinuation.RepeatHead);
+            Assert.True(carriedContinuation.RepeatFoot);
+        }
+        var page1Rows = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableRow) page1Rows++;
+        }
+        Assert.Equal(4, page1Rows);
+
+        var page2BaselineCount = sink.Fragments.Count;
+        using (var page2 = new TableLayouter(table, sink, carriedContinuation, null, shaper))
+        {
+            page2.ConfigureEmission(0, 0, 600);
+            var ctx2 = new FragmentainerContext(contentInlineSize: 600, blockSize: 600);
+            var layoutCtx2 = new LayoutContext(ctx2);
+            using var resolver2 = new BreakResolver();
+            var result2 = page2.AttemptLayout(
+                ctx2, ref layoutCtx2, resolver2, LayoutAttemptStrategy.LastResort);
+            Assert.Equal(LayoutAttemptOutcome.AllDone, result2.Outcome);
+        }
+        var page2Rows = 0;
+        for (var i = page2BaselineCount; i < sink.Fragments.Count; i++)
+        {
+            if (sink.Fragments[i].Box.Kind == BoxKind.TableRow) page2Rows++;
+        }
+        Assert.Equal(4, page2Rows);
+    }
+
+    [Fact]
+    public void Cycle2_continuation_repeathead_repeatfoot_flags_set_correctly()
+    {
+        // Single PageComplete check — when the table has thead +
+        // tfoot, the returned TableContinuation MUST have
+        // RepeatHead == true + RepeatFoot == true so the resume page
+        // knows to re-emit both.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+        var (root, table) = BuildTheadTfootTable(
+            headerRowHeights: [100], bodyRowHeights: [200, 200, 200], footerRowHeights: [100]);
+
+        using var layouter = new TableLayouter(table, sink, null, null, shaper);
+        layouter.ConfigureEmission(0, 0, 600);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 500);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var cont = Assert.IsType<TableContinuation>(result.Continuation);
+        Assert.True(cont.RepeatHead);
+        Assert.True(cont.RepeatFoot);
+    }
+
+    [Fact]
+    public void Cycle2_no_thead_or_tfoot_preserves_cycle_1_behavior()
+    {
+        // Regression: a table with no <thead> + no <tfoot> behaves
+        // identically to cycle 1 — the new RepeatHead / RepeatFoot
+        // flags stay false on a PageComplete.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+        var (root, table) = BuildTallRowTable(rowHeights: [300, 300, 300]);
+
+        using var layouter = new TableLayouter(table, sink, null, null, shaper);
+        layouter.ConfigureEmission(0, 0, 600);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var cont = Assert.IsType<TableContinuation>(result.Continuation);
+        Assert.False(cont.RepeatHead);
+        Assert.False(cont.RepeatFoot);
+        Assert.Equal(2, cont.NextRowIndex);
+    }
+
+    [Fact]
+    public void Cycle2_table_with_only_thead_emits_only_headers()
+    {
+        // <thead> with rows, no <tbody> or <tfoot> — all rows are
+        // headers; emit them + AllDone.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+        var (root, table) = BuildTheadTfootTable(
+            headerRowHeights: [100, 100],
+            bodyRowHeights: System.Array.Empty<double>(),
+            footerRowHeights: System.Array.Empty<double>());
+
+        using var layouter = new TableLayouter(table, sink, null, null, shaper);
+        layouter.ConfigureEmission(0, 0, 600);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+
+        var rowCount = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableRow) rowCount++;
+        }
+        Assert.Equal(2, rowCount);
+    }
+
+    [Fact]
+    public void Cycle2_table_with_only_tfoot_emits_only_footers()
+    {
+        // Symmetric — <tfoot> only.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+        var (root, table) = BuildTheadTfootTable(
+            headerRowHeights: System.Array.Empty<double>(),
+            bodyRowHeights: System.Array.Empty<double>(),
+            footerRowHeights: [100, 100]);
+
+        using var layouter = new TableLayouter(table, sink, null, null, shaper);
+        layouter.ConfigureEmission(0, 0, 600);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+
+        var rowCount = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableRow) rowCount++;
+        }
+        Assert.Equal(2, rowCount);
+    }
+
+    [Fact]
+    public void Cycle2_table_with_oversized_header_emits_forced_overflow()
+    {
+        // Header is 900 px tall, page = 600. Header force-emits +
+        // PAGINATION-FORCED-OVERFLOW-001 fires (the bottom-caption
+        // cursor extends past the page bottom; the cycle-1
+        // EmitOverflowDiagnosticIfNeeded helper catches it).
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+        var (root, table) = BuildTheadTfootTable(
+            headerRowHeights: [900],
+            bodyRowHeights: [100],
+            footerRowHeights: System.Array.Empty<double>());
+
+        using var layouter = new TableLayouter(table, sink, null, diagSink, shaper);
+        layouter.ConfigureEmission(0, 0, 600);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 600);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // Header committed (it was the "first row to emit").
+        Assert.Contains(sink.Fragments, f => f.Box.Kind == BoxKind.TableRow);
+        // Forced-overflow OR header-footer-oversized diagnostic fires
+        // (header alone exceeds the page → at least one of these).
+        var hasOverflowDiag = false;
+        foreach (var d in diagSink.Diagnostics)
+        {
+            if (d.Code == PaginateDiagnosticCodes.PaginationForcedOverflow001
+                || d.Code == PaginateDiagnosticCodes.LayoutTableHeaderFooterOversized001)
+            {
+                hasOverflowDiag = true;
+                break;
+            }
+        }
+        Assert.True(hasOverflowDiag,
+            "Expected PAGINATION-FORCED-OVERFLOW-001 or "
+            + "LAYOUT-TABLE-HEADER-FOOTER-OVERSIZED-001 for an oversized header.");
+    }
+
+    [Fact]
+    public void Cycle2_table_with_header_and_footer_exceeding_fragmentainer_emits_diagnostic()
+    {
+        // Header 300 + footer 300 = 600; page = 500. 600 > 500 →
+        // LAYOUT-TABLE-HEADER-FOOTER-OVERSIZED-001 fires.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+        var (root, table) = BuildTheadTfootTable(
+            headerRowHeights: [300],
+            bodyRowHeights: [100],
+            footerRowHeights: [300]);
+
+        using var layouter = new TableLayouter(table, sink, null, diagSink, shaper);
+        layouter.ConfigureEmission(0, 0, 600);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 500);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        Assert.Contains(diagSink.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutTableHeaderFooterOversized001);
+    }
+
+    [Fact]
+    public void Cycle2_top_caption_skipped_on_resume_pages()
+    {
+        // Top caption + thead — verify the cycle-1 caption skip
+        // semantics still hold on resume pages despite the cycle-2
+        // header repetition.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+        var (root, table) = BuildTheadTfootTable(
+            headerRowHeights: [100],
+            bodyRowHeights: [200, 200, 200],
+            footerRowHeights: System.Array.Empty<double>());
+        var captionStyle = MakeStyle();
+        captionStyle.Set(PropertyId.CaptionSide, ComputedSlot.FromKeyword(0));
+        var caption = Box.ForElement(BoxKind.TableCaption, captionStyle, MakeElement());
+        var capInner = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var capInnerStyle = MakeStyle();
+        SetLengthPx(capInnerStyle, PropertyId.Height, 50);
+        capInner.AppendChild(Box.ForElement(BoxKind.BlockContainer, capInnerStyle, MakeElement()));
+        caption.AppendChild(capInner);
+        // Caption goes at index 0 of the wrapper (= before the grid).
+        table.InsertChild(0, caption);
+
+        TableContinuation? carriedContinuation = null;
+        using (var page1 = new TableLayouter(table, sink, null, null, shaper))
+        {
+            page1.ConfigureEmission(0, 0, 600);
+            var ctx1 = new FragmentainerContext(contentInlineSize: 600, blockSize: 500);
+            var layoutCtx1 = new LayoutContext(ctx1);
+            using var resolver1 = new BreakResolver();
+            var result1 = page1.AttemptLayout(
+                ctx1, ref layoutCtx1, resolver1, LayoutAttemptStrategy.LastResort);
+            carriedContinuation = Assert.IsType<TableContinuation>(result1.Continuation);
+        }
+        // Page 1 emits the caption.
+        var page1CaptionCount = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCaption) page1CaptionCount++;
+        }
+        Assert.Equal(1, page1CaptionCount);
+
+        var page2BaselineCount = sink.Fragments.Count;
+        using (var page2 = new TableLayouter(table, sink, carriedContinuation, null, shaper))
+        {
+            page2.ConfigureEmission(0, 0, 600);
+            var ctx2 = new FragmentainerContext(contentInlineSize: 600, blockSize: 500);
+            var layoutCtx2 = new LayoutContext(ctx2);
+            using var resolver2 = new BreakResolver();
+            page2.AttemptLayout(ctx2, ref layoutCtx2, resolver2, LayoutAttemptStrategy.LastResort);
+        }
+        var page2CaptionCount = 0;
+        for (var i = page2BaselineCount; i < sink.Fragments.Count; i++)
+        {
+            if (sink.Fragments[i].Box.Kind == BoxKind.TableCaption) page2CaptionCount++;
+        }
+        Assert.Equal(0, page2CaptionCount);
+    }
+
+    [Fact]
+    public void Cycle2_bottom_caption_emitted_only_on_last_page_after_footer()
+    {
+        // <tfoot> + bottom caption — verify the bottom caption emits
+        // only on the LAST page, anchored AFTER the footer.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+        var (root, table) = BuildTheadTfootTable(
+            headerRowHeights: System.Array.Empty<double>(),
+            bodyRowHeights: [200, 200, 200],
+            footerRowHeights: [100]);
+        var captionStyle = MakeStyle();
+        captionStyle.Set(PropertyId.CaptionSide, ComputedSlot.FromKeyword(1));
+        var caption = Box.ForElement(BoxKind.TableCaption, captionStyle, MakeElement());
+        var capInner = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+        var capInnerStyle = MakeStyle();
+        SetLengthPx(capInnerStyle, PropertyId.Height, 50);
+        capInner.AppendChild(Box.ForElement(BoxKind.BlockContainer, capInnerStyle, MakeElement()));
+        caption.AppendChild(capInner);
+        table.AppendChild(caption);
+
+        TableContinuation? carriedContinuation = null;
+        using (var page1 = new TableLayouter(table, sink, null, null, shaper))
+        {
+            page1.ConfigureEmission(0, 0, 600);
+            var ctx1 = new FragmentainerContext(contentInlineSize: 600, blockSize: 500);
+            var layoutCtx1 = new LayoutContext(ctx1);
+            using var resolver1 = new BreakResolver();
+            var result1 = page1.AttemptLayout(
+                ctx1, ref layoutCtx1, resolver1, LayoutAttemptStrategy.LastResort);
+            carriedContinuation = Assert.IsType<TableContinuation>(result1.Continuation);
+        }
+        var page1CaptionCount = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCaption) page1CaptionCount++;
+        }
+        Assert.Equal(0, page1CaptionCount); // bottom caption skipped on non-last page
+
+        using (var page2 = new TableLayouter(table, sink, carriedContinuation, null, shaper))
+        {
+            page2.ConfigureEmission(0, 0, 600);
+            var ctx2 = new FragmentainerContext(contentInlineSize: 600, blockSize: 500);
+            var layoutCtx2 = new LayoutContext(ctx2);
+            using var resolver2 = new BreakResolver();
+            page2.AttemptLayout(ctx2, ref layoutCtx2, resolver2, LayoutAttemptStrategy.LastResort);
+        }
+        var totalCaptionCount = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableCaption) totalCaptionCount++;
+        }
+        Assert.Equal(1, totalCaptionCount);
+    }
+
+    /// <summary>Build a table with <c>&lt;thead&gt;</c> /
+    /// <c>&lt;tbody&gt;</c> / <c>&lt;tfoot&gt;</c> row groups. Empty
+    /// arrays produce no group. Each row carries a single cell with an
+    /// explicit-height BlockContainer (so the cell's content extent
+    /// = the supplied height regardless of font metrics).</summary>
+    private static (Box root, Box table) BuildTheadTfootTable(
+        double[] headerRowHeights, double[] bodyRowHeights, double[] footerRowHeights)
+    {
+        var root = Box.CreateRoot(MakeStyle());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+
+        if (headerRowHeights.Length > 0)
+        {
+            var thead = Box.ForElement(BoxKind.TableHeaderGroup, MakeStyle(), MakeElement());
+            foreach (var h in headerRowHeights)
+            {
+                thead.AppendChild(MakeRowWithHeight(h));
+            }
+            grid.AppendChild(thead);
+        }
+        if (bodyRowHeights.Length > 0)
+        {
+            var tbody = Box.ForElement(BoxKind.TableRowGroup, MakeStyle(), MakeElement());
+            foreach (var h in bodyRowHeights)
+            {
+                tbody.AppendChild(MakeRowWithHeight(h));
+            }
+            grid.AppendChild(tbody);
+        }
+        if (footerRowHeights.Length > 0)
+        {
+            var tfoot = Box.ForElement(BoxKind.TableFooterGroup, MakeStyle(), MakeElement());
+            foreach (var h in footerRowHeights)
+            {
+                tfoot.AppendChild(MakeRowWithHeight(h));
+            }
+            grid.AppendChild(tfoot);
+        }
+        table.AppendChild(grid);
+        root.AppendChild(table);
+        return (root, table);
+
+        static Box MakeRowWithHeight(double h)
+        {
+            var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+            var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+            var anon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+            var bcStyle = MakeStyle();
+            SetLengthPx(bcStyle, PropertyId.Height, h);
+            var bc = Box.ForElement(BoxKind.BlockContainer, bcStyle, MakeElement());
+            anon.AppendChild(bc);
+            cell.AppendChild(anon);
+            row.AppendChild(cell);
+            return row;
+        }
+    }
+
     /// <summary>Build a table whose rows have the specified heights —
     /// each row carries a single cell wrapping a BlockContainer with
     /// the height set explicitly. Returns the root + table wrapper for

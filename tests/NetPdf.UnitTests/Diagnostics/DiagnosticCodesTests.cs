@@ -600,6 +600,37 @@ public sealed class DiagnosticCodesTests
             NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutTableRowspanCrossesPage001);
     }
 
+    // ============================================================
+    // Phase 3 Task 13 cycle 2 —
+    // LAYOUT-TABLE-HEADER-FOOTER-OVERSIZED-001 parity.
+    // ============================================================
+
+    [Fact]
+    public void Layout_table_header_footer_oversized_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(registry,
+            @"\|\s*`?(LAYOUT-TABLE-HEADER-FOOTER-OVERSIZED-001)`?\s*\|\s*(\w+)\s*\|");
+        Assert.True(match.Success,
+            "LAYOUT-TABLE-HEADER-FOOTER-OVERSIZED-001 row not found in docs/diagnostics-codes.md");
+        Assert.Equal(DiagnosticCodes.LayoutTableHeaderFooterOversized001, match.Groups[1].Value);
+        Assert.Equal("Warning", match.Groups[2].Value);
+    }
+
+    [Fact]
+    public void Layout_table_header_footer_oversized_001_constant_value_is_stable()
+    {
+        Assert.Equal("LAYOUT-TABLE-HEADER-FOOTER-OVERSIZED-001",
+            DiagnosticCodes.LayoutTableHeaderFooterOversized001);
+    }
+
+    [Fact]
+    public void Layout_table_header_footer_oversized_001_facade_and_paginate_constants_agree()
+    {
+        Assert.Equal(DiagnosticCodes.LayoutTableHeaderFooterOversized001,
+            NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutTableHeaderFooterOversized001);
+    }
+
     private static string LoadRegistry()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

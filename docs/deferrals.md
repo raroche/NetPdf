@@ -292,8 +292,7 @@ grepping the ID).
   (ascending rowspan) lands any excess from `rowspan>1` cells on
   the LAST row of the span. The CSS Tables L3 §11 spec-strict
   distribution-proportional algorithm is sub-cycle 5+ work. No
-  `border-collapse`, no `<thead>` / `<tfoot>` repetition across
-  pages, no RTL
+  `border-collapse`, no RTL
   flips. **Task 13 cycle 1 — multi-page row splitting at row
   boundaries.** When the row stack exceeds the fragmentainer
   block-size, the table now consults the break resolver before
@@ -313,7 +312,33 @@ grepping the ID).
   ATOMIC: the recursion has no continuation-emission route, so
   nested tables emit every row on the same page + rely on the
   existing forced-overflow diagnostic for over-tall cases. Task 13
-  cycle 2+ may generalize the recursion. **Sub-cycle 3 — captions (`<caption>`) lay
+  cycle 2+ may generalize the recursion. **Task 13 cycle 2 —
+  `<thead>` / `<tfoot>` per-page repeat.** Header rows
+  (collected from `<thead>` / `display: table-header-group`)
+  repeat at the TOP of each page the table spans; footer rows
+  (from `<tfoot>` / `display: table-footer-group`) repeat
+  IMMEDIATELY AFTER the last body row that fits on each page
+  (CSS Tables L3 §3.6 / §11). `CollectRows` now classifies each
+  collected row by group kind (`Header`, `Body`, `Footer`) and
+  reorders so headers come first + footers last regardless of
+  HTML5 source order (HTML5 permits `<tfoot>` before `<tbody>`;
+  the spec says it still renders at the end). The body-row
+  pagination loop reserves the footer-stack height in
+  `fragmentainer.UsedBlockSize` BEFORE walking body rows so the
+  resolver's RemainingBlockSize budget already excludes the
+  footer reservation; the cycle-1 paint-safe row → cell →
+  content emit order continues to hold within each section.
+  `TableContinuation.RepeatHead` / `RepeatFoot` flags drive the
+  resume page: when set, the resume layouter re-emits the
+  header at the top + footer at the bottom of the body window.
+  The new `LAYOUT-TABLE-HEADER-FOOTER-OVERSIZED-001` diagnostic
+  fires when header + footer combined exceed the fragmentainer
+  (no room for any body row alongside the repeat contract) —
+  header + footer commit atomically + body is skipped to avoid
+  infinite continuation loops. The locked cycle-2 footer
+  position is IMMEDIATELY AFTER THE LAST BODY ROW on each page
+  (not bottom-anchored to the fragmentainer); sub-cycle 3+ may
+  revisit bottom-anchoring. **Sub-cycle 3 — captions (`<caption>`) lay
   out as block fragments above (`caption-side: top`, default) or
   below (`caption-side: bottom`) the table grid; caption inline-
   size = table wrapper's content-inline-size; the writing-mode-
@@ -398,8 +423,7 @@ grepping the ID).
 - **Missing** — Per CSS Tables L3 + HTML5 §4.9.11: percentage
   column widths; full grid/table used-inline-size reconciliation for
   content-shrink scenarios; §6.3 border-collapse + border-spacing;
-  §6.4 column-group widths beyond Pass A fallback; per-page
-  `<thead>` / `<tfoot>` repeat (Task 13 cycle 2); nested-recursion
+  §6.4 column-group widths beyond Pass A fallback; nested-recursion
   table-continuation propagation (Task 13 cycle 1 ships outer-loop
   row splitting + nested tables stay atomic with forced-overflow
   fallback; cycle 2+ may generalize); row-internal splitting (a
@@ -447,8 +471,7 @@ grepping the ID).
     nested-recursion path uses the new `NoBreakBreakResolver` to
     keep nested tables atomic — cycle 2+ may generalize).
     Remaining: spec-strict §11 rowspan distribution-proportional
-    algorithm; §6.3 border-collapse model + `border-spacing`; per-
-    page `<thead>` / `<tfoot>` repetition (Task 13 cycle 2);
+    algorithm; §6.3 border-collapse model + `border-spacing`;
     row-internal splitting + row-level `break-inside: avoid`; RTL
     writing modes / row reversal / caption inline-axis keyword
     routing; HTML5 colspan='0'/rowspan='0' remainder semantics;
@@ -493,9 +516,20 @@ grepping the ID).
   continuation. Top captions emit only on the first page; bottom
   captions only on the last. Nested-recursion tables stay atomic
   via the new `NoBreakBreakResolver` (cycle 2+ deferral).
+  Phase 3 Task 13 cycle 2 added `<thead>` / `<tfoot>` per-page
+  repeat: `CollectRows` now classifies rows by group kind +
+  reorders so headers come first + footers last regardless of
+  HTML5 source order; body-row pagination reserves footer-stack
+  height before walking body rows so resolver budgets exclude
+  the footer; `TableContinuation.RepeatHead` / `RepeatFoot` flags
+  drive the resume page's re-emit. New
+  `LAYOUT-TABLE-HEADER-FOOTER-OVERSIZED-001` diagnostic for the
+  catastrophic header+footer-exceeds-fragmentainer case. Locked
+  footer position: immediately after the last committed body
+  row (not bottom-anchored).
 - **Removal condition** — All "Missing" items above are
   implemented: percentage column widths; §6.3 border-collapse +
-  border-spacing; per-page header/footer repeat; multi-fragmentainer
+  border-spacing; multi-fragmentainer
   row splitting; §11 spec-strict rowspan distribution-proportional
   algorithm; CSS Tables L3 §3 spec-strict proportional-weight column
   distribution; block-level fixed `width` honoring + replaced-element

@@ -945,6 +945,59 @@ public sealed class TableLayouterProductionTests
             d.Code == PaginateDiagnosticCodes.PaginationForcedOverflow001);
     }
 
+    [Fact]
+    public async Task Cycle2_production_html_table_with_thead_tfoot_emits_header_and_footer_fragments()
+    {
+        // Phase 3 Task 13 cycle 2 — production-pipeline test that
+        // <thead> and <tfoot> elements flow through BoxBuilder as
+        // TableHeaderGroup / TableFooterGroup boxes + their rows
+        // emit as TableRow fragments alongside <tbody> rows.
+        //
+        // Note: under <html><body><table> the recursive-atomic
+        // fallback from cycle 1's Finding 1 keeps the table on a
+        // single page (rather than splitting + repeating header/
+        // footer per the cycle 2 algorithm). Cycle 2's per-page
+        // repetition is fully exercised by the direct-construction
+        // tests in TableLayouterTests.cs. This test pins the
+        // production-path recognition + fragment emission: header,
+        // body, and footer rows all flow through BoxBuilder + emit
+        // TableRow BoxFragments without throwing.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                th > div, td > div { height: 20px; }
+            </style></head><body>
+            <table>
+              <thead><tr><th><div>Header</div></th></tr></thead>
+              <tbody>
+                <tr><td><div>Row 1</div></td></tr>
+                <tr><td><div>Row 2</div></td></tr>
+              </tbody>
+              <tfoot><tr><td><div>Footer</div></td></tr></tfoot>
+            </table>
+            </body></html>
+            """;
+
+        var (sink, diagnostics, _) = await RenderViaFullPipelineAsync(html);
+
+        // 4 TableRow fragments expected: 1 header + 2 body + 1 footer.
+        var rowCount = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableRow) rowCount++;
+        }
+        Assert.Equal(4, rowCount);
+
+        // No LAYOUT-TABLE-FEATURE-UNSUPPORTED-001 diagnostic
+        // mentioning thead/tfoot/header/footer — cycle 2 ships
+        // header/footer recognition.
+        Assert.DoesNotContain(diagnostics.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001
+            && (d.Message.Contains("thead", System.StringComparison.OrdinalIgnoreCase)
+                || d.Message.Contains("tfoot", System.StringComparison.OrdinalIgnoreCase)
+                || d.Message.Contains("header", System.StringComparison.OrdinalIgnoreCase)
+                || d.Message.Contains("footer", System.StringComparison.OrdinalIgnoreCase)));
+    }
+
     private static ComputedStyle MakeStyle() => ComputedStyle.RentForExclusiveTesting();
 
     private static void SetLengthPx(ComputedStyle style, PropertyId id, double px)

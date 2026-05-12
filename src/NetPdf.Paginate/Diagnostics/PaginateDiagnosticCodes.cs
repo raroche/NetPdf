@@ -162,4 +162,21 @@ internal static class PaginateDiagnosticCodes
     /// Severity: <see cref="PaginateDiagnosticSeverity.Warning"/>.</summary>
     public const string LayoutTableRowspanCrossesPage001 =
         "LAYOUT-TABLE-ROWSPAN-CROSSES-PAGE-001";
+
+    /// <summary>Per Phase 3 Task 13 cycle 2 — emitted by
+    /// <c>TableLayouter</c> when the combined <c>&lt;thead&gt;</c> +
+    /// <c>&lt;tfoot&gt;</c> stack height (header rows + footer rows)
+    /// exceeds the fragmentainer's available block-size, leaving no
+    /// room to repeat the header + footer on every page along with
+    /// any body row. Per CSS Tables L3 §3.6 / §11 the header + footer
+    /// repeat at the top + bottom of each page; if they exceed the
+    /// fragmentainer, no body row can fit on a page that ALSO honors
+    /// the repeat contract. The layouter commits the header + footer
+    /// once (atomically) on the current page, skips the body to avoid
+    /// infinite continuation loops, and surfaces this diagnostic so
+    /// authors can reduce header / footer content or widen the page.
+    /// Mirrors <c>NetPdf.DiagnosticCodes.LayoutTableHeaderFooterOversized001</c>.
+    /// Severity: <see cref="PaginateDiagnosticSeverity.Warning"/>.</summary>
+    public const string LayoutTableHeaderFooterOversized001 =
+        "LAYOUT-TABLE-HEADER-FOOTER-OVERSIZED-001";
 }

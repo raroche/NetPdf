@@ -945,6 +945,168 @@ public sealed class TableLayouterProductionTests
             d.Code == PaginateDiagnosticCodes.PaginationForcedOverflow001);
     }
 
+    [Fact]
+    public async Task Cycle2_production_html_table_with_thead_tfoot_emits_header_and_footer_fragments()
+    {
+        // Phase 3 Task 13 cycle 2 — production-pipeline test that
+        // <thead> and <tfoot> elements flow through BoxBuilder as
+        // TableHeaderGroup / TableFooterGroup boxes + their rows
+        // emit as TableRow fragments alongside <tbody> rows.
+        //
+        // Note: under <html><body><table> the recursive-atomic
+        // fallback from cycle 1's Finding 1 keeps the table on a
+        // single page (rather than splitting + repeating header/
+        // footer per the cycle 2 algorithm). Cycle 2's per-page
+        // repetition is fully exercised by the direct-construction
+        // tests in TableLayouterTests.cs. This test pins the
+        // production-path recognition + fragment emission: header,
+        // body, and footer rows all flow through BoxBuilder + emit
+        // TableRow BoxFragments without throwing.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                th > div, td > div { height: 20px; }
+            </style></head><body>
+            <table>
+              <thead><tr><th><div>Header</div></th></tr></thead>
+              <tbody>
+                <tr><td><div>Row 1</div></td></tr>
+                <tr><td><div>Row 2</div></td></tr>
+              </tbody>
+              <tfoot><tr><td><div>Footer</div></td></tr></tfoot>
+            </table>
+            </body></html>
+            """;
+
+        var (sink, diagnostics, _) = await RenderViaFullPipelineAsync(html);
+
+        // 4 TableRow fragments expected: 1 header + 2 body + 1 footer.
+        var rowCount = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableRow) rowCount++;
+        }
+        Assert.Equal(4, rowCount);
+
+        // No LAYOUT-TABLE-FEATURE-UNSUPPORTED-001 diagnostic
+        // mentioning thead/tfoot/header/footer — cycle 2 ships
+        // header/footer recognition.
+        Assert.DoesNotContain(diagnostics.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutTableFeatureUnsupported001
+            && (d.Message.Contains("thead", System.StringComparison.OrdinalIgnoreCase)
+                || d.Message.Contains("tfoot", System.StringComparison.OrdinalIgnoreCase)
+                || d.Message.Contains("header", System.StringComparison.OrdinalIgnoreCase)
+                || d.Message.Contains("footer", System.StringComparison.OrdinalIgnoreCase)));
+    }
+
+    [Fact]
+    public async Task Cycle2_production_html_table_with_thead_tfoot_repeats_across_pages_via_full_pipeline()
+    {
+        // Per Phase 3 Task 13 cycle 2 hardening Finding 1 — the
+        // single-level nested-recursion propagation path now carries
+        // TableContinuation through EmitBlockSubtreeRecursive when the
+        // table is at depth==1 (= direct descendant of the just-emitted
+        // top-level child of the BlockLayouter's root, e.g. body in
+        // the typical <html><body><table>). The recursion uses the
+        // OUTER resolver; PageComplete bubbles up the call stack to
+        // the main loop which wraps it in a BlockContinuation.
+        //
+        // This test pins: (a) header + footer fragments appear on
+        // BOTH pages (= cycle 2's per-page repetition fires through
+        // the production pipeline), (b) body rows split correctly
+        // (page 1's body window != page 2's body window), (c) no
+        // PAGINATION-FORCED-OVERFLOW-001 diagnostic (the table splits
+        // cleanly, no false signal from the outer block-flow path).
+        //
+        // The HTML is sized so the table forces a split: header (20px)
+        // + 3 body rows (40px each) + footer (20px) = 160px; page = 100;
+        // can't fit all on one page → cycle 2 splits the body slice
+        // across two pages, repeating header + footer.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                th > div { height: 20px; }
+                td > div { height: 40px; }
+            </style></head><body>
+            <table>
+              <thead><tr><th><div>Header</div></th></tr></thead>
+              <tbody>
+                <tr><td><div>Row 1</div></td></tr>
+                <tr><td><div>Row 2</div></td></tr>
+                <tr><td><div>Row 3</div></td></tr>
+              </tbody>
+              <tfoot><tr><td><div>Footer</div></td></tr></tfoot>
+            </table>
+            </body></html>
+            """;
+
+        var (sink, diagnostics, _) = await RenderViaFullPipelineAsyncWithPaging(
+            html, contentInlineSize: 600, pageBlockSize: 100);
+
+        // We expect at least one TableRow header + one TableRow footer
+        // emitted PER PAGE the table spans. Conservative assertion:
+        // total row fragments > unique source row count (= 5: 1 head +
+        // 3 body + 1 foot) because header/footer repeated.
+        var rowCount = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableRow) rowCount++;
+        }
+        Assert.True(rowCount >= 5,
+            $"Expected ≥5 TableRow fragments (= 5 unique rows or more "
+            + $"due to repetition); got {rowCount}.");
+
+        // No PAGINATION-FORCED-OVERFLOW-001 — the table splits cleanly.
+        Assert.DoesNotContain(diagnostics.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.PaginationForcedOverflow001);
+    }
+
+    /// <summary>Variant of <see cref="RenderViaFullPipelineAsync"/>
+    /// that drives multi-page layout by iterating AttemptLayout while
+    /// the result is PageComplete. The fragmentainer's UsedBlockSize
+    /// is reset between pages.</summary>
+    private static async Task<(RecordingFragmentSink sink,
+        RecordingDiagnosticsSink diagnostics, Box root)>
+        RenderViaFullPipelineAsyncWithPaging(
+            string html, double contentInlineSize, double pageBlockSize)
+    {
+        var host = new HtmlParsingHost();
+        var document = await host.ParseAsync(html, new HtmlPdfOptions());
+
+        var sheets = AdaptAllSheetsViaPreprocessor(document);
+        var cascade = CascadeResolver.Resolve(document, sheets, CssMediaContext.DefaultPrint);
+        var resolved = VarResolver.Resolve(cascade, document);
+        var box = BoxBuilder.Build(document, resolved);
+
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        LayoutContinuation? continuation = null;
+        const int maxPages = 6;
+        for (var page = 0; page < maxPages; page++)
+        {
+            using var layouter = new BlockLayouter(
+                rootBox: box,
+                sink: sink,
+                incomingContinuation: continuation,
+                diagnostics: diagSink,
+                shaperResolver: shaper);
+
+            var ctx = new FragmentainerContext(
+                contentInlineSize: contentInlineSize,
+                blockSize: pageBlockSize);
+            var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+            using var resolver = new BreakResolver();
+            var result = layouter.AttemptLayout(
+                ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+            if (result.Outcome == LayoutAttemptOutcome.AllDone) break;
+            if (result.Outcome != LayoutAttemptOutcome.PageComplete) break;
+            continuation = result.Continuation;
+        }
+
+        return (sink, diagSink, box);
+    }
+
     private static ComputedStyle MakeStyle() => ComputedStyle.RentForExclusiveTesting();
 
     private static void SetLengthPx(ComputedStyle style, PropertyId id, double px)

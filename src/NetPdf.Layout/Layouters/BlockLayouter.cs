@@ -458,27 +458,34 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // Per Phase 3 Task 13 cycle 1 hardening (Finding 9) — when
         // the incoming BlockContinuation carries a TableContinuation
         // in LayouterState, the child at ResumeAtChild MUST be a
-        // Table or InlineTable wrapper. Pre-fix, a malformed
-        // continuation (LayouterState is TableContinuation but
-        // ResumeAtChild no longer points to a table) was silently
-        // ignored — the resume page emitted as if no table-resume
-        // were pending, dropping the deferred row content. Throw
-        // here so caller bugs surface loudly rather than producing
-        // mis-laid documents.
+        // Table or InlineTable wrapper (direct dispatch path) OR a
+        // block-flow container (the cycle 2 hardening Finding 1
+        // single-level nested-recursion propagation path — e.g.
+        // <body><table>, where ResumeAtChild points at the body wrapper
+        // + the recursion finds the nested table). Pre-fix, a
+        // malformed continuation (LayouterState is TableContinuation
+        // but ResumeAtChild was neither) was silently ignored —
+        // the resume page emitted as if no table-resume were pending,
+        // dropping the deferred row content. Throw here so caller bugs
+        // surface loudly rather than producing mis-laid documents.
         if (incomingBlock?.LayouterState is TableContinuation
             && startChildIdx >= 0
             && startChildIdx < _rootBox.Children.Count
-            && _rootBox.Children[startChildIdx].Kind is not (BoxKind.Table or BoxKind.InlineTable))
+            && _rootBox.Children[startChildIdx].Kind is not (BoxKind.Table or BoxKind.InlineTable)
+            && !IsBlockFlowContainerOwnedByBlockLayouter(_rootBox.Children[startChildIdx]))
         {
             throw new InvalidOperationException(
                 "BlockLayouter.AttemptLayout: incoming BlockContinuation carries "
                 + "a TableContinuation in LayouterState but the child at "
                 + $"ResumeAtChild={startChildIdx} has BoxKind."
-                + $"{_rootBox.Children[startChildIdx].Kind}, not Table or "
-                + "InlineTable. This is a layouter contract violation — the "
-                + "table-resume state can only attach to a table child. The "
-                + "dispatching layouter must produce continuations where the "
-                + "ResumeAtChild + LayouterState pair are mutually consistent.");
+                + $"{_rootBox.Children[startChildIdx].Kind}, not Table / "
+                + "InlineTable / block-flow container. This is a layouter "
+                + "contract violation — the table-resume state can only "
+                + "attach to a table child OR a block-flow container "
+                + "containing the table at depth 1 (cycle 2 hardening "
+                + "Finding 1). The dispatching layouter must produce "
+                + "continuations where the ResumeAtChild + LayouterState "
+                + "pair are mutually consistent.");
         }
 
         // Snapshot UsedBlockSize at entry. Per-page extent placed by
@@ -1564,13 +1571,68 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // Per cycle-2b post-PR-28 review #2 — CT threaded through
             // to abort deep traversals; depth=1 since `child` is the
             // first nesting level under `_rootBox`.
+            //
+            // Per cycle 2 hardening Finding 1 — single-level nested-
+            // table continuation propagation. When the recursion at
+            // depth==1 encounters a Table that is a direct descendant
+            // of `child` (e.g. `<body><table>` where `child` is body),
+            // it uses the OUTER resolver + fragmentainer so the table
+            // can return PageComplete; the callback below captures any
+            // such continuation. The main loop then wraps it in a
+            // BlockContinuation(ResumeAtChild=childIdx, LayouterState=tc)
+            // and returns PageComplete itself. Deeper nesting (depth>=2)
+            // still falls back to NoBreakBreakResolver (= atomic).
+            TableContinuation? nestedTableContFromRecursion = null;
+            // Per Finding 1 — pass the incoming TableContinuation from
+            // the carried BlockContinuation.LayouterState through to
+            // the recursion when ResumeAtChild matches this child.
+            // The recursion finds the nested Table at depth==1 and
+            // hands the continuation to its constructor via
+            // PreMeasureTableIfNeeded. Consume once (one-shot flag) so
+            // siblings on the same page don't accidentally inherit it.
+            TableContinuation? nestedIncomingTc = null;
+            if (incomingBlock?.LayouterState is TableContinuation incTcNested
+                && childIdx == incomingBlock.ResumeAtChild
+                && !_consumedIncomingTableContinuation
+                && child.Kind is not (BoxKind.Table or BoxKind.InlineTable))
+            {
+                nestedIncomingTc = incTcNested;
+                _consumedIncomingTableContinuation = true;
+            }
             EmitBlockSubtreeRecursive(
                 child,
                 parentBlockOffset: blockOffset,
                 parentInlineOffset: inFlowInlineOffset,
                 parentInlineSize: borderBoxInlineSize,
                 cancellationToken: cancellationToken,
-                depth: 1);
+                depth: 1,
+                propagatingResolver: resolver,
+                propagatingFragmentainer: fragmentainer,
+                incomingTableContinuationAtDepth1: nestedIncomingTc,
+                onTablePageComplete: tc => nestedTableContFromRecursion = tc);
+
+            // Per Finding 1 — if a depth-1 nested table returned
+            // PageComplete, propagate up. The wrapper child's own
+            // fragment was already emitted above; the resume page
+            // re-enters with BlockContinuation(ResumeAtChild=childIdx,
+            // LayouterState=tc), walks into `child` via the recursion,
+            // and resumes the table at the captured row.
+            if (nestedTableContFromRecursion is not null)
+            {
+                // Restore UsedBlockSize so the outer page-cost
+                // arithmetic isn't double-counted (the table's own
+                // fragmentainer.UsedBlockSize advance from the row
+                // pagination is already accounted for through the
+                // table's own restore in TableLayouter.AttemptLayout).
+                return LayoutAttemptResult.PageComplete(
+                    new BlockContinuation(
+                        ResumeAtChild: childIdx,
+                        ConsumedBlockSize: priorPagesConsumed
+                            + (fragmentainer.UsedBlockSize - _pageStartUsedBlockSize),
+                        LayouterState: nestedTableContFromRecursion),
+                    cost: 0);
+            }
+
             // Per Phase 3 Task 12 sub-cycle 1 hardening (Finding 1) —
             // drain the pre-measured table content into the outer
             // sink. The wrapper's outer fragment is already emitted
@@ -1719,7 +1781,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         double parentInlineOffset,
         double parentInlineSize,
         CancellationToken cancellationToken,
-        int depth)
+        int depth,
+        IBreakResolver? propagatingResolver = null,
+        FragmentainerContext? propagatingFragmentainer = null,
+        TableContinuation? incomingTableContinuationAtDepth1 = null,
+        Action<TableContinuation>? onTablePageComplete = null)
     {
         // Per cycle-2b post-PR-28 review #2 + Copilot #1 — DoS
         // protection. Untrusted HTML can construct pathologically
@@ -2003,6 +2069,15 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     Diagnostics = _diagnostics,
                 };
                 var nestedMeasuredUsedInline = 0.0;
+                // Per cycle 2 hardening Finding 1 — at recursion
+                // depth==1, the incoming TableContinuation (if any) is
+                // intended for THIS table. Pass it through; consume on
+                // first match so siblings don't accidentally inherit it.
+                LayoutContinuation? incomingForThisTable = null;
+                if (depth == 1 && incomingTableContinuationAtDepth1 is not null)
+                {
+                    incomingForThisTable = incomingTableContinuationAtDepth1;
+                }
                 nestedPendingTable = PreMeasureTableIfNeeded(
                     wrapperChild: child,
                     wrapperInlineOffset: childInlineOffset,
@@ -2010,9 +2085,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     wrapperInlineSize: childBorderBoxInlineSize,
                     fragmentainer: fragmentainerForMeasure,
                     layout: ref transientLayout,
+                    incomingTableContinuation: incomingForThisTable,
                     tableContentHeight: out nestedMeasuredHeight,
                     tableMeasuredUsedInlineSize: out nestedMeasuredUsedInline,
                     cancellationToken: cancellationToken);
+                if (incomingForThisTable is not null && nestedPendingTable is not null)
+                {
+                    // Consumed — clear so siblings (or deeper
+                    // recursions) don't accidentally inherit.
+                    incomingTableContinuationAtDepth1 = null;
+                }
                 if (nestedPendingTable is not null)
                 {
                     var wrapperBorderPaddingBlock =
@@ -2066,13 +2148,31 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // Recurse — emit grandchildren relative to this child's
             // content area. The recursion's own predicate gate skips
             // walking INTO non-flow block kinds (Table/Flex/Grid/etc.).
+            //
+            // Per cycle 2 hardening Finding 1 — forward the
+            // propagating-resolver / continuation hooks DOWN ONE
+            // LEVEL: a Table inside `child` is at recursion depth +2
+            // from the top-level dispatch (depth==1 here means the
+            // current `parent` is the top-level child of _rootBox);
+            // its nested Table is depth==2. Per the locked design,
+            // the single-level nesting case (= a Table that is a
+            // DIRECT descendant of the just-emitted top-level child,
+            // depth==2) honors the OUTER resolver + continuation;
+            // deeper nesting falls back to NoBreakBreakResolver via
+            // the depth==2 check at the table-emit site below. We
+            // pass these hooks through SO the recursion's nested
+            // table emit can use them, gated by depth.
             EmitBlockSubtreeRecursive(
                 child,
                 parentBlockOffset: childBlockOffset,
                 parentInlineOffset: childInlineOffset,
                 parentInlineSize: childBorderBoxInlineSize,
                 cancellationToken: cancellationToken,
-                depth: depth + 1);
+                depth: depth + 1,
+                propagatingResolver: propagatingResolver,
+                propagatingFragmentainer: propagatingFragmentainer,
+                incomingTableContinuationAtDepth1: incomingTableContinuationAtDepth1,
+                onTablePageComplete: onTablePageComplete);
 
             // Per Phase 3 Task 12 sub-cycle 1 hardening (Finding 6 /
             // 1) + sub-cycle 2 hardening (Finding 1) — drain the pre-
@@ -2084,34 +2184,71 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // forced-overflow signals + cell-content layout.
             if (nestedPendingTable is not null && _capturedFragmentainer is not null)
             {
-                var fragmentainerForEmit = _capturedFragmentainer;
-                var emitLayout = new LayoutContext(fragmentainerForEmit)
+                // Per cycle 2 hardening Finding 1 — when this table is
+                // at recursion depth==1 (= a DIRECT descendant of the
+                // just-emitted top-level child of _rootBox, e.g.
+                // `<body><table>`) AND the caller provided a
+                // propagating resolver, use that resolver + propagating
+                // fragmentainer so the table consults the SAME
+                // pagination state the outer AttemptLayout loop owns.
+                // The PageComplete continuation flows up via
+                // onTablePageComplete (the main loop will wrap it in a
+                // BlockContinuation). Deeper nesting (depth >= 2) is
+                // still atomic via NoBreakBreakResolver.
+                var useOuterResolverHere =
+                    depth == 1
+                    && propagatingResolver is not null
+                    && propagatingFragmentainer is not null
+                    && onTablePageComplete is not null;
+
+                if (useOuterResolverHere)
                 {
-                    Diagnostics = _diagnostics,
-                };
-                // Per Phase 3 Task 13 cycle 1 — use the NoBreakBreakResolver
-                // so the nested table emits ATOMICALLY (= every row
-                // commits on this page). The subtree-walk recursion
-                // has no continuation-emission path (cycle 2b's
-                // recursion is atomic — descendants commit on the
-                // same page as the parent + overflow surfaces via
-                // the forced-overflow diagnostic). With the regular
-                // BreakResolver the nested table would split at row-
-                // boundaries + return PageComplete, but the
-                // recursion has nowhere to send the continuation;
-                // unemitted rows would be silently dropped. The no-
-                // break resolver suppresses the split + lets the
-                // existing PAGINATION-FORCED-OVERFLOW-001 diagnostic
-                // surface the over-tall case. Cycle 2+ may
-                // generalize the subtree-walk to carry continuations
-                // end-to-end.
-                using var nestedResolver = new TableLayouter.NoBreakBreakResolver();
-                _ = EmitTableInner(
-                    nestedPendingTable,
-                    fragmentainer: fragmentainerForEmit,
-                    layout: ref emitLayout,
-                    resolver: nestedResolver,
-                    cancellationToken: cancellationToken);
+                    var fragmentainerForEmit = propagatingFragmentainer!;
+                    var emitLayout = new LayoutContext(fragmentainerForEmit)
+                    {
+                        Diagnostics = _diagnostics,
+                    };
+                    // The TableContinuation (if any) was already passed
+                    // to nestedPendingTable via the PreMeasureTableIfNeeded
+                    // call above; the TableLayouter consumes its
+                    // _incomingTableContinuation from the constructor.
+                    var tableInnerResult = EmitTableInner(
+                        nestedPendingTable,
+                        fragmentainer: fragmentainerForEmit,
+                        layout: ref emitLayout,
+                        resolver: propagatingResolver!,
+                        cancellationToken: cancellationToken);
+                    if (tableInnerResult.Continuation is TableContinuation tc)
+                    {
+                        // Capture for propagation up to the main
+                        // AttemptLayout loop. The caller wraps tc in a
+                        // BlockContinuation + returns PageComplete.
+                        onTablePageComplete!(tc);
+                    }
+                }
+                else
+                {
+                    var fragmentainerForEmit = _capturedFragmentainer;
+                    var emitLayout = new LayoutContext(fragmentainerForEmit)
+                    {
+                        Diagnostics = _diagnostics,
+                    };
+                    // Per Phase 3 Task 13 cycle 1 — use the
+                    // NoBreakBreakResolver so the nested table emits
+                    // ATOMICALLY at deeper-than-1 depths (the
+                    // continuation propagation path doesn't extend
+                    // through nested block containers in cycle 2;
+                    // sub-cycle 6+ may generalize). The forced-
+                    // overflow diagnostic still fires for over-tall
+                    // cases.
+                    using var nestedResolver = new TableLayouter.NoBreakBreakResolver();
+                    _ = EmitTableInner(
+                        nestedPendingTable,
+                        fragmentainer: fragmentainerForEmit,
+                        layout: ref emitLayout,
+                        resolver: nestedResolver,
+                        cancellationToken: cancellationToken);
+                }
             }
 
             // Per cycle-2b post-PR-28 review #1 — SIGNED cursor advance.

@@ -48,6 +48,7 @@ public sealed class DeferralsParityTests
         "fuzzing-infrastructure",
         "inline-atomic-boxes",
         "table-auto-fixed-spans-borders",
+        "multicol-balancing-pagination",
     };
 
     [Fact]

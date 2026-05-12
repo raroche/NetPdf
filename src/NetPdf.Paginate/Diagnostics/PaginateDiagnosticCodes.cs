@@ -179,4 +179,25 @@ internal static class PaginateDiagnosticCodes
     /// Severity: <see cref="PaginateDiagnosticSeverity.Warning"/>.</summary>
     public const string LayoutTableHeaderFooterOversized001 =
         "LAYOUT-TABLE-HEADER-FOOTER-OVERSIZED-001";
+
+    /// <summary>Per Phase 3 Task 14 cycle 1 — emitted by
+    /// <c>MulticolLayouter</c> when the in-flow content of a
+    /// multicol container does NOT fit within the N columns'
+    /// available block-size. Cycle 1 ships Hello World multi-column
+    /// layout: a block container with <c>column-count: N</c> splits
+    /// its content equally across N parallel columns (sub-
+    /// fragmentainers), each sized at
+    /// <c>(containerContentInlineSize - (N-1)*columnGap) / N</c>
+    /// inline-axis + <c>containerContentBlockSize</c> block-axis.
+    /// When content overflows the FIRST column the layouter advances
+    /// to the next; when content overflows the LAST column the
+    /// remaining content is truncated + this diagnostic fires. Per
+    /// CSS Multi-column L1 §3.5 the spec-strict behavior is to
+    /// fragment the multicol container itself across pages so the
+    /// overflowing content continues; sub-cycle 2 will ship that
+    /// multi-page multicol via <c>MulticolContinuation</c>. Mirrors
+    /// <c>NetPdf.DiagnosticCodes.LayoutMulticolForcedOverflow001</c>.
+    /// Severity: <see cref="PaginateDiagnosticSeverity.Warning"/>.</summary>
+    public const string LayoutMulticolForcedOverflow001 =
+        "LAYOUT-MULTICOL-FORCED-OVERFLOW-001";
 }

@@ -161,6 +161,50 @@ internal static class ComputedStyleLayoutExtensions
             _ => TableLayoutMode.Auto,
         };
     }
+
+    /// <summary>Per Phase 3 Task 14 cycle 1 — decode
+    /// <see cref="PropertyId.ColumnCount"/> into a positive
+    /// integer column count, or <see langword="null"/> when the
+    /// property is <c>auto</c> / unset / invalid. Per CSS Multi-column
+    /// L1 §3.2 a positive integer specifies the explicit column count
+    /// for the multicol container; <c>auto</c> falls back to the
+    /// <c>column-width</c>-derived count (sub-cycle 2+ work).
+    ///
+    /// <para><b>Cycle 1 contract.</b> Returns <see langword="null"/>
+    /// when the slot is anything other than <see cref="ComputedSlotTag.Integer"/>
+    /// with a value &gt;= 1. That includes <c>auto</c>, unset, parse
+    /// failures (the Integer resolver rejected the value), zero, and
+    /// negative numbers. The MulticolLayouter dispatch in
+    /// <c>BlockLayouter</c> uses a non-null result &gt;= 2 as the gate
+    /// — <c>column-count: 1</c> behaves as a normal block per the
+    /// task plan's locked design (no MulticolLayouter dispatch).</para>
+    /// </summary>
+    public static int? ReadColumnCount(this ComputedStyle style)
+    {
+        var slot = style.Get(PropertyId.ColumnCount);
+        if (slot.Tag != ComputedSlotTag.Integer)
+        {
+            return null;
+        }
+        var n = slot.AsInteger();
+        return n >= 1 ? n : null;
+    }
+
+    /// <summary>Per Phase 3 Task 14 cycle 1 — decode
+    /// <see cref="PropertyId.ColumnGap"/> into a CSS px length, or
+    /// the cycle-1 default (16 px) when the slot is <c>normal</c> /
+    /// unset / non-length. Per CSS Multi-column L1 §6.1 the
+    /// <c>normal</c> initial value resolves to 1em (≈ 16 px at the
+    /// initial font size). Cycle 1 hard-codes 16 px regardless of
+    /// font-size; sub-cycle 2+ will resolve against the cascaded
+    /// <c>font-size</c>.</summary>
+    public static double ReadColumnGap(this ComputedStyle style)
+    {
+        var slot = style.Get(PropertyId.ColumnGap);
+        return slot.Tag == ComputedSlotTag.LengthPx
+            ? slot.AsLengthPx()
+            : 16.0;
+    }
 }
 
 /// <summary>Per Phase 3 Task 12 sub-cycle 3 — typed decode of

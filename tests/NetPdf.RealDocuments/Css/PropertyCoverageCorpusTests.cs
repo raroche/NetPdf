@@ -108,7 +108,12 @@ public sealed class PropertyCoverageCorpusTests
         "grid-column", "grid-column-end", "grid-column-gap", "grid-column-start",
         "grid-row", "grid-row-end", "grid-row-gap", "grid-row-start",
         "grid-template", "grid-template-areas", "grid-template-columns", "grid-template-rows",
-        "gap", "row-gap", "column-gap",
+        "gap", "row-gap",
+        // column-gap promoted out of the allowlist by Phase 3 Task 14
+        // cycle 1 — the property is now registered + resolves via the
+        // multicol family. Other column-* properties (column-count,
+        // column-width, column-fill, column-rule-*) are also wired by
+        // Task 14 cycle 1 + don't need allowlist entries.
         // Text decoration sub-properties.
         "text-decoration-color", "text-decoration-style", "text-decoration-thickness",
         // Vendor prefixes — AngleSharp.Css surfaces them; the cascade strips at Task 7.

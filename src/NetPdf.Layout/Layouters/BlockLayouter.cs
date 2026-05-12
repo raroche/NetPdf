@@ -1560,6 +1560,91 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 InlineSize: borderBoxInlineSize,
                 BlockSize: borderBoxBlockSize));
 
+            // Per Phase 3 Task 14 cycle 1 — multicol container
+            // dispatch. A block container with `column-count: N`
+            // (N >= 2) splits its in-flow content equally across N
+            // parallel columns via MulticolLayouter. The wrapper
+            // fragment is already emitted above (with the regular
+            // block sizing); MulticolLayouter emits the per-column
+            // content INSIDE the wrapper's content area. Skips the
+            // EmitBlockSubtreeRecursive call below (the multicol
+            // layouter owns the inner emission). column-count: 1 is
+            // NOT a multicol container — the regular block flow path
+            // applies.
+            if (IsMulticolContainer(child))
+            {
+                // Content-box geometry inside the wrapper's border-
+                // box. Per CSS Multi-column L1 §3 the column content
+                // area lives inside the container's content box (=
+                // border box minus border + padding edges).
+                var multicolBorderInlineStart =
+                    child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
+                var multicolPaddingInlineStart =
+                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
+                var multicolBorderInlineEnd =
+                    child.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
+                var multicolPaddingInlineEnd =
+                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
+                var multicolBorderBlockStart =
+                    child.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
+                var multicolPaddingBlockStart =
+                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingTop);
+                var multicolBorderBlockEnd =
+                    child.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
+                var multicolPaddingBlockEnd =
+                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingBottom);
+                var multicolContentInlineSize = Math.Max(1.0,
+                    borderBoxInlineSize
+                    - multicolBorderInlineStart - multicolPaddingInlineStart
+                    - multicolBorderInlineEnd - multicolPaddingInlineEnd);
+                var multicolContentBlockSize = Math.Max(1.0,
+                    borderBoxBlockSize
+                    - multicolBorderBlockStart - multicolPaddingBlockStart
+                    - multicolBorderBlockEnd - multicolPaddingBlockEnd);
+                var multicolContentInlineOffset =
+                    inFlowInlineOffset + multicolBorderInlineStart + multicolPaddingInlineStart;
+                var multicolContentBlockOffset =
+                    blockOffset + multicolBorderBlockStart + multicolPaddingBlockStart;
+
+                using var multicolLayouter = new MulticolLayouter(
+                    rootBox: child,
+                    sink: _sink,
+                    incomingContinuation: null,
+                    diagnostics: _diagnostics,
+                    shaperResolver: _shaperResolver);
+                multicolLayouter.ConfigureEmission(
+                    contentInlineOffset: multicolContentInlineOffset,
+                    contentBlockOffset: multicolContentBlockOffset,
+                    contentInlineSize: multicolContentInlineSize,
+                    contentBlockSize: multicolContentBlockSize);
+                // Use a fresh column-scoped resolver — the outer
+                // resolver's checkpoint state is isolated from the
+                // multicol's per-column pagination. Mirrors
+                // TableLayouter's per-cell resolver isolation.
+                using var multicolResolver = new BreakResolver();
+                _ = multicolLayouter.AttemptLayout(
+                    fragmentainer,
+                    ref layout,
+                    multicolResolver,
+                    LayoutAttemptStrategy.LastResort,
+                    cancellationToken);
+
+                // Cursor advance + margin-collapse bookkeeping mirror
+                // the regular block path below. Skip the
+                // EmitBlockSubtreeRecursive + EmitTableInner calls.
+                fragmentainer.UsedBlockSize = Math.Max(0,
+                    fragmentainer.UsedBlockSize + marginBoxBlockSizeForCursor);
+                prevBlockMarginEnd = marginEnd;
+                hasPriorAdjoiningBlock = true;
+                emittedThisAttempt++;
+                lastEmittedIdx = childIdx;
+
+                // Skip the rest of the regular Continue path for
+                // this child; the multicol's inner content has been
+                // emitted in full (cycle 1 is single-page atomic).
+                continue;
+            }
+
             // Per Phase 3 Task 7 cycle 2b — recursively emit fragments
             // for the child's block-level descendants. Cycle 1 / 2
             // emitted only top-level children of `_rootBox`; with
@@ -2145,6 +2230,79 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 InlineSize: childBorderBoxInlineSize,
                 BlockSize: childBorderBoxBlockSize));
 
+            // Per Phase 3 Task 14 cycle 1 — nested multicol dispatch.
+            // A nested block-flow descendant with `column-count: N`
+            // (N >= 2) dispatches to MulticolLayouter for per-column
+            // emission INSIDE its border box. Skip the
+            // EmitBlockSubtreeRecursive call below for this child
+            // (the multicol layouter owns the inner content
+            // emission). Mirrors the outer-loop dispatch above for
+            // the depth-0 case.
+            if (IsMulticolContainer(child))
+            {
+                var nestedMulticolBorderInlineStart =
+                    child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
+                var nestedMulticolPaddingInlineStart =
+                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
+                var nestedMulticolBorderInlineEnd =
+                    child.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
+                var nestedMulticolPaddingInlineEnd =
+                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
+                var nestedMulticolContentInlineSize = Math.Max(1.0,
+                    childBorderBoxInlineSize
+                    - nestedMulticolBorderInlineStart - nestedMulticolPaddingInlineStart
+                    - nestedMulticolBorderInlineEnd - nestedMulticolPaddingInlineEnd);
+                var nestedMulticolContentBlockSize = Math.Max(1.0,
+                    childBorderBoxBlockSize
+                    - borderStart - paddingStart - paddingEnd - borderEnd);
+                var nestedMulticolContentInlineOffset =
+                    childInlineOffset
+                    + nestedMulticolBorderInlineStart + nestedMulticolPaddingInlineStart;
+                var nestedMulticolContentBlockOffset =
+                    childBlockOffset + borderStart + paddingStart;
+
+                using var nestedMulticolLayouter = new MulticolLayouter(
+                    rootBox: child,
+                    sink: _sink,
+                    incomingContinuation: null,
+                    diagnostics: _diagnostics,
+                    shaperResolver: _shaperResolver);
+                nestedMulticolLayouter.ConfigureEmission(
+                    contentInlineOffset: nestedMulticolContentInlineOffset,
+                    contentBlockOffset: nestedMulticolContentBlockOffset,
+                    contentInlineSize: nestedMulticolContentInlineSize,
+                    contentBlockSize: nestedMulticolContentBlockSize);
+                using var nestedMulticolResolver = new BreakResolver();
+                // The recursion doesn't have a ref LayoutContext;
+                // synthesize a transient one carrying the
+                // constructor's diagnostic sink. Mirrors the nested-
+                // table dispatch above (Phase 3 Task 12 sub-cycle 2
+                // Finding 1).
+                if (_capturedFragmentainer is not null)
+                {
+                    var nestedMulticolLayoutCtx = new LayoutContext(_capturedFragmentainer)
+                    {
+                        Diagnostics = _diagnostics,
+                    };
+                    _ = nestedMulticolLayouter.AttemptLayout(
+                        _capturedFragmentainer,
+                        ref nestedMulticolLayoutCtx,
+                        nestedMulticolResolver,
+                        LayoutAttemptStrategy.LastResort,
+                        cancellationToken);
+                }
+
+                // Advance the cursor + bookkeeping; skip the
+                // EmitBlockSubtreeRecursive below. Mirrors the
+                // standard cursor advance at the bottom of the loop
+                // (childCursor + topShift + childEffectiveBlockSize
+                // + marginEnd).
+                childCursor = childCursor + topShift + childEffectiveBlockSize + marginEnd;
+                prevMarginEnd = marginEnd;
+                hasPrior = true;
+                continue;
+            }
+
             // Recurse — emit grandchildren relative to this child's
             // content area. The recursion's own predicate gate skips
             // walking INTO non-flow block kinds (Table/Flex/Grid/etc.).
@@ -2608,6 +2766,49 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             or BoxKind.ListItem or BoxKind.AnonymousBlock => true,
         _ => false,
     };
+
+    /// <summary>Per Phase 3 Task 14 cycle 1 — predicate distinguishing
+    /// multicol containers from regular block-flow containers. A box
+    /// is a multicol container when:
+    /// <list type="bullet">
+    ///   <item>Its kind is a block-flow container owned by
+    ///   <see cref="BlockLayouter"/> (<see cref="BoxKind.BlockContainer"/>,
+    ///   <see cref="BoxKind.ListItem"/>, <see cref="BoxKind.AnonymousBlock"/>;
+    ///   <see cref="BoxKind.Root"/> excluded since the cascade origin
+    ///   wouldn't carry <c>column-count</c> in practice).</item>
+    ///   <item>Its computed style declares <c>column-count</c> with a
+    ///   positive integer value &gt;= 2 (= <see cref="ComputedStyleLayoutExtensions.ReadColumnCount"/>
+    ///   returns a value &gt;= 2). <c>column-count: 1</c> is by
+    ///   definition NOT a multicol layout per the task plan's locked
+    ///   design — it lays out as a normal block.</item>
+    /// </list>
+    ///
+    /// <para><b>Why not a dedicated <c>BoxKind.MulticolContainer</c>.</b>
+    /// CSS Multi-column L1 §2 defines the multicol container as a
+    /// regular block-level box that gains multi-column behavior from
+    /// the <c>column-count</c> / <c>column-width</c> property values.
+    /// Encoding this as a layout-time predicate (rather than a
+    /// BoxBuilder-time box kind) mirrors how CSS encodes it +
+    /// preserves the box hierarchy invariants (e.g., a
+    /// <c>display: block</c> element is still a BlockContainer
+    /// regardless of <c>column-count</c>; the cascade's typed-slot
+    /// reads decide layout at dispatch time).</para></summary>
+    private static bool IsMulticolContainer(Box box)
+    {
+        if (!IsBlockFlowContainerOwnedByBlockLayouter(box))
+        {
+            return false;
+        }
+        // Root is the implicit document containing block; it
+        // shouldn't carry column-count + the multicol model doesn't
+        // apply to it. Exclude defensively.
+        if (box.Kind == BoxKind.Root)
+        {
+            return false;
+        }
+        var n = box.Style.ReadColumnCount();
+        return n is >= 2;
+    }
 
     /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 — predicate
     /// distinguishing block containers whose children are entirely

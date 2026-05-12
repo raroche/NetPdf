@@ -373,5 +373,24 @@ internal static class DiagnosticCodes
     public const string LayoutTableHeaderFooterOversized001 =
         "LAYOUT-TABLE-HEADER-FOOTER-OVERSIZED-001";
 
+    /// <summary>
+    /// Per Phase 3 Task 14 cycle 1 — emitted by the multicol layouter
+    /// when the in-flow content of a multicol container does NOT fit
+    /// within the N columns' available block-size. Cycle 1 ships
+    /// Hello World multi-column layout: a block container with
+    /// <c>column-count: N</c> splits its content equally across N
+    /// parallel columns, each acting as a sub-fragmentainer of the
+    /// same block-axis extent. When content overflows the LAST
+    /// column the remaining content is truncated + this diagnostic
+    /// fires. Per CSS Multi-column L1 §3.5 the spec-strict behavior
+    /// is to fragment the multicol container itself across pages so
+    /// the overflowing content continues; sub-cycle 2 will ship that
+    /// multi-page multicol via <c>MulticolContinuation</c>. See
+    /// <c>docs/deferrals.md#multicol-balancing-pagination</c>.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string LayoutMulticolForcedOverflow001 =
+        "LAYOUT-MULTICOL-FORCED-OVERFLOW-001";
+
     // endregion LAYOUT-*
 }

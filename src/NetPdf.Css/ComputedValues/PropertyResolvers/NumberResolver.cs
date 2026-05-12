@@ -49,6 +49,21 @@ internal static class NumberResolver
         ICssDiagnosticsSink? diagnostics,
         CssSourceLocation location)
     {
+        // Per Phase 3 Task 14 cycle 1 — column-count admits <c>auto</c>
+        // as a keyword (CSS Multi-column L1 §3.2 — "the number of
+        // columns is determined by column-width"). v1 stores this as
+        // a Keyword slot so the multicol-layouter dispatch's
+        // <c>ReadColumnCount</c> extension can distinguish "auto"
+        // from a positive integer + skip the multicol path. Other
+        // Integer-typed properties don't currently admit a keyword;
+        // when a future property does, expand this gate or refactor
+        // into a per-property table.
+        if (propertyId == PropertyId.ColumnCount
+            && value.Equals("auto", System.StringComparison.OrdinalIgnoreCase))
+        {
+            return ResolverResult.Resolved(ComputedSlot.FromKeyword(0));
+        }
+
         if (!int.TryParse(value, NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var n))
         {
             Emit(diagnostics, propertyName, value,

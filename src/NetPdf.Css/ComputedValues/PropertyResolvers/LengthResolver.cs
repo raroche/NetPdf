@@ -70,6 +70,19 @@ internal static class LengthResolver
         if (TryMatchKeyword(value, type, out var keywordSlot))
             return ResolverResult.Resolved(keywordSlot);
 
+        // Per Phase 3 Task 14 cycle 1 — per-property keyword admittance
+        // for the multicol family. CSS Multi-column L1 admits:
+        //   - column-width: <length> | auto
+        //   - column-gap:   <length> | normal
+        // Both are Length-typed (not LengthPercentageAuto / TextSpacing)
+        // because they don't admit percentages OR the broader keyword
+        // sets. The cycle-1 layouter reads these via
+        // <c>ComputedStyleLayoutExtensions.ReadColumnGap</c> /
+        // <c>ReadColumnWidth</c> which treat a non-LengthPx slot as the
+        // initial keyword.
+        if (TryMatchMulticolKeyword(value, propertyId, out var multicolKeywordSlot))
+            return ResolverResult.Resolved(multicolKeywordSlot);
+
         // Numeric path: decompose into (number, unit).
         if (!TrySplitNumberAndUnit(value, out var number, out var unit))
         {
@@ -161,6 +174,37 @@ internal static class LengthResolver
             return true;
         }
         if (type is PropertyType.TextSpacing && value.Equals("normal", StringComparison.OrdinalIgnoreCase))
+        {
+            slot = ComputedSlot.FromKeyword(KeywordIdNormal);
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>Per Phase 3 Task 14 cycle 1 — per-property keyword
+    /// admittance for the multicol Length properties. The CSS spec
+    /// admits ONE keyword in addition to the generic length grammar:
+    /// <c>auto</c> for <c>column-width</c> (CSS Multi-column L1 §3.1),
+    /// <c>normal</c> for <c>column-gap</c> (CSS Multi-column L1 §6.1).
+    /// Both are Length-typed (not LengthPercentageAuto / TextSpacing
+    /// where the generic <see cref="TryMatchKeyword"/> already admits
+    /// the keyword) so a per-PropertyId gate is the cleanest extension.
+    /// The layouter reads these slots via
+    /// <c>ComputedStyleLayoutExtensions.ReadColumnGap</c> /
+    /// <c>ReadColumnWidth</c> + treats a Keyword slot as the initial
+    /// value.</summary>
+    private static bool TryMatchMulticolKeyword(
+        string value, PropertyId propertyId, out ComputedSlot slot)
+    {
+        slot = default;
+        if (propertyId == PropertyId.ColumnWidth
+            && value.Equals("auto", StringComparison.OrdinalIgnoreCase))
+        {
+            slot = ComputedSlot.FromKeyword(KeywordIdAuto);
+            return true;
+        }
+        if (propertyId == PropertyId.ColumnGap
+            && value.Equals("normal", StringComparison.OrdinalIgnoreCase))
         {
             slot = ComputedSlot.FromKeyword(KeywordIdNormal);
             return true;

@@ -152,8 +152,6 @@ namespace NetPdf.Layout.Layouters;
 ///   falling back to Pass B / Pass C.</item>
 ///   <item>Border-collapse model + <c>border-spacing</c> per
 ///   §6.3.</item>
-///   <item><c>&lt;thead&gt;</c> / <c>&lt;tfoot&gt;</c> repetition
-///   across pages.</item>
 ///   <item>Multi-fragmentainer ROW-INTERNAL splitting (one row whose
 ///   content is taller than the remaining page is committed in full
 ///   + the existing forced-overflow diagnostic fires; cycle 2+ may
@@ -163,14 +161,30 @@ namespace NetPdf.Layout.Layouters;
 ///   algorithm. Sub-cycle 2 uses a naive "extra height to the last
 ///   row of the span" approach.</item>
 ///   <item>Nested-recursion continuation propagation past a single
-///   depth — Task 13 cycle 1 hardening (Finding 1) carries
+///   depth — Task 13 cycle 2 hardening (Finding 1) carries
 ///   <see cref="TableContinuation"/> through
 ///   <see cref="BlockLayouter.EmitBlockSubtreeRecursive"/> when the
-///   table is a DIRECT descendant of the just-emitted top-level
-///   block (recursion depth = 1); deeper nesting falls back to the
-///   atomic <see cref="NoBreakBreakResolver"/>. Sub-cycle 6+ may
-///   generalize.</item>
+///   table is a DIRECT descendant (depth=1) of the just-emitted top-
+///   level block (so <c>&lt;body&gt;&gt;&lt;table&gt;</c> tables now
+///   split + repeat headers/footers across pages); deeper nesting
+///   (e.g. <c>&lt;body&gt;&gt;&lt;div&gt;&gt;&lt;table&gt;</c>) still
+///   falls back to the atomic <see cref="NoBreakBreakResolver"/>.
+///   Sub-cycle 6+ may generalize to arbitrary depth.</item>
 /// </list>
+///
+/// <para><b>Per Phase 3 Task 13 cycle 2 — <c>&lt;thead&gt;</c> /
+/// <c>&lt;tfoot&gt;</c> repetition.</b> When a <see cref="BoxKind.TableHeaderGroup"/>
+/// or <see cref="BoxKind.TableFooterGroup"/> wraps rows in the source,
+/// those rows are re-emitted at the TOP (header) and BOTTOM (footer)
+/// of every page the table spans. <see cref="CollectRows"/> performs
+/// the 3-way partition (headers → body → footers) regardless of source
+/// order — HTML5 permits <c>&lt;tfoot&gt;</c> declared BEFORE
+/// <c>&lt;tbody&gt;</c>, and CSS Tables L3 §3.6 / §11 mandates the
+/// visual order. BoxBuilder's <c>GridLevelFixup</c> preserves source
+/// order; the cycle-2 reordering is done inside this layouter alone.
+/// Header / footer cells use
+/// <see cref="MeasuringFragmentSink.FlushKeepingBuffer"/> so their
+/// content can re-emit on subsequent pages.</para>
 ///
 /// <para><b>Pagination scope.</b> Per Phase 3 Task 13 cycle 1, the
 /// layouter NOW consults the break resolver between rows: rows that
@@ -309,6 +323,20 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         _incomingTableContinuation = incomingContinuation as TableContinuation;
         _diagnostics = diagnostics;
         _shaperResolver = shaperResolver;
+
+        // Per Phase 3 Task 13 cycle 2 hardening (Finding 3) — on
+        // resume pages (incomingContinuation is a TableContinuation),
+        // mark header / footer cell diagnostics as already flushed by
+        // the first-page layouter. The buffered diagnostics were
+        // drained ONCE on page 1's emit; the resume page must not
+        // re-flush them or the diagnostic sink sees duplicates of
+        // every header / footer cell diagnostic per repeated emit
+        // across all pages.
+        if (_incomingTableContinuation is not null)
+        {
+            _headerCellDiagnosticsFlushed = true;
+            _footerCellDiagnosticsFlushed = true;
+        }
     }
 
     /// <summary>Pre-emit context describing where in the fragmentainer
@@ -587,6 +615,24 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     private int _measuredFooterRowCount;
     private double _measuredHeaderStackHeight;
     private double _measuredFooterStackHeight;
+    // Per Phase 3 Task 13 cycle 2 hardening (Finding 3) — once-per-
+    // table diagnostic-flush trackers. Header / footer cells flush
+    // their BufferingDiagnosticsSink ONCE across the table's lifetime
+    // (on the first page where they emit); on subsequent pages the
+    // headers / footers re-emit fragments via FlushKeepingBuffer
+    // but their diagnostic buffers stay quiet. Pre-Finding-3 the
+    // header / footer cells dropped their diagnostics entirely
+    // because the EmitHeaderRows / EmitFooterRows helpers never
+    // touched the BufferingDiagnosticsSink. These flags ride on the
+    // per-table-instance lifecycle: cycle 2 constructs a fresh
+    // TableLayouter per page, so the flags STILL reset across pages.
+    // The continuation contract carries no flush state; instead each
+    // resume layouter checks its own _incomingTableContinuation: when
+    // non-null (= resume page), we set the flags to true at construct
+    // time to suppress duplicate flushes (the first-page layouter
+    // already flushed them).
+    private bool _headerCellDiagnosticsFlushed;
+    private bool _footerCellDiagnosticsFlushed;
     // Per Phase 3 Task 12 sub-cycle 3 — caption measurements live
     // alongside the row + cell measurements; sub-cycle 1 + 2 captured
     // only the raw caption Box for the deferral-diagnostic snippet,
@@ -905,6 +951,36 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         // table (top captions still pending; not a resume). Mirrors the
         // cycle-1 semantic of rawResumeAtRow == 0.
         var isFirstPage = rawResumeAtRow == 0;
+
+        // Per Phase 3 Task 13 cycle 2 hardening (Finding 4) — honor
+        // RepeatHead / RepeatFoot on resume pages. On the FIRST page
+        // (isFirstPage), headers + footers ALWAYS emit when they
+        // exist; the source HTML decides whether to define a thead /
+        // tfoot. On resume pages, the continuation's flags control
+        // whether to RE-emit the repeating header / footer. The
+        // cycle-2 default builds continuations with RepeatHead =
+        // (headerCount > 0) + RepeatFoot = (footerCount > 0), so the
+        // typical resume page re-emits both. Authors (or future CSS
+        // like `break-inside: avoid-page`) can opt out by constructing
+        // a continuation with `false` flags. This is consulted at the
+        // EmitHeaderRows / EmitFooterRows call sites below + the
+        // effective*StackHeight values are used by the per-page body
+        // budget reservation (so suppressed header / footer frees up
+        // budget for body rows).
+        var repeatHeadOnThisPage = isFirstPage
+            ? (headerCount > 0)
+            : (_incomingTableContinuation?.RepeatHead ?? false) && (headerCount > 0);
+        var repeatFootOnThisPage = isFirstPage
+            ? (footerCount > 0)
+            : (_incomingTableContinuation?.RepeatFoot ?? false) && (footerCount > 0);
+
+        // Per Finding 4 — effective heights collapse to zero when the
+        // corresponding repeat is suppressed; the body-budget
+        // reservation arithmetic uses these instead of the raw
+        // measured stack heights so a `RepeatHead = false` continuation
+        // doesn't waste body budget on a header that won't emit.
+        var effectiveHeaderStackHeight = repeatHeadOnThisPage ? headerStackHeight : 0.0;
+        var effectiveFooterStackHeight = repeatFootOnThisPage ? footerStackHeight : 0.0;
         // Finding 7 — NextRowIndex == rows.Count: all rows already
         // committed on prior pages. Emit the bottom captions (if any)
         // at the wrapper's content-block-offset (no row stack on this
@@ -1203,16 +1279,29 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         var rowStackOrigin = topCaptionCursor;
         var rowBlockOffsets = new double[rowCount];
         var rowEndBlockOffset = new double[rowCount + 1];
-        // Walk headers contiguously from rowStackOrigin.
+        // Walk headers contiguously from rowStackOrigin. Per Finding 4
+        // — when RepeatHead is suppressed on this page, the body
+        // anchors directly at rowStackOrigin (no header gap). The
+        // rowCursorBlock advance is conditional on repeatHeadOnThisPage.
         var rowCursorBlock = rowStackOrigin;
         rowEndBlockOffset[0] = rowCursorBlock;
         for (var r = 0; r < headerCount; r++)
         {
             rowBlockOffsets[r] = rowCursorBlock;
-            rowCursorBlock += rows[r].RowHeight;
+            // Headers contribute to offset only if we'll emit them.
+            // When repeatHeadOnThisPage == false, the header row's
+            // rowBlockOffsets[r] is still set to rowStackOrigin (it
+            // shares the slot with the first body row); the EmitHeaderRows
+            // gate below short-circuits the actual emit so no visual
+            // overlap occurs.
+            if (repeatHeadOnThisPage)
+            {
+                rowCursorBlock += rows[r].RowHeight;
+            }
             rowEndBlockOffset[r + 1] = rowCursorBlock;
         }
-        // Body rows: rowCursorBlock now == rowStackOrigin + headerStackHeight.
+        // Body rows: rowCursorBlock now == rowStackOrigin +
+        // effectiveHeaderStackHeight.
         var bodyStartCursorBlock = rowCursorBlock;
         for (var r = bodyStart; r < bodyEnd; r++)
         {
@@ -1228,11 +1317,18 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         // PageComplete. The provisional natural-extent value is what
         // the emit path for the AllDone-on-last-page case uses (all
         // body rows fit; footers naturally follow).
+        // Per Finding 4 — when RepeatFoot is suppressed on this page,
+        // footer rows still get an offset (the array is rowCount-sized;
+        // we don't want OOR indexing), but the gated EmitFooterRows
+        // skips actually emitting them.
         var footerCursorBlock = rowCursorBlock;
         for (var r = footerStart; r < rowCount; r++)
         {
             rowBlockOffsets[r] = rowCursorBlock;
-            rowCursorBlock += rows[r].RowHeight;
+            if (repeatFootOnThisPage)
+            {
+                rowCursorBlock += rows[r].RowHeight;
+            }
             rowEndBlockOffset[r + 1] = rowCursorBlock;
         }
 
@@ -1266,16 +1362,16 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         // has other content above the table, the available budget
         // shrinks accordingly. See
         // docs/deferrals.md#table-auto-fixed-spans-borders.
-        if (headerStackHeight + footerStackHeight > fragmentainer.BlockSize - rowStackOrigin
-            && (headerCount > 0 || footerCount > 0))
+        if (effectiveHeaderStackHeight + effectiveFooterStackHeight > fragmentainer.BlockSize - rowStackOrigin
+            && (repeatHeadOnThisPage || repeatFootOnThisPage))
         {
             OptimizingBreakResolver.SafeEmit(
                 layout.Diagnostics ?? _diagnostics,
                 new PaginateDiagnostic(
                     PaginateDiagnosticCodes.LayoutTableHeaderFooterOversized001,
                     $"TableLayouter: combined <thead> + <tfoot> stack height "
-                    + $"({(headerStackHeight + footerStackHeight):0.##} = "
-                    + $"header {headerStackHeight:0.##} + footer {footerStackHeight:0.##}) "
+                    + $"({(effectiveHeaderStackHeight + effectiveFooterStackHeight):0.##} = "
+                    + $"header {effectiveHeaderStackHeight:0.##} + footer {effectiveFooterStackHeight:0.##}) "
                     + $"exceeds the fragmentainer's available block-size "
                     + $"({(fragmentainer.BlockSize - rowStackOrigin):0.##}). "
                     + "No room for a body row on a page that also honors the "
@@ -1285,6 +1381,71 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                     + "header / footer content or widen the page. See "
                     + "docs/deferrals.md#table-auto-fixed-spans-borders.",
                     PaginateDiagnosticSeverity.Warning));
+
+            // Per cycle 2 hardening Finding 2 — enforce the locked
+            // "skip body" policy. The pre-hardening code emitted the
+            // diagnostic but then ENTERED the body loop with a negative
+            // body budget; if the footer is shorter than the remaining
+            // budget the resolver could still commit a body row at an
+            // offset BEHIND the footer reservation. Locked design:
+            //   1. Emit headers atomically.
+            //   2. Emit footers atomically, immediately after the
+            //      header stack (degraded layout — footer is NOT
+            //      anchored after a body that didn't fit).
+            //   3. Return AllDone — no body rows emit on this page;
+            //      the entire body slice is dropped on the floor for
+            //      this catastrophic case.
+            //
+            // The skip is necessary because deferring the body to a
+            // continuation would re-enter the same oversized branch on
+            // the next page (header + footer reservation is identical
+            // per-page) → infinite continuation loop. The diagnostic
+            // above tells authors to widen the page or shrink the
+            // header / footer content.
+            //
+            // Re-anchor footers to follow the (effective) header stack
+            // directly (= rowStackOrigin + effectiveHeaderStackHeight)
+            // on this page. ReanchorFooterOffsets accepts the footer
+            // slice's anchor point + walks footer indices applying the
+            // shift; it does NOT touch header / body offsets.
+            ReanchorFooterOffsets(
+                rowBlockOffsets, rowEndBlockOffset,
+                rows!, footerStart, rowCount,
+                bodyWindowEndOffset: rowStackOrigin + effectiveHeaderStackHeight);
+
+            // Snapshot UsedBlockSize here (the canonical
+            // `initialUsedBlockSize` capture sits AFTER this branch in
+            // the pagination loop — we never reach it in the oversized
+            // case). EmitHeaderRows + EmitFooterRows don't mutate
+            // UsedBlockSize but we restore the snapshot defensively so
+            // the outer wrapper-advance arithmetic stays correct.
+            var oversizedInitialUsedBlockSize = fragmentainer.UsedBlockSize;
+
+            if (repeatHeadOnThisPage)
+            {
+                EmitHeaderRows(
+                    rows!, placementsByRow, columnOffsetsLocal!,
+                    rowBlockOffsets, rowEndBlockOffset, usedInlineSize,
+                    headerStart: 0, headerEndExclusive: headerCount,
+                    flushDiagnostics: _diagnostics ?? layout.Diagnostics,
+                    diagnosticsAlreadyFlushed: ref _headerCellDiagnosticsFlushed,
+                    cancellationToken: cancellationToken);
+            }
+            if (repeatFootOnThisPage)
+            {
+                EmitFooterRows(
+                    rows!, placementsByRow, columnOffsetsLocal!,
+                    rowBlockOffsets, rowEndBlockOffset, usedInlineSize,
+                    footerStartIndex: footerStart, footerEndExclusive: rowCount,
+                    flushDiagnostics: _diagnostics ?? layout.Diagnostics,
+                    diagnosticsAlreadyFlushed: ref _footerCellDiagnosticsFlushed,
+                    cancellationToken: cancellationToken);
+            }
+
+            // Restore UsedBlockSize so the outer BlockLayouter's
+            // wrapper-advance arithmetic doesn't double-count.
+            fragmentainer.UsedBlockSize = oversizedInitialUsedBlockSize;
+            return LayoutAttemptResult.AllDone(cost: 0);
         }
 
         // Per Phase 3 Task 13 cycle 1 — row-level pagination loop.
@@ -1367,7 +1528,7 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         // `rowBlockOffsets[resumeAtRow] - (rowStackOrigin + headerStackHeight)`
         // — i.e., move the body slice up so the resumed row anchors
         // at the row stack origin + header stack height.
-        var bodyAnchor = rowStackOrigin + headerStackHeight;
+        var bodyAnchor = rowStackOrigin + effectiveHeaderStackHeight;
         var resumeRowOffsetShift = resumeAtRow > bodyStart
             ? rowBlockOffsets[resumeAtRow] - bodyAnchor
             : 0.0;
@@ -1416,7 +1577,7 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         //   ⟺ rowBottom ≤ BlockSize - footerStackHeight
         //   ⟺ footer (anchored at rowBottom) fits within page.
         // EXACTLY the cycle-2 contract.
-        fragmentainer.UsedBlockSize = bodyAnchor + footerStackHeight;
+        fragmentainer.UsedBlockSize = bodyAnchor + effectiveFooterStackHeight;
 
         for (var r = resumeAtRow; r < bodyEnd; r++)
         {
@@ -1434,7 +1595,7 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             //   chunkBlockSize ≤ RemainingBlockSize
             //   ⟺ rowBottom + footerStackHeight ≤ BlockSize
             // = the cycle-2 fit-check (footer must fit too).
-            fragmentainer.UsedBlockSize = rowBlockOffsets[r] + footerStackHeight;
+            fragmentainer.UsedBlockSize = rowBlockOffsets[r] + effectiveFooterStackHeight;
             var pageRelativeRowTop = rowBlockOffsets[r];
             var chunkBlockSize = rows[r].RowHeight;
 
@@ -1442,6 +1603,21 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             // TableRowBoundary class so the cost model's penalty
             // matrix keys correctly (currently identical to
             // BlockBoundary, but distinct for future cost tuning).
+            //
+            // TODO (Phase 3 Task 13 cycle 2 hardening Finding 5 deferral)
+            // — switch from the greedy ConsiderBreakAt streaming path
+            // to the bounded-DP ResolveBreaks batched path. Per
+            // IBreakResolver.ResolveBreaks's docs, the optimizer's
+            // 2-page lookahead needs a window of candidates; the
+            // current per-row ConsiderBreakAt loop is greedy by
+            // contract. Building a per-page row-opportunity window +
+            // calling ResolveBreaks would let the cost model pick the
+            // BEST row to break at across the body slice (e.g. avoid
+            // splitting between rows whose content is logically
+            // grouped). Deferred to sub-cycle 6+ — the greedy path is
+            // correct for cycle 2's atomic-row semantics; the
+            // optimizer's benefit emerges with row-internal splitting
+            // + break-inside: avoid support (also deferred).
             var opportunity = new BreakOpportunity(
                 UsedBlockSize: pageRelativeRowTop,
                 ChunkBlockSize: chunkBlockSize,
@@ -1520,9 +1696,9 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                 // (defer when captions / earlier rows committed)
                 // still applies — preserving cycle-1 semantics for
                 // tables without thead/tfoot.
-                var bodyHasOverhead = headerStackHeight > 0 || footerStackHeight > 0;
+                var bodyHasOverhead = effectiveHeaderStackHeight > 0 || effectiveFooterStackHeight > 0;
                 var freshPageBodyBudget = fragmentainer.BlockSize
-                    - headerStackHeight - footerStackHeight;
+                    - effectiveHeaderStackHeight - effectiveFooterStackHeight;
                 var bodyRowIntrinsicallyOversized =
                     bodyHasOverhead
                     && rowsEmittedOnPage == 0
@@ -1629,11 +1805,19 @@ internal sealed class TableLayouter : ILayouter, IDisposable
                     // Phase A-pre — emit header rows (with cell content
                     // re-flushed via FlushKeepingBuffer so subsequent
                     // pages can re-emit the same buffered content).
-                    EmitHeaderRows(
-                        rows!, placementsByRow, columnOffsetsLocal!,
-                        rowBlockOffsets, rowEndBlockOffset, usedInlineSize,
-                        headerStart: 0, headerEndExclusive: headerCount,
-                        cancellationToken);
+                    // Per Finding 4 — gate on repeatHeadOnThisPage so
+                    // continuations with RepeatHead=false suppress the
+                    // emit.
+                    if (repeatHeadOnThisPage)
+                    {
+                        EmitHeaderRows(
+                            rows!, placementsByRow, columnOffsetsLocal!,
+                            rowBlockOffsets, rowEndBlockOffset, usedInlineSize,
+                            headerStart: 0, headerEndExclusive: headerCount,
+                            flushDiagnostics: _diagnostics ?? layout.Diagnostics,
+                            diagnosticsAlreadyFlushed: ref _headerCellDiagnosticsFlushed,
+                            cancellationToken: cancellationToken);
+                    }
 
                     EmitRowWindow(
                         rows!, placements, placementsByRow, columnOffsetsLocal!,
@@ -1645,19 +1829,25 @@ internal sealed class TableLayouter : ILayouter, IDisposable
 
                     // Phase A-post — emit footer rows (repeat content
                     // via FlushKeepingBuffer). Footers anchor at
-                    // bodyWindowEndOffset.
-                    EmitFooterRows(
-                        rows!, placementsByRow, columnOffsetsLocal!,
-                        rowBlockOffsets, rowEndBlockOffset, usedInlineSize,
-                        footerStartIndex: footerStart, footerEndExclusive: rowCount,
-                        cancellationToken);
+                    // bodyWindowEndOffset. Per Finding 4 — gate on
+                    // repeatFootOnThisPage.
+                    if (repeatFootOnThisPage)
+                    {
+                        EmitFooterRows(
+                            rows!, placementsByRow, columnOffsetsLocal!,
+                            rowBlockOffsets, rowEndBlockOffset, usedInlineSize,
+                            footerStartIndex: footerStart, footerEndExclusive: rowCount,
+                            flushDiagnostics: _diagnostics ?? layout.Diagnostics,
+                            diagnosticsAlreadyFlushed: ref _footerCellDiagnosticsFlushed,
+                            cancellationToken: cancellationToken);
+                    }
 
                     var consumedThisAttempt =
                         (lastCommittedRowExclusive > commitFromRow
                             ? rowEndBlockOffset[lastCommittedRowExclusive] - rowBlockOffsets[commitFromRow]
                             : 0.0)
-                        + headerStackHeight
-                        + footerStackHeight
+                        + effectiveHeaderStackHeight
+                        + effectiveFooterStackHeight
                         + (rowStackOrigin - _contentBlockOffset); // include top captions on first page
                     var nextContinuation = new TableContinuation(
                         RepeatHead: headerCount > 0,
@@ -1694,12 +1884,20 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         // because the entire body slice committed.
         //
         // Per Finding 4, pass the diagnostic sink so per-row cell
-        // diagnostics flush alongside their committed content.
-        EmitHeaderRows(
-            rows!, placementsByRow, columnOffsetsLocal!,
-            rowBlockOffsets, rowEndBlockOffset, usedInlineSize,
-            headerStart: 0, headerEndExclusive: headerCount,
-            cancellationToken);
+        // diagnostics flush alongside their committed content. Gate
+        // header / footer emit on repeatHeadOnThisPage / repeatFootOnThisPage
+        // so continuations with the corresponding repeat suppressed
+        // don't re-emit them.
+        if (repeatHeadOnThisPage)
+        {
+            EmitHeaderRows(
+                rows!, placementsByRow, columnOffsetsLocal!,
+                rowBlockOffsets, rowEndBlockOffset, usedInlineSize,
+                headerStart: 0, headerEndExclusive: headerCount,
+                flushDiagnostics: _diagnostics ?? layout.Diagnostics,
+                diagnosticsAlreadyFlushed: ref _headerCellDiagnosticsFlushed,
+                cancellationToken: cancellationToken);
+        }
         EmitRowWindow(
             rows!, placements, placementsByRow, columnOffsetsLocal!,
             rowBlockOffsets, rowEndBlockOffset, usedInlineSize,
@@ -1707,11 +1905,16 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             windowEndExclusive: lastCommittedRowExclusive,
             cancellationToken,
             diagSink: commitDiagSink);
-        EmitFooterRows(
-            rows!, placementsByRow, columnOffsetsLocal!,
-            rowBlockOffsets, rowEndBlockOffset, usedInlineSize,
-            footerStartIndex: footerStart, footerEndExclusive: rowCount,
-            cancellationToken);
+        if (repeatFootOnThisPage)
+        {
+            EmitFooterRows(
+                rows!, placementsByRow, columnOffsetsLocal!,
+                rowBlockOffsets, rowEndBlockOffset, usedInlineSize,
+                footerStartIndex: footerStart, footerEndExclusive: rowCount,
+                flushDiagnostics: _diagnostics ?? layout.Diagnostics,
+                diagnosticsAlreadyFlushed: ref _footerCellDiagnosticsFlushed,
+                cancellationToken: cancellationToken);
+        }
 
         // Per Phase 3 Task 12 sub-cycle 3 — Phase D: emit bottom-side
         // captions AFTER the row stack. Stacks vertically in document
@@ -1745,7 +1948,11 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         // it's also rowEndBlockOffset[lastCommittedRowExclusive] +
         // footerStackHeight when the body fully committed AND
         // footers naturally followed.
-        var bottomCaptionCursor = footerCount > 0
+        // Per Finding 4 — when footers are suppressed (RepeatFoot=false),
+        // the bottom captions anchor at the last committed body row's
+        // end (footers contributed 0 to the offset arithmetic since
+        // their rowCursorBlock advance was gated).
+        var bottomCaptionCursor = (footerCount > 0 && repeatFootOnThisPage)
             ? rowEndBlockOffset[rowCount]
             : rowEndBlockOffset[lastCommittedRowExclusive];
         if (captions is { Count: > 0 })
@@ -1920,16 +2127,18 @@ internal sealed class TableLayouter : ILayouter, IDisposable
     /// subsequent pages (headers repeat at the top of every page the
     /// table spans).
     ///
-    /// <para>The diagnostic flush for header cells is INTENTIONALLY
-    /// omitted on resume pages — cell-content diagnostics flush ONCE
-    /// (on the first page) to avoid leaking duplicate diagnostics
-    /// across pages. The layouter doesn't currently track which
-    /// header cells have already flushed their diagnostics; we accept
-    /// the simplification that header-cell diagnostics flush on EVERY
-    /// page they repeat (mirrors the BufferingDiagnosticsSink's
-    /// stable-state contract — diagnostics may duplicate but won't
-    /// silently drop). Sub-cycle 6+ may introduce a one-shot
-    /// flush flag.</para></summary>
+    /// <para>Per cycle 2 hardening Finding 3 — header cell diagnostic
+    /// buffers flush EXACTLY ONCE across the table's emit lifetime.
+    /// <paramref name="flushDiagnostics"/> is the outer sink (may be
+    /// <see langword="null"/>);
+    /// <paramref name="diagnosticsAlreadyFlushed"/> is the layouter
+    /// instance's flag (true means a prior emit already drained the
+    /// buffers; skip the flush). On the FIRST page (first layouter
+    /// instance), the constructor leaves the flag false; this method
+    /// flushes + sets it to true so subsequent EmitHeaderRows calls
+    /// within the same instance are no-ops for diagnostics. On RESUME
+    /// pages the constructor sets the flag to true so the resume
+    /// layouter doesn't re-emit duplicate header diagnostics.</para></summary>
     private void EmitHeaderRows(
         List<RowMeasurement> rows,
         List<CellPlacement>?[] placementsByRow,
@@ -1939,6 +2148,8 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         double usedInlineSize,
         int headerStart,
         int headerEndExclusive,
+        IPaginateDiagnosticsSink? flushDiagnostics,
+        ref bool diagnosticsAlreadyFlushed,
         CancellationToken cancellationToken)
     {
         if (headerEndExclusive <= headerStart) return;
@@ -1985,7 +2196,11 @@ internal sealed class TableLayouter : ILayouter, IDisposable
 
         // Phase C — drain cell-content via FlushKeepingBuffer so the
         // same buffered fragments can re-emit on subsequent pages
-        // (headers repeat every page).
+        // (headers repeat every page). Per Finding 3 — also drain each
+        // cell's DiagnosticsBuffer on the FIRST emit (per-instance);
+        // suppress on subsequent emits to avoid duplicates.
+        var shouldFlushDiagnostics =
+            !diagnosticsAlreadyFlushed && flushDiagnostics is not null;
         for (var r = headerStart; r < headerEndExclusive; r++)
         {
             var bucket = placementsByRow[r];
@@ -1995,14 +2210,26 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             {
                 var placement = bucket[i];
                 placement.ContentBuffer.FlushKeepingBuffer(_sink, rowBlockOffsets[r]);
+                if (shouldFlushDiagnostics)
+                {
+                    placement.DiagnosticsBuffer?.FlushTo(flushDiagnostics!);
+                }
             }
+        }
+        if (shouldFlushDiagnostics)
+        {
+            diagnosticsAlreadyFlushed = true;
         }
     }
 
     /// <summary>Per Phase 3 Task 13 cycle 2 — emit the
     /// <c>&lt;tfoot&gt;</c> row slice <c>[footerStartIndex, footerEndExclusive)</c>.
     /// Same emit shape as <see cref="EmitHeaderRows"/> — non-destructive
-    /// content flush so subsequent pages can re-emit footers.</summary>
+    /// content flush so subsequent pages can re-emit footers.
+    ///
+    /// <para>Per cycle 2 hardening Finding 3 — footer cell diagnostic
+    /// buffers flush EXACTLY ONCE per layouter instance; see
+    /// <see cref="EmitHeaderRows"/> for the contract.</para></summary>
     private void EmitFooterRows(
         List<RowMeasurement> rows,
         List<CellPlacement>?[] placementsByRow,
@@ -2012,6 +2239,8 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         double usedInlineSize,
         int footerStartIndex,
         int footerEndExclusive,
+        IPaginateDiagnosticsSink? flushDiagnostics,
+        ref bool diagnosticsAlreadyFlushed,
         CancellationToken cancellationToken)
     {
         if (footerEndExclusive <= footerStartIndex) return;
@@ -2057,6 +2286,9 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         }
 
         // Phase C — drain cell content (FlushKeepingBuffer for repeat).
+        // Per Finding 3 — flush DiagnosticsBuffer on FIRST emit.
+        var shouldFlushDiagnostics =
+            !diagnosticsAlreadyFlushed && flushDiagnostics is not null;
         for (var r = footerStartIndex; r < footerEndExclusive; r++)
         {
             var bucket = placementsByRow[r];
@@ -2066,7 +2298,15 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             {
                 var placement = bucket[i];
                 placement.ContentBuffer.FlushKeepingBuffer(_sink, rowBlockOffsets[r]);
+                if (shouldFlushDiagnostics)
+                {
+                    placement.DiagnosticsBuffer?.FlushTo(flushDiagnostics!);
+                }
             }
+        }
+        if (shouldFlushDiagnostics)
+        {
+            diagnosticsAlreadyFlushed = true;
         }
     }
 
@@ -2362,15 +2602,19 @@ internal sealed class TableLayouter : ILayouter, IDisposable
         }
 
         // Collect rows in document order (recursing into row groups).
-        // Per Phase 3 Task 13 cycle 2 — alongside the Box list, record
-        // each row's source group kind (Header / Body / Footer) so the
-        // emit phase can re-emit headers + footers on every page. The
-        // collector also reorders so headers come first + footers last
-        // regardless of HTML5 source order (HTML5 permits <tfoot> before
-        // <tbody>; the spec says the footer still renders at the end).
+        // Per Phase 3 Task 13 cycle 2 — the collector partitions rows
+        // into a contiguous headers → body → footers sequence so the
+        // emit phase can re-emit headers + footers on every page (CSS
+        // Tables L3 §3.6 / §11). HTML5 permits <tfoot> before <tbody>
+        // in source; the partition fixes that regardless of source
+        // order. BoxBuilder's GridLevelFixup preserves source order;
+        // the cycle-2 reordering is done HERE alone. Per cycle 2
+        // hardening Copilot #4 — the previous version also tagged each
+        // row with a RowGroupKind enum, but the array was never read
+        // after collection (the slice boundaries are sufficient).
+        // Dropped (along with the enum) to save the allocation.
         var rows = new List<Box>();
-        var rowKinds = new List<RowGroupKind>();
-        CollectRows(grid, rows, rowKinds, out var headerCount, out var footerCount, cancellationToken);
+        CollectRows(grid, rows, out var headerCount, out var footerCount, cancellationToken);
         _measuredHeaderRowCount = headerCount;
         _measuredFooterRowCount = footerCount;
 
@@ -3420,55 +3664,38 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             declaredBlockSize);
     }
 
-    /// <summary>Per Phase 3 Task 13 cycle 2 — row-group classification
-    /// for thead / tbody / tfoot repetition. Each collected row is
-    /// tagged with the group it came from so the cycle-2 emit phase
-    /// can re-emit headers + footers on every page.</summary>
-    internal enum RowGroupKind
-    {
-        /// <summary>Header row (from <c>&lt;thead&gt;</c> /
-        /// <c>display: table-header-group</c>). Repeated at the top
-        /// of every page the table spans.</summary>
-        Header = 0,
-        /// <summary>Body row (default). The cycle-1 row-pagination
-        /// loop walks this slice.</summary>
-        Body = 1,
-        /// <summary>Footer row (from <c>&lt;tfoot&gt;</c> /
-        /// <c>display: table-footer-group</c>). Repeated immediately
-        /// after the last body row that fits on every page.</summary>
-        Footer = 2,
-    }
-
     /// <summary>Sub-cycle 1 + Task 13 cycle 2 — walk
     /// <paramref name="grid"/>'s children in document order, appending
     /// every <see cref="BoxKind.TableRow"/> (including those nested
     /// inside <see cref="BoxKind.TableRowGroup"/> /
     /// <see cref="BoxKind.TableHeaderGroup"/> /
-    /// <see cref="BoxKind.TableFooterGroup"/>) to <paramref name="rows"/>,
-    /// alongside its source <see cref="RowGroupKind"/> in
-    /// <paramref name="rowKinds"/>. Captions, column groups, columns
-    /// are skipped — captions live at the wrapper level (Finding 4
-    /// handles them); column groups + columns are sub-cycle 2+ work.
+    /// <see cref="BoxKind.TableFooterGroup"/>) to <paramref name="rows"/>.
+    /// Captions, column groups, columns are skipped — captions live at
+    /// the wrapper level (Finding 4 handles them); column groups +
+    /// columns are sub-cycle 2+ work.
     ///
     /// <para><b>Cycle 2 reorder.</b> HTML5 §4.9.6 allows
     /// <c>&lt;tfoot&gt;</c> to appear BEFORE <c>&lt;tbody&gt;</c> in
     /// source order, but the rendering should still place the footer
-    /// at the END of the table. BoxBuilder's table fixup preserves
-    /// document order (it does NOT reorder thead / tfoot), so this
-    /// method does the sort: after the document-order walk, the row
-    /// list is partitioned into three contiguous slices —
+    /// at the END of the table. BoxBuilder's <c>GridLevelFixup</c>
+    /// preserves document order (it does NOT reorder thead / tfoot),
+    /// so this method does the sort itself: after the document-order
+    /// walk, the row list is partitioned into three contiguous slices —
     /// <c>[0, headerCount)</c> = headers, <c>[headerCount,
     /// rows.Count - footerCount)</c> = body, <c>[rows.Count -
     /// footerCount, rows.Count)</c> = footers — using a stable
     /// 3-way partition that preserves the original order within each
     /// group. <paramref name="headerCount"/> / <paramref name="footerCount"/>
-    /// are reported back so callers can index into the slices
-    /// without re-scanning <paramref name="rowKinds"/>.</para>
+    /// are reported back so callers can index into the slices without
+    /// scanning. Per Copilot #4 hardening — the prior implementation
+    /// also returned a per-row <c>RowGroupKind</c> enum list tagging
+    /// each row's source slice, but the array was never read by the
+    /// emit path (slice boundaries are sufficient). Dropped (along
+    /// with the enum) to save the allocation.</para>
     /// </summary>
     private static void CollectRows(
         Box grid,
         List<Box> rows,
-        List<RowGroupKind> rowKinds,
         out int headerCount,
         out int footerCount,
         CancellationToken cancellationToken)
@@ -3533,23 +3760,21 @@ internal sealed class TableLayouter : ILayouter, IDisposable
 
         headerCount = headers.Count;
         footerCount = footers.Count;
-        // Assemble final rows + rowKinds in headers → body → footers
-        // order. CSS Tables L3 §3.6 / §11 specifies the visual order
-        // independent of source order.
+        // Assemble final rows in headers → body → footers order. CSS
+        // Tables L3 §3.6 / §11 specifies the visual order independent
+        // of source order. Slice boundaries are recovered downstream
+        // via headerCount + footerCount.
         for (var i = 0; i < headers.Count; i++)
         {
             rows.Add(headers[i]);
-            rowKinds.Add(RowGroupKind.Header);
         }
         for (var i = 0; i < bodies.Count; i++)
         {
             rows.Add(bodies[i]);
-            rowKinds.Add(RowGroupKind.Body);
         }
         for (var i = 0; i < footers.Count; i++)
         {
             rows.Add(footers[i]);
-            rowKinds.Add(RowGroupKind.Footer);
         }
     }
 

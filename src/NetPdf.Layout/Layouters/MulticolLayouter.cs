@@ -252,6 +252,77 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
                     + "would silently return AllDone with no fragments, "
                     + "hiding caller bugs.");
             }
+            // Per Phase 3 Task 14 cycle 2 hardening (Finding #2) —
+            // fail-fast invariant validation. Mirrors
+            // TableLayouter's per-field range checks at
+            // TableLayouter.cs:300-319. Each check guards a silent-
+            // restart / silent-content-loss failure mode that would
+            // otherwise hide producer-side bugs.
+            if (!double.IsFinite(mcCont.ConsumedBlockSize)
+                || mcCont.ConsumedBlockSize < 0)
+            {
+                throw new ArgumentOutOfRangeException(
+                    nameof(incomingContinuation),
+                    $"MulticolContinuation.ConsumedBlockSize="
+                    + $"{mcCont.ConsumedBlockSize} must be finite + non-"
+                    + "negative. NaN / Infinity / negative values "
+                    + "indicate a producer bug — they would propagate "
+                    + "into pagination math (RemainingBlockSize "
+                    + "comparisons, cost calculations) and silently "
+                    + "corrupt every downstream page-break decision.");
+            }
+            if (mcCont.PerChildLayouterState is not null
+                and not BlockContinuation)
+            {
+                throw new ArgumentException(
+                    "MulticolContinuation.PerChildLayouterState must be "
+                    + "null or a BlockContinuation (the nested per-"
+                    + "child layouter resume state). Got "
+                    + $"{mcCont.PerChildLayouterState.GetType().Name}. "
+                    + "Per cycle 2's contract, per-child resume state "
+                    + "is always a BlockContinuation produced by the "
+                    + "inner BlockLayouter that runs each multicol "
+                    + "column. Other types would silently bypass the "
+                    + "resume dispatch and restart the child from "
+                    + "scratch, duplicating content already emitted "
+                    + "on the prior page.",
+                    nameof(incomingContinuation));
+            }
+            if (mcCont.NextChildIndex == rootBox.Children.Count
+                && mcCont.PerChildLayouterState is not null)
+            {
+                throw new ArgumentException(
+                    $"MulticolContinuation has NextChildIndex="
+                    + $"{mcCont.NextChildIndex} == "
+                    + $"rootBox.Children.Count ({rootBox.Children.Count}) "
+                    + "(= terminal index, no more children to emit) BUT "
+                    + "PerChildLayouterState is not null. A terminal "
+                    + "index means the prior page completed every "
+                    + "child; there is no nested per-child state to "
+                    + "resume. This combination indicates a producer "
+                    + "bug — likely a missing 'consume' of the "
+                    + "PerChildLayouterState when advancing past the "
+                    + "last child.",
+                    nameof(incomingContinuation));
+            }
+            if (mcCont.PerChildLayouterState is BlockContinuation bc
+                && bc.ResumeAtChild != mcCont.NextChildIndex)
+            {
+                throw new ArgumentException(
+                    "MulticolContinuation has PerChildLayouterState = "
+                    + $"BlockContinuation(ResumeAtChild={bc.ResumeAtChild}) "
+                    + $"but the outer NextChildIndex is "
+                    + $"{mcCont.NextChildIndex}. The two indices must "
+                    + "agree — they refer to the SAME multicol child "
+                    + "(NextChildIndex from the multicol's perspective; "
+                    + "ResumeAtChild from the nested BlockLayouter's "
+                    + "perspective on the same child's inner block "
+                    + "subtree). A mismatch indicates a producer bug "
+                    + "and would cause the resume to misroute the "
+                    + "nested state to a different child, silently "
+                    + "duplicating or skipping content.",
+                    nameof(incomingContinuation));
+            }
             typedIncoming = mcCont;
         }
 
@@ -330,7 +401,32 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
         var columnCount = _rootBox.Style.ReadColumnCount() ?? 1;
         if (columnCount > MaxColumnCount)
         {
+            // Per Phase 3 Task 14 cycle 2 hardening (Finding #3) —
+            // surface the silent clamp via a Warning diagnostic.
+            // Without this, an author with `column-count: 10000` sees
+            // a rendered output with 1000 columns that visually
+            // disagrees with the stylesheet but no warning explains
+            // why. The clamp itself is intentional (the per-column
+            // arithmetic is O(N) per child; uncapped N is a DoS
+            // vector for adversarial / generated input). Mirrors the
+            // non-finite-geometry emission pattern below
+            // (`SafeEmit(layout.Diagnostics ?? _diagnostics, ...)`).
+            var requestedColumnCount = columnCount;
             columnCount = MaxColumnCount;
+            OptimizingBreakResolver.SafeEmit(
+                layout.Diagnostics ?? _diagnostics,
+                new PaginateDiagnostic(
+                    PaginateDiagnosticCodes.LayoutMulticolColumnCountClamped001,
+                    $"MulticolLayouter: requested column-count="
+                    + $"{requestedColumnCount} exceeds the layouter's "
+                    + $"safety cap (MaxColumnCount={MaxColumnCount}); "
+                    + "clamping to "
+                    + $"{columnCount}. The cap protects against the "
+                    + "per-column arithmetic's O(N)-per-child cost on "
+                    + "adversarial inputs (uncapped N is a DoS vector). "
+                    + "The rendered output will have at most "
+                    + $"{columnCount} columns.",
+                    PaginateDiagnosticSeverity.Warning));
         }
         var columnGap = _rootBox.Style.ReadColumnGap();
         if (!double.IsFinite(columnGap) || columnGap < 0)

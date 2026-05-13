@@ -693,6 +693,68 @@ public sealed class DiagnosticCodesTests
             NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutMulticolNonFiniteGeometry001);
     }
 
+    // ============================================================
+    // Phase 3 Task 14 cycle 2 hardening (Finding #3) —
+    // LAYOUT-MULTICOL-COLUMN-COUNT-CLAMPED-001 parity.
+    // ============================================================
+
+    [Fact]
+    public void Layout_multicol_column_count_clamped_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(registry,
+            @"\|\s*`?(LAYOUT-MULTICOL-COLUMN-COUNT-CLAMPED-001)`?\s*\|\s*(\w+)\s*\|");
+        Assert.True(match.Success,
+            "LAYOUT-MULTICOL-COLUMN-COUNT-CLAMPED-001 row not found in docs/diagnostics-codes.md");
+        Assert.Equal(DiagnosticCodes.LayoutMulticolColumnCountClamped001, match.Groups[1].Value);
+        Assert.Equal("Warning", match.Groups[2].Value);
+    }
+
+    [Fact]
+    public void Layout_multicol_column_count_clamped_001_constant_value_is_stable()
+    {
+        Assert.Equal("LAYOUT-MULTICOL-COLUMN-COUNT-CLAMPED-001",
+            DiagnosticCodes.LayoutMulticolColumnCountClamped001);
+    }
+
+    [Fact]
+    public void Layout_multicol_column_count_clamped_001_facade_and_paginate_constants_agree()
+    {
+        Assert.Equal(DiagnosticCodes.LayoutMulticolColumnCountClamped001,
+            NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutMulticolColumnCountClamped001);
+    }
+
+    // ============================================================
+    // Phase 3 Task 14 cycle 2 hardening (Finding #1) —
+    // LAYOUT-FLOAT-BREAK-INSIDE-NESTED-001 parity.
+    // ============================================================
+
+    [Fact]
+    public void Layout_float_break_inside_nested_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(registry,
+            @"\|\s*`?(LAYOUT-FLOAT-BREAK-INSIDE-NESTED-001)`?\s*\|\s*(\w+)\s*\|");
+        Assert.True(match.Success,
+            "LAYOUT-FLOAT-BREAK-INSIDE-NESTED-001 row not found in docs/diagnostics-codes.md");
+        Assert.Equal(DiagnosticCodes.LayoutFloatBreakInsideNested001, match.Groups[1].Value);
+        Assert.Equal("Warning", match.Groups[2].Value);
+    }
+
+    [Fact]
+    public void Layout_float_break_inside_nested_001_constant_value_is_stable()
+    {
+        Assert.Equal("LAYOUT-FLOAT-BREAK-INSIDE-NESTED-001",
+            DiagnosticCodes.LayoutFloatBreakInsideNested001);
+    }
+
+    [Fact]
+    public void Layout_float_break_inside_nested_001_facade_and_paginate_constants_agree()
+    {
+        Assert.Equal(DiagnosticCodes.LayoutFloatBreakInsideNested001,
+            NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutFloatBreakInsideNested001);
+    }
+
     private static string LoadRegistry()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

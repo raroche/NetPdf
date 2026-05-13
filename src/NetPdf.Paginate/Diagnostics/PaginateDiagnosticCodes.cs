@@ -180,6 +180,24 @@ internal static class PaginateDiagnosticCodes
     public const string LayoutTableHeaderFooterOversized001 =
         "LAYOUT-TABLE-HEADER-FOOTER-OVERSIZED-001";
 
+    /// <summary>Per Phase 3 Task 14 cycle 2 hardening (Finding #3) —
+    /// emitted by <c>MulticolLayouter</c> when the author-supplied
+    /// <c>column-count</c> exceeds the layouter's
+    /// <c>MaxColumnCount</c> safety cap (= 1000) and is silently
+    /// clamped. Without surfacing this, a stray <c>column-count:
+    /// 100000</c> would produce N=1000 columns + the rendered output
+    /// would visually disagree with the stylesheet — but emit no
+    /// warning, hiding the cap as a silent DoS-mitigation behavior.
+    /// The clamp is intentional (the layouter's per-column
+    /// arithmetic is O(N) per child; uncapped N is a DoS vector for
+    /// adversarial input), but authors who hit the cap legitimately
+    /// (e.g., generated CSS) need to know that the requested column
+    /// count was reduced. Mirrors
+    /// <c>NetPdf.DiagnosticCodes.LayoutMulticolColumnCountClamped001</c>.
+    /// Severity: <see cref="PaginateDiagnosticSeverity.Warning"/>.</summary>
+    public const string LayoutMulticolColumnCountClamped001 =
+        "LAYOUT-MULTICOL-COLUMN-COUNT-CLAMPED-001";
+
     /// <summary>Per Phase 3 Task 14 cycles 1-2 — emitted by
     /// <c>MulticolLayouter</c> /<c>BlockLayouter</c> when a multicol
     /// container's in-flow content can't make forward progress
@@ -241,4 +259,22 @@ internal static class PaginateDiagnosticCodes
     /// Severity: <see cref="PaginateDiagnosticSeverity.Warning"/>.</summary>
     public const string LayoutMulticolNonFiniteGeometry001 =
         "LAYOUT-MULTICOL-NON-FINITE-GEOMETRY-001";
+
+    /// <summary>Per Phase 3 Task 14 cycle 2 hardening (Finding #1) —
+    /// emitted by <c>BlockLayouter</c> when a float subtree's nested
+    /// recursion returns a non-null <c>LayoutContinuation</c>
+    /// (indicating a multicol or table inside the float broke mid-
+    /// emission). Floats are out-of-flow per CSS 2.2 §9.5; propagating
+    /// their continuation through the in-flow pagination machinery
+    /// requires float-tracking machinery that's an existing Phase 3
+    /// Task 8 deferral (cycle 3+ scope). The layouter discards the
+    /// returned continuation (atomic-fallback behavior) + surfaces
+    /// this diagnostic so authors / integrators see the truncation
+    /// rather than wondering why content disappeared from the float.
+    /// The diagnostic fires at most once per page to avoid spam from
+    /// pages with many such floats. Mirrors
+    /// <c>NetPdf.DiagnosticCodes.LayoutFloatBreakInsideNested001</c>.
+    /// Severity: <see cref="PaginateDiagnosticSeverity.Warning"/>.</summary>
+    public const string LayoutFloatBreakInsideNested001 =
+        "LAYOUT-FLOAT-BREAK-INSIDE-NESTED-001";
 }

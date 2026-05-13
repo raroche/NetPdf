@@ -374,6 +374,23 @@ internal static class DiagnosticCodes
         "LAYOUT-TABLE-HEADER-FOOTER-OVERSIZED-001";
 
     /// <summary>
+    /// Per Phase 3 Task 14 cycle 2 hardening (Finding #3) — emitted by
+    /// the multicol layouter when the author-supplied
+    /// <c>column-count</c> exceeds the internal safety cap (= 1000)
+    /// and is silently clamped. The clamp protects against the
+    /// per-column arithmetic's O(N) cost on adversarial inputs (a
+    /// <c>column-count: 1000000</c> would otherwise allocate ~1M
+    /// per-column geometry slots + invoke 1M nested BlockLayouter
+    /// calls per page). Authors who legitimately hit the cap
+    /// (generated CSS, configuration mistakes) see the warning + can
+    /// reduce the requested column count. The rendered output will
+    /// have AT MOST 1000 columns.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string LayoutMulticolColumnCountClamped001 =
+        "LAYOUT-MULTICOL-COLUMN-COUNT-CLAMPED-001";
+
+    /// <summary>
     /// Per Phase 3 Task 14 cycle 1 — emitted by the multicol layouter
     /// when the in-flow content of a multicol container does NOT fit
     /// within the N columns' available block-size. Cycle 1 ships
@@ -407,6 +424,22 @@ internal static class DiagnosticCodes
     /// </summary>
     public const string LayoutMulticolNonFiniteGeometry001 =
         "LAYOUT-MULTICOL-NON-FINITE-GEOMETRY-001";
+
+    /// <summary>
+    /// Per Phase 3 Task 14 cycle 2 hardening (Finding #1) — emitted
+    /// by the block layouter when a float subtree's nested recursion
+    /// returns a non-null <c>LayoutContinuation</c> (indicating a
+    /// multicol or table inside the float broke mid-emission). Floats
+    /// are out-of-flow per CSS 2.2 §9.5; propagating their
+    /// continuation requires float-tracking machinery that's an
+    /// existing Phase 3 Task 8 deferral. The layouter discards the
+    /// returned continuation (atomic-fallback behavior) + surfaces
+    /// this diagnostic so authors see the truncation. Fires at most
+    /// once per page.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string LayoutFloatBreakInsideNested001 =
+        "LAYOUT-FLOAT-BREAK-INSIDE-NESTED-001";
 
     // endregion LAYOUT-*
 }

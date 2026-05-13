@@ -266,7 +266,13 @@ grepping the ID).
 ## table-auto-fixed-spans-borders
 
 - **ID** — `table-auto-fixed-spans-borders`
-- **Status** — `approximated`.
+- **Status** — `approximated`. Phase 3 Task 14 cycle 2 hardening
+  Finding #1 lifted the depth==1-only continuation propagation
+  limit for nested tables — tables at any in-flow recursion depth
+  now split cleanly across pages (the `NoBreakBreakResolver`
+  depth≥2 atomic fallback was deleted in this hardening; the
+  TableLayouter's single-oversized-row forward-progress fallback
+  remains the safety net).
 - **Behavior** — `TableLayouter` (Phase 3 Task 12 sub-cycles 1 + 2)
   walks the Table → TableGrid → row → cell hierarchy via a two-phase
   protocol — a pre-measure pass populates per-row cell content
@@ -305,14 +311,14 @@ grepping the ID).
   page 1; bottom on the last page). A single oversized row taller
   than the fragmentainer falls back to forced-overflow forward
   progress + emits the `PAGINATION-FORCED-OVERFLOW-001`
-  diagnostic. **Limitation** — the OUTER `BlockLayouter` child
-  loop integrates the continuation propagation, but the
-  `EmitBlockSubtreeRecursive` nested-walk path (= the typical
-  `<html><body><table>` shape from real HTML) keeps tables
-  ATOMIC: the recursion has no continuation-emission route, so
-  nested tables emit every row on the same page + rely on the
-  existing forced-overflow diagnostic for over-tall cases. Task 13
-  cycle 2+ may generalize the recursion. **Task 13 cycle 2 —
+  diagnostic. **Phase 3 Task 14 cycle 2 hardening Finding #1 lift**
+  — the depth==1-only nested-table continuation propagation limit
+  has been removed. Tables at ANY in-flow recursion depth
+  (including the canonical `<html><body><table>` shape from real
+  HTML) now split across pages cleanly via the chain-of-
+  `BlockContinuation` return contract from `EmitBlockSubtreeRecursive`;
+  the `NoBreakBreakResolver` depth≥2 atomic fallback was deleted
+  in the same hardening pass. **Task 13 cycle 2 —
   `<thead>` / `<tfoot>` per-page repeat.** Header rows
   (collected from `<thead>` / `display: table-header-group`)
   repeat at the TOP of each page the table spans; footer rows
@@ -423,12 +429,9 @@ grepping the ID).
 - **Missing** — Per CSS Tables L3 + HTML5 §4.9.11: percentage
   column widths; full grid/table used-inline-size reconciliation for
   content-shrink scenarios; §6.3 border-collapse + border-spacing;
-  §6.4 column-group widths beyond Pass A fallback; nested-recursion
-  table-continuation propagation (Task 13 cycle 1 ships outer-loop
-  row splitting + nested tables stay atomic with forced-overflow
-  fallback; cycle 2+ may generalize); row-internal splitting (a
-  single row taller than the fragmentainer is currently atomic +
-  triggers forced-overflow);
+  §6.4 column-group widths beyond Pass A fallback; row-internal
+  splitting (a single row taller than the fragmentainer is
+  currently atomic + triggers forced-overflow);
   §11 spec-strict rowspan distribution-proportional algorithm;
   CSS Tables L3 §3 spec-strict proportional-weight column-width
   distribution (sub-cycle 5 ships a deterministic linear-interpolation
@@ -468,8 +471,15 @@ grepping the ID).
     linear-interpolation distribution. Task 13 cycle 1 added multi-
     page row splitting via resolver-driven row-level pagination +
     `TableContinuation` resume contract (outer-loop integrated;
-    nested-recursion path uses the new `NoBreakBreakResolver` to
-    keep nested tables atomic — cycle 2+ may generalize).
+    nested-recursion path used the `NoBreakBreakResolver` to keep
+    nested tables atomic). Phase 3 Task 14 cycle 2 hardening
+    Finding #1 lifted that limit by refactoring
+    `EmitBlockSubtreeRecursive` to return a `LayoutContinuation?`
+    chain that propagates nested table/multicol breaks through any
+    in-flow recursion depth; `NoBreakBreakResolver`'s depth≥2
+    fallback was deleted (the class remains, still used for
+    captions). The `TableLayouter` single-oversized-row forward-
+    progress fallback is the safety net.
     Remaining: spec-strict §11 rowspan distribution-proportional
     algorithm; §6.3 border-collapse model + `border-spacing`;
     row-internal splitting + row-level `break-inside: avoid`; RTL
@@ -542,10 +552,13 @@ grepping the ID).
 ## multicol-balancing-pagination
 
 - **ID** — `multicol-balancing-pagination`
-- **Status** — `approximated` (cycles 1-2 ship fixed-column-count +
-  equal-split + single-level multi-page splitting; balancing +
-  column-width auto-count + column rules + `column-span: all` remain
-  cycle 3+ scope).
+- **Status** — `approximated` (cycles 1-2 + cycle 2 hardening ship
+  fixed-column-count + equal-split + multi-page splitting through
+  any recursion depth; balancing + column-width auto-count + column
+  rules + `column-span: all` remain cycle 3+ scope). Phase 3 Task 14
+  cycle 2 hardening Finding #1 lifted the depth==1-only continuation
+  propagation limit — nested multicols at any in-flow recursion
+  depth now split cleanly across pages.
 - **Behavior** — `MulticolLayouter` (Phase 3 Task 14 cycles 1-2)
   recognizes a block container with `column-count: N` (integer ≥ 2)
   as a multicol container. Detection is via
@@ -584,26 +597,14 @@ grepping the ID).
   `incomingContinuation` — content resumes at the exact child the
   prior page deferred at (mirrors Task 13 cycle 1's row-pagination
   pattern for tables). `LAYOUT-MULTICOL-FORCED-OVERFLOW-001` is
-  SUPPRESSED for clean multi-page splits; it fires only when (a) a
-  resume page can't make forward progress (single-oversized-child
-  fallback) OR (b) the multicol is at recursion depth ≥ 2 inside
-  `EmitBlockSubtreeRecursive` where cycle 2's single-level
-  propagation can't reach (e.g., `html > body > div.multicol` from
-  real HTML — the recursion's
-  `incomingMulticolContinuationAtDepth1` + `onMulticolPageComplete`
-  hooks fire only at depth==1, mirroring Task 13 cycle 2
-  hardening's `TableContinuation` pattern).
+  SUPPRESSED for clean multi-page splits; per cycle 2 hardening
+  Finding #1, ANY in-flow recursion depth now propagates cleanly —
+  the diagnostic now fires only on resume pages that can't make
+  forward progress (single-oversized-child fallback). Floats
+  containing multicol content are still atomic (their out-of-flow
+  continuation propagation is deferred under
+  `float-continuation-propagation`).
 - **Missing** —
-  - **Multi-level recursive multicol propagation**: cycle 2's
-    single-level (depth==1) propagation handles multicol as a
-    direct descendant of the layouter's root or as a depth-1
-    descendant via the recursion's single-level callback. For
-    multicols nested deeper (e.g., the canonical `html > body >
-    div.multicol` case from BoxBuilder output) the recursive
-    `PageComplete` can't propagate; cycle 2 surfaces the truncation
-    via the forced-overflow diagnostic. Sub-cycle 3+ may generalize
-    by promoting the `LayouterState` propagation seam to a typed
-    "nested-layouter-state" subtype that flows through any depth.
   - **Column balancing** (`column-fill: balance` — CSS Multi-column
     L1 §3.4): cycle 1 fills columns left-to-right serially; columns
     aren't balanced to roughly-equal heights.
@@ -646,11 +647,61 @@ grepping the ID).
     contract.
 - **Added** — Phase 3 Task 14 cycle 1; expanded in cycle 2 (this
   branch).
-- **Removal condition** — multi-level recursive multicol propagation
-  ships (deep-nested multicols fragment cleanly without the
-  diagnostic); column balancing (`column-fill: balance`) ships;
-  `column-width` derives column count when `column-count` is `auto`;
-  column rules paint; `column-span: all` works.
+- **Removal condition** — column balancing
+  (`column-fill: balance`) ships; `column-width` derives column
+  count when `column-count` is `auto`; column rules paint;
+  `column-span: all` works. (Multi-level recursive multicol
+  propagation shipped in Phase 3 Task 14 cycle 2 hardening
+  Finding #1.)
+
+---
+
+## float-continuation-propagation
+
+- **ID** — `float-continuation-propagation`
+- **Status** — `approximated` (in-flow continuations propagate cleanly
+  through any recursion depth per Phase 3 Task 14 cycle 2 hardening
+  Finding #1; floats remain out-of-flow per CSS 2.2 §9.5 and can't
+  yet carry a continuation across pages).
+- **Behavior** — When a float subtree (`float: left` / `float: right`
+  containing block-level descendants) hosts a nested multicol or
+  table whose pagination breaks mid-emission, the `BlockLayouter`
+  recursion produces a non-null `LayoutContinuation` for that
+  subtree. Floats are out-of-flow per CSS 2.2 §9.5; propagating
+  their continuation through the in-flow pagination machinery would
+  require float-tracking continuation machinery
+  (FloatManager-aware continuation state, float-fragment resume
+  contract, BFC-snapshot restoration in the float emission path).
+  The cycle 2 hardening pass discards the recursion return inside
+  float subtrees (the float's first-page slice is committed; the
+  remainder is truncated) + emits the new
+  `LAYOUT-FLOAT-BREAK-INSIDE-NESTED-001` Warning diagnostic at most
+  once per page so the truncation is observable.
+- **Missing** — float-tracking continuation machinery
+  (FloatManager state snapshot/restore across pages; float-
+  fragment resume contract; cross-page float overflow per
+  CSS Fragmentation L3 §5).
+- **Trigger** — corpus needs a float containing multicol/table that
+  spans pages, OR a user-reported case where content inside a
+  large float vanishes.
+- **Owner files** —
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs::EmitFloat`,
+    `EmitNestedFloat` — recursion sites that discard the return +
+    emit the diagnostic.
+  - `src/NetPdf.Layout/FloatManager.cs` — would gain the cross-page
+    snapshot/restore contract.
+  - `src/NetPdf.Paginate/LayoutContinuation.cs` — would gain a
+    `FloatContinuation` record alongside `BlockContinuation` /
+    `TableContinuation` / `MulticolContinuation`.
+- **Added** — Phase 3 Task 14 cycle 2 hardening Finding #1 (this
+  branch). The discard behavior pre-existed (cycle 1 had no return
+  contract at all so the breaks were silently swallowed); the
+  hardening just made the truncation visible via the new
+  diagnostic.
+- **Removal condition** — `FloatContinuation` ships + the float-
+  emission path consumes / produces it; nested multicol/table
+  pagination inside floats matches the in-flow behavior (clean
+  multi-page splits with no `LAYOUT-FLOAT-BREAK-INSIDE-NESTED-001`).
 
 ---
 

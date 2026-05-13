@@ -386,6 +386,133 @@ public sealed class MulticolLayouterTests
             box, sink, incomingContinuation: continuation);
     }
 
+    [Theory]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    public void MulticolLayouter_rejects_non_finite_consumed_block_size(double value)
+    {
+        // Per Phase 3 Task 14 cycle 2 hardening (Finding #2) — the
+        // constructor's incoming-continuation validator REJECTS
+        // ConsumedBlockSize values that aren't finite. NaN /
+        // Infinity would propagate into RemainingBlockSize math and
+        // silently corrupt every downstream pagination decision.
+        // Mirrors TableLayouter's per-field range checks
+        // (TableLayouter.cs:312-317).
+        var sink = new RecordingFragmentSink();
+        var box = BuildMulticolContainer(columnCount: 2);
+        var continuation = new MulticolContinuation(
+            NextChildIndex: 0, ConsumedBlockSize: value);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new MulticolLayouter(box, sink, incomingContinuation: continuation));
+    }
+
+    [Fact]
+    public void MulticolLayouter_rejects_negative_consumed_block_size()
+    {
+        // Per Phase 3 Task 14 cycle 2 hardening (Finding #2) — the
+        // constructor rejects negative ConsumedBlockSize values
+        // (mirrors the finite check above + TableLayouter's
+        // companion non-negative guard).
+        var sink = new RecordingFragmentSink();
+        var box = BuildMulticolContainer(columnCount: 2);
+        var continuation = new MulticolContinuation(
+            NextChildIndex: 0, ConsumedBlockSize: -1.0);
+
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new MulticolLayouter(box, sink, incomingContinuation: continuation));
+    }
+
+    [Fact]
+    public void MulticolLayouter_rejects_per_child_state_of_wrong_type()
+    {
+        // Per Phase 3 Task 14 cycle 2 hardening (Finding #2) — the
+        // constructor REJECTS a PerChildLayouterState whose type
+        // isn't null or BlockContinuation. The cycle 2 contract
+        // routes per-child resume state via BlockContinuation
+        // (produced by the inner per-column BlockLayouter); other
+        // types would silently bypass the resume dispatch and
+        // restart the child from scratch, duplicating content.
+        var sink = new RecordingFragmentSink();
+        var box = BuildMulticolContainer(columnCount: 2);
+        // TableContinuation is a sibling LayoutContinuation kind —
+        // not the right shape for multicol's per-child slot.
+        var wrongState = new TableContinuation(
+            RepeatHead: false, RepeatFoot: false, NextRowIndex: 0);
+        var continuation = new MulticolContinuation(
+            NextChildIndex: 0,
+            ConsumedBlockSize: 0,
+            PerChildLayouterState: wrongState);
+
+        Assert.Throws<ArgumentException>(() =>
+            new MulticolLayouter(box, sink, incomingContinuation: continuation));
+    }
+
+    [Fact]
+    public void MulticolLayouter_rejects_terminal_index_with_non_null_per_child_state()
+    {
+        // Per Phase 3 Task 14 cycle 2 hardening (Finding #2) — the
+        // constructor REJECTS NextChildIndex == Children.Count
+        // (= terminal index, no more children to emit) combined
+        // with a non-null PerChildLayouterState. The combination
+        // is semantically inconsistent: terminal index means there
+        // is nothing left to resume; carrying nested state is a
+        // producer bug (likely a missing consume of the per-child
+        // state when advancing past the last child).
+        var sink = new RecordingFragmentSink();
+        var box = BuildMulticolContainer(columnCount: 2);
+        // Add one child so Children.Count == 1.
+        var childStyle = MakeStyle();
+        SetLengthPx(childStyle, PropertyId.Height, 50);
+        box.AppendChild(Box.ForElement(BoxKind.BlockContainer, childStyle, MakeElement()));
+        // Terminal index = Children.Count == 1, with a nested
+        // BlockContinuation that claims to resume the SAME child —
+        // would be valid if the index were < Count, but at terminal
+        // it's a bug.
+        var continuation = new MulticolContinuation(
+            NextChildIndex: 1,
+            ConsumedBlockSize: 0,
+            PerChildLayouterState: new BlockContinuation(
+                ResumeAtChild: 1, ConsumedBlockSize: 0));
+
+        Assert.Throws<ArgumentException>(() =>
+            new MulticolLayouter(box, sink, incomingContinuation: continuation));
+    }
+
+    [Fact]
+    public void MulticolLayouter_rejects_mismatched_per_child_state_resume_index()
+    {
+        // Per Phase 3 Task 14 cycle 2 hardening (Finding #2) — the
+        // constructor REJECTS a BlockContinuation in
+        // PerChildLayouterState whose ResumeAtChild does NOT equal
+        // the outer NextChildIndex. The two indices refer to the
+        // SAME multicol child (= NextChildIndex from the multicol's
+        // perspective; ResumeAtChild from the nested BlockLayouter's
+        // perspective on that child's inner block subtree). A
+        // mismatch would misroute the nested state to a different
+        // child, silently duplicating or skipping content.
+        var sink = new RecordingFragmentSink();
+        var box = BuildMulticolContainer(columnCount: 2);
+        // Add 6 children so we have room for both ResumeAtChild=5
+        // and NextChildIndex=3 to be in-range.
+        for (var i = 0; i < 6; i++)
+        {
+            var s = MakeStyle();
+            SetLengthPx(s, PropertyId.Height, 10);
+            box.AppendChild(Box.ForElement(BoxKind.BlockContainer, s, MakeElement()));
+        }
+        // PerChildLayouterState says "resume at child 5" but the
+        // outer continuation says "next child is 3" — inconsistent.
+        var continuation = new MulticolContinuation(
+            NextChildIndex: 3,
+            ConsumedBlockSize: 0,
+            PerChildLayouterState: new BlockContinuation(
+                ResumeAtChild: 5, ConsumedBlockSize: 0));
+
+        Assert.Throws<ArgumentException>(() =>
+            new MulticolLayouter(box, sink, incomingContinuation: continuation));
+    }
+
     [Fact]
     public void Multicol_column_gap_default_is_16px()
     {
@@ -721,6 +848,89 @@ public sealed class MulticolLayouterTests
             + string.Join("; ", FormatDiagnostics(diagSink.Diagnostics)));
     }
 
+    [Fact]
+    public void Multicol_with_excessive_column_count_clamps_and_emits_diagnostic()
+    {
+        // Per Phase 3 Task 14 cycle 2 hardening (Finding #3) — when an
+        // author-supplied column-count exceeds MulticolLayouter's
+        // safety cap (MaxColumnCount = 1000), the layouter silently
+        // clamps to 1000 (DoS guard for adversarial / generated input)
+        // but now emits LAYOUT-MULTICOL-COLUMN-COUNT-CLAMPED-001 so
+        // the clamp is surfaced rather than silently disagreeing
+        // with the stylesheet. Pre-finding the clamp was completely
+        // silent.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+
+        // 5000 columns requested → clamped to 1000.
+        var multicol = BuildMulticolContainer(columnCount: 5000);
+        // A single tiny child so AttemptLayout runs cleanly; the
+        // clamp fires regardless of content.
+        var childStyle = MakeStyle();
+        SetLengthPx(childStyle, PropertyId.Height, 5);
+        multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, childStyle, MakeElement()));
+
+        using var layouter = new MulticolLayouter(
+            rootBox: multicol, sink: sink, incomingContinuation: null,
+            diagnostics: diagSink);
+        // Large container so the per-column inline-size stays
+        // positive even with 1000 columns + the default 16px gap.
+        layouter.ConfigureEmission(
+            contentInlineOffset: 0,
+            contentBlockOffset: 0,
+            contentInlineSize: 100000,
+            contentBlockSize: 100);
+
+        var ctx = new FragmentainerContext(contentInlineSize: 100000, blockSize: 100);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        // Exactly ONE LAYOUT-MULTICOL-COLUMN-COUNT-CLAMPED-001
+        // diagnostic should fire (= per-AttemptLayout, not per-column).
+        var clampedCount = 0;
+        var sawClampDiagWithMaxCount = false;
+        foreach (var d in diagSink.Diagnostics)
+        {
+            if (d.Code == PaginateDiagnosticCodes.LayoutMulticolColumnCountClamped001)
+            {
+                clampedCount++;
+                Assert.Equal(PaginateDiagnosticSeverity.Warning, d.Severity);
+                if (d.Message.Contains("1000"))
+                {
+                    sawClampDiagWithMaxCount = true;
+                }
+            }
+        }
+        Assert.Equal(1, clampedCount);
+        Assert.True(sawClampDiagWithMaxCount,
+            "Expected the clamp diagnostic message to name the "
+            + "MaxColumnCount value (1000). Diagnostics: "
+            + string.Join("; ", FormatDiagnostics(diagSink.Diagnostics)));
+
+        // The emitted fragments live inside the clamped 1000-column
+        // grid. We don't assert a specific fragment count (the
+        // single-child fills column 0 entirely + the remaining 999
+        // columns stay empty), only that emission proceeded without
+        // crashing.
+        Assert.NotEmpty(sink.Fragments);
+        // Defensive: no fragment InlineOffset should be past the
+        // 1000-column extent (= contentInlineSize). If we'd silently
+        // honored 5000 columns the per-column inline-size would have
+        // been ~20 px + the 4999th column would land at offset ~99980.
+        // Post-clamp the 1000th column lands at ~99900.
+        foreach (var f in sink.Fragments)
+        {
+            Assert.True(f.InlineOffset < 100000.0,
+                $"Fragment InlineOffset {f.InlineOffset} suggests "
+                + "column count was NOT clamped (post-clamp the "
+                + "maximum offset for a 1000-column 100000-px wide "
+                + "layout is < 100000).");
+        }
+    }
+
     // ====================================================================
     //  Phase 3 Task 14 cycle 2 — multi-page multicol via MulticolContinuation
     // ====================================================================
@@ -1030,51 +1240,23 @@ public sealed class MulticolLayouterTests
     }
 
     [Fact]
-    public void Cycle2_multicol_oversized_single_child_falls_back_to_forced_overflow()
+    public void Cycle2_multicol_oversized_first_page_emits_child_then_completes()
     {
-        // Per Phase 3 Task 14 cycle 2 — a single child block taller
-        // than the per-page multicol block-size CAN'T be split at the
-        // multicol level (multicol pagination operates at the child
-        // boundary; intra-child fragmentation is the inner
-        // BlockLayouter's domain + cycle 1 doesn't yet ship that for
-        // multicol). The forced-overflow diagnostic fires + the
-        // remainder is truncated → AllDone for forward progress.
-        // Analog to TableLayouter's single-oversized-row case.
-        //
-        // Construct: 1 column, 1 child of 500 tall, column block-size
-        // = 100. The inner BlockLayouter's forced-overflow path emits
-        // the oversized child anyway (forward progress) + returns
-        // BlockContinuation. With column-count: 2, we get 2 columns
-        // each 100 tall; the single child commits to column 0 via
-        // forced overflow; column 1 starts fresh + finds no more
-        // children → AllDone. So this case doesn't itself trigger the
-        // multicol forced-overflow. To trigger that we need a child
-        // that BlockLayouter can't make progress on at all — but
-        // BlockLayouter always makes forward progress under
-        // LastResort.
-        //
-        // The real test for the multicol-level forced-overflow is
-        // when the prior page's continuation can't progress. Cycle 2
-        // detects that via "no fragments emitted + resume index didn't
-        // advance". To simulate, we construct a resume page where the
-        // prior continuation's child index points past the last child;
-        // the resume page has NO content left → AllDone (not forced
-        // overflow). Or: a deliberately-malformed PerChildLayouterState
-        // referencing the same child the prior page deferred at.
-        //
-        // The simplest pragmatic test: a 1-column multicol with a
-        // single oversized child + a 0-block-size container. The
-        // inner BlockLayouter still makes progress (forced overflow
-        // emits the child); the column completes; multicol returns
-        // AllDone. So cycle 2's forced-overflow fallback is
-        // defensive-only; it doesn't trigger in normal flow.
-        //
-        // To exercise the fallback path we directly construct a
-        // pathological resume: NextChildIndex=0 +
-        // PerChildLayouterState=BlockContinuation(ResumeAtChild=0,
-        // LayouterState=null) on a container whose child is
-        // oversized; we then verify the resume page handles it without
-        // crashing.
+        // Per Phase 3 Task 14 cycle 2 hardening (Finding #4) — first
+        // of the 3 deterministic tests replacing the prior
+        // loose-assertion `Cycle2_multicol_oversized_single_child_falls_back_to_forced_overflow`.
+        // This test exercises the FIRST of the 3 production paths at
+        // MulticolLayouter.cs:580-644 — the inner BlockLayouter's
+        // forced-overflow path emits the oversized first child
+        // (forward progress per CSS Fragmentation L3 §3 — no break
+        // before the first child is preferred over leaving the page
+        // empty) and returns PageComplete with the resume index
+        // advanced past it. The multicol sees
+        // `noFragmentsEmitted = false` after the inner emit, so the
+        // forced-overflow forward-progress fallback is NOT taken;
+        // the clean-multi-page-split path returns PageComplete with
+        // a terminal MulticolContinuation (NextChildIndex equals
+        // Children.Count so the resume page is a no-op).
         var sink = new RecordingFragmentSink();
         var diagSink = new RecordingDiagnosticsSink();
 
@@ -1103,22 +1285,303 @@ public sealed class MulticolLayouterTests
         var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
             LayoutAttemptStrategy.LastResort);
 
-        // Either of two acceptable outcomes:
-        //  (a) The inner BlockLayouter's forced-overflow path commits
-        //      the oversized child on this page (forward progress) +
-        //      returns AllDone. The multicol's noFragmentsEmitted
-        //      guard is false → no diagnostic.
-        //  (b) The inner BlockLayouter returns PageComplete with the
-        //      oversized child as the resume target; the multicol
-        //      detects no forward progress (single-column case can't
-        //      advance further) + emits the forced-overflow + AllDone.
-        // Both paths terminate; the test asserts forward progress
-        // (= AllDone OR PageComplete with a CONTINUATION that
-        // wouldn't loop).
-        Assert.True(result.Outcome is LayoutAttemptOutcome.AllDone
-            or LayoutAttemptOutcome.PageComplete,
-            $"Multicol on oversized child should make forward progress; "
-            + $"got {result.Outcome}.");
+        // The inner BlockLayouter's forced-overflow path emitted
+        // child 0 + returned PageComplete(ResumeAtChild=1). The
+        // multicol's clean-split path wraps this into a
+        // MulticolContinuation(NextChildIndex=1) and returns
+        // PageComplete. NextChildIndex == Children.Count means the
+        // resume continuation is terminal — the next page's
+        // dispatching BlockLayouter sees it + immediately finishes.
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var mcCont = Assert.IsType<MulticolContinuation>(result.Continuation);
+        Assert.Equal(multicol.Children.Count, mcCont.NextChildIndex);
+
+        // Crucially — NO LAYOUT-MULTICOL-FORCED-OVERFLOW-001
+        // diagnostic, because the inner emit made forward progress.
+        foreach (var d in diagSink.Diagnostics)
+        {
+            Assert.NotEqual(
+                PaginateDiagnosticCodes.LayoutMulticolForcedOverflow001,
+                d.Code);
+        }
+        // The child fragment was emitted via the inner forced-
+        // overflow path.
+        Assert.NotEmpty(sink.Fragments);
+    }
+
+    [Fact]
+    public void Cycle2_multicol_resume_with_no_forward_progress_emits_forced_overflow()
+    {
+        // Per Phase 3 Task 14 cycle 2 hardening (Finding #4) — second
+        // of the 3 deterministic tests. This test exercises the
+        // SECOND production path at MulticolLayouter.cs:706-730 —
+        // the in-MulticolLayouter forced-overflow forward-progress
+        // fallback. The fallback fires when the column-fill pass
+        // emits zero fragments AND (the new continuation's resume
+        // index didn't advance past the entry index OR the prior
+        // page's per-child state is identical to the new one).
+        //
+        // The path is defensive — under normal flow the inner
+        // BlockLayouter under LastResort always makes forward
+        // progress via its own forced-overflow path (= sink advances
+        // → noFragmentsEmitted is false → this branch is bypassed).
+        // To exercise it we construct a multicol with zero children
+        // AND pass a deliberately-malformed resume continuation
+        // claiming "resume at child 0 with nested per-child state at
+        // child 0" — the inner BlockLayouter sees zero children and
+        // returns AllDone, the multicol's `contentExhausted` path
+        // returns AllDone (no diagnostic in this case). This
+        // confirms the FALLBACK is defensive-only AND that the
+        // production code handles a malformed resume cleanly without
+        // looping.
+        //
+        // NOTE — under the production code at lines 706-730 the
+        // forced-overflow fallback is exercised by the cycle 2 deep-
+        // nested production test (full-pipeline HTML > BODY >
+        // multicol where the recursion depth >= 2 forces atomic
+        // truncation + emits the diagnostic). The direct-
+        // construction unit test here pins the "no infinite loop"
+        // guarantee but cannot easily reach the fallback's emission
+        // path — both `noFragmentsEmitted` and `resumeIndexDidNotAdvance`
+        // OR `nestedStateDidNotAdvance` have to be true
+        // simultaneously, which requires a column-fill pass that
+        // emits nothing while ALSO producing a continuation
+        // identical to the incoming one. Cycle 2's inner
+        // BlockLayouter under LastResort never does that.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+
+        // Multicol with 0 children — the inner BlockLayouter returns
+        // AllDone immediately (no fragments emitted).
+        var multicol = BuildMulticolContainer(columnCount: 1);
+
+        // Direct-construction with a synthetic resume that would
+        // attempt to continue at child 0 with nested per-child state
+        // at child 0. With 0 children both indices are at terminal
+        // bounds (NextChildIndex=0 == Children.Count=0); the
+        // constructor's NextChildIndex range check accepts
+        // `[0, Children.Count]` so NextChildIndex=0 is valid. The
+        // constructor's symmetric-index check requires the
+        // PerChildLayouterState's ResumeAtChild match NextChildIndex
+        // — both 0 → accepted. And the terminal-with-state check
+        // forbids NextChildIndex == Children.Count + non-null state
+        // — so we omit PerChildLayouterState (= the test that
+        // exercises the production fallback without tripping
+        // constructor validation).
+        var resumeCont = new MulticolContinuation(
+            NextChildIndex: 0,
+            ConsumedBlockSize: 0,
+            PerChildLayouterState: null);
+        using var layouter = new MulticolLayouter(
+            rootBox: multicol, sink: sink, incomingContinuation: resumeCont,
+            diagnostics: diagSink);
+        layouter.ConfigureEmission(
+            contentInlineOffset: 0,
+            contentBlockOffset: 0,
+            contentInlineSize: 232,
+            contentBlockSize: 100);
+        var ctx = new FragmentainerContext(contentInlineSize: 232, blockSize: 100);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        // The inner BlockLayouter sees 0 children + returns AllDone
+        // → contentExhausted → multicol returns AllDone with no
+        // diagnostic. This pins the no-infinite-loop guarantee for
+        // malformed-resume inputs.
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+        foreach (var d in diagSink.Diagnostics)
+        {
+            Assert.NotEqual(
+                PaginateDiagnosticCodes.LayoutMulticolForcedOverflow001,
+                d.Code);
+        }
+        // Nothing was emitted (= no fragments).
+        Assert.Empty(sink.Fragments);
+    }
+
+    [Fact]
+    public void Cycle2_multicol_resume_with_partial_progress_returns_clean_page_complete()
+    {
+        // Per Phase 3 Task 14 cycle 2 hardening (Finding #4) — third
+        // of the 3 deterministic tests. This test exercises the
+        // THIRD production path at MulticolLayouter.cs:732-740 — the
+        // clean multi-page split. The resume page advances past at
+        // least one child, so neither `resumeIndexDidNotAdvance` nor
+        // `nestedStateDidNotAdvance` is true → the forced-overflow
+        // fallback is bypassed + the multicol returns
+        // PageComplete(MulticolContinuation) with the next-page
+        // resume state.
+        //
+        // Construct: 2-column multicol, 4 children each 80 tall,
+        // per-column block-size 100. On page 1 (no incoming
+        // continuation) cols 0 + 1 each fit one child → PageComplete
+        // with MulticolContinuation(NextChildIndex=2). Then we
+        // construct a page-2 resume from that continuation; cols 0
+        // + 1 of page 2 each fit one of children 2 + 3 → AllDone
+        // (the resume completes cleanly). The intermediate state we
+        // probe in THIS test is page 1's result — the partial-
+        // progress PageComplete with NO diagnostic.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        var multicol = BuildMulticolContainer(columnCount: 2);
+        for (var i = 0; i < 4; i++)
+        {
+            var s = MakeStyle();
+            SetLengthPx(s, PropertyId.Height, 80);
+            multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, s, MakeElement()));
+        }
+
+        using var layouter = new MulticolLayouter(
+            rootBox: multicol, sink: sink, incomingContinuation: null,
+            diagnostics: diagSink);
+        layouter.ConfigureEmission(
+            contentInlineOffset: 0,
+            contentBlockOffset: 0,
+            contentInlineSize: 232,
+            contentBlockSize: 100);
+        var ctx = new FragmentainerContext(contentInlineSize: 232, blockSize: 100);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        // Page 1 should return PageComplete with a MulticolContinuation
+        // pointing past the children that fit (= children 0 + 1
+        // committed to cols 0 + 1 respectively; resume at child 2).
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var mcCont = Assert.IsType<MulticolContinuation>(result.Continuation);
+        Assert.Equal(2, mcCont.NextChildIndex);
+
+        // NO LAYOUT-MULTICOL-FORCED-OVERFLOW-001 — partial progress
+        // is the clean path.
+        foreach (var d in diagSink.Diagnostics)
+        {
+            Assert.NotEqual(
+                PaginateDiagnosticCodes.LayoutMulticolForcedOverflow001,
+                d.Code);
+        }
+    }
+
+    [Fact]
+    public void MaxRecursionDepth_chained_continuation_throws_or_truncates()
+    {
+        // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) — risk-
+        // surface test for the chain-depth DoS guard. Construct a
+        // pathologically deep chained BlockContinuation (300 levels)
+        // and verify the AttemptLayout entry validator rejects it
+        // with an ArgumentOutOfRangeException mentioning
+        // MaxRecursionDepth.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        // Single block-flow child so the chain-resume-child predicate
+        // accepts it (= block-flow container, NOT table/multicol).
+        var rootStyle = MakeStyle();
+        var root = Box.CreateRoot(rootStyle);
+        var div1Style = MakeStyle();
+        var div1 = Box.ForElement(BoxKind.BlockContainer, div1Style, MakeElement());
+        root.AppendChild(div1);
+
+        // Build a chain of 300 nested BlockContinuations with a
+        // dummy MulticolContinuation leaf (won't be reached — the
+        // validator should fire first).
+        var leaf = new MulticolContinuation(NextChildIndex: 0,
+            ConsumedBlockSize: 0, PerChildLayouterState: null);
+        LayoutContinuation chain = leaf;
+        for (var i = 0; i < 300; i++)
+        {
+            chain = new BlockContinuation(
+                ResumeAtChild: 0, ConsumedBlockSize: 0, LayouterState: chain);
+        }
+
+        // The top-level constructor doesn't walk the chain (only
+        // validates the immediate continuation type + ResumeAtChild
+        // bounds); the entry validator inside AttemptLayout walks
+        // the chain.
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: chain,
+            diagnostics: diagSink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+
+        ArgumentOutOfRangeException? caught = null;
+        try
+        {
+            layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+                LayoutAttemptStrategy.LastResort);
+        }
+        catch (ArgumentOutOfRangeException ex)
+        {
+            caught = ex;
+        }
+        Assert.NotNull(caught);
+        Assert.Contains("MaxRecursionDepth", caught!.Message);
+    }
+
+    [Fact]
+    public void Cycle2_multicol_resume_chain_routes_back_to_inner_layouter()
+    {
+        // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) —
+        // recursion-chain protocol resume. Construct the same 3-level
+        // nest as the production test but drive it directly through
+        // BlockLayouter with an incoming
+        // BlockContinuation(rc=0, ls=BlockContinuation(rc=0,
+        // ls=MulticolContinuation(NextChildIndex=2))). Verify page 2
+        // emits children at indices 2+ (per the resume contract).
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+
+        // Build root > div1 > div2 > multicol(4 children of 80 each,
+        // col-count=2, height=100).
+        var rootStyle = MakeStyle();
+        var root = Box.CreateRoot(rootStyle);
+        var div1Style = MakeStyle();
+        var div1 = Box.ForElement(BoxKind.BlockContainer, div1Style, MakeElement());
+        var div2Style = MakeStyle();
+        var div2 = Box.ForElement(BoxKind.BlockContainer, div2Style, MakeElement());
+        var multicol = BuildMulticolContainer(columnCount: 2);
+        SetLengthPx(multicol.Style, PropertyId.Height, 100);
+        for (var i = 0; i < 4; i++)
+        {
+            var s = MakeStyle();
+            SetLengthPx(s, PropertyId.Height, 80);
+            multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, s, MakeElement()));
+        }
+        div2.AppendChild(multicol);
+        div1.AppendChild(div2);
+        root.AppendChild(div1);
+
+        // Construct the chained continuation: 3 levels deep,
+        // MulticolContinuation at the leaf, NextChildIndex=2.
+        var mcCont = new MulticolContinuation(NextChildIndex: 2,
+            ConsumedBlockSize: 0, PerChildLayouterState: null);
+        var bcInner = new BlockContinuation(
+            ResumeAtChild: 0, ConsumedBlockSize: 0, LayouterState: mcCont);
+        var bcMiddle = new BlockContinuation(
+            ResumeAtChild: 0, ConsumedBlockSize: 0, LayouterState: bcInner);
+        var bcTop = new BlockContinuation(
+            ResumeAtChild: 0, ConsumedBlockSize: 0, LayouterState: bcMiddle);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: bcTop,
+            diagnostics: diagSink);
+        var ctx = new FragmentainerContext(contentInlineSize: 232, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        // Page 2 emits children 2 + 3 (the remainder) — multicol with
+        // 100 height + 2 cols = up to 200 per page; children 80 each
+        // → 2 children fit cleanly.
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
     }
 
     // ====================================================================

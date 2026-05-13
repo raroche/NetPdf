@@ -787,40 +787,23 @@ public sealed class TableLayouterProductionTests
     [Fact]
     public async Task Cycle1_production_multi_page_table_does_not_crash_full_pipeline()
     {
-        // Per Phase 3 Task 13 cycle 1 — end-to-end regression test
-        // that a real HTML table with rows that would overflow the
-        // fragmentainer block-size flows through the full pipeline
-        // without crashing. Cycle 1 ships the TableLayouter-internal
-        // multi-page row splitting (covered by the direct-
-        // construction unit tests in TableLayouterTests.cs); the
-        // BlockLayouter's OUTER child loop integrates the
-        // TableContinuation propagation when the table is a direct
-        // child of the root. But typical HTML wraps `<table>` inside
-        // `<html> > <body>`, so the table is reached via
-        // EmitBlockSubtreeRecursive's nested walk — and cycle 1
-        // keeps that recursive path ATOMIC (= the existing forced-
-        // overflow diagnostic fires for over-tall nested tables).
-        // Cycle 2+ may generalize the recursion to propagate
-        // continuations end-to-end.
+        // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) — the
+        // depth==1-only continuation propagation limit has been
+        // lifted for nested tables too. A real HTML table nested
+        // inside HTML > BODY now SPLITS CLEANLY across pages: the
+        // recursion returns a chained BlockContinuation(rc=N,
+        // ls=BlockContinuation(rc=N, ls=TableContinuation)) reflecting
+        // the html→body→table nesting; the OUTER AttemptLayout wraps
+        // that into the top-level PageComplete result. The NoBreak-
+        // BreakResolver depth>=2 atomic fallback was deleted; the
+        // table's single-oversized-row forward-progress fallback is
+        // the safety net.
         //
-        // This test pins: (a) the full pipeline doesn't throw on a
-        // multi-page table HTML input, (b) the table fragments are
-        // emitted (= the row-pagination code path runs through the
-        // recursion's EmitTableInner call), (c) the PAGINATION-
-        // FORCED-OVERFLOW-001 diagnostic fires (the outer block
-        // pagination sees the wrapper as an oversized block — the
-        // table itself splits internally but the wrapper still
-        // emits with full natural extent).
-        //
-        // Per Phase 3 Task 13 cycle 1 hardening (Finding 1) — this
-        // test continues to pin the NESTED-RECURSION ATOMIC PATH
-        // behavior; a separate test
-        // `Cycle1_production_table_as_root_child_splits_cleanly_at_outer_path`
-        // pins the OUTER path's actual multi-page splitting via a
-        // direct-constructed box tree (bypassing BoxBuilder's body
-        // wrap). Generalizing the recursion to propagate
-        // TableContinuation end-to-end is a sub-cycle 6+ deferral
-        // (see docs/deferrals.md#table-auto-fixed-spans-borders).
+        // Pre-finding: 3 rows committed atomically on page 1 +
+        // PAGINATION-FORCED-OVERFLOW-001 fired. Post-finding: 2 rows
+        // commit on page 1 (the third overflows + becomes the
+        // TableContinuation's NextRowIndex=2), PageComplete with a
+        // chained BlockContinuation, NO PAGINATION-FORCED-OVERFLOW-001.
         const string html = """
             <!DOCTYPE html><html><head><style>
                 td > div { height: 300px; }
@@ -833,25 +816,46 @@ public sealed class TableLayouterProductionTests
             </body></html>
             """;
 
-        var (sink, diagnostics, _) = await RenderViaFullPipelineAsync(html);
+        var (sink, diagnostics, _, result) =
+            await RenderViaFullPipelineCapturingResultAsync(html);
 
-        // All 3 rows committed (cycle 1's nested-recursion path
-        // stays atomic — rows commit on page 1 even though the
-        // total stack exceeds the fragmentainer). Cycle 2+ may
-        // propagate the TableContinuation through the recursion.
+        // Post-finding: 2 rows committed on page 1 (the third row
+        // becomes part of the TableContinuation chain returned for
+        // page 2).
         var rowCount = 0;
         foreach (var f in sink.Fragments)
         {
             if (f.Box.Kind == BoxKind.TableRow) rowCount++;
         }
-        Assert.Equal(3, rowCount);
+        Assert.Equal(2, rowCount);
 
-        // The outer BlockLayouter emits PAGINATION-FORCED-OVERFLOW-001
-        // because the wrapper's measured content exceeds the
-        // fragmentainer block-size. The inner table-row splitting
-        // doesn't suppress this signal in cycle 1.
-        Assert.Contains(diagnostics.Diagnostics, d =>
+        // Post-finding: NO PAGINATION-FORCED-OVERFLOW-001 — the
+        // nested table now splits cleanly via the lifted propagation.
+        Assert.DoesNotContain(diagnostics.Diagnostics, d =>
             d.Code == PaginateDiagnosticCodes.PaginationForcedOverflow001);
+
+        // Page 1 outcome is PageComplete with chained continuation.
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var topBc = Assert.IsType<BlockContinuation>(result.Continuation);
+
+        // Walk the chain to the TableContinuation leaf. The HTML >
+        // BODY > table nesting produces at least one intermediate
+        // BlockContinuation wrapping the TableContinuation.
+        object? walker = topBc.LayouterState;
+        var chainDepth = 0;
+        while (walker is BlockContinuation deeper)
+        {
+            chainDepth++;
+            walker = deeper.LayouterState;
+            Assert.True(chainDepth < 32,
+                "Continuation chain unexpectedly deep — chain runaway?");
+        }
+        var tc = Assert.IsType<TableContinuation>(walker);
+        Assert.Equal(2, tc.NextRowIndex);
+        Assert.True(chainDepth >= 1,
+            "Expected chain depth >= 1 — the HTML > BODY > table nesting "
+            + "should produce at least one nested BlockContinuation wrapping "
+            + "the TableContinuation leaf. Actual chainDepth = " + chainDepth);
     }
 
     [Fact]
@@ -942,6 +946,121 @@ public sealed class TableLayouterProductionTests
         // (Finding 2's dry-run committed extent suppresses the
         // outer block-flow's false signal.)
         Assert.DoesNotContain(diagSink.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.PaginationForcedOverflow001);
+    }
+
+    [Fact]
+    public void Cycle2_production_table_at_depth_3_splits_cleanly()
+    {
+        // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) — the
+        // multi-level continuation propagation lifts the depth==1-only
+        // limit. Construct a 3-level-deep nest:
+        //   root > div1 > div2 > table(3 rows of 300 each)
+        // Page = 800; row stack 900 → row 2 overflows. Verify the
+        // recursion returns a chain of 3 nested BlockContinuations
+        // wrapping the TableContinuation leaf at NextRowIndex=2.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var div1 = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        var div2 = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        for (var r = 0; r < 3; r++)
+        {
+            var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+            var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+            var anon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+            var bcStyle = MakeStyle();
+            SetLengthPx(bcStyle, PropertyId.Height, 300);
+            anon.AppendChild(Box.ForElement(BoxKind.BlockContainer, bcStyle, MakeElement()));
+            cell.AppendChild(anon);
+            row.AppendChild(cell);
+            grid.AppendChild(row);
+        }
+        table.AppendChild(grid);
+        div2.AppendChild(table);
+        div1.AppendChild(div2);
+        root.AppendChild(div1);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null,
+            diagnostics: diagSink,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var topBc = Assert.IsType<BlockContinuation>(result.Continuation);
+        // Walk chain to TableContinuation leaf — 3 nested BCs in total.
+        object? walker = topBc.LayouterState;
+        var depth = 0;
+        while (walker is BlockContinuation deeper)
+        {
+            depth++;
+            walker = deeper.LayouterState;
+            Assert.True(depth < 32, "Chain runaway?");
+        }
+        var tc = Assert.IsType<TableContinuation>(walker);
+        Assert.Equal(2, tc.NextRowIndex);
+        // Chain depth visible to the test = (raw recursion depth) - 1
+        // due to the top-level flatten (LayouterState ?? deepRet).
+        // For root > div1 > div2 > table the raw depth is 2 (the
+        // outer dispatch walks into div1 at depth=1; the recursion
+        // walks into div2 at depth=2; the table is at depth=2's
+        // child level). The flatten removes one wrapping BC; the
+        // remaining BC-chain visible to the walker = 1.
+        Assert.True(depth >= 1,
+            "Expected chain depth >= 1 for root > div1 > div2 > table; got " + depth);
+
+        // No PAGINATION-FORCED-OVERFLOW-001 — split is clean.
+        Assert.DoesNotContain(diagSink.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.PaginationForcedOverflow001);
+    }
+
+    [Fact]
+    public async Task Cycle2_production_html_body_table_splits_cleanly()
+    {
+        // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) —
+        // complementary positive case for html > body > table. The
+        // flipped pin test asserts this from the row-count + chain
+        // angle; this test asserts from the structured-walking angle.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                td > div { height: 300px; }
+            </style></head><body>
+            <table>
+              <tr><td><div></div></td></tr>
+              <tr><td><div></div></td></tr>
+              <tr><td><div></div></td></tr>
+            </table>
+            </body></html>
+            """;
+
+        var (_, diagnostics, _, result) =
+            await RenderViaFullPipelineCapturingResultAsync(html);
+
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var topBc = Assert.IsType<BlockContinuation>(result.Continuation);
+        object? walker = topBc.LayouterState;
+        var depth = 0;
+        while (walker is BlockContinuation deeper)
+        {
+            depth++;
+            walker = deeper.LayouterState;
+            Assert.True(depth < 32, "Chain runaway?");
+        }
+        var tc = Assert.IsType<TableContinuation>(walker);
+        Assert.Equal(2, tc.NextRowIndex);
+        Assert.True(depth >= 1,
+            "Expected chain depth >= 1 for html > body > table; got " + depth);
+        Assert.DoesNotContain(diagnostics.Diagnostics, d =>
             d.Code == PaginateDiagnosticCodes.PaginationForcedOverflow001);
     }
 
@@ -1131,6 +1250,20 @@ public sealed class TableLayouterProductionTests
         RecordingDiagnosticsSink diagnostics, Box root)>
         RenderViaFullPipelineAsync(string html)
     {
+        var (sink, diagnostics, box, _) =
+            await RenderViaFullPipelineCapturingResultAsync(html);
+        return (sink, diagnostics, box);
+    }
+
+    /// <summary>Per Phase 3 Task 14 cycle 2 hardening (Finding #1) —
+    /// variant of <see cref="RenderViaFullPipelineAsync"/> that also
+    /// returns the page-1 <see cref="LayoutAttemptResult"/>. Used by
+    /// tests that need to assert on the continuation chain.</summary>
+    private static async Task<(RecordingFragmentSink sink,
+        RecordingDiagnosticsSink diagnostics, Box root,
+        LayoutAttemptResult result)>
+        RenderViaFullPipelineCapturingResultAsync(string html)
+    {
         var host = new HtmlParsingHost();
         var document = await host.ParseAsync(html, new HtmlPdfOptions());
 
@@ -1153,9 +1286,10 @@ public sealed class TableLayouterProductionTests
         var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
         var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
         using var resolver = new BreakResolver();
-        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
 
-        return (sink, diagSink, box);
+        return (sink, diagSink, box, result);
     }
 
     private static ImmutableArray<CssStylesheet> AdaptAllSheetsViaPreprocessor(IDocument document)

@@ -364,6 +364,30 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// every AttemptLayout entry.</summary>
     private bool _consumedIncomingMulticolContinuation;
 
+    /// <summary>Per Phase 3 Task 14 cycle 2 hardening (Finding #1) —
+    /// one-shot consumption flag for the incoming chained
+    /// <see cref="BlockContinuation"/> in
+    /// <see cref="BlockContinuation.LayouterState"/>. The cycle 2
+    /// hardening lifted the depth==1-only continuation propagation
+    /// limit: a deep nested multicol/table can now return its
+    /// continuation through a chain of <see cref="BlockContinuation"/>s
+    /// nested in <see cref="BlockContinuation.LayouterState"/>. This
+    /// flag ensures the carried chain feeds into the FIRST matching
+    /// recursion entry per attempt; siblings start fresh. Reset on
+    /// every AttemptLayout entry.</summary>
+    private bool _consumedIncomingBlockContinuationRecursion;
+
+    /// <summary>Per Phase 3 Task 14 cycle 2 hardening (Finding #1) —
+    /// one-shot per-page emission flag for
+    /// <c>LAYOUT-FLOAT-BREAK-INSIDE-NESTED-001</c>. A float subtree
+    /// (out-of-flow per CSS 2.2 §9.5) whose nested recursion returns a
+    /// non-null continuation has its continuation discarded (float-
+    /// tracking continuation machinery is a Phase 3 Task 8 deferral);
+    /// the diagnostic surfaces the truncation. To avoid spamming pages
+    /// that have many such floats, we emit at most one diagnostic per
+    /// page. Reset on every AttemptLayout entry.</summary>
+    private bool _emittedFloatBreakInsideNestedDiagnosticThisPage;
+
     /// <summary>Construct a layouter for <paramref name="rootBox"/>'s
     /// block children, emitting fragments into <paramref name="sink"/>.
     /// <paramref name="incomingContinuation"/> resumes a multi-page
@@ -525,6 +549,67 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 + "consistent. Per Phase 3 Task 14 cycle 2 resume contract.");
         }
 
+        // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) — when
+        // the incoming BlockContinuation carries a nested
+        // BlockContinuation (the recursion-chain protocol introduced
+        // by lifting the depth==1-only propagation limit), the child
+        // at ResumeAtChild MUST be a block-flow container — NOT a
+        // Table/InlineTable/multicol container (which would be the
+        // direct-dispatch path, unwrapped one level deeper). The chain
+        // is walked at the recursion-dispatch site; the entry-time
+        // check is a fail-fast guard for malformed dispatch.
+        if (incomingBlock?.LayouterState is BlockContinuation chainHead
+            && startChildIdx >= 0
+            && startChildIdx < _rootBox.Children.Count)
+        {
+            var chainResumeChild = _rootBox.Children[startChildIdx];
+            if (chainResumeChild.Kind is BoxKind.Table or BoxKind.InlineTable
+                || IsMulticolContainer(chainResumeChild)
+                || !IsBlockFlowContainerOwnedByBlockLayouter(chainResumeChild))
+            {
+                throw new ArgumentException(
+                    "BlockLayouter.AttemptLayout: incoming BlockContinuation "
+                    + "carries a chained BlockContinuation in LayouterState "
+                    + "(the recursion-chain protocol from Phase 3 Task 14 "
+                    + "cycle 2 hardening Finding #1) but the child at "
+                    + $"ResumeAtChild={startChildIdx} has BoxKind."
+                    + $"{chainResumeChild.Kind} (column-count="
+                    + $"{chainResumeChild.Style.ReadColumnCount()}), which is "
+                    + "neither a block-flow container nor allowed to host a "
+                    + "chained continuation. The chain protocol unwraps one "
+                    + "BlockContinuation per recursion level; the LEAF must "
+                    + "be a Table/Multicol continuation attaching to the "
+                    + "matching child kind. The dispatching layouter must "
+                    + "produce continuations where each chain level's "
+                    + "ResumeAtChild + LayouterState pair are mutually "
+                    + "consistent.",
+                    "incomingContinuation");
+            }
+
+            // Walk the chain (bc → bc.LayouterState as BlockContinuation
+            // → ...) and cap depth at MaxRecursionDepth (= 256). A
+            // malformed chain (e.g., 1M nested BlockContinuations) is a
+            // DoS vector — throw at entry rather than blow the stack
+            // mid-recursion.
+            var chainDepth = 1;
+            var walker = chainHead;
+            while (walker.LayouterState is BlockContinuation deeperBlock)
+            {
+                chainDepth++;
+                if (chainDepth > MaxRecursionDepth)
+                {
+                    throw new ArgumentOutOfRangeException(
+                        "incomingContinuation",
+                        $"BlockLayouter.AttemptLayout: incoming BlockContinuation "
+                        + $"chain depth exceeds MaxRecursionDepth ({MaxRecursionDepth}). "
+                        + "Pathologically deep chains are a DoS vector against "
+                        + "untrusted continuation state. Per Phase 3 Task 14 "
+                        + "cycle 2 hardening Finding #1.");
+                }
+                walker = deeperBlock;
+            }
+        }
+
         // Snapshot UsedBlockSize at entry. Per-page extent placed by
         // THIS attempt = fragmentainer.UsedBlockSize - initialUsed.
         var initialUsed = fragmentainer.UsedBlockSize;
@@ -595,6 +680,17 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // resumed index; subsequent multicol children in the same
         // attempt start fresh.
         _consumedIncomingMulticolContinuation = false;
+
+        // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) — reset
+        // the one-shot consumption flag for an incoming chained
+        // BlockContinuation in LayouterState (the deep-nested
+        // recursion-continuation path lifted from depth==1 only).
+        _consumedIncomingBlockContinuationRecursion = false;
+
+        // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) — reset
+        // the per-page one-shot flag for
+        // LAYOUT-FLOAT-BREAK-INSIDE-NESTED-001 emission.
+        _emittedFloatBreakInsideNestedDiagnosticThisPage = false;
 
         // Track whether this attempt has emitted any fragment so far.
         // Per PR #22 review fix #1 — the oversized-block forward-
@@ -1215,60 +1311,31 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // may cache the result per Box.
             if (IsMulticolContainer(child))
             {
-                var multicolWrapperBorderBlockStart =
-                    child.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
-                var multicolWrapperPaddingBlockStart =
-                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingTop);
-                var multicolWrapperBorderBlockEnd =
-                    child.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
-                var multicolWrapperPaddingBlockEnd =
-                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingBottom);
-                var multicolWrapperBorderInlineStart =
-                    child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
-                var multicolWrapperPaddingInlineStart =
-                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
-                var multicolWrapperBorderInlineEnd =
-                    child.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
-                var multicolWrapperPaddingInlineEnd =
-                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
-                var multicolWrapperBorderPaddingBlock =
-                    multicolWrapperBorderBlockStart + multicolWrapperPaddingBlockStart
-                    + multicolWrapperBorderBlockEnd + multicolWrapperPaddingBlockEnd;
-                var multicolContentInlineSizeForMeasure = Math.Max(1.0,
-                    borderBoxInlineSize
-                    - multicolWrapperBorderInlineStart - multicolWrapperPaddingInlineStart
-                    - multicolWrapperBorderInlineEnd - multicolWrapperPaddingInlineEnd);
-                // Per Finding 2 — derive the per-column block-size from
-                // the fragmentainer's remaining block-space when the
-                // wrapper has height: auto. Without this the per-
-                // column block-size would be the wrapper's content-
-                // block-size minus border/padding = 0 px (or 1 px
-                // after the clamp inside MulticolLayouter), and the
-                // multicol immediately force-overflows.
-                double multicolContentBlockSizeForMeasure;
-                if (IsHeightAuto(child))
-                {
-                    // hypothetical block top = where the wrapper's
-                    // border-box would land (after margin collapse).
-                    // Available remaining = fragmentainer's block-size
-                    // - hypothetical top - wrapper's vertical border +
-                    // padding (the columns sit INSIDE the wrapper's
-                    // content area).
-                    var hypotheticalTop = fragmentainer.UsedBlockSize + topShift;
-                    var remaining = fragmentainer.BlockSize - hypotheticalTop
-                        - multicolWrapperBorderPaddingBlock;
-                    multicolContentBlockSizeForMeasure = Math.Max(1.0, remaining);
-                }
-                else
-                {
-                    multicolContentBlockSizeForMeasure = Math.Max(1.0,
-                        borderBoxBlockSize - multicolWrapperBorderPaddingBlock);
-                }
+                // Per Phase 3 Task 14 cycle 2 hardening (Finding #5) —
+                // multicol content-box geometry is shared with the
+                // outer / recursion emit + recursion premeasure sites
+                // via MulticolGeometryHelper. For Finding 2's auto-
+                // height path the per-column block-size derives from
+                // the fragmentainer's remaining block-space at the
+                // hypothetical wrapper border-box top
+                // (= fragmentainer.UsedBlockSize + topShift).
+                var multicolHypotheticalBlockTop =
+                    fragmentainer.UsedBlockSize + topShift;
+                var multicolHypotheticalInlineLeft =
+                    availInlineStart + marginInlineStart;
+                var multicolPremeasureGeom = MulticolGeometryHelper.ComputeContentGeometry(
+                    multicolBox: child,
+                    borderBoxInlineSize: borderBoxInlineSize,
+                    borderBoxBlockSize: borderBoxBlockSize,
+                    borderBoxInlineOffset: multicolHypotheticalInlineLeft,
+                    borderBoxBlockOffset: multicolHypotheticalBlockTop,
+                    fragmentainer: fragmentainer,
+                    isHeightAuto: IsHeightAuto(child));
 
                 var multicolMeasuredColumnExtent = PreMeasureMulticolColumnExtent(
                     child,
-                    contentInlineSize: multicolContentInlineSizeForMeasure,
-                    contentBlockSize: multicolContentBlockSizeForMeasure,
+                    contentInlineSize: multicolPremeasureGeom.ContentInlineSize,
+                    contentBlockSize: multicolPremeasureGeom.ContentBlockSize,
                     fragmentainer: fragmentainer,
                     layout: ref layout,
                     cancellationToken: cancellationToken);
@@ -1280,7 +1347,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // height + the columnized extent + border/padding (the
                 // wrapper grows when columns overflow the CSS height).
                 var multicolDrivenBorderBox =
-                    multicolMeasuredColumnExtent + multicolWrapperBorderPaddingBlock;
+                    multicolMeasuredColumnExtent
+                    + multicolPremeasureGeom.BorderPaddingBlockSum;
                 if (multicolDrivenBorderBox > borderBoxBlockSize)
                 {
                     borderBoxBlockSize = multicolDrivenBorderBox;
@@ -1581,13 +1649,31 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     // the fragmentainer (forced-overflow forward
                     // progress). Per cycle-2b post-PR-28 review #2 —
                     // CT threaded through to abort deep traversals.
-                    EmitBlockSubtreeRecursive(
+                    //
+                    // Per Phase 3 Task 14 cycle 2 hardening (Finding #1)
+                    // — capture the recursion's return; if non-null,
+                    // propagate as a chained BlockContinuation up. The
+                    // forced-overflow forward-progress contract pins
+                    // the wrapper child's first slice to THIS page;
+                    // any deeper break the recursion encounters still
+                    // needs a continuation, otherwise content vanishes.
+                    var forcedNestedRet = EmitBlockSubtreeRecursive(
                         child,
                         parentBlockOffset: forcedOverflowChildBlockOffset,
                         parentInlineOffset: forcedOverflowInlineOffset,
                         parentInlineSize: borderBoxInlineSize,
                         cancellationToken: cancellationToken,
                         depth: 1);
+                    if (forcedNestedRet is BlockContinuation forcedDeep)
+                    {
+                        return LayoutAttemptResult.PageComplete(
+                            new BlockContinuation(
+                                ResumeAtChild: childIdx,
+                                ConsumedBlockSize: priorPagesConsumed
+                                    + (fragmentainer.UsedBlockSize - _pageStartUsedBlockSize),
+                                LayouterState: forcedDeep.LayouterState ?? forcedDeep),
+                            cost: 0);
+                    }
                     // Per Phase 3 Task 12 sub-cycle 1 hardening
                     // (Finding 1) — drain the pre-measured table
                     // content into the outer sink. The wrapper's
@@ -1723,59 +1809,30 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // applies.
             if (IsMulticolContainer(child))
             {
-                // Content-box geometry inside the wrapper's border-
-                // box. Per CSS Multi-column L1 §3 the column content
-                // area lives inside the container's content box (=
-                // border box minus border + padding edges).
-                var multicolBorderInlineStart =
-                    child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
-                var multicolPaddingInlineStart =
-                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
-                var multicolBorderInlineEnd =
-                    child.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
-                var multicolPaddingInlineEnd =
-                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
-                var multicolBorderBlockStart =
-                    child.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
-                var multicolPaddingBlockStart =
-                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingTop);
-                var multicolBorderBlockEnd =
-                    child.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
-                var multicolPaddingBlockEnd =
-                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingBottom);
-                var multicolContentInlineSize = Math.Max(1.0,
-                    borderBoxInlineSize
-                    - multicolBorderInlineStart - multicolPaddingInlineStart
-                    - multicolBorderInlineEnd - multicolPaddingInlineEnd);
-                // Per Phase 3 Task 14 cycle 1 hardening (Finding 2) —
-                // when the wrapper has height: auto, derive the per-
-                // column block-size from the fragmentainer's REMAINING
-                // block-space (mirrors the pre-measure path above so
-                // emit + measure agree). Pre-fix the per-column block-
-                // size came from borderBoxBlockSize - border/padding —
-                // which for height:auto is ~0 → the multicol
-                // immediately force-overflowed + truncated all content.
-                double multicolContentBlockSize;
-                if (IsHeightAuto(child))
-                {
-                    var multicolWrapperBorderPaddingBlockEmit =
-                        multicolBorderBlockStart + multicolPaddingBlockStart
-                        + multicolBorderBlockEnd + multicolPaddingBlockEnd;
-                    var remaining = fragmentainer.BlockSize - blockOffset
-                        - multicolWrapperBorderPaddingBlockEmit;
-                    multicolContentBlockSize = Math.Max(1.0, remaining);
-                }
-                else
-                {
-                    multicolContentBlockSize = Math.Max(1.0,
-                        borderBoxBlockSize
-                        - multicolBorderBlockStart - multicolPaddingBlockStart
-                        - multicolBorderBlockEnd - multicolPaddingBlockEnd);
-                }
-                var multicolContentInlineOffset =
-                    inFlowInlineOffset + multicolBorderInlineStart + multicolPaddingInlineStart;
-                var multicolContentBlockOffset =
-                    blockOffset + multicolBorderBlockStart + multicolPaddingBlockStart;
+                // Per Phase 3 Task 14 cycle 2 hardening (Finding #5) —
+                // multicol content-box geometry is shared with the
+                // outer / recursion premeasure + recursion emit sites
+                // via MulticolGeometryHelper. Per CSS Multi-column L1
+                // §3 the column content area lives inside the
+                // container's content box (= border box minus border +
+                // padding edges). For Finding 2's auto-height path the
+                // per-column block-size derives from the
+                // fragmentainer's REMAINING block-space at the
+                // wrapper's actual border-box top (= blockOffset);
+                // mirrors the pre-measure path above so emit + measure
+                // agree.
+                var multicolEmitGeom = MulticolGeometryHelper.ComputeContentGeometry(
+                    multicolBox: child,
+                    borderBoxInlineSize: borderBoxInlineSize,
+                    borderBoxBlockSize: borderBoxBlockSize,
+                    borderBoxInlineOffset: inFlowInlineOffset,
+                    borderBoxBlockOffset: blockOffset,
+                    fragmentainer: fragmentainer,
+                    isHeightAuto: IsHeightAuto(child));
+                var multicolContentInlineSize = multicolEmitGeom.ContentInlineSize;
+                var multicolContentBlockSize = multicolEmitGeom.ContentBlockSize;
+                var multicolContentInlineOffset = multicolEmitGeom.ContentInlineOffset;
+                var multicolContentBlockOffset = multicolEmitGeom.ContentBlockOffset;
 
                 // Per Phase 3 Task 14 cycle 2 — multi-page multicol
                 // resume. When the incoming BlockContinuation carries
@@ -1868,49 +1925,47 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // to abort deep traversals; depth=1 since `child` is the
             // first nesting level under `_rootBox`.
             //
-            // Per cycle 2 hardening Finding 1 — single-level nested-
-            // table continuation propagation. When the recursion at
-            // depth==1 encounters a Table that is a direct descendant
-            // of `child` (e.g. `<body><table>` where `child` is body),
-            // it uses the OUTER resolver + fragmentainer so the table
-            // can return PageComplete; the callback below captures any
-            // such continuation. The main loop then wraps it in a
-            // BlockContinuation(ResumeAtChild=childIdx, LayouterState=tc)
-            // and returns PageComplete itself. Deeper nesting (depth>=2)
-            // still falls back to NoBreakBreakResolver (= atomic).
-            TableContinuation? nestedTableContFromRecursion = null;
-            // Per Finding 1 — pass the incoming TableContinuation from
-            // the carried BlockContinuation.LayouterState through to
-            // the recursion when ResumeAtChild matches this child.
-            // The recursion finds the nested Table at depth==1 and
-            // hands the continuation to its constructor via
-            // PreMeasureTableIfNeeded. Consume once (one-shot flag) so
-            // siblings on the same page don't accidentally inherit it.
-            TableContinuation? nestedIncomingTc = null;
-            if (incomingBlock?.LayouterState is TableContinuation incTcNested
+            // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) —
+            // multi-level continuation propagation. The recursion now
+            // returns a `LayoutContinuation?`: null on clean emission,
+            // or a chained `BlockContinuation` whose `LayouterState`
+            // traces down to a `TableContinuation` or
+            // `MulticolContinuation` leaf representing the deep
+            // multicol/table break. The outer loop wraps any non-null
+            // return into the top-level `BlockContinuation` for
+            // PageComplete.
+            //
+            // Routing protocol (down): when the incoming
+            // BlockContinuation matches this child AND its
+            // `LayouterState` is itself a BlockContinuation, pass
+            // that inner chain as the recursion's `incomingContinuation`.
+            // When the inner is a direct Table/Multicol continuation,
+            // wrap it in a BlockContinuation(rc=0, ls=inner) so the
+            // recursion's chain-unwrap branch finds the leaf at
+            // depth==1's first matching child (the cycle-1 dispatch
+            // shape).
+            LayoutContinuation? recIncoming = null;
+            if (incomingBlock?.LayouterState is LayoutContinuation lc
                 && childIdx == incomingBlock.ResumeAtChild
-                && !_consumedIncomingTableContinuation
-                && child.Kind is not (BoxKind.Table or BoxKind.InlineTable))
+                && !_consumedIncomingBlockContinuationRecursion)
             {
-                nestedIncomingTc = incTcNested;
-                _consumedIncomingTableContinuation = true;
+                recIncoming = lc switch
+                {
+                    BlockContinuation innerBlock => innerBlock,
+                    TableContinuation tc when child.Kind is not (BoxKind.Table or BoxKind.InlineTable)
+                        => new BlockContinuation(
+                            ResumeAtChild: 0, ConsumedBlockSize: 0, LayouterState: tc),
+                    MulticolContinuation mc when !IsMulticolContainer(child)
+                        => new BlockContinuation(
+                            ResumeAtChild: 0, ConsumedBlockSize: 0, LayouterState: mc),
+                    _ => null,
+                };
+                if (recIncoming is not null)
+                {
+                    _consumedIncomingBlockContinuationRecursion = true;
+                }
             }
-            // Per Phase 3 Task 14 cycle 2 — symmetric forward of an
-            // incoming MulticolContinuation through the recursion. A
-            // multicol that is a depth==1 descendant of `child` (e.g.
-            // `<body><div column-count: 2>`) gets the carried
-            // continuation when ResumeAtChild matches.
-            MulticolContinuation? nestedIncomingMcCont = null;
-            MulticolContinuation? nestedMulticolContFromRecursion = null;
-            if (incomingBlock?.LayouterState is MulticolContinuation incMcNested
-                && childIdx == incomingBlock.ResumeAtChild
-                && !_consumedIncomingMulticolContinuation
-                && !IsMulticolContainer(child))
-            {
-                nestedIncomingMcCont = incMcNested;
-                _consumedIncomingMulticolContinuation = true;
-            }
-            EmitBlockSubtreeRecursive(
+            var recursiveReturn = EmitBlockSubtreeRecursive(
                 child,
                 parentBlockOffset: blockOffset,
                 parentInlineOffset: inFlowInlineOffset,
@@ -1919,43 +1974,23 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 depth: 1,
                 propagatingResolver: resolver,
                 propagatingFragmentainer: fragmentainer,
-                incomingTableContinuationAtDepth1: nestedIncomingTc,
-                onTablePageComplete: tc => nestedTableContFromRecursion = tc,
-                incomingMulticolContinuationAtDepth1: nestedIncomingMcCont,
-                onMulticolPageComplete: mc => nestedMulticolContFromRecursion = mc);
+                incomingContinuation: recIncoming);
 
-            // Per Finding 1 — if a depth-1 nested table returned
-            // PageComplete, propagate up. The wrapper child's own
-            // fragment was already emitted above; the resume page
-            // re-enters with BlockContinuation(ResumeAtChild=childIdx,
-            // LayouterState=tc), walks into `child` via the recursion,
-            // and resumes the table at the captured row.
-            if (nestedTableContFromRecursion is not null)
-            {
-                // Restore UsedBlockSize so the outer page-cost
-                // arithmetic isn't double-counted (the table's own
-                // fragmentainer.UsedBlockSize advance from the row
-                // pagination is already accounted for through the
-                // table's own restore in TableLayouter.AttemptLayout).
-                return LayoutAttemptResult.PageComplete(
-                    new BlockContinuation(
-                        ResumeAtChild: childIdx,
-                        ConsumedBlockSize: priorPagesConsumed
-                            + (fragmentainer.UsedBlockSize - _pageStartUsedBlockSize),
-                        LayouterState: nestedTableContFromRecursion),
-                    cost: 0);
-            }
-
-            // Per Phase 3 Task 14 cycle 2 — same propagation pattern
-            // for a depth==1 nested multicol returning PageComplete.
-            if (nestedMulticolContFromRecursion is not null)
+            // Stitching (up): on non-null return propagate as a
+            // `PageComplete(BlockContinuation(rc=childIdx, ls=<chain>))`
+            // to the outer LayoutRetryCoordinator. The `LayouterState
+            // ?? deepRet` fallback flattens the depth==1 case (where
+            // the inner BC's `LayouterState` is a bare Table/Multicol
+            // continuation — the cycle-1 protocol shape preserved for
+            // back-compat) but preserves the chain for depth >= 2.
+            if (recursiveReturn is BlockContinuation deepRet)
             {
                 return LayoutAttemptResult.PageComplete(
                     new BlockContinuation(
                         ResumeAtChild: childIdx,
                         ConsumedBlockSize: priorPagesConsumed
                             + (fragmentainer.UsedBlockSize - _pageStartUsedBlockSize),
-                        LayouterState: nestedMulticolContFromRecursion),
+                        LayouterState: deepRet.LayouterState ?? deepRet),
                     cost: 0);
             }
 
@@ -2101,7 +2136,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     // and obscure the correctness fixes. Cycle 2c will add a third
     // call site (cross-subtree break propagation) where the
     // duplication starts hurting; the refactor lands cleanly there.
-    private void EmitBlockSubtreeRecursive(
+    private LayoutContinuation? EmitBlockSubtreeRecursive(
         Box parent,
         double parentBlockOffset,
         double parentInlineOffset,
@@ -2110,10 +2145,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         int depth,
         IBreakResolver? propagatingResolver = null,
         FragmentainerContext? propagatingFragmentainer = null,
-        TableContinuation? incomingTableContinuationAtDepth1 = null,
-        Action<TableContinuation>? onTablePageComplete = null,
-        MulticolContinuation? incomingMulticolContinuationAtDepth1 = null,
-        Action<MulticolContinuation>? onMulticolPageComplete = null)
+        LayoutContinuation? incomingContinuation = null)
     {
         // Per cycle-2b post-PR-28 review #2 + Copilot #1 — DoS
         // protection. Untrusted HTML can construct pathologically
@@ -2144,8 +2176,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // it ships (Phase 3 Tasks 8-12).
         if (!IsBlockFlowContainerOwnedByBlockLayouter(parent))
         {
-            return;
+            return null;
         }
+
+        // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) — unwrap
+        // the incoming continuation chain. The recursion-chain
+        // protocol nests BlockContinuations inside
+        // LayouterState; each recursion level peels one layer.
+        // The LEAF must be a Table/MulticolContinuation that the
+        // direct-dispatch branch below consumes.
+        var incomingBlockChain = incomingContinuation as BlockContinuation;
 
         // Parent's content-area corner in fragmentainer coordinates.
         var pBorderStart = parent.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
@@ -2176,8 +2216,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         double prevMarginEnd = 0;
         var hasPrior = false;
 
-        foreach (var child in parent.Children)
+        // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) — indexed
+        // iteration so we can match the recursion-chain's
+        // ResumeAtChild index against the current child position.
+        for (var childIdx = 0; childIdx < parent.Children.Count; childIdx++)
         {
+            var child = parent.Children[childIdx];
             cancellationToken.ThrowIfCancellationRequested();
             if (!child.IsBlockLevel)
             {
@@ -2397,14 +2441,17 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     Diagnostics = _diagnostics,
                 };
                 var nestedMeasuredUsedInline = 0.0;
-                // Per cycle 2 hardening Finding 1 — at recursion
-                // depth==1, the incoming TableContinuation (if any) is
-                // intended for THIS table. Pass it through; consume on
-                // first match so siblings don't accidentally inherit it.
+                // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) —
+                // the recursion-chain protocol replaces the depth==1
+                // gate. When the incoming continuation's chain reaches
+                // a TableContinuation leaf AND the current child
+                // matches its ResumeAtChild, use that continuation.
                 LayoutContinuation? incomingForThisTable = null;
-                if (depth == 1 && incomingTableContinuationAtDepth1 is not null)
+                if (incomingBlockChain is not null
+                    && childIdx == incomingBlockChain.ResumeAtChild
+                    && incomingBlockChain.LayouterState is TableContinuation incomingTcLeaf)
                 {
-                    incomingForThisTable = incomingTableContinuationAtDepth1;
+                    incomingForThisTable = incomingTcLeaf;
                 }
                 nestedPendingTable = PreMeasureTableIfNeeded(
                     wrapperChild: child,
@@ -2416,12 +2463,22 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     incomingTableContinuation: incomingForThisTable,
                     tableContentHeight: out nestedMeasuredHeight,
                     tableMeasuredUsedInlineSize: out nestedMeasuredUsedInline,
-                    cancellationToken: cancellationToken);
+                    cancellationToken: cancellationToken,
+                    // Per Phase 3 Task 14 cycle 2 hardening (Finding #1)
+                    // — match the cycle-1 outer-loop convention
+                    // (BlockLayouter.cs:1128). The deep table can now
+                    // split via the lifted recursion-chain propagation;
+                    // size the wrapper to the committed-page extent so
+                    // the wrapper doesn't claim the full natural extent
+                    // (which would over-reserve space + trip false
+                    // forced-overflow on the page that actually fits
+                    // only some rows).
+                    useDryRunCommittedHeight: true);
                 if (incomingForThisTable is not null && nestedPendingTable is not null)
                 {
                     // Consumed — clear so siblings (or deeper
                     // recursions) don't accidentally inherit.
-                    incomingTableContinuationAtDepth1 = null;
+                    incomingBlockChain = null;
                 }
                 if (nestedPendingTable is not null)
                 {
@@ -2473,52 +2530,32 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             //       actual content extent.
             if (IsMulticolContainer(child) && _capturedFragmentainer is not null)
             {
-                var nMcBorderBlockStart =
-                    child.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
-                var nMcPaddingBlockStart =
-                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingTop);
-                var nMcBorderBlockEnd =
-                    child.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
-                var nMcPaddingBlockEnd =
-                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingBottom);
-                var nMcBorderInlineStart =
-                    child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
-                var nMcPaddingInlineStart =
-                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
-                var nMcBorderInlineEnd =
-                    child.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
-                var nMcPaddingInlineEnd =
-                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
-                var nMcBorderPaddingBlock = nMcBorderBlockStart + nMcPaddingBlockStart
-                    + nMcBorderBlockEnd + nMcPaddingBlockEnd;
-                var nMcContentInlineSize = Math.Max(1.0,
-                    childBorderBoxInlineSize
-                    - nMcBorderInlineStart - nMcPaddingInlineStart
-                    - nMcBorderInlineEnd - nMcPaddingInlineEnd);
-                double nMcContentBlockSize;
-                if (IsHeightAuto(child))
-                {
-                    var remaining = _capturedFragmentainer.BlockSize - childBlockOffset
-                        - nMcBorderPaddingBlock;
-                    nMcContentBlockSize = Math.Max(1.0, remaining);
-                }
-                else
-                {
-                    nMcContentBlockSize = Math.Max(1.0,
-                        childBorderBoxBlockSize - nMcBorderPaddingBlock);
-                }
+                // Per Phase 3 Task 14 cycle 2 hardening (Finding #5) —
+                // shared with the outer / recursion emit + outer
+                // premeasure sites via MulticolGeometryHelper. Mirrors
+                // the outer dispatch path's pre-measure: grow
+                // childBorderBoxBlockSize (the wrapper's painted block
+                // extent) to fit the columnized content.
+                var nMcGeom = MulticolGeometryHelper.ComputeContentGeometry(
+                    multicolBox: child,
+                    borderBoxInlineSize: childBorderBoxInlineSize,
+                    borderBoxBlockSize: childBorderBoxBlockSize,
+                    borderBoxInlineOffset: childInlineOffset,
+                    borderBoxBlockOffset: childBlockOffset,
+                    fragmentainer: _capturedFragmentainer,
+                    isHeightAuto: IsHeightAuto(child));
                 var nMcMeasureLayout = new LayoutContext(_capturedFragmentainer)
                 {
                     Diagnostics = _diagnostics,
                 };
                 var nMcColumnExtent = PreMeasureMulticolColumnExtent(
                     child,
-                    contentInlineSize: nMcContentInlineSize,
-                    contentBlockSize: nMcContentBlockSize,
+                    contentInlineSize: nMcGeom.ContentInlineSize,
+                    contentBlockSize: nMcGeom.ContentBlockSize,
                     fragmentainer: _capturedFragmentainer,
                     layout: ref nMcMeasureLayout,
                     cancellationToken: cancellationToken);
-                var nMcDriven = nMcColumnExtent + nMcBorderPaddingBlock;
+                var nMcDriven = nMcColumnExtent + nMcGeom.BorderPaddingBlockSum;
                 if (nMcDriven > childBorderBoxBlockSize)
                 {
                     childBorderBoxBlockSize = nMcDriven;
@@ -2551,54 +2588,41 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // the depth-0 case.
             if (IsMulticolContainer(child))
             {
-                var nestedMulticolBorderInlineStart =
-                    child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
-                var nestedMulticolPaddingInlineStart =
-                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
-                var nestedMulticolBorderInlineEnd =
-                    child.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
-                var nestedMulticolPaddingInlineEnd =
-                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
-                var nestedMulticolContentInlineSize = Math.Max(1.0,
-                    childBorderBoxInlineSize
-                    - nestedMulticolBorderInlineStart - nestedMulticolPaddingInlineStart
-                    - nestedMulticolBorderInlineEnd - nestedMulticolPaddingInlineEnd);
-                // Per Phase 3 Task 14 cycle 1 hardening (Finding 2) —
-                // when the wrapper has height: auto, derive the per-
-                // column block-size from the captured fragmentainer's
-                // REMAINING block-space. Mirrors the outer dispatch
-                // path so emit + measure agree.
-                double nestedMulticolContentBlockSize;
-                if (IsHeightAuto(child) && _capturedFragmentainer is not null)
-                {
-                    var nestedRemaining = _capturedFragmentainer.BlockSize - childBlockOffset
-                        - borderStart - paddingStart - paddingEnd - borderEnd;
-                    nestedMulticolContentBlockSize = Math.Max(1.0, nestedRemaining);
-                }
-                else
-                {
-                    nestedMulticolContentBlockSize = Math.Max(1.0,
-                        childBorderBoxBlockSize
-                        - borderStart - paddingStart - paddingEnd - borderEnd);
-                }
-                var nestedMulticolContentInlineOffset =
-                    childInlineOffset
-                    + nestedMulticolBorderInlineStart + nestedMulticolPaddingInlineStart;
-                var nestedMulticolContentBlockOffset =
-                    childBlockOffset + borderStart + paddingStart;
+                // Per Phase 3 Task 14 cycle 2 hardening (Finding #5) —
+                // shared with the outer / recursion premeasure + outer
+                // emit sites via MulticolGeometryHelper. Mirrors the
+                // outer-loop dispatch above for the depth-0 case.
+                // The auto-height path's remaining-space derivation
+                // requires the captured fragmentainer; when null
+                // (recursion entered outside the main outer loop), the
+                // helper falls through to the explicit-height path —
+                // matching the legacy `&& _capturedFragmentainer is
+                // not null` guard.
+                var nestedMulticolGeom = MulticolGeometryHelper.ComputeContentGeometry(
+                    multicolBox: child,
+                    borderBoxInlineSize: childBorderBoxInlineSize,
+                    borderBoxBlockSize: childBorderBoxBlockSize,
+                    borderBoxInlineOffset: childInlineOffset,
+                    borderBoxBlockOffset: childBlockOffset,
+                    fragmentainer: _capturedFragmentainer,
+                    isHeightAuto: IsHeightAuto(child));
+                var nestedMulticolContentInlineSize = nestedMulticolGeom.ContentInlineSize;
+                var nestedMulticolContentBlockSize = nestedMulticolGeom.ContentBlockSize;
+                var nestedMulticolContentInlineOffset = nestedMulticolGeom.ContentInlineOffset;
+                var nestedMulticolContentBlockOffset = nestedMulticolGeom.ContentBlockOffset;
 
-                // Per Phase 3 Task 14 cycle 2 — at recursion depth==1
-                // the incoming MulticolContinuation (if any) is
-                // intended for THIS multicol child. Pass it through;
-                // consume on first match so siblings don't accidentally
-                // inherit it. Mirrors the depth==1
-                // incomingTableContinuationAtDepth1 pattern (Task 13
-                // cycle 2 hardening Finding 1).
+                // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) —
+                // the recursion-chain protocol replaces the depth==1
+                // gate. When the incoming continuation's chain reaches
+                // a MulticolContinuation leaf AND the current child
+                // matches its ResumeAtChild, use that continuation.
                 MulticolContinuation? incomingForThisMulticol = null;
-                if (depth == 1 && incomingMulticolContinuationAtDepth1 is not null)
+                if (incomingBlockChain is not null
+                    && childIdx == incomingBlockChain.ResumeAtChild
+                    && incomingBlockChain.LayouterState is MulticolContinuation incomingMcLeaf)
                 {
-                    incomingForThisMulticol = incomingMulticolContinuationAtDepth1;
-                    incomingMulticolContinuationAtDepth1 = null;
+                    incomingForThisMulticol = incomingMcLeaf;
+                    incomingBlockChain = null;
                 }
 
                 using var nestedMulticolLayouter = new MulticolLayouter(
@@ -2633,45 +2657,21 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         cancellationToken);
                 }
 
-                // Per Phase 3 Task 14 cycle 2 — propagate
-                // PageComplete(MulticolContinuation) up. The
-                // single-level propagation pattern from Task 13
-                // cycle 2 hardening Finding 1 applies: at depth==1,
-                // capture the continuation via the callback so the
-                // outer main loop can wrap it in a BlockContinuation.
-                // Deeper nesting (depth >= 2) still falls through
-                // atomically — but cycle 2 emits the forced-overflow
-                // diagnostic so the content-loss is surfaced (sub-
-                // cycle 3+ may generalize multi-level propagation).
+                // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) —
+                // multi-level recursion-continuation propagation. The
+                // cycle-1 depth==1-only gate is lifted: ANY nested
+                // multicol that returns PageComplete propagates UP via
+                // the return value as a chained BlockContinuation
+                // (LayouterState = MulticolContinuation at the leaf).
+                // The outer AttemptLayout dispatch wraps the chain
+                // into the final outer BlockContinuation.
                 if (nestedMulticolResult is { Outcome: LayoutAttemptOutcome.PageComplete }
                     && nestedMulticolResult.Value.Continuation is MulticolContinuation mcCont)
                 {
-                    if (depth == 1 && onMulticolPageComplete is not null)
-                    {
-                        onMulticolPageComplete(mcCont);
-                    }
-                    else
-                    {
-                        // Deep-nested multicol can't propagate. Emit
-                        // the forced-overflow diagnostic so the
-                        // truncated remainder is surfaced to the
-                        // integrator.
-                        OptimizingBreakResolver.SafeEmit(
-                            _diagnostics,
-                            new PaginateDiagnostic(
-                                PaginateDiagnosticCodes.LayoutMulticolForcedOverflow001,
-                                $"BlockLayouter recursion (depth={depth}): nested "
-                                + $"multicol container at child index "
-                                + $"{mcCont.NextChildIndex} overflowed across "
-                                + $"pages but cycle 2's recursion-continuation "
-                                + $"propagation handles only depth==1 (single-"
-                                + $"level) — deeper nesting stays atomic. The "
-                                + $"remaining content is truncated. Sub-cycle "
-                                + $"3+ may generalize multi-level propagation. "
-                                + $"See docs/deferrals.md#multicol-balancing-"
-                                + $"pagination.",
-                                PaginateDiagnosticSeverity.Warning));
-                    }
+                    return new BlockContinuation(
+                        ResumeAtChild: childIdx,
+                        ConsumedBlockSize: 0,
+                        LayouterState: mcCont);
                 }
 
                 // Advance the cursor + bookkeeping; skip the
@@ -2689,20 +2689,56 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // content area. The recursion's own predicate gate skips
             // walking INTO non-flow block kinds (Table/Flex/Grid/etc.).
             //
-            // Per cycle 2 hardening Finding 1 — forward the
-            // propagating-resolver / continuation hooks DOWN ONE
-            // LEVEL: a Table inside `child` is at recursion depth +2
-            // from the top-level dispatch (depth==1 here means the
-            // current `parent` is the top-level child of _rootBox);
-            // its nested Table is depth==2. Per the locked design,
-            // the single-level nesting case (= a Table that is a
-            // DIRECT descendant of the just-emitted top-level child,
-            // depth==2) honors the OUTER resolver + continuation;
-            // deeper nesting falls back to NoBreakBreakResolver via
-            // the depth==2 check at the table-emit site below. We
-            // pass these hooks through SO the recursion's nested
-            // table emit can use them, gated by depth.
-            EmitBlockSubtreeRecursive(
+            // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) —
+            // multi-level continuation propagation. The depth==1 gate
+            // is lifted: ANY nested multicol / table / further-nested
+            // block at ANY depth can now propagate its PageComplete
+            // up via the chain-of-BlockContinuation return protocol.
+            //
+            // Routing rules at this recursion site:
+            //   (a) If the chain head's ResumeAtChild matches AND the
+            //       LayouterState is a BlockContinuation, peel one
+            //       layer + pass it down (the LayouterState's leaf
+            //       sits at a deeper level than this).
+            //   (b) If the chain head's ResumeAtChild matches AND the
+            //       LayouterState is a Table/Multicol leaf BUT the
+            //       current child is a block-flow container (= NOT a
+            //       Table/Multicol container), the leaf belongs to a
+            //       deeper level too — pass the whole chain head down
+            //       (re-wrapped at rc=0 so the deeper recursion can
+            //       find the leaf at its own first matching child).
+            //   (c) Otherwise pass null (the leaf was either consumed
+            //       at this level's Table/Multicol direct-dispatch
+            //       branch, or the chain doesn't apply to this child).
+            LayoutContinuation? incomingForChild = null;
+            if (incomingBlockChain is not null
+                && childIdx == incomingBlockChain.ResumeAtChild)
+            {
+                if (incomingBlockChain.LayouterState is BlockContinuation deeperBlock)
+                {
+                    incomingForChild = deeperBlock;
+                    incomingBlockChain = null;
+                }
+                else if (incomingBlockChain.LayouterState is TableContinuation tcLeaf
+                    && child.Kind is not (BoxKind.Table or BoxKind.InlineTable))
+                {
+                    // The leaf is a table continuation but the current
+                    // child is a block-flow container — push the leaf
+                    // wrapped in a fresh BC down to the deeper recursion.
+                    incomingForChild = new BlockContinuation(
+                        ResumeAtChild: 0, ConsumedBlockSize: 0, LayouterState: tcLeaf);
+                    incomingBlockChain = null;
+                }
+                else if (incomingBlockChain.LayouterState is MulticolContinuation mcLeaf
+                    && !IsMulticolContainer(child))
+                {
+                    // Same as the TableContinuation case for multicol.
+                    incomingForChild = new BlockContinuation(
+                        ResumeAtChild: 0, ConsumedBlockSize: 0, LayouterState: mcLeaf);
+                    incomingBlockChain = null;
+                }
+            }
+            var nestedRet = EmitBlockSubtreeRecursive(
                 child,
                 parentBlockOffset: childBlockOffset,
                 parentInlineOffset: childInlineOffset,
@@ -2711,10 +2747,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 depth: depth + 1,
                 propagatingResolver: propagatingResolver,
                 propagatingFragmentainer: propagatingFragmentainer,
-                incomingTableContinuationAtDepth1: incomingTableContinuationAtDepth1,
-                onTablePageComplete: onTablePageComplete,
-                incomingMulticolContinuationAtDepth1: incomingMulticolContinuationAtDepth1,
-                onMulticolPageComplete: onMulticolPageComplete);
+                incomingContinuation: incomingForChild);
+            if (nestedRet is not null)
+            {
+                return new BlockContinuation(
+                    ResumeAtChild: childIdx,
+                    ConsumedBlockSize: 0,
+                    LayouterState: nestedRet);
+            }
 
             // Per Phase 3 Task 12 sub-cycle 1 hardening (Finding 6 /
             // 1) + sub-cycle 2 hardening (Finding 1) — drain the pre-
@@ -2724,72 +2764,59 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // fragmentainer captured at AttemptLayout entry; the
             // table layouter uses these for deferral diagnostics +
             // forced-overflow signals + cell-content layout.
+            //
+            // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) —
+            // the depth==1-only NoBreakBreakResolver fallback at
+            // deeper nesting is lifted. ALL depths now use the
+            // propagating outer resolver + fragmentainer when
+            // available (or the captured outer fragmentainer + a
+            // fresh BreakResolver when the propagating pair is not
+            // provided — e.g. the forced-overflow path). The deep
+            // table can now return a TableContinuation; the recursion
+            // wraps that into a chained BlockContinuation up to the
+            // outer dispatch.
             if (nestedPendingTable is not null && _capturedFragmentainer is not null)
             {
-                // Per cycle 2 hardening Finding 1 — when this table is
-                // at recursion depth==1 (= a DIRECT descendant of the
-                // just-emitted top-level child of _rootBox, e.g.
-                // `<body><table>`) AND the caller provided a
-                // propagating resolver, use that resolver + propagating
-                // fragmentainer so the table consults the SAME
-                // pagination state the outer AttemptLayout loop owns.
-                // The PageComplete continuation flows up via
-                // onTablePageComplete (the main loop will wrap it in a
-                // BlockContinuation). Deeper nesting (depth >= 2) is
-                // still atomic via NoBreakBreakResolver.
-                var useOuterResolverHere =
-                    depth == 1
-                    && propagatingResolver is not null
-                    && propagatingFragmentainer is not null
-                    && onTablePageComplete is not null;
-
-                if (useOuterResolverHere)
+                var fragmentainerForEmit = propagatingFragmentainer ?? _capturedFragmentainer;
+                var emitLayout = new LayoutContext(fragmentainerForEmit)
                 {
-                    var fragmentainerForEmit = propagatingFragmentainer!;
-                    var emitLayout = new LayoutContext(fragmentainerForEmit)
-                    {
-                        Diagnostics = _diagnostics,
-                    };
-                    // The TableContinuation (if any) was already passed
-                    // to nestedPendingTable via the PreMeasureTableIfNeeded
-                    // call above; the TableLayouter consumes its
-                    // _incomingTableContinuation from the constructor.
+                    Diagnostics = _diagnostics,
+                };
+                // Use the propagating resolver when supplied; otherwise
+                // a fresh BreakResolver. NoBreakBreakResolver is no
+                // longer used here — TableLayouter's single-oversized-
+                // row forward-progress fallback is the safety net that
+                // makes lifting the atomic-deep-nesting fallback safe.
+                IBreakResolver resolverForEmit;
+                BreakResolver? localResolver = null;
+                if (propagatingResolver is not null)
+                {
+                    resolverForEmit = propagatingResolver;
+                }
+                else
+                {
+                    localResolver = new BreakResolver();
+                    resolverForEmit = localResolver;
+                }
+                try
+                {
                     var tableInnerResult = EmitTableInner(
                         nestedPendingTable,
                         fragmentainer: fragmentainerForEmit,
                         layout: ref emitLayout,
-                        resolver: propagatingResolver!,
+                        resolver: resolverForEmit,
                         cancellationToken: cancellationToken);
                     if (tableInnerResult.Continuation is TableContinuation tc)
                     {
-                        // Capture for propagation up to the main
-                        // AttemptLayout loop. The caller wraps tc in a
-                        // BlockContinuation + returns PageComplete.
-                        onTablePageComplete!(tc);
+                        return new BlockContinuation(
+                            ResumeAtChild: childIdx,
+                            ConsumedBlockSize: 0,
+                            LayouterState: tc);
                     }
                 }
-                else
+                finally
                 {
-                    var fragmentainerForEmit = _capturedFragmentainer;
-                    var emitLayout = new LayoutContext(fragmentainerForEmit)
-                    {
-                        Diagnostics = _diagnostics,
-                    };
-                    // Per Phase 3 Task 13 cycle 1 — use the
-                    // NoBreakBreakResolver so the nested table emits
-                    // ATOMICALLY at deeper-than-1 depths (the
-                    // continuation propagation path doesn't extend
-                    // through nested block containers in cycle 2;
-                    // sub-cycle 6+ may generalize). The forced-
-                    // overflow diagnostic still fires for over-tall
-                    // cases.
-                    using var nestedResolver = new TableLayouter.NoBreakBreakResolver();
-                    _ = EmitTableInner(
-                        nestedPendingTable,
-                        fragmentainer: fragmentainerForEmit,
-                        layout: ref emitLayout,
-                        resolver: nestedResolver,
-                        cancellationToken: cancellationToken);
+                    localResolver?.Dispose();
                 }
             }
 
@@ -2805,6 +2832,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             prevMarginEnd = marginEnd;
             hasPrior = true;
         }
+
+        // Clean emission — no nested break propagated up.
+        return null;
     }
 
     /// <summary>Per Phase 3 Task 8 cycle 1 — emit a float fragment.
@@ -2911,13 +2941,42 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
 
         // Recurse for descendants of the nested float (e.g., a div
         // inside a float that has its own block-level content).
-        EmitBlockSubtreeRecursive(
+        //
+        // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) — floats
+        // are out-of-flow per CSS 2.2 §9.5; propagating a nested
+        // multicol/table continuation through the in-flow pagination
+        // machinery requires float-tracking continuation machinery
+        // that's an existing Phase 3 Task 8 deferral. Discard the
+        // returned continuation (atomic-fallback behavior preserved)
+        // + emit a one-shot per-page diagnostic so the truncation is
+        // observable. The first-page slice of the float is committed;
+        // the deep break's remainder is lost.
+        var nestedFloatRet = EmitBlockSubtreeRecursive(
             child,
             parentBlockOffset: fragmentBlockOffset,
             parentInlineOffset: fragmentInlineOffset,
             parentInlineSize: borderBoxInlineSize,
             cancellationToken: cancellationToken,
             depth: 1);
+        if (nestedFloatRet is not null
+            && !_emittedFloatBreakInsideNestedDiagnosticThisPage)
+        {
+            OptimizingBreakResolver.SafeEmit(
+                _capturedDiagSink ?? _diagnostics,
+                new PaginateDiagnostic(
+                    PaginateDiagnosticCodes.LayoutFloatBreakInsideNested001,
+                    $"BlockLayouter: nested float (BoxKind."
+                    + $"{child.Kind}) contains a multicol/table that broke "
+                    + "mid-emission. Floats are out-of-flow per CSS 2.2 "
+                    + "§9.5; propagating their nested continuation through "
+                    + "the in-flow pagination machinery requires float-"
+                    + "tracking continuation machinery that's an existing "
+                    + "Phase 3 Task 8 deferral (cycle 3+ scope). The deep "
+                    + "break's remainder is truncated. See "
+                    + "docs/deferrals.md#float-continuation-propagation.",
+                    PaginateDiagnosticSeverity.Warning));
+            _emittedFloatBreakInsideNestedDiagnosticThisPage = true;
+        }
     }
 
     /// <summary>Per Phase 3 Task 8 cycle 1 post-PR-30 review (P1 #4) —
@@ -3107,13 +3166,38 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // Per cycle 2b — recursively emit descendants. Floats can
         // contain block-level children (like any other container);
         // they emit at offsets relative to the float's content area.
-        EmitBlockSubtreeRecursive(
+        //
+        // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) — discard
+        // the recursion's return for float subtrees. Floats are
+        // out-of-flow per CSS 2.2 §9.5; their nested continuation
+        // can't propagate through the in-flow pagination machinery
+        // without float-tracking continuation machinery (existing
+        // Phase 3 Task 8 deferral). Emit a one-shot per-page
+        // diagnostic so authors see the truncation.
+        var floatRet = EmitBlockSubtreeRecursive(
             child,
             parentBlockOffset: fragmentBlockOffset,
             parentInlineOffset: fragmentInlineOffset,
             parentInlineSize: borderBoxInlineSize,
             cancellationToken: cancellationToken,
             depth: 1);
+        if (floatRet is not null
+            && !_emittedFloatBreakInsideNestedDiagnosticThisPage)
+        {
+            var diagSink = layout.Diagnostics ?? _diagnostics;
+            OptimizingBreakResolver.SafeEmit(diagSink, new PaginateDiagnostic(
+                PaginateDiagnosticCodes.LayoutFloatBreakInsideNested001,
+                $"BlockLayouter: float (BoxKind.{child.Kind}) contains a "
+                + "multicol/table that broke mid-emission. Floats are "
+                + "out-of-flow per CSS 2.2 §9.5; propagating their nested "
+                + "continuation through the in-flow pagination machinery "
+                + "requires float-tracking continuation machinery that's "
+                + "an existing Phase 3 Task 8 deferral (cycle 3+ scope). "
+                + "The deep break's remainder is truncated. See "
+                + "docs/deferrals.md#float-continuation-propagation.",
+                PaginateDiagnosticSeverity.Warning));
+            _emittedFloatBreakInsideNestedDiagnosticThisPage = true;
+        }
     }
 
     /// <summary>Per cycle-2b post-PR-28 review #3 — predicate
@@ -4149,8 +4233,15 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             var contentInlineSize = Math.Max(0,
                 wrapperInlineSize - tBorderInlineStart - tPaddingInlineStart
                 - tBorderInlineEnd - tPaddingInlineEnd);
+            // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) — use
+            // dry-run committed height. The lifted recursion-continuation
+            // propagation now splits the table across pages cleanly; the
+            // outer subtree-extent measure must reflect what fits on THIS
+            // page so the outer break decision doesn't fire a false
+            // PAGINATION-FORCED-OVERFLOW-001.
             var contentHeight = MeasureNestedTableContentExtent(
-                parent, contentInlineSize, cancellationToken);
+                parent, contentInlineSize, cancellationToken,
+                useDryRunCommittedHeight: true);
             var wrapperBorderPaddingBlock = pBorderStart + pPaddingStart
                 + pPaddingEnd + pBorderEnd;
             var tableDriven = contentHeight + wrapperBorderPaddingBlock;
@@ -4476,16 +4567,21 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     private double MeasureNestedTableContentExtent(
         Box wrapper,
         double contentInlineSize,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool useDryRunCommittedHeight = false)
     {
         _measuredTableContentHeightCache ??= new Dictionary<Box, double>();
-        if (_measuredTableContentHeightCache.TryGetValue(wrapper, out var cached))
+        if (!useDryRunCommittedHeight
+            && _measuredTableContentHeightCache.TryGetValue(wrapper, out var cached))
         {
             return cached;
         }
         if (contentInlineSize <= 0 || _capturedFragmentainer is null)
         {
-            _measuredTableContentHeightCache[wrapper] = 0;
+            if (!useDryRunCommittedHeight)
+            {
+                _measuredTableContentHeightCache[wrapper] = 0;
+            }
             return 0;
         }
 
@@ -4511,6 +4607,27 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         };
         var contentHeight = transientLayouter.MeasureContentHeight(
             _capturedFragmentainer, ref transientLayout, cancellationToken);
+
+        // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) — when
+        // the caller is doing a measure pass for a wrapper whose
+        // nested table will now split cleanly via the lifted
+        // recursion-continuation propagation, return the DRY-RUN
+        // COMMITTED extent (= rows committed on the current page)
+        // rather than the natural full-content extent. Without this
+        // the outer subtree-extent measure would overestimate the
+        // wrapper's height + the outer break decision would still
+        // dispatch a forced-overflow path even though the table
+        // splits cleanly internally.
+        if (useDryRunCommittedHeight)
+        {
+            var dryRunCommitted = transientLayouter.DryRunCommittedBlockSize(
+                _capturedFragmentainer, resumeAtRow: 0,
+                out _, out _);
+            // Caller doesn't cache the dry-run mode — different pages
+            // may have different committed extents.
+            return dryRunCommitted;
+        }
+
         _measuredTableContentHeightCache[wrapper] = contentHeight;
         return contentHeight;
     }
@@ -4692,6 +4809,137 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     {
         var slot = box.Style.Get(PropertyId.Height);
         return slot.Tag != ComputedSlotTag.LengthPx;
+    }
+
+    /// <summary>Per Phase 3 Task 14 cycle 2 hardening (Finding #5) —
+    /// shared content-box geometry computation for the 4 multicol-
+    /// wrapper sites in <see cref="BlockLayouter"/>:
+    /// <list type="bullet">
+    /// <item>Outer dispatch (pre-cycle-2 site for top-level multicol children of the BlockLayouter root)</item>
+    /// <item>Recursion dispatch (nested multicol descendants emitted by <see cref="EmitBlockSubtreeRecursive"/>)</item>
+    /// <item>Premeasure outer (the dry-run pass that grows the wrapper's border-box block size before emit)</item>
+    /// <item>Premeasure recursion (mirrors the outer premeasure for nested wrappers)</item>
+    /// </list>
+    /// Each site previously read 8 style properties (4 borders + 4
+    /// paddings) inline, derived the same content-box inline / block
+    /// sizes (clamped to ≥ 1.0 to avoid degenerate column boxes), and
+    /// — for the emit sites — added inline/block-axis content offsets.
+    /// Per the cycle 2 hardening Finding 5 refactor, all four sites
+    /// now call <see cref="ComputeContentGeometry"/> to share the
+    /// derivation. Behavior is byte-identical with the prior inline
+    /// arithmetic.
+    ///
+    /// <para>The <c>borderBoxBlockOffset</c> parameter represents the
+    /// wrapper's border-box top edge (in fragmentainer-block-axis
+    /// coordinates) — for emit sites this is the pre-computed
+    /// <c>blockOffset</c> / <c>childBlockOffset</c>; for premeasure
+    /// sites it is the hypothetical <c>fragmentainer.UsedBlockSize +
+    /// topShift</c> / <c>childBlockOffset</c>. The
+    /// <c>borderBoxInlineOffset</c> parameter similarly represents the
+    /// wrapper's border-box left edge (<c>inFlowInlineOffset</c> for
+    /// the outer site, <c>childInlineOffset</c> for the recursion
+    /// site). Premeasure sites compute the offsets too but the
+    /// caller may discard them — the helper-side cost is negligible.
+    /// </para></summary>
+    private static class MulticolGeometryHelper
+    {
+        /// <summary>Computed content-box geometry of a multicol
+        /// wrapper. <c>ContentInlineSize</c> / <c>ContentBlockSize</c>
+        /// are clamped to ≥ 1.0 (mirrors the pre-extraction inline
+        /// <c>Math.Max(1.0, ...)</c> clamps that prevented
+        /// <see cref="MulticolLayouter"/> from receiving a degenerate
+        /// per-column extent). <c>BorderPaddingBlockSum</c> is the
+        /// vertical border + padding sum (used by the caller to grow
+        /// the wrapper's border-box block size to fit the columnized
+        /// content extent).</summary>
+        public readonly record struct ContentBox(
+            double ContentInlineSize,
+            double ContentBlockSize,
+            double ContentInlineOffset,
+            double ContentBlockOffset,
+            double BorderPaddingBlockSum);
+
+        /// <summary>Compute the wrapper's content-box geometry from
+        /// its border-box size + the wrapper's own borders + paddings
+        /// (read from <paramref name="multicolBox"/>'s computed
+        /// style). For <c>height: auto</c> wrappers the per-column
+        /// block-size is derived from the fragmentainer's REMAINING
+        /// block-space (= <c>fragmentainer.BlockSize -
+        /// borderBoxBlockOffset - BorderPaddingBlockSum</c>) per CSS
+        /// Multi-column L1 §3.5 "fill available column space"
+        /// semantics for auto-height containers. For explicit-height
+        /// wrappers the per-column block-size is derived from the
+        /// wrapper's content area (= <c>borderBoxBlockSize -
+        /// BorderPaddingBlockSum</c>).
+        ///
+        /// <para>The <paramref name="fragmentainer"/> parameter is
+        /// nullable to accommodate the recursion-dispatch call site
+        /// where <c>_capturedFragmentainer</c> may be null (BlockLayouter
+        /// not entered via the main outer loop). When null AND
+        /// <paramref name="isHeightAuto"/> is true, the helper falls
+        /// through to the explicit-height path — matching the legacy
+        /// recursion-dispatch behavior that guarded the auto-height
+        /// branch with <c>&amp;&amp; _capturedFragmentainer is not
+        /// null</c>.</para></summary>
+        public static ContentBox ComputeContentGeometry(
+            Box multicolBox,
+            double borderBoxInlineSize,
+            double borderBoxBlockSize,
+            double borderBoxInlineOffset,
+            double borderBoxBlockOffset,
+            FragmentainerContext? fragmentainer,
+            bool isHeightAuto)
+        {
+            var borderInlineStart =
+                multicolBox.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
+            var paddingInlineStart =
+                multicolBox.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
+            var borderInlineEnd =
+                multicolBox.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
+            var paddingInlineEnd =
+                multicolBox.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
+            var borderBlockStart =
+                multicolBox.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
+            var paddingBlockStart =
+                multicolBox.Style.ReadLengthPxOrZero(PropertyId.PaddingTop);
+            var borderBlockEnd =
+                multicolBox.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
+            var paddingBlockEnd =
+                multicolBox.Style.ReadLengthPxOrZero(PropertyId.PaddingBottom);
+
+            var borderPaddingBlockSum =
+                borderBlockStart + paddingBlockStart + borderBlockEnd + paddingBlockEnd;
+
+            var contentInlineSize = Math.Max(1.0,
+                borderBoxInlineSize
+                - borderInlineStart - paddingInlineStart
+                - borderInlineEnd - paddingInlineEnd);
+
+            double contentBlockSize;
+            if (isHeightAuto && fragmentainer is not null)
+            {
+                var remaining =
+                    fragmentainer.BlockSize - borderBoxBlockOffset - borderPaddingBlockSum;
+                contentBlockSize = Math.Max(1.0, remaining);
+            }
+            else
+            {
+                contentBlockSize = Math.Max(1.0,
+                    borderBoxBlockSize - borderPaddingBlockSum);
+            }
+
+            var contentInlineOffset =
+                borderBoxInlineOffset + borderInlineStart + paddingInlineStart;
+            var contentBlockOffset =
+                borderBoxBlockOffset + borderBlockStart + paddingBlockStart;
+
+            return new ContentBox(
+                ContentInlineSize: contentInlineSize,
+                ContentBlockSize: contentBlockSize,
+                ContentInlineOffset: contentInlineOffset,
+                ContentBlockOffset: contentBlockOffset,
+                BorderPaddingBlockSum: borderPaddingBlockSum);
+        }
     }
 
     /// <summary>Per Phase 3 Task 12 sub-cycle 1 hardening (Finding 1)

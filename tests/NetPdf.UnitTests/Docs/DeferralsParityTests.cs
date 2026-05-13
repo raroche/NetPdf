@@ -49,6 +49,7 @@ public sealed class DeferralsParityTests
         "inline-atomic-boxes",
         "table-auto-fixed-spans-borders",
         "multicol-balancing-pagination",
+        "float-continuation-propagation",
     };
 
     [Fact]

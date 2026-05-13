@@ -180,24 +180,63 @@ internal static class PaginateDiagnosticCodes
     public const string LayoutTableHeaderFooterOversized001 =
         "LAYOUT-TABLE-HEADER-FOOTER-OVERSIZED-001";
 
-    /// <summary>Per Phase 3 Task 14 cycle 1 — emitted by
-    /// <c>MulticolLayouter</c> when the in-flow content of a
-    /// multicol container does NOT fit within the N columns'
-    /// available block-size. Cycle 1 ships Hello World multi-column
-    /// layout: a block container with <c>column-count: N</c> splits
-    /// its content equally across N parallel columns (sub-
-    /// fragmentainers), each sized at
-    /// <c>(containerContentInlineSize - (N-1)*columnGap) / N</c>
-    /// inline-axis + <c>containerContentBlockSize</c> block-axis.
-    /// When content overflows the FIRST column the layouter advances
-    /// to the next; when content overflows the LAST column the
-    /// remaining content is truncated + this diagnostic fires. Per
-    /// CSS Multi-column L1 §3.5 the spec-strict behavior is to
-    /// fragment the multicol container itself across pages so the
-    /// overflowing content continues; sub-cycle 2 will ship that
-    /// multi-page multicol via <c>MulticolContinuation</c>. Mirrors
-    /// <c>NetPdf.DiagnosticCodes.LayoutMulticolForcedOverflow001</c>.
+    /// <summary>Per Phase 3 Task 14 cycle 2 hardening (Finding #3) —
+    /// emitted by <c>MulticolLayouter</c> when the author-supplied
+    /// <c>column-count</c> exceeds the layouter's
+    /// <c>MaxColumnCount</c> safety cap (= 1000) and is silently
+    /// clamped. Without surfacing this, a stray <c>column-count:
+    /// 100000</c> would produce N=1000 columns + the rendered output
+    /// would visually disagree with the stylesheet — but emit no
+    /// warning, hiding the cap as a silent DoS-mitigation behavior.
+    /// The clamp is intentional (the layouter's per-column
+    /// arithmetic is O(N) per child; uncapped N is a DoS vector for
+    /// adversarial input), but authors who hit the cap legitimately
+    /// (e.g., generated CSS) need to know that the requested column
+    /// count was reduced. Mirrors
+    /// <c>NetPdf.DiagnosticCodes.LayoutMulticolColumnCountClamped001</c>.
     /// Severity: <see cref="PaginateDiagnosticSeverity.Warning"/>.</summary>
+    public const string LayoutMulticolColumnCountClamped001 =
+        "LAYOUT-MULTICOL-COLUMN-COUNT-CLAMPED-001";
+
+    /// <summary>Per Phase 3 Task 14 cycles 1-2 — emitted by
+    /// <c>MulticolLayouter</c> /<c>BlockLayouter</c> when a multicol
+    /// container's in-flow content can't make forward progress
+    /// through the N columns + the available page space. Cycle 2's
+    /// multi-page multicol ships clean page splitting (via
+    /// <c>MulticolContinuation</c>); this diagnostic NARROWED its
+    /// semantics in cycle 2 — a clean multi-page split is no longer
+    /// an error.
+    ///
+    /// <para><b>Cycle 2 — when this fires:</b></para>
+    /// <list type="bullet">
+    ///   <item><b>No-forward-progress (MulticolLayouter):</b> a
+    ///   resume page entered with a <c>MulticolContinuation</c>
+    ///   re-runs the column-fill pass + emits ZERO fragments +
+    ///   returns a continuation that doesn't advance past the entry
+    ///   index. The layouter truncates the remainder + emits the
+    ///   diagnostic to surface the loss. Analog to TableLayouter's
+    ///   single-oversized-row case.</item>
+    ///   <item><b>Deep-nested multicol (BlockLayouter recursion):</b>
+    ///   cycle 2's recursion-continuation propagation handles ONLY
+    ///   the depth==1 case (= the multicol is a direct descendant of
+    ///   the top-level child of <c>_rootBox</c> dispatched by the
+    ///   main <c>AttemptLayout</c> loop). For multicols nested
+    ///   deeper (e.g., <c>html &gt; body &gt; div.multicol</c> from a
+    ///   real HTML document), the <c>PageComplete</c> result is
+    ///   captured but can't propagate through the recursion's single-
+    ///   level callback. The diagnostic fires + the remainder is
+    ///   truncated. Sub-cycle 3+ may generalize multi-level
+    ///   recursive propagation, mirroring how Task 13 cycle 2
+    ///   hardening Finding 1 added single-level propagation for
+    ///   <c>TableContinuation</c>.</item>
+    /// </list>
+    ///
+    /// <para>Pre-cycle-2 the diagnostic fired for ANY overflow past
+    /// the N columns; cycle 1 always truncated. Cycle 2 ships the
+    /// clean multi-page split that suppresses the diagnostic in the
+    /// common case. Mirrors
+    /// <c>NetPdf.DiagnosticCodes.LayoutMulticolForcedOverflow001</c>.
+    /// Severity: <see cref="PaginateDiagnosticSeverity.Warning"/>.</para></summary>
     public const string LayoutMulticolForcedOverflow001 =
         "LAYOUT-MULTICOL-FORCED-OVERFLOW-001";
 
@@ -220,4 +259,22 @@ internal static class PaginateDiagnosticCodes
     /// Severity: <see cref="PaginateDiagnosticSeverity.Warning"/>.</summary>
     public const string LayoutMulticolNonFiniteGeometry001 =
         "LAYOUT-MULTICOL-NON-FINITE-GEOMETRY-001";
+
+    /// <summary>Per Phase 3 Task 14 cycle 2 hardening (Finding #1) —
+    /// emitted by <c>BlockLayouter</c> when a float subtree's nested
+    /// recursion returns a non-null <c>LayoutContinuation</c>
+    /// (indicating a multicol or table inside the float broke mid-
+    /// emission). Floats are out-of-flow per CSS 2.2 §9.5; propagating
+    /// their continuation through the in-flow pagination machinery
+    /// requires float-tracking machinery that's an existing Phase 3
+    /// Task 8 deferral (cycle 3+ scope). The layouter discards the
+    /// returned continuation (atomic-fallback behavior) + surfaces
+    /// this diagnostic so authors / integrators see the truncation
+    /// rather than wondering why content disappeared from the float.
+    /// The diagnostic fires at most once per page to avoid spam from
+    /// pages with many such floats. Mirrors
+    /// <c>NetPdf.DiagnosticCodes.LayoutFloatBreakInsideNested001</c>.
+    /// Severity: <see cref="PaginateDiagnosticSeverity.Warning"/>.</summary>
+    public const string LayoutFloatBreakInsideNested001 =
+        "LAYOUT-FLOAT-BREAK-INSIDE-NESTED-001";
 }

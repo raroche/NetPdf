@@ -6453,6 +6453,213 @@ public sealed class TableLayouterTests
     }
 
     // ====================================================================
+    //  Phase 3 Task 14 cycle 2 hardening (Finding #1) — multi-level
+    //  recursion-continuation propagation tests.
+    // ====================================================================
+
+    [Fact]
+    public void Cycle2_table_resume_chain_routes_back_to_inner_layouter()
+    {
+        // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) —
+        // recursion-chain protocol resume for tables. Direct
+        // construction: root > div1 > div2 > table(3 rows of 300
+        // each). Drive page 2 by passing an incoming chained
+        // BlockContinuation(rc=0, ls=BlockContinuation(rc=0,
+        // ls=TableContinuation(NextRowIndex=2))). Verify page 2
+        // emits row 2 (the deferred row).
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var div1 = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        var div2 = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        for (var r = 0; r < 3; r++)
+        {
+            var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+            var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+            var anon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+            var bcStyle = MakeStyle();
+            SetLengthPx(bcStyle, PropertyId.Height, 300);
+            anon.AppendChild(Box.ForElement(BoxKind.BlockContainer, bcStyle, MakeElement()));
+            cell.AppendChild(anon);
+            row.AppendChild(cell);
+            grid.AppendChild(row);
+        }
+        table.AppendChild(grid);
+        div2.AppendChild(table);
+        div1.AppendChild(div2);
+        root.AppendChild(div1);
+
+        var tc = new TableContinuation(
+            RepeatHead: false, RepeatFoot: false,
+            NextRowIndex: 2,
+            ConsumedBlockSize: 0);
+        var bcInner = new BlockContinuation(
+            ResumeAtChild: 0, ConsumedBlockSize: 0, LayouterState: tc);
+        var bcTop = new BlockContinuation(
+            ResumeAtChild: 0, ConsumedBlockSize: 0, LayouterState: bcInner);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: bcTop,
+            diagnostics: diagSink,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // Page 2 — row 2 emitted, no further continuation.
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+        var rowCount = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableRow) rowCount++;
+        }
+        Assert.Equal(1, rowCount);
+    }
+
+    [Fact]
+    public void Cycle2_multicol_containing_table_both_at_depth_2_propagates()
+    {
+        // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) — mixed
+        // case: a multicol container at depth 2 contains a table
+        // whose rows overflow. Verify the recursion returns a chain
+        // with a MulticolContinuation at the outer leaf level (the
+        // multicol's PerChildLayouterState carries the table's
+        // continuation internally — that part is MulticolLayouter's
+        // domain).
+        //
+        // Construct: root > div > multicol(column-count=2, h=100) >
+        // table(3 rows of 80 each). At column block-size 100 + 3
+        // rows of 80 = 240, the table needs multiple columns. The
+        // multicol propagates this as a MulticolContinuation chain
+        // up through the recursion.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var div = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        var multicolStyle = MakeStyle();
+        multicolStyle.Set(PropertyId.ColumnCount, ComputedSlot.FromInteger(2));
+        SetLengthPx(multicolStyle, PropertyId.Height, 100);
+        var multicol = Box.ForElement(BoxKind.BlockContainer, multicolStyle, MakeElement());
+        for (var i = 0; i < 5; i++)
+        {
+            var s = MakeStyle();
+            SetLengthPx(s, PropertyId.Height, 80);
+            multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, s, MakeElement()));
+        }
+        div.AppendChild(multicol);
+        root.AppendChild(div);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null,
+            diagnostics: diagSink,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 232, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var topBc = Assert.IsType<BlockContinuation>(result.Continuation);
+        // Walk to the leaf — should reach a MulticolContinuation.
+        object? walker = topBc.LayouterState;
+        var depth = 0;
+        while (walker is BlockContinuation deeper)
+        {
+            depth++;
+            walker = deeper.LayouterState;
+            Assert.True(depth < 32, "Chain runaway?");
+        }
+        var mcCont = Assert.IsType<MulticolContinuation>(walker);
+        Assert.True(mcCont.NextChildIndex > 0,
+            "Multicol must have advanced past at least one child.");
+    }
+
+    [Fact]
+    public void Deep_nested_table_rewind_preserves_wrapper_state()
+    {
+        // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) — risk-
+        // surface test. Construct a deep nested table where the
+        // wrapper's measured extent (= dry-run committed) drives
+        // page-1 pagination. Verify two successive page emissions on
+        // an integrator-driven retry don't double-count the wrapper's
+        // fragment cursor.
+        //
+        // Setup: root > div > table(3 rows × 300) — total 900 > 800
+        // fragmentainer. Page 1 commits 2 rows; page 2 commits row 3.
+        // Track the wrapper Table fragment count: each page should
+        // emit the wrapper exactly ONCE.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var div = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+        for (var r = 0; r < 3; r++)
+        {
+            var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+            var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+            var anon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+            var bcStyle = MakeStyle();
+            SetLengthPx(bcStyle, PropertyId.Height, 300);
+            anon.AppendChild(Box.ForElement(BoxKind.BlockContainer, bcStyle, MakeElement()));
+            cell.AppendChild(anon);
+            row.AppendChild(cell);
+            grid.AppendChild(row);
+        }
+        table.AppendChild(grid);
+        div.AppendChild(table);
+        root.AppendChild(div);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null,
+            diagnostics: diagSink,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+        var result1 = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // Page 1: 2 rows committed.
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result1.Outcome);
+        var page1WrapperCount = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == table) page1WrapperCount++;
+        }
+        Assert.Equal(1, page1WrapperCount);
+
+        // The wrapper's fragment block-size should match the
+        // committed-on-page-1 extent (≈ 2 × 300 = 600), NOT the
+        // natural full extent (900). This is what guards against
+        // false PAGINATION-FORCED-OVERFLOW-001 on page 1.
+        BoxFragment? wrapper = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == table) { wrapper = f; break; }
+        }
+        Assert.NotNull(wrapper);
+        Assert.True(wrapper.Value.BlockSize < 800,
+            $"Wrapper block-size {wrapper.Value.BlockSize} should be less "
+            + "than the fragmentainer (800) — proves dry-run committed "
+            + "sizing is in effect for the deep-nested case.");
+    }
+
+    // ====================================================================
     //  Tree builders + test doubles
     // ====================================================================
 

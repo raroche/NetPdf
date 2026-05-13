@@ -108,34 +108,62 @@ internal sealed record GridContinuation(
     int RowIndex,
     object? TrackSizingCache = null) : LayoutContinuation;
 
-/// <summary>Per Phase 3 Task 14 cycle 1 — multicol container split
+/// <summary>Per Phase 3 Task 14 cycles 1-2 — multicol container split
 /// across pages. CSS Multi-column L1 §2 defines the multicol container
 /// as a block formatting context whose in-flow children flow through
 /// N parallel columns (sub-fragmentainers) before continuing to the
 /// next page. Cycle 1 ships a Hello World multicol with explicit
-/// <c>column-count</c>; multi-page multicol (the outer multicol box
-/// fragmented across pages) + column balancing + <c>column-width</c>
-/// auto-count + <c>column-span: all</c> + column rules are sub-cycle
-/// 2+ scope per <c>docs/deferrals.md#multicol-balancing-pagination</c>.
+/// <c>column-count</c>; cycle 2 (this revision) implements multi-page
+/// multicol (the outer multicol box fragmenting across pages so
+/// overflowing content continues on the next page) per CSS
+/// Multi-column L1 §3.5 + CSS Fragmentation L3 §3. Column balancing +
+/// <c>column-width</c> auto-count + <c>column-span: all</c> + column
+/// rules remain sub-cycle 3+ scope per
+/// <c>docs/deferrals.md#multicol-balancing-pagination</c>.
 ///
-/// <para><b>Cycle 1 placeholder.</b> The continuation type is reserved
-/// so the LayouterState seam exists when sub-cycle 2 ships multi-page
-/// multicol. Cycle 1's <c>MulticolLayouter</c> never produces a
-/// non-null <see cref="MulticolContinuation"/>: it commits all content
-/// it can on the current page + emits
-/// <c>LAYOUT-MULTICOL-FORCED-OVERFLOW-001</c> when content overflows
-/// the N columns. Sub-cycle 2 will populate
-/// <paramref name="NextColumnIndex"/> +
-/// <see cref="LayouterState"/> with the nested BlockLayouter's
-/// resume state.</para>
+/// <para><b>Cycle 2 contract.</b> The continuation captures
+/// "where to resume" so the next-page MulticolLayouter picks up content
+/// emission at the exact child the previous page ran out of room for.
+/// Mirrors <see cref="BlockContinuation"/>'s semantics — the resume
+/// page constructs a fresh <c>MulticolLayouter</c> with this
+/// continuation; the LAST column's overflowing
+/// <see cref="BlockContinuation"/> (if any) lives in
+/// <paramref name="PerChildLayouterState"/>, and the FIRST column on
+/// the next page resumes that nested <c>BlockLayouter</c> at the same
+/// place.</para>
 ///
-/// <para><paramref name="NextColumnIndex"/> identifies the next column
-/// to start emitting into when the outer multicol box resumes on the
-/// next page. <paramref name="LayouterState"/> per Phase 3 review fix
-/// #7 — opaque state (e.g., the in-progress
-/// <see cref="BlockContinuation"/> from the column that overflowed)
-/// for the resume page to feed back into the inner BlockLayouter.</para>
+/// <para><paramref name="NextChildIndex"/> identifies the next child
+/// of the multicol container to start emitting content from when the
+/// outer multicol box resumes on the next page. The valid range on
+/// entry is <c>[0, container.Children.Count]</c>; the upper bound is
+/// the degenerate "all children committed" case (no continuation
+/// would actually be produced for that case — the layouter returns
+/// AllDone — but the bound is included for symmetry with
+/// <see cref="BlockContinuation.ResumeAtChild"/>).</para>
+///
+/// <para><paramref name="ConsumedBlockSize"/> per Phase 3 Task 14
+/// cycle 2 — cumulative block-axis size committed across PRIOR pages,
+/// matching <see cref="BlockContinuation.ConsumedBlockSize"/>'s
+/// semantics. Currently informational (recorded for cost-model
+/// lookahead in future cycles); the resume-page MulticolLayouter
+/// recomputes its own page-relative offsets from
+/// <paramref name="NextChildIndex"/> alone.</para>
+///
+/// <para><paramref name="PerChildLayouterState"/> per Phase 3 review
+/// fix #7 + Task 14 cycle 2 — opaque carrier for the LAST-column-on-
+/// prior-page nested layouter's resume state (e.g., a
+/// <see cref="BlockContinuation"/> from the column that overflowed
+/// mid-child). When non-null on resume, the FIRST column on the
+/// resumed page hands this back to the nested <c>BlockLayouter</c>
+/// as <c>incomingContinuation</c>; the column picks up at the right
+/// place inside <paramref name="NextChildIndex"/> rather than
+/// re-starting that child's emission. Cycle 2 stores
+/// <see cref="BlockContinuation"/> instances here; future cycles may
+/// also carry nested table / flex / grid continuations through the
+/// same seam (mirrors how <see cref="BlockContinuation.LayouterState"/>
+/// carries <see cref="TableContinuation"/>).</para>
 /// </summary>
 internal sealed record MulticolContinuation(
-    int NextColumnIndex,
-    object? LayouterState = null) : LayoutContinuation;
+    int NextChildIndex,
+    double ConsumedBlockSize = 0.0,
+    object? PerChildLayouterState = null) : LayoutContinuation;

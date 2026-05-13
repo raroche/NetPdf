@@ -216,20 +216,17 @@ internal static class PaginateDiagnosticCodes
     ///   index. The layouter truncates the remainder + emits the
     ///   diagnostic to surface the loss. Analog to TableLayouter's
     ///   single-oversized-row case.</item>
-    ///   <item><b>Deep-nested multicol (BlockLayouter recursion):</b>
-    ///   cycle 2's recursion-continuation propagation handles ONLY
-    ///   the depth==1 case (= the multicol is a direct descendant of
-    ///   the top-level child of <c>_rootBox</c> dispatched by the
-    ///   main <c>AttemptLayout</c> loop). For multicols nested
-    ///   deeper (e.g., <c>html &gt; body &gt; div.multicol</c> from a
-    ///   real HTML document), the <c>PageComplete</c> result is
-    ///   captured but can't propagate through the recursion's single-
-    ///   level callback. The diagnostic fires + the remainder is
-    ///   truncated. Sub-cycle 3+ may generalize multi-level
-    ///   recursive propagation, mirroring how Task 13 cycle 2
-    ///   hardening Finding 1 added single-level propagation for
-    ///   <c>TableContinuation</c>.</item>
     /// </list>
+    ///
+    /// <para>Per post-PR-#57 review #2 Finding #2 — the deep-nested
+    /// branch of this diagnostic (multicol at recursion depth ≥ 2
+    /// inside <c>EmitBlockSubtreeRecursive</c>) was REMOVED in the
+    /// cycle 2 hardening (Finding #1)'s multi-level continuation
+    /// propagation lift. The recursion now returns a chained
+    /// <c>LayoutContinuation</c> that flows up through any DOM depth,
+    /// so deep-nested multicols split cleanly. This diagnostic now
+    /// fires only for the no-forward-progress fallback case described
+    /// above.</para>
     ///
     /// <para>Pre-cycle-2 the diagnostic fired for ANY overflow past
     /// the N columns; cycle 1 always truncated. Cycle 2 ships the

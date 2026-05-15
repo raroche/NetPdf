@@ -205,6 +205,52 @@ internal static class ComputedStyleLayoutExtensions
             ? slot.AsLengthPx()
             : 16.0;
     }
+
+    /// <summary>Per Phase 3 Task 14 cycle 3 — decode
+    /// <see cref="PropertyId.ColumnFill"/> into a
+    /// <see cref="ColumnFillValue"/>. Per CSS Multi-column L1 §3.4
+    /// the property admits three keywords: <c>balance</c> (the spec
+    /// default — columns should have approximately equal block-axis
+    /// extent), <c>balance-all</c> (same as <c>balance</c> but applies
+    /// to all fragmentainers, not just the last — see deferrals doc
+    /// for the last-fragmentainer special-case which is sub-cycle 2+
+    /// scope), and <c>auto</c> (serial fill, left-to-right, no
+    /// balancing — the cycle 1+2 behavior).
+    ///
+    /// <para>Keyword indices match the source-gen'd table in
+    /// <see cref="NetPdf.Css.ComputedValues.PropertyResolvers.KeywordResolver"/>:
+    /// 0=balance, 1=balance-all, 2=auto. The spec default (= the
+    /// initial value when the slot is unset or non-keyword) is
+    /// <see cref="ColumnFillValue.Balance"/>.</para></summary>
+    public static ColumnFillValue ReadColumnFill(this ComputedStyle style)
+    {
+        var keyword = style.ReadKeywordOrDefault(PropertyId.ColumnFill, defaultIndex: 0);
+        return keyword switch
+        {
+            1 => ColumnFillValue.BalanceAll,
+            2 => ColumnFillValue.Auto,
+            _ => ColumnFillValue.Balance,
+        };
+    }
+
+    /// <summary>Per Phase 3 Task 14 cycle 3 — predicate distinguishing
+    /// <c>height: auto</c> from an explicit <c>height: 0</c> or
+    /// <c>height: &lt;positive px&gt;</c> on a box's computed style.
+    /// Returns <see langword="true"/> when the height slot's tag is
+    /// anything OTHER than <see cref="ComputedSlotTag.LengthPx"/> (=
+    /// the keyword <c>auto</c>, or unset).
+    ///
+    /// <para>Mirrors <c>BlockLayouter.IsHeightAuto</c> (private
+    /// instance method) but exposed at the extension layer so
+    /// <see cref="MulticolLayouter"/> can gate its
+    /// <c>column-fill: balance</c> activation on the same predicate
+    /// without taking a dependency on BlockLayouter's
+    /// instance.</para></summary>
+    public static bool IsHeightAuto(this Boxes.Box box)
+    {
+        var slot = box.Style.Get(PropertyId.Height);
+        return slot.Tag != ComputedSlotTag.LengthPx;
+    }
 }
 
 /// <summary>Per Phase 3 Task 12 sub-cycle 3 — typed decode of
@@ -229,4 +275,28 @@ internal enum TableLayoutMode : byte
 {
     Auto = 0,
     Fixed = 1,
+}
+
+/// <summary>Per Phase 3 Task 14 cycle 3 — typed decode of
+/// <see cref="PropertyId.ColumnFill"/>. CSS Multi-column L1 §3.4
+/// admits <c>balance</c> (the spec default — columns should have
+/// approximately equal block-axis extent on every fragmentainer
+/// except the last), <c>balance-all</c> (same behavior on EVERY
+/// fragmentainer, including the last — sub-cycle 2+ scope; cycle 3
+/// treats this identically to <c>balance</c>), and <c>auto</c> (no
+/// balancing — columns fill serially left-to-right, the cycle 1+2
+/// behavior).
+///
+/// <para>Cycle 3 only activates balancing for
+/// <c>column-fill: balance</c> (or <c>balance-all</c>) AND
+/// <c>height: auto</c>. Explicit-height containers use the cycle 1+2
+/// serial-fill path regardless of <c>column-fill</c> — matches the
+/// conservative Prince / WeasyPrint behavior + avoids the
+/// over-shrinking that would otherwise drop content out of a fixed-
+/// height container.</para></summary>
+internal enum ColumnFillValue : byte
+{
+    Balance = 0,
+    BalanceAll = 1,
+    Auto = 2,
 }

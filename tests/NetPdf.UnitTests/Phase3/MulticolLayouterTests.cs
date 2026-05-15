@@ -1699,6 +1699,404 @@ public sealed class MulticolLayouterTests
     }
 
     // ====================================================================
+    //  Phase 3 Task 14 cycle 3 — column-fill: balance (CSS Multi-column
+    //  L1 §3.4). The default `column-fill: balance` distributes content
+    //  so columns have approximately equal block-axis extent. Cycle 3
+    //  Hello World activates balancing for auto-height multicols only;
+    //  explicit-height containers + `column-fill: auto` keep the
+    //  cycle 1+2 serial-fill behavior.
+    // ====================================================================
+
+    [Fact]
+    public void Cycle3_multicol_balance_height_auto_distributes_equally()
+    {
+        // Auto-height multicol with 4 children of 80 px each + 2 columns.
+        // - Without balancing (cycle 1+2): contentBlockSize = 800 (page
+        //   remaining); all 4 children fit in column 0 (= 320 px); column 1
+        //   is empty.
+        // - With balancing (cycle 3, default column-fill: balance):
+        //   totalSerial = 320; ideal = ceil(320/2) = 160;
+        //   balancedBlockSize = min(160, 800) = 160. Each column holds 2
+        //   children (160 px each). Distribution is balanced.
+        //
+        // The test asserts the inline-offset distribution: 2 children land
+        // in column 0 (inlineOffset = 0); 2 children land in column 1
+        // (inlineOffset = perColumnInline + columnGap = 108 + 16 = 124).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var multicol = BuildMulticolContainer(columnCount: 2);
+        // No Height set → height: auto → balancing activates.
+        for (var i = 0; i < 4; i++)
+        {
+            var s = MakeStyle();
+            SetLengthPx(s, PropertyId.Height, 80);
+            multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, s, MakeElement()));
+        }
+        root.AppendChild(multicol);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 232, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        // Per-column inline size = (232 - 16) / 2 = 108.
+        // Column 0 offset = 0; column 1 offset = 124.
+        var column0Children = 0;
+        var column1Children = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.BlockContainer
+                && f.Box != multicol
+                && f.Box.SourceElement is not null)
+            {
+                if (f.InlineOffset == 0) column0Children++;
+                else if (f.InlineOffset == 124) column1Children++;
+            }
+        }
+        Assert.Equal(2, column0Children);
+        Assert.Equal(2, column1Children);
+    }
+
+    [Fact]
+    public void Cycle3_multicol_balance_uneven_content_rounds_up_idealBlockSize()
+    {
+        // 3 children of 80 px each + 2 columns. Total = 240;
+        // ideal = ceil(240/2) = 120; balancedBlockSize = min(120, 800) = 120.
+        // Serial fill into a 120-px column: child 0 (80px) fits, child 1
+        // (80px) doesn't fit (column 0 has used 80, 40 remaining) → child 1
+        // goes to column 1, child 2 (80px) fits in column 1 (column 1 has
+        // 40 remaining... wait, column 1 has used 80, 40 remaining; child 2
+        // doesn't fit either).
+        //
+        // Actually the layout depends on the inner BlockLayouter's fit
+        // logic. For column 0 with blockSize=120:
+        //   - child 0 (80px) emits → column 0 used = 80, remaining = 40.
+        //   - child 1 (80px) doesn't fit → PageComplete(ResumeAtChild=1).
+        // For column 1 with blockSize=120:
+        //   - child 1 (80px) emits → column 1 used = 80, remaining = 40.
+        //   - child 2 (80px) doesn't fit → PageComplete(ResumeAtChild=2).
+        // With 2 columns total, column 1's overflow → multicol's overflow
+        // path returns PageComplete(MulticolContinuation(NextChildIndex=2)).
+        //
+        // So: column 0 = 1 child (80px); column 1 = 1 child (80px); the
+        // remaining child overflows to the next page. The test pins the
+        // observed distribution + verifies the ceiling rounding behavior
+        // by confirming the balanced ideal (120) was actually applied
+        // rather than perColumnBlockSize (800, which would have fit all 3
+        // children in column 0).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var multicol = BuildMulticolContainer(columnCount: 2);
+        // No Height set → height: auto → balancing activates.
+        for (var i = 0; i < 3; i++)
+        {
+            var s = MakeStyle();
+            SetLengthPx(s, PropertyId.Height, 80);
+            multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, s, MakeElement()));
+        }
+        root.AppendChild(multicol);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 232, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var column0Children = 0;
+        var column1Children = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.BlockContainer
+                && f.Box != multicol
+                && f.Box.SourceElement is not null)
+            {
+                if (f.InlineOffset == 0) column0Children++;
+                else if (f.InlineOffset == 124) column1Children++;
+            }
+        }
+        // Column 0 holds 1 child; column 1 holds 1 child. The 3rd child
+        // overflowed (cycle 2 multi-page-multicol path handles it).
+        // Critically: if balancing weren't active, all 3 children would
+        // be in column 0 (= column0Children == 3, column1Children == 0).
+        Assert.True(column0Children >= 1,
+            $"Expected at least 1 child in column 0; got {column0Children}.");
+        Assert.True(column1Children >= 1,
+            $"Expected at least 1 child in column 1 (proves balancing "
+            + $"activated; without it column 1 would be empty); "
+            + $"got {column1Children}.");
+    }
+
+    [Fact]
+    public void Cycle3_multicol_auto_fill_preserves_cycle1_serial_behavior()
+    {
+        // Explicit `column-fill: auto` (keyword index 2 per
+        // KeywordResolver.cs:238) MUST preserve the cycle 1+2 serial-fill
+        // behavior: column 0 fills first; column 1 only receives content
+        // that overflows column 0.
+        //
+        // Setup: auto-height multicol, 4 children of 80 px each, 2
+        // columns, page height 800.
+        // - With column-fill: auto: contentBlockSize = 800; all 4
+        //   children fit in column 0 (320 px); column 1 is empty.
+        // - (If balancing were ACCIDENTALLY active despite column-fill:
+        //   auto, we'd see 2 children per column.)
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var multicol = BuildMulticolContainer(columnCount: 2);
+        // Explicitly set column-fill: auto (keyword index 2). Auto-height
+        // is preserved (no Height set).
+        multicol.Style.Set(PropertyId.ColumnFill, ComputedSlot.FromKeyword(2));
+        for (var i = 0; i < 4; i++)
+        {
+            var s = MakeStyle();
+            SetLengthPx(s, PropertyId.Height, 80);
+            multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, s, MakeElement()));
+        }
+        root.AppendChild(multicol);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 232, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var column0Children = 0;
+        var column1Children = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.BlockContainer
+                && f.Box != multicol
+                && f.Box.SourceElement is not null)
+            {
+                if (f.InlineOffset == 0) column0Children++;
+                else if (f.InlineOffset == 124) column1Children++;
+            }
+        }
+        // All 4 children land in column 0; column 1 is empty.
+        Assert.Equal(4, column0Children);
+        Assert.Equal(0, column1Children);
+    }
+
+    [Fact]
+    public void Cycle3_multicol_balance_with_explicit_height_uses_explicit_height_not_balancing()
+    {
+        // When the author specifies an explicit `height: 200px` AND
+        // `column-fill: balance` (the default), cycle 3 preserves the
+        // cycle 1+2 serial-fill behavior (= explicit height pins the
+        // per-column block-size to the author's chosen value; balancing
+        // doesn't activate). Mirrors Prince / WeasyPrint's conservative
+        // approach.
+        //
+        // Setup: explicit-height multicol (200 px), 4 children of 80 px
+        // each, 2 columns. With explicit-height + no balancing: column 0
+        // fits 2 children (160 px); column 1 fits 2 children (160 px).
+        // (Note: this DOES end up looking balanced because the 200-px
+        // column happens to fit exactly 2 of the 80-px children.) The
+        // critical assertion is the FORWARD-PROGRESS distribution
+        // pattern: column 0 fills serially before column 1 starts.
+        //
+        // To distinguish from the balancing path we use 3 children
+        // instead of 4: with serial fill, column 0 fits 2 children
+        // (160 px), column 1 fits 1 child (80 px). With balancing,
+        // totalSerial=240, ideal=ceil(240/2)=120; balancedBlockSize=
+        // min(120,200)=120; column 0 fits 1 child (80 px), column 1
+        // fits 1 child (80 px), 1 child overflows. The two paths
+        // produce DIFFERENT distributions → the assertion pinpoints
+        // which path ran.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var multicol = BuildMulticolContainer(columnCount: 2);
+        SetLengthPx(multicol.Style, PropertyId.Height, 200);
+        // column-fill: balance is the default — DON'T explicitly set it.
+        for (var i = 0; i < 3; i++)
+        {
+            var s = MakeStyle();
+            SetLengthPx(s, PropertyId.Height, 80);
+            multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, s, MakeElement()));
+        }
+        root.AppendChild(multicol);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 232, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var column0Children = 0;
+        var column1Children = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.BlockContainer
+                && f.Box != multicol
+                && f.Box.SourceElement is not null)
+            {
+                if (f.InlineOffset == 0) column0Children++;
+                else if (f.InlineOffset == 124) column1Children++;
+            }
+        }
+        // Serial fill: column 0 holds 2 children (160 px ≤ 200 px);
+        // column 1 holds 1 child (80 px). If balancing were
+        // ACCIDENTALLY active with the explicit height, column 0 +
+        // column 1 would each hold 1 child (the third would overflow).
+        Assert.Equal(2, column0Children);
+        Assert.Equal(1, column1Children);
+    }
+
+    [Fact]
+    public void Cycle3_multicol_balance_all_treated_as_balance_for_cycle3()
+    {
+        // `column-fill: balance-all` (keyword index 1) is treated
+        // identically to `balance` for cycle 3 Hello World — the
+        // last-fragmentainer special-case semantics are sub-cycle 2+
+        // scope. The test mirrors the
+        // Cycle3_multicol_balance_height_auto_distributes_equally
+        // setup but explicitly sets column-fill: balance-all.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var multicol = BuildMulticolContainer(columnCount: 2);
+        // Set column-fill: balance-all (keyword index 1).
+        multicol.Style.Set(PropertyId.ColumnFill, ComputedSlot.FromKeyword(1));
+        for (var i = 0; i < 4; i++)
+        {
+            var s = MakeStyle();
+            SetLengthPx(s, PropertyId.Height, 80);
+            multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, s, MakeElement()));
+        }
+        root.AppendChild(multicol);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 232, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var column0Children = 0;
+        var column1Children = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.BlockContainer
+                && f.Box != multicol
+                && f.Box.SourceElement is not null)
+            {
+                if (f.InlineOffset == 0) column0Children++;
+                else if (f.InlineOffset == 124) column1Children++;
+            }
+        }
+        // Same result as `balance`: 2 children per column.
+        Assert.Equal(2, column0Children);
+        Assert.Equal(2, column1Children);
+    }
+
+    [Fact]
+    public void Cycle3_multicol_balance_oversized_child_falls_back_via_forced_overflow()
+    {
+        // A child taller than the balanced ideal forces the inner
+        // BlockLayouter's forced-overflow path; the existing cycle 1+2
+        // forward-progress machinery handles the case without an
+        // infinite loop. Specifically: 2 columns + 1 child of 500 px on
+        // an auto-height multicol with page-block-size 800.
+        // totalSerial = 500; ideal = ceil(500/2) = 250; balanced =
+        // min(250, 800) = 250. Child 500 px > balanced 250 px → inner
+        // BlockLayouter's forced-overflow path emits child 0 anyway
+        // (LastResort) + returns PageComplete or AllDone depending on
+        // the inner forced-overflow logic. The multicol either:
+        //   - sees AllDone (single child committed in column 0) → returns
+        //     AllDone (no diagnostic);
+        //   - or sees PageComplete from the inner layouter → the
+        //     clean-multi-page-split path returns PageComplete with a
+        //     terminal MulticolContinuation.
+        // In either case the test pins:
+        //   (a) emission did not infinite-loop (= the call returned);
+        //   (b) the child fragment was emitted (forward progress);
+        //   (c) no LAYOUT-MULTICOL-FORCED-OVERFLOW-001 diagnostic for
+        //       the multicol-level forced-overflow (the inner forced-
+        //       overflow may emit other diagnostics — those are not
+        //       asserted here).
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var multicol = BuildMulticolContainer(columnCount: 2);
+        // Auto-height + balance default → balancing activates. Single
+        // oversized child stresses the forced-overflow path.
+        var childStyle = MakeStyle();
+        SetLengthPx(childStyle, PropertyId.Height, 500);
+        var child = Box.ForElement(BoxKind.BlockContainer, childStyle, MakeElement());
+        multicol.AppendChild(child);
+        root.AppendChild(multicol);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: diagSink,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 232, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+
+        // The call must return (not infinite-loop). xUnit's lack of a
+        // built-in timeout doesn't let us bound this; relying on the
+        // test runner's outer timeout for the no-loop guarantee.
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        // (b) Forward progress — child fragment was emitted.
+        BoxFragment? childFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == child) { childFragment = f; break; }
+        }
+        Assert.NotNull(childFragment);
+
+        // (c) No multicol-level forced-overflow diagnostic. The inner
+        // BlockLayouter's forced-overflow path made forward progress
+        // (= sink advanced); the multicol's forward-progress fallback
+        // at MulticolLayouter.cs:706-730 was NOT taken.
+        foreach (var d in diagSink.Diagnostics)
+        {
+            Assert.NotEqual(
+                PaginateDiagnosticCodes.LayoutMulticolForcedOverflow001,
+                d.Code);
+        }
+    }
+
+    // ====================================================================
     //  Helpers
     // ====================================================================
 

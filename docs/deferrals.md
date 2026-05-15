@@ -552,13 +552,17 @@ grepping the ID).
 ## multicol-balancing-pagination
 
 - **ID** — `multicol-balancing-pagination`
-- **Status** — `approximated` (cycles 1-2 + cycle 2 hardening ship
-  fixed-column-count + equal-split + multi-page splitting through
-  any recursion depth; balancing + column-width auto-count + column
-  rules + `column-span: all` remain cycle 3+ scope). Phase 3 Task 14
-  cycle 2 hardening Finding #1 lifted the depth==1-only continuation
-  propagation limit — nested multicols at any in-flow recursion
-  depth now split cleanly across pages.
+- **Status** — `approximated` (cycles 1-3 ship fixed-column-count +
+  equal-split + multi-page splitting through any recursion depth +
+  `column-fill: balance` for auto-height containers; column-width
+  auto-count + column rules + `column-span: all` remain cycle 3
+  hardening + cycle 4+ scope). Phase 3 Task 14 cycle 2 hardening
+  Finding #1 lifted the depth==1-only continuation propagation
+  limit — nested multicols at any in-flow recursion depth now split
+  cleanly across pages. Cycle 3 Hello World adds column balancing
+  via a 2-pass algorithm (pre-measure the serial extent → divide by
+  N columns, ceil, clamp ≤ perColumnBlockSize → re-run the column-
+  fill loop with the balanced block-size).
 - **Behavior** — `MulticolLayouter` (Phase 3 Task 14 cycles 1-2)
   recognizes a block container with `column-count: N` (integer ≥ 2)
   as a multicol container. Detection is via
@@ -604,10 +608,37 @@ grepping the ID).
   containing multicol content are still atomic (their out-of-flow
   continuation propagation is deferred under
   `float-continuation-propagation`).
+- **Cycle 3 column balancing** — when computed `column-fill` is
+  `balance` (the spec default) or `balance-all` AND the multicol
+  container has `height: auto`, `MulticolLayouter` runs a 2-pass
+  dry-run / layout sequence: pass 1 serial-fills the multicol's
+  children into a single notional tall column (using a fresh nested
+  `BlockLayouter` with a generous block-size budget of
+  `perColumnBlockSize × columnCount × 2`) + captures the max
+  `BlockOffset + BlockSize` (= `totalSerialExtent`); pass 2 computes
+  `idealBlockSize = ceil(totalSerial / N)`, clamps to
+  `min(ideal, perColumnBlockSize)` + floors at 1.0, then re-runs the
+  column-fill loop with the balanced block-size as the per-column
+  sub-fragmentainer's `blockSize`. Containers with `height: auto`
+  AND `column-fill: auto` keep the cycle 1+2 serial-fill behavior;
+  containers with an explicit `height` also keep the serial path
+  (conservative — matches Prince / WeasyPrint, avoids over-shrink
+  drop-out of fixed-height containers). The 2-pass cost is `O(2N)`
+  block layout per multicol when balancing is active; cycle 3
+  hardening may cache the result per Box.
 - **Missing** —
-  - **Column balancing** (`column-fill: balance` — CSS Multi-column
-    L1 §3.4): cycle 1 fills columns left-to-right serially; columns
-    aren't balanced to roughly-equal heights.
+  - **`column-fill: balance-all` last-fragmentainer semantics** (CSS
+    Multi-column L1 §3.4): cycle 3 treats `balance-all` identically
+    to `balance` (= balance on every fragmentainer except the last
+    is the same as balance on every fragmentainer including the
+    last). The spec distinguishes them only when an explicit-height
+    multicol spans multiple fragmentainers — sub-cycle 2+ scope.
+  - **Column balancing with explicit `height`** (CSS Multi-column L1
+    §3.4): cycle 3 only balances `height: auto` multicols. When the
+    author specifies an explicit `height` AND `column-fill: balance`,
+    the spec calls for balancing within the explicit height
+    constraint; cycle 3 conservatively falls back to serial fill to
+    avoid the over-shrink drop-out failure mode. Sub-cycle 2+ work.
   - **`column-width` + automatic column count** (CSS Multi-column L1
     §3.1): cycle 1 reads `column-count` only. When `column-width` is
     declared without `column-count`, sub-cycle 2 will compute
@@ -632,10 +663,16 @@ grepping the ID).
   case where multicol content vanishes (= the forced-overflow
   diagnostic fires).
 - **Owner files** —
-  - `src/NetPdf.Layout/Layouters/MulticolLayouter.cs` — cycles 1-2
+  - `src/NetPdf.Layout/Layouters/MulticolLayouter.cs` — cycles 1-3
     implementation; cycle 2 adds the multi-page resume path via
-    `MulticolContinuation`. Sub-cycle 3+ will add balancing +
-    column-width-driven counting + column rules.
+    `MulticolContinuation`; cycle 3 adds `column-fill: balance` via
+    `PreMeasureTotalSerialExtent` + the 2-pass balanced-block-size
+    pipeline. Cycle 3 hardening + sub-cycle 4+ will add column-width
+    auto-count + column rules + `column-span: all`.
+  - `src/NetPdf.Layout/Layouters/ComputedStyleLayoutExtensions.cs`
+    — cycle 3 adds `ReadColumnFill()` (returning `ColumnFillValue`)
+    + `IsHeightAuto()` (the auto-height predicate the balancing gate
+    consumes).
   - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — the dispatch
     site that recognizes multicol containers + invokes
     `MulticolLayouter`; cycle 2 adds the
@@ -645,8 +682,9 @@ grepping the ID).
     — cycle 1 reserved the type; cycle 2 expands it to the
     `(NextChildIndex, ConsumedBlockSize, PerChildLayouterState)`
     contract.
-- **Added** — Phase 3 Task 14 cycle 1; expanded in cycle 2 (this
-  branch).
+- **Added** — Phase 3 Task 14 cycle 1; expanded in cycle 2; cycle 3
+  ships `column-fill: balance` (auto-height containers) via a 2-pass
+  pre-measure + balanced layout pipeline.
 - **Removal condition** — column balancing
   (`column-fill: balance`) ships; `column-width` derives column
   count when `column-count` is `auto`; column rules paint;

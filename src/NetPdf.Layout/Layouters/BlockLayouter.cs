@@ -1657,6 +1657,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     // the wrapper child's first slice to THIS page;
                     // any deeper break the recursion encounters still
                     // needs a continuation, otherwise content vanishes.
+                    //
+                    // Per post-PR-#57 review #2 Finding #1 — preserve
+                    // the full chain (no flatten). See the matching
+                    // comment at the regular recursive-walk site below
+                    // for the rationale.
                     var forcedNestedRet = EmitBlockSubtreeRecursive(
                         child,
                         parentBlockOffset: forcedOverflowChildBlockOffset,
@@ -1671,7 +1676,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                                 ResumeAtChild: childIdx,
                                 ConsumedBlockSize: priorPagesConsumed
                                     + (fragmentainer.UsedBlockSize - _pageStartUsedBlockSize),
-                                LayouterState: forcedDeep.LayouterState ?? forcedDeep),
+                                LayouterState: forcedDeep),
                             cost: 0);
                     }
                     // Per Phase 3 Task 12 sub-cycle 1 hardening
@@ -1944,6 +1949,24 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // recursion's chain-unwrap branch finds the leaf at
             // depth==1's first matching child (the cycle-1 dispatch
             // shape).
+            // Per post-PR-#57 review #2 Finding #1 — chain peel only.
+            // With the no-flatten chain contract (see the stitching
+            // comment below), the chain always has DOM-depth layers
+            // and the leaf (Table/MulticolContinuation) is wrapped in a
+            // BlockContinuation whose `ResumeAtChild` names its
+            // container's idx in the matching parent. So a chain head
+            // arriving at the recursive-walk site whose `LayouterState`
+            // is itself a Table/MulticolContinuation leaf means the
+            // leaf's container IS the current child — the cycle-1
+            // direct-dispatch path fires earlier and consumes that
+            // chain. By the time we reach this switch, the only valid
+            // case is `BlockContinuation innerBlock` (a deeper level).
+            //
+            // The prior hardcoded-`rc=0` re-wrap branches for Table /
+            // Multicol leaves at this site were workarounds for the
+            // flatten that dropped intermediate indices; removed for
+            // correctness (they discarded the leaf's actual parent
+            // idx when the chain had been flattened).
             LayoutContinuation? recIncoming = null;
             if (incomingBlock?.LayouterState is LayoutContinuation lc
                 && childIdx == incomingBlock.ResumeAtChild
@@ -1952,12 +1975,6 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 recIncoming = lc switch
                 {
                     BlockContinuation innerBlock => innerBlock,
-                    TableContinuation tc when child.Kind is not (BoxKind.Table or BoxKind.InlineTable)
-                        => new BlockContinuation(
-                            ResumeAtChild: 0, ConsumedBlockSize: 0, LayouterState: tc),
-                    MulticolContinuation mc when !IsMulticolContainer(child)
-                        => new BlockContinuation(
-                            ResumeAtChild: 0, ConsumedBlockSize: 0, LayouterState: mc),
                     _ => null,
                 };
                 if (recIncoming is not null)
@@ -1978,11 +1995,19 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
 
             // Stitching (up): on non-null return propagate as a
             // `PageComplete(BlockContinuation(rc=childIdx, ls=<chain>))`
-            // to the outer LayoutRetryCoordinator. The `LayouterState
-            // ?? deepRet` fallback flattens the depth==1 case (where
-            // the inner BC's `LayouterState` is a bare Table/Multicol
-            // continuation — the cycle-1 protocol shape preserved for
-            // back-compat) but preserves the chain for depth >= 2.
+            // to the outer LayoutRetryCoordinator.
+            //
+            // Per post-PR-#57 review #2 Finding #1 — preserve the full
+            // chain (do NOT flatten `deepRet.LayouterState ?? deepRet`).
+            // The flatten dropped the recursion-depth's wrap layer,
+            // discarding its `ResumeAtChild` index. For DOM shapes where
+            // an intermediate container's matching child is at a
+            // non-zero index (e.g., `<body><spacer/><multicol/>` where
+            // multicol is body's idx 1), the dropped index caused the
+            // chain to misroute on resume — the inner BC's rc was
+            // interpreted against the wrong level's child list, missing
+            // its target. The chain now has DOM-depth layers; every
+            // intermediate container's child index is preserved.
             if (recursiveReturn is BlockContinuation deepRet)
             {
                 return LayoutAttemptResult.PageComplete(
@@ -1990,7 +2015,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         ResumeAtChild: childIdx,
                         ConsumedBlockSize: priorPagesConsumed
                             + (fragmentainer.UsedBlockSize - _pageStartUsedBlockSize),
-                        LayouterState: deepRet.LayouterState ?? deepRet),
+                        LayouterState: deepRet),
                     cost: 0);
             }
 
@@ -2219,7 +2244,20 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) — indexed
         // iteration so we can match the recursion-chain's
         // ResumeAtChild index against the current child position.
-        for (var childIdx = 0; childIdx < parent.Children.Count; childIdx++)
+        //
+        // Per post-PR-#57 review #2 Finding #1 — skip-to-resume.
+        // When the recursion receives a chain head with `ResumeAtChild
+        // = N`, the prior page already committed this subtree's
+        // children at indices [0, N). Re-emitting them on the resume
+        // page would duplicate content. Start iteration at `N` so the
+        // pre-resume children are correctly skipped. (When the chain
+        // head is null — i.e., the recursion is layering down a fresh
+        // subtree, not resuming — startIdx defaults to 0 and the full
+        // child list is walked.) The top-level AttemptLayout loop has
+        // a symmetric skip via `startChildIdx`; this brings the
+        // recursion in line.
+        var startIdx = incomingBlockChain?.ResumeAtChild ?? 0;
+        for (var childIdx = startIdx; childIdx < parent.Children.Count; childIdx++)
         {
             var child = parent.Children[childIdx];
             cancellationToken.ThrowIfCancellationRequested();
@@ -2695,48 +2733,27 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // block at ANY depth can now propagate its PageComplete
             // up via the chain-of-BlockContinuation return protocol.
             //
-            // Routing rules at this recursion site:
-            //   (a) If the chain head's ResumeAtChild matches AND the
-            //       LayouterState is a BlockContinuation, peel one
-            //       layer + pass it down (the LayouterState's leaf
-            //       sits at a deeper level than this).
-            //   (b) If the chain head's ResumeAtChild matches AND the
-            //       LayouterState is a Table/Multicol leaf BUT the
-            //       current child is a block-flow container (= NOT a
-            //       Table/Multicol container), the leaf belongs to a
-            //       deeper level too — pass the whole chain head down
-            //       (re-wrapped at rc=0 so the deeper recursion can
-            //       find the leaf at its own first matching child).
-            //   (c) Otherwise pass null (the leaf was either consumed
-            //       at this level's Table/Multicol direct-dispatch
-            //       branch, or the chain doesn't apply to this child).
+            // Per post-PR-#57 review #2 Finding #1 — chain peel only.
+            // The chain has DOM-depth layers (top-level no-flatten +
+            // recursion-level skip-to-resume preserve every
+            // intermediate container's child index). A leaf
+            // (Table/MulticolContinuation) in the chain's LayouterState
+            // means the leaf's container IS the matching child — the
+            // Table/Multicol direct-dispatch branches above consume it
+            // before this recursive-walk site is reached. So the only
+            // valid chain-head case here is `BlockContinuation
+            // deeperBlock` (the next level down).
+            //
+            // The prior hardcoded-`rc=0` re-wrap branches for Table /
+            // Multicol leaves were workarounds for the flatten that
+            // dropped intermediate indices; removed for correctness.
             LayoutContinuation? incomingForChild = null;
             if (incomingBlockChain is not null
-                && childIdx == incomingBlockChain.ResumeAtChild)
+                && childIdx == incomingBlockChain.ResumeAtChild
+                && incomingBlockChain.LayouterState is BlockContinuation deeperBlock)
             {
-                if (incomingBlockChain.LayouterState is BlockContinuation deeperBlock)
-                {
-                    incomingForChild = deeperBlock;
-                    incomingBlockChain = null;
-                }
-                else if (incomingBlockChain.LayouterState is TableContinuation tcLeaf
-                    && child.Kind is not (BoxKind.Table or BoxKind.InlineTable))
-                {
-                    // The leaf is a table continuation but the current
-                    // child is a block-flow container — push the leaf
-                    // wrapped in a fresh BC down to the deeper recursion.
-                    incomingForChild = new BlockContinuation(
-                        ResumeAtChild: 0, ConsumedBlockSize: 0, LayouterState: tcLeaf);
-                    incomingBlockChain = null;
-                }
-                else if (incomingBlockChain.LayouterState is MulticolContinuation mcLeaf
-                    && !IsMulticolContainer(child))
-                {
-                    // Same as the TableContinuation case for multicol.
-                    incomingForChild = new BlockContinuation(
-                        ResumeAtChild: 0, ConsumedBlockSize: 0, LayouterState: mcLeaf);
-                    incomingBlockChain = null;
-                }
+                incomingForChild = deeperBlock;
+                incomingBlockChain = null;
             }
             var nestedRet = EmitBlockSubtreeRecursive(
                 child,

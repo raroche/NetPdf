@@ -1584,6 +1584,120 @@ public sealed class MulticolLayouterTests
         Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
     }
 
+    [Fact]
+    public void Cycle2_multicol_at_non_first_position_in_parent_resumes_correctly()
+    {
+        // Per post-PR-#57 review #2 Finding #1 — when a multicol
+        // container is at a NON-ZERO index in its parent, the chain's
+        // intermediate index must be preserved on the way up AND
+        // honored as a skip-to-resume target on the way down.
+        //
+        // Pre-fix bugs:
+        //   (a) The top-level `deepRet.LayouterState ?? deepRet`
+        //       flatten dropped one chain layer, collapsing the
+        //       3-layer chain `BC[body] > BC[multicol@idx-N] > Mc`
+        //       to the 2-layer `BC[body] > Mc`. On resume, the inner
+        //       BC's rc=N was lost.
+        //   (b) The leaf-re-wrap branches in the chain-unwrap switch
+        //       hardcoded `ResumeAtChild=0`, so even when the chain
+        //       reached the recursion the leaf was misrouted to the
+        //       first child instead of child N.
+        //   (c) The recursion's for loop started at childIdx=0, so
+        //       even with a correctly-routed chain it would re-emit
+        //       children at idx [0, N) that were already committed on
+        //       the prior page.
+        //
+        // DOM: root > body where body.Children = [
+        //          spacer (idx 0, h=50),
+        //          multicol (idx 1, col-count=2, h=100, 4 children of
+        //                    h=80 each)
+        //      ]. Page 1 emits spacer + multicol's first 2 children
+        // (c0 in col 0, c1 in col 1, c2 + c3 overflow). Page 2 should
+        // resume the multicol at child index 2 and emit c2 + c3
+        // WITHOUT re-emitting the spacer.
+        var sink1 = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+
+        Box BuildRoot()
+        {
+            var root = Box.CreateRoot(MakeStyle());
+            var body = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+
+            var spacerStyle = MakeStyle();
+            SetLengthPx(spacerStyle, PropertyId.Height, 50);
+            body.AppendChild(Box.ForElement(BoxKind.BlockContainer, spacerStyle, MakeElement()));
+
+            var multicol = BuildMulticolContainer(columnCount: 2);
+            SetLengthPx(multicol.Style, PropertyId.Height, 100);
+            for (var i = 0; i < 4; i++)
+            {
+                var s = MakeStyle();
+                SetLengthPx(s, PropertyId.Height, 80);
+                multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, s, MakeElement()));
+            }
+            body.AppendChild(multicol);
+            root.AppendChild(body);
+            return root;
+        }
+
+        // === Page 1 ===
+        var root1 = BuildRoot();
+        using var layouter1 = new BlockLayouter(
+            rootBox: root1, sink: sink1,
+            incomingContinuation: null,
+            diagnostics: diagSink);
+        var ctx1 = new FragmentainerContext(contentInlineSize: 232, blockSize: 800);
+        var layoutCtx1 = new LayoutContext(ctx1) { Diagnostics = diagSink };
+        using var resolver1 = new BreakResolver();
+        var result1 = layouter1.AttemptLayout(ctx1, ref layoutCtx1, resolver1,
+            LayoutAttemptStrategy.LastResort);
+
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result1.Outcome);
+        // Chain: BC[rc=0 body in root] > BC[rc=1 multicol in body] >
+        // MulticolContinuation. The INNER BC's rc=1 is the regression
+        // marker — pre-fix the flatten dropped it.
+        var topBc1 = Assert.IsType<BlockContinuation>(result1.Continuation);
+        Assert.Equal(0, topBc1.ResumeAtChild);
+        var bcInner1 = Assert.IsType<BlockContinuation>(topBc1.LayouterState);
+        Assert.Equal(1, bcInner1.ResumeAtChild);
+        var mcCont1 = Assert.IsType<MulticolContinuation>(bcInner1.LayouterState);
+        Assert.Equal(2, mcCont1.NextChildIndex);
+
+        // === Page 2 (resume with the chained continuation) ===
+        var sink2 = new RecordingFragmentSink();
+        var root2 = BuildRoot();
+        using var layouter2 = new BlockLayouter(
+            rootBox: root2, sink: sink2,
+            incomingContinuation: topBc1,
+            diagnostics: diagSink);
+        var ctx2 = new FragmentainerContext(contentInlineSize: 232, blockSize: 800);
+        var layoutCtx2 = new LayoutContext(ctx2) { Diagnostics = diagSink };
+        using var resolver2 = new BreakResolver();
+        var result2 = layouter2.AttemptLayout(ctx2, ref layoutCtx2, resolver2,
+            LayoutAttemptStrategy.LastResort);
+
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result2.Outcome);
+
+        // Page 2 must NOT re-emit the spacer (height 50). The only
+        // BlockContainer leaf fragments (no children) on page 2 should
+        // be the 2 multicol children at height 80 — c2 and c3.
+        var leafBlocks = new List<BoxFragment>();
+        foreach (var f in sink2.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.BlockContainer
+                && f.Box.Children.Count == 0)
+            {
+                leafBlocks.Add(f);
+            }
+        }
+        Assert.Equal(2, leafBlocks.Count);
+        foreach (var f in leafBlocks)
+        {
+            Assert.InRange(f.BlockSize, 79, 81);  // multicol-child height = 80
+            Assert.NotEqual(50.0, f.BlockSize);   // spacer's distinct height
+        }
+    }
+
     // ====================================================================
     //  Helpers
     // ====================================================================

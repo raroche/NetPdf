@@ -463,11 +463,17 @@ public sealed class MulticolLayouterProductionTests
 
         Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
         var topBc = Assert.IsType<BlockContinuation>(result.Continuation);
-        // Chain: BlockContinuation > BlockContinuation > MulticolContinuation
-        // (top wraps div1's recursion descent; the inner BC wraps div2's
-        // descent; the leaf is the MulticolContinuation).
+        // Per post-PR-#57 review #2 Finding #1 — chain has DOM-depth
+        // layers (the flatten that dropped one intermediate index has
+        // been removed). For `root > div1 > div2 > multicol` the chain
+        // is BC > BC > BC > MulticolContinuation:
+        //   topBc      → wraps div1's recursion descent
+        //   bcLevel1   → wraps div2's recursion descent
+        //   bcLevel2   → wraps multicol's container position
+        //   mcCont     → the multicol's resume state (leaf)
         var bcLevel1 = Assert.IsType<BlockContinuation>(topBc.LayouterState);
-        var mcCont = Assert.IsType<MulticolContinuation>(bcLevel1.LayouterState);
+        var bcLevel2 = Assert.IsType<BlockContinuation>(bcLevel1.LayouterState);
+        var mcCont = Assert.IsType<MulticolContinuation>(bcLevel2.LayouterState);
         Assert.Equal(2, mcCont.NextChildIndex);
 
         // No forced-overflow diagnostic — the multi-level propagation

@@ -6463,10 +6463,14 @@ public sealed class TableLayouterTests
         // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) —
         // recursion-chain protocol resume for tables. Direct
         // construction: root > div1 > div2 > table(3 rows of 300
-        // each). Drive page 2 by passing an incoming chained
-        // BlockContinuation(rc=0, ls=BlockContinuation(rc=0,
-        // ls=TableContinuation(NextRowIndex=2))). Verify page 2
-        // emits row 2 (the deferred row).
+        // each).
+        //
+        // Per post-PR-#57 review #2 Finding #1 — chain has DOM-depth
+        // layers (no flatten). For `root > div1 > div2 > table` the
+        // resume chain is BC(rc=0 [div1 in root]) > BC(rc=0 [div2 in
+        // div1]) > BC(rc=0 [table in div2]) > TableContinuation. Drive
+        // page 2 by constructing that 4-layer chain and asserting row
+        // 2 (the deferred row) emits.
         var sink = new RecordingFragmentSink();
         var diagSink = new RecordingDiagnosticsSink();
         using var shaper = new SyntheticShaperResolver();
@@ -6497,10 +6501,14 @@ public sealed class TableLayouterTests
             RepeatHead: false, RepeatFoot: false,
             NextRowIndex: 2,
             ConsumedBlockSize: 0);
-        var bcInner = new BlockContinuation(
+        // 4-layer chain mirrors the DOM depth (root > div1 > div2 >
+        // table), one BC per intermediate container.
+        var bcInnermost = new BlockContinuation(
             ResumeAtChild: 0, ConsumedBlockSize: 0, LayouterState: tc);
+        var bcMid = new BlockContinuation(
+            ResumeAtChild: 0, ConsumedBlockSize: 0, LayouterState: bcInnermost);
         var bcTop = new BlockContinuation(
-            ResumeAtChild: 0, ConsumedBlockSize: 0, LayouterState: bcInner);
+            ResumeAtChild: 0, ConsumedBlockSize: 0, LayouterState: bcMid);
 
         using var layouter = new BlockLayouter(
             rootBox: root, sink: sink,
@@ -6519,6 +6527,109 @@ public sealed class TableLayouterTests
         foreach (var f in sink.Fragments)
         {
             if (f.Box.Kind == BoxKind.TableRow) rowCount++;
+        }
+        Assert.Equal(1, rowCount);
+    }
+
+    [Fact]
+    public void Cycle2_table_at_non_first_position_in_parent_resumes_correctly()
+    {
+        // Per post-PR-#57 review #2 Finding #1 — table version of the
+        // non-zero-intermediate-index regression test. The pre-fix
+        // chain-flatten + leaf-rewrap-with-rc=0 + missing
+        // skip-to-resume would cause the spacer to be re-emitted on
+        // page 2 + the table to restart from row 0 (duplicating page
+        // 1's row 0 + row 1).
+        //
+        // DOM: root > body where body.Children = [
+        //          spacer (idx 0, h=50),
+        //          table (idx 1, 3 rows of h=300 each)
+        //      ]. Fragmentainer block-size = 600. Page 1 emits spacer
+        // (50) + table wrapper containing rows 0 + 1 (cumulative 600).
+        // Row 2 overflows to page 2. Page 2 should resume the table
+        // at row 2 WITHOUT re-emitting the spacer or rows 0 + 1.
+        var sink1 = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        Box BuildRoot()
+        {
+            var root = Box.CreateRoot(MakeStyle());
+            var body = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+
+            var spacerStyle = MakeStyle();
+            SetLengthPx(spacerStyle, PropertyId.Height, 50);
+            body.AppendChild(Box.ForElement(BoxKind.BlockContainer, spacerStyle, MakeElement()));
+
+            var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+            var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+            for (var r = 0; r < 3; r++)
+            {
+                var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+                var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+                var anon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+                var rowContentStyle = MakeStyle();
+                SetLengthPx(rowContentStyle, PropertyId.Height, 300);
+                anon.AppendChild(Box.ForElement(BoxKind.BlockContainer, rowContentStyle, MakeElement()));
+                cell.AppendChild(anon);
+                row.AppendChild(cell);
+                grid.AppendChild(row);
+            }
+            table.AppendChild(grid);
+            body.AppendChild(table);
+            root.AppendChild(body);
+            return root;
+        }
+
+        // === Page 1 ===
+        var root1 = BuildRoot();
+        using var layouter1 = new BlockLayouter(
+            rootBox: root1, sink: sink1,
+            incomingContinuation: null,
+            diagnostics: diagSink,
+            shaperResolver: shaper);
+        var ctx1 = new FragmentainerContext(contentInlineSize: 600, blockSize: 700);
+        var layoutCtx1 = new LayoutContext(ctx1) { Diagnostics = diagSink };
+        using var resolver1 = new BreakResolver();
+        var result1 = layouter1.AttemptLayout(ctx1, ref layoutCtx1, resolver1,
+            LayoutAttemptStrategy.LastResort);
+
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result1.Outcome);
+        // Chain: BC[rc=0 body in root] > BC[rc=1 table in body] >
+        // TableContinuation. The INNER BC's rc=1 is the regression
+        // marker — pre-fix the flatten dropped it.
+        var topBc1 = Assert.IsType<BlockContinuation>(result1.Continuation);
+        Assert.Equal(0, topBc1.ResumeAtChild);
+        var bcInner1 = Assert.IsType<BlockContinuation>(topBc1.LayouterState);
+        Assert.Equal(1, bcInner1.ResumeAtChild);
+        var tc1 = Assert.IsType<TableContinuation>(bcInner1.LayouterState);
+        Assert.Equal(2, tc1.NextRowIndex);
+
+        // === Page 2 (resume) ===
+        var sink2 = new RecordingFragmentSink();
+        var root2 = BuildRoot();
+        using var layouter2 = new BlockLayouter(
+            rootBox: root2, sink: sink2,
+            incomingContinuation: topBc1,
+            diagnostics: diagSink,
+            shaperResolver: shaper);
+        var ctx2 = new FragmentainerContext(contentInlineSize: 600, blockSize: 700);
+        var layoutCtx2 = new LayoutContext(ctx2) { Diagnostics = diagSink };
+        using var resolver2 = new BreakResolver();
+        var result2 = layouter2.AttemptLayout(ctx2, ref layoutCtx2, resolver2,
+            LayoutAttemptStrategy.LastResort);
+
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result2.Outcome);
+
+        // Page 2 must emit EXACTLY 1 table row (row 2) and 0 spacer
+        // fragments (height 50). The spacer at body idx 0 was already
+        // committed on page 1.
+        var rowCount = 0;
+        foreach (var f in sink2.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.TableRow) rowCount++;
+            // No fragment should have the spacer's distinct height of 50.
+            Assert.NotEqual(50.0, f.BlockSize);
         }
         Assert.Equal(1, rowCount);
     }
@@ -6599,64 +6710,120 @@ public sealed class TableLayouterTests
         // fragmentainer. Page 1 commits 2 rows; page 2 commits row 3.
         // Track the wrapper Table fragment count: each page should
         // emit the wrapper exactly ONCE.
-        var sink = new RecordingFragmentSink();
+        //
+        // Per post-PR-#57 review #2 Finding #3 — the original test
+        // stopped after page-1 assertions and did NOT exercise the
+        // resume path. A chain-routing regression on the page-2 leg
+        // would slip through. This update extends the test to drive a
+        // page-2 attempt with the page-1 continuation and asserts
+        // (a) row 3 emits, (b) wrapper-count on page 2 is exactly 1,
+        // (c) no `PAGINATION-FORCED-OVERFLOW-001` was emitted on
+        // either leg.
+        var sink1 = new RecordingFragmentSink();
         var diagSink = new RecordingDiagnosticsSink();
         using var shaper = new SyntheticShaperResolver();
 
-        var root = Box.CreateRoot(MakeStyle());
-        var div = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
-        var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
-        var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
-        for (var r = 0; r < 3; r++)
+        Box BuildRoot(out Box tableOut)
         {
-            var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
-            var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
-            var anon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
-            var bcStyle = MakeStyle();
-            SetLengthPx(bcStyle, PropertyId.Height, 300);
-            anon.AppendChild(Box.ForElement(BoxKind.BlockContainer, bcStyle, MakeElement()));
-            cell.AppendChild(anon);
-            row.AppendChild(cell);
-            grid.AppendChild(row);
+            var root = Box.CreateRoot(MakeStyle());
+            var div = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+            var table = Box.ForElement(BoxKind.Table, MakeStyle(), MakeElement());
+            var grid = Box.Anonymous(BoxKind.TableGrid, MakeStyle());
+            for (var r = 0; r < 3; r++)
+            {
+                var row = Box.ForElement(BoxKind.TableRow, MakeStyle(), MakeElement());
+                var cell = Box.ForElement(BoxKind.TableCell, MakeStyle(), MakeElement());
+                var anon = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
+                var bcStyle = MakeStyle();
+                SetLengthPx(bcStyle, PropertyId.Height, 300);
+                anon.AppendChild(Box.ForElement(BoxKind.BlockContainer, bcStyle, MakeElement()));
+                cell.AppendChild(anon);
+                row.AppendChild(cell);
+                grid.AppendChild(row);
+            }
+            table.AppendChild(grid);
+            div.AppendChild(table);
+            root.AppendChild(div);
+            tableOut = table;
+            return root;
         }
-        table.AppendChild(grid);
-        div.AppendChild(table);
-        root.AppendChild(div);
 
-        using var layouter = new BlockLayouter(
-            rootBox: root, sink: sink,
+        // === Page 1 ===
+        var root1 = BuildRoot(out var table1);
+        using var layouter1 = new BlockLayouter(
+            rootBox: root1, sink: sink1,
             incomingContinuation: null,
             diagnostics: diagSink,
             shaperResolver: shaper);
-        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
-        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
-        using var resolver = new BreakResolver();
-        var result1 = layouter.AttemptLayout(
-            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+        var ctx1 = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx1 = new LayoutContext(ctx1) { Diagnostics = diagSink };
+        using var resolver1 = new BreakResolver();
+        var result1 = layouter1.AttemptLayout(
+            ctx1, ref layoutCtx1, resolver1, LayoutAttemptStrategy.LastResort);
 
         // Page 1: 2 rows committed.
         Assert.Equal(LayoutAttemptOutcome.PageComplete, result1.Outcome);
         var page1WrapperCount = 0;
-        foreach (var f in sink.Fragments)
+        BoxFragment? wrapper1 = null;
+        foreach (var f in sink1.Fragments)
         {
-            if (f.Box == table) page1WrapperCount++;
+            if (f.Box == table1)
+            {
+                page1WrapperCount++;
+                wrapper1 ??= f;
+            }
         }
         Assert.Equal(1, page1WrapperCount);
-
         // The wrapper's fragment block-size should match the
         // committed-on-page-1 extent (≈ 2 × 300 = 600), NOT the
         // natural full extent (900). This is what guards against
         // false PAGINATION-FORCED-OVERFLOW-001 on page 1.
-        BoxFragment? wrapper = null;
-        foreach (var f in sink.Fragments)
-        {
-            if (f.Box == table) { wrapper = f; break; }
-        }
-        Assert.NotNull(wrapper);
-        Assert.True(wrapper.Value.BlockSize < 800,
-            $"Wrapper block-size {wrapper.Value.BlockSize} should be less "
+        Assert.NotNull(wrapper1);
+        Assert.True(wrapper1.Value.BlockSize < 800,
+            $"Wrapper block-size {wrapper1.Value.BlockSize} should be less "
             + "than the fragmentainer (800) — proves dry-run committed "
             + "sizing is in effect for the deep-nested case.");
+
+        // === Page 2 (resume) ===
+        // Per post-PR-#57 review #2 Finding #3 — exercise the chain-
+        // routing across page boundaries. Use a fresh DOM (= mirrors
+        // the typical integrator-driven retry where the renderer is
+        // re-entered for each page) and pass page 1's chained
+        // BlockContinuation as the incoming state.
+        var sink2 = new RecordingFragmentSink();
+        var root2 = BuildRoot(out var table2);
+        using var layouter2 = new BlockLayouter(
+            rootBox: root2, sink: sink2,
+            incomingContinuation: result1.Continuation,
+            diagnostics: diagSink,
+            shaperResolver: shaper);
+        var ctx2 = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx2 = new LayoutContext(ctx2) { Diagnostics = diagSink };
+        using var resolver2 = new BreakResolver();
+        var result2 = layouter2.AttemptLayout(
+            ctx2, ref layoutCtx2, resolver2, LayoutAttemptStrategy.LastResort);
+
+        // Page 2: row 3 emits (the deferred row); no further continuation.
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result2.Outcome);
+        var page2WrapperCount = 0;
+        var page2RowCount = 0;
+        foreach (var f in sink2.Fragments)
+        {
+            if (f.Box == table2) page2WrapperCount++;
+            if (f.Box.Kind == BoxKind.TableRow) page2RowCount++;
+        }
+        Assert.Equal(1, page2WrapperCount);  // wrapper not double-counted
+        Assert.Equal(1, page2RowCount);      // exactly row 3 emitted
+
+        // Across both legs, no PAGINATION-FORCED-OVERFLOW-001 — the
+        // chain routed cleanly and the table split via the proper
+        // multi-page continuation path, not the last-resort overflow.
+        foreach (var d in diagSink.Diagnostics)
+        {
+            Assert.NotEqual(
+                PaginateDiagnosticCodes.PaginationForcedOverflow001,
+                d.Code);
+        }
     }
 
     // ====================================================================

@@ -552,17 +552,21 @@ grepping the ID).
 ## multicol-balancing-pagination
 
 - **ID** — `multicol-balancing-pagination`
-- **Status** — `approximated` (cycles 1-3 ship fixed-column-count +
-  equal-split + multi-page splitting through any recursion depth +
-  `column-fill: balance` for auto-height containers; column-width
-  auto-count + column rules + `column-span: all` remain cycle 3
-  hardening + cycle 4+ scope). Phase 3 Task 14 cycle 2 hardening
-  Finding #1 lifted the depth==1-only continuation propagation
-  limit — nested multicols at any in-flow recursion depth now split
-  cleanly across pages. Cycle 3 Hello World adds column balancing
-  via a 2-pass algorithm (pre-measure the serial extent → divide by
-  N columns, ceil, clamp ≤ perColumnBlockSize → re-run the column-
-  fill loop with the balanced block-size).
+- **Status** — `approximated` (cycles 1-3 + post-PR-#59 review
+  hardening ship fixed-column-count + equal-split + multi-page
+  splitting through any recursion depth + `column-fill: balance` /
+  `balance-all` with correct last-fragment semantics + a real fit-
+  search instead of the average-height heuristic; column-width
+  auto-count + column rules + `column-span: all` + the balance-result
+  perf cache remain sub-cycle 2+ scope). Phase 3 Task 14 cycle 2
+  hardening Finding #1 lifted the depth==1-only continuation
+  propagation limit — nested multicols at any in-flow recursion
+  depth now split cleanly across pages. Cycle 3 + post-PR-#59 review
+  hardening ship the correct column-balancing algorithm: a binary-
+  search fit-probe finds the smallest column-block-size where all
+  content fits in N columns, with correct `balance` vs `balance-all`
+  semantics, resume-aware pre-measure, multi-window pre-measure for
+  long content, and margin-aware extent capture.
 - **Behavior** — `MulticolLayouter` (Phase 3 Task 14 cycles 1-2)
   recognizes a block container with `column-count: N` (integer ≥ 2)
   as a multicol container. Detection is via
@@ -608,31 +612,69 @@ grepping the ID).
   containing multicol content are still atomic (their out-of-flow
   continuation propagation is deferred under
   `float-continuation-propagation`).
-- **Cycle 3 column balancing** — when computed `column-fill` is
-  `balance` (the spec default) or `balance-all` AND the multicol
-  container has `height: auto`, `MulticolLayouter` runs a 2-pass
-  dry-run / layout sequence: pass 1 serial-fills the multicol's
-  children into a single notional tall column (using a fresh nested
-  `BlockLayouter` with a generous block-size budget of
-  `perColumnBlockSize × columnCount × 2`) + captures the max
-  `BlockOffset + BlockSize` (= `totalSerialExtent`); pass 2 computes
-  `idealBlockSize = ceil(totalSerial / N)`, clamps to
-  `min(ideal, perColumnBlockSize)` + floors at 1.0, then re-runs the
-  column-fill loop with the balanced block-size as the per-column
-  sub-fragmentainer's `blockSize`. Containers with `height: auto`
-  AND `column-fill: auto` keep the cycle 1+2 serial-fill behavior;
-  containers with an explicit `height` also keep the serial path
-  (conservative — matches Prince / WeasyPrint, avoids over-shrink
-  drop-out of fixed-height containers). The 2-pass cost is `O(2N)`
-  block layout per multicol when balancing is active; cycle 3
-  hardening may cache the result per Box.
+- **Cycle 3 + post-PR-#59 review hardening column balancing** —
+  when computed `column-fill` is `balance` (the spec default) or
+  `balance-all` AND the multicol container has `height: auto` AND
+  `column-count` ≥ 2, `MulticolLayouter` runs a binary-search fit-
+  probe pipeline:
+  - **Resume-aware pre-measure (F#3 + F#4 + F#5).** The
+    `_incomingContinuation` is decoded BEFORE pre-measure so resume
+    pages start from the right child / nested state. The pre-measure
+    LOOPS over `BlockContinuation` results — each iteration uses a
+    `perColumnBlockSize × columnCount × 2` window + adds the
+    fragmentainer's `UsedBlockSize` (margin-aware cursor extent
+    including trailing margins + collapsed-margin effects) to the
+    accumulator until `AllDone` or the iteration cap
+    (`MaxPreMeasureIterations = 8`).
+  - **Last-fragment detection (F#2).** `balance` balances only the
+    LAST fragment; non-final fragments use serial fill.
+    `balance-all` balances every fragment. Detection: if
+    `totalSerialExtent ≤ perColumnBlockSize × columnCount`, content
+    fits in N columns → this IS the last fragment.
+  - **Binary-search fit-probe (F#1).** When balancing fires, a
+    binary search over `[ceil(total/N), perColumnBlockSize]` at 1px
+    resolution finds the smallest column-block-size where
+    `FitsInNColumns(...)` returns true (= a serial column-fill
+    simulation reaches `AllDone` in ≤ N columns). The pre-fix
+    `ceil(total/N)` heuristic was wrong for indivisible content:
+    3 × 80px in 2 columns produced ideal=120 → fits 1 per column →
+    3rd child spilled to page 2 even though 160px columns fit all
+    3 on one page.
+  - **`ConsumedBlockSize` accumulator (F#8).** Multi-page
+    `MulticolContinuation` uses `effectiveColumnBlockSize` (= the
+    balanced height, or `perColumnBlockSize` when balancing is
+    inactive) instead of always using `perColumnBlockSize`. Pre-fix
+    the accumulator over-counted by `perColumnBlockSize -
+    effectiveColumnBlockSize` per page when balancing fired.
+  - **`IsHeightAuto` predicate (F#7).** Correctly classifies
+    `height: 50%` (Percentage) and `height: calc(...)` (Calc) as
+    NON-auto. Pre-fix `slot.Tag != LengthPx` incorrectly treated
+    percentage heights as auto, routing them into the balancing
+    path + over-shrinking the columns.
+  - Containers with `height: auto` AND `column-fill: auto` keep the
+    cycle 1+2 serial-fill behavior; containers with an explicit
+    `height` (LengthPx or Percentage) also keep the serial path
+    (conservative — matches Prince / WeasyPrint, avoids over-shrink
+    drop-out).
+  - **Cost.** When balancing is active: pre-measure ≈ 1×, fit-search
+    ≈ O(log range) × `columnCount` `BlockLayouter` dry-runs, layout
+    1×. Worst case ~12 dry-runs total for a 1000px range with N=2.
+    The post-PR-#59 deferred F#6 perf-cache would memoize the fit-
+    search result per Box; sub-cycle 2+ scope.
 - **Missing** —
-  - **`column-fill: balance-all` last-fragmentainer semantics** (CSS
-    Multi-column L1 §3.4): cycle 3 treats `balance-all` identically
-    to `balance` (= balance on every fragmentainer except the last
-    is the same as balance on every fragmentainer including the
-    last). The spec distinguishes them only when an explicit-height
-    multicol spans multiple fragmentainers — sub-cycle 2+ scope.
+  - **Balance-result perf cache (F#6 — deferred from post-PR-#59
+    review)**: the fit-search runs `O(log range) × columnCount`
+    nested `BlockLayouter` dry-runs per multicol per page. When a
+    multicol's content is unchanged across pages the result could
+    be memoized per Box (key: rootBox + perColumnInlineSize +
+    perColumnBlockSize + columnCount + carriedContinuation
+    identity). Sub-cycle 2+ scope; the current per-page cost is
+    acceptable for cycle 3 Hello World correctness over
+    optimization.
+  - **Pass-count benchmark guard**: a perf-bench-gated upper bound
+    on the number of nested `BlockLayouter.AttemptLayout` calls per
+    multicol per page. Sub-cycle 2+ scope alongside the F#6 cache —
+    once the cache lands, the guard pins the cache hit-rate.
   - **Column balancing with explicit `height`** (CSS Multi-column L1
     §3.4): cycle 3 only balances `height: auto` multicols. When the
     author specifies an explicit `height` AND `column-fill: balance`,
@@ -665,26 +707,36 @@ grepping the ID).
 - **Owner files** —
   - `src/NetPdf.Layout/Layouters/MulticolLayouter.cs` — cycles 1-3
     implementation; cycle 2 adds the multi-page resume path via
-    `MulticolContinuation`; cycle 3 adds `column-fill: balance` via
-    `PreMeasureTotalSerialExtent` + the 2-pass balanced-block-size
-    pipeline. Cycle 3 hardening + sub-cycle 4+ will add column-width
+    `MulticolContinuation`; cycle 3 + post-PR-#59 review hardening
+    add `column-fill: balance` / `balance-all` via the binary-
+    search fit-probe pipeline (`PreMeasureTotalSerialExtent` looped
+    + margin-aware, `FindBalancedColumnBlockSize`, `FitsInNColumns`).
+    Sub-cycle 2+ will add the F#6 fit-result cache + column-width
     auto-count + column rules + `column-span: all`.
   - `src/NetPdf.Layout/Layouters/ComputedStyleLayoutExtensions.cs`
     — cycle 3 adds `ReadColumnFill()` (returning `ColumnFillValue`)
-    + `IsHeightAuto()` (the auto-height predicate the balancing gate
-    consumes).
+    + `IsHeightAuto()` (post-PR-#59 hardening F#7 — correctly
+    classifies Percentage + Calc heights as NON-auto; only Unset
+    and Keyword slots are auto).
   - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — the dispatch
     site that recognizes multicol containers + invokes
     `MulticolLayouter`; cycle 2 adds the
     `MulticolContinuation`-via-`BlockContinuation.LayouterState`
-    propagation pattern (main loop + recursion's depth==1 callback).
+    propagation pattern (main loop + recursion's depth==1 callback);
+    post-PR-#59 hardening F#7 fixes the private static
+    `IsHeightAuto` identically to the extension version.
   - `src/NetPdf.Paginate/LayoutContinuation.cs::MulticolContinuation`
     — cycle 1 reserved the type; cycle 2 expands it to the
     `(NextChildIndex, ConsumedBlockSize, PerChildLayouterState)`
     contract.
 - **Added** — Phase 3 Task 14 cycle 1; expanded in cycle 2; cycle 3
-  ships `column-fill: balance` (auto-height containers) via a 2-pass
-  pre-measure + balanced layout pipeline.
+  Hello World shipped a 2-pass average-height balancing approach;
+  post-PR-#59 review hardening replaced the heuristic with a binary-
+  search fit-probe (F#1) + last-fragment semantics (F#2) + resume-
+  aware pre-measure (F#3) + multi-window loop (F#4) + margin-aware
+  extent (F#5) + correct `IsHeightAuto` (F#7) + corrected
+  `ConsumedBlockSize` accumulator (F#8). F#6 perf-cache deferred to
+  sub-cycle 2+.
 - **Removal condition** — column balancing
   (`column-fill: balance`) ships; `column-width` derives column
   count when `column-count` is `auto`; column rules paint;

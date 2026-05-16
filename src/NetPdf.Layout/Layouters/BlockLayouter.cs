@@ -4812,10 +4812,19 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// <summary>Per Phase 3 Task 14 cycle 1 hardening (Finding 2) —
     /// predicate distinguishing <c>height: auto</c> from an explicit
     /// <c>height: 0</c> or <c>height: &lt;positive px&gt;</c> on a
-    /// box's computed style. Returns <see langword="true"/> when the
-    /// height slot's tag is anything OTHER than
-    /// <see cref="ComputedSlotTag.LengthPx"/> (= the keyword <c>auto</c>,
-    /// or unset).
+    /// box's computed style. Returns <see langword="true"/> only when
+    /// the height slot's tag is <see cref="ComputedSlotTag.Unset"/> (=
+    /// the default <c>auto</c>) OR <see cref="ComputedSlotTag.Keyword"/>
+    /// (= the explicit <c>auto</c> keyword).
+    ///
+    /// <para><b>Post-PR-#59 review hardening (Finding #7).</b> Mirrors
+    /// the fix in <see cref="ComputedStyleLayoutExtensions.IsHeightAuto"/>
+    /// — the pre-fix predicate returned <c>slot.Tag !=
+    /// ComputedSlotTag.LengthPx</c>, which incorrectly reported
+    /// <c>height: 50%</c> (Percentage) and <c>height: calc(...)</c>
+    /// (Calc) as auto. Per CSS 2.1 §10.5 a percentage height resolves
+    /// against the containing block's height — that's EXPLICIT sizing,
+    /// not auto.</para>
     ///
     /// <para>The pre-cycle-3 <see cref="ComputedStyleLayoutExtensions.ReadLengthPxOrZero"/>
     /// path returns 0 for BOTH <c>auto</c> AND explicit <c>0px</c>;
@@ -4825,7 +4834,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     private static bool IsHeightAuto(Box box)
     {
         var slot = box.Style.Get(PropertyId.Height);
-        return slot.Tag != ComputedSlotTag.LengthPx;
+        // Height is type LengthPercentageAuto. Only the `auto` keyword OR
+        // unset (= default `auto`) are auto. Percentage values are
+        // explicit sizing relative to the containing block; LengthPx is
+        // explicit absolute sizing. Per CSS 2.1 §10.5 percentage height
+        // resolves against the containing block's height; treating it as
+        // auto would route balanced multicol into the wrong layout path.
+        return slot.Tag is ComputedSlotTag.Unset or ComputedSlotTag.Keyword;
     }
 
     /// <summary>Per Phase 3 Task 14 cycle 2 hardening (Finding #5) —

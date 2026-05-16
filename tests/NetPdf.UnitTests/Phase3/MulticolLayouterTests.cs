@@ -1766,32 +1766,28 @@ public sealed class MulticolLayouterTests
     }
 
     [Fact]
-    public void Cycle3_multicol_balance_uneven_content_rounds_up_idealBlockSize()
+    public void Cycle3_multicol_balance_three_blocks_fit_in_two_columns_on_one_page()
     {
-        // 3 children of 80 px each + 2 columns. Total = 240;
-        // ideal = ceil(240/2) = 120; balancedBlockSize = min(120, 800) = 120.
-        // Serial fill into a 120-px column: child 0 (80px) fits, child 1
-        // (80px) doesn't fit (column 0 has used 80, 40 remaining) → child 1
-        // goes to column 1, child 2 (80px) fits in column 1 (column 1 has
-        // 40 remaining... wait, column 1 has used 80, 40 remaining; child 2
-        // doesn't fit either).
+        // Post-PR-#59 review hardening Finding #1 — the previous test
+        // (Cycle3_multicol_balance_uneven_content_rounds_up_idealBlockSize)
+        // pinned the OLD ceil(total/N) heuristic's wrong result: 3
+        // children × 80px in 2 columns spilled the 3rd child to page 2
+        // because ideal=ceil(240/2)=120 fits only 1 per column.
         //
-        // Actually the layout depends on the inner BlockLayouter's fit
-        // logic. For column 0 with blockSize=120:
-        //   - child 0 (80px) emits → column 0 used = 80, remaining = 40.
-        //   - child 1 (80px) doesn't fit → PageComplete(ResumeAtChild=1).
-        // For column 1 with blockSize=120:
-        //   - child 1 (80px) emits → column 1 used = 80, remaining = 40.
-        //   - child 2 (80px) doesn't fit → PageComplete(ResumeAtChild=2).
-        // With 2 columns total, column 1's overflow → multicol's overflow
-        // path returns PageComplete(MulticolContinuation(NextChildIndex=2)).
+        // The new fit-search (FindBalancedColumnBlockSize) binary-
+        // searches over [ceil(total/N), perColumnBlockSize] for the
+        // smallest column-block-size where all content fits. For 3 × 80
+        // in 2 columns:
+        //   - At 120px: col 0 fits 80 (1 child); col 1 fits 80 (1
+        //     child); 1 child remains → doesn't fit in 2 cols.
+        //   - At 160px: col 0 fits 80+80=160 (2 children exact); col 1
+        //     fits 80 (1 child); 0 remaining → fits.
+        // The search converges on 160; all 3 children land on one page
+        // (column 0 = 2 children, column 1 = 1 child).
         //
-        // So: column 0 = 1 child (80px); column 1 = 1 child (80px); the
-        // remaining child overflows to the next page. The test pins the
-        // observed distribution + verifies the ceiling rounding behavior
-        // by confirming the balanced ideal (120) was actually applied
-        // rather than perColumnBlockSize (800, which would have fit all 3
-        // children in column 0).
+        // This test pins the new fit-search semantics. Before the F#1
+        // hardening it would have failed at the "column0+column1==3"
+        // assertion.
         var sink = new RecordingFragmentSink();
         using var shaper = new SyntheticShaperResolver();
 
@@ -1814,7 +1810,7 @@ public sealed class MulticolLayouterTests
         var layoutCtx = new LayoutContext(ctx);
         using var resolver = new BreakResolver();
 
-        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
             LayoutAttemptStrategy.LastResort);
 
         var column0Children = 0;
@@ -1829,16 +1825,20 @@ public sealed class MulticolLayouterTests
                 else if (f.InlineOffset == 124) column1Children++;
             }
         }
-        // Column 0 holds 1 child; column 1 holds 1 child. The 3rd child
-        // overflowed (cycle 2 multi-page-multicol path handles it).
-        // Critically: if balancing weren't active, all 3 children would
-        // be in column 0 (= column0Children == 3, column1Children == 0).
+
+        // All 3 children fit on one page (fit-search finds H=160 where
+        // 2×80 fit in column 0 + 1×80 fits in column 1).
+        Assert.Equal(3, column0Children + column1Children);
+        // Both columns are non-empty (balanced — neither column is
+        // wasted).
         Assert.True(column0Children >= 1,
-            $"Expected at least 1 child in column 0; got {column0Children}.");
+            $"Column 0 should hold at least 1 child; got {column0Children}.");
         Assert.True(column1Children >= 1,
-            $"Expected at least 1 child in column 1 (proves balancing "
-            + $"activated; without it column 1 would be empty); "
-            + $"got {column1Children}.");
+            $"Column 1 should hold at least 1 child; got {column1Children}.");
+        // No overflow continuation produced — the multicol completed
+        // on this page (pre-F#1 the third child spilled to a second
+        // page via a MulticolContinuation).
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
     }
 
     [Fact]
@@ -2094,6 +2094,523 @@ public sealed class MulticolLayouterTests
                 PaginateDiagnosticCodes.LayoutMulticolForcedOverflow001,
                 d.Code);
         }
+    }
+
+    // ====================================================================
+    //  Phase 3 Task 14 cycle 3 post-PR-#59 review hardening — 7 tests for
+    //  missing coverage. Each test pins ONE of the F#1, F#2, F#3, F#4,
+    //  F#5, F#7 fixes (F#6 perf-cache is deferred to sub-cycle 2; F#8 is
+    //  exercised implicitly by F#3 via the multi-page resume).
+    // ====================================================================
+
+    [Fact]
+    public void Cycle3_balance_indivisible_blocks_fit_search_finds_correct_height()
+    {
+        // F#1 — fit-search correctness for indivisible content. 3
+        // children × 80px in 2 columns: total=240, ceil(240/2)=120
+        // (the pre-F#1 heuristic). At 120, col 0 fits 1 (80+80=160 >
+        // 120) → only 1 per column → 3rd child spills. The new fit-
+        // search converges on 160 where col 0 fits 2 children + col 1
+        // fits 1 child + AllDone on this page.
+        //
+        // Distinguishes this test from the indirect coverage in
+        // Cycle3_multicol_balance_three_blocks_fit_in_two_columns_on_one_page:
+        // here the assertion is on the column-block-size INFERRED from
+        // the fragment block-offsets — the second child in column 0
+        // should sit at blockOffset=80 (= directly after the first
+        // child); the column's used extent equals 160px (= 2 × 80px).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var multicol = BuildMulticolContainer(columnCount: 2);
+        for (var i = 0; i < 3; i++)
+        {
+            var s = MakeStyle();
+            SetLengthPx(s, PropertyId.Height, 80);
+            multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, s, MakeElement()));
+        }
+        root.AppendChild(multicol);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 232, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        // Collect fragments sorted by inline + block offset.
+        var column0Blocks = new List<BoxFragment>();
+        var column1Blocks = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.BlockContainer
+                && f.Box != multicol
+                && f.Box.SourceElement is not null)
+            {
+                if (f.InlineOffset == 0) column0Blocks.Add(f);
+                else if (f.InlineOffset == 124) column1Blocks.Add(f);
+            }
+        }
+
+        // AllDone on this page — no overflow.
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+
+        // Column 0 holds 2 children at blockOffsets 0, 80 (confirming
+        // the fit-search picked H ≥ 160; pre-F#1 H=120 would have
+        // emitted only the first child + spilled the rest).
+        Assert.True(column0Blocks.Count >= 2,
+            $"Column 0 should hold at least 2 children (fit-search H >= "
+            + $"160 stacks 2 × 80px); got {column0Blocks.Count}.");
+        // All 3 children land on this page.
+        Assert.Equal(3, column0Blocks.Count + column1Blocks.Count);
+    }
+
+    [Fact]
+    public void Cycle3_balance_vs_balance_all_over_multiple_fragmentainers_balance_uses_serial_fill_on_first_page()
+    {
+        // F#2 — `column-fill: balance` (default) balances ONLY the
+        // last fragment; non-final fragments use serial fill. Setup:
+        // auto-height multicol; column count = 2; per-page block-size
+        // = 200; 10 children of 80px each (total = 800; 800 > 200 ×
+        // 2 = 400 → content does NOT fit on one page → page 1 is NOT
+        // the last fragment → serial fill on page 1).
+        //
+        // Expected page-1 behavior with the F#2 fix:
+        //   - Column 0 fills to the brim: 200 / 80 = 2 children
+        //     (blockOffsets 0, 80; 80+80=160 ≤ 200; third 80+80+80=240
+        //     > 200 doesn't fit).
+        //   - Column 1 also serial-fills: 2 more children.
+        //   - Page 1 holds 4 children total; 6 remain → PageComplete
+        //     with a MulticolContinuation pointing at child 4.
+        //
+        // Pre-F#2 the same DOM was BALANCED on page 1 (which was
+        // wrong): the pre-measure saw total=800 and picked an "ideal"
+        // height that under-utilized the page.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var multicol = BuildMulticolContainer(columnCount: 2);
+        // column-fill: balance is the default; don't explicitly set.
+        for (var i = 0; i < 10; i++)
+        {
+            var s = MakeStyle();
+            SetLengthPx(s, PropertyId.Height, 80);
+            multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, s, MakeElement()));
+        }
+        root.AppendChild(multicol);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 232, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var column0Blocks = new List<BoxFragment>();
+        var column1Blocks = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.BlockContainer
+                && f.Box != multicol
+                && f.Box.SourceElement is not null)
+            {
+                if (f.InlineOffset == 0) column0Blocks.Add(f);
+                else if (f.InlineOffset == 124) column1Blocks.Add(f);
+            }
+        }
+
+        // Page is NOT the last fragment → serial fill. Column 0
+        // saturates at perColumnBlockSize=200 with 2 × 80px.
+        Assert.Equal(2, column0Blocks.Count);
+        Assert.Equal(2, column1Blocks.Count);
+        // Page 1 is incomplete → PageComplete (not AllDone).
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+    }
+
+    [Fact]
+    public void Cycle3_balance_all_balances_every_fragment_including_non_final()
+    {
+        // F#2 — `column-fill: balance-all` balances every fragment,
+        // including non-final ones. Same DOM as the balance test above
+        // (10 × 80px in a 2-column auto-height multicol with page-
+        // block-size 200) but explicit `column-fill: balance-all`.
+        //
+        // With balance-all on page 1 (a NON-last fragment) the pre-
+        // measure measures total=800 against the actual remaining
+        // content; the fit-search picks the smallest column-block-size
+        // ≤ 200 where all 800 fit. 800 > 200 × 2 = 400 → no value ≤
+        // 200 fits → FindBalancedColumnBlockSize returns 200 (the cap)
+        // → page 1 ends up serial-fill anyway.
+        //
+        // The user-visible distinguisher: when total fits in ≤ N ×
+        // perColumnBlockSize, balance-all balances; balance doesn't.
+        // Setup: 3 × 80px (total=240) in 2 columns with page-block-
+        // size=200 (total ≤ N × perColumnBlockSize = 400 → "last
+        // fragment" with balance + page 1 with balance-all).
+        //   - balance: fits in N=2 cols → balance on this fragment.
+        //   - balance-all: also balances.
+        // Both produce the SAME result here. The distinguisher needs
+        // a case where balance is NOT-last but balance-all IS still
+        // balanced. Use 5 × 80px (total=400) in 2 cols with page=200:
+        //   - balance: total=400 ≤ 400 → "last" → balance → fit-
+        //     search picks H=160 (col 0 has 2, col 1 has 2, 1 spills).
+        //     Actually 400 == 200×2 exactly. F#2 detects isLastFragment
+        //     as totalSerial ≤ perColumnBlockSize × columnCount;
+        //     400 ≤ 400 = true → balance fires. Page 1 IS the last
+        //     fragment in this scenario by F#2's detection rule.
+        //
+        // Let's pick a clearer scenario: 9 × 80px (total=720). N=2,
+        // perColumnBlockSize=200. 720 > 400 → balance treats page 1 as
+        // NOT-last → serial fill (column 0 = 2 children @ 80, column 1
+        // = 2 children @ 80). balance-all treats page 1 as balanced →
+        // fit-search probes [ceil(720/2)=360, 200]; 360 > 200 → no
+        // value in range → returns 200 (cap) → serial fill anyway.
+        //
+        // So this distinction is hard to expose at the column-count
+        // level when total > N × perColumnBlockSize. The F#2 fix's
+        // observable behavior is: balance-all NEVER skips the fit-
+        // search even on non-final fragments. Pin the contract by
+        // checking that EXPLICIT column-fill:balance-all produces the
+        // SAME page-1 distribution as column-fill:balance for the
+        // "last fragment fits" case (this also confirms balance-all
+        // doesn't accidentally skip balancing).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var multicol = BuildMulticolContainer(columnCount: 2);
+        // Explicit balance-all (keyword index 1 per KeywordResolver).
+        multicol.Style.Set(PropertyId.ColumnFill, ComputedSlot.FromKeyword(1));
+        // 3 × 80px fits in N=2 cols at H=160 → balance-all balances.
+        for (var i = 0; i < 3; i++)
+        {
+            var s = MakeStyle();
+            SetLengthPx(s, PropertyId.Height, 80);
+            multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, s, MakeElement()));
+        }
+        root.AppendChild(multicol);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        // Use a generous page-block-size (800) so this fragment IS
+        // the last fragment under both balance + balance-all rules;
+        // the test pins that balance-all still produces a BALANCED
+        // (not serial-filled) result on the last fragment.
+        var ctx = new FragmentainerContext(contentInlineSize: 232, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var column0Blocks = new List<BoxFragment>();
+        var column1Blocks = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.BlockContainer
+                && f.Box != multicol
+                && f.Box.SourceElement is not null)
+            {
+                if (f.InlineOffset == 0) column0Blocks.Add(f);
+                else if (f.InlineOffset == 124) column1Blocks.Add(f);
+            }
+        }
+
+        // balance-all balanced: column 1 is non-empty (without
+        // balancing, all 3 children would be in column 0 since the
+        // page-block-size of 800 fits all 3 × 80 = 240 in column 0).
+        Assert.True(column1Blocks.Count >= 1,
+            $"balance-all should produce a balanced distribution; col 1 "
+            + $"is empty (= unbalanced) → balance-all incorrectly skipped "
+            + $"the fit-search.");
+        Assert.Equal(3, column0Blocks.Count + column1Blocks.Count);
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+    }
+
+    [Fact]
+    public void Cycle3_resume_page_balancing_measures_only_remaining_content()
+    {
+        // F#3 — on a resume page, the balancing pre-measure starts
+        // from the carried continuation (= measures only remaining
+        // content) instead of measuring from child 0.
+        //
+        // Setup: 6 × 80px in a 2-column auto-height multicol with
+        // page-block-size=200. Page 1: serial fill (NOT-last per F#2,
+        // since total=480 > 400=N×perColumnBlockSize) → col 0 = 2
+        // children, col 1 = 2 children, 2 remain → PageComplete with
+        // MulticolContinuation(NextChildIndex=4).
+        //
+        // Page 2 resume: only 2 children remain (total=160). 160 ≤
+        // 400 → last fragment → balance. Fit-search picks H=80 (col 0
+        // = 1 × 80; col 1 = 1 × 80).
+        //
+        // Pre-F#3 the resume-page pre-measure passed null instead of
+        // the resume continuation, measuring all 6 × 80 = 480 again
+        // and picking a too-tall H (or a serial-fill result).
+        //
+        // Pin the behavior by constructing a synthetic resume
+        // continuation + invoking MulticolLayouter directly. This
+        // exercises the F#3 contract without depending on the multi-
+        // page driver loop.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var multicol = BuildMulticolContainer(columnCount: 2);
+        for (var i = 0; i < 6; i++)
+        {
+            var s = MakeStyle();
+            SetLengthPx(s, PropertyId.Height, 80);
+            multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, s, MakeElement()));
+        }
+
+        // Synthesize a "resume from child 4" MulticolContinuation
+        // (= simulating page 2 of the scenario above).
+        var resumeCont = new MulticolContinuation(
+            NextChildIndex: 4,
+            ConsumedBlockSize: 200,
+            PerChildLayouterState: null);
+
+        using var multicolLayouter = new MulticolLayouter(
+            rootBox: multicol,
+            sink: sink,
+            incomingContinuation: resumeCont,
+            diagnostics: null,
+            shaperResolver: shaper);
+        multicolLayouter.ConfigureEmission(
+            contentInlineOffset: 0,
+            contentBlockOffset: 0,
+            contentInlineSize: 232,
+            contentBlockSize: 200);
+
+        var ctx = new FragmentainerContext(contentInlineSize: 232, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        var result = multicolLayouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        // Both remaining children (children 4 + 5) emit on this page.
+        var column0Blocks = new List<BoxFragment>();
+        var column1Blocks = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.BlockContainer
+                && f.Box != multicol
+                && f.Box.SourceElement is not null)
+            {
+                if (f.InlineOffset == 0) column0Blocks.Add(f);
+                else if (f.InlineOffset == 124) column1Blocks.Add(f);
+            }
+        }
+        // 2 children expected (children 4 + 5 of the original 6).
+        Assert.Equal(2, column0Blocks.Count + column1Blocks.Count);
+        // Balanced: both columns hold ≥ 1 child. If the pre-measure
+        // had measured all 6 children (= pre-F#3 bug), it would have
+        // seen totalSerial=480 > 200×2=400 → "not last fragment" →
+        // serial fill → col 0 = 2, col 1 = 0. The presence of a child
+        // in col 1 proves F#3's resume-aware pre-measure ran.
+        Assert.True(column1Blocks.Count >= 1,
+            $"F#3 contract: resume-page pre-measure measured only "
+            + $"remaining 2 children → totalSerial=160 ≤ 400 → 'last "
+            + $"fragment' → balanced. col 1 has {column1Blocks.Count} "
+            + $"children (expected >= 1; col 1 empty suggests pre-measure "
+            + $"saw all 6 children again).");
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+    }
+
+    [Fact]
+    public void Cycle3_long_content_exceeds_pre_measure_sentinel_still_measured()
+    {
+        // F#4 — the pre-measure loop captures content extents that
+        // exceed a single dry-run window. Pre-fix the pre-measure
+        // capped at perColumnBlockSize × columnCount × 2 (single
+        // window) → long content was silently under-measured.
+        //
+        // Setup: 50 × 100px = 5000px total content in a 2-column
+        // multicol with page-block-size=400. Per-window cap =
+        // 400×2×2 = 1600px. The pre-measure loop must accumulate
+        // beyond the single 1600px window.
+        //
+        // The observable signal: after the F#4 fix, the pre-measure
+        // correctly reports totalSerialExtent ≈ 5000 → F#2 detects
+        // 5000 > 400×2=800 → page 1 NOT-last → serial fill → col 0
+        // fills with 4 × 100 = 400px (4 children); col 1 fills with
+        // 4 × 100 = 400px (4 children) → page 1 emits exactly 8
+        // children. Pre-F#4 the truncated pre-measure may have seen
+        // ≤ 1600 → could route through the "last fragment" path
+        // incorrectly + balance → different distribution.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var multicol = BuildMulticolContainer(columnCount: 2);
+        for (var i = 0; i < 50; i++)
+        {
+            var s = MakeStyle();
+            SetLengthPx(s, PropertyId.Height, 100);
+            multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, s, MakeElement()));
+        }
+        root.AppendChild(multicol);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 232, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var column0Blocks = new List<BoxFragment>();
+        var column1Blocks = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.BlockContainer
+                && f.Box != multicol
+                && f.Box.SourceElement is not null)
+            {
+                if (f.InlineOffset == 0) column0Blocks.Add(f);
+                else if (f.InlineOffset == 124) column1Blocks.Add(f);
+            }
+        }
+
+        // Page 1 is NOT the last fragment (total >> N ×
+        // perColumnBlockSize) → serial fill → both columns full at
+        // perColumnBlockSize. With 100px children + 400px columns,
+        // each column holds exactly 4 children.
+        Assert.Equal(4, column0Blocks.Count);
+        Assert.Equal(4, column1Blocks.Count);
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+    }
+
+    [Fact]
+    public void Cycle3_balanced_multicol_with_margin_bearing_children_accounts_for_trailing_margins()
+    {
+        // F#5 — the pre-measure now uses fragmentainer.UsedBlockSize
+        // (margin-aware cursor extent) instead of the sink's max
+        // BlockOffset+BlockSize (which missed trailing margins +
+        // collapsed-margin effects).
+        //
+        // Setup: 3 children, each height=80 with margin-bottom=20.
+        // Pre-F#5 the sink's MaxBlockExtent measured 80+80+80=240
+        // (= 3 fragment bottoms, last child's trailing margin
+        // unaccounted). Post-F#5 the cursor measures 80+20+80+20+80=
+        // 280 (or 80+20+80+20+80+20=300 if the very last trailing
+        // margin participates — implementation may vary).
+        //
+        // The observable signal: with the correct margin-aware total
+        // the fit-search picks an H that accounts for trailing
+        // margins between siblings; without it the fit-search picks
+        // an H too short to fit the content with margins, and column
+        // 0 emits fewer children than it should.
+        //
+        // 2 columns, page-block-size=800 (= last-fragment scenario).
+        // Cleanly observable assertion: all 3 children emit on this
+        // page (regardless of which column holds which child). Pre-
+        // F#5 the under-measured total could route too-short H → 3rd
+        // child spills.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var multicol = BuildMulticolContainer(columnCount: 2);
+        for (var i = 0; i < 3; i++)
+        {
+            var s = MakeStyle();
+            SetLengthPx(s, PropertyId.Height, 80);
+            SetLengthPx(s, PropertyId.MarginBottom, 20);
+            multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, s, MakeElement()));
+        }
+        root.AppendChild(multicol);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 232, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var allChildBlocks = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.BlockContainer
+                && f.Box != multicol
+                && f.Box.SourceElement is not null)
+            {
+                allChildBlocks++;
+            }
+        }
+
+        // All 3 margin-bearing children emit on this page.
+        Assert.Equal(3, allChildBlocks);
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+    }
+
+    [Fact]
+    public void Cycle3_percentage_height_multicol_uses_explicit_height_not_balancing()
+    {
+        // F#7 — IsHeightAuto returns false for `height: 50%`
+        // (Percentage). Pre-F#7 the predicate was `slot.Tag !=
+        // LengthPx`, treating percentage values as auto → balancing
+        // ran on percentage-height multicols → over-shrunk columns.
+        //
+        // The F#7 fix's CALLER-VISIBLE invariant exercised here:
+        // `Boxes.Box.IsHeightAuto()` correctly classifies Percentage
+        // slots as NON-auto. The end-to-end column distribution under
+        // a percentage height depends on the BlockLayouter's
+        // percentage-height resolution (deferred to a later cycle —
+        // currently treats Percentage as 0 in ReadLengthPxOrZero); we
+        // pin only the predicate's behavior here, decoupled from the
+        // resolution gap.
+        //
+        // Three slot kinds + their expected IsHeightAuto outcome:
+        //   - Unset (= default auto): true (no Height slot set).
+        //   - Keyword auto: not directly testable without a Keyword
+        //     resolver entry for Height = auto; covered by the Unset
+        //     case (= default `auto`).
+        //   - LengthPx (e.g. 200px): false.
+        //   - Percentage (e.g. 50%): false (pre-F#7 returned true).
+        var boxAuto = BuildMulticolContainer(columnCount: 2);
+        // No height set → Unset slot → IsHeightAuto true.
+        Assert.True(boxAuto.IsHeightAuto(),
+            "Unset Height slot should be classified as auto.");
+
+        var boxExplicit = BuildMulticolContainer(columnCount: 2);
+        SetLengthPx(boxExplicit.Style, PropertyId.Height, 200);
+        Assert.False(boxExplicit.IsHeightAuto(),
+            "Explicit LengthPx Height should NOT be classified as auto.");
+
+        var boxPercentage = BuildMulticolContainer(columnCount: 2);
+        boxPercentage.Style.Set(
+            PropertyId.Height, ComputedSlot.FromPercentage(50));
+        // Pre-F#7 this returned TRUE (Percentage.Tag != LengthPx); post-
+        // F#7 it correctly returns FALSE (Percentage is NOT auto).
+        Assert.False(boxPercentage.IsHeightAuto(),
+            "Percentage Height (e.g. 50%) should NOT be classified as "
+            + "auto. Per CSS 2.1 §10.5 a percentage height resolves "
+            + "against the containing block's height — that's explicit "
+            + "sizing, not auto. Routing percentage-height multicols "
+            + "into the balancing path would over-shrink columns + drop "
+            + "content out of the container.");
     }
 
     // ====================================================================

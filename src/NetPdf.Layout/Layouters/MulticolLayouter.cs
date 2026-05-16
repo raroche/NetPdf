@@ -507,66 +507,6 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
         // partially filled (= no column balancing).
         var perColumnBlockSize = _contentBlockSize;
 
-        // Per Phase 3 Task 14 cycle 3 — column balancing per CSS Multi-
-        // column L1 §3.4. Activate when:
-        //   1. `column-fill` is `balance` or `balance-all` (= the spec
-        //      default — cycle 1+2 silently ignored this; cycle 3
-        //      honors it).
-        //   2. The multicol container has `height: auto` (= an
-        //      explicit height pins the per-column block-size to the
-        //      author's chosen value, mirroring conservative Prince /
-        //      WeasyPrint behavior + avoiding the over-shrink case
-        //      where a balanced ideal would drop content out of a
-        //      fixed-height container).
-        //
-        // 2-pass algorithm:
-        //   PASS 1 (pre-measure): serial-fill the content into a
-        //     single notional tall column; capture the resulting block
-        //     extent (= `totalSerialExtent`).
-        //   PASS 2 (layout): re-run the column-fill loop with
-        //     `effectiveColumnBlockSize = min(ceil(totalSerial /
-        //     columnCount), perColumnBlockSize)`. The ceiling rounds
-        //     up so the balanced columns aren't shorter than they need
-        //     to be (and any remainder lands in the last column,
-        //     visually similar to author intent). The min(...,
-        //     perColumnBlockSize) clamp preserves the per-page block-
-        //     size bound — balancing never grows a column past the
-        //     container's content extent. The floor at 1.0 avoids
-        //     pathological divide-by-zero edge cases for tiny content.
-        //
-        // `column-fill: balance-all` per the spec applies balancing to
-        // ALL fragmentainers including the last; cycle 3 treats it
-        // identically to `balance` (the last-fragmentainer special-
-        // case is sub-cycle 2+ scope; see
-        // docs/deferrals.md#multicol-balancing-pagination).
-        var columnFill = _rootBox.Style.ReadColumnFill();
-        var balancingActive =
-            columnFill is ColumnFillValue.Balance or ColumnFillValue.BalanceAll
-            && _rootBox.IsHeightAuto();
-        var effectiveColumnBlockSize = perColumnBlockSize;
-        if (balancingActive && columnCount > 1)
-        {
-            var totalSerialExtent = PreMeasureTotalSerialExtent(
-                perColumnInlineSize: perColumnInlineSize,
-                perColumnBlockSize: perColumnBlockSize,
-                columnCount: columnCount,
-                carriedContinuation: null,
-                cancellationToken: cancellationToken);
-            // Defensive: a non-finite extent (e.g., pathological
-            // content with non-finite block-size) would NaN-poison
-            // the divide. Fall back to the unbalanced perColumnBlockSize.
-            if (double.IsFinite(totalSerialExtent) && totalSerialExtent > 0)
-            {
-                var idealBlockSize = Math.Ceiling(totalSerialExtent / columnCount);
-                effectiveColumnBlockSize = Math.Min(idealBlockSize, perColumnBlockSize);
-                // Floor at 1.0 — both as a divide-by-zero guard +
-                // because FragmentainerContext rejects non-positive
-                // block-sizes (the per-column FragmentainerContext
-                // below uses this value).
-                effectiveColumnBlockSize = Math.Max(effectiveColumnBlockSize, 1.0);
-            }
-        }
-
         // Per Phase 3 Task 14 cycle 2 — multi-page multicol resume.
         // When the constructor stashed a MulticolContinuation, the
         // FIRST column on THIS page picks up content emission at the
@@ -574,6 +514,14 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
         // PerChildLayouterState as its nested incomingContinuation.
         // Subsequent columns continue from the prior column's
         // PageComplete result, same as cycle 1.
+        //
+        // Per post-PR-#59 review hardening (Finding #3) — this decode
+        // block was moved BEFORE the cycle 3 balancing block so the
+        // pre-measure can resume from the right point on page 2.
+        // Pre-fix the balancing pre-measure was passed `null` even on
+        // resume pages, which measured from child 0 instead of from
+        // the carried resume point + over-estimated the total serial
+        // extent (causing under-balanced columns on resume pages).
         //
         // Resume protocol:
         //   - If _incomingContinuation.PerChildLayouterState is a
@@ -606,6 +554,77 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
             // (NextChildIndex == 0 AND PerChildLayouterState == null)
             // is the degenerate "first-page-equivalent" case — leave
             // carriedContinuation null + start at child 0.
+        }
+
+        // Per Phase 3 Task 14 cycle 3 — column balancing per CSS Multi-
+        // column L1 §3.4. `balance` (default) balances only the LAST
+        // fragment; non-final fragments use sequential fill.
+        // `balance-all` balances every fragment. Activation also
+        // requires `height: auto` (conservative — matches Prince /
+        // WeasyPrint) and `column-count` ≥ 2.
+        //
+        // Per post-PR-#59 review hardening:
+        //   F#3 — `carriedContinuation` is decoded BEFORE this block
+        //         (see above), so the pre-measure resumes from the
+        //         right point on page 2.
+        //   F#1 — Replaced the `ceil(total/N)` average-height
+        //         heuristic with a real fit-search (binary search)
+        //         that finds the smallest column-block-size where all
+        //         content fits in N columns. The heuristic was wrong
+        //         for indivisible blocks (3 × 80px in 2 columns →
+        //         ideal=120, fits only 1 per column, spills the 3rd
+        //         to page 2 even though 160px fits all 3 on one page).
+        //   F#2 — `balance` semantics fixed: only balance the LAST
+        //         fragment. Detection: if `totalSerialExtent <=
+        //         perColumnBlockSize * columnCount`, content fits in
+        //         N columns → this IS the last fragment. Otherwise
+        //         sequential fill on this fragment. `balance-all`
+        //         balances every fragment.
+        //   F#4 — `PreMeasureTotalSerialExtent` now loops over
+        //         continuations until AllDone, accumulating extents
+        //         across multiple dry-run windows. The prior single-
+        //         window cap silently under-measured long content.
+        //   F#5 — Both pre-measure and fit-search read
+        //         `fragmentainer.UsedBlockSize` (margin-aware cursor
+        //         extent) instead of the sink's max BlockOffset+
+        //         BlockSize (which missed trailing margins +
+        //         collapsed-margin effects).
+        var columnFill = _rootBox.Style.ReadColumnFill();
+        var canBalance =
+            columnFill is ColumnFillValue.Balance or ColumnFillValue.BalanceAll
+            && _rootBox.IsHeightAuto()
+            && columnCount > 1
+            && _rootBox.Children.Count > 0;
+        var effectiveColumnBlockSize = perColumnBlockSize;
+
+        if (canBalance)
+        {
+            var totalSerialExtent = PreMeasureTotalSerialExtent(
+                perColumnInlineSize, perColumnBlockSize, columnCount,
+                carriedContinuation as BlockContinuation, cancellationToken);
+
+            if (double.IsFinite(totalSerialExtent) && totalSerialExtent > 0)
+            {
+                // F#2 — last-fragment detection. balance applies on
+                // the last fragment only; balance-all applies on every
+                // fragment.
+                var isLastFragment = totalSerialExtent <= perColumnBlockSize * columnCount;
+                var shouldBalance = columnFill switch
+                {
+                    ColumnFillValue.BalanceAll => true,
+                    ColumnFillValue.Balance => isLastFragment,
+                    _ => false,  // unreachable given canBalance gate
+                };
+
+                if (shouldBalance)
+                {
+                    effectiveColumnBlockSize = FindBalancedColumnBlockSize(
+                        perColumnInlineSize, perColumnBlockSize, columnCount,
+                        totalSerialExtent,
+                        carriedContinuation as BlockContinuation,
+                        cancellationToken);
+                }
+            }
         }
 
         // Column-fill pass. Walk columns left-to-right; the previous
@@ -797,11 +816,22 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
 
             // Clean multi-page split — capture the resume state into
             // a MulticolContinuation + return PageComplete.
+            //
+            // Per post-PR-#59 review hardening (Finding #8) — the
+            // accumulator uses `effectiveColumnBlockSize`, not
+            // `perColumnBlockSize`. When balancing is active the page
+            // actually used the balanced (smaller) block-size; pre-fix
+            // the accumulator over-counted by `perColumnBlockSize -
+            // effectiveColumnBlockSize` per page. `effectiveColumnBlockSize`
+            // is in scope from the cycle 3 balancing block above (it
+            // defaults to `perColumnBlockSize` when balancing didn't
+            // activate, so the cycle 1+2 sequential-fill behavior is
+            // preserved).
             var priorConsumed = _incomingContinuation?.ConsumedBlockSize ?? 0.0;
             return LayoutAttemptResult.PageComplete(
                 new MulticolContinuation(
                     NextChildIndex: blockCont.ResumeAtChild,
-                    ConsumedBlockSize: priorConsumed + perColumnBlockSize,
+                    ConsumedBlockSize: priorConsumed + effectiveColumnBlockSize,
                     PerChildLayouterState: blockCont),
                 cost: 0);
         }
@@ -828,56 +858,54 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
         return LayoutAttemptResult.AllDone(cost: 0);
     }
 
-    /// <summary>Per Phase 3 Task 14 cycle 3 — dry-run pre-measure
-    /// for <c>column-fill: balance</c>. Runs a single nested
-    /// <see cref="BlockLayouter"/> over the multicol's children with
-    /// a very tall block-size (= <paramref name="perColumnBlockSize"/>
-    /// × <paramref name="columnCount"/> × 2, clamped to a finite upper
-    /// bound) so all content fits in one notional "tall column". The
-    /// returned value is the maximum <c>BlockOffset + BlockSize</c>
-    /// reached by any emitted fragment in that single-column flow —
-    /// the "serial extent" the balancing math then divides across
-    /// <paramref name="columnCount"/> columns.
+    private const int MaxPreMeasureIterations = 8;
+
+    /// <summary>Per Phase 3 Task 14 cycle 3 + post-PR-#59 review
+    /// hardening (F#3 + F#4 + F#5) — measures the total serial-fill
+    /// block extent the multicol's in-flow content would consume in a
+    /// single notional tall column. Used by the column-balancing pre-
+    /// measure pass.
     ///
-    /// <para>Uses a <see cref="DiscardingMeasureSink"/> that drops
-    /// fragments but tracks the max bottom edge. The dry-run pass
-    /// uses <see cref="LayoutAttemptStrategy.LastResort"/> so any
-    /// content that doesn't fit (= extremely pathological inputs
-    /// where even the very-tall sentinel block-size is exceeded)
-    /// commits in place rather than asking for a rewind. A fresh
-    /// <see cref="BreakResolver"/> isolates the measure's
-    /// checkpoints from the outer column-fill loop's resolver.</para>
+    /// <para>Loops over <c>BlockContinuation</c> results to handle
+    /// content that exceeds a single dry-run window (F#4). Uses the
+    /// fragmentainer's <c>UsedBlockSize</c> as the per-iteration
+    /// extent (= the actual BlockLayouter cursor including trailing
+    /// margins + collapsed-margin effects, F#5).</para>
     ///
-    /// <para><b>Caveat — 2× cost</b> when balancing is active. The
-    /// pre-measure runs the children's full block-layout once
-    /// (against a discarding sink) + the subsequent layout pass
-    /// re-runs it against the real outer sink with the balanced
-    /// block-size. Acceptable for cycle 3 Hello World; the cycle 3
-    /// hardening pass may cache the result per Box.</para></summary>
+    /// <para>The <paramref name="carriedContinuation"/> seeds the
+    /// FIRST iteration's nested BlockLayouter (F#3 — pre-fix this was
+    /// always null, so resume pages measured from child 0 instead of
+    /// from the resume point).</para>
+    ///
+    /// <para>Iteration is capped at <see cref="MaxPreMeasureIterations"/>
+    /// to prevent unbounded loops on pathological content. Real-world
+    /// multicols rarely exceed 2-3 iterations (each iteration measures
+    /// roughly <c>columnCount × 2</c> pages of content).</para>
+    ///
+    /// <para>A fresh <see cref="BreakResolver"/> per iteration isolates
+    /// the measure's checkpoints from the outer column-fill loop's
+    /// resolver + ensures clean re-entry on the next dry-run window.</para></summary>
     /// <param name="perColumnInlineSize">The cycle-2-derived per-
     /// column inline-axis extent. Re-used for the dry-run's notional
     /// single tall column so the measured extent reflects the actual
     /// post-balancing inline width (= line-wrap counts match).</param>
     /// <param name="perColumnBlockSize">The unbalanced per-page block-
-    /// size bound. Multiplied by <paramref name="columnCount"/> × 2 to
-    /// give the dry-run a generous block-axis budget.</param>
+    /// size bound. Used as the per-iteration window size (multiplied
+    /// by <paramref name="columnCount"/> × 2).</param>
     /// <param name="columnCount">The active column count (after the
     /// MaxColumnCount clamp). Used as the multiplier on
-    /// <paramref name="perColumnBlockSize"/> for the dry-run's block
-    /// budget.</param>
-    /// <param name="carriedContinuation">Per Phase 3 Task 14 cycle 3
-    /// — Hello World scope DOES NOT propagate resume state into the
-    /// pre-measure (= passes null). The cycle 3 hardening pass may
-    /// fold in the resume contract; here it's a placeholder for
-    /// signature symmetry with the layout pass.</param>
-    /// <param name="cancellationToken">Threaded into the dry-run
-    /// layouter so a long-running content layout responds to
-    /// cancellation.</param>
-    /// <returns>The serial-fill block-axis extent. Returns 0 when the
-    /// multicol has no in-flow content; returns a finite-clamped
-    /// value when the measurement produced a non-finite result
-    /// (caller treats 0 as "no balancing needed", falling back to
-    /// perColumnBlockSize).</returns>
+    /// <paramref name="perColumnBlockSize"/> for the dry-run's per-
+    /// iteration block budget.</param>
+    /// <param name="carriedContinuation">Per F#3 — the multicol's
+    /// resume state from the prior page. Seeds the first dry-run
+    /// iteration so the measurement starts from the right child
+    /// index (and any nested per-child resume state).</param>
+    /// <param name="cancellationToken">Threaded into each dry-run
+    /// iteration's layouter so a long-running content layout responds
+    /// to cancellation.</param>
+    /// <returns>The serial-fill block-axis extent, accumulated across
+    /// all dry-run iterations. Returns 0 when the multicol has no
+    /// in-flow content.</returns>
     private double PreMeasureTotalSerialExtent(
         double perColumnInlineSize,
         double perColumnBlockSize,
@@ -891,42 +919,168 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
             return 0;
         }
 
-        // Generous block-axis budget: 2× the natural budget (=
-        // columns × per-page block-size). Clamp to a finite ceiling
-        // to avoid Infinity propagation when perColumnBlockSize is
-        // astronomically large.
         var rawBudget = perColumnBlockSize * columnCount * 2.0;
         if (!double.IsFinite(rawBudget) || rawBudget <= 0)
         {
             rawBudget = perColumnBlockSize;
         }
-        var measureBudget = rawBudget;
 
-        var discardingSink = new DiscardingMeasureSink();
-        using var innerLayouter = new BlockLayouter(
-            rootBox: _rootBox,
-            sink: discardingSink,
-            incomingContinuation: carriedContinuation,
-            diagnostics: null,
-            shaperResolver: _shaperResolver);
-
-        var measureFragmentainer = new FragmentainerContext(
-            contentInlineSize: perColumnInlineSize,
-            blockSize: measureBudget);
-        var measureLayoutCtx = new LayoutContext(measureFragmentainer)
+        var totalExtent = 0.0;
+        var carry = carriedContinuation;
+        for (var iter = 0; iter < MaxPreMeasureIterations; iter++)
         {
-            Diagnostics = null,
-        };
-        using var measureResolver = new BreakResolver();
+            cancellationToken.ThrowIfCancellationRequested();
 
-        _ = innerLayouter.AttemptLayout(
-            measureFragmentainer,
-            ref measureLayoutCtx,
-            measureResolver,
-            LayoutAttemptStrategy.LastResort,
-            cancellationToken);
+            var discardingSink = new DiscardingMeasureSink();
+            using var innerLayouter = new BlockLayouter(
+                rootBox: _rootBox,
+                sink: discardingSink,
+                incomingContinuation: carry,
+                diagnostics: null,
+                shaperResolver: _shaperResolver);
 
-        return discardingSink.MaxBlockExtent;
+            var measureFragmentainer = new FragmentainerContext(
+                contentInlineSize: perColumnInlineSize,
+                blockSize: rawBudget);
+            var measureLayoutCtx = new LayoutContext(measureFragmentainer)
+            {
+                Diagnostics = null,
+            };
+            using var measureResolver = new BreakResolver();
+
+            var result = innerLayouter.AttemptLayout(
+                measureFragmentainer,
+                ref measureLayoutCtx,
+                measureResolver,
+                LayoutAttemptStrategy.LastResort,
+                cancellationToken);
+
+            // F#5 — fragmentainer.UsedBlockSize is the BlockLayouter's
+            // actual cursor extent (margin-aware). The sink's max
+            // BlockOffset+BlockSize misses trailing margins.
+            totalExtent += measureFragmentainer.UsedBlockSize;
+
+            if (result.Outcome == LayoutAttemptOutcome.AllDone) break;
+            if (result.Continuation is BlockContinuation cont)
+            {
+                carry = cont;
+            }
+            else
+            {
+                break;  // unexpected; return what we measured
+            }
+        }
+
+        return totalExtent;
+    }
+
+    /// <summary>Per Phase 3 Task 14 cycle 3 + post-PR-#59 review
+    /// hardening (F#1) — binary search for the smallest column-block-
+    /// size where the multicol's content fits in
+    /// <paramref name="columnCount"/> columns.
+    ///
+    /// <para>Pre-fix used a naive <c>ceil(totalSerialExtent /
+    /// columnCount)</c> heuristic. That's correct for content composed
+    /// of breakable atoms (e.g., long flowing text) but wrong for
+    /// indivisible children: 3 children × 80px in 2 columns produced
+    /// ideal=120px, which fits only 1 per column → the 3rd child
+    /// spilled to page 2 even though 160px columns fit all 3 on one
+    /// page.</para>
+    ///
+    /// <para>Algorithm — binary search over <c>[ceil(total/N),
+    /// perColumnBlockSize]</c> at 1px resolution. Each iteration runs
+    /// a serial column-fill simulation (<see cref="FitsInNColumns"/>)
+    /// and halves the search range. Per CSS Multi-column L1 §3.4 the
+    /// spec describes balancing as "minimizing height variation while
+    /// honoring breaks" — finding the smallest column-block-size where
+    /// content still fits matches this goal.</para>
+    ///
+    /// <para>Per-iteration cost: <c>columnCount</c> nested
+    /// <c>BlockLayouter</c> dry-runs. Iteration count: O(log(perColumnBlockSize
+    /// - ceil(total/N))). Worst case ~10 iterations for a 1000px
+    /// range.</para></summary>
+    private double FindBalancedColumnBlockSize(
+        double perColumnInlineSize,
+        double perColumnBlockSize,
+        int columnCount,
+        double totalSerialExtent,
+        BlockContinuation? carriedContinuation,
+        CancellationToken cancellationToken)
+    {
+        var lo = Math.Max(1.0, Math.Ceiling(totalSerialExtent / columnCount));
+        var hi = perColumnBlockSize;
+
+        if (lo >= hi) return perColumnBlockSize;
+
+        // Binary search at 1px resolution.
+        while (hi - lo > 0.5)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var mid = Math.Floor((lo + hi) / 2.0);
+            if (FitsInNColumns(perColumnInlineSize, mid, columnCount,
+                               carriedContinuation, cancellationToken))
+            {
+                hi = mid;  // smaller column-block-size suffices
+            }
+            else
+            {
+                lo = mid + 1.0;  // need taller columns
+            }
+        }
+        return Math.Max(1.0, Math.Min(hi, perColumnBlockSize));
+    }
+
+    /// <summary>Per Phase 3 Task 14 cycle 3 + post-PR-#59 review
+    /// hardening (F#1) — simulates a serial column-fill at the
+    /// candidate <paramref name="columnBlockSize"/> and reports whether
+    /// all in-flow content fits within <paramref name="columnCount"/>
+    /// columns. Used by the binary-search fit-probe.
+    ///
+    /// <para>Walks columns left-to-right; each column's nested
+    /// <see cref="BlockLayouter"/> consumes content from the prior
+    /// column's <c>PageComplete</c> continuation (or
+    /// <paramref name="carriedContinuation"/> on column 0). "Fits"
+    /// means the simulation reaches <c>AllDone</c> in ≤
+    /// <paramref name="columnCount"/> columns.</para></summary>
+    private bool FitsInNColumns(
+        double perColumnInlineSize,
+        double columnBlockSize,
+        int columnCount,
+        BlockContinuation? carriedContinuation,
+        CancellationToken cancellationToken)
+    {
+        var carry = carriedContinuation;
+        for (var c = 0; c < columnCount; c++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var discardingSink = new DiscardingMeasureSink();
+            using var inner = new BlockLayouter(
+                rootBox: _rootBox,
+                sink: discardingSink,
+                incomingContinuation: carry,
+                diagnostics: null,
+                shaperResolver: _shaperResolver);
+
+            var ctx = new FragmentainerContext(
+                contentInlineSize: perColumnInlineSize,
+                blockSize: columnBlockSize);
+            var lctx = new LayoutContext(ctx) { Diagnostics = null };
+            using var resolver = new BreakResolver();
+
+            var result = inner.AttemptLayout(
+                ctx, ref lctx, resolver,
+                LayoutAttemptStrategy.LastResort, cancellationToken);
+
+            if (result.Outcome == LayoutAttemptOutcome.AllDone)
+                return true;
+
+            if (result.Continuation is BlockContinuation cont)
+                carry = cont;
+            else
+                return false;
+        }
+        return false;  // used all N columns and still has content
     }
 
     /// <summary>Per cycle 1 — release resources held by the

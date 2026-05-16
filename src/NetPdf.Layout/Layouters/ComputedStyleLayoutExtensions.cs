@@ -233,12 +233,22 @@ internal static class ComputedStyleLayoutExtensions
         };
     }
 
-    /// <summary>Per Phase 3 Task 14 cycle 3 — predicate distinguishing
-    /// <c>height: auto</c> from an explicit <c>height: 0</c> or
-    /// <c>height: &lt;positive px&gt;</c> on a box's computed style.
-    /// Returns <see langword="true"/> when the height slot's tag is
-    /// anything OTHER than <see cref="ComputedSlotTag.LengthPx"/> (=
-    /// the keyword <c>auto</c>, or unset).
+    /// <summary>Per Phase 3 Task 14 cycle 3 + post-PR-#59 review
+    /// hardening (Finding #7) — predicate distinguishing <c>height:
+    /// auto</c> from any EXPLICIT sizing on a box's computed style.
+    /// Returns <see langword="true"/> only when the height slot is
+    /// <see cref="ComputedSlotTag.Unset"/> (= the default <c>auto</c>)
+    /// OR <see cref="ComputedSlotTag.Keyword"/> (= the explicit
+    /// <c>auto</c> keyword).
+    ///
+    /// <para><b>Pre-hardening bug.</b> The original predicate returned
+    /// <c>slot.Tag != ComputedSlotTag.LengthPx</c>, which incorrectly
+    /// reported <c>height: 50%</c> (Percentage) and <c>height: calc(...)</c>
+    /// (Calc) as auto. Per CSS 2.1 §10.5 a percentage height resolves
+    /// against the containing block's height — that's EXPLICIT sizing,
+    /// not auto. Routing percentage-height multicols into the balancing
+    /// path would over-shrink columns + drop content out of the
+    /// container.</para>
     ///
     /// <para>Mirrors <c>BlockLayouter.IsHeightAuto</c> (private
     /// instance method) but exposed at the extension layer so
@@ -249,7 +259,13 @@ internal static class ComputedStyleLayoutExtensions
     public static bool IsHeightAuto(this Boxes.Box box)
     {
         var slot = box.Style.Get(PropertyId.Height);
-        return slot.Tag != ComputedSlotTag.LengthPx;
+        // Height is type LengthPercentageAuto. Only the `auto` keyword OR
+        // unset (= default `auto`) are auto. Percentage values are
+        // explicit sizing relative to the containing block; LengthPx is
+        // explicit absolute sizing. Per CSS 2.1 §10.5 percentage height
+        // resolves against the containing block's height; treating it as
+        // auto would route balanced multicol into the wrong layout path.
+        return slot.Tag is ComputedSlotTag.Unset or ComputedSlotTag.Keyword;
     }
 }
 

@@ -1750,6 +1750,14 @@ public sealed class BlockLayouterTests
     {
         // Per cycle-2b post-PR-28 review #3 — same predicate guard
         // applies to Flex / Grid / BlockReplacedElement.
+        //
+        // Per Phase 3 Task 15 cycle 1 (Hello World) — the flex
+        // container now dispatches into FlexLayouter which DOES emit
+        // its block-level item children. Grid / BlockReplacedElement
+        // remain skipped (no dedicated layouter wired yet — Phase 3
+        // Tasks 16+ will ship those). This test pins the cycle-1
+        // shift: flex items now appear; grid items + replaced inner
+        // content still don't.
         var sink = new RecordingFragmentSink();
         var root = Box.CreateRoot(MakeStyle());
 
@@ -1787,15 +1795,17 @@ public sealed class BlockLayouterTests
         layouter.AttemptLayout(
             ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
 
-        // 3 fragments: flex, grid, img. The flex/grid/img children
-        // are skipped — their inner geometry belongs to dedicated
-        // layouters (Phase 3 Tasks 8-12).
-        Assert.Equal(3, sink.Fragments.Count);
+        // Per Phase 3 Task 15 cycle 1 — 4 fragments: flex wrapper,
+        // flex item (via FlexLayouter dispatch), grid wrapper, img
+        // wrapper. Grid + replaced inner content still belong to
+        // dedicated layouters not yet wired.
+        Assert.Equal(4, sink.Fragments.Count);
         Assert.Same(flex, sink.Fragments[0].Box);
-        Assert.Same(grid, sink.Fragments[1].Box);
-        Assert.Same(img, sink.Fragments[2].Box);
-        // Critically — flexItem / gridItem are NOT in the fragment list.
-        Assert.DoesNotContain(sink.Fragments, f => ReferenceEquals(f.Box, flexItem));
+        Assert.Same(flexItem, sink.Fragments[1].Box);
+        Assert.Same(grid, sink.Fragments[2].Box);
+        Assert.Same(img, sink.Fragments[3].Box);
+        // Cycle 1 — flexItem IS now emitted (FlexLayouter); gridItem
+        // is still not.
         Assert.DoesNotContain(sink.Fragments, f => ReferenceEquals(f.Box, gridItem));
     }
 

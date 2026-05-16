@@ -590,8 +590,12 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
         //         BlockSize (which missed trailing margins +
         //         collapsed-margin effects).
         var columnFill = _rootBox.Style.ReadColumnFill();
+        // Explicit parens around the `is or` pattern per Copilot PR-#59
+        // review: the pattern-`or` precedence is higher than `&&`, so the
+        // expression is correct without parens, but the parens make the
+        // reading unambiguous at a glance.
         var canBalance =
-            columnFill is ColumnFillValue.Balance or ColumnFillValue.BalanceAll
+            (columnFill is ColumnFillValue.Balance or ColumnFillValue.BalanceAll)
             && _rootBox.IsHeightAuto()
             && columnCount > 1
             && _rootBox.Children.Count > 0;

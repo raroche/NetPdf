@@ -3262,10 +3262,27 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     ///   <see cref="BoxKind.Root"/> excluded since the cascade origin
     ///   wouldn't carry <c>column-count</c> in practice).</item>
     ///   <item>Its computed style declares <c>column-count</c> with a
-    ///   positive integer value &gt;= 2 (= <see cref="ComputedStyleLayoutExtensions.ReadColumnCount"/>
-    ///   returns a value &gt;= 2). <c>column-count: 1</c> is by
-    ///   definition NOT a multicol layout per the task plan's locked
-    ///   design — it lays out as a normal block.</item>
+    ///   positive integer value &gt;= 1 (= <see cref="ComputedStyleLayoutExtensions.ReadColumnCount"/>
+    ///   returns a value &gt;= 1). Per post-PR-#60 review hardening
+    ///   (F#3), <c>column-count: 1</c> ALSO establishes a multicol
+    ///   container — CSS Multi-column L1 §1 says "a multi-column
+    ///   container is created when [column-count or column-width] is
+    ///   set on a block-level element [non-auto]"; column boxes
+    ///   establish their own BFC. Pre-fix this branch required
+    ///   <c>n &gt;= 2</c>, so <c>column-count: 1</c> fell through to
+    ///   ordinary block flow + lost the BFC contract (e.g., outer
+    ///   margins could collapse with the multicol's first child's top
+    ///   margin). The MulticolLayouter now degrades to
+    ///   <c>EmitSingleColumnFallthrough</c> when used N &lt; 2 instead.</item>
+    ///   <item><b>Per Phase 3 Task 14 cycle 4</b> — OR its computed style
+    ///   declares <c>column-width</c> with a length value (=
+    ///   <see cref="ComputedStyleLayoutExtensions.ReadColumnWidth"/>
+    ///   returns a non-null value). The effective column count is
+    ///   derived from the container's content inline-size + column-gap
+    ///   per CSS Multi-column L1 §3.3 at MulticolLayouter dispatch time
+    ///   (container geometry isn't known at this static predicate).
+    ///   When the derived count is &lt; 2 the MulticolLayouter degrades
+    ///   to a single-column emit (= functionally non-multicol).</item>
     /// </list>
     ///
     /// <para><b>Why not a dedicated <c>BoxKind.MulticolContainer</c>.</b>
@@ -3292,7 +3309,22 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             return false;
         }
         var n = box.Style.ReadColumnCount();
-        return n is >= 2;
+        // Per post-PR-#60 review hardening (F#3) — `column-count: 1`
+        // establishes a multicol container per CSS Multi-column L1 §1
+        // (column boxes have their own BFC). Pre-fix this branch
+        // required n >= 2, so column-count: 1 fell through to ordinary
+        // block flow + lost the BFC contract. MulticolLayouter
+        // degrades to EmitSingleColumnFallthrough when used N < 2.
+        if (n is >= 1) return true;
+        // Per Phase 3 Task 14 cycle 4 — `column-width: <length>` with
+        // `column-count: auto` ALSO constitutes a multicol container;
+        // the effective column count is derived from the container's
+        // inline size at dispatch time (= inside MulticolLayouter via
+        // ComputeUsedColumnCount). The derived-N-must-be->=2 check
+        // happens there once container geometry is known; if it's < 2
+        // MulticolLayouter degrades to a single-column emit.
+        if (box.Style.ReadColumnWidth() is not null) return true;
+        return false;
     }
 
     /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 — predicate

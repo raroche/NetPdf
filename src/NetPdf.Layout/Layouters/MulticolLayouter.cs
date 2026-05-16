@@ -24,10 +24,13 @@ namespace NetPdf.Layout.Layouters;
 /// <para><b>Cycle 1 contract (baseline).</b> The layouter:</para>
 /// <list type="bullet">
 ///   <item>Reads <c>column-count</c> + <c>column-gap</c> from the
-///   container's <see cref="ComputedStyle"/>. <c>column-count: 1</c>
-///   is NOT a multicol container — the BlockLayouter dispatch path
-///   skips MulticolLayouter for any container with
-///   <c>ReadColumnCount() &lt; 2</c>.</item>
+///   container's <see cref="ComputedStyle"/>. Per post-PR-#60 review
+///   hardening (F#3) <c>column-count: 1</c> NOW reaches the
+///   MulticolLayouter and is handled by <c>EmitSingleColumnFallthrough</c>
+///   — CSS Multi-column L1 §1 establishes the BFC contract for any
+///   non-auto column-count, including 1. Pre-fix this gate required
+///   <c>ReadColumnCount() &gt;= 2</c> + <c>column-count: 1</c> fell
+///   through to ordinary block flow, losing the BFC contract.</item>
 ///   <item>For each of the N columns (left-to-right), constructs a
 ///   nested <see cref="BlockLayouter"/> with the SAME root box (the
 ///   multicol container) + a per-column sub-fragmentainer
@@ -205,15 +208,28 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
         ArgumentNullException.ThrowIfNull(rootBox);
         ArgumentNullException.ThrowIfNull(sink);
 
+        // Per Phase 3 Task 14 cycle 4 — accept multicol containers that
+        // declare intent EITHER via `column-count: <integer>` OR via
+        // `column-width: <length>`. The dispatching BlockLayouter's
+        // IsMulticolContainer gate fires for both cases; the effective
+        // column count is computed inside AttemptLayout once container
+        // geometry (_contentInlineSize) is known (the derivation needs
+        // it). This constructor only validates that AT LEAST ONE of the
+        // two declarations is present so a typo / mis-route at the
+        // dispatch level surfaces loudly.
         var columnCount = rootBox.Style.ReadColumnCount();
-        if (columnCount is null or < 1)
+        var columnWidth = rootBox.Style.ReadColumnWidth();
+        if ((columnCount is null or < 1) && columnWidth is null)
         {
             throw new ArgumentException(
                 "MulticolLayouter expects a block container with "
-                + "`column-count: <positive integer>`. The "
+                + "`column-count: <positive integer>` OR "
+                + "`column-width: <length>`. The "
                 + $"ReadColumnCount() extension returned {columnCount} "
-                + "for the supplied rootBox (= null/auto/invalid/zero/"
-                + "negative). The dispatching BlockLayouter is the "
+                + "and ReadColumnWidth() returned "
+                + $"{(columnWidth?.ToString() ?? "null")} "
+                + "for the supplied rootBox (= both auto / unset / "
+                + "invalid). The dispatching BlockLayouter is the "
                 + "guard for this contract — the wrong kind would "
                 + "silently emit zero columns + drop all content, "
                 + "hiding the integration bug.",
@@ -395,10 +411,35 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
                 + "the layouter knows where to anchor the columns.");
         }
 
-        // Re-read column-count + column-gap. ReadColumnCount() was
-        // validated >= 1 in the constructor; the upper-bound cap is
-        // a DoS guard against `column-count: 999999`.
-        var columnCount = _rootBox.Style.ReadColumnCount() ?? 1;
+        // Re-read column-gap first; ComputeUsedColumnCount needs it to
+        // derive N from column-width.
+        var columnGap = _rootBox.Style.ReadColumnGap();
+        if (!double.IsFinite(columnGap) || columnGap < 0)
+        {
+            // Defensive — the resolver should already reject negative
+            // length values for column-gap, but a future change might
+            // not. Fall back to the cycle-1 default.
+            columnGap = DefaultColumnGapPx;
+        }
+
+        // Per Phase 3 Task 14 cycle 4 — compute the EFFECTIVE used
+        // column count per CSS Multi-column L1 §3.3. The 4 spec cases
+        // are encoded in ComputeUsedColumnCount; pre-cycle 4 this was
+        // a raw `ReadColumnCount() ?? 1`. With cycle 4, when
+        // `column-count: auto` AND `column-width: <length>`, the
+        // derived N depends on the container's content inline-size +
+        // column-gap (= now known because ConfigureEmission ran).
+        var specifiedColumnCount = _rootBox.Style.ReadColumnCount();
+        var specifiedColumnWidth = _rootBox.Style.ReadColumnWidth();
+        var columnCount = ComputedStyleLayoutExtensions.ComputeUsedColumnCount(
+            containerContentInlineSize: _contentInlineSize,
+            specifiedColumnCount: specifiedColumnCount,
+            columnWidth: specifiedColumnWidth,
+            columnGap: columnGap);
+
+        // Upper-bound cap. The DoS guard applies AFTER derivation so a
+        // pathological combo (e.g., container=1e9 px + column-width=1
+        // px → derived N = ~1e9) is caught. Mirrors the cycle-2 pattern.
         if (columnCount > MaxColumnCount)
         {
             // Per Phase 3 Task 14 cycle 2 hardening (Finding #3) —
@@ -428,13 +469,22 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
                     + $"{columnCount} columns.",
                     PaginateDiagnosticSeverity.Warning));
         }
-        var columnGap = _rootBox.Style.ReadColumnGap();
-        if (!double.IsFinite(columnGap) || columnGap < 0)
+
+        // Per Phase 3 Task 14 cycle 4 — single-column degenerate.
+        // When the derived N is 1 (e.g., `column-width: 1000px` in a
+        // 400 px container clamps derivedCount to 1), the multicol
+        // dispatch IS reached because IsMulticolContainer's predicate
+        // fires on column-width presence alone. Inside the layouter we
+        // detect derivedCount < 2 and degrade to a single-column emit:
+        // run one nested BlockLayouter spanning the full content
+        // inline-size + block-size, no column translation. Functionally
+        // equivalent to non-multicol layout, but reachable through the
+        // multicol dispatch so the predicate stays simple + side-effect-
+        // free.
+        if (columnCount < 2)
         {
-            // Defensive — the resolver should already reject negative
-            // length values for column-gap, but a future change might
-            // not. Fall back to the cycle-1 default.
-            columnGap = DefaultColumnGapPx;
+            return EmitSingleColumnFallthrough(
+                fragmentainer, ref layout, cancellationToken);
         }
 
         // Per-column inline size. The total gap budget is
@@ -523,38 +573,15 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
         // the carried resume point + over-estimated the total serial
         // extent (causing under-balanced columns on resume pages).
         //
-        // Resume protocol:
-        //   - If _incomingContinuation.PerChildLayouterState is a
-        //     BlockContinuation, hand it directly to the first
-        //     column's nested BlockLayouter — that captures BOTH the
-        //     resume-child-index + any nested layouter state from a
-        //     prior page's overflowing column.
-        //   - If PerChildLayouterState is null AND NextChildIndex > 0,
-        //     synthesize a BlockContinuation(ResumeAtChild=NextChildIndex,
-        //     ConsumedBlockSize=0). This case arises when the prior
-        //     page committed a whole-child boundary (= the last column
-        //     of the prior page ended exactly at a child boundary;
-        //     PerChildLayouterState was null but the next-child cursor
-        //     advanced).
-        //   - Otherwise (null + NextChildIndex == 0): first-page
-        //     equivalent — start cleanly.
-        LayoutContinuation? carriedContinuation = null;
-        if (_incomingContinuation is not null)
-        {
-            if (_incomingContinuation.PerChildLayouterState is BlockContinuation perChildBlockCont)
-            {
-                carriedContinuation = perChildBlockCont;
-            }
-            else if (_incomingContinuation.NextChildIndex > 0)
-            {
-                carriedContinuation = new BlockContinuation(
-                    ResumeAtChild: _incomingContinuation.NextChildIndex,
-                    ConsumedBlockSize: 0);
-            }
-            // (NextChildIndex == 0 AND PerChildLayouterState == null)
-            // is the degenerate "first-page-equivalent" case — leave
-            // carriedContinuation null + start at child 0.
-        }
+        // Per post-PR-#60 review hardening (F#5) — the decode logic +
+        // PageComplete packaging + forced-overflow diagnostics are
+        // extracted into shared helpers so the multi-column path and
+        // the EmitSingleColumnFallthrough path can't drift. See
+        // <see cref="DecodeIncomingCarriedContinuation"/>,
+        // <see cref="PackageMulticolPageComplete"/>,
+        // <see cref="EmitForcedOverflowDiagnostic"/>, and
+        // <see cref="EmitUnexpectedContinuationDiagnostic"/>.
+        LayoutContinuation? carriedContinuation = DecodeIncomingCarriedContinuation();
 
         // Per Phase 3 Task 14 cycle 3 — column balancing per CSS Multi-
         // column L1 §3.4. `balance` (default) balances only the LAST
@@ -778,66 +805,23 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
         // progress, mirroring cycle 1's behavior.
         if (carriedContinuation is BlockContinuation blockCont)
         {
-            var entryNextChildIndex = _incomingContinuation?.NextChildIndex ?? 0;
-            var noFragmentsEmitted = _sink.Cursor == sinkCursorAtStart;
-            var resumeIndexDidNotAdvance = blockCont.ResumeAtChild <= entryNextChildIndex;
-            // Additional progress signal: the prior page's
-            // PerChildLayouterState is also a BlockContinuation; if
-            // the new blockCont matches (same ResumeAtChild + null /
-            // identical layouter state) the resume isn't making
-            // progress through the same child either.
-            var nestedStateDidNotAdvance =
-                _incomingContinuation?.PerChildLayouterState is BlockContinuation priorNested
-                && blockCont.ResumeAtChild == priorNested.ResumeAtChild
-                && blockCont.LayouterState is null
-                && priorNested.LayouterState is null;
-
-            if (noFragmentsEmitted
-                && (resumeIndexDidNotAdvance || nestedStateDidNotAdvance))
+            // Per post-PR-#60 review hardening (F#5) — forward-progress
+            // detection extracted into TryEmitForcedOverflowFallback so
+            // EmitSingleColumnFallthrough can reuse it. The forced-
+            // overflow diagnostic + AllDone truncation is the response
+            // when the multicol-level pagination can't advance (= no
+            // fragments emitted + resume index OR nested state didn't
+            // advance).
+            if (TryEmitForcedOverflowFallback(
+                    blockCont, sinkCursorAtStart, columnCount,
+                    perColumnBlockSize, layout))
             {
-                // Forced-overflow fallback — the multicol can't make
-                // forward progress at the multicol level. Emit the
-                // diagnostic + truncate the remainder (= AllDone) so
-                // the outer pagination doesn't loop forever.
-                OptimizingBreakResolver.SafeEmit(
-                    layout.Diagnostics ?? _diagnostics,
-                    new PaginateDiagnostic(
-                        PaginateDiagnosticCodes.LayoutMulticolForcedOverflow001,
-                        $"MulticolLayouter: in-flow content of multicol container "
-                        + $"(column-count={columnCount}, per-column block-size="
-                        + $"{perColumnBlockSize:0.##}) cannot make forward "
-                        + $"progress across pages — a single child at index "
-                        + $"{blockCont.ResumeAtChild} (of "
-                        + $"{_rootBox.Children.Count}) is taller than the per-"
-                        + $"page multicol block-size + cannot be split at the "
-                        + $"multicol level. The remaining content is truncated "
-                        + $"to avoid pagination loop. Intra-child fragmentation "
-                        + $"at the multicol level is sub-cycle 3+ scope. See "
-                        + $"docs/deferrals.md#multicol-balancing-pagination.",
-                        PaginateDiagnosticSeverity.Warning));
                 return LayoutAttemptResult.AllDone(cost: 0);
             }
 
             // Clean multi-page split — capture the resume state into
             // a MulticolContinuation + return PageComplete.
-            //
-            // Per post-PR-#59 review hardening (Finding #8) — the
-            // accumulator uses `effectiveColumnBlockSize`, not
-            // `perColumnBlockSize`. When balancing is active the page
-            // actually used the balanced (smaller) block-size; pre-fix
-            // the accumulator over-counted by `perColumnBlockSize -
-            // effectiveColumnBlockSize` per page. `effectiveColumnBlockSize`
-            // is in scope from the cycle 3 balancing block above (it
-            // defaults to `perColumnBlockSize` when balancing didn't
-            // activate, so the cycle 1+2 sequential-fill behavior is
-            // preserved).
-            var priorConsumed = _incomingContinuation?.ConsumedBlockSize ?? 0.0;
-            return LayoutAttemptResult.PageComplete(
-                new MulticolContinuation(
-                    NextChildIndex: blockCont.ResumeAtChild,
-                    ConsumedBlockSize: priorConsumed + effectiveColumnBlockSize,
-                    PerChildLayouterState: blockCont),
-                cost: 0);
+            return PackageMulticolPageComplete(blockCont, effectiveColumnBlockSize);
         }
 
         // Defensive — carriedContinuation is non-null AND not a
@@ -847,18 +831,306 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
         // truncate so we don't return a malformed PageComplete.
         if (carriedContinuation is not null)
         {
-            OptimizingBreakResolver.SafeEmit(
-                layout.Diagnostics ?? _diagnostics,
-                new PaginateDiagnostic(
-                    PaginateDiagnosticCodes.LayoutMulticolForcedOverflow001,
-                    $"MulticolLayouter: nested BlockLayouter returned an "
-                    + $"unexpected continuation kind "
-                    + $"({carriedContinuation.GetType().Name}); the multicol "
-                    + $"can't make forward progress + truncates the remainder. "
-                    + $"Cycle 2's resume contract expects BlockContinuation "
-                    + $"from the per-column nested layouter.",
-                    PaginateDiagnosticSeverity.Warning));
+            EmitUnexpectedContinuationDiagnostic(carriedContinuation, layout);
         }
+        return LayoutAttemptResult.AllDone(cost: 0);
+    }
+
+    // ====================================================================
+    //  Shared helpers (F#5) — extracted so EmitSingleColumnFallthrough +
+    //  the main column-fill path use the SAME resume decode + PageComplete
+    //  packaging + diagnostic-emission logic. Pre-extraction the fallback
+    //  duplicated the decode + lacked the forward-progress detection and
+    //  malformed-continuation diagnostic of the main path; if the nested
+    //  BlockLayouter returned an unexpected kind from the fallback path
+    //  the multicol silently returned AllDone with no audit trail.
+    // ====================================================================
+
+    /// <summary>F#5 — decode <see cref="_incomingContinuation"/> into a
+    /// <see cref="LayoutContinuation"/> the nested BlockLayouter
+    /// understands. Mirrors the resume protocol described inline in
+    /// AttemptLayout (see the cycle-2 multi-page resume block).
+    ///
+    /// <list type="bullet">
+    ///   <item>If <c>PerChildLayouterState</c> is a
+    ///   <see cref="BlockContinuation"/>, return it directly — that
+    ///   captures BOTH the resume-child-index + any nested layouter
+    ///   state from a prior page's overflowing column.</item>
+    ///   <item>If <c>PerChildLayouterState</c> is null AND
+    ///   <c>NextChildIndex &gt; 0</c>, synthesize a
+    ///   <c>BlockContinuation(ResumeAtChild=NextChildIndex,
+    ///   ConsumedBlockSize=0)</c>. This case arises when the prior
+    ///   page committed a whole-child boundary.</item>
+    ///   <item>Otherwise (null + NextChildIndex == 0): first-page
+    ///   equivalent — return null.</item>
+    /// </list></summary>
+    private LayoutContinuation? DecodeIncomingCarriedContinuation()
+    {
+        if (_incomingContinuation is null) return null;
+        if (_incomingContinuation.PerChildLayouterState is BlockContinuation perChildBlockCont)
+        {
+            return perChildBlockCont;
+        }
+        if (_incomingContinuation.NextChildIndex > 0)
+        {
+            return new BlockContinuation(
+                ResumeAtChild: _incomingContinuation.NextChildIndex,
+                ConsumedBlockSize: 0);
+        }
+        return null;
+    }
+
+    /// <summary>F#5 — package the final-column overflowing
+    /// <see cref="BlockContinuation"/> into a
+    /// <see cref="MulticolContinuation"/> wrapped in
+    /// <see cref="LayoutAttemptResult.PageComplete"/>. Both the multi-
+    /// column path and the single-column fallback path call this so the
+    /// MulticolContinuation construction stays consistent.
+    ///
+    /// <para>Per post-PR-#59 review hardening (Finding #8) — the
+    /// accumulator uses <paramref name="usedColumnBlockSize"/>, not
+    /// <c>perColumnBlockSize</c>. When balancing is active the page
+    /// actually used the balanced (smaller) block-size; pre-fix the
+    /// accumulator over-counted by <c>perColumnBlockSize -
+    /// effectiveColumnBlockSize</c> per page. The single-column path
+    /// passes <c>_contentBlockSize</c> here (= the unbalanced full
+    /// page block extent) since N=1 doesn't balance; the multi-column
+    /// path passes <c>effectiveColumnBlockSize</c> from the cycle 3
+    /// balancing block.</para></summary>
+    private LayoutAttemptResult PackageMulticolPageComplete(
+        BlockContinuation blockCont,
+        double usedColumnBlockSize)
+    {
+        var priorConsumed = _incomingContinuation?.ConsumedBlockSize ?? 0.0;
+        return LayoutAttemptResult.PageComplete(
+            new MulticolContinuation(
+                NextChildIndex: blockCont.ResumeAtChild,
+                ConsumedBlockSize: priorConsumed + usedColumnBlockSize,
+                PerChildLayouterState: blockCont),
+            cost: 0);
+    }
+
+    /// <summary>F#5 — forward-progress detection + forced-overflow
+    /// diagnostic emission for the multi-column path. Returns
+    /// <see langword="true"/> when the diagnostic fired (= caller should
+    /// truncate to AllDone) and <see langword="false"/> when the resume
+    /// is making forward progress (= caller should package PageComplete).
+    ///
+    /// <para>The detection mirrors the inline cycle-2 logic: the
+    /// fallback fires when NO fragments emitted between entry + exit
+    /// AND either the resume-child-index didn't advance past the entry
+    /// index OR the prior page's per-child nested state is identical
+    /// to the new continuation's. The single-column path passes
+    /// <c>columnCount = 1</c> + <c>perColumnBlockSize = _contentBlockSize</c>
+    /// (= the diagnostic message reports the correct geometry; the
+    /// progress-detection logic is identical regardless of N).</para></summary>
+    private bool TryEmitForcedOverflowFallback(
+        BlockContinuation blockCont,
+        int sinkCursorAtStart,
+        int columnCount,
+        double perColumnBlockSize,
+        LayoutContext layout)
+    {
+        var entryNextChildIndex = _incomingContinuation?.NextChildIndex ?? 0;
+        var noFragmentsEmitted = _sink.Cursor == sinkCursorAtStart;
+        var resumeIndexDidNotAdvance = blockCont.ResumeAtChild <= entryNextChildIndex;
+        // Additional progress signal: the prior page's
+        // PerChildLayouterState is also a BlockContinuation; if
+        // the new blockCont matches (same ResumeAtChild + null /
+        // identical layouter state) the resume isn't making
+        // progress through the same child either.
+        var nestedStateDidNotAdvance =
+            _incomingContinuation?.PerChildLayouterState is BlockContinuation priorNested
+            && blockCont.ResumeAtChild == priorNested.ResumeAtChild
+            && blockCont.LayouterState is null
+            && priorNested.LayouterState is null;
+
+        if (noFragmentsEmitted
+            && (resumeIndexDidNotAdvance || nestedStateDidNotAdvance))
+        {
+            EmitForcedOverflowDiagnostic(
+                blockCont, columnCount, perColumnBlockSize, layout);
+            return true;
+        }
+        return false;
+    }
+
+    /// <summary>F#5 — emit the
+    /// <see cref="PaginateDiagnosticCodes.LayoutMulticolForcedOverflow001"/>
+    /// diagnostic for the "no forward progress" multicol case. Extracted
+    /// so both the multi-column path and the single-column fallback can
+    /// emit identical messages with the right contextual parameters.</summary>
+    private void EmitForcedOverflowDiagnostic(
+        BlockContinuation blockCont,
+        int columnCount,
+        double perColumnBlockSize,
+        LayoutContext layout)
+    {
+        OptimizingBreakResolver.SafeEmit(
+            layout.Diagnostics ?? _diagnostics,
+            new PaginateDiagnostic(
+                PaginateDiagnosticCodes.LayoutMulticolForcedOverflow001,
+                $"MulticolLayouter: in-flow content of multicol container "
+                + $"(column-count={columnCount}, per-column block-size="
+                + $"{perColumnBlockSize:0.##}) cannot make forward "
+                + $"progress across pages — a single child at index "
+                + $"{blockCont.ResumeAtChild} (of "
+                + $"{_rootBox.Children.Count}) is taller than the per-"
+                + $"page multicol block-size + cannot be split at the "
+                + $"multicol level. The remaining content is truncated "
+                + $"to avoid pagination loop. Intra-child fragmentation "
+                + $"at the multicol level is sub-cycle 3+ scope. See "
+                + $"docs/deferrals.md#multicol-balancing-pagination.",
+                PaginateDiagnosticSeverity.Warning));
+    }
+
+    /// <summary>F#5 — emit the malformed-continuation-kind diagnostic
+    /// for the defensive "this shouldn't happen but be loud if it
+    /// does" path. Both the multi-column + single-column paths emit
+    /// this when the nested BlockLayouter returns a continuation type
+    /// other than <see cref="BlockContinuation"/>.</summary>
+    private void EmitUnexpectedContinuationDiagnostic(
+        LayoutContinuation carriedContinuation,
+        LayoutContext layout)
+    {
+        OptimizingBreakResolver.SafeEmit(
+            layout.Diagnostics ?? _diagnostics,
+            new PaginateDiagnostic(
+                PaginateDiagnosticCodes.LayoutMulticolForcedOverflow001,
+                $"MulticolLayouter: nested BlockLayouter returned an "
+                + $"unexpected continuation kind "
+                + $"({carriedContinuation.GetType().Name}); the multicol "
+                + $"can't make forward progress + truncates the remainder. "
+                + $"Cycle 2's resume contract expects BlockContinuation "
+                + $"from the per-column nested layouter.",
+                PaginateDiagnosticSeverity.Warning));
+    }
+
+    /// <summary>Per Phase 3 Task 14 cycle 4 — single-column degenerate
+    /// emit. Reachable when the dispatch fires on a `column-width: &lt;length&gt;`
+    /// container whose derived column count is 1 (e.g.,
+    /// `column-width: 1000px` in a 400px container clamps to 1 per CSS
+    /// Multi-column L1 §3.3), AND (per post-PR-#60 review hardening F#3)
+    /// when the dispatch fires on `column-count: 1` (the BFC contract
+    /// case). Functionally equivalent to regular block-flow emission:
+    /// runs ONE nested BlockLayouter spanning the full content inline-
+    /// size + block-size, with a translating sink anchored to the
+    /// container's content-box origin (no column-axis translation
+    /// since there's only one column).
+    ///
+    /// <para>The translation is still needed because the outer
+    /// BlockLayouter already emitted the multicol wrapper fragment + we
+    /// must land the inner content INSIDE the wrapper's content area.
+    /// The nested layouter's sub-fragmentainer has origin (0, 0) in its
+    /// own coordinate space; the translating sink maps it to
+    /// (_contentInlineOffset, _contentBlockOffset) in the outer
+    /// fragmentainer's space — same pattern as the multi-column path
+    /// with columnIdx=0.</para>
+    ///
+    /// <para>Resume + multi-page contract preserved: when the nested
+    /// BlockLayouter returns PageComplete(BlockContinuation), this
+    /// method packages it into a MulticolContinuation just like the
+    /// multi-column path so the dispatching BlockLayouter's
+    /// <c>BlockContinuation(LayouterState=MulticolContinuation)</c>
+    /// propagation works unchanged.</para>
+    ///
+    /// <para>Per post-PR-#60 review hardening (F#5) — this method
+    /// shares the resume decode + PageComplete packaging + forced-
+    /// overflow detection + unexpected-continuation diagnostic with
+    /// the multi-column path via the helpers below
+    /// (<see cref="DecodeIncomingCarriedContinuation"/>,
+    /// <see cref="PackageMulticolPageComplete"/>,
+    /// <see cref="TryEmitForcedOverflowFallback"/>,
+    /// <see cref="EmitUnexpectedContinuationDiagnostic"/>). Pre-fix
+    /// the fallback duplicated the decode + silently returned AllDone
+    /// on any non-BlockContinuation outcome, hiding malformed nested
+    /// state from the audit trail.</para></summary>
+    private LayoutAttemptResult EmitSingleColumnFallthrough(
+        FragmentainerContext fragmentainer,
+        ref LayoutContext layout,
+        CancellationToken cancellationToken)
+    {
+        // F#5 — shared resume decode.
+        var carriedContinuation = DecodeIncomingCarriedContinuation();
+
+        var translatingSink = new ColumnFragmentSink(
+            outerSink: _sink,
+            inlineOffsetTranslation: _contentInlineOffset,
+            blockOffsetTranslation: _contentBlockOffset);
+
+        var singleColumnFragmentainer = new FragmentainerContext(
+            contentInlineSize: _contentInlineSize,
+            blockSize: _contentBlockSize);
+
+        // F#5 — capture sink cursor at entry so the forced-overflow
+        // forward-progress check has a baseline to compare against on
+        // the resume-loop case (zero children emitted + resume index
+        // hasn't advanced).
+        var sinkCursorAtStart = _sink.Cursor;
+
+        using var innerLayouter = new BlockLayouter(
+            rootBox: _rootBox,
+            sink: translatingSink,
+            incomingContinuation: carriedContinuation,
+            diagnostics: _diagnostics,
+            shaperResolver: _shaperResolver);
+
+        using var innerResolver = new BreakResolver();
+        var innerLayoutCtx = new LayoutContext(singleColumnFragmentainer)
+        {
+            Diagnostics = layout.Diagnostics ?? _diagnostics,
+        };
+
+        var innerResult = innerLayouter.AttemptLayout(
+            singleColumnFragmentainer,
+            ref innerLayoutCtx,
+            innerResolver,
+            LayoutAttemptStrategy.LastResort,
+            cancellationToken);
+
+        if (innerResult.Outcome == LayoutAttemptOutcome.AllDone)
+        {
+            return LayoutAttemptResult.AllDone(cost: 0);
+        }
+        if (innerResult.Outcome == LayoutAttemptOutcome.PageComplete
+            && innerResult.Continuation is BlockContinuation blockCont)
+        {
+            // F#5 — forward-progress check before clean PageComplete
+            // packaging. If the resume isn't advancing AND no fragments
+            // emitted, emit the forced-overflow diagnostic + truncate.
+            // Cycle 4 single-column has effectively column-count = 1
+            // here; pass perColumnBlockSize = _contentBlockSize so the
+            // diagnostic message reports the correct geometry.
+            if (TryEmitForcedOverflowFallback(
+                    blockCont, sinkCursorAtStart, columnCount: 1,
+                    perColumnBlockSize: _contentBlockSize, layout))
+            {
+                return LayoutAttemptResult.AllDone(cost: 0);
+            }
+
+            // Multi-page split with N=1. Package into MulticolContinuation
+            // so the dispatching BlockLayouter's resume protocol works.
+            // F#5 — uses the shared packaging helper. The "used column
+            // block-size" for N=1 is the full content block-size (no
+            // balancing applies to a single column).
+            return PackageMulticolPageComplete(blockCont, _contentBlockSize);
+        }
+
+        // F#5 — defensive emit for the unexpected-continuation-kind
+        // case. Pre-fix this fall-through silently returned AllDone,
+        // hiding any nested-layouter contract violation from the
+        // diagnostic stream. Now the malformed kind surfaces a Warning
+        // identical to the multi-column path's.
+        if (innerResult.Outcome == LayoutAttemptOutcome.PageComplete
+            && innerResult.Continuation is not null
+            && innerResult.Continuation is not BlockContinuation)
+        {
+            EmitUnexpectedContinuationDiagnostic(innerResult.Continuation, layout);
+        }
+        // Defensive — unexpected outcome under LastResort (e.g.,
+        // NeedsRewind, which the inner BlockLayouter MUST NOT return
+        // under LastResort per ILayouter contract). Truncate to avoid
+        // infinite-loop pagination.
         return LayoutAttemptResult.AllDone(cost: 0);
     }
 

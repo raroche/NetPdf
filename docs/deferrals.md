@@ -552,21 +552,38 @@ grepping the ID).
 ## multicol-balancing-pagination
 
 - **ID** — `multicol-balancing-pagination`
-- **Status** — `approximated` (cycles 1-3 + post-PR-#59 review
-  hardening ship fixed-column-count + equal-split + multi-page
-  splitting through any recursion depth + `column-fill: balance` /
+- **Status** — `approximated` (cycles 1-4 + post-PR-#59 + post-PR-#60
+  review hardening ship fixed-column-count + column-width-derived
+  auto count (absolute resolved lengths only — font-relative values
+  deferred to sub-cycle 5+) + equal-split + multi-page splitting
+  through any recursion depth + `column-fill: balance` /
   `balance-all` with correct last-fragment semantics + a real fit-
-  search instead of the average-height heuristic; column-width
-  auto-count + column rules + `column-span: all` + the balance-result
-  perf cache remain sub-cycle 2+ scope). Phase 3 Task 14 cycle 2
-  hardening Finding #1 lifted the depth==1-only continuation
-  propagation limit — nested multicols at any in-flow recursion
-  depth now split cleanly across pages. Cycle 3 + post-PR-#59 review
-  hardening ship the correct column-balancing algorithm: a binary-
-  search fit-probe finds the smallest column-block-size where all
-  content fits in N columns, with correct `balance` vs `balance-all`
-  semantics, resume-aware pre-measure, multi-window pre-measure for
-  long content, and margin-aware extent capture.
+  search instead of the average-height heuristic; column rules +
+  `column-span: all` + the balance-result perf cache + font-relative
+  `column-width` resolution remain sub-cycle 2+ scope). Phase 3
+  Task 14 cycle 2 hardening Finding #1 lifted the depth==1-only
+  continuation propagation limit — nested multicols at any in-flow
+  recursion depth now split cleanly across pages. Cycle 3 +
+  post-PR-#59 review hardening ship the correct column-balancing
+  algorithm: a binary-search fit-probe finds the smallest column-
+  block-size where all content fits in N columns, with correct
+  `balance` vs `balance-all` semantics, resume-aware pre-measure,
+  multi-window pre-measure for long content, and margin-aware
+  extent capture. Cycle 4 ships the CSS Multi-column L1 §3.3 used-
+  column-count derivation for absolute resolved lengths:
+  `column-width: <Npx>` alone or combined with `column-count`
+  derives N from the container's content inline-size + column-gap,
+  with single-column degenerate fallthrough when derivedN == 1
+  (e.g., `column-width` larger than the container). Post-PR-#60
+  review hardening: (F#1) admits `column-width: 0` per spec §3.1's
+  used-value 1px floor; (F#3) `column-count: 1` now reaches the
+  MulticolLayouter per spec §1's BFC contract (degrades to
+  single-column fallthrough); (F#4) the int-cast in the derivation
+  helper is now clamped to int.MaxValue BEFORE the cast so huge
+  finite ratios don't trigger undefined behavior; (F#5) the
+  single-column fallthrough now shares its resume decode +
+  PageComplete packaging + diagnostic emission with the multi-
+  column path.
 - **Behavior** — `MulticolLayouter` (Phase 3 Task 14 cycles 1-2)
   recognizes a block container with `column-count: N` (integer ≥ 2)
   as a multicol container. Detection is via
@@ -662,6 +679,18 @@ grepping the ID).
     The post-PR-#59 deferred F#6 perf-cache would memoize the fit-
     search result per Box; sub-cycle 2+ scope.
 - **Missing** —
+  - **Font-relative `column-width`** (CSS Multi-column L1 §3.1):
+    cycle 4 reads only resolved `LengthPx` slots; font-relative
+    values (`em`, `rem`) AND percentages are returned as
+    `ResolverResult.Deferred` by the cycle-1 `LengthResolver` (the
+    raw text rides along on the side; the slot itself stays
+    `ComputedSlotTag.Unset`), and cycle 4's `ReadColumnWidth`
+    returns null for those, so they don't trigger multicol dispatch
+    via the column-width path. Authors who write
+    `column-width: 12em` (the CSS Multi-column L1 §3.1 introductory
+    example) currently fall through to ordinary block flow.
+    Sub-cycle 5+ will resolve them against the cascaded font-size
+    (em/rem) + containing block (percentages).
   - **Balance-result perf cache (F#6 — deferred from post-PR-#59
     review)**: the fit-search runs `O(log range) × columnCount`
     nested `BlockLayouter` dry-runs per multicol per page. When a
@@ -681,11 +710,6 @@ grepping the ID).
     the spec calls for balancing within the explicit height
     constraint; cycle 3 conservatively falls back to serial fill to
     avoid the over-shrink drop-out failure mode. Sub-cycle 2+ work.
-  - **`column-width` + automatic column count** (CSS Multi-column L1
-    §3.1): cycle 1 reads `column-count` only. When `column-width` is
-    declared without `column-count`, sub-cycle 2 will compute
-    `N = floor((containerContentInlineSize + columnGap) /
-    (column-width + columnGap))`.
   - **`column-span: all`** (CSS Multi-column L1 §4): a child with
     `column-span: all` spans across all columns; cycle 1 has no
     column-span machinery.
@@ -705,26 +729,36 @@ grepping the ID).
   case where multicol content vanishes (= the forced-overflow
   diagnostic fires).
 - **Owner files** —
-  - `src/NetPdf.Layout/Layouters/MulticolLayouter.cs` — cycles 1-3
+  - `src/NetPdf.Layout/Layouters/MulticolLayouter.cs` — cycles 1-4
     implementation; cycle 2 adds the multi-page resume path via
     `MulticolContinuation`; cycle 3 + post-PR-#59 review hardening
     add `column-fill: balance` / `balance-all` via the binary-
     search fit-probe pipeline (`PreMeasureTotalSerialExtent` looped
-    + margin-aware, `FindBalancedColumnBlockSize`, `FitsInNColumns`).
-    Sub-cycle 2+ will add the F#6 fit-result cache + column-width
-    auto-count + column rules + `column-span: all`.
+    + margin-aware, `FindBalancedColumnBlockSize`, `FitsInNColumns`);
+    cycle 4 derives the effective column count from
+    `column-width` via `ComputeUsedColumnCount` + adds the
+    `EmitSingleColumnFallthrough` path for derivedN == 1.
+    Sub-cycle 2+ will add the F#6 fit-result cache + column rules +
+    `column-span: all`.
   - `src/NetPdf.Layout/Layouters/ComputedStyleLayoutExtensions.cs`
     — cycle 3 adds `ReadColumnFill()` (returning `ColumnFillValue`)
     + `IsHeightAuto()` (post-PR-#59 hardening F#7 — correctly
     classifies Percentage + Calc heights as NON-auto; only Unset
-    and Keyword slots are auto).
+    and Keyword slots are auto); cycle 4 adds `ReadColumnWidth()`
+    (decoding `column-width` as a CSS px length, null on auto) +
+    the static helper `ComputeUsedColumnCount(...)` (encoding the
+    4 spec cases from CSS Multi-column L1 §3.3).
   - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — the dispatch
     site that recognizes multicol containers + invokes
     `MulticolLayouter`; cycle 2 adds the
     `MulticolContinuation`-via-`BlockContinuation.LayouterState`
     propagation pattern (main loop + recursion's depth==1 callback);
     post-PR-#59 hardening F#7 fixes the private static
-    `IsHeightAuto` identically to the extension version.
+    `IsHeightAuto` identically to the extension version; cycle 4
+    extends `IsMulticolContainer` to fire on `column-width: <length>`
+    AND `column-count: <int>` (the dispatch gate captures multicol
+    intent; derivedN is computed once container geometry is known
+    inside `MulticolLayouter`).
   - `src/NetPdf.Paginate/LayoutContinuation.cs::MulticolContinuation`
     — cycle 1 reserved the type; cycle 2 expands it to the
     `(NextChildIndex, ConsumedBlockSize, PerChildLayouterState)`
@@ -736,13 +770,14 @@ grepping the ID).
   aware pre-measure (F#3) + multi-window loop (F#4) + margin-aware
   extent (F#5) + correct `IsHeightAuto` (F#7) + corrected
   `ConsumedBlockSize` accumulator (F#8). F#6 perf-cache deferred to
-  sub-cycle 2+.
-- **Removal condition** — column balancing
-  (`column-fill: balance`) ships; `column-width` derives column
-  count when `column-count` is `auto`; column rules paint;
-  `column-span: all` works. (Multi-level recursive multicol
-  propagation shipped in Phase 3 Task 14 cycle 2 hardening
-  Finding #1.)
+  sub-cycle 2+. Cycle 4 ships `column-width`-derived used column
+  count per CSS Multi-column L1 §3.3 + single-column degenerate
+  fallthrough for derivedN == 1.
+- **Removal condition** — column rules paint; `column-span: all`
+  works. (Multi-level recursive multicol propagation shipped in
+  Phase 3 Task 14 cycle 2 hardening Finding #1; column balancing
+  shipped in cycle 3; `column-width` derived used count shipped in
+  cycle 4.)
 
 ---
 

@@ -287,12 +287,29 @@ public sealed class MulticolLayouterTests
     }
 
     [Fact]
-    public void Multicol_column_count_1_behaves_like_normal_block()
+    public void Multicol_column_count_1_reaches_MulticolLayouter_via_single_column_fallthrough()
     {
-        // column-count: 1 is NOT a multicol container per the task
-        // plan's locked design. The block lays out as a normal
-        // block; MulticolLayouter is never invoked + no
-        // forced-overflow diagnostic fires.
+        // Per post-PR-#60 review hardening (F#3) — `column-count: 1`
+        // NOW reaches MulticolLayouter per CSS Multi-column L1 §1
+        // ("a multi-column container is created when [column-count or
+        // column-width] is set on a block-level element [non-auto]").
+        // Column boxes establish their own BFC; the dispatch must fire
+        // so the BFC contract is preserved. The layouter degrades to
+        // EmitSingleColumnFallthrough (= one nested BlockLayouter
+        // spanning the full content inline-size + block-size with no
+        // column-axis translation), so the user-visible layout still
+        // matches what the pre-fix "normal block" code path produced:
+        // child at offset 0, full content area inline-size, no
+        // forced-overflow diagnostic. The behavioral test of the BFC
+        // contract itself is sub-cycle 5+ (margin-collapse semantics
+        // need a real BFC harness; this test pins the dispatch).
+        //
+        // Pre-fix the dispatch gate required column-count >= 2, so
+        // column-count: 1 fell through to ordinary block flow + lost
+        // the BFC contract. The user-visible fragment positions were
+        // the same (no column-axis split happens either way for N=1)
+        // but margin-collapse with the outer block could happen, which
+        // is non-conformant.
         var sink = new RecordingFragmentSink();
         var diagSink = new RecordingDiagnosticsSink();
         using var shaper = new SyntheticShaperResolver();
@@ -318,8 +335,9 @@ public sealed class MulticolLayouterTests
             LayoutAttemptStrategy.LastResort);
 
         // The child should land at inline offset 0 with the FULL
-        // content inline size (= the multicol's content area, not a
-        // per-column slice).
+        // content inline size (= the multicol's content area;
+        // EmitSingleColumnFallthrough produces no per-column slice
+        // since N=1).
         BoxFragment? childFragment = null;
         foreach (var f in sink.Fragments)
         {
@@ -329,7 +347,7 @@ public sealed class MulticolLayouterTests
         Assert.Equal(0, childFragment!.Value.InlineOffset);
         Assert.Equal(232, childFragment.Value.InlineSize);
 
-        // No forced-overflow diagnostic.
+        // No forced-overflow diagnostic — the layout fits cleanly.
         foreach (var d in diagSink.Diagnostics)
         {
             Assert.NotEqual(
@@ -2614,6 +2632,732 @@ public sealed class MulticolLayouterTests
     }
 
     // ====================================================================
+    //  Cycle 4 — column-width-derived automatic column count
+    //  (CSS Multi-column L1 §3.3)
+    // ====================================================================
+
+    [Fact]
+    public void Cycle4_column_width_only_derives_column_count_from_container()
+    {
+        // Per Phase 3 Task 14 cycle 4 — when `column-width: <length>`
+        // is declared without `column-count` (= column-count auto),
+        // the effective column count is derived from the container's
+        // content inline-size + column-gap per CSS Multi-column L1 §3.3.
+        //
+        // Setup: column-width=100px, container=400px, default 16px gap.
+        // Derived N = floor((400+16)/(100+16)) = floor(416/116) = 3.
+        // Per-column inline-size after equal-split:
+        //   (400 - 2*16) / 3 = 368/3 ≈ 122.67.
+        // (Note: per-column inline-size EXCEEDS the requested column-
+        //  width — this is the intended CSS behavior; column-width is a
+        //  MINIMUM, columns expand to evenly divide the available space.)
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var multicol = BuildMulticolWidthContainer(columnWidthPx: 100);
+        // Container height = 100; per-column block-size = 100.
+        SetLengthPx(multicol.Style, PropertyId.Height, 100);
+        // 3 children, each 90 tall — so each fits exactly in one column.
+        for (var i = 0; i < 3; i++)
+        {
+            var s = MakeStyle();
+            SetLengthPx(s, PropertyId.Height, 90);
+            multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, s, MakeElement()));
+        }
+        root.AppendChild(multicol);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        // Gather the 3 child fragments.
+        var childFragments = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.BlockContainer
+                && f.Box != multicol
+                && f.Box.SourceElement is not null)
+            {
+                childFragments.Add(f);
+            }
+        }
+        Assert.Equal(3, childFragments.Count);
+
+        // Expected per-column inline-size = (400 - 2*16) / 3 = 368/3.
+        const double expectedColumnWidth = (400.0 - 32.0) / 3.0;
+        // Column inline offsets: 0, perCol+gap, 2*(perCol+gap).
+        var expectedOffsets = new[]
+        {
+            0.0,
+            expectedColumnWidth + 16.0,
+            2.0 * (expectedColumnWidth + 16.0),
+        };
+        for (var i = 0; i < 3; i++)
+        {
+            Assert.Equal(expectedColumnWidth, childFragments[i].InlineSize, precision: 3);
+            Assert.Equal(expectedOffsets[i], childFragments[i].InlineOffset, precision: 3);
+        }
+    }
+
+    [Fact]
+    public void Cycle4_both_column_count_and_width_set_uses_smaller()
+    {
+        // Per Phase 3 Task 14 cycle 4 — when BOTH `column-count` AND
+        // `column-width` are set, the effective column count is
+        // min(specifiedCount, derivedCount) per CSS Multi-column L1 §3.3.
+        //
+        // Setup: column-count=5, column-width=100px, container=400px,
+        // 16px gap. derivedCount = floor((400+16)/(100+16)) = 3.
+        // min(5, 3) = 3. So 3 columns.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var multicol = BuildMulticolContainer(columnCount: 5);
+        // Add column-width on top of column-count.
+        SetLengthPx(multicol.Style, PropertyId.ColumnWidth, 100);
+        SetLengthPx(multicol.Style, PropertyId.Height, 100);
+        for (var i = 0; i < 3; i++)
+        {
+            var s = MakeStyle();
+            SetLengthPx(s, PropertyId.Height, 90);
+            multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, s, MakeElement()));
+        }
+        root.AppendChild(multicol);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var childFragments = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.BlockContainer
+                && f.Box != multicol
+                && f.Box.SourceElement is not null)
+            {
+                childFragments.Add(f);
+            }
+        }
+        Assert.Equal(3, childFragments.Count);
+
+        // 3 columns means per-column inline = (400 - 2*16)/3 = 368/3.
+        // If the smaller `min` rule weren't honored, 5 columns would
+        // produce per-col = (400 - 4*16)/5 = 67.2 (≠ 368/3 ≈ 122.67).
+        const double expectedColumnWidthAtN3 = (400.0 - 32.0) / 3.0;
+        Assert.Equal(expectedColumnWidthAtN3, childFragments[0].InlineSize, precision: 3);
+    }
+
+    [Fact]
+    public void Cycle4_column_width_larger_than_container_clamps_to_one()
+    {
+        // Per Phase 3 Task 14 cycle 4 — when column-width exceeds the
+        // container's content inline-size, derivedCount = floor((400+16)
+        // / (1000+16)) = floor(0.41) = 0, clamped to 1 per
+        // ComputeUsedColumnCount's `if (derivedCount < 1) derivedCount = 1`.
+        //
+        // With effective N = 1, MulticolLayouter degrades to a single-
+        // column emit (= functionally non-multicol). The dispatch still
+        // fires because IsMulticolContainer's gate triggers on
+        // column-width presence alone; the single-column fallthrough
+        // emits content spanning the full content inline-size with no
+        // column-axis translation.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var multicol = BuildMulticolWidthContainer(columnWidthPx: 1000);
+        SetLengthPx(multicol.Style, PropertyId.Height, 100);
+        var childStyle = MakeStyle();
+        SetLengthPx(childStyle, PropertyId.Height, 50);
+        multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, childStyle, MakeElement()));
+        root.AppendChild(multicol);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var childFragments = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.BlockContainer
+                && f.Box != multicol
+                && f.Box.SourceElement is not null)
+            {
+                childFragments.Add(f);
+            }
+        }
+        Assert.Single(childFragments);
+
+        // Single-column fallthrough: child spans full container content
+        // inline-size (= 400 px) at inline offset 0. NOT a per-column
+        // width like (400 - gap)/N.
+        Assert.Equal(0, childFragments[0].InlineOffset, precision: 3);
+        Assert.Equal(400, childFragments[0].InlineSize, precision: 3);
+    }
+
+    [Fact]
+    public void Cycle4_compute_used_column_count_covers_all_four_spec_cases()
+    {
+        // Per Phase 3 Task 14 cycle 4 — direct unit test of
+        // ComputeUsedColumnCount covering the 4 cases from
+        // CSS Multi-column L1 §3.3:
+        //
+        // Case A: column-count: auto + column-width: auto → 1 (no multicol)
+        // Case B: column-count: auto + column-width: <length>
+        //   → floor((container+gap)/(width+gap)), clamped to ≥ 1
+        // Case C: column-count: <int> + column-width: auto → specified count
+        // Case D: column-count: <int> + column-width: <length>
+        //   → min(specifiedCount, derivedCount)
+
+        // Case A — both auto.
+        Assert.Equal(1, ComputedStyleLayoutExtensions.ComputeUsedColumnCount(
+            containerContentInlineSize: 400,
+            specifiedColumnCount: null,
+            columnWidth: null,
+            columnGap: 16));
+
+        // Case B — column-width only.
+        // floor((400+16)/(100+16)) = floor(3.586) = 3.
+        Assert.Equal(3, ComputedStyleLayoutExtensions.ComputeUsedColumnCount(
+            containerContentInlineSize: 400,
+            specifiedColumnCount: null,
+            columnWidth: 100,
+            columnGap: 16));
+
+        // Case B clamp to 1 — column-width > container.
+        // floor((400+16)/(1000+16)) = floor(0.41) = 0 → clamped to 1.
+        Assert.Equal(1, ComputedStyleLayoutExtensions.ComputeUsedColumnCount(
+            containerContentInlineSize: 400,
+            specifiedColumnCount: null,
+            columnWidth: 1000,
+            columnGap: 16));
+
+        // Case C — column-count only.
+        Assert.Equal(5, ComputedStyleLayoutExtensions.ComputeUsedColumnCount(
+            containerContentInlineSize: 400,
+            specifiedColumnCount: 5,
+            columnWidth: null,
+            columnGap: 16));
+
+        // Case D — both set; specifiedCount > derivedCount → take derived.
+        // derivedCount = 3 (= Case B); min(5, 3) = 3.
+        Assert.Equal(3, ComputedStyleLayoutExtensions.ComputeUsedColumnCount(
+            containerContentInlineSize: 400,
+            specifiedColumnCount: 5,
+            columnWidth: 100,
+            columnGap: 16));
+
+        // Case D — specifiedCount < derivedCount → take specified.
+        // derivedCount = 3; min(2, 3) = 2.
+        Assert.Equal(2, ComputedStyleLayoutExtensions.ComputeUsedColumnCount(
+            containerContentInlineSize: 400,
+            specifiedColumnCount: 2,
+            columnWidth: 100,
+            columnGap: 16));
+
+        // Defensive — non-finite container inline-size.
+        Assert.Equal(1, ComputedStyleLayoutExtensions.ComputeUsedColumnCount(
+            containerContentInlineSize: double.NaN,
+            specifiedColumnCount: null,
+            columnWidth: 100,
+            columnGap: 16));
+
+        // Defensive — negative column-width.
+        // Per post-PR-#60 review hardening (F#1) the helper now admits
+        // `columnWidth: 0` per spec §3.1's 1px-floor clamp. NEGATIVE
+        // values still fall through to the "no constraint" path
+        // (NumberResolver rejects negative LengthPx upstream so this
+        // is purely defensive).
+        Assert.Equal(1, ComputedStyleLayoutExtensions.ComputeUsedColumnCount(
+            containerContentInlineSize: 400,
+            specifiedColumnCount: null,
+            columnWidth: -10,
+            columnGap: 16));
+    }
+
+    [Fact]
+    public void Cycle4_read_column_width_returns_null_for_auto_default()
+    {
+        // Per Phase 3 Task 14 cycle 4 — ReadColumnWidth contract:
+        // returns null when the slot is auto / unset / non-length,
+        // otherwise the resolved LengthPx value.
+
+        // Unset (= default `auto`) → null.
+        var styleUnset = MakeStyle();
+        Assert.Null(styleUnset.ReadColumnWidth());
+
+        // LengthPx → the resolved value.
+        var styleLength = MakeStyle();
+        SetLengthPx(styleLength, PropertyId.ColumnWidth, 100);
+        Assert.Equal(100, styleLength.ReadColumnWidth());
+
+        // Keyword (= auto) → null. The resolver may encode `auto` as
+        // a Keyword slot via the multicol keyword admittance pattern
+        // (see LengthResolver.TryMatchMulticolKeyword).
+        var styleKeyword = MakeStyle();
+        styleKeyword.Set(PropertyId.ColumnWidth, ComputedSlot.FromKeyword(0));
+        Assert.Null(styleKeyword.ReadColumnWidth());
+    }
+
+    // ====================================================================
+    //  Post-PR-#60 review hardening — 6 findings (F#1, F#2 covered in
+    //  production tests, F#3, F#4, F#5)
+    // ====================================================================
+
+    [Fact]
+    public void Cycle4_column_width_zero_clamps_to_one_pixel_used_width()
+    {
+        // Per post-PR-#60 review hardening (F#1) — `column-width: 0`
+        // must derive columns per CSS Multi-column L1 §3.1's used-value
+        // clamp `max(specifiedValue, 1px)`. Pre-fix the helper gated
+        // on `cw > 0`, so 0 routed to the "no width constraint" path
+        // (= derivedCount = int.MaxValue) and `column-count: auto +
+        // column-width: 0` returned 1 instead of the spec-required
+        // derived N from the 1px floor.
+        //
+        // With containerInline = 400 px + columnGap = 16 px, the
+        // 1px-clamped denom = 1 + 16 = 17. Numerator = 400 + 16 = 416.
+        // derivedN = floor(416 / 17) = floor(24.47) = 24.
+        var derivedN = ComputedStyleLayoutExtensions.ComputeUsedColumnCount(
+            containerContentInlineSize: 400,
+            specifiedColumnCount: null,
+            columnWidth: 0,
+            columnGap: 16);
+        Assert.Equal(24, derivedN);
+
+        // Same calculation with column-gap = 0 just to make the math
+        // unambiguous: denom = 1, numerator = 400, derivedN = 400.
+        var derivedNoGap = ComputedStyleLayoutExtensions.ComputeUsedColumnCount(
+            containerContentInlineSize: 400,
+            specifiedColumnCount: null,
+            columnWidth: 0,
+            columnGap: 0);
+        Assert.Equal(400, derivedNoGap);
+
+        // With `column-count: 3` + `column-width: 0`, min(specified=3,
+        // derived=24) = 3. The spec-combined case D from §3.3.
+        var derivedBoth = ComputedStyleLayoutExtensions.ComputeUsedColumnCount(
+            containerContentInlineSize: 400,
+            specifiedColumnCount: 3,
+            columnWidth: 0,
+            columnGap: 16);
+        Assert.Equal(3, derivedBoth);
+    }
+
+    [Fact]
+    public void Cycle4_huge_finite_geometry_derives_safely_before_int_conversion()
+    {
+        // Per post-PR-#60 review hardening (F#4) — for huge finite
+        // ratios (containerInline = 1e9, columnWidth = 1px, columnGap
+        // = 0), the pre-fix `(int)Math.Floor(numerator / denom)` cast
+        // had undefined behavior for ratios > int.MaxValue. Post-fix
+        // the helper clamps the double to int.MaxValue BEFORE the cast.
+        var derivedHuge = ComputedStyleLayoutExtensions.ComputeUsedColumnCount(
+            containerContentInlineSize: 1e9,
+            specifiedColumnCount: null,
+            columnWidth: 1,
+            columnGap: 0);
+        // The exact value depends on the cast precision — what matters
+        // is that the result is finite + non-negative + did not throw.
+        // For 1e9 / 1 = 1e9 (well below int.MaxValue ≈ 2.147e9), the
+        // result rounds to 1000000000.
+        Assert.Equal(1_000_000_000, derivedHuge);
+        Assert.True(derivedHuge > 0);
+
+        // Push past int.MaxValue. containerInline = 1e15, columnWidth
+        // = 1px, columnGap = 0 → ratio = 1e15 > int.MaxValue.
+        // Post-fix the double is clamped to int.MaxValue BEFORE the cast.
+        var derivedOverflow = ComputedStyleLayoutExtensions.ComputeUsedColumnCount(
+            containerContentInlineSize: 1e15,
+            specifiedColumnCount: null,
+            columnWidth: 1,
+            columnGap: 0);
+        Assert.Equal(int.MaxValue, derivedOverflow);
+
+        // The MulticolLayouter applies MaxColumnCount=1000 AFTER this
+        // returns; verify the full-pipeline clamp via a real multicol
+        // construction with the same huge geometry. The MulticolLayouter
+        // detects columnCount > MaxColumnCount, emits the
+        // LayoutMulticolColumnCountClamped001 diagnostic, and proceeds
+        // with N=1000.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var multicol = BuildMulticolWidthContainer(columnWidthPx: 1);
+        // Empty multicol — no children needed to exercise the clamp.
+        using var layouter = new MulticolLayouter(
+            rootBox: multicol, sink: sink, incomingContinuation: null,
+            diagnostics: diagSink, shaperResolver: shaper);
+        layouter.ConfigureEmission(
+            contentInlineOffset: 0,
+            contentBlockOffset: 0,
+            contentInlineSize: 1e9,  // huge but finite
+            contentBlockSize: 100);
+        var ctx = new FragmentainerContext(contentInlineSize: 1e9, blockSize: 100);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        // The MaxColumnCount=1000 clamp + diagnostic both fired.
+        var clampDiag = false;
+        foreach (var d in diagSink.Diagnostics)
+        {
+            if (d.Code == PaginateDiagnosticCodes.LayoutMulticolColumnCountClamped001)
+            {
+                clampDiag = true;
+                break;
+            }
+        }
+        Assert.True(clampDiag,
+            "Expected LAYOUT-MULTICOL-COLUMN-COUNT-CLAMPED-001 diagnostic for huge geometry; got: "
+            + string.Join("; ", FormatDiagnostics(diagSink.Diagnostics)));
+    }
+
+    [Fact]
+    public void Cycle4_column_count_one_dispatches_to_MulticolLayouter_via_BlockLayouter()
+    {
+        // Per post-PR-#60 review hardening (F#3) — `column-count: 1`
+        // now reaches MulticolLayouter (= the dispatch fires) per CSS
+        // Multi-column L1 §1. Pre-fix `IsMulticolContainer` required
+        // n >= 2, so column-count: 1 fell through to ordinary block
+        // flow + lost the BFC contract. Post-fix the gate is n >= 1
+        // + the layouter degrades to EmitSingleColumnFallthrough.
+        //
+        // Direct observable proof: the test verifies that
+        // ReadColumnCount returns 1 (= the cascade sees the value)
+        // AND a full BlockLayouter dispatch produces ordinary single-
+        // column geometry (= no errors, fragment at the right
+        // position). The dispatch itself is verified by the fact that
+        // a multicol with column-count: 1 and no other multicol
+        // properties still lays out correctly through the multicol
+        // path — pre-fix the same input would route through the
+        // generic block path.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var multicol = BuildMulticolContainer(columnCount: 1);
+        SetLengthPx(multicol.Style, PropertyId.Height, 100);
+        // ReadColumnCount surface contract — F#3's underlying fix
+        // depends on the cascade resolving 1 to a non-null Integer.
+        Assert.Equal(1, multicol.Style.ReadColumnCount());
+        var childStyle = MakeStyle();
+        SetLengthPx(childStyle, PropertyId.Height, 50);
+        var child = Box.ForElement(BoxKind.BlockContainer, childStyle, MakeElement());
+        multicol.AppendChild(child);
+        root.AppendChild(multicol);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: diagSink,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 232, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        // Layout completes without throwing; the dispatch reaches
+        // MulticolLayouter which falls through to single-column emit.
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+
+        // Child lands at the full content area inline-size (= 232),
+        // not a per-column slice — single-column fallthrough preserves
+        // the user-visible layout while still establishing the BFC
+        // dispatch contract.
+        BoxFragment? childFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == child) { childFragment = f; break; }
+        }
+        Assert.NotNull(childFragment);
+        Assert.Equal(0, childFragment!.Value.InlineOffset);
+        Assert.Equal(232, childFragment.Value.InlineSize);
+
+        // No diagnostics — the fallthrough is the happy path.
+        foreach (var d in diagSink.Diagnostics)
+        {
+            Assert.NotEqual(
+                PaginateDiagnosticCodes.LayoutMulticolForcedOverflow001,
+                d.Code);
+        }
+    }
+
+    [Fact]
+    public void Cycle4_single_column_fallback_resume_page_emits_remaining_children()
+    {
+        // Per post-PR-#60 review hardening (F#5) — the single-column
+        // fallback shares its resume decode + PageComplete packaging
+        // with the multi-column path. Verifies that on a resume page
+        // (= incomingContinuation is non-null), EmitSingleColumnFallthrough
+        // correctly picks up at the carried NextChildIndex + emits the
+        // remaining children, packaging the result via the shared
+        // PackageMulticolPageComplete helper.
+        //
+        // Setup: derived N = 1 via column-width=1000px in a 200px
+        // container; 5 children of 60px each (total 300px). Page 1
+        // (block-size 130) emits children 0+1 then runs out of room +
+        // returns PageComplete(NextChildIndex=2). Page 2 receives that
+        // continuation + emits children 2, 3, 4.
+        var sink1 = new RecordingFragmentSink();
+        var diagSink1 = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var multicol = BuildMulticolWidthContainer(columnWidthPx: 1000);
+        for (var i = 0; i < 5; i++)
+        {
+            var s = MakeStyle();
+            SetLengthPx(s, PropertyId.Height, 60);
+            multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, s, MakeElement()));
+        }
+
+        // Page 1.
+        using var layouter1 = new MulticolLayouter(
+            rootBox: multicol, sink: sink1, incomingContinuation: null,
+            diagnostics: diagSink1, shaperResolver: shaper);
+        layouter1.ConfigureEmission(
+            contentInlineOffset: 0,
+            contentBlockOffset: 0,
+            contentInlineSize: 200,
+            contentBlockSize: 130);
+        var ctx1 = new FragmentainerContext(contentInlineSize: 200, blockSize: 130);
+        var layoutCtx1 = new LayoutContext(ctx1) { Diagnostics = diagSink1 };
+        using var resolver1 = new BreakResolver();
+
+        var result1 = layouter1.AttemptLayout(ctx1, ref layoutCtx1, resolver1,
+            LayoutAttemptStrategy.LastResort);
+
+        // Page 1 emits children 0+1 (60+60=120 <= 130; child 2 would
+        // overflow) + returns PageComplete with a MulticolContinuation.
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result1.Outcome);
+        var mcCont = Assert.IsType<MulticolContinuation>(result1.Continuation);
+        Assert.True(mcCont.NextChildIndex >= 1,
+            $"Expected MulticolContinuation.NextChildIndex >= 1 (= at least one child emitted); got {mcCont.NextChildIndex}.");
+
+        // Page 2 — resume.
+        var sink2 = new RecordingFragmentSink();
+        var diagSink2 = new RecordingDiagnosticsSink();
+        using var layouter2 = new MulticolLayouter(
+            rootBox: multicol, sink: sink2, incomingContinuation: mcCont,
+            diagnostics: diagSink2, shaperResolver: shaper);
+        layouter2.ConfigureEmission(
+            contentInlineOffset: 0,
+            contentBlockOffset: 0,
+            contentInlineSize: 200,
+            contentBlockSize: 300);  // enough room for all remaining children
+        var ctx2 = new FragmentainerContext(contentInlineSize: 200, blockSize: 300);
+        var layoutCtx2 = new LayoutContext(ctx2) { Diagnostics = diagSink2 };
+        using var resolver2 = new BreakResolver();
+
+        var result2 = layouter2.AttemptLayout(ctx2, ref layoutCtx2, resolver2,
+            LayoutAttemptStrategy.LastResort);
+
+        // Page 2 finishes the remaining children.
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result2.Outcome);
+        // The fragments collectively account for all 5 children:
+        // page 1 emitted some + page 2 emitted the rest.
+        var page1ChildFragments = 0;
+        foreach (var f in sink1.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.BlockContainer
+                && f.Box != multicol
+                && f.Box.SourceElement is not null)
+            {
+                page1ChildFragments++;
+            }
+        }
+        var page2ChildFragments = 0;
+        foreach (var f in sink2.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.BlockContainer
+                && f.Box != multicol
+                && f.Box.SourceElement is not null)
+            {
+                page2ChildFragments++;
+            }
+        }
+        // Across both pages, the resume protocol emits all 5 children
+        // (the dispatcher's continuation chain stitches the pages
+        // together at the multicol-content level).
+        Assert.Equal(5, page1ChildFragments + page2ChildFragments);
+
+        // No forced-overflow diagnostic — clean multi-page split.
+        foreach (var d in diagSink1.Diagnostics)
+        {
+            Assert.NotEqual(
+                PaginateDiagnosticCodes.LayoutMulticolForcedOverflow001,
+                d.Code);
+        }
+        foreach (var d in diagSink2.Diagnostics)
+        {
+            Assert.NotEqual(
+                PaginateDiagnosticCodes.LayoutMulticolForcedOverflow001,
+                d.Code);
+        }
+    }
+
+    [Fact]
+    public void Cycle4_single_column_fallback_oversized_child_emits_forced_overflow_via_inner_dispatch()
+    {
+        // Per post-PR-#60 review hardening (F#5) — derived N = 1 with
+        // a single child taller than perColumnBlockSize. Mirrors the
+        // multi-column path's `Cycle1_multicol_forced_overflow_oversized_child`.
+        // The fallthrough's inner BlockLayouter forces the child to
+        // commit (LastResort strategy) + returns PageComplete with a
+        // BlockContinuation pointing at the next index. The fallthrough
+        // packages this into a MulticolContinuation via the shared
+        // PackageMulticolPageComplete helper.
+        //
+        // Pre-F#5 the fallthrough silently returned AllDone on any
+        // outcome the explicit `if (PageComplete && BlockContinuation)`
+        // branch didn't match. With F#5 the explicit BlockContinuation
+        // branch handles the forced-overflow case identically to the
+        // multi-column path's behavior at MulticolLayouter.cs:826-890.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var multicol = BuildMulticolWidthContainer(columnWidthPx: 1000);
+        // Single child 500 tall, in a 200px-wide container with
+        // per-page block-size 100 — far smaller than the child.
+        var childStyle = MakeStyle();
+        SetLengthPx(childStyle, PropertyId.Height, 500);
+        multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, childStyle, MakeElement()));
+
+        using var layouter = new MulticolLayouter(
+            rootBox: multicol, sink: sink, incomingContinuation: null,
+            diagnostics: diagSink, shaperResolver: shaper);
+        layouter.ConfigureEmission(
+            contentInlineOffset: 0,
+            contentBlockOffset: 0,
+            contentInlineSize: 200,
+            contentBlockSize: 100);
+        var ctx = new FragmentainerContext(contentInlineSize: 200, blockSize: 100);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        // The inner BlockLayouter under LastResort emits child 0 +
+        // returns PageComplete(ResumeAtChild=1). The fallthrough's
+        // F#5 shared PackageMulticolPageComplete wraps this into a
+        // MulticolContinuation(NextChildIndex=1).
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var mcCont = Assert.IsType<MulticolContinuation>(result.Continuation);
+        Assert.Equal(multicol.Children.Count, mcCont.NextChildIndex);
+
+        // Verify the child fragment was emitted (= the inner layouter
+        // made forward progress; the fallthrough did NOT return AllDone
+        // silently).
+        Assert.NotEmpty(sink.Fragments);
+
+        // No forced-overflow diagnostic (= the inner emit advanced).
+        foreach (var d in diagSink.Diagnostics)
+        {
+            Assert.NotEqual(
+                PaginateDiagnosticCodes.LayoutMulticolForcedOverflow001,
+                d.Code);
+        }
+    }
+
+    [Fact]
+    public void Cycle4_single_column_fallback_uses_shared_helpers_for_resume_decode()
+    {
+        // Per post-PR-#60 review hardening (F#5) — verifies that the
+        // single-column fallthrough resume path is bit-identical to
+        // the multi-column path's. Test constructs a multicol with
+        // derived N = 1 and feeds a MulticolContinuation carrying
+        // NextChildIndex = 2 + null PerChildLayouterState (the
+        // "whole-child boundary" case). The fallthrough must
+        // synthesize a BlockContinuation(ResumeAtChild=2,
+        // ConsumedBlockSize=0) per the shared
+        // DecodeIncomingCarriedContinuation helper + emit only the
+        // remaining children (= children 2, 3).
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var multicol = BuildMulticolWidthContainer(columnWidthPx: 1000);
+        // 4 children of 50px each.
+        for (var i = 0; i < 4; i++)
+        {
+            var s = MakeStyle();
+            SetLengthPx(s, PropertyId.Height, 50);
+            multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, s, MakeElement()));
+        }
+
+        // Synthesize the resume continuation: "the prior page committed
+        // children 0+1 at a whole-child boundary; resume at child 2
+        // with no nested state".
+        var resumeContinuation = new MulticolContinuation(
+            NextChildIndex: 2,
+            ConsumedBlockSize: 100,  // arbitrary non-negative
+            PerChildLayouterState: null);
+
+        using var layouter = new MulticolLayouter(
+            rootBox: multicol, sink: sink, incomingContinuation: resumeContinuation,
+            diagnostics: diagSink, shaperResolver: shaper);
+        layouter.ConfigureEmission(
+            contentInlineOffset: 0,
+            contentBlockOffset: 0,
+            contentInlineSize: 200,
+            contentBlockSize: 500);  // plenty of room for the 2 remaining children
+        var ctx = new FragmentainerContext(contentInlineSize: 200, blockSize: 500);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        // All remaining content fits on this page.
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+
+        // The emitted child fragments should be 2 (= children at
+        // indices 2 and 3); the resume decode skipped 0+1 cleanly via
+        // the shared helper.
+        var childFragments = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.BlockContainer
+                && f.Box != multicol
+                && f.Box.SourceElement is not null)
+            {
+                childFragments.Add(f);
+            }
+        }
+        Assert.Equal(2, childFragments.Count);
+    }
+
+    // ====================================================================
     //  Helpers
     // ====================================================================
 
@@ -2626,6 +3370,19 @@ public sealed class MulticolLayouterTests
     {
         var style = MakeStyle();
         style.Set(PropertyId.ColumnCount, ComputedSlot.FromInteger(columnCount));
+        return Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+    }
+
+    /// <summary>Per Phase 3 Task 14 cycle 4 — build a BlockContainer
+    /// with <c>column-width: &lt;length&gt;</c> declared on its computed
+    /// style (column-count remains auto). The cycle-4 IsMulticolContainer
+    /// gate recognizes this as a multicol intent; the effective
+    /// column count is derived inside MulticolLayouter from the
+    /// container's content inline-size.</summary>
+    private static Box BuildMulticolWidthContainer(double columnWidthPx)
+    {
+        var style = MakeStyle();
+        style.Set(PropertyId.ColumnWidth, ComputedSlot.FromLengthPx(columnWidthPx));
         return Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
     }
 

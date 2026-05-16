@@ -2614,6 +2614,296 @@ public sealed class MulticolLayouterTests
     }
 
     // ====================================================================
+    //  Cycle 4 — column-width-derived automatic column count
+    //  (CSS Multi-column L1 §3.3)
+    // ====================================================================
+
+    [Fact]
+    public void Cycle4_column_width_only_derives_column_count_from_container()
+    {
+        // Per Phase 3 Task 14 cycle 4 — when `column-width: <length>`
+        // is declared without `column-count` (= column-count auto),
+        // the effective column count is derived from the container's
+        // content inline-size + column-gap per CSS Multi-column L1 §3.3.
+        //
+        // Setup: column-width=100px, container=400px, default 16px gap.
+        // Derived N = floor((400+16)/(100+16)) = floor(416/116) = 3.
+        // Per-column inline-size after equal-split:
+        //   (400 - 2*16) / 3 = 368/3 ≈ 122.67.
+        // (Note: per-column inline-size EXCEEDS the requested column-
+        //  width — this is the intended CSS behavior; column-width is a
+        //  MINIMUM, columns expand to evenly divide the available space.)
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var multicol = BuildMulticolWidthContainer(columnWidthPx: 100);
+        // Container height = 100; per-column block-size = 100.
+        SetLengthPx(multicol.Style, PropertyId.Height, 100);
+        // 3 children, each 90 tall — so each fits exactly in one column.
+        for (var i = 0; i < 3; i++)
+        {
+            var s = MakeStyle();
+            SetLengthPx(s, PropertyId.Height, 90);
+            multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, s, MakeElement()));
+        }
+        root.AppendChild(multicol);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        // Gather the 3 child fragments.
+        var childFragments = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.BlockContainer
+                && f.Box != multicol
+                && f.Box.SourceElement is not null)
+            {
+                childFragments.Add(f);
+            }
+        }
+        Assert.Equal(3, childFragments.Count);
+
+        // Expected per-column inline-size = (400 - 2*16) / 3 = 368/3.
+        const double expectedColumnWidth = (400.0 - 32.0) / 3.0;
+        // Column inline offsets: 0, perCol+gap, 2*(perCol+gap).
+        var expectedOffsets = new[]
+        {
+            0.0,
+            expectedColumnWidth + 16.0,
+            2.0 * (expectedColumnWidth + 16.0),
+        };
+        for (var i = 0; i < 3; i++)
+        {
+            Assert.Equal(expectedColumnWidth, childFragments[i].InlineSize, precision: 3);
+            Assert.Equal(expectedOffsets[i], childFragments[i].InlineOffset, precision: 3);
+        }
+    }
+
+    [Fact]
+    public void Cycle4_both_column_count_and_width_set_uses_smaller()
+    {
+        // Per Phase 3 Task 14 cycle 4 — when BOTH `column-count` AND
+        // `column-width` are set, the effective column count is
+        // min(specifiedCount, derivedCount) per CSS Multi-column L1 §3.3.
+        //
+        // Setup: column-count=5, column-width=100px, container=400px,
+        // 16px gap. derivedCount = floor((400+16)/(100+16)) = 3.
+        // min(5, 3) = 3. So 3 columns.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var multicol = BuildMulticolContainer(columnCount: 5);
+        // Add column-width on top of column-count.
+        SetLengthPx(multicol.Style, PropertyId.ColumnWidth, 100);
+        SetLengthPx(multicol.Style, PropertyId.Height, 100);
+        for (var i = 0; i < 3; i++)
+        {
+            var s = MakeStyle();
+            SetLengthPx(s, PropertyId.Height, 90);
+            multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, s, MakeElement()));
+        }
+        root.AppendChild(multicol);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var childFragments = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.BlockContainer
+                && f.Box != multicol
+                && f.Box.SourceElement is not null)
+            {
+                childFragments.Add(f);
+            }
+        }
+        Assert.Equal(3, childFragments.Count);
+
+        // 3 columns means per-column inline = (400 - 2*16)/3 = 368/3.
+        // If the smaller `min` rule weren't honored, 5 columns would
+        // produce per-col = (400 - 4*16)/5 = 67.2 (≠ 368/3 ≈ 122.67).
+        const double expectedColumnWidthAtN3 = (400.0 - 32.0) / 3.0;
+        Assert.Equal(expectedColumnWidthAtN3, childFragments[0].InlineSize, precision: 3);
+    }
+
+    [Fact]
+    public void Cycle4_column_width_larger_than_container_clamps_to_one()
+    {
+        // Per Phase 3 Task 14 cycle 4 — when column-width exceeds the
+        // container's content inline-size, derivedCount = floor((400+16)
+        // / (1000+16)) = floor(0.41) = 0, clamped to 1 per
+        // ComputeUsedColumnCount's `if (derivedCount < 1) derivedCount = 1`.
+        //
+        // With effective N = 1, MulticolLayouter degrades to a single-
+        // column emit (= functionally non-multicol). The dispatch still
+        // fires because IsMulticolContainer's gate triggers on
+        // column-width presence alone; the single-column fallthrough
+        // emits content spanning the full content inline-size with no
+        // column-axis translation.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var multicol = BuildMulticolWidthContainer(columnWidthPx: 1000);
+        SetLengthPx(multicol.Style, PropertyId.Height, 100);
+        var childStyle = MakeStyle();
+        SetLengthPx(childStyle, PropertyId.Height, 50);
+        multicol.AppendChild(Box.ForElement(BoxKind.BlockContainer, childStyle, MakeElement()));
+        root.AppendChild(multicol);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var childFragments = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.BlockContainer
+                && f.Box != multicol
+                && f.Box.SourceElement is not null)
+            {
+                childFragments.Add(f);
+            }
+        }
+        Assert.Single(childFragments);
+
+        // Single-column fallthrough: child spans full container content
+        // inline-size (= 400 px) at inline offset 0. NOT a per-column
+        // width like (400 - gap)/N.
+        Assert.Equal(0, childFragments[0].InlineOffset, precision: 3);
+        Assert.Equal(400, childFragments[0].InlineSize, precision: 3);
+    }
+
+    [Fact]
+    public void Cycle4_compute_used_column_count_covers_all_four_spec_cases()
+    {
+        // Per Phase 3 Task 14 cycle 4 — direct unit test of
+        // ComputeUsedColumnCount covering the 4 cases from
+        // CSS Multi-column L1 §3.3:
+        //
+        // Case A: column-count: auto + column-width: auto → 1 (no multicol)
+        // Case B: column-count: auto + column-width: <length>
+        //   → floor((container+gap)/(width+gap)), clamped to ≥ 1
+        // Case C: column-count: <int> + column-width: auto → specified count
+        // Case D: column-count: <int> + column-width: <length>
+        //   → min(specifiedCount, derivedCount)
+
+        // Case A — both auto.
+        Assert.Equal(1, ComputedStyleLayoutExtensions.ComputeUsedColumnCount(
+            containerContentInlineSize: 400,
+            specifiedColumnCount: null,
+            columnWidth: null,
+            columnGap: 16));
+
+        // Case B — column-width only.
+        // floor((400+16)/(100+16)) = floor(3.586) = 3.
+        Assert.Equal(3, ComputedStyleLayoutExtensions.ComputeUsedColumnCount(
+            containerContentInlineSize: 400,
+            specifiedColumnCount: null,
+            columnWidth: 100,
+            columnGap: 16));
+
+        // Case B clamp to 1 — column-width > container.
+        // floor((400+16)/(1000+16)) = floor(0.41) = 0 → clamped to 1.
+        Assert.Equal(1, ComputedStyleLayoutExtensions.ComputeUsedColumnCount(
+            containerContentInlineSize: 400,
+            specifiedColumnCount: null,
+            columnWidth: 1000,
+            columnGap: 16));
+
+        // Case C — column-count only.
+        Assert.Equal(5, ComputedStyleLayoutExtensions.ComputeUsedColumnCount(
+            containerContentInlineSize: 400,
+            specifiedColumnCount: 5,
+            columnWidth: null,
+            columnGap: 16));
+
+        // Case D — both set; specifiedCount > derivedCount → take derived.
+        // derivedCount = 3 (= Case B); min(5, 3) = 3.
+        Assert.Equal(3, ComputedStyleLayoutExtensions.ComputeUsedColumnCount(
+            containerContentInlineSize: 400,
+            specifiedColumnCount: 5,
+            columnWidth: 100,
+            columnGap: 16));
+
+        // Case D — specifiedCount < derivedCount → take specified.
+        // derivedCount = 3; min(2, 3) = 2.
+        Assert.Equal(2, ComputedStyleLayoutExtensions.ComputeUsedColumnCount(
+            containerContentInlineSize: 400,
+            specifiedColumnCount: 2,
+            columnWidth: 100,
+            columnGap: 16));
+
+        // Defensive — non-finite container inline-size.
+        Assert.Equal(1, ComputedStyleLayoutExtensions.ComputeUsedColumnCount(
+            containerContentInlineSize: double.NaN,
+            specifiedColumnCount: null,
+            columnWidth: 100,
+            columnGap: 16));
+
+        // Defensive — non-positive column-width.
+        // Per ReadColumnWidth contract this can't occur (NumberResolver
+        // rejects negative + zero), but the helper guards defensively;
+        // negative columnWidth is treated as "no constraint" (= 1 unless
+        // specifiedColumnCount is set).
+        Assert.Equal(1, ComputedStyleLayoutExtensions.ComputeUsedColumnCount(
+            containerContentInlineSize: 400,
+            specifiedColumnCount: null,
+            columnWidth: -10,
+            columnGap: 16));
+    }
+
+    [Fact]
+    public void Cycle4_read_column_width_returns_null_for_auto_default()
+    {
+        // Per Phase 3 Task 14 cycle 4 — ReadColumnWidth contract:
+        // returns null when the slot is auto / unset / non-length,
+        // otherwise the resolved LengthPx value.
+
+        // Unset (= default `auto`) → null.
+        var styleUnset = MakeStyle();
+        Assert.Null(styleUnset.ReadColumnWidth());
+
+        // LengthPx → the resolved value.
+        var styleLength = MakeStyle();
+        SetLengthPx(styleLength, PropertyId.ColumnWidth, 100);
+        Assert.Equal(100, styleLength.ReadColumnWidth());
+
+        // Keyword (= auto) → null. The resolver may encode `auto` as
+        // a Keyword slot via the multicol keyword admittance pattern
+        // (see LengthResolver.TryMatchMulticolKeyword).
+        var styleKeyword = MakeStyle();
+        styleKeyword.Set(PropertyId.ColumnWidth, ComputedSlot.FromKeyword(0));
+        Assert.Null(styleKeyword.ReadColumnWidth());
+    }
+
+    // ====================================================================
     //  Helpers
     // ====================================================================
 
@@ -2626,6 +2916,19 @@ public sealed class MulticolLayouterTests
     {
         var style = MakeStyle();
         style.Set(PropertyId.ColumnCount, ComputedSlot.FromInteger(columnCount));
+        return Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+    }
+
+    /// <summary>Per Phase 3 Task 14 cycle 4 — build a BlockContainer
+    /// with <c>column-width: &lt;length&gt;</c> declared on its computed
+    /// style (column-count remains auto). The cycle-4 IsMulticolContainer
+    /// gate recognizes this as a multicol intent; the effective
+    /// column count is derived inside MulticolLayouter from the
+    /// container's content inline-size.</summary>
+    private static Box BuildMulticolWidthContainer(double columnWidthPx)
+    {
+        var style = MakeStyle();
+        style.Set(PropertyId.ColumnWidth, ComputedSlot.FromLengthPx(columnWidthPx));
         return Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
     }
 

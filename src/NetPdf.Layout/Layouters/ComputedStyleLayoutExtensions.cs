@@ -1,6 +1,7 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System;
 using NetPdf.Css.ComputedValues;
 using NetPdf.Css.Properties;
 
@@ -204,6 +205,102 @@ internal static class ComputedStyleLayoutExtensions
         return slot.Tag == ComputedSlotTag.LengthPx
             ? slot.AsLengthPx()
             : 16.0;
+    }
+
+    /// <summary>Per Phase 3 Task 14 cycle 4 — decode
+    /// <see cref="PropertyId.ColumnWidth"/> as a CSS px length. Returns
+    /// <see langword="null"/> when the slot is <c>auto</c> / unset /
+    /// non-length (the cycle-1 hardening NumberResolver guard rejects
+    /// negative + zero values, so a non-null result is always &gt; 0).
+    ///
+    /// <para>Used by the multicol dispatch + the column-count derivation
+    /// in <see cref="BlockLayouter"/>: when <c>column-count</c> is auto
+    /// AND <c>column-width</c> is a length, the effective column count is
+    /// <c>floor((containerInline + columnGap) / (columnWidth + columnGap))</c>
+    /// per CSS Multi-column L1 §3.3. Sub-cycle 2+ will resolve percentage
+    /// + calc() column-width values; cycle 4 reads only the resolved
+    /// LengthPx slot.</para></summary>
+    public static double? ReadColumnWidth(this ComputedStyle style)
+    {
+        var slot = style.Get(PropertyId.ColumnWidth);
+        return slot.Tag == ComputedSlotTag.LengthPx
+            ? slot.AsLengthPx()
+            : null;
+    }
+
+    /// <summary>Per Phase 3 Task 14 cycle 4 — compute the effective used
+    /// column count per CSS Multi-column L1 §3.3. The 4 cases:
+    /// <list type="bullet">
+    ///   <item><c>column-count: auto</c> + <c>column-width: auto</c> →
+    ///   used N = 1 (no multicol dispatch).</item>
+    ///   <item><c>column-count: auto</c> + <c>column-width: &lt;length&gt;</c>
+    ///   → used N = <c>max(1, floor((containerInline + columnGap) /
+    ///   (columnWidth + columnGap)))</c>.</item>
+    ///   <item><c>column-count: &lt;integer&gt;</c> +
+    ///   <c>column-width: auto</c> → used N = specified count.</item>
+    ///   <item><c>column-count: &lt;integer&gt;</c> +
+    ///   <c>column-width: &lt;length&gt;</c> → used N =
+    ///   <c>min(specifiedCount, derivedCount)</c>.</item>
+    /// </list>
+    ///
+    /// <para>The container's actual per-column inline-size after N is
+    /// chosen continues to follow cycle 1's equal-split formula:
+    /// <c>(containerInline - (N-1)*columnGap) / N</c>. Per CSS spec the
+    /// columns expand evenly into the available inline space, so the
+    /// resolved per-column inline-size may exceed <paramref name="columnWidth"/>
+    /// — this is intended behavior; <paramref name="columnWidth"/> is a
+    /// MINIMUM not an exact size.</para>
+    ///
+    /// <para><b>Defensive guards.</b> Non-finite / non-positive
+    /// <paramref name="columnWidth"/> or container inline-size produce
+    /// derivedCount = 1 (no derivable constraint). When both
+    /// <paramref name="specifiedColumnCount"/> and
+    /// <paramref name="columnWidth"/> are null the result is 1 (no
+    /// multicol intent).</para></summary>
+    public static int ComputeUsedColumnCount(
+        double containerContentInlineSize,
+        int? specifiedColumnCount,
+        double? columnWidth,
+        double columnGap)
+    {
+        if (specifiedColumnCount is null && columnWidth is null) return 1;
+
+        int derivedCount;
+        if (columnWidth is double cw && cw > 0)
+        {
+            var denom = cw + columnGap;
+            if (!double.IsFinite(denom) || denom <= 0)
+            {
+                derivedCount = 1;
+            }
+            else
+            {
+                var numerator = containerContentInlineSize + columnGap;
+                if (!double.IsFinite(numerator) || numerator <= 0)
+                {
+                    derivedCount = 1;
+                }
+                else
+                {
+                    derivedCount = (int)Math.Floor(numerator / denom);
+                    if (derivedCount < 1) derivedCount = 1;
+                }
+            }
+        }
+        else
+        {
+            // No column-width constraint — let specifiedColumnCount win
+            // unconstrained. int.MaxValue is a sentinel meaning "the
+            // derived path doesn't bound N"; the `Math.Min` below
+            // collapses to the specified count.
+            derivedCount = int.MaxValue;
+        }
+
+        if (specifiedColumnCount is int sc && sc >= 1)
+        {
+            return Math.Min(sc, derivedCount);
+        }
+        return derivedCount == int.MaxValue ? 1 : derivedCount;
     }
 
     /// <summary>Per Phase 3 Task 14 cycle 3 — decode

@@ -3266,6 +3266,15 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     ///   returns a value &gt;= 2). <c>column-count: 1</c> is by
     ///   definition NOT a multicol layout per the task plan's locked
     ///   design — it lays out as a normal block.</item>
+    ///   <item><b>Per Phase 3 Task 14 cycle 4</b> — OR its computed style
+    ///   declares <c>column-width</c> with a length value (=
+    ///   <see cref="ComputedStyleLayoutExtensions.ReadColumnWidth"/>
+    ///   returns a non-null value). The effective column count is
+    ///   derived from the container's content inline-size + column-gap
+    ///   per CSS Multi-column L1 §3.3 at MulticolLayouter dispatch time
+    ///   (container geometry isn't known at this static predicate).
+    ///   When the derived count is &lt; 2 the MulticolLayouter degrades
+    ///   to a single-column emit (= functionally non-multicol).</item>
     /// </list>
     ///
     /// <para><b>Why not a dedicated <c>BoxKind.MulticolContainer</c>.</b>
@@ -3292,7 +3301,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             return false;
         }
         var n = box.Style.ReadColumnCount();
-        return n is >= 2;
+        if (n is >= 2) return true;
+        // Per Phase 3 Task 14 cycle 4 — `column-width: <length>` with
+        // `column-count: auto` ALSO constitutes a multicol container;
+        // the effective column count is derived from the container's
+        // inline size at dispatch time (= inside MulticolLayouter via
+        // ComputeUsedColumnCount). The derived-N-must-be->=2 check
+        // happens there once container geometry is known; if it's < 2
+        // MulticolLayouter degrades to a single-column emit.
+        if (box.Style.ReadColumnWidth() is not null) return true;
+        return false;
     }
 
     /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 — predicate

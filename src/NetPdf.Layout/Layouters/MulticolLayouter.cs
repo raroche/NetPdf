@@ -205,15 +205,28 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
         ArgumentNullException.ThrowIfNull(rootBox);
         ArgumentNullException.ThrowIfNull(sink);
 
+        // Per Phase 3 Task 14 cycle 4 — accept multicol containers that
+        // declare intent EITHER via `column-count: <integer>` OR via
+        // `column-width: <length>`. The dispatching BlockLayouter's
+        // IsMulticolContainer gate fires for both cases; the effective
+        // column count is computed inside AttemptLayout once container
+        // geometry (_contentInlineSize) is known (the derivation needs
+        // it). This constructor only validates that AT LEAST ONE of the
+        // two declarations is present so a typo / mis-route at the
+        // dispatch level surfaces loudly.
         var columnCount = rootBox.Style.ReadColumnCount();
-        if (columnCount is null or < 1)
+        var columnWidth = rootBox.Style.ReadColumnWidth();
+        if ((columnCount is null or < 1) && columnWidth is null)
         {
             throw new ArgumentException(
                 "MulticolLayouter expects a block container with "
-                + "`column-count: <positive integer>`. The "
+                + "`column-count: <positive integer>` OR "
+                + "`column-width: <length>`. The "
                 + $"ReadColumnCount() extension returned {columnCount} "
-                + "for the supplied rootBox (= null/auto/invalid/zero/"
-                + "negative). The dispatching BlockLayouter is the "
+                + "and ReadColumnWidth() returned "
+                + $"{(columnWidth?.ToString() ?? "null")} "
+                + "for the supplied rootBox (= both auto / unset / "
+                + "invalid). The dispatching BlockLayouter is the "
                 + "guard for this contract — the wrong kind would "
                 + "silently emit zero columns + drop all content, "
                 + "hiding the integration bug.",
@@ -395,10 +408,35 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
                 + "the layouter knows where to anchor the columns.");
         }
 
-        // Re-read column-count + column-gap. ReadColumnCount() was
-        // validated >= 1 in the constructor; the upper-bound cap is
-        // a DoS guard against `column-count: 999999`.
-        var columnCount = _rootBox.Style.ReadColumnCount() ?? 1;
+        // Re-read column-gap first; ComputeUsedColumnCount needs it to
+        // derive N from column-width.
+        var columnGap = _rootBox.Style.ReadColumnGap();
+        if (!double.IsFinite(columnGap) || columnGap < 0)
+        {
+            // Defensive — the resolver should already reject negative
+            // length values for column-gap, but a future change might
+            // not. Fall back to the cycle-1 default.
+            columnGap = DefaultColumnGapPx;
+        }
+
+        // Per Phase 3 Task 14 cycle 4 — compute the EFFECTIVE used
+        // column count per CSS Multi-column L1 §3.3. The 4 spec cases
+        // are encoded in ComputeUsedColumnCount; pre-cycle 4 this was
+        // a raw `ReadColumnCount() ?? 1`. With cycle 4, when
+        // `column-count: auto` AND `column-width: <length>`, the
+        // derived N depends on the container's content inline-size +
+        // column-gap (= now known because ConfigureEmission ran).
+        var specifiedColumnCount = _rootBox.Style.ReadColumnCount();
+        var specifiedColumnWidth = _rootBox.Style.ReadColumnWidth();
+        var columnCount = ComputedStyleLayoutExtensions.ComputeUsedColumnCount(
+            containerContentInlineSize: _contentInlineSize,
+            specifiedColumnCount: specifiedColumnCount,
+            columnWidth: specifiedColumnWidth,
+            columnGap: columnGap);
+
+        // Upper-bound cap. The DoS guard applies AFTER derivation so a
+        // pathological combo (e.g., container=1e9 px + column-width=1
+        // px → derived N = ~1e9) is caught. Mirrors the cycle-2 pattern.
         if (columnCount > MaxColumnCount)
         {
             // Per Phase 3 Task 14 cycle 2 hardening (Finding #3) —
@@ -428,13 +466,22 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
                     + $"{columnCount} columns.",
                     PaginateDiagnosticSeverity.Warning));
         }
-        var columnGap = _rootBox.Style.ReadColumnGap();
-        if (!double.IsFinite(columnGap) || columnGap < 0)
+
+        // Per Phase 3 Task 14 cycle 4 — single-column degenerate.
+        // When the derived N is 1 (e.g., `column-width: 1000px` in a
+        // 400 px container clamps derivedCount to 1), the multicol
+        // dispatch IS reached because IsMulticolContainer's predicate
+        // fires on column-width presence alone. Inside the layouter we
+        // detect derivedCount < 2 and degrade to a single-column emit:
+        // run one nested BlockLayouter spanning the full content
+        // inline-size + block-size, no column translation. Functionally
+        // equivalent to non-multicol layout, but reachable through the
+        // multicol dispatch so the predicate stays simple + side-effect-
+        // free.
+        if (columnCount < 2)
         {
-            // Defensive — the resolver should already reject negative
-            // length values for column-gap, but a future change might
-            // not. Fall back to the cycle-1 default.
-            columnGap = DefaultColumnGapPx;
+            return EmitSingleColumnFallthrough(
+                fragmentainer, ref layout, cancellationToken);
         }
 
         // Per-column inline size. The total gap budget is
@@ -859,6 +906,107 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
                     + $"from the per-column nested layouter.",
                     PaginateDiagnosticSeverity.Warning));
         }
+        return LayoutAttemptResult.AllDone(cost: 0);
+    }
+
+    /// <summary>Per Phase 3 Task 14 cycle 4 — single-column degenerate
+    /// emit. Reachable when the dispatch fires on a `column-width: &lt;length&gt;`
+    /// container whose derived column count is 1 (e.g.,
+    /// `column-width: 1000px` in a 400px container clamps to 1 per CSS
+    /// Multi-column L1 §3.3). Functionally equivalent to regular block-
+    /// flow emission: runs ONE nested BlockLayouter spanning the full
+    /// content inline-size + block-size, with a translating sink anchored
+    /// to the container's content-box origin (no column-axis translation
+    /// since there's only one column).
+    ///
+    /// <para>The translation is still needed because the outer
+    /// BlockLayouter already emitted the multicol wrapper fragment + we
+    /// must land the inner content INSIDE the wrapper's content area.
+    /// The nested layouter's sub-fragmentainer has origin (0, 0) in its
+    /// own coordinate space; the translating sink maps it to
+    /// (_contentInlineOffset, _contentBlockOffset) in the outer
+    /// fragmentainer's space — same pattern as the multi-column path
+    /// with columnIdx=0.</para>
+    ///
+    /// <para>Resume + multi-page contract preserved: when the nested
+    /// BlockLayouter returns PageComplete(BlockContinuation), this
+    /// method packages it into a MulticolContinuation just like the
+    /// multi-column path so the dispatching BlockLayouter's
+    /// `BlockContinuation(LayouterState=MulticolContinuation)`
+    /// propagation works unchanged.</para></summary>
+    private LayoutAttemptResult EmitSingleColumnFallthrough(
+        FragmentainerContext fragmentainer,
+        ref LayoutContext layout,
+        CancellationToken cancellationToken)
+    {
+        // Resume protocol mirrors the multi-column path: unpack the
+        // PerChildLayouterState (if any) into a BlockContinuation for
+        // the nested layouter. See the multi-column AttemptLayout for
+        // the full rationale.
+        LayoutContinuation? carriedContinuation = null;
+        if (_incomingContinuation is not null)
+        {
+            if (_incomingContinuation.PerChildLayouterState is BlockContinuation perChildBlockCont)
+            {
+                carriedContinuation = perChildBlockCont;
+            }
+            else if (_incomingContinuation.NextChildIndex > 0)
+            {
+                carriedContinuation = new BlockContinuation(
+                    ResumeAtChild: _incomingContinuation.NextChildIndex,
+                    ConsumedBlockSize: 0);
+            }
+        }
+
+        var translatingSink = new ColumnFragmentSink(
+            outerSink: _sink,
+            inlineOffsetTranslation: _contentInlineOffset,
+            blockOffsetTranslation: _contentBlockOffset);
+
+        var singleColumnFragmentainer = new FragmentainerContext(
+            contentInlineSize: _contentInlineSize,
+            blockSize: _contentBlockSize);
+
+        using var innerLayouter = new BlockLayouter(
+            rootBox: _rootBox,
+            sink: translatingSink,
+            incomingContinuation: carriedContinuation,
+            diagnostics: _diagnostics,
+            shaperResolver: _shaperResolver);
+
+        using var innerResolver = new BreakResolver();
+        var innerLayoutCtx = new LayoutContext(singleColumnFragmentainer)
+        {
+            Diagnostics = layout.Diagnostics ?? _diagnostics,
+        };
+
+        var innerResult = innerLayouter.AttemptLayout(
+            singleColumnFragmentainer,
+            ref innerLayoutCtx,
+            innerResolver,
+            LayoutAttemptStrategy.LastResort,
+            cancellationToken);
+
+        if (innerResult.Outcome == LayoutAttemptOutcome.AllDone)
+        {
+            return LayoutAttemptResult.AllDone(cost: 0);
+        }
+        if (innerResult.Outcome == LayoutAttemptOutcome.PageComplete
+            && innerResult.Continuation is BlockContinuation blockCont)
+        {
+            // Multi-page split with N=1. Package into MulticolContinuation
+            // so the dispatching BlockLayouter's resume protocol works.
+            var priorConsumed = _incomingContinuation?.ConsumedBlockSize ?? 0.0;
+            return LayoutAttemptResult.PageComplete(
+                new MulticolContinuation(
+                    NextChildIndex: blockCont.ResumeAtChild,
+                    ConsumedBlockSize: priorConsumed + _contentBlockSize,
+                    PerChildLayouterState: blockCont),
+                cost: innerResult.Cost);
+        }
+
+        // Defensive — unexpected outcome under LastResort. Truncate to
+        // avoid infinite-loop pagination.
         return LayoutAttemptResult.AllDone(cost: 0);
     }
 

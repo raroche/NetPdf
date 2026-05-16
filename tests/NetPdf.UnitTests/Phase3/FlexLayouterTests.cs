@@ -234,6 +234,233 @@ public sealed class FlexLayouterTests
     }
 
     // ====================================================================
+    //  Phase 3 Task 15 L2 — justify-content main-axis alignment
+    // ====================================================================
+    //
+    // Fixture: 3 items of width 50 in a 300px container (= freeSpace 150)
+    // unless noted otherwise. The CSS Box Alignment L3 §4.5 keyword
+    // index mapping is verified against
+    // KeywordResolver.BuildJustifyContentTable: 0=normal,
+    // 1=space-between, 2=space-around, 3=space-evenly, 4=stretch,
+    // 5=center, 6=start, 7=end, 8=flex-start, 9=flex-end, 10=left,
+    // 11=right. The unit tests set the keyword slot directly via
+    // ComputedSlot.FromKeyword(...) rather than going through the
+    // cascade so the indices are part of the test's contract.
+
+    [Fact]
+    public void L2_justify_content_flex_end_packs_items_at_main_end()
+    {
+        // 3 items of width 50 in a 300px container, justify-content:
+        // flex-end (= keyword index 9). freeSpace = 150 →
+        // startOffset = 150, betweenSpacing = 0. Expected offsets:
+        // 150, 200, 250.
+        var fragments = LayoutThreeItemsWithJustifyContent(
+            keywordIndex: 9, itemWidth: 50, containerWidth: 300);
+
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(150.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(200.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(250.0, fragments[2].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L2_justify_content_center_centers_items_on_main_axis()
+    {
+        // 3 items of width 50 in a 300px container, justify-content:
+        // center (= keyword index 5). freeSpace = 150 →
+        // startOffset = 75, betweenSpacing = 0. Expected offsets:
+        // 75, 125, 175.
+        var fragments = LayoutThreeItemsWithJustifyContent(
+            keywordIndex: 5, itemWidth: 50, containerWidth: 300);
+
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(75.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(125.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(175.0, fragments[2].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L2_justify_content_space_between_distributes_equal_gaps()
+    {
+        // 3 items of width 50 in a 300px container, justify-content:
+        // space-between (= keyword index 1). freeSpace = 150 →
+        // startOffset = 0, betweenSpacing = 150 / (3 - 1) = 75.
+        // Expected offsets: 0, 125, 250.
+        var fragments = LayoutThreeItemsWithJustifyContent(
+            keywordIndex: 1, itemWidth: 50, containerWidth: 300);
+
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(0.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(125.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(250.0, fragments[2].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L2_justify_content_space_around_half_space_at_edges()
+    {
+        // 3 items of width 50 in a 300px container, justify-content:
+        // space-around (= keyword index 2). freeSpace = 150 →
+        // startOffset = 150 / (2 * 3) = 25, betweenSpacing = 150 / 3
+        // = 50. Expected offsets: 25, 125, 225.
+        var fragments = LayoutThreeItemsWithJustifyContent(
+            keywordIndex: 2, itemWidth: 50, containerWidth: 300);
+
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(25.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(125.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(225.0, fragments[2].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L2_justify_content_space_evenly_equal_space_everywhere()
+    {
+        // 3 items of width 50 in a 300px container, justify-content:
+        // space-evenly (= keyword index 3). freeSpace = 150 →
+        // startOffset = 150 / (3 + 1) = 37.5, betweenSpacing = 37.5.
+        // Expected offsets: 37.5, 125, 212.5.
+        var fragments = LayoutThreeItemsWithJustifyContent(
+            keywordIndex: 3, itemWidth: 50, containerWidth: 300);
+
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(37.5, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(125.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(212.5, fragments[2].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L2_justify_content_overflow_falls_back_to_flex_start()
+    {
+        // 5 items of width 100 in a 300px container, justify-content:
+        // center (= keyword index 5). totalItemSize = 500, freeSpace
+        // = -200 (overflow). Per spec all alignment modes collapse to
+        // flex-start packing when freeSpace <= 0; items overflow at
+        // the inline-start, not at the center. Expected offsets:
+        // 0, 100, 200, 300, 400.
+        var fragments = LayoutNItemsWithJustifyContent(
+            keywordIndex: 5, itemWidth: 100, containerWidth: 300, itemCount: 5);
+
+        Assert.Equal(5, fragments.Count);
+        Assert.Equal(0.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(100.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(200.0, fragments[2].InlineOffset, precision: 3);
+        Assert.Equal(300.0, fragments[3].InlineOffset, precision: 3);
+        Assert.Equal(400.0, fragments[4].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L2_justify_content_single_item_space_between_uses_flex_start()
+    {
+        // 1 item of width 50 in a 300px container, justify-content:
+        // space-between (= keyword index 1). Per spec N=1 with
+        // space-between falls back to flex-start (single item has no
+        // gaps between). Expected offset: 0.
+        var fragments = LayoutNItemsWithJustifyContent(
+            keywordIndex: 1, itemWidth: 50, containerWidth: 300, itemCount: 1);
+
+        Assert.Single(fragments);
+        Assert.Equal(0.0, fragments[0].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L2_justify_content_normal_keyword_maps_to_flex_start()
+    {
+        // 3 items of width 50 in a 300px container, justify-content:
+        // normal (= keyword index 0). Per CSS Flexbox L1 §8.2 the
+        // computed default `normal` resolves to flex-start. Expected
+        // offsets: 0, 50, 100 (pack at main-start).
+        var fragments = LayoutThreeItemsWithJustifyContent(
+            keywordIndex: 0, itemWidth: 50, containerWidth: 300);
+
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(0.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(50.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(100.0, fragments[2].InlineOffset, precision: 3);
+    }
+
+    /// <summary>L2 helper — drive FlexLayouter with N identical items
+    /// + the requested justify-content keyword. Returns the per-item
+    /// fragments in source order (= the order the layouter emitted
+    /// them, which for L2's row-packing matches source order
+    /// regardless of justify-content).
+    ///
+    /// <para>The flex container's content-inline-size derives from the
+    /// fragmentainer's content-inline-size (cycle 1 BlockLayouter sizes
+    /// block-level wrappers to fill the available inline range; the
+    /// container's declared <c>width</c> is not honored as a shrink-
+    /// to-fit constraint). To keep the test arithmetic precise, the
+    /// helper passes the requested <paramref name="containerWidth"/> as
+    /// the FragmentainerContext's contentInlineSize so the flex
+    /// wrapper's <c>borderBoxInlineSize</c> equals it exactly.</para></summary>
+    private static List<BoxFragment> LayoutNItemsWithJustifyContent(
+        int keywordIndex, double itemWidth, double containerWidth, int itemCount)
+    {
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        // Set the container's declared width for documentation purposes —
+        // cycle 1's block-sizing path inherits the available range
+        // regardless, so the fragmentainer width below is what
+        // controls the layouter's _contentInlineSize.
+        SetLengthPx(flex.Style, PropertyId.Width, containerWidth);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+        flex.Style.Set(PropertyId.JustifyContent, ComputedSlot.FromKeyword(keywordIndex));
+
+        var items = new Box[itemCount];
+        for (var i = 0; i < itemCount; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, itemWidth);
+            SetLengthPx(style, PropertyId.Height, 50);
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        // FragmentainerContext.contentInlineSize = containerWidth: the
+        // BlockLayouter's wrapper sizing fills this range so the
+        // flex container's borderBoxInlineSize = containerWidth and
+        // the layouter's _contentInlineSize matches the test fixture's
+        // intent exactly.
+        var ctx = new FragmentainerContext(
+            contentInlineSize: containerWidth, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        // Filter out the wrapper + root, return item fragments in
+        // source order. Each item's Box identity is preserved so the
+        // sort order matches the source order of items[].
+        var itemFragments = new List<BoxFragment>();
+        for (var i = 0; i < itemCount; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i])
+                {
+                    itemFragments.Add(f);
+                    break;
+                }
+            }
+        }
+        return itemFragments;
+    }
+
+    /// <summary>Three-item L2 helper — convenience wrapper around
+    /// <see cref="LayoutNItemsWithJustifyContent"/> for the common
+    /// case used by the position + distribution tests.</summary>
+    private static List<BoxFragment> LayoutThreeItemsWithJustifyContent(
+        int keywordIndex, double itemWidth, double containerWidth) =>
+        LayoutNItemsWithJustifyContent(
+            keywordIndex, itemWidth, containerWidth, itemCount: 3);
+
+    // ====================================================================
     //  Helpers
     // ====================================================================
 

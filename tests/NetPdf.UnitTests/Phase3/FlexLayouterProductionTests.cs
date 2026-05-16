@@ -121,6 +121,88 @@ public sealed class FlexLayouterProductionTests
             itemBFragment.Value.BlockOffset, precision: 3);
     }
 
+    [Fact]
+    public async Task L2_production_html_justify_content_space_between()
+    {
+        // Per Phase 3 Task 15 L2 — a real HTML <div> with
+        // `display: flex; justify-content: space-between` containing
+        // three block-level children with explicit widths flows
+        // through every stage of the pipeline + emits per-item content
+        // fragments at the L2-spec'd offsets (0, 275, 550 for
+        // freeSpace = 600 - 150 = 450; betweenSpacing = 450 / 2 = 225;
+        // so 0, 50 + 225 = 275, 50 + 225 + 50 + 225 = 550).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    justify-content: space-between;
+                    width: 600px;
+                    height: 60px;
+                }
+                .item-a { width: 50px; height: 50px; }
+                .item-b { width: 50px; height: 50px; }
+                .item-c { width: 50px; height: 50px; }
+            </style></head><body>
+            <div class="flex">
+              <div class="item-a"></div>
+              <div class="item-b"></div>
+              <div class="item-c"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        // Find the flex container + three item fragments.
+        BoxFragment? flexFragment = null;
+        BoxFragment? itemAFragment = null;
+        BoxFragment? itemBFragment = null;
+        BoxFragment? itemCFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class");
+            if (classAttr == "flex" && f.Box.Kind == BoxKind.FlexContainer)
+            {
+                flexFragment = f;
+            }
+            else if (classAttr == "item-a")
+            {
+                itemAFragment = f;
+            }
+            else if (classAttr == "item-b")
+            {
+                itemBFragment = f;
+            }
+            else if (classAttr == "item-c")
+            {
+                itemCFragment = f;
+            }
+        }
+
+        Assert.NotNull(flexFragment);
+        Assert.NotNull(itemAFragment);
+        Assert.NotNull(itemBFragment);
+        Assert.NotNull(itemCFragment);
+
+        // L2 — justify-content: space-between with 3 items of width
+        // 50 in a 600px container. totalItemSize = 150, freeSpace =
+        // 450, betweenSpacing = 450 / (3 - 1) = 225. Expected
+        // inline-offsets: 0, 275, 550 (relative to the flex
+        // container's content-inline-start).
+        Assert.Equal(0.0, itemAFragment!.Value.InlineOffset, precision: 3);
+        Assert.Equal(275.0, itemBFragment!.Value.InlineOffset, precision: 3);
+        Assert.Equal(550.0, itemCFragment!.Value.InlineOffset, precision: 3);
+
+        // All three items share the container's content-block-start
+        // (cycle 1 align-items is flex-start equivalent).
+        Assert.Equal(itemAFragment.Value.BlockOffset,
+            itemBFragment.Value.BlockOffset, precision: 3);
+        Assert.Equal(itemAFragment.Value.BlockOffset,
+            itemCFragment.Value.BlockOffset, precision: 3);
+    }
+
     // ====================================================================
     //  Pipeline driver — mirrors MulticolLayouterProductionTests.
     // ====================================================================

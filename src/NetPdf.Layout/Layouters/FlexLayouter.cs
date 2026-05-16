@@ -32,10 +32,24 @@ namespace NetPdf.Layout.Layouters;
 ///   may overflow the container's inline extent if their natural
 ///   widths don't fit. <c>wrap</c> / <c>wrap-reverse</c> are sub-cycle
 ///   2+ scope.</item>
-///   <item>Only <c>justify-content: normal</c> / <c>flex-start</c>
-///   (default packing). Items pack at the main-start (= the
-///   container's content-inline-start edge). Other values are
-///   sub-cycle 2+ scope.</item>
+///   <item><b>L2 — <c>justify-content</c> main-axis alignment.</b>
+///   The layouter honors the six effective values per CSS Box
+///   Alignment L3 §4.5: <c>flex-start</c> (default packing at main-
+///   start), <c>flex-end</c> (pack at main-end), <c>center</c>
+///   (center on main-axis), <c>space-between</c> (equal gaps between
+///   items, no edge spacing), <c>space-around</c> (equal gaps with
+///   half-size edges), <c>space-evenly</c> (equal gaps including
+///   edges). The logical aliases <c>start</c> / <c>end</c> + the
+///   directional aliases <c>left</c> / <c>right</c> map to
+///   <c>flex-start</c> / <c>flex-end</c> under L1's default LTR +
+///   <c>flex-direction: row</c>. The <c>normal</c> initial value
+///   maps to <c>flex-start</c> per CSS Flexbox L1 §8.2. The
+///   <c>stretch</c> value (the grid default) has no effect on flex
+///   main-axis packing per spec, so it maps to <c>flex-start</c>.
+///   The <c>safe</c> / <c>unsafe</c> overflow modifiers are dropped
+///   (compounds map to <c>flex-start</c>); safe-mode overflow
+///   containment + writing-mode-aware <c>left</c> / <c>right</c>
+///   mapping are L3+ scope.</item>
 ///   <item>Only <c>align-items: normal</c> / <c>stretch</c> (default).
 ///   Cycle 1 emits each item at the container's content-block-start
 ///   edge regardless of <c>align-items</c> — equivalent to
@@ -250,19 +264,50 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // Per cycle 1 (Hello World) — fixed-axis assumptions:
         //   flex-direction: row (main axis = inline axis)
         //   flex-wrap: nowrap (single line)
-        //   justify-content: flex-start (pack at main-start)
         //   align-items: stretch (cycle 1 emits at content-block-start
         //                         regardless of the value)
+        // Per L2 — justify-content is now honored (see ReadJustifyContent
+        //   + ComputeJustifyContentOffsets below).
         // Cycle 2+ will read the actual computed values from
         //   _rootBox.Style for PropertyId.FlexDirection / FlexWrap /
-        //   JustifyContent / AlignItems.
+        //   AlignItems.
+
+        // L2 — first pass: count block-level items + sum their natural
+        // inline-sizes so the alignment math knows the free-space + N.
+        // Mirrors the row-packing loop's filter (only block-level
+        // children participate in cycle 1) so the count matches the
+        // emission pass below. The two-pass design is necessary because
+        // start-offset + between-spacing both depend on N AND total
+        // item size, neither of which is known until the items are
+        // walked. The double pass is O(N) overall — same complexity
+        // class as cycle 1.
+        var itemCount = 0;
+        var totalItemInlineSize = 0.0;
+        for (var itemIdx = 0; itemIdx < _rootBox.Children.Count; itemIdx++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var item = _rootBox.Children[itemIdx];
+            if (!item.IsBlockLevel) continue;
+            itemCount++;
+            totalItemInlineSize += item.Style.ReadLengthPxOrZero(PropertyId.Width);
+        }
+
+        // L2 — resolve justify-content + compute the start-offset +
+        // between-spacing per CSS Box Alignment L3 §4.5. Per-spec when
+        // freeSpace <= 0 (= items overflow the container) all alignment
+        // modes fall back to flex-start packing — items overflow at the
+        // start, not at the end / center / etc. — see
+        // ComputeJustifyContentOffsets's overflow branch.
+        var justifyContent = _rootBox.Style.ReadJustifyContent();
+        var freeSpace = _contentInlineSize - totalItemInlineSize;
+        var (startOffset, betweenSpacing) = ComputeJustifyContentOffsets(
+            justifyContent, freeSpace, itemCount);
 
         // The main-axis cursor walks from the container's content-
-        // inline-start edge across each item's natural inline-size.
-        // Mirror's MulticolLayouter's column-cursor pattern but
-        // without the per-column subdivision: cycle 1 packs every
-        // item at flex-start in a single line.
-        var mainCursor = _contentInlineOffset;
+        // inline-start edge plus the alignment start-offset across each
+        // item's natural inline-size. Between-spacing extends each
+        // post-item advance.
+        var mainCursor = _contentInlineOffset + startOffset;
 
         for (var itemIdx = 0; itemIdx < _rootBox.Children.Count; itemIdx++)
         {
@@ -316,17 +361,75 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 InlineSize: itemInlineSize,
                 BlockSize: itemBlockSize));
 
-            // Advance the main-axis cursor past this item. With
-            // flex-wrap: nowrap the cursor walks past _contentInlineSize
-            // for items that don't fit — overflow is the spec'd
-            // behavior for nowrap (CSS Flexbox L1 §6 + §9.4).
-            mainCursor += itemInlineSize;
+            // Advance the main-axis cursor past this item + the
+            // L2 between-spacing. With flex-wrap: nowrap the cursor
+            // walks past _contentInlineSize for items that don't fit —
+            // overflow is the spec'd behavior for nowrap (CSS Flexbox
+            // L1 §6 + §9.4). The between-spacing only contributes for
+            // the distribution values (space-between / -around /
+            // -evenly); position values leave it at 0.
+            mainCursor += itemInlineSize + betweenSpacing;
         }
 
         // Cycle 1 (Hello World) — flex container is atomic to outer
         // pagination; all items committed on this page. No
         // continuation.
         return LayoutAttemptResult.AllDone(cost: 0);
+    }
+
+    /// <summary>Per Phase 3 Task 15 L2 — compute the start-offset +
+    /// between-spacing for the main-axis cursor per CSS Box Alignment
+    /// L3 §4.5. The returned tuple is consumed by AttemptLayout's
+    /// row-packing loop: <c>cursor = contentInlineOffset + startOffset</c>
+    /// before the first item, then <c>cursor += itemInlineSize +
+    /// betweenSpacing</c> after each emission.
+    ///
+    /// <para><b>Overflow fallback.</b> Per spec, when there's no free
+    /// space (= items overflow OR exactly fill the container) ALL
+    /// justify-content modes fall back to flex-start packing. Items
+    /// emit consecutively from the container's content-inline-start
+    /// + overflow off the inline-end edge. The <c>safe</c> modifier
+    /// (L3+) would prevent items being pushed offscreen by the
+    /// alignment offset, but L2 always uses <c>unsafe</c>
+    /// behavior — collapsed to flex-start here regardless.</para>
+    ///
+    /// <para><b>N == 1 special case.</b> <c>space-between</c> with a
+    /// single item has no "between" gaps to distribute, so it falls
+    /// back to flex-start per spec. <c>space-around</c> +
+    /// <c>space-evenly</c> with N=1 naturally degenerate to center
+    /// (the formulas below produce <c>startOffset = freeSpace / 2</c>
+    /// for both, which is correct).</para>
+    ///
+    /// <para><b>N == 0 special case.</b> Empty flex container — the
+    /// alignment math is moot since there are no items to emit. The
+    /// caller's row-packing loop won't execute, but the return values
+    /// are still defined (zeros) so the caller doesn't need a special
+    /// case.</para></summary>
+    private static (double startOffset, double betweenSpacing) ComputeJustifyContentOffsets(
+        JustifyContentValue justifyContent, double freeSpace, int itemCount)
+    {
+        if (itemCount == 0 || freeSpace <= 0)
+        {
+            // No items OR overflow — flex-start fallback (cursor stays
+            // at the container's content-inline-start, no extra
+            // between-item spacing).
+            return (0, 0);
+        }
+        return justifyContent switch
+        {
+            JustifyContentValue.FlexEnd => (freeSpace, 0),
+            JustifyContentValue.Center => (freeSpace / 2.0, 0),
+            JustifyContentValue.SpaceBetween => itemCount >= 2
+                ? (0, freeSpace / (itemCount - 1))
+                : (0, 0), // N=1 → flex-start fallback per spec
+            JustifyContentValue.SpaceAround => (
+                freeSpace / (2.0 * itemCount),
+                freeSpace / itemCount),
+            JustifyContentValue.SpaceEvenly => (
+                freeSpace / (itemCount + 1),
+                freeSpace / (itemCount + 1)),
+            _ => (0, 0), // FlexStart (and any unmapped value)
+        };
     }
 
     /// <summary>Per cycle 1 (Hello World) — no per-instance state to

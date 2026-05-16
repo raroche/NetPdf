@@ -403,6 +403,65 @@ internal static class ComputedStyleLayoutExtensions
         };
     }
 
+    /// <summary>Per Phase 3 Task 15 L2 — decode
+    /// <see cref="PropertyId.JustifyContent"/> per CSS Box Alignment L3
+    /// §4.5. L2 ships the common <c>&lt;content-position&gt;</c> +
+    /// <c>&lt;content-distribution&gt;</c> values; logical-axis aliases
+    /// (<c>start</c> / <c>end</c> / <c>left</c> / <c>right</c>) map to
+    /// <c>flex-start</c> / <c>flex-end</c> for the L1 default
+    /// <c>flex-direction: row</c> (writing-mode-aware mapping is L3+
+    /// scope). The <c>safe</c> / <c>unsafe</c> overflow-position
+    /// modifiers (= compound keywords like <c>safe center</c>) are
+    /// treated as the bare position for L2 — the spec's safe-mode
+    /// overflow containment (= prevent items being pushed offscreen
+    /// when overflowing) is L3+ scope.
+    ///
+    /// <para><b>Keyword index mapping.</b> The source-gen'd
+    /// <c>BuildJustifyContentTable</c> in
+    /// <see cref="NetPdf.Css.ComputedValues.PropertyResolvers.KeywordResolver"/>
+    /// emits indices in this order: 0=normal, 1=space-between,
+    /// 2=space-around, 3=space-evenly, 4=stretch, 5=center, 6=start,
+    /// 7=end, 8=flex-start, 9=flex-end, 10=left, 11=right, 12-18=safe
+    /// {center, start, end, flex-start, flex-end, left, right},
+    /// 19-25=unsafe {…same 7…}. The <c>safe</c> / <c>unsafe</c>
+    /// compound indices (12+) all fall through to <see cref="JustifyContentValue.FlexStart"/>
+    /// for L2; the bare-position semantics are captured when authors
+    /// use the unmodified position keyword.</para>
+    ///
+    /// <para><b>Spec mapping notes.</b> <c>normal</c> resolves to
+    /// <c>flex-start</c> per CSS Flexbox L1 §8.2 (the flex container's
+    /// computed default). <c>stretch</c> is the grid default; for flex
+    /// containers it has no effect on main-axis packing per spec, so
+    /// L2 maps it to <c>flex-start</c>. The logical aliases
+    /// <c>start</c> / <c>end</c> + the directional aliases <c>left</c> /
+    /// <c>right</c> map to <c>flex-start</c> / <c>flex-end</c> under
+    /// the L1 default LTR + <c>flex-direction: row</c>.</para></summary>
+    public static JustifyContentValue ReadJustifyContent(this ComputedStyle style)
+    {
+        var keyword = style.ReadKeywordOrDefault(PropertyId.JustifyContent, defaultIndex: 0);
+        return keyword switch
+        {
+            // <content-distribution>
+            1 => JustifyContentValue.SpaceBetween,
+            2 => JustifyContentValue.SpaceAround,
+            3 => JustifyContentValue.SpaceEvenly,
+            4 => JustifyContentValue.FlexStart,       // stretch → flex-start for flex per spec
+            // <content-position>
+            5 => JustifyContentValue.Center,
+            6 => JustifyContentValue.FlexStart,       // start → flex-start (LTR row)
+            7 => JustifyContentValue.FlexEnd,         // end → flex-end (LTR row)
+            8 => JustifyContentValue.FlexStart,
+            9 => JustifyContentValue.FlexEnd,
+            10 => JustifyContentValue.FlexStart,      // left → flex-start (row)
+            11 => JustifyContentValue.FlexEnd,        // right → flex-end (row)
+            // safe / unsafe <position> compounds (indices 12+) — L2
+            // treats them as flex-start; the overflow modifier's safe-
+            // mode containment is L3+ scope. The bare-position semantics
+            // are captured when authors omit the overflow modifier.
+            _ => JustifyContentValue.FlexStart,       // 0 (normal) → flex-start; unknown → flex-start
+        };
+    }
+
     /// <summary>Per Phase 3 Task 14 cycle 3 + post-PR-#59 review
     /// hardening (Finding #7) — predicate distinguishing <c>height:
     /// auto</c> from any EXPLICIT sizing on a box's computed style.
@@ -485,4 +544,27 @@ internal enum ColumnFillValue : byte
     Balance = 0,
     BalanceAll = 1,
     Auto = 2,
+}
+
+/// <summary>Per Phase 3 Task 15 L2 — typed decode of
+/// <see cref="PropertyId.JustifyContent"/>. CSS Box Alignment L3 §4.5
+/// admits a large grammar (<c>normal | &lt;content-distribution&gt; |
+/// [&lt;overflow-position&gt;? &amp;&amp; [&lt;content-position&gt; |
+/// left | right]]</c>); L2 collapses this to six effective behaviors
+/// covering the common flexbox main-axis alignment patterns. Logical-
+/// axis aliases (<c>start</c> / <c>end</c>) and directional aliases
+/// (<c>left</c> / <c>right</c>) map to <see cref="FlexStart"/> /
+/// <see cref="FlexEnd"/> under the L1 default LTR +
+/// <c>flex-direction: row</c>; writing-mode-aware mapping is L3+
+/// scope. The <c>safe</c> / <c>unsafe</c> overflow modifiers are
+/// dropped by the decode (compound indices map to <see cref="FlexStart"/>
+/// in L2); safe-mode overflow containment is L3+ scope.</summary>
+internal enum JustifyContentValue : byte
+{
+    FlexStart = 0,
+    FlexEnd = 1,
+    Center = 2,
+    SpaceBetween = 3,
+    SpaceAround = 4,
+    SpaceEvenly = 5,
 }

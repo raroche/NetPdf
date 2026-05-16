@@ -853,7 +853,14 @@ grepping the ID).
 - **Missing** —
   - `flex-direction: column` / `row-reverse` / `column-reverse`
   - `flex-wrap: wrap` / `wrap-reverse`
-  - `justify-content` values beyond `flex-start`
+  - `safe` / `unsafe` overflow-position modifiers for
+    `justify-content` (L2 treats compound keywords like
+    `safe center` as the bare position; the spec's safe-mode
+    overflow containment is L3+ scope)
+  - Writing-mode-aware `left` / `right` mapping for
+    `justify-content` (L2 maps both to `flex-start` / `flex-end`
+    under the L1 default LTR + `flex-direction: row`; L3+ will
+    resolve against the box's writing-mode + direction)
   - `align-items` values beyond default `flex-start` equivalent
     (no real `stretch`, no `center` / `end` / `baseline`)
   - `flex-grow` / `flex-shrink` / `flex-basis` resolution

@@ -537,6 +537,73 @@ public sealed class MulticolLayouterProductionTests
             d.Code == PaginateDiagnosticCodes.LayoutMulticolForcedOverflow001);
     }
 
+    [Fact]
+    public async Task Cycle3_production_multicol_with_auto_height_balances_cleanly()
+    {
+        // Per Phase 3 Task 14 cycle 3 — full pipeline (HTML → cascade →
+        // box → BlockLayouter → MulticolLayouter) for an auto-height
+        // multicol container with column-fill: balance (the spec
+        // default). Cycle 3 distributes the children equally across
+        // columns rather than letting column 0 absorb everything.
+        //
+        // Setup: 4 paragraph-like blocks of 80 px each in a 2-column
+        // multicol with no explicit height. Per cycle 3 balancing:
+        //   totalSerial = 320; ideal = ceil(320/2) = 160;
+        //   balancedBlockSize = min(160, page-remaining) = 160.
+        // Column 0 holds 2 children (160 px); column 1 holds 2 children
+        // (160 px). Cycle 1+2 would have placed all 4 children in column
+        // 0 (= 320 px) since the page-remaining (800 px) easily
+        // accommodates them serially.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .multicol {
+                    column-count: 2;
+                    width: 232px;
+                }
+                .item { height: 80px; }
+            </style></head><body>
+            <div class="multicol">
+              <div class="item"></div>
+              <div class="item"></div>
+              <div class="item"></div>
+              <div class="item"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        // Find item fragments + bucket by column (inline offset).
+        // Column 0 starts at the multicol's inline-start; column 1 starts
+        // at perColumnInline + columnGap. Since BlockLayouter cycle 1
+        // returns full available inline (= 600 px from
+        // RenderViaFullPipelineAsync), perColumnInline = (600-16)/2 = 292.
+        // Column 1 starts at 292 + 16 = 308.
+        var itemFragments = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind != BoxKind.BlockContainer) continue;
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            if (srcEl.GetAttribute("class") == "item")
+            {
+                itemFragments.Add(f);
+            }
+        }
+        Assert.Equal(4, itemFragments.Count);
+
+        var column0Items = 0;
+        var column1Items = 0;
+        foreach (var f in itemFragments)
+        {
+            if (f.InlineOffset == 0) column0Items++;
+            else if (f.InlineOffset > 0) column1Items++;
+        }
+        // Balanced distribution: 2 children per column.
+        Assert.Equal(2, column0Items);
+        Assert.Equal(2, column1Items);
+    }
+
     private static AngleSharp.Dom.IElement MakeElement()
     {
         var parser = new AngleSharp.Html.Parser.HtmlParser();

@@ -175,10 +175,19 @@ internal static class ComputedStyleLayoutExtensions
     /// when the slot is anything other than <see cref="ComputedSlotTag.Integer"/>
     /// with a value &gt;= 1. That includes <c>auto</c>, unset, parse
     /// failures (the Integer resolver rejected the value), zero, and
-    /// negative numbers. The MulticolLayouter dispatch in
-    /// <c>BlockLayouter</c> uses a non-null result &gt;= 2 as the gate
-    /// — <c>column-count: 1</c> behaves as a normal block per the
-    /// task plan's locked design (no MulticolLayouter dispatch).</para>
+    /// negative numbers.</para>
+    ///
+    /// <para>Per post-PR-#60 review hardening (F#3) — the MulticolLayouter
+    /// dispatch in <c>BlockLayouter.IsMulticolContainer</c> now uses a
+    /// non-null result &gt;= 1 as the gate (NOT &gt;= 2). CSS Multi-column
+    /// L1 §1 says a multicol container is created whenever
+    /// <c>column-count</c> (or <c>column-width</c>) is set non-auto;
+    /// column boxes establish their own BFC. <c>column-count: 1</c>
+    /// reaches <see cref="MulticolLayouter"/> which degrades to
+    /// <c>EmitSingleColumnFallthrough</c> — the BFC contract is
+    /// preserved without a column-axis split. Pre-fix the gate
+    /// required &gt;= 2, so <c>column-count: 1</c> fell through to
+    /// ordinary block flow + lost the BFC contract.</para>
     /// </summary>
     public static int? ReadColumnCount(this ComputedStyle style)
     {
@@ -209,17 +218,34 @@ internal static class ComputedStyleLayoutExtensions
 
     /// <summary>Per Phase 3 Task 14 cycle 4 — decode
     /// <see cref="PropertyId.ColumnWidth"/> as a CSS px length. Returns
-    /// <see langword="null"/> when the slot is <c>auto</c> / unset /
-    /// non-length (the cycle-1 hardening NumberResolver guard rejects
-    /// negative + zero values, so a non-null result is always &gt; 0).
+    /// <see langword="null"/> when the slot is <c>auto</c> / unset OR
+    /// when the slot carries a font-relative length (<c>em</c>,
+    /// <c>rem</c>) or percentage — the cycle-1 <c>LengthResolver</c>
+    /// returns a <c>ResolutionState.Deferred</c> result for those (the
+    /// raw text rides along on the side; the slot itself stays
+    /// <see cref="ComputedSlotTag.Unset"/>), and resolving them
+    /// requires the font-size cascade which is a sub-cycle 5+ deferral
+    /// (see <c>docs/deferrals.md#multicol-balancing-pagination</c>).
+    /// Cycle 4 reads only the resolved <see cref="ComputedSlotTag.LengthPx"/>
+    /// slot.
+    ///
+    /// <para><b>Zero handling.</b> Per CSS Multi-column L1 §3.1 the used
+    /// value of <c>column-width</c> is <c>max(specifiedValue, 1px)</c>;
+    /// authors can write <c>column-width: 0</c> and the spec still
+    /// derives columns at the 1px floor. The cycle-1 hardening
+    /// <c>NumberResolver</c> rejects NEGATIVE lengths (no slot is
+    /// produced) but accepts 0 — this reader returns the resolved value
+    /// as-is including 0; the 1px floor is applied by
+    /// <see cref="ComputeUsedColumnCount"/>, not here. This keeps the
+    /// reader a pure decode + the spec-clamp behavior local to the
+    /// derivation helper.</para>
     ///
     /// <para>Used by the multicol dispatch + the column-count derivation
     /// in <see cref="BlockLayouter"/>: when <c>column-count</c> is auto
     /// AND <c>column-width</c> is a length, the effective column count is
-    /// <c>floor((containerInline + columnGap) / (columnWidth + columnGap))</c>
-    /// per CSS Multi-column L1 §3.3. Sub-cycle 2+ will resolve percentage
-    /// + calc() column-width values; cycle 4 reads only the resolved
-    /// LengthPx slot.</para></summary>
+    /// <c>floor((containerInline + columnGap) / (usedColumnWidth + columnGap))</c>
+    /// per CSS Multi-column L1 §3.3, where
+    /// <c>usedColumnWidth = max(columnWidth, 1px)</c>.</para></summary>
     public static double? ReadColumnWidth(this ComputedStyle style)
     {
         var slot = style.Get(PropertyId.ColumnWidth);
@@ -235,7 +261,9 @@ internal static class ComputedStyleLayoutExtensions
     ///   used N = 1 (no multicol dispatch).</item>
     ///   <item><c>column-count: auto</c> + <c>column-width: &lt;length&gt;</c>
     ///   → used N = <c>max(1, floor((containerInline + columnGap) /
-    ///   (columnWidth + columnGap)))</c>.</item>
+    ///   (usedColumnWidth + columnGap)))</c>, where
+    ///   <c>usedColumnWidth = max(columnWidth, 1px)</c> per CSS
+    ///   Multi-column L1 §3.1.</item>
     ///   <item><c>column-count: &lt;integer&gt;</c> +
     ///   <c>column-width: auto</c> → used N = specified count.</item>
     ///   <item><c>column-count: &lt;integer&gt;</c> +
@@ -245,18 +273,28 @@ internal static class ComputedStyleLayoutExtensions
     ///
     /// <para>The container's actual per-column inline-size after N is
     /// chosen continues to follow cycle 1's equal-split formula:
-    /// <c>(containerInline - (N-1)*columnGap) / N</c>. Per CSS spec the
-    /// columns expand evenly into the available inline space, so the
-    /// resolved per-column inline-size may exceed <paramref name="columnWidth"/>
-    /// — this is intended behavior; <paramref name="columnWidth"/> is a
-    /// MINIMUM not an exact size.</para>
+    /// <c>(containerInline - (N-1)*columnGap) / N</c>. Per CSS Multi-
+    /// column L1 §3.1 the authored <c>column-width</c> is an OPTIMAL
+    /// width — a "tentative used value" — the actual per-column inline-
+    /// size computed by the equal-split formula may be wider OR narrower
+    /// than the authored value depending on container geometry. Columns
+    /// expand to fill the available inline space, so authoring
+    /// <c>column-width: 100px</c> in a 400px container with 3 derived
+    /// columns produces ~123px columns (not 100px).</para>
     ///
-    /// <para><b>Defensive guards.</b> Non-finite / non-positive
-    /// <paramref name="columnWidth"/> or container inline-size produce
-    /// derivedCount = 1 (no derivable constraint). When both
+    /// <para><b>Defensive guards.</b> Non-finite container inline-size
+    /// produces derivedCount = 1 (no derivable constraint). When both
     /// <paramref name="specifiedColumnCount"/> and
     /// <paramref name="columnWidth"/> are null the result is 1 (no
-    /// multicol intent).</para></summary>
+    /// multicol intent). <paramref name="columnWidth"/> == 0 is admitted
+    /// per spec §3.1's 1px-floor clamp (NumberResolver rejects negative
+    /// lengths upstream; zero passes through here + clamps to 1px). The
+    /// double-precision ratio is clamped to <c>[1, int.MaxValue]</c>
+    /// BEFORE the int conversion so an astronomically large container
+    /// (e.g., 1e9 px) divided by a 1 px <c>usedColumnWidth</c> + 0 gap
+    /// can't trigger undefined behavior in the int cast; the caller's
+    /// downstream <c>MaxColumnCount</c> safety cap (=1000 in
+    /// MulticolLayouter) then handles the final bound.</para></summary>
     public static int ComputeUsedColumnCount(
         double containerContentInlineSize,
         int? specifiedColumnCount,
@@ -265,42 +303,77 @@ internal static class ComputedStyleLayoutExtensions
     {
         if (specifiedColumnCount is null && columnWidth is null) return 1;
 
-        int derivedCount;
-        if (columnWidth is double cw && cw > 0)
+        // `derivedFromWidth` is null when column-width is auto / unset
+        // / non-finite / negative — those cases leave derivation
+        // unconstrained, and the specifiedColumnCount path takes over
+        // exclusively. When derivedFromWidth is non-null it's the
+        // CSS Multi-column L1 §3.3 derivation result (clamped to
+        // [1, int.MaxValue]).
+        int? derivedFromWidth = null;
+        // Per post-PR-#60 review hardening (F#1) — admit `columnWidth ==
+        // 0` per CSS Multi-column L1 §3.1: the used value clamp is
+        // `max(specifiedValue, 1px)` so authors can write
+        // `column-width: 0` and the spec still derives columns at the
+        // 1px floor. Pre-fix this branch was gated on `cw > 0`, silently
+        // routing `column-width: 0` to the "no width constraint" path
+        // (= derivedCount = int.MaxValue sentinel) instead of the spec-
+        // required derived-N path with the 1px floor. The NumberResolver
+        // guard rejects NEGATIVE lengths upstream (no slot is produced)
+        // but ALLOWS zero — non-finite values still produce derivedCount
+        // = 1.
+        if (columnWidth is double cw && double.IsFinite(cw) && cw >= 0)
         {
-            var denom = cw + columnGap;
+            // F#1 — clamp to the spec's 1px floor. `usedColumnWidth` is
+            // the "used value" in spec terminology; the cascade slot
+            // continues to carry the authored value (0).
+            var usedColumnWidth = Math.Max(1.0, cw);
+            var denom = usedColumnWidth + columnGap;
             if (!double.IsFinite(denom) || denom <= 0)
             {
-                derivedCount = 1;
+                derivedFromWidth = 1;
             }
             else
             {
                 var numerator = containerContentInlineSize + columnGap;
                 if (!double.IsFinite(numerator) || numerator <= 0)
                 {
-                    derivedCount = 1;
+                    derivedFromWidth = 1;
                 }
                 else
                 {
-                    derivedCount = (int)Math.Floor(numerator / denom);
-                    if (derivedCount < 1) derivedCount = 1;
+                    // Per post-PR-#60 review hardening (F#4) — clamp the
+                    // double ratio BEFORE the int cast. For huge finite
+                    // ratios (containerInline=1e15, usedColumnWidth=1px,
+                    // columnGap=0 → ratio = 1e15 which exceeds
+                    // int.MaxValue ≈ 2.147e9), the pre-fix `(int)` cast
+                    // had undefined behavior. The MulticolLayouter's
+                    // `MaxColumnCount = 1000` safety cap applies AFTER
+                    // this method returns, but it can't repair an
+                    // overflowed int conversion. `int.MaxValue` is far
+                    // above any sane column count; the layouter then
+                    // clamps to its smaller MaxColumnCount.
+                    var derivedDouble = Math.Floor(numerator / denom);
+                    if (derivedDouble < 1.0) derivedDouble = 1.0;
+                    if (derivedDouble > int.MaxValue) derivedDouble = int.MaxValue;
+                    derivedFromWidth = (int)derivedDouble;
                 }
             }
         }
-        else
-        {
-            // No column-width constraint — let specifiedColumnCount win
-            // unconstrained. int.MaxValue is a sentinel meaning "the
-            // derived path doesn't bound N"; the `Math.Min` below
-            // collapses to the specified count.
-            derivedCount = int.MaxValue;
-        }
+        // Else: column-width is null OR non-finite OR negative (the
+        // negative case is defensive: NumberResolver should never
+        // produce a negative LengthPx slot). The derivation is left
+        // unconstrained — derivedFromWidth stays null + specifiedColumnCount
+        // wins exclusively.
 
         if (specifiedColumnCount is int sc && sc >= 1)
         {
-            return Math.Min(sc, derivedCount);
+            return derivedFromWidth is int derivedW ? Math.Min(sc, derivedW) : sc;
         }
-        return derivedCount == int.MaxValue ? 1 : derivedCount;
+        // No specified count — pass through the derivation, or default
+        // to 1 when only the specifiedColumnCount path applied + was
+        // null/invalid (= the first-line guard above already returned
+        // for the all-null case; this fallback is defensive).
+        return derivedFromWidth ?? 1;
     }
 
     /// <summary>Per Phase 3 Task 14 cycle 3 — decode

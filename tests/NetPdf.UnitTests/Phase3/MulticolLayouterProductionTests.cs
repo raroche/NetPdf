@@ -710,6 +710,89 @@ public sealed class MulticolLayouterProductionTests
             d.Code == PaginateDiagnosticCodes.LayoutMulticolForcedOverflow001);
     }
 
+    [Fact]
+    public async Task Cycle4_production_html_column_width_em_does_not_trigger_multicol_yet()
+    {
+        // Per post-PR-#60 review hardening (F#2) — pinning test for
+        // the scope-narrowing deferral of font-relative `column-width`
+        // values. CSS Multi-column L1 §3.1's introductory example uses
+        // `column-width: 12em`; the cycle-1 LengthResolver returns
+        // `ResolutionState.Deferred` for em/rem (the slot stays Unset,
+        // raw text rides along on the side). Cycle 4's ReadColumnWidth
+        // returns null for any non-LengthPx slot, so an em-only
+        // multicol intent falls through to ordinary block flow.
+        //
+        // Sub-cycle 5+ will resolve em values against the cascaded
+        // font-size + percentage values against the containing block.
+        // Documented in docs/deferrals.md#multicol-balancing-pagination.
+        //
+        // Setup: `column-width: 12em` in a 600px container with no
+        // `column-count`. The body children should land at the
+        // wrapper's full inline-size (= ordinary block flow), NOT
+        // split into multiple columns.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .multicol {
+                    column-width: 12em;
+                    height: 100px;
+                }
+                .item { height: 30px; }
+            </style></head><body>
+            <div class="multicol">
+              <div class="item"></div>
+              <div class="item"></div>
+              <div class="item"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        // Find the multicol wrapper + item fragments.
+        BoxFragment? multicolFragment = null;
+        var itemFragments = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind != BoxKind.BlockContainer) continue;
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var cls = srcEl.GetAttribute("class");
+            if (cls == "multicol") multicolFragment = f;
+            else if (cls == "item") itemFragments.Add(f);
+        }
+        Assert.NotNull(multicolFragment);
+        Assert.Equal(3, itemFragments.Count);
+
+        // ReadColumnWidth returns NULL even though the slot is set
+        // — the em value was Deferred by the resolver.
+        var columnWidth = multicolFragment!.Value.Box.Style.ReadColumnWidth();
+        Assert.Null(columnWidth);
+
+        // Each item lands at the wrapper's full content inline-size,
+        // NOT a per-column slice. The exact match value depends on
+        // the wrapper's inline size; the key assertion is "no per-
+        // column inline-offset translation happened" — every item
+        // lands at the same inline offset (column 0 in multicol terms,
+        // or simply the wrapper's content-box origin in ordinary
+        // block-flow terms).
+        var firstItemOffset = itemFragments[0].InlineOffset;
+        var firstItemSize = itemFragments[0].InlineSize;
+        foreach (var f in itemFragments)
+        {
+            Assert.Equal(firstItemOffset, f.InlineOffset, precision: 3);
+            Assert.Equal(firstItemSize, f.InlineSize, precision: 3);
+        }
+        // The item inline-size equals the wrapper inline-size (= no
+        // column-axis split happened). Pre-cycle-4 multicol with N>=2
+        // would have made items narrower; cycle-4 with derived N=1
+        // would have done the single-column fallthrough which also
+        // gives full inline-size; ordinary block flow gives full
+        // inline-size too. We assert the full-width outcome which is
+        // consistent with the deferred-units behavior + pins that no
+        // column-axis split happened.
+        Assert.Equal(multicolFragment.Value.InlineSize, firstItemSize, precision: 3);
+    }
+
     private static AngleSharp.Dom.IElement MakeElement()
     {
         var parser = new AngleSharp.Html.Parser.HtmlParser();

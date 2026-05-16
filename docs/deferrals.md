@@ -552,26 +552,38 @@ grepping the ID).
 ## multicol-balancing-pagination
 
 - **ID** — `multicol-balancing-pagination`
-- **Status** — `approximated` (cycles 1-4 + post-PR-#59 review
-  hardening ship fixed-column-count + column-width-derived auto count
-  + equal-split + multi-page splitting through any recursion depth +
-  `column-fill: balance` / `balance-all` with correct last-fragment
-  semantics + a real fit-search instead of the average-height
-  heuristic; column rules + `column-span: all` + the balance-result
-  perf cache remain sub-cycle 2+ scope). Phase 3 Task 14 cycle 2
-  hardening Finding #1 lifted the depth==1-only continuation
-  propagation limit — nested multicols at any in-flow recursion
-  depth now split cleanly across pages. Cycle 3 + post-PR-#59 review
-  hardening ship the correct column-balancing algorithm: a binary-
-  search fit-probe finds the smallest column-block-size where all
-  content fits in N columns, with correct `balance` vs `balance-all`
-  semantics, resume-aware pre-measure, multi-window pre-measure for
-  long content, and margin-aware extent capture. Cycle 4 ships the
-  CSS Multi-column L1 §3.3 used-column-count derivation:
-  `column-width: <length>` alone or combined with `column-count`
+- **Status** — `approximated` (cycles 1-4 + post-PR-#59 + post-PR-#60
+  review hardening ship fixed-column-count + column-width-derived
+  auto count (absolute resolved lengths only — font-relative values
+  deferred to sub-cycle 5+) + equal-split + multi-page splitting
+  through any recursion depth + `column-fill: balance` /
+  `balance-all` with correct last-fragment semantics + a real fit-
+  search instead of the average-height heuristic; column rules +
+  `column-span: all` + the balance-result perf cache + font-relative
+  `column-width` resolution remain sub-cycle 2+ scope). Phase 3
+  Task 14 cycle 2 hardening Finding #1 lifted the depth==1-only
+  continuation propagation limit — nested multicols at any in-flow
+  recursion depth now split cleanly across pages. Cycle 3 +
+  post-PR-#59 review hardening ship the correct column-balancing
+  algorithm: a binary-search fit-probe finds the smallest column-
+  block-size where all content fits in N columns, with correct
+  `balance` vs `balance-all` semantics, resume-aware pre-measure,
+  multi-window pre-measure for long content, and margin-aware
+  extent capture. Cycle 4 ships the CSS Multi-column L1 §3.3 used-
+  column-count derivation for absolute resolved lengths:
+  `column-width: <Npx>` alone or combined with `column-count`
   derives N from the container's content inline-size + column-gap,
   with single-column degenerate fallthrough when derivedN == 1
-  (e.g., `column-width` larger than the container).
+  (e.g., `column-width` larger than the container). Post-PR-#60
+  review hardening: (F#1) admits `column-width: 0` per spec §3.1's
+  used-value 1px floor; (F#3) `column-count: 1` now reaches the
+  MulticolLayouter per spec §1's BFC contract (degrades to
+  single-column fallthrough); (F#4) the int-cast in the derivation
+  helper is now clamped to int.MaxValue BEFORE the cast so huge
+  finite ratios don't trigger undefined behavior; (F#5) the
+  single-column fallthrough now shares its resume decode +
+  PageComplete packaging + diagnostic emission with the multi-
+  column path.
 - **Behavior** — `MulticolLayouter` (Phase 3 Task 14 cycles 1-2)
   recognizes a block container with `column-count: N` (integer ≥ 2)
   as a multicol container. Detection is via
@@ -667,6 +679,18 @@ grepping the ID).
     The post-PR-#59 deferred F#6 perf-cache would memoize the fit-
     search result per Box; sub-cycle 2+ scope.
 - **Missing** —
+  - **Font-relative `column-width`** (CSS Multi-column L1 §3.1):
+    cycle 4 reads only resolved `LengthPx` slots; font-relative
+    values (`em`, `rem`) AND percentages are returned as
+    `ResolverResult.Deferred` by the cycle-1 `LengthResolver` (the
+    raw text rides along on the side; the slot itself stays
+    `ComputedSlotTag.Unset`), and cycle 4's `ReadColumnWidth`
+    returns null for those, so they don't trigger multicol dispatch
+    via the column-width path. Authors who write
+    `column-width: 12em` (the CSS Multi-column L1 §3.1 introductory
+    example) currently fall through to ordinary block flow.
+    Sub-cycle 5+ will resolve them against the cascaded font-size
+    (em/rem) + containing block (percentages).
   - **Balance-result perf cache (F#6 — deferred from post-PR-#59
     review)**: the fit-search runs `O(log range) × columnCount`
     nested `BlockLayouter` dry-runs per multicol per page. When a

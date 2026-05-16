@@ -1918,6 +1918,96 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 continue;
             }
 
+            // Per Phase 3 Task 15 cycle 1 (Hello World) — flex
+            // container dispatch. A box with BoxKind.FlexContainer /
+            // InlineFlexContainer (= display: flex / inline-flex)
+            // lays out its direct children as flex items via
+            // FlexLayouter. The wrapper fragment is already emitted
+            // above (with the regular block sizing); FlexLayouter
+            // emits the per-item content INSIDE the wrapper's
+            // content area. Skips the EmitBlockSubtreeRecursive call
+            // below (FlexLayouter owns the inner emission).
+            //
+            // Cycle 1 keeps geometry simple: the flex container's
+            // content-box is derived directly from the wrapper's
+            // border-box minus the wrapper's own borders + paddings
+            // — no fragmentainer-remaining-space derivation (that's
+            // multicol's auto-height column-fill semantic; flex's
+            // cross-axis sizing is sub-cycle 2+ scope). Cycle 1's
+            // FlexLayouter is atomic to outer pagination so the
+            // returned LayoutAttemptResult is always AllDone — no
+            // continuation packaging needed.
+            if (IsFlexContainer(child))
+            {
+                // Derive the flex container's content-box geometry
+                // from the wrapper's border-box (already painted via
+                // the BoxFragment emission above). The math mirrors
+                // MulticolGeometryHelper.ComputeContentGeometry's
+                // explicit-height branch (no fragmentainer-remaining
+                // derivation for cycle 1).
+                var flexBorderInlineStart =
+                    child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
+                var flexPaddingInlineStart =
+                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
+                var flexBorderInlineEnd =
+                    child.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
+                var flexPaddingInlineEnd =
+                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
+                var flexBorderBlockStart =
+                    child.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
+                var flexPaddingBlockStart =
+                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingTop);
+                var flexBorderBlockEnd =
+                    child.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
+                var flexPaddingBlockEnd =
+                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingBottom);
+
+                var flexContentInlineSize = Math.Max(1.0,
+                    borderBoxInlineSize
+                    - flexBorderInlineStart - flexPaddingInlineStart
+                    - flexBorderInlineEnd - flexPaddingInlineEnd);
+                var flexContentBlockSize = Math.Max(1.0,
+                    borderBoxBlockSize
+                    - flexBorderBlockStart - flexPaddingBlockStart
+                    - flexBorderBlockEnd - flexPaddingBlockEnd);
+                var flexContentInlineOffset =
+                    inFlowInlineOffset + flexBorderInlineStart + flexPaddingInlineStart;
+                var flexContentBlockOffset =
+                    blockOffset + flexBorderBlockStart + flexPaddingBlockStart;
+
+                using var flexLayouter = new FlexLayouter(
+                    rootBox: child,
+                    sink: _sink,
+                    incomingContinuation: null,
+                    diagnostics: _diagnostics,
+                    shaperResolver: _shaperResolver);
+                flexLayouter.ConfigureEmission(
+                    contentInlineOffset: flexContentInlineOffset,
+                    contentBlockOffset: flexContentBlockOffset,
+                    contentInlineSize: flexContentInlineSize,
+                    contentBlockSize: flexContentBlockSize);
+
+                using var flexResolver = new BreakResolver();
+                _ = flexLayouter.AttemptLayout(
+                    fragmentainer,
+                    ref layout,
+                    flexResolver,
+                    LayoutAttemptStrategy.LastResort,
+                    cancellationToken);
+
+                // Cursor advance + bookkeeping mirror the multicol
+                // dispatch above. Cycle 1 flex is atomic — no
+                // PageComplete propagation needed (FlexLayouter
+                // always returns AllDone).
+                fragmentainer.UsedBlockSize = Math.Max(0,
+                    fragmentainer.UsedBlockSize + marginBoxBlockSizeForCursor);
+                prevBlockMarginEnd = marginEnd;
+                hasPriorAdjoiningBlock = true;
+                emittedThisAttempt++;
+                lastEmittedIdx = childIdx;
+                continue;
+            }
+
             // Per Phase 3 Task 7 cycle 2b — recursively emit fragments
             // for the child's block-level descendants. Cycle 1 / 2
             // emitted only top-level children of `_rootBox`; with
@@ -2723,6 +2813,84 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 continue;
             }
 
+            // Per Phase 3 Task 15 cycle 1 (Hello World) — nested flex
+            // container dispatch. A nested block-flow descendant with
+            // BoxKind.FlexContainer / InlineFlexContainer (= display:
+            // flex / inline-flex) dispatches to FlexLayouter for per-
+            // item emission INSIDE its border box. Skip the
+            // EmitBlockSubtreeRecursive call below for this child
+            // (the flex layouter owns the inner content emission).
+            // Mirrors the outer-loop dispatch above for the depth-0
+            // case. Cycle 1 is atomic to outer pagination (no
+            // FlexContinuation propagation up the recursion chain
+            // yet); sub-cycle 2+ will gain that contract.
+            if (IsFlexContainer(child))
+            {
+                var nestedFlexBorderInlineStart =
+                    child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
+                var nestedFlexPaddingInlineStart =
+                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
+                var nestedFlexBorderInlineEnd =
+                    child.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
+                var nestedFlexPaddingInlineEnd =
+                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
+                var nestedFlexBorderBlockStart =
+                    child.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
+                var nestedFlexPaddingBlockStart =
+                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingTop);
+                var nestedFlexBorderBlockEnd =
+                    child.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
+                var nestedFlexPaddingBlockEnd =
+                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingBottom);
+
+                var nestedFlexContentInlineSize = Math.Max(1.0,
+                    childBorderBoxInlineSize
+                    - nestedFlexBorderInlineStart - nestedFlexPaddingInlineStart
+                    - nestedFlexBorderInlineEnd - nestedFlexPaddingInlineEnd);
+                var nestedFlexContentBlockSize = Math.Max(1.0,
+                    childBorderBoxBlockSize
+                    - nestedFlexBorderBlockStart - nestedFlexPaddingBlockStart
+                    - nestedFlexBorderBlockEnd - nestedFlexPaddingBlockEnd);
+                var nestedFlexContentInlineOffset =
+                    childInlineOffset + nestedFlexBorderInlineStart + nestedFlexPaddingInlineStart;
+                var nestedFlexContentBlockOffset =
+                    childBlockOffset + nestedFlexBorderBlockStart + nestedFlexPaddingBlockStart;
+
+                using var nestedFlexLayouter = new FlexLayouter(
+                    rootBox: child,
+                    sink: _sink,
+                    incomingContinuation: null,
+                    diagnostics: _diagnostics,
+                    shaperResolver: _shaperResolver);
+                nestedFlexLayouter.ConfigureEmission(
+                    contentInlineOffset: nestedFlexContentInlineOffset,
+                    contentBlockOffset: nestedFlexContentBlockOffset,
+                    contentInlineSize: nestedFlexContentInlineSize,
+                    contentBlockSize: nestedFlexContentBlockSize);
+
+                using var nestedFlexResolver = new BreakResolver();
+                if (_capturedFragmentainer is not null)
+                {
+                    var nestedFlexLayoutCtx = new LayoutContext(_capturedFragmentainer)
+                    {
+                        Diagnostics = _diagnostics,
+                    };
+                    _ = nestedFlexLayouter.AttemptLayout(
+                        _capturedFragmentainer,
+                        ref nestedFlexLayoutCtx,
+                        nestedFlexResolver,
+                        LayoutAttemptStrategy.LastResort,
+                        cancellationToken);
+                }
+
+                // Advance the cursor + bookkeeping; skip the
+                // EmitBlockSubtreeRecursive below.
+                childCursor = childCursor + topShift + childEffectiveBlockSize + marginEnd;
+                prevMarginEnd = marginEnd;
+                hasPrior = true;
+                continue;
+            }
+
             // Recurse — emit grandchildren relative to this child's
             // content area. The recursion's own predicate gate skips
             // walking INTO non-flow block kinds (Table/Flex/Grid/etc.).
@@ -3326,6 +3494,24 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         if (box.Style.ReadColumnWidth() is not null) return true;
         return false;
     }
+
+    /// <summary>Per Phase 3 Task 15 cycle 1 (Hello World) — predicate
+    /// distinguishing flex containers from regular block-flow containers.
+    /// A box is a flex container when its <see cref="Box.Kind"/> is
+    /// <see cref="BoxKind.FlexContainer"/> (block-outer + flex-inner =
+    /// <c>display: flex</c>) or <see cref="BoxKind.InlineFlexContainer"/>
+    /// (inline-outer + flex-inner = <c>display: inline-flex</c>).
+    ///
+    /// <para><b>Why BoxKind-based, not property-based.</b> Contrast
+    /// with <see cref="IsMulticolContainer"/>'s property-based gate
+    /// (<c>column-count</c> / <c>column-width</c> on a regular
+    /// <see cref="BoxKind.BlockContainer"/>). Per CSS Display L3 §2,
+    /// <c>display: flex</c> defines an outer + inner display pair that
+    /// <see cref="DisplayMapper"/> already resolves into the dedicated
+    /// kind at box-generation time; the dispatch predicate just reads
+    /// the kind.</para></summary>
+    private static bool IsFlexContainer(Box box)
+        => box.Kind is BoxKind.FlexContainer or BoxKind.InlineFlexContainer;
 
     /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 — predicate
     /// distinguishing block containers whose children are entirely

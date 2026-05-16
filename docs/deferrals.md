@@ -830,6 +830,65 @@ grepping the ID).
 
 ---
 
+## flex-layouter-features
+
+- **ID** — `flex-layouter-features`
+- **Status** — `approximated`. Phase 3 Task 15 L1 ships single-line
+  `flex-direction: row` with `flex-start` packing. Most Flexbox L1
+  features are deferred to sub-cycles.
+- **Behavior** — A block container with `display: flex` (=
+  `BoxKind.FlexContainer`) or `display: inline-flex` (=
+  `BoxKind.InlineFlexContainer`) lays out its direct block-level
+  children as a single horizontal row. Each item emits at its natural
+  inline-size (= the item's declared `width` if set, else 0) and
+  natural block-size (= declared `height` if set, else 0). Items pack
+  from the container's `contentInlineOffset` left-to-right; the main-
+  axis cursor advances by each item's inline-size with no wrapping
+  (overflow is permitted per CSS Flexbox L1 §6 + §9.4 for
+  `flex-wrap: nowrap`). All items emit at `contentBlockOffset` on
+  the cross-axis (= `flex-start` equivalent regardless of the
+  computed `align-items` value). The flex container is atomic to
+  outer pagination (the entire container's items emit on the page
+  the wrapper landed on; no `FlexContinuation` resume).
+- **Missing** —
+  - `flex-direction: column` / `row-reverse` / `column-reverse`
+  - `flex-wrap: wrap` / `wrap-reverse`
+  - `justify-content` values beyond `flex-start`
+  - `align-items` values beyond default `flex-start` equivalent
+    (no real `stretch`, no `center` / `end` / `baseline`)
+  - `flex-grow` / `flex-shrink` / `flex-basis` resolution
+  - `order` property
+  - Anonymous flex-item wrapping for inline-level / text children
+    (cycle 1 skips non-block-level children silently; whitespace
+    `TextRun`s between flex item elements are dropped without a
+    fragment)
+  - Multi-page flex container splitting (atomic to outer pagination
+    in L1; `FlexContinuation` exists in
+    `src/NetPdf.Paginate/LayoutContinuation.cs` for sub-cycle 2+)
+  - Baseline alignment
+- **Owner files** —
+  - `src/NetPdf.Layout/Layouters/FlexLayouter.cs` — the layouter
+    itself.
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — the `IsFlexContainer`
+    predicate + the outer-loop + recursion-site dispatch into
+    `FlexLayouter`.
+  - `src/NetPdf.Layout/Boxes/DisplayMapper.cs` — `display: flex`
+    `/ inline-flex` → `BoxKind.FlexContainer` /
+    `BoxKind.InlineFlexContainer`.
+  - `src/NetPdf.Css/properties.json` — the `align-items`,
+    `flex-direction`, `flex-wrap`, `justify-content` keyword
+    properties (already parsed; not yet honored by the layouter).
+- **Trigger** — sub-cycle 2 picks up flex-direction: column +
+  flex-wrap + real align-items; sub-cycle 3 picks up flex-grow /
+  shrink / basis. Sub-cycle 4 picks up the anonymous-flex-item
+  wrapping + the `FlexContinuation`-based multi-page split.
+- **Added** — Phase 3 Task 15 cycle 1 (Hello World).
+- **Removal condition** — Phase 3 Task 15 L2 + L3 ship the deferred
+  features (column / wrap / justify / align / grow / shrink / basis /
+  order / baseline / multi-page split / anonymous flex item).
+
+---
+
 ## fuzzing-infrastructure
 
 - **ID** — `fuzzing-infrastructure`

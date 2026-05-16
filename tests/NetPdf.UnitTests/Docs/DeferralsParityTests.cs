@@ -50,6 +50,7 @@ public sealed class DeferralsParityTests
         "table-auto-fixed-spans-borders",
         "multicol-balancing-pagination",
         "float-continuation-propagation",
+        "flex-layouter-features",
     };
 
     [Fact]

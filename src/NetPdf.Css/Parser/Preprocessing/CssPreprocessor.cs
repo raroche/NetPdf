@@ -93,6 +93,24 @@ internal static class CssPreprocessor
         // valid-value emit is tolerated by the cascade per CSS
         // last-decl-wins rules.
         "white-space",
+        // Per Phase 3 Task 15 L2 post-PR-#62 review hardening F#4 —
+        // AngleSharp.Css 1.0.0-beta.144 accepts the bare
+        // `justify-content` values (flex-start / flex-end / center /
+        // space-between / etc.) but DROPS the compound
+        // `<overflow-position> <content-position>` forms
+        // (= `safe center`, `unsafe flex-end`, etc.) per CSS Box
+        // Alignment L3 §4.5 — these are the modern (2022) grammar
+        // additions AngleSharp's older parser doesn't recognize. Our
+        // `KeywordResolver.BuildJustifyContentTable` already produces
+        // all 26 indices including the 14 compound forms; routing the
+        // recovery path through ScanDeclarations preserves the raw
+        // declaration text so the cascade resolver receives it
+        // verbatim + the KeywordResolver decodes it correctly. The
+        // duplicate vs AngleSharp's bare-value emit (when authors
+        // write a bare value) is tolerated by the cascade per CSS
+        // last-decl-wins rules — same precedent as the white-space
+        // entry above.
+        "justify-content",
     }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>

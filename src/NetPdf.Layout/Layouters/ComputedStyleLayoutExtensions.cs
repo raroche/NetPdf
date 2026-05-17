@@ -410,11 +410,23 @@ internal static class ComputedStyleLayoutExtensions
     /// (<c>start</c> / <c>end</c> / <c>left</c> / <c>right</c>) map to
     /// <c>flex-start</c> / <c>flex-end</c> for the L1 default
     /// <c>flex-direction: row</c> (writing-mode-aware mapping is L3+
-    /// scope). The <c>safe</c> / <c>unsafe</c> overflow-position
-    /// modifiers (= compound keywords like <c>safe center</c>) are
-    /// treated as the bare position for L2 — the spec's safe-mode
-    /// overflow containment (= prevent items being pushed offscreen
-    /// when overflowing) is L3+ scope.
+    /// scope).
+    ///
+    /// <para>Per Phase 3 Task 15 L2 post-PR-#62 review hardening F#1 —
+    /// the <c>safe</c> / <c>unsafe</c> overflow-position modifiers are
+    /// now decoded into the <see cref="ResolvedJustifyContent.Mode"/>
+    /// channel instead of being collapsed to <see cref="JustifyContentValue.FlexStart"/>.
+    /// Per CSS Box Alignment L3 §5.3, <c>unsafe X</c> HONORS the
+    /// specified alignment even on overflow; <c>safe X</c> ONLY changes
+    /// behavior on overflow (falling back to safe-start). Pre-fix all
+    /// 14 compound keywords (indices 12-25) decoded to
+    /// <see cref="JustifyContentValue.FlexStart"/>, so authoring
+    /// <c>safe center</c> rendered identically to <c>flex-start</c>.
+    /// The two-field return (<see cref="ResolvedJustifyContent.Value"/>
+    /// for the base alignment, <see cref="ResolvedJustifyContent.Mode"/>
+    /// for the overflow modifier) lets
+    /// <c>FlexLayouter.ComputeJustifyContentOffsets</c> apply the
+    /// spec-correct overflow fallback per §5.3.</para>
     ///
     /// <para><b>Keyword index mapping.</b> The source-gen'd
     /// <c>BuildJustifyContentTable</c> in
@@ -423,10 +435,9 @@ internal static class ComputedStyleLayoutExtensions
     /// 2=space-around, 3=space-evenly, 4=stretch, 5=center, 6=start,
     /// 7=end, 8=flex-start, 9=flex-end, 10=left, 11=right, 12-18=safe
     /// {center, start, end, flex-start, flex-end, left, right},
-    /// 19-25=unsafe {…same 7…}. The <c>safe</c> / <c>unsafe</c>
-    /// compound indices (12+) all fall through to <see cref="JustifyContentValue.FlexStart"/>
-    /// for L2; the bare-position semantics are captured when authors
-    /// use the unmodified position keyword.</para>
+    /// 19-25=unsafe {…same 7…}. The "safe X" + "unsafe X" compounds
+    /// follow the same 7-entry <see cref="NetPdf.Css.ComputedValues.PropertyResolvers.KeywordResolver"/>
+    /// <c>ContentPositions</c> ordering.</para>
     ///
     /// <para><b>Spec mapping notes.</b> <c>normal</c> resolves to
     /// <c>flex-start</c> per CSS Flexbox L1 §8.2 (the flex container's
@@ -436,30 +447,47 @@ internal static class ComputedStyleLayoutExtensions
     /// <c>start</c> / <c>end</c> + the directional aliases <c>left</c> /
     /// <c>right</c> map to <c>flex-start</c> / <c>flex-end</c> under
     /// the L1 default LTR + <c>flex-direction: row</c>.</para></summary>
-    public static JustifyContentValue ReadJustifyContent(this ComputedStyle style)
+    public static ResolvedJustifyContent ReadJustifyContent(this ComputedStyle style)
     {
         var keyword = style.ReadKeywordOrDefault(PropertyId.JustifyContent, defaultIndex: 0);
-        return keyword switch
+        // Decode base position + overflow mode. Indices 12-18 are
+        // safe-X; 19-25 are unsafe-X. The "X" follows ContentPositions
+        // order (KeywordResolver.cs:121):
+        // { center, start, end, flex-start, flex-end, left, right }.
+        var (value, mode) = keyword switch
         {
-            // <content-distribution>
-            1 => JustifyContentValue.SpaceBetween,
-            2 => JustifyContentValue.SpaceAround,
-            3 => JustifyContentValue.SpaceEvenly,
-            4 => JustifyContentValue.FlexStart,       // stretch → flex-start for flex per spec
-            // <content-position>
-            5 => JustifyContentValue.Center,
-            6 => JustifyContentValue.FlexStart,       // start → flex-start (LTR row)
-            7 => JustifyContentValue.FlexEnd,         // end → flex-end (LTR row)
-            8 => JustifyContentValue.FlexStart,
-            9 => JustifyContentValue.FlexEnd,
-            10 => JustifyContentValue.FlexStart,      // left → flex-start (row)
-            11 => JustifyContentValue.FlexEnd,        // right → flex-end (row)
-            // safe / unsafe <position> compounds (indices 12+) — L2
-            // treats them as flex-start; the overflow modifier's safe-
-            // mode containment is L3+ scope. The bare-position semantics
-            // are captured when authors omit the overflow modifier.
-            _ => JustifyContentValue.FlexStart,       // 0 (normal) → flex-start; unknown → flex-start
+            // Bare values (no overflow modifier).
+            0 => (JustifyContentValue.FlexStart, OverflowAlignmentMode.Default),  // normal
+            1 => (JustifyContentValue.SpaceBetween, OverflowAlignmentMode.Default),
+            2 => (JustifyContentValue.SpaceAround, OverflowAlignmentMode.Default),
+            3 => (JustifyContentValue.SpaceEvenly, OverflowAlignmentMode.Default),
+            4 => (JustifyContentValue.FlexStart, OverflowAlignmentMode.Default),  // stretch → flex-start for flex
+            5 => (JustifyContentValue.Center, OverflowAlignmentMode.Default),
+            6 => (JustifyContentValue.FlexStart, OverflowAlignmentMode.Default),  // start → flex-start (LTR row)
+            7 => (JustifyContentValue.FlexEnd, OverflowAlignmentMode.Default),    // end → flex-end (LTR row)
+            8 => (JustifyContentValue.FlexStart, OverflowAlignmentMode.Default),
+            9 => (JustifyContentValue.FlexEnd, OverflowAlignmentMode.Default),
+            10 => (JustifyContentValue.FlexStart, OverflowAlignmentMode.Default), // left (LTR row)
+            11 => (JustifyContentValue.FlexEnd, OverflowAlignmentMode.Default),   // right (LTR row)
+            // safe <position> — indices 12..18 (center/start/end/flex-start/flex-end/left/right)
+            12 => (JustifyContentValue.Center, OverflowAlignmentMode.Safe),
+            13 => (JustifyContentValue.FlexStart, OverflowAlignmentMode.Safe),    // safe start
+            14 => (JustifyContentValue.FlexEnd, OverflowAlignmentMode.Safe),      // safe end
+            15 => (JustifyContentValue.FlexStart, OverflowAlignmentMode.Safe),    // safe flex-start
+            16 => (JustifyContentValue.FlexEnd, OverflowAlignmentMode.Safe),      // safe flex-end
+            17 => (JustifyContentValue.FlexStart, OverflowAlignmentMode.Safe),    // safe left (LTR row)
+            18 => (JustifyContentValue.FlexEnd, OverflowAlignmentMode.Safe),      // safe right (LTR row)
+            // unsafe <position> — indices 19..25
+            19 => (JustifyContentValue.Center, OverflowAlignmentMode.Unsafe),
+            20 => (JustifyContentValue.FlexStart, OverflowAlignmentMode.Unsafe),  // unsafe start
+            21 => (JustifyContentValue.FlexEnd, OverflowAlignmentMode.Unsafe),    // unsafe end
+            22 => (JustifyContentValue.FlexStart, OverflowAlignmentMode.Unsafe),  // unsafe flex-start
+            23 => (JustifyContentValue.FlexEnd, OverflowAlignmentMode.Unsafe),    // unsafe flex-end
+            24 => (JustifyContentValue.FlexStart, OverflowAlignmentMode.Unsafe),  // unsafe left (LTR row)
+            25 => (JustifyContentValue.FlexEnd, OverflowAlignmentMode.Unsafe),    // unsafe right (LTR row)
+            _ => (JustifyContentValue.FlexStart, OverflowAlignmentMode.Default),  // unknown → safe default
         };
+        return new ResolvedJustifyContent(value, mode);
     }
 
     /// <summary>Per Phase 3 Task 14 cycle 3 + post-PR-#59 review
@@ -550,15 +578,22 @@ internal enum ColumnFillValue : byte
 /// <see cref="PropertyId.JustifyContent"/>. CSS Box Alignment L3 §4.5
 /// admits a large grammar (<c>normal | &lt;content-distribution&gt; |
 /// [&lt;overflow-position&gt;? &amp;&amp; [&lt;content-position&gt; |
-/// left | right]]</c>); L2 collapses this to six effective behaviors
+/// left | right]]</c>); L2 collapses this to six effective base behaviors
 /// covering the common flexbox main-axis alignment patterns. Logical-
 /// axis aliases (<c>start</c> / <c>end</c>) and directional aliases
 /// (<c>left</c> / <c>right</c>) map to <see cref="FlexStart"/> /
 /// <see cref="FlexEnd"/> under the L1 default LTR +
-/// <c>flex-direction: row</c>; writing-mode-aware mapping is L3+
-/// scope. The <c>safe</c> / <c>unsafe</c> overflow modifiers are
-/// dropped by the decode (compound indices map to <see cref="FlexStart"/>
-/// in L2); safe-mode overflow containment is L3+ scope.</summary>
+/// <c>flex-direction: row</c>; writing-mode-aware mapping is L3+ scope.
+///
+/// <para>Per Phase 3 Task 15 L2 post-PR-#62 review hardening F#1 — the
+/// <c>safe</c> / <c>unsafe</c> overflow modifiers (compound keywords
+/// like <c>safe center</c>) now carry their semantics on the separate
+/// <see cref="OverflowAlignmentMode"/> channel returned alongside this
+/// enum from <see cref="ComputedStyleLayoutExtensions.ReadJustifyContent"/>
+/// (= <see cref="ResolvedJustifyContent"/>). The base position +
+/// overflow mode together let
+/// <c>FlexLayouter.ComputeJustifyContentOffsets</c> apply spec-correct
+/// overflow handling per CSS Box Alignment L3 §5.3.</para></summary>
 internal enum JustifyContentValue : byte
 {
     FlexStart = 0,
@@ -568,3 +603,43 @@ internal enum JustifyContentValue : byte
     SpaceAround = 4,
     SpaceEvenly = 5,
 }
+
+/// <summary>Per Phase 3 Task 15 L2 post-PR-#62 review hardening F#1 —
+/// overflow-alignment mode per CSS Box Alignment L3 §5.3. The mode is
+/// orthogonal to the base alignment value (<see cref="JustifyContentValue"/>)
+/// and is decoded from the optional <c>&lt;overflow-position&gt;</c>
+/// prefix of <c>justify-content</c>'s compound grammar (e.g.,
+/// <c>safe center</c>, <c>unsafe flex-end</c>).
+///
+/// <para><b>Per spec.</b> <see cref="Default"/> (no modifier) — each
+/// alignment family has its own overflow fallback per the spec (the
+/// distribution values fall back to safe start; positional values keep
+/// their natural offset which may be negative on overflow).
+/// <see cref="Safe"/> — on overflow, fall back to "safe start"
+/// regardless of the specified value (= no item is pushed below the
+/// container's start edge). <see cref="Unsafe"/> — honor the specified
+/// alignment even on overflow (items may be pushed offscreen).</para></summary>
+internal enum OverflowAlignmentMode : byte
+{
+    Default = 0,
+    Safe = 1,
+    Unsafe = 2,
+}
+
+/// <summary>Per Phase 3 Task 15 L2 post-PR-#62 review hardening F#1 —
+/// resolved <c>justify-content</c> value carrying both the base
+/// alignment (<see cref="Value"/>) and the overflow modifier
+/// (<see cref="Mode"/>). Returned by
+/// <see cref="ComputedStyleLayoutExtensions.ReadJustifyContent"/>; the
+/// two channels are consumed together by
+/// <c>FlexLayouter.ComputeJustifyContentOffsets</c> per CSS Box
+/// Alignment L3 §5.3.
+///
+/// <para>Pre-hardening the extension returned only <see cref="Value"/>
+/// (= a bare <see cref="JustifyContentValue"/>); all 14 compound
+/// keywords (safe X / unsafe X — indices 12-25) collapsed to
+/// <see cref="JustifyContentValue.FlexStart"/>, hiding the spec's safe-
+/// mode containment + unsafe-mode override semantics.</para></summary>
+internal readonly record struct ResolvedJustifyContent(
+    JustifyContentValue Value,
+    OverflowAlignmentMode Mode);

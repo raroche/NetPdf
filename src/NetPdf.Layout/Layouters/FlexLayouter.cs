@@ -46,10 +46,17 @@ namespace NetPdf.Layout.Layouters;
 ///   maps to <c>flex-start</c> per CSS Flexbox L1 §8.2. The
 ///   <c>stretch</c> value (the grid default) has no effect on flex
 ///   main-axis packing per spec, so it maps to <c>flex-start</c>.
-///   The <c>safe</c> / <c>unsafe</c> overflow modifiers are dropped
-///   (compounds map to <c>flex-start</c>); safe-mode overflow
-///   containment + writing-mode-aware <c>left</c> / <c>right</c>
-///   mapping are L3+ scope.</item>
+///   Per Phase 3 Task 15 L2 post-PR-#62 hardening F#1 + F#2 the
+///   <c>safe</c> / <c>unsafe</c> overflow modifiers (= compound
+///   keywords like <c>safe center</c>) are now decoded into the
+///   overflow-mode channel of <see cref="ResolvedJustifyContent"/>
+///   + applied per CSS Box Alignment L3 §5.3: <c>safe X</c> forces
+///   safe-start fallback on overflow regardless of value;
+///   <c>unsafe X</c> honors the specified alignment even on
+///   overflow; default (no modifier) gives distribution values the
+///   safe-start fallback + positional values their natural
+///   (possibly-negative) offset. Writing-mode-aware <c>left</c> /
+///   <c>right</c> mapping is L3+ scope.</item>
 ///   <item>Only <c>align-items: normal</c> / <c>stretch</c> (default).
 ///   Cycle 1 emits each item at the container's content-block-start
 ///   edge regardless of <c>align-items</c> — equivalent to
@@ -293,15 +300,20 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         }
 
         // L2 — resolve justify-content + compute the start-offset +
-        // between-spacing per CSS Box Alignment L3 §4.5. Per-spec when
-        // freeSpace <= 0 (= items overflow the container) all alignment
-        // modes fall back to flex-start packing — items overflow at the
-        // start, not at the end / center / etc. — see
-        // ComputeJustifyContentOffsets's overflow branch.
-        var justifyContent = _rootBox.Style.ReadJustifyContent();
+        // between-spacing per CSS Box Alignment L3 §4.5. Per Phase 3
+        // Task 15 L2 post-PR-#62 hardening F#1 + F#2 — the resolved
+        // value now carries TWO channels: the base alignment value +
+        // an overflow modifier (Default / Safe / Unsafe). Per §5.3 the
+        // overflow handling depends on BOTH: positional values keep
+        // their natural (possibly-negative) offset on overflow while
+        // distribution values fall back to safe-start; the explicit
+        // `safe` modifier forces safe-start fallback regardless; the
+        // explicit `unsafe` modifier preserves the alignment even on
+        // overflow.
+        var resolvedJC = _rootBox.Style.ReadJustifyContent();
         var freeSpace = _contentInlineSize - totalItemInlineSize;
         var (startOffset, betweenSpacing) = ComputeJustifyContentOffsets(
-            justifyContent, freeSpace, itemCount);
+            resolvedJC.Value, resolvedJC.Mode, freeSpace, itemCount);
 
         // The main-axis cursor walks from the container's content-
         // inline-start edge plus the alignment start-offset across each
@@ -379,19 +391,43 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
 
     /// <summary>Per Phase 3 Task 15 L2 — compute the start-offset +
     /// between-spacing for the main-axis cursor per CSS Box Alignment
-    /// L3 §4.5. The returned tuple is consumed by AttemptLayout's
-    /// row-packing loop: <c>cursor = contentInlineOffset + startOffset</c>
-    /// before the first item, then <c>cursor += itemInlineSize +
-    /// betweenSpacing</c> after each emission.
+    /// L3 §4.5 + §5.3. The returned tuple is consumed by
+    /// AttemptLayout's row-packing loop:
+    /// <c>cursor = contentInlineOffset + startOffset</c> before the
+    /// first item, then <c>cursor += itemInlineSize + betweenSpacing</c>
+    /// after each emission.
     ///
-    /// <para><b>Overflow fallback.</b> Per spec, when there's no free
-    /// space (= items overflow OR exactly fill the container) ALL
-    /// justify-content modes fall back to flex-start packing. Items
-    /// emit consecutively from the container's content-inline-start
-    /// + overflow off the inline-end edge. The <c>safe</c> modifier
-    /// (L3+) would prevent items being pushed offscreen by the
-    /// alignment offset, but L2 always uses <c>unsafe</c>
-    /// behavior — collapsed to flex-start here regardless.</para>
+    /// <para>Per Phase 3 Task 15 L2 post-PR-#62 review hardening F#2 —
+    /// overflow handling now follows CSS Box Alignment L3 §5.3 instead
+    /// of a blanket flex-start fallback. The pre-fix all-modes
+    /// collapse-to-zero behavior was wrong for two reasons: (a)
+    /// positional values (flex-start / flex-end / center) on overflow
+    /// should keep their natural offset — <c>center</c> with negative
+    /// free-space puts items at <c>freeSpace/2</c> (a negative value)
+    /// so items overflow EQUALLY on both sides; (b) the explicit
+    /// <c>safe</c> / <c>unsafe</c> modifiers were ignored entirely.
+    /// The new behavior:</para>
+    /// <list type="bullet">
+    ///   <item><b>Distribution values</b> (space-between /
+    ///   space-around / space-evenly) on overflow always fall back to
+    ///   safe start (= return <c>(0, 0)</c>). The spec admits subtle
+    ///   per-value differences (some readings say space-around /
+    ///   space-evenly fall back to safe center) but Hello World scope
+    ///   treats all distribution-value overflows as safe start — the
+    ///   consistent fallback that all three share.</item>
+    ///   <item><b>Positional values</b> (flex-start / flex-end /
+    ///   center) on overflow keep their natural offset (which may be
+    ///   negative — e.g., center with negative free-space yields
+    ///   <c>freeSpace/2</c>).</item>
+    ///   <item><b><c>safe</c> modifier</b> (= <see cref="OverflowAlignmentMode.Safe"/>)
+    ///   on overflow forces safe-start fallback for ALL values; on
+    ///   non-overflow it's transparent (= behaves like
+    ///   <see cref="OverflowAlignmentMode.Default"/>).</item>
+    ///   <item><b><c>unsafe</c> modifier</b> (= <see cref="OverflowAlignmentMode.Unsafe"/>)
+    ///   on overflow honors the natural offset regardless of value
+    ///   family; positional values overflow per their natural offset
+    ///   + distribution values produce their (now-negative) gap math.</item>
+    /// </list>
     ///
     /// <para><b>N == 1 special case.</b> <c>space-between</c> with a
     /// single item has no "between" gaps to distribute, so it falls
@@ -406,30 +442,64 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     /// are still defined (zeros) so the caller doesn't need a special
     /// case.</para></summary>
     private static (double startOffset, double betweenSpacing) ComputeJustifyContentOffsets(
-        JustifyContentValue justifyContent, double freeSpace, int itemCount)
+        JustifyContentValue value,
+        OverflowAlignmentMode mode,
+        double freeSpace,
+        int itemCount)
     {
-        if (itemCount == 0 || freeSpace <= 0)
+        if (itemCount == 0) return (0, 0);
+
+        // Compute the NATURAL offset for the value (ignoring overflow
+        // for now). This is the spec-defined offset assuming free space
+        // exists; the overflow branch below either preserves it (for
+        // positional values + the unsafe modifier) or replaces it with
+        // safe-start fallback.
+        var natural = value switch
         {
-            // No items OR overflow — flex-start fallback (cursor stays
-            // at the container's content-inline-start, no extra
-            // between-item spacing).
-            return (0, 0);
-        }
-        return justifyContent switch
-        {
-            JustifyContentValue.FlexEnd => (freeSpace, 0),
-            JustifyContentValue.Center => (freeSpace / 2.0, 0),
+            JustifyContentValue.FlexEnd => (freeSpace, 0.0),
+            JustifyContentValue.Center => (freeSpace / 2.0, 0.0),
             JustifyContentValue.SpaceBetween => itemCount >= 2
-                ? (0, freeSpace / (itemCount - 1))
-                : (0, 0), // N=1 → flex-start fallback per spec
+                ? (0.0, freeSpace / (itemCount - 1))
+                : (0.0, 0.0), // N=1 → flex-start fallback per spec
             JustifyContentValue.SpaceAround => (
                 freeSpace / (2.0 * itemCount),
                 freeSpace / itemCount),
             JustifyContentValue.SpaceEvenly => (
                 freeSpace / (itemCount + 1),
                 freeSpace / (itemCount + 1)),
-            _ => (0, 0), // FlexStart (and any unmapped value)
+            _ => (0.0, 0.0), // FlexStart
         };
+
+        // F#2 hardening — overflow handling per CSS Box Alignment L3
+        // §5.3. Only the `freeSpace < 0` branch applies the overflow
+        // rules; `freeSpace == 0` falls through to the natural return
+        // (which is (0, 0) for all values anyway, since every formula
+        // multiplies by freeSpace).
+        if (freeSpace < 0)
+        {
+            // Explicit `safe` modifier — always fall back to safe start
+            // regardless of value family. Items pack at the container's
+            // start edge + overflow off the end.
+            if (mode == OverflowAlignmentMode.Safe) return (0, 0);
+            // Explicit `unsafe` modifier — honor the natural offset
+            // (= the value's overflow behavior is opt-in even for
+            // distribution values; the resulting between-spacing may
+            // be negative, causing items to overlap).
+            if (mode == OverflowAlignmentMode.Unsafe) return natural;
+            // Default mode (no overflow modifier) — distribution values
+            // fall back to safe start; positional values keep their
+            // natural (possibly-negative) offset, allowing items to
+            // overflow equally on both sides for `center` etc.
+            return value switch
+            {
+                JustifyContentValue.SpaceBetween or
+                JustifyContentValue.SpaceAround or
+                JustifyContentValue.SpaceEvenly => (0, 0),
+                _ => natural, // positional values — allow overflow
+            };
+        }
+
+        return natural;
     }
 
     /// <summary>Per cycle 1 (Hello World) — no per-instance state to

@@ -842,21 +842,36 @@ grepping the ID).
   children as a single horizontal row. Each item emits at its natural
   inline-size (= the item's declared `width` if set, else 0) and
   natural block-size (= declared `height` if set, else 0). Items pack
-  from the container's `contentInlineOffset` left-to-right; the main-
-  axis cursor advances by each item's inline-size with no wrapping
-  (overflow is permitted per CSS Flexbox L1 §6 + §9.4 for
-  `flex-wrap: nowrap`). All items emit at `contentBlockOffset` on
-  the cross-axis (= `flex-start` equivalent regardless of the
-  computed `align-items` value). The flex container is atomic to
-  outer pagination (the entire container's items emit on the page
-  the wrapper landed on; no `FlexContinuation` resume).
+  along the main-axis cursor; the cursor is offset by L2's
+  `justify-content` start-offset + advances by `itemInlineSize +
+  betweenSpacing`. L2's `justify-content` honors the full matrix per
+  CSS Box Alignment L3 §4.5 + §5.3: six base values (`flex-start`,
+  `flex-end`, `center`, `space-between`, `space-around`,
+  `space-evenly`) cross three overflow modes (default, `safe`,
+  `unsafe`). On overflow (free-space < 0): distribution values fall
+  back to safe-start; positional values keep their natural
+  (possibly-negative) offset; `safe X` always falls back to safe-
+  start; `unsafe X` honors the alignment even on overflow. Logical
+  aliases (`start` / `end` / `left` / `right`) map to `flex-start` /
+  `flex-end` under the L1 default LTR + `flex-direction: row`. All
+  items emit at `contentBlockOffset` on the cross-axis (=
+  `flex-start` equivalent regardless of the computed `align-items`
+  value). The flex container is atomic to outer pagination (the
+  entire container's items emit on the page the wrapper landed on;
+  no `FlexContinuation` resume).
 - **Missing** —
   - `flex-direction: column` / `row-reverse` / `column-reverse`
   - `flex-wrap: wrap` / `wrap-reverse`
-  - `safe` / `unsafe` overflow-position modifiers for
-    `justify-content` (L2 treats compound keywords like
-    `safe center` as the bare position; the spec's safe-mode
-    overflow containment is L3+ scope)
+  - Outer-main-size + auto-margins in `justify-content` free-space
+    calculation (CSS Flexbox L1 §9.5): L2's pre-pass sums only
+    declared `width`, ignoring item margins / padding / borders /
+    auto margins. Per spec the free-space calculation uses each
+    item's resolved margin-box main-axis size, and auto margins
+    consume free space BEFORE `justify-content` distributes the
+    remainder. Sub-cycle 3+ will add the outer-size pre-pass.
+    Until then, items with non-zero margins will produce slightly-
+    off `justify-content` placements (e.g., space-between will
+    leave less between-item space than the spec dictates).
   - Writing-mode-aware `left` / `right` mapping for
     `justify-content` (L2 maps both to `flex-start` / `flex-end`
     under the L1 default LTR + `flex-direction: row`; L3+ will

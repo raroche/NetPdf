@@ -328,16 +328,47 @@ public sealed class FlexLayouterTests
     }
 
     [Fact]
-    public void L2_justify_content_overflow_falls_back_to_flex_start()
+    public void L2_justify_content_center_with_overflow_keeps_centered_negative_offset()
     {
+        // Per Phase 3 Task 15 L2 post-PR-#62 hardening F#2 — rewritten
+        // from the pre-fix `L2_justify_content_overflow_falls_back_to_flex_start`.
+        // The pre-fix test pinned the WRONG behavior (all values
+        // collapsed to flex-start on overflow). Per CSS Box Alignment
+        // L3 §5.3 positional values (= center / flex-end / flex-start)
+        // keep their natural offset on overflow — center with negative
+        // free-space yields `freeSpace/2` (a negative value) so items
+        // overflow EQUALLY on both sides of the container.
+        //
         // 5 items of width 100 in a 300px container, justify-content:
         // center (= keyword index 5). totalItemSize = 500, freeSpace
-        // = -200 (overflow). Per spec all alignment modes collapse to
-        // flex-start packing when freeSpace <= 0; items overflow at
-        // the inline-start, not at the center. Expected offsets:
-        // 0, 100, 200, 300, 400.
+        // = -200 → startOffset = -100. Expected offsets:
+        // -100, 0, 100, 200, 300.
         var fragments = LayoutNItemsWithJustifyContent(
             keywordIndex: 5, itemWidth: 100, containerWidth: 300, itemCount: 5);
+
+        Assert.Equal(5, fragments.Count);
+        Assert.Equal(-100.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(0.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(100.0, fragments[2].InlineOffset, precision: 3);
+        Assert.Equal(200.0, fragments[3].InlineOffset, precision: 3);
+        Assert.Equal(300.0, fragments[4].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L2_justify_content_space_between_with_overflow_falls_back_to_flex_start()
+    {
+        // Per Phase 3 Task 15 L2 post-PR-#62 hardening F#2 — pins the
+        // distribution-value overflow path per CSS Box Alignment L3
+        // §5.3. Distribution values (space-between / space-around /
+        // space-evenly) DO collapse to safe-start (= flex-start) on
+        // overflow — only the positional-value branch keeps its
+        // natural offset.
+        //
+        // 5 items of width 100 in a 300px container, justify-content:
+        // space-between (= keyword index 1). freeSpace = -200 →
+        // safe-start fallback. Expected offsets: 0, 100, 200, 300, 400.
+        var fragments = LayoutNItemsWithJustifyContent(
+            keywordIndex: 1, itemWidth: 100, containerWidth: 300, itemCount: 5);
 
         Assert.Equal(5, fragments.Count);
         Assert.Equal(0.0, fragments[0].InlineOffset, precision: 3);
@@ -345,6 +376,187 @@ public sealed class FlexLayouterTests
         Assert.Equal(200.0, fragments[2].InlineOffset, precision: 3);
         Assert.Equal(300.0, fragments[3].InlineOffset, precision: 3);
         Assert.Equal(400.0, fragments[4].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L2_justify_content_space_around_with_overflow_falls_back_to_flex_start()
+    {
+        // Per Phase 3 Task 15 L2 post-PR-#62 hardening F#2 — pins
+        // space-around's distribution-value overflow fallback. All
+        // three distribution values (space-between / space-around /
+        // space-evenly) share the same safe-start fallback per §5.3.
+        //
+        // 5 items of width 100 in a 300px container, justify-content:
+        // space-around (= keyword index 2). freeSpace = -200 →
+        // safe-start fallback. Expected offsets: 0, 100, 200, 300, 400.
+        var fragments = LayoutNItemsWithJustifyContent(
+            keywordIndex: 2, itemWidth: 100, containerWidth: 300, itemCount: 5);
+
+        Assert.Equal(5, fragments.Count);
+        Assert.Equal(0.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(100.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(200.0, fragments[2].InlineOffset, precision: 3);
+        Assert.Equal(300.0, fragments[3].InlineOffset, precision: 3);
+        Assert.Equal(400.0, fragments[4].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L2_justify_content_safe_center_with_overflow_falls_back_to_flex_start()
+    {
+        // Per Phase 3 Task 15 L2 post-PR-#62 hardening F#1 — pins the
+        // `safe center` compound (= keyword index 12) overflow
+        // behavior. Per CSS Box Alignment L3 §5.3 the `safe` modifier
+        // forces safe-start fallback on overflow REGARDLESS of the
+        // base alignment (= the spec's safe-mode containment).
+        //
+        // 5 items of width 100 in a 300px container, justify-content:
+        // `safe center` (= keyword index 12). freeSpace = -200 →
+        // safe modifier forces safe-start. Expected offsets:
+        // 0, 100, 200, 300, 400.
+        var fragments = LayoutNItemsWithJustifyContent(
+            keywordIndex: 12, itemWidth: 100, containerWidth: 300, itemCount: 5);
+
+        Assert.Equal(5, fragments.Count);
+        Assert.Equal(0.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(100.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(200.0, fragments[2].InlineOffset, precision: 3);
+        Assert.Equal(300.0, fragments[3].InlineOffset, precision: 3);
+        Assert.Equal(400.0, fragments[4].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L2_justify_content_safe_center_without_overflow_behaves_as_center()
+    {
+        // Per Phase 3 Task 15 L2 post-PR-#62 hardening F#1 — pins the
+        // `safe center` compound (= keyword index 12) WITHOUT-overflow
+        // behavior. Per CSS Box Alignment L3 §5.3 the `safe` modifier
+        // is TRANSPARENT when free-space is non-negative — it ONLY
+        // changes behavior on overflow. So `safe center` with positive
+        // free-space behaves identically to bare `center`.
+        //
+        // 3 items of width 50 in a 300px container, justify-content:
+        // `safe center` (= keyword index 12). freeSpace = 150 →
+        // startOffset = 75. Expected offsets: 75, 125, 175 (= bare
+        // center result from L2_justify_content_center_centers_items_on_main_axis).
+        var fragments = LayoutThreeItemsWithJustifyContent(
+            keywordIndex: 12, itemWidth: 50, containerWidth: 300);
+
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(75.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(125.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(175.0, fragments[2].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L2_justify_content_unsafe_flex_end_with_overflow_honors_alignment()
+    {
+        // Per Phase 3 Task 15 L2 post-PR-#62 hardening F#1 — pins the
+        // `unsafe flex-end` compound (= keyword index 23) overflow
+        // behavior. Per CSS Box Alignment L3 §5.3 the `unsafe`
+        // modifier honors the specified alignment EVEN ON OVERFLOW —
+        // items may be pushed offscreen.
+        //
+        // 5 items of width 100 in a 300px container, justify-content:
+        // `unsafe flex-end` (= keyword index 23). totalItemSize = 500,
+        // freeSpace = -200 → unsafe modifier honors flex-end → start-
+        // offset = freeSpace = -200. Expected offsets:
+        // -200, -100, 0, 100, 200.
+        var fragments = LayoutNItemsWithJustifyContent(
+            keywordIndex: 23, itemWidth: 100, containerWidth: 300, itemCount: 5);
+
+        Assert.Equal(5, fragments.Count);
+        Assert.Equal(-200.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(-100.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(0.0, fragments[2].InlineOffset, precision: 3);
+        Assert.Equal(100.0, fragments[3].InlineOffset, precision: 3);
+        Assert.Equal(200.0, fragments[4].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L2_justify_content_known_gap_item_margins_ignored_in_free_space_calc()
+    {
+        // Per Phase 3 Task 15 L2 post-PR-#62 hardening F#3 — DEFERRAL
+        // PIN. The current pre-pass at `FlexLayouter.AttemptLayout`
+        // sums only the items' declared `width`, IGNORING item
+        // margins / padding / borders. Per CSS Flexbox L1 §9.5 the
+        // free-space calculation should use each item's resolved
+        // margin-box main-axis size; auto margins consume free space
+        // BEFORE `justify-content` distributes the remainder.
+        //
+        // This test pins the CURRENT (incomplete) behavior so that
+        // sub-cycle 3+'s outer-main-size pre-pass + auto-margin
+        // resolution will make this test FAIL — prompting an update
+        // to assert the spec-correct margin-box-aware free-space
+        // calculation.
+        //
+        // Fixture: 3 items of width 50, with margin-right: 20px each
+        // in a 300px container, justify-content: space-between.
+        //
+        // Spec-correct result (FUTURE — what sub-cycle 3+ should
+        // produce): totalMarginBoxInline = 3*(50+20) = 210;
+        // freeSpace = 90; betweenSpacing = 90/(3-1) = 45;
+        // cursors:  0  (item 1)
+        //           50 + 20 (margin) + 45 (gap) = 115 (item 2)
+        //           115 + 50 + 20 + 45 = 230 (item 3)
+        //
+        // Current (BUGGY) result: totalItemSize = 3*50 = 150;
+        // freeSpace = 150; betweenSpacing = 150/(3-1) = 75; the
+        // emission loop currently advances by item width only (no
+        // margin contribution either), so offsets are 0/125/250 —
+        // identical to the no-margin case.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Width, 300);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+        flex.Style.Set(PropertyId.JustifyContent, ComputedSlot.FromKeyword(1)); // space-between
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 50);
+            SetLengthPx(style, PropertyId.Height, 50);
+            // Author the margin-right that the pre-pass currently ignores.
+            SetLengthPx(style, PropertyId.MarginRight, 20);
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 300, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i])
+                {
+                    fragments.Add(f);
+                    break;
+                }
+            }
+        }
+
+        Assert.Equal(3, fragments.Count);
+        // F#3 deferral pin — these offsets are the BUGGY result
+        // (margins ignored in free-space calc AND in cursor advance).
+        // Sub-cycle 3+ should make this fail; when it does, update to
+        // the spec-correct offsets 0, 115, 230 (see comments above).
+        Assert.Equal(0.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(125.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(250.0, fragments[2].InlineOffset, precision: 3);
     }
 
     [Fact]

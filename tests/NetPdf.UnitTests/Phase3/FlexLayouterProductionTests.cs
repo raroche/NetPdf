@@ -389,6 +389,72 @@ public sealed class FlexLayouterProductionTests
         Assert.Equal(400.0, items[3].InlineOffset, precision: 3);
     }
 
+    [Fact]
+    public async Task L3_production_html_align_items_center()
+    {
+        // Per Phase 3 Task 15 L3 — production-pipeline test proving
+        // `align-items: center` survives the parser → cascade →
+        // BoxBuilder → BlockLayouter → FlexLayouter chain. Pre-L3 the
+        // layouter emitted all items at contentBlockOffset regardless
+        // of align-items; post-L3 the items center on the cross axis.
+        //
+        // 3 items of height 50 in a 200px-tall flex container,
+        // align-items: center. crossSpace = 150 → block-offset = 75.
+        // Expected: all 3 items at the same block offset (= the
+        // container's contentBlockOffset + 75).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    align-items: center;
+                    width: 600px;
+                    height: 200px;
+                }
+                .item-a { width: 100px; height: 50px; }
+                .item-b { width: 100px; height: 50px; }
+                .item-c { width: 100px; height: 50px; }
+            </style></head><body>
+            <div class="flex">
+              <div class="item-a"></div>
+              <div class="item-b"></div>
+              <div class="item-c"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        // Find the flex container wrapper fragment + the 3 item fragments.
+        BoxFragment? flexFragment = null;
+        var (a, b, c) = FindThreeItems(sink);
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class");
+            if (classAttr == "flex" && f.Box.Kind == BoxKind.FlexContainer)
+            {
+                flexFragment = f;
+                break;
+            }
+        }
+        Assert.NotNull(flexFragment);
+
+        // L3 — align-items: center with items of height 50 in a 200px
+        // container. The center block-offset relative to the
+        // container's content-block-start is (200-50)/2 = 75. The flex
+        // container's content-block-start = the wrapper's BlockOffset
+        // (no border / padding on the .flex container in this fixture).
+        var expectedBlockOffset = flexFragment!.Value.BlockOffset + 75.0;
+        Assert.Equal(expectedBlockOffset, a.BlockOffset, precision: 3);
+        Assert.Equal(expectedBlockOffset, b.BlockOffset, precision: 3);
+        Assert.Equal(expectedBlockOffset, c.BlockOffset, precision: 3);
+        // Items keep their declared block-size (positional alignment).
+        Assert.Equal(50.0, a.BlockSize, precision: 3);
+        Assert.Equal(50.0, b.BlockSize, precision: 3);
+        Assert.Equal(50.0, c.BlockSize, precision: 3);
+    }
+
     /// <summary>Per Phase 3 Task 15 L2 post-PR-#62 hardening F#4 —
     /// shared finder for the .item-a / .item-b / .item-c production
     /// fixture used by the bare-position tests

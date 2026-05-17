@@ -853,12 +853,24 @@ grepping the ID).
   (possibly-negative) offset; `safe X` always falls back to safe-
   start; `unsafe X` honors the alignment even on overflow. Logical
   aliases (`start` / `end` / `left` / `right`) map to `flex-start` /
-  `flex-end` under the L1 default LTR + `flex-direction: row`. All
-  items emit at `contentBlockOffset` on the cross-axis (=
-  `flex-start` equivalent regardless of the computed `align-items`
-  value). The flex container is atomic to outer pagination (the
-  entire container's items emit on the page the wrapper landed on;
-  no `FlexContinuation` resume).
+  `flex-end` under the L1 default LTR + `flex-direction: row`. L3's
+  `align-items` honors the four base values per CSS Flexbox L1 §8.3
+  + CSS Box Alignment L3 §6: `flex-start` (cross-start pack),
+  `flex-end` (cross-end pack), `center` (cross-axis centering), and
+  `stretch` (auto-sized items resized to fill the container's cross
+  extent; explicitly-sized items keep their declared block-size per
+  §7.2). `normal` resolves to `stretch` (the computed default).
+  Logical aliases (`start` / `end` / `self-start` / `self-end`) map
+  to `flex-start` / `flex-end` under the L1 default LTR +
+  `flex-direction: row`. Compound `safe` / `unsafe` modifiers honor
+  CSS Box Alignment L3 §5.3 (safe → safe-start fallback on overflow;
+  unsafe → honor alignment on overflow; default → positional values
+  keep natural offset on overflow). The container's cross-axis
+  extent (`containerCrossSize`) derives from the container's
+  explicit `height` when set, else max(item natural block-size).
+  The flex container is atomic to outer pagination (the entire
+  container's items emit on the page the wrapper landed on; no
+  `FlexContinuation` resume).
 - **Missing** —
   - `flex-direction: column` / `row-reverse` / `column-reverse`
   - `flex-wrap: wrap` / `wrap-reverse`
@@ -876,8 +888,33 @@ grepping the ID).
     `justify-content` (L2 maps both to `flex-start` / `flex-end`
     under the L1 default LTR + `flex-direction: row`; L3+ will
     resolve against the box's writing-mode + direction)
-  - `align-items` values beyond default `flex-start` equivalent
-    (no real `stretch`, no `center` / `end` / `baseline`)
+  - `align-items: baseline` / `first baseline` / `last baseline`
+    (CSS Box Alignment L3 §6.2 + CSS Flexbox L1 §8.3) — requires
+    text-shaping integration to align item baselines. L3 decodes
+    all three baseline indices (3 / 4 / 5) to the safe default
+    `stretch`; sub-cycle L4+ scope. Authoring `baseline` today
+    behaves as `stretch` for layout but the cascade still records
+    the requested value, so when L4+ ships the deferred behavior
+    activates without a re-author.
+  - `align-items: anchor-center` (CSS Anchor Positioning) — out of
+    scope for Flexbox L1; the L3 decoder maps it to `stretch`. Sub-
+    cycle L4+ (or later — anchor positioning is a separate spec)
+    will pick this up.
+  - `align-self` per-item alignment override (CSS Box Alignment L3
+    §7) — adds an extra cascade read per item to the row-packing
+    loop + a per-item resolver that falls back to the container's
+    `align-items` when the item's `align-self` is `auto`. The L3
+    layouter reads only the container's `align-items` so every item
+    in a flex container shares the same cross-axis alignment.
+  - `safe` / `unsafe` overflow containment for `align-items` —
+    L3 decodes the compound keywords (indices 13-26) into the
+    `OverflowAlignmentMode` channel + applies the spec-correct
+    behavior per CSS Box Alignment L3 §5.3 for positional values
+    (= same approach as L2's `justify-content`). Sub-cycle L4+
+    will refine if the L3 single-line / positional-value-only
+    treatment proves insufficient for the deferred-value families
+    (e.g., when baseline alignment lands and its overflow semantics
+    differ from positional values').
   - `flex-grow` / `flex-shrink` / `flex-basis` resolution
   - `order` property
   - Anonymous flex-item wrapping for inline-level / text children
@@ -887,7 +924,6 @@ grepping the ID).
   - Multi-page flex container splitting (atomic to outer pagination
     in L1; `FlexContinuation` exists in
     `src/NetPdf.Paginate/LayoutContinuation.cs` for sub-cycle 2+)
-  - Baseline alignment
 - **Owner files** —
   - `src/NetPdf.Layout/Layouters/FlexLayouter.cs` — the layouter
     itself.

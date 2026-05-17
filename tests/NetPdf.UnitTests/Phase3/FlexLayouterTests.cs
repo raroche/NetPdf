@@ -589,6 +589,56 @@ public sealed class FlexLayouterTests
         Assert.Equal(100.0, fragments[2].InlineOffset, precision: 3);
     }
 
+    [Theory]
+    [InlineData(6, 0.0, 50.0, 100.0)]     // start → flex-start (LTR row)
+    [InlineData(10, 0.0, 50.0, 100.0)]    // left → flex-start (LTR row)
+    [InlineData(7, 150.0, 200.0, 250.0)]  // end → flex-end (LTR row)
+    [InlineData(11, 150.0, 200.0, 250.0)] // right → flex-end (LTR row)
+    public void L2_justify_content_logical_alias_maps_to_physical_for_ltr_row(
+        int keywordIndex, double expected0, double expected1, double expected2)
+    {
+        // Per CSS Box Alignment L3 §4.5 + Copilot PR-#62 review (Cs #3 + #5):
+        // `start` / `end` / `left` / `right` are logical-axis aliases that
+        // resolve to flex-start / flex-end for the L1 default
+        // `flex-direction: row` (LTR). Writing-mode-aware mapping is L3+
+        // scope. Pin the current contract: 3 items of width 50 in 300px,
+        // freeSpace = 150 → start/left land at 0/50/100 (= flex-start);
+        // end/right land at 150/200/250 (= flex-end).
+        var fragments = LayoutThreeItemsWithJustifyContent(
+            keywordIndex: keywordIndex, itemWidth: 50, containerWidth: 300);
+
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(expected0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(expected1, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(expected2, fragments[2].InlineOffset, precision: 3);
+    }
+
+    [Theory]
+    [InlineData(13, 0.0, 50.0, 100.0)]    // safe start → flex-start
+    [InlineData(14, 150.0, 200.0, 250.0)] // safe end → flex-end (no overflow)
+    [InlineData(17, 0.0, 50.0, 100.0)]    // safe left → flex-start
+    [InlineData(18, 150.0, 200.0, 250.0)] // safe right → flex-end (no overflow)
+    [InlineData(20, 0.0, 50.0, 100.0)]    // unsafe start → flex-start
+    [InlineData(21, 150.0, 200.0, 250.0)] // unsafe end → flex-end
+    [InlineData(24, 0.0, 50.0, 100.0)]    // unsafe left → flex-start
+    [InlineData(25, 150.0, 200.0, 250.0)] // unsafe right → flex-end
+    public void L2_justify_content_safe_unsafe_alias_compounds_map_to_physical_without_overflow(
+        int keywordIndex, double expected0, double expected1, double expected2)
+    {
+        // Per Copilot PR-#62 review (Cs #3 + #5) — alias families inside
+        // safe/unsafe compounds should also map per the L1 default
+        // `flex-direction: row` (LTR). Without overflow the safe modifier
+        // is a no-op; both safe and unsafe should produce the same offsets
+        // as their bare alias counterparts (pinned by the test above).
+        var fragments = LayoutThreeItemsWithJustifyContent(
+            keywordIndex: keywordIndex, itemWidth: 50, containerWidth: 300);
+
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(expected0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(expected1, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(expected2, fragments[2].InlineOffset, precision: 3);
+    }
+
     /// <summary>L2 helper — drive FlexLayouter with N identical items
     /// + the requested justify-content keyword. Returns the per-item
     /// fragments in source order (= the order the layouter emitted

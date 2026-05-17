@@ -121,6 +121,300 @@ public sealed class FlexLayouterProductionTests
             itemBFragment.Value.BlockOffset, precision: 3);
     }
 
+    [Fact]
+    public async Task L2_production_html_justify_content_space_between()
+    {
+        // Per Phase 3 Task 15 L2 — a real HTML <div> with
+        // `display: flex; justify-content: space-between` containing
+        // three block-level children with explicit widths flows
+        // through every stage of the pipeline + emits per-item content
+        // fragments at the L2-spec'd offsets (0, 275, 550 for
+        // freeSpace = 600 - 150 = 450; betweenSpacing = 450 / 2 = 225;
+        // so 0, 50 + 225 = 275, 50 + 225 + 50 + 225 = 550).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    justify-content: space-between;
+                    width: 600px;
+                    height: 60px;
+                }
+                .item-a { width: 50px; height: 50px; }
+                .item-b { width: 50px; height: 50px; }
+                .item-c { width: 50px; height: 50px; }
+            </style></head><body>
+            <div class="flex">
+              <div class="item-a"></div>
+              <div class="item-b"></div>
+              <div class="item-c"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        // Find the flex container + three item fragments.
+        BoxFragment? flexFragment = null;
+        BoxFragment? itemAFragment = null;
+        BoxFragment? itemBFragment = null;
+        BoxFragment? itemCFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class");
+            if (classAttr == "flex" && f.Box.Kind == BoxKind.FlexContainer)
+            {
+                flexFragment = f;
+            }
+            else if (classAttr == "item-a")
+            {
+                itemAFragment = f;
+            }
+            else if (classAttr == "item-b")
+            {
+                itemBFragment = f;
+            }
+            else if (classAttr == "item-c")
+            {
+                itemCFragment = f;
+            }
+        }
+
+        Assert.NotNull(flexFragment);
+        Assert.NotNull(itemAFragment);
+        Assert.NotNull(itemBFragment);
+        Assert.NotNull(itemCFragment);
+
+        // L2 — justify-content: space-between with 3 items of width
+        // 50 in a 600px container. totalItemSize = 150, freeSpace =
+        // 450, betweenSpacing = 450 / (3 - 1) = 225. Expected
+        // inline-offsets: 0, 275, 550 (relative to the flex
+        // container's content-inline-start).
+        Assert.Equal(0.0, itemAFragment!.Value.InlineOffset, precision: 3);
+        Assert.Equal(275.0, itemBFragment!.Value.InlineOffset, precision: 3);
+        Assert.Equal(550.0, itemCFragment!.Value.InlineOffset, precision: 3);
+
+        // All three items share the container's content-block-start
+        // (cycle 1 align-items is flex-start equivalent).
+        Assert.Equal(itemAFragment.Value.BlockOffset,
+            itemBFragment.Value.BlockOffset, precision: 3);
+        Assert.Equal(itemAFragment.Value.BlockOffset,
+            itemCFragment.Value.BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public async Task L2_production_html_justify_content_center()
+    {
+        // Per Phase 3 Task 15 L2 post-PR-#62 hardening F#4 —
+        // production-pipeline test proving `justify-content: center`
+        // survives the parser → cascade → BoxBuilder → BlockLayouter
+        // → FlexLayouter chain. Pre-fix coverage was direct-
+        // construction only via `ComputedSlot.FromKeyword(5)` — the
+        // KeywordResolver index was never exercised.
+        //
+        // 3 items of width 100 in a 600px container, center →
+        // freeSpace = 300, startOffset = 150. Expected offsets:
+        // 150, 250, 350.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    justify-content: center;
+                    width: 600px;
+                    height: 60px;
+                }
+                .item-a { width: 100px; height: 50px; }
+                .item-b { width: 100px; height: 50px; }
+                .item-c { width: 100px; height: 50px; }
+            </style></head><body>
+            <div class="flex">
+              <div class="item-a"></div>
+              <div class="item-b"></div>
+              <div class="item-c"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+        var (a, b, c) = FindThreeItems(sink);
+
+        Assert.Equal(150.0, a.InlineOffset, precision: 3);
+        Assert.Equal(250.0, b.InlineOffset, precision: 3);
+        Assert.Equal(350.0, c.InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public async Task L2_production_html_justify_content_flex_end()
+    {
+        // Per Phase 3 Task 15 L2 post-PR-#62 hardening F#4 —
+        // production-pipeline test for `justify-content: flex-end`.
+        //
+        // 3 items of width 100 in a 600px container, flex-end →
+        // freeSpace = 300, startOffset = 300. Expected offsets:
+        // 300, 400, 500.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    justify-content: flex-end;
+                    width: 600px;
+                    height: 60px;
+                }
+                .item-a { width: 100px; height: 50px; }
+                .item-b { width: 100px; height: 50px; }
+                .item-c { width: 100px; height: 50px; }
+            </style></head><body>
+            <div class="flex">
+              <div class="item-a"></div>
+              <div class="item-b"></div>
+              <div class="item-c"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+        var (a, b, c) = FindThreeItems(sink);
+
+        Assert.Equal(300.0, a.InlineOffset, precision: 3);
+        Assert.Equal(400.0, b.InlineOffset, precision: 3);
+        Assert.Equal(500.0, c.InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public async Task L2_production_html_justify_content_safe_center_with_overflow_falls_back_to_start()
+    {
+        // Per Phase 3 Task 15 L2 post-PR-#62 hardening F#4 (the
+        // test family that would have caught F#1 in review) —
+        // production-pipeline test for `justify-content: safe center`.
+        // Pre-F#1 fix this compound keyword decoded to flex-start
+        // regardless of overflow; post-fix the `safe` modifier
+        // forces safe-start fallback ONLY when free-space is
+        // negative, otherwise transparent.
+        //
+        // 4 items of width 200 in a 600px container (overflow:
+        // totalItemSize=800, freeSpace=-200), safe center →
+        // safe modifier forces safe-start. Expected offsets:
+        // 0, 200, 400, 600.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    justify-content: safe center;
+                    width: 600px;
+                    height: 60px;
+                }
+                .item { width: 200px; height: 50px; }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+              <div class="item c"></div>
+              <div class="item d"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var items = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class");
+            if (classAttr != null && classAttr.StartsWith("item"))
+            {
+                items.Add(f);
+            }
+        }
+
+        Assert.Equal(4, items.Count);
+        Assert.Equal(0.0, items[0].InlineOffset, precision: 3);
+        Assert.Equal(200.0, items[1].InlineOffset, precision: 3);
+        Assert.Equal(400.0, items[2].InlineOffset, precision: 3);
+        Assert.Equal(600.0, items[3].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public async Task L2_production_html_justify_content_unsafe_flex_end_with_overflow_honors_alignment()
+    {
+        // Per Phase 3 Task 15 L2 post-PR-#62 hardening F#4 —
+        // production-pipeline test for `justify-content: unsafe
+        // flex-end`. Pre-F#1 fix this compound keyword decoded to
+        // flex-start; post-fix the `unsafe` modifier preserves the
+        // base alignment EVEN ON OVERFLOW. Items are pushed past
+        // the container's start edge into negative offsets.
+        //
+        // 4 items of width 200 in a 600px container (overflow:
+        // freeSpace=-200), unsafe flex-end → honors flex-end →
+        // startOffset = -200. Expected offsets: -200, 0, 200, 400.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    justify-content: unsafe flex-end;
+                    width: 600px;
+                    height: 60px;
+                }
+                .item { width: 200px; height: 50px; }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+              <div class="item c"></div>
+              <div class="item d"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var items = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class");
+            if (classAttr != null && classAttr.StartsWith("item"))
+            {
+                items.Add(f);
+            }
+        }
+
+        Assert.Equal(4, items.Count);
+        Assert.Equal(-200.0, items[0].InlineOffset, precision: 3);
+        Assert.Equal(0.0, items[1].InlineOffset, precision: 3);
+        Assert.Equal(200.0, items[2].InlineOffset, precision: 3);
+        Assert.Equal(400.0, items[3].InlineOffset, precision: 3);
+    }
+
+    /// <summary>Per Phase 3 Task 15 L2 post-PR-#62 hardening F#4 —
+    /// shared finder for the .item-a / .item-b / .item-c production
+    /// fixture used by the bare-position tests
+    /// (<see cref="L2_production_html_justify_content_center"/> +
+    /// <see cref="L2_production_html_justify_content_flex_end"/>).</summary>
+    private static (BoxFragment a, BoxFragment b, BoxFragment c)
+        FindThreeItems(RecordingFragmentSink sink)
+    {
+        BoxFragment? a = null;
+        BoxFragment? b = null;
+        BoxFragment? c = null;
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class");
+            if (classAttr == "item-a") a = f;
+            else if (classAttr == "item-b") b = f;
+            else if (classAttr == "item-c") c = f;
+        }
+        Assert.NotNull(a);
+        Assert.NotNull(b);
+        Assert.NotNull(c);
+        return (a!.Value, b!.Value, c!.Value);
+    }
+
     // ====================================================================
     //  Pipeline driver — mirrors MulticolLayouterProductionTests.
     // ====================================================================

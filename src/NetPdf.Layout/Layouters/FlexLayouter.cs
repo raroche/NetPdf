@@ -26,24 +26,31 @@ namespace NetPdf.Layout.Layouters;
 /// the absolute minimum end-to-end path so subsequent cycles have a
 /// scaffold to grow:</para>
 /// <list type="bullet">
-///   <item><b>Per Phase 3 Task 15 L4</b> — <c>flex-direction: row</c>
-///   (L1-L3 default) and <c>flex-direction: column</c> (L4 new) are
-///   both honored. For <c>row</c>: main = inline axis (horizontal);
-///   cross = block axis (vertical); items flow left-to-right. For
-///   <c>column</c>: main = block axis (vertical); cross = inline axis
-///   (horizontal); items stack top-to-bottom. The axis-mapping layer
-///   (see <c>GetAxisProperties</c> below) translates the spec-abstract
-///   "main / cross" terminology to the property IDs the layouter reads
-///   (<c>PropertyId.Width</c> / <c>Height</c>) at each direction.
-///   <c>justify-content</c> always controls main-axis packing (so
-///   column direction makes it govern block-axis offsets), and
-///   <c>align-items</c> always controls cross-axis placement (so
-///   column direction makes it govern inline-axis offsets). The
-///   reversed variants <c>row-reverse</c> + <c>column-reverse</c>
-///   are decoded by <c>ReadFlexDirection</c> but the layouter
-///   currently treats them as their non-reversed counterparts; the
-///   reversal of item order is L5+ scope per
-///   <c>docs/deferrals.md#flex-layouter-features</c>.</item>
+///   <item><b>Per Phase 3 Task 15 L4 + L5</b> — all four
+///   <c>flex-direction</c> values are honored. For <c>row</c>: main =
+///   inline axis (horizontal); cross = block axis (vertical); items
+///   flow left-to-right. For <c>column</c>: main = block axis
+///   (vertical); cross = inline axis (horizontal); items stack top-to-
+///   bottom. The axis-mapping layer (see <c>GetAxisProperties</c>
+///   below) translates the spec-abstract "main / cross" terminology to
+///   the property IDs the layouter reads (<c>PropertyId.Width</c> /
+///   <c>Height</c>) at each direction. <c>justify-content</c> always
+///   controls main-axis packing (so column direction makes it govern
+///   block-axis offsets), and <c>align-items</c> always controls
+///   cross-axis placement (so column direction makes it govern inline-
+///   axis offsets). For the reversed variants <c>row-reverse</c> +
+///   <c>column-reverse</c> (L5 new): per CSS Flexbox L1 §5.1 "same as
+///   row / column but main-start and main-end are swapped". The
+///   per-item placement math (cross-axis alignment, stretch,
+///   justify-content start-offset + between-spacing) is unchanged;
+///   only the FINAL main-axis offset assigned to each fragment is
+///   flipped around the container's main-extent (see the
+///   <c>mainOffsetForEmission</c> branch in the emission loop). This
+///   produces items packed against the reversed main-start edge (=
+///   the original main-end edge) in reverse DOM order. Cross-axis
+///   behavior is unchanged: <c>row-reverse</c> still has block as
+///   cross axis; <c>column-reverse</c> still has inline as cross
+///   axis.</item>
 ///   <item>Only <c>flex-wrap: nowrap</c> (default). Single-line; items
 ///   may overflow the container's inline extent if their natural
 ///   widths don't fit. <c>wrap</c> / <c>wrap-reverse</c> are sub-cycle
@@ -308,14 +315,20 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 + "the layouter knows where to anchor the items.");
         }
 
-        // Per Phase 3 Task 15 L4 — resolve flex-direction. L1-L3 default
-        // is `row` (main = inline axis); L4 adds `column` (main = block
-        // axis). The reversed variants (`row-reverse` / `column-reverse`)
-        // are decoded but currently treated as their non-reversed
-        // counterparts — item-order reversal is L5+ scope per
-        // docs/deferrals.md#flex-layouter-features.
+        // Per Phase 3 Task 15 L4 + L5 — resolve flex-direction. L1-L3
+        // default is `row` (main = inline axis); L4 adds `column` (main
+        // = block axis); L5 adds `row-reverse` + `column-reverse` which
+        // per CSS Flexbox L1 §5.1 swap main-start and main-end along
+        // the same row / column axis. The reversal is applied as a
+        // single offset-flip transform at the per-item emission site
+        // (see `isReverse` branch below) — the per-item math (cross-
+        // axis alignment, stretch, justify-content start-offset +
+        // between-spacing) is direction-agnostic and operates on the
+        // natural (= non-reversed) cursor; only the FINAL main-axis
+        // offset assigned to each fragment flips for reverse directions.
         var flexDirection = _rootBox.Style.ReadFlexDirection();
         var isColumn = flexDirection.IsFlexColumnDirection();
+        var isReverse = flexDirection.IsFlexReverseDirection();
         var (mainSizeProperty, crossSizeProperty) = GetAxisProperties(flexDirection);
 
         // Resolve the container's main-axis + cross-axis content extents
@@ -521,13 +534,50 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 containerCrossSize, itemCrossSize, itemIsCrossSizeAuto,
                 contentCrossOffset);
 
+            // Per Phase 3 Task 15 L5 — for reversed directions, flip the
+            // main-axis offset around the container's main extent per
+            // CSS Flexbox L1 §5.1 ("row-reverse / column-reverse: same
+            // as row / column but main-start and main-end are swapped").
+            //
+            // The natural cursor walks 0 → containerMainSize in DOM
+            // order. The flip transform
+            //   actualMainOffset = (contentMainOffset + containerMainSize)
+            //                    - (mainCursor - contentMainOffset)
+            //                    - itemMainSize
+            // rewrites each item's main-axis offset relative to the
+            // container's main-END edge instead of its main-start edge,
+            // producing items packed against the reversed main-start (=
+            // the original main-end) in REVERSE DOM order without
+            // reversing the iteration loop.
+            //
+            // Worked example — 3 items 50px each, container main-size
+            // 400, justify-content: flex-start, freeSpace = 250,
+            // startOffset = 0:
+            //   - DOM 0: natural mainCursor = contentMainOffset + 0 = 0;
+            //     flipped = contentMainOffset + 400 - 0 - 50 = 350.
+            //   - DOM 1: natural mainCursor = 50; flipped = 300.
+            //   - DOM 2: natural mainCursor = 100; flipped = 250.
+            // Items pack at the right / bottom edge in reverse DOM order
+            // (= visually [DOM2, DOM1, DOM0] from main-start to main-end
+            // along the new reversed axis). For justify-content: center
+            // the same flip produces the visually-centered cluster with
+            // reversed DOM order — see the L5 unit + production tests.
+            //
+            // The flip is direction-agnostic (operates on the abstract
+            // main axis); only the physical mapping below differs
+            // between row-reverse (flip applies to inline) and column-
+            // reverse (flip applies to block).
+            var mainOffsetForEmission = isReverse
+                ? (contentMainOffset + containerMainSize) - (mainCursor - contentMainOffset) - itemMainSize
+                : mainCursor;
+
             // Map the abstract (main, cross) tuple to the physical
             // (inline, block) axes per direction.
             double inlineOffset, blockOffset, inlineSize, blockSize;
             if (isColumn)
             {
                 // Column: main = block, cross = inline.
-                blockOffset = mainCursor;
+                blockOffset = mainOffsetForEmission;
                 inlineOffset = itemCrossOffset;
                 blockSize = itemMainSize;
                 inlineSize = itemEffectiveCrossSize;
@@ -535,7 +585,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             else
             {
                 // Row: main = inline, cross = block.
-                inlineOffset = mainCursor;
+                inlineOffset = mainOffsetForEmission;
                 blockOffset = itemCrossOffset;
                 inlineSize = itemMainSize;
                 blockSize = itemEffectiveCrossSize;
@@ -890,9 +940,11 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     /// </list>
     /// The reversed variants (<c>row-reverse</c> / <c>column-reverse</c>)
     /// share the same axis assignment as their non-reversed counterparts
-    /// — reversal of item order is orthogonal to the row/column axis
-    /// swap and is L5+ scope per
-    /// <c>docs/deferrals.md#flex-layouter-features</c>.</summary>
+    /// per CSS Flexbox L1 §5.1 — reversal only swaps main-start and
+    /// main-end edges, not the row/column axis itself. The L5
+    /// reversal logic flips the main-axis offset at the emission site
+    /// (see <c>mainOffsetForEmission</c> in <see cref="AttemptLayout"/>);
+    /// the property reads here stay direction-agnostic.</summary>
     private static (PropertyId mainSize, PropertyId crossSize) GetAxisProperties(
         FlexDirectionValue direction)
     {

@@ -839,12 +839,21 @@ grepping the ID).
 - **Behavior** — A block container with `display: flex` (=
   `BoxKind.FlexContainer`) or `display: inline-flex` (=
   `BoxKind.InlineFlexContainer`) lays out its direct block-level
-  children as a single horizontal row. Each item emits at its natural
-  inline-size (= the item's declared `width` if set, else 0) and
-  natural block-size (= declared `height` if set, else 0). Items pack
-  along the main-axis cursor; the cursor is offset by L2's
-  `justify-content` start-offset + advances by `itemInlineSize +
-  betweenSpacing`. L2's `justify-content` honors the full matrix per
+  children along the main axis selected by `flex-direction`. Per
+  Phase 3 Task 15 L4 the layouter honors two `flex-direction` values:
+  `row` (the L1-L3 default; main = inline axis, items flow left-to-
+  right) and `column` (L4 new; main = block axis, items stack top-to-
+  bottom). For column direction `justify-content` controls block-axis
+  packing + `align-items` controls inline-axis placement (the axis
+  swap is transparent to L2 + L3's alignment math — only the cursor
+  axis + the property reads change). The reversed variants
+  (`row-reverse` / `column-reverse`) are decoded but currently treated
+  as their non-reversed counterparts (L5+ scope). Each item emits at
+  its natural main-axis + cross-axis sizes from the direction-
+  appropriate property (= width / height for row → main / cross; height
+  / width for column). Items pack along the main-axis cursor; the
+  cursor is offset by L2's `justify-content` start-offset + advances
+  by `itemMainSize + betweenSpacing`. L2's `justify-content` honors the full matrix per
   CSS Box Alignment L3 §4.5 + §5.3: six base values (`flex-start`,
   `flex-end`, `center`, `space-between`, `space-around`,
   `space-evenly`) cross three overflow modes (default, `safe`,
@@ -872,7 +881,14 @@ grepping the ID).
   container's items emit on the page the wrapper landed on; no
   `FlexContinuation` resume).
 - **Missing** —
-  - `flex-direction: column` / `row-reverse` / `column-reverse`
+  - `flex-direction: row-reverse` and `column-reverse` (CSS Flexbox L1
+    §5.1). The reversal of item order is orthogonal to the row/column
+    axis swap shipped in L4 — both reversed variants are decoded by
+    `ReadFlexDirection` but the FlexLayouter currently treats them as
+    their non-reversed counterparts (row-reverse → row, column-reverse
+    → column). Sub-cycle L5+ adds the item-order reversal in a single
+    pass over the per-item emission loop (cursor walks from main-end
+    inward instead of from main-start outward).
   - `flex-wrap: wrap` / `wrap-reverse`
   - Outer-main-size + auto-margins in `justify-content` free-space
     calculation (CSS Flexbox L1 §9.5): L2's pre-pass sums only

@@ -1451,6 +1451,383 @@ public sealed class FlexLayouterTests
         Assert.Equal(200.0, itemFragment!.Value.BlockSize, precision: 3);
     }
 
+    // ====================================================================
+    //  Phase 3 Task 15 L4 — flex-direction: column tests
+    // ====================================================================
+    //
+    // FlexDirection keyword indices (KeywordResolver.cs:197):
+    //   0=row (L1-L3 default), 1=row-reverse, 2=column (L4 new),
+    //   3=column-reverse. L4 ships row + column only; reversed variants
+    //   are decoded but defer item-order reversal to L5+.
+    //
+    // For column direction:
+    //   - main axis = block axis (vertical stacking)
+    //   - cross axis = inline axis (horizontal placement)
+    //   - justify-content controls block-axis positioning
+    //   - align-items controls inline-axis positioning
+
+    [Fact]
+    public void L4_flex_direction_column_stacks_items_vertically()
+    {
+        // 3 items of height 50 in a column container of height 300.
+        // Items pack along the main axis (= block axis) starting at the
+        // content-block-start (= 0). Expected BlockOffsets: 0, 50, 100.
+        // The cross axis = inline; with the L3-default `stretch`
+        // align-items + the test fixture's auto-width items, items
+        // expand to the container's inline cross-size.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
+        SetLengthPx(flex.Style, PropertyId.Height, 300);
+        SetLengthPx(flex.Style, PropertyId.Width, 200);
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Height, 50);
+            SetLengthPx(style, PropertyId.Width, 100);
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+
+        Assert.Equal(3, fragments.Count);
+        // Items stack vertically (main = block axis): BlockOffsets
+        // 0, 50, 100. Each item keeps its declared block-size 50.
+        Assert.Equal(0.0, fragments[0].BlockOffset, precision: 3);
+        Assert.Equal(50.0, fragments[1].BlockOffset, precision: 3);
+        Assert.Equal(100.0, fragments[2].BlockOffset, precision: 3);
+        Assert.Equal(50.0, fragments[0].BlockSize, precision: 3);
+        Assert.Equal(50.0, fragments[1].BlockSize, precision: 3);
+        Assert.Equal(50.0, fragments[2].BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public void L4_flex_direction_column_with_justify_content_center()
+    {
+        // 3 items of height 50 in a column container of height 300.
+        // justify-content: center → freeSpace = 300 - 150 = 150;
+        // startOffset = 75. Expected BlockOffsets: 75, 125, 175.
+        // The cursor axis is block, NOT inline (the L4 axis swap).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
+        flex.Style.Set(PropertyId.JustifyContent, ComputedSlot.FromKeyword(5)); // center
+        SetLengthPx(flex.Style, PropertyId.Height, 300);
+        SetLengthPx(flex.Style, PropertyId.Width, 200);
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Height, 50);
+            SetLengthPx(style, PropertyId.Width, 100);
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+
+        Assert.Equal(3, fragments.Count);
+        // justify-content centers on the MAIN axis (= block for column).
+        // BlockOffsets: 75, 125, 175.
+        Assert.Equal(75.0, fragments[0].BlockOffset, precision: 3);
+        Assert.Equal(125.0, fragments[1].BlockOffset, precision: 3);
+        Assert.Equal(175.0, fragments[2].BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L4_flex_direction_column_with_align_items_center()
+    {
+        // 3 items of width 100 in a column container of width 200.
+        // align-items: center on the CROSS axis (= inline for column).
+        // crossSpace = 200 - 100 = 100 → InlineOffset = 50 per item.
+        // BlockOffsets advance along main axis (= block).
+        //
+        // The cycle-1 block-flow inline-sizing path inherits the
+        // fragmentainer's available range as the wrapper's inline
+        // size regardless of the declared `width` — same caveat as
+        // L2's LayoutNItemsWithJustifyContent helper. We pass
+        // contentInlineSize = 200 in the FragmentainerContext so the
+        // wrapper's _contentInlineSize = 200 matches the test intent.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(6)); // center
+        SetLengthPx(flex.Style, PropertyId.Height, 300);
+        SetLengthPx(flex.Style, PropertyId.Width, 200);
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Height, 50);
+            SetLengthPx(style, PropertyId.Width, 100);
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 200, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+
+        Assert.Equal(3, fragments.Count);
+        // align-items centers on the CROSS axis (= inline for column).
+        // crossSpace = 200 - 100 = 100 → InlineOffset 50 per item.
+        Assert.Equal(50.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(50.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(50.0, fragments[2].InlineOffset, precision: 3);
+        // Items keep declared inline-size 100 (positional alignment
+        // never resizes).
+        Assert.Equal(100.0, fragments[0].InlineSize, precision: 3);
+        // BlockOffsets advance along main axis: 0, 50, 100.
+        Assert.Equal(0.0, fragments[0].BlockOffset, precision: 3);
+        Assert.Equal(50.0, fragments[1].BlockOffset, precision: 3);
+        Assert.Equal(100.0, fragments[2].BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L4_flex_direction_column_stretch_resizes_items_to_container_inline_size()
+    {
+        // Column direction with align-items: stretch. Items with no
+        // explicit width get resized to the container's cross extent
+        // (= inline size 200 here). Mirrors the L3 stretch test but
+        // along the inline axis instead of the block axis.
+        //
+        // Same caveat as the align-items-center test: the block-flow
+        // inline-sizing inherits the fragmentainer's contentInlineSize
+        // as the wrapper's inline-size; we pass 200 in the context.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(1)); // stretch
+        SetLengthPx(flex.Style, PropertyId.Height, 300);
+        SetLengthPx(flex.Style, PropertyId.Width, 200);
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Height, 50);
+            // Items 0 + 2 leave width auto → stretch resizes to 200.
+            // Item 1 declares explicit width 80 → kept at 80.
+            if (i == 1) SetLengthPx(style, PropertyId.Width, 80);
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 200, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+
+        Assert.Equal(3, fragments.Count);
+        // Auto-width items stretched to container's inline cross extent (200).
+        Assert.Equal(200.0, fragments[0].InlineSize, precision: 3);
+        // Explicit-width item kept at declared value.
+        Assert.Equal(80.0, fragments[1].InlineSize, precision: 3);
+        Assert.Equal(200.0, fragments[2].InlineSize, precision: 3);
+        // All items start at cross-start (= contentInlineOffset = 0).
+        Assert.Equal(0.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(0.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(0.0, fragments[2].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L4_flex_direction_column_with_space_between_distributes_block_axis()
+    {
+        // 3 items of height 50 in a column container of height 400.
+        // justify-content: space-between (on main = block axis).
+        // freeSpace = 400 - 150 = 250; betweenSpacing = 250 / 2 = 125.
+        // BlockOffsets: 0, 50 + 125 = 175, 50 + 125 + 50 + 125 = 350.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
+        flex.Style.Set(PropertyId.JustifyContent, ComputedSlot.FromKeyword(1)); // space-between
+        SetLengthPx(flex.Style, PropertyId.Height, 400);
+        SetLengthPx(flex.Style, PropertyId.Width, 200);
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Height, 50);
+            SetLengthPx(style, PropertyId.Width, 100);
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+
+        Assert.Equal(3, fragments.Count);
+        // space-between distributes on the MAIN axis (= block for column).
+        Assert.Equal(0.0, fragments[0].BlockOffset, precision: 3);
+        Assert.Equal(175.0, fragments[1].BlockOffset, precision: 3);
+        Assert.Equal(350.0, fragments[2].BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L4_flex_direction_row_baseline_preserved()
+    {
+        // Sanity test: row direction (default; keyword index 0) still
+        // produces the same offsets as before the L4 axis-mapping
+        // refactor. 3 items of width 50 in a 400px container with no
+        // justify-content keyword → flex-start packing. Expected
+        // InlineOffsets: 0, 50, 100.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        // Default flex-direction is row; set explicitly to pin the test.
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(0)); // row
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 50);
+            SetLengthPx(style, PropertyId.Height, 50);
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+
+        Assert.Equal(3, fragments.Count);
+        // Row direction baseline — InlineOffsets advance along main
+        // axis (= inline for row): 0, 50, 100.
+        Assert.Equal(0.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(50.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(100.0, fragments[2].InlineOffset, precision: 3);
+        // BlockOffset shared (= contentBlockOffset; align-items default
+        // is stretch but items have explicit height so they keep 50).
+        Assert.Equal(0.0, fragments[0].BlockOffset, precision: 3);
+        Assert.Equal(0.0, fragments[1].BlockOffset, precision: 3);
+        Assert.Equal(0.0, fragments[2].BlockOffset, precision: 3);
+    }
+
     /// <summary>L3 helper — drive FlexLayouter with 3 identical items
     /// + the requested align-items keyword. Returns the per-item
     /// fragments in source order.

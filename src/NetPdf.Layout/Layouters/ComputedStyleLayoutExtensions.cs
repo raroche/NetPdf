@@ -490,6 +490,35 @@ internal static class ComputedStyleLayoutExtensions
         return new ResolvedJustifyContent(value, mode);
     }
 
+    /// <summary>Per Phase 3 Task 15 L4 — decode
+    /// <see cref="PropertyId.FlexDirection"/> per CSS Flexbox L1 §5.1.
+    /// L4 ships the two axis-direction values: <c>row</c> (the default;
+    /// main axis = inline axis) and <c>column</c> (main axis = block
+    /// axis). The reversed variants <c>row-reverse</c> /
+    /// <c>column-reverse</c> are admitted (parsed + decoded into the
+    /// enum) but the FlexLayouter does not yet honor the reversal —
+    /// reversed-axis item ordering is L5+ scope per
+    /// <c>docs/deferrals.md#flex-layouter-features</c>. The reversal
+    /// is orthogonal to the row/column axis swap, so it can be added
+    /// without re-architecting L4's axis-mapping layer.
+    ///
+    /// <para><b>Keyword index mapping.</b> The source-gen'd
+    /// <c>BuildFlexDirectionTable</c> in
+    /// <see cref="NetPdf.Css.ComputedValues.PropertyResolvers.KeywordResolver"/>
+    /// emits indices in the <c>properties.json</c> order: 0=row,
+    /// 1=row-reverse, 2=column, 3=column-reverse.</para></summary>
+    public static FlexDirectionValue ReadFlexDirection(this ComputedStyle style)
+    {
+        var keyword = style.ReadKeywordOrDefault(PropertyId.FlexDirection, defaultIndex: 0);
+        return keyword switch
+        {
+            1 => FlexDirectionValue.RowReverse,
+            2 => FlexDirectionValue.Column,
+            3 => FlexDirectionValue.ColumnReverse,
+            _ => FlexDirectionValue.Row,
+        };
+    }
+
     /// <summary>Per Phase 3 Task 15 L3 — decode
     /// <see cref="PropertyId.AlignItems"/> per CSS Box Alignment L3 §6 +
     /// CSS Flexbox L1 §8.3. L3 ships the four commonly-used position
@@ -774,3 +803,51 @@ internal enum AlignItemsValue : byte
 internal readonly record struct ResolvedAlignItems(
     AlignItemsValue Value,
     OverflowAlignmentMode Mode);
+
+/// <summary>Per Phase 3 Task 15 L4 — typed decode of
+/// <see cref="PropertyId.FlexDirection"/> per CSS Flexbox L1 §5.1.
+/// L4 ships <c>row</c> (the default; main axis = inline axis) and
+/// <c>column</c> (main axis = block axis); the reversed variants
+/// <c>row-reverse</c> + <c>column-reverse</c> are decoded but the
+/// FlexLayouter does not yet honor the reversal — reversed item
+/// ordering is L5+ scope. The reversal is orthogonal to the row/column
+/// axis swap shipped in L4 (the axis-mapping layer accommodates both
+/// reversed variants by treating them as their non-reversed
+/// counterparts, leaving order-flip work for the sub-cycle that picks
+/// it up).
+///
+/// <para>Per CSS Flexbox L1 §5.1 the four values control:
+/// <list type="bullet">
+///   <item><see cref="Row"/> — main = inline (default); items flow
+///   left-to-right under LTR.</item>
+///   <item><see cref="RowReverse"/> — main = inline, items flow
+///   right-to-left under LTR (L5+ scope for the reversal).</item>
+///   <item><see cref="Column"/> — main = block; items stack top-to-
+///   bottom.</item>
+///   <item><see cref="ColumnReverse"/> — main = block, items stack
+///   bottom-to-top (L5+ scope for the reversal).</item>
+/// </list></para></summary>
+internal enum FlexDirectionValue : byte
+{
+    Row = 0,
+    RowReverse = 1,
+    Column = 2,
+    ColumnReverse = 3,
+}
+
+/// <summary>Per Phase 3 Task 15 L4 — helper extensions on
+/// <see cref="FlexDirectionValue"/>.</summary>
+internal static class FlexDirectionValueExtensions
+{
+    /// <summary>Per Phase 3 Task 15 L4 — is this a column direction?
+    /// Used for axis selection in <c>FlexLayouter</c> +
+    /// <c>BlockLayouter</c>'s flex pre-measure dispatch.
+    /// <c>row-reverse</c> remains a row direction (main = inline);
+    /// <c>column-reverse</c> remains a column direction (main = block).
+    /// The L5+ reversal handling is orthogonal to this predicate — when
+    /// the reversal logic lands it will read the <c>FlexDirectionValue</c>
+    /// directly to distinguish the two row variants + the two column
+    /// variants.</summary>
+    public static bool IsFlexColumnDirection(this FlexDirectionValue value)
+        => value == FlexDirectionValue.Column || value == FlexDirectionValue.ColumnReverse;
+}

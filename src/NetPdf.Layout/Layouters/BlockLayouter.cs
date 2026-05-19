@@ -1390,13 +1390,28 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // — move in lockstep with FlexLayouter's placement math.
             if (IsFlexContainer(child))
             {
-                var flexCrossExtent = PreMeasureFlexCrossExtent(child);
-                var flexBorderPaddingBlock =
-                    borderStart + paddingStart + paddingEnd + borderEnd;
-                var flexDrivenBorderBox = flexCrossExtent + flexBorderPaddingBlock;
-                if (flexDrivenBorderBox > borderBoxBlockSize)
+                // Per Phase 3 Task 15 L4 — the pre-measure that grows
+                // the wrapper's block-axis extent to the flex cross-
+                // extent (= max(item natural block-size)) applies only
+                // for ROW direction. For COLUMN direction the main axis
+                // IS the block axis — the wrapper's auto-block-size
+                // equals the SUM of items' block-sizes (= the
+                // block-flow stacking that `MeasureSubtreeVisualBlockExtent`
+                // computes naturally below), so no special pre-measure
+                // is needed. Mirrors the L3 hardening F#1's row-only
+                // scope; the column-direction subtree extent is
+                // spec-correct as-is.
+                var childFlexDirection = child.Style.ReadFlexDirection();
+                if (!childFlexDirection.IsFlexColumnDirection())
                 {
-                    borderBoxBlockSize = flexDrivenBorderBox;
+                    var flexCrossExtent = PreMeasureFlexCrossExtent(child);
+                    var flexBorderPaddingBlock =
+                        borderStart + paddingStart + paddingEnd + borderEnd;
+                    var flexDrivenBorderBox = flexCrossExtent + flexBorderPaddingBlock;
+                    if (flexDrivenBorderBox > borderBoxBlockSize)
+                    {
+                        borderBoxBlockSize = flexDrivenBorderBox;
+                    }
                 }
             }
 
@@ -1511,7 +1526,20 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // pendingTableLayouter clamp above for the same reason
             // (the recursive walk over-measures content that has its
             // own internal layout discipline).
+            // Per Phase 3 Task 15 L4 — the row-direction clamp only
+            // applies when the flex container's main axis is NOT the
+            // block axis. For column direction the main axis IS the
+            // block axis — the block-flow stacking sum that
+            // MeasureSubtreeVisualBlockExtent produces IS the correct
+            // wrapper extent (the items genuinely stack vertically
+            // along the main axis). The L3 hardening's clamp would
+            // shrink the column wrapper to max(item block-size) which
+            // truncates the lower items; the row-direction clamp
+            // correctly counteracted the over-measurement caused by
+            // the recursive walk treating items as block-flow children
+            // when the spec says they are single-line horizontally.
             if (IsFlexContainer(child)
+                && !child.Style.ReadFlexDirection().IsFlexColumnDirection()
                 && subtreeBlockExtent > borderBoxBlockSize)
             {
                 subtreeBlockExtent = borderBoxBlockSize;
@@ -2777,30 +2805,45 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // — move in lockstep with FlexLayouter's placement math.
             if (IsFlexContainer(child))
             {
-                var nFlexCrossExtent = PreMeasureFlexCrossExtent(child);
-                var nFlexBorderPaddingBlock =
-                    borderStart + paddingStart + paddingEnd + borderEnd;
-                var nFlexDriven = nFlexCrossExtent + nFlexBorderPaddingBlock;
-                if (nFlexDriven > childBorderBoxBlockSize)
+                // Per Phase 3 Task 15 L4 — the row-only premeasure
+                // applies the spec-correct cross-extent grow + the
+                // subtree-extent clamp. For column direction the main
+                // axis is the block axis, so the natural block-flow
+                // stacking sum produced by the recursive walk IS the
+                // correct wrapper extent (items stack vertically along
+                // the main axis); the clamp would truncate items and
+                // the grow is a no-op since cross extent for column
+                // direction is the INLINE axis (the wrapper's inline-
+                // size is already correctly resolved). Mirrors the
+                // outer-loop's direction-aware premeasure.
+                var childFlexDirection = child.Style.ReadFlexDirection();
+                if (!childFlexDirection.IsFlexColumnDirection())
                 {
-                    childBorderBoxBlockSize = nFlexDriven;
-                }
-                // Also clamp childEffectiveBlockSize back to the post-
-                // grow childBorderBoxBlockSize when the subtree extent
-                // (which stacked the items as block-flow) exceeded it.
-                // Mirrors the outer-loop's `subtreeBlockExtent` clamp
-                // for flex containers — the recursive walk over-measures
-                // children with their own layout discipline.
-                if (childEffectiveBlockSize > childBorderBoxBlockSize)
-                {
-                    childEffectiveBlockSize = childBorderBoxBlockSize;
-                }
-                // After the clamp, ensure the grown wrapper size still
-                // dominates if the spec'd cross extent now exceeds the
-                // (clamped) childEffectiveBlockSize.
-                if (nFlexDriven > childEffectiveBlockSize)
-                {
-                    childEffectiveBlockSize = nFlexDriven;
+                    var nFlexCrossExtent = PreMeasureFlexCrossExtent(child);
+                    var nFlexBorderPaddingBlock =
+                        borderStart + paddingStart + paddingEnd + borderEnd;
+                    var nFlexDriven = nFlexCrossExtent + nFlexBorderPaddingBlock;
+                    if (nFlexDriven > childBorderBoxBlockSize)
+                    {
+                        childBorderBoxBlockSize = nFlexDriven;
+                    }
+                    // Also clamp childEffectiveBlockSize back to the post-
+                    // grow childBorderBoxBlockSize when the subtree extent
+                    // (which stacked the items as block-flow) exceeded it.
+                    // Mirrors the outer-loop's `subtreeBlockExtent` clamp
+                    // for flex containers — the recursive walk over-measures
+                    // children with their own layout discipline.
+                    if (childEffectiveBlockSize > childBorderBoxBlockSize)
+                    {
+                        childEffectiveBlockSize = childBorderBoxBlockSize;
+                    }
+                    // After the clamp, ensure the grown wrapper size still
+                    // dominates if the spec'd cross extent now exceeds the
+                    // (clamped) childEffectiveBlockSize.
+                    if (nFlexDriven > childEffectiveBlockSize)
+                    {
+                        childEffectiveBlockSize = nFlexDriven;
+                    }
                 }
             }
 

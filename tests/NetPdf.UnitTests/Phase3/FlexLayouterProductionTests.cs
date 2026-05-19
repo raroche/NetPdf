@@ -633,17 +633,23 @@ public sealed class FlexLayouterProductionTests
         Assert.NotNull(flexFragment);
 
         // BlockOffsets advance along the main axis (= block for column).
-        var contentBlockStart = flexFragment!.Value.BlockOffset;
-        Assert.Equal(contentBlockStart + 0.0, a.BlockOffset, precision: 3);
-        Assert.Equal(contentBlockStart + 50.0, b.BlockOffset, precision: 3);
-        Assert.Equal(contentBlockStart + 100.0, c.BlockOffset, precision: 3);
+        // Per PR #64 Copilot review — `BoxFragment.BlockOffset` is the
+        // BORDER-BOX start of the wrapper (not the content-box start).
+        // The two coincide in this fixture only because the flex
+        // container has no padding/border; future fixtures with
+        // padding will need to add `borderTop + paddingTop` to derive
+        // the content-block-start.
+        var wrapperBorderBoxBlockStart = flexFragment!.Value.BlockOffset;
+        Assert.Equal(wrapperBorderBoxBlockStart + 0.0, a.BlockOffset, precision: 3);
+        Assert.Equal(wrapperBorderBoxBlockStart + 50.0, b.BlockOffset, precision: 3);
+        Assert.Equal(wrapperBorderBoxBlockStart + 100.0, c.BlockOffset, precision: 3);
 
         // InlineOffsets center on the cross axis (= inline for column).
         // crossSpace = 600 - 100 = 500 → offset 250 per item.
-        var contentInlineStart = flexFragment.Value.InlineOffset;
-        Assert.Equal(contentInlineStart + 250.0, a.InlineOffset, precision: 3);
-        Assert.Equal(contentInlineStart + 250.0, b.InlineOffset, precision: 3);
-        Assert.Equal(contentInlineStart + 250.0, c.InlineOffset, precision: 3);
+        var wrapperBorderBoxInlineStart = flexFragment.Value.InlineOffset;
+        Assert.Equal(wrapperBorderBoxInlineStart + 250.0, a.InlineOffset, precision: 3);
+        Assert.Equal(wrapperBorderBoxInlineStart + 250.0, b.InlineOffset, precision: 3);
+        Assert.Equal(wrapperBorderBoxInlineStart + 250.0, c.InlineOffset, precision: 3);
 
         // Items keep declared sizes — positional alignment never resizes;
         // the L4 stretch path is exercised by the unit tests.

@@ -875,11 +875,16 @@ grepping the ID).
   CSS Box Alignment L3 §5.3 (safe → safe-start fallback on overflow;
   unsafe → honor alignment on overflow; default → positional values
   keep natural offset on overflow). The container's cross-axis
-  extent (`containerCrossSize`) derives from the container's
-  explicit `height` when set, else max(item natural block-size).
-  The flex container is atomic to outer pagination (the entire
-  container's items emit on the page the wrapper landed on; no
-  `FlexContinuation` resume).
+  extent (`containerCrossSize`) is direction-dependent: row direction
+  (cross axis = block axis) uses explicit `height` when set else
+  max(item natural block-size) per CSS Flexbox L1 §9.4; column
+  direction (cross axis = inline axis) uses the wrapper's
+  content-inline-size (= available inline range from BlockLayouter's
+  ConfigureEmission) — `width: auto` on a block-level flex container
+  means "fill containing block" per CSS Sizing §3.4, NOT shrink-to-fit
+  (inline-flex shrink-to-fit is L5+ scope). The flex container is
+  atomic to outer pagination (the entire container's items emit on
+  the page the wrapper landed on; no `FlexContinuation` resume).
 - **Missing** —
   - `flex-direction: row-reverse` and `column-reverse` (CSS Flexbox L1
     §5.1). The reversal of item order is orthogonal to the row/column

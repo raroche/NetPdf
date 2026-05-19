@@ -411,20 +411,27 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             }
             else
             {
-                // width: auto — derive cross from max(item natural
-                // inline-size). Mirrors the row-direction `height: auto`
-                // path's max(item block-size) derivation per
-                // CSS Flexbox L1 §9.4.
-                var maxItemCross = 0.0;
-                for (var i = 0; i < _rootBox.Children.Count; i++)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    var c = _rootBox.Children[i];
-                    if (!c.IsBlockLevel) continue;
-                    var iw = c.Style.ReadLengthPxOrZero(PropertyId.Width);
-                    if (iw > maxItemCross) maxItemCross = iw;
-                }
-                containerCrossSize = maxItemCross;
+                // Per PR #64 Copilot review — column direction with
+                // `width: auto` uses the wrapper's content-inline-size
+                // (= available inline range as set by BlockLayouter's
+                // ConfigureEmission). This differs from the row-direction
+                // `height: auto` path which uses max(item block-size):
+                //   - Row + height:auto: cross axis = block; the line's
+                //     extent IS the wrapper's auto-block-size (CSS
+                //     Flexbox §9.4).
+                //   - Column + width:auto: cross axis = inline; the
+                //     wrapper is block-level so width:auto means "fill
+                //     containing block" (CSS Sizing §3.4) — NOT
+                //     shrink-to-fit. Items wider than the available
+                //     range overflow (handled per CSS Box Alignment
+                //     §5.3 by the existing safe/unsafe modes).
+                //   Pre-fix this branch used max(item natural width),
+                //   which would have shrunk the wrapper below its
+                //   available range and miscentered items via
+                //   align-items when items were narrower than the
+                //   container. Inline-level flex (display: inline-flex)
+                //   shrink-to-fit is L5+ scope.
+                containerCrossSize = _contentInlineSize;
             }
         }
         else

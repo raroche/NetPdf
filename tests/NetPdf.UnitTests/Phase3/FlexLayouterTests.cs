@@ -1062,28 +1062,39 @@ public sealed class FlexLayouterTests
         layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
             LayoutAttemptStrategy.LastResort);
 
+        // Per PR #63 Copilot review — derive contentBlockOffset from the
+        // flex wrapper's BoxFragment (the container has no border /
+        // padding in this fixture, so the wrapper's BlockOffset equals
+        // the content-block-start). Pre-fix used `baseOffset =
+        // fragments[0].BlockOffset - 50.0` which was tautological:
+        // asserting `baseOffset + 50.0 == fragments[0].BlockOffset` is
+        // trivially true. The new derivation roots the absolute offset
+        // in the wrapper's actual block-start, so the assertions pin
+        // both `containerCrossSize = max(50, 100, 75) = 100` AND the
+        // per-item flex-end placement against an independent reference.
+        BoxFragment? flexWrapper = null;
         var fragments = new List<BoxFragment>();
-        for (var i = 0; i < items.Length; i++)
+        foreach (var f in sink.Fragments)
         {
-            foreach (var f in sink.Fragments)
+            if (f.Box == flex) flexWrapper = f;
+            for (var i = 0; i < items.Length; i++)
             {
                 if (f.Box == items[i]) { fragments.Add(f); break; }
             }
         }
 
+        Assert.NotNull(flexWrapper);
         Assert.Equal(3, fragments.Count);
-        // BlockOffset is relative to the flex container's content-
-        // block-start (= 0 in this fixture; the container has no
-        // border/padding). The flex container is laid out by
-        // BlockLayouter, which sizes auto-height block-level wrappers
-        // to fill the available block range. Here the relevant assertion
-        // is that the per-item offset = item_offset_within_container
-        // (which, given contentBlockOffset = 0 in this layout, equals
-        // the absolute BlockOffset).
-        var baseOffset = fragments[0].BlockOffset - 50.0; // back out the item-0 offset to find contentBlockOffset
-        Assert.Equal(baseOffset + 50.0, fragments[0].BlockOffset, precision: 3); // 100 - 50 = 50
-        Assert.Equal(baseOffset + 0.0, fragments[1].BlockOffset, precision: 3);  // 100 - 100 = 0
-        Assert.Equal(baseOffset + 25.0, fragments[2].BlockOffset, precision: 3); // 100 - 75 = 25
+        var contentBlockOffset = flexWrapper!.Value.BlockOffset;
+        // crossSpace per item = containerCrossSize - itemHeight; flex-
+        // end places each item at contentBlockOffset + crossSpace.
+        Assert.Equal(contentBlockOffset + 50.0, fragments[0].BlockOffset, precision: 3); // 100 - 50 = 50
+        Assert.Equal(contentBlockOffset + 0.0, fragments[1].BlockOffset, precision: 3);  // 100 - 100 = 0
+        Assert.Equal(contentBlockOffset + 25.0, fragments[2].BlockOffset, precision: 3); // 100 - 75 = 25
+        // Item 1 (the tallest) lands at the cross-start because
+        // crossSpace == 0; this independently verifies the
+        // containerCrossSize = max(item heights) derivation.
+        Assert.Equal(flexWrapper.Value.BlockOffset, fragments[1].BlockOffset, precision: 3);
     }
 
     // ====================================================================

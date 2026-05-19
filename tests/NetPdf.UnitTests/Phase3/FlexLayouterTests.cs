@@ -723,6 +723,796 @@ public sealed class FlexLayouterTests
             keywordIndex, itemWidth, containerWidth, itemCount: 3);
 
     // ====================================================================
+    //  Phase 3 Task 15 L3 — align-items cross-axis alignment
+    // ====================================================================
+    //
+    // Fixture: 3 items of width 100 in a container of declared height
+    // 200 (= containerCrossSize 200) unless noted otherwise. The CSS
+    // Box Alignment L3 §6 + Flexbox L1 §8.3 keyword index mapping is
+    // verified against KeywordResolver.BuildAlignItemsTable
+    // (KeywordResolver.cs:286-298) + the SelfPositions order
+    // (KeywordResolver.cs:114-115 = "center, start, end, self-start,
+    // self-end, flex-start, flex-end"). Tests set the keyword slot
+    // directly via ComputedSlot.FromKeyword(...) rather than going
+    // through the cascade so the indices are part of the test's
+    // contract. The keyword index mapping is:
+    //   0=normal, 1=stretch, 2=anchor-center, 3=baseline,
+    //   4=first baseline, 5=last baseline,
+    //   6=center, 7=start, 8=end, 9=self-start, 10=self-end,
+    //   11=flex-start, 12=flex-end,
+    //   13-19=safe {center, start, end, self-start, self-end, flex-start, flex-end},
+    //   20-26=unsafe {…same 7…}
+
+    [Fact]
+    public void L3_align_items_flex_start_packs_items_at_cross_start()
+    {
+        // 3 items of height 50 in a 200px-tall container, align-items:
+        // flex-start (= keyword index 11). crossSpace = 150. Expected
+        // block offsets: all at contentBlockOffset (= 0 in this fixture
+        // since the flex container has no border / padding).
+        var fragments = LayoutThreeItemsWithAlignItems(
+            keywordIndex: 11, containerHeight: 200, itemHeight: 50);
+
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(0.0, fragments[0].BlockOffset, precision: 3);
+        Assert.Equal(0.0, fragments[1].BlockOffset, precision: 3);
+        Assert.Equal(0.0, fragments[2].BlockOffset, precision: 3);
+        // Items keep their declared block-size (positional alignment
+        // never resizes; only stretch does).
+        Assert.Equal(50.0, fragments[0].BlockSize, precision: 3);
+        Assert.Equal(50.0, fragments[1].BlockSize, precision: 3);
+        Assert.Equal(50.0, fragments[2].BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public void L3_align_items_flex_end_packs_items_at_cross_end()
+    {
+        // 3 items of height 50 in a 200px container, align-items:
+        // flex-end (= keyword index 12). crossSpace = 150 → block
+        // offsets all at contentBlockOffset + crossSpace = 150.
+        var fragments = LayoutThreeItemsWithAlignItems(
+            keywordIndex: 12, containerHeight: 200, itemHeight: 50);
+
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(150.0, fragments[0].BlockOffset, precision: 3);
+        Assert.Equal(150.0, fragments[1].BlockOffset, precision: 3);
+        Assert.Equal(150.0, fragments[2].BlockOffset, precision: 3);
+        Assert.Equal(50.0, fragments[0].BlockSize, precision: 3);
+        Assert.Equal(50.0, fragments[1].BlockSize, precision: 3);
+        Assert.Equal(50.0, fragments[2].BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public void L3_align_items_center_centers_items_on_cross_axis()
+    {
+        // 3 items of height 50 in a 200px container, align-items:
+        // center (= keyword index 6). crossSpace = 150 → block
+        // offsets all at contentBlockOffset + crossSpace / 2 = 75.
+        var fragments = LayoutThreeItemsWithAlignItems(
+            keywordIndex: 6, containerHeight: 200, itemHeight: 50);
+
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(75.0, fragments[0].BlockOffset, precision: 3);
+        Assert.Equal(75.0, fragments[1].BlockOffset, precision: 3);
+        Assert.Equal(75.0, fragments[2].BlockOffset, precision: 3);
+        Assert.Equal(50.0, fragments[0].BlockSize, precision: 3);
+        Assert.Equal(50.0, fragments[1].BlockSize, precision: 3);
+        Assert.Equal(50.0, fragments[2].BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public void L3_align_items_stretch_resizes_items_to_container_cross_size()
+    {
+        // Per CSS Flexbox L1 §8.3 + §7.2 — `align-items: stretch`
+        // resizes the item's cross-axis size to the container's cross
+        // extent ONLY when the item's own cross-axis size is auto
+        // (read as itemCrossSize == 0 from the cycle-1 reader).
+        // Explicitly-sized items keep their declared block-size.
+        //
+        // Fixture: 3 items in a 200px container with align-items:
+        // stretch (= keyword index 1). Items 0 + 2 declare no height
+        // (= itemCrossSize 0 → stretched to 200); item 1 declares
+        // height 50 (= kept at 50). All emit at the container's
+        // content-block-start.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(1)); // stretch
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            // Items 0 + 2 leave height auto (no SetLengthPx call →
+            // the reader returns 0 → stretch path activates).
+            // Item 1 declares an explicit height.
+            if (i == 1) SetLengthPx(style, PropertyId.Height, 50);
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+
+        Assert.Equal(3, fragments.Count);
+        // All items emit at the container's content-block-start (=
+        // stretch starts at cross-start by definition).
+        Assert.Equal(0.0, fragments[0].BlockOffset, precision: 3);
+        Assert.Equal(0.0, fragments[1].BlockOffset, precision: 3);
+        Assert.Equal(0.0, fragments[2].BlockOffset, precision: 3);
+        // Auto-height items get container's cross extent (200).
+        Assert.Equal(200.0, fragments[0].BlockSize, precision: 3);
+        // Explicit-height item is preserved (50).
+        Assert.Equal(50.0, fragments[1].BlockSize, precision: 3);
+        Assert.Equal(200.0, fragments[2].BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public void L3_align_items_overflow_center_keeps_negative_offset()
+    {
+        // 3 items of height 250 in a 200px container, align-items:
+        // center (= keyword index 6). crossSpace = -50 → natural
+        // offset = -25 (= -50/2). Per CSS Box Alignment L3 §5.3
+        // default mode + positional values keep their natural
+        // (possibly-negative) offset — items overflow EQUALLY on
+        // both sides.
+        var fragments = LayoutThreeItemsWithAlignItems(
+            keywordIndex: 6, containerHeight: 200, itemHeight: 250);
+
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(-25.0, fragments[0].BlockOffset, precision: 3);
+        Assert.Equal(-25.0, fragments[1].BlockOffset, precision: 3);
+        Assert.Equal(-25.0, fragments[2].BlockOffset, precision: 3);
+        // Items keep declared block-size; positional alignment doesn't resize.
+        Assert.Equal(250.0, fragments[0].BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public void L3_align_items_safe_center_overflow_falls_back_to_flex_start()
+    {
+        // Per CSS Box Alignment L3 §5.3 — the `safe` modifier forces
+        // safe-start (= contentBlockOffset) fallback on overflow
+        // regardless of the base value.
+        //
+        // 3 items of height 250 in a 200px container, align-items:
+        // `safe center` (= keyword index 13). crossSpace = -50 →
+        // safe modifier forces block-offset = contentBlockOffset = 0.
+        var fragments = LayoutThreeItemsWithAlignItems(
+            keywordIndex: 13, containerHeight: 200, itemHeight: 250);
+
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(0.0, fragments[0].BlockOffset, precision: 3);
+        Assert.Equal(0.0, fragments[1].BlockOffset, precision: 3);
+        Assert.Equal(0.0, fragments[2].BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L3_align_items_unsafe_flex_end_overflow_honors_alignment()
+    {
+        // Per CSS Box Alignment L3 §5.3 — the `unsafe` modifier
+        // honors the natural offset even on overflow.
+        //
+        // 3 items of height 250 in a 200px container, align-items:
+        // `unsafe flex-end` (= keyword index 26). crossSpace = -50 →
+        // natural flex-end offset = contentBlockOffset + crossSpace
+        // = 0 + (-50) = -50. Items are pushed PAST the container's
+        // start edge.
+        var fragments = LayoutThreeItemsWithAlignItems(
+            keywordIndex: 26, containerHeight: 200, itemHeight: 250);
+
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(-50.0, fragments[0].BlockOffset, precision: 3);
+        Assert.Equal(-50.0, fragments[1].BlockOffset, precision: 3);
+        Assert.Equal(-50.0, fragments[2].BlockOffset, precision: 3);
+    }
+
+    [Theory]
+    [InlineData(7, 0.0)]    // start → flex-start (LTR row)
+    [InlineData(9, 0.0)]    // self-start → flex-start (LTR row)
+    [InlineData(8, 150.0)]  // end → flex-end (LTR row)
+    [InlineData(10, 150.0)] // self-end → flex-end (LTR row)
+    public void L3_align_items_logical_alias_maps_to_physical_for_ltr_row(
+        int keywordIndex, double expectedBlockOffset)
+    {
+        // Per CSS Box Alignment L3 §6.1 + the L4+ writing-mode-aware
+        // deferral — the logical-axis aliases `start` / `end` /
+        // `self-start` / `self-end` resolve to flex-start / flex-end
+        // under the L1 default LTR + `flex-direction: row`.
+        //
+        // 3 items of height 50 in a 200px container → crossSpace 150.
+        // Expected: start / self-start → 0; end / self-end → 150.
+        var fragments = LayoutThreeItemsWithAlignItems(
+            keywordIndex: keywordIndex, containerHeight: 200, itemHeight: 50);
+
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(expectedBlockOffset, fragments[0].BlockOffset, precision: 3);
+        Assert.Equal(expectedBlockOffset, fragments[1].BlockOffset, precision: 3);
+        Assert.Equal(expectedBlockOffset, fragments[2].BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L3_align_items_baseline_falls_back_to_stretch_for_l3()
+    {
+        // DEFERRAL PIN — per Phase 3 Task 15 L3 LOCKED scope,
+        // `baseline` / `first baseline` / `last baseline` require
+        // text-shaping integration + are L4+ scope. The L3 decoder
+        // maps all three baseline indices (3, 4, 5) to the safe
+        // default `stretch`.
+        //
+        // 3 items with auto height in a 200px container, align-items:
+        // baseline (= keyword index 3). Stretch resizes auto-sized
+        // items to containerCrossSize = 200; all emit at the
+        // container's content-block-start.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(3)); // baseline
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            // Leave height auto (= itemCrossSize 0 → stretch resizes
+            // to containerCrossSize).
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+
+        Assert.Equal(3, fragments.Count);
+        // Baseline falls through to stretch — items resize to
+        // containerCrossSize + emit at cross-start. Sub-cycle L4+ will
+        // implement actual baseline alignment + this test should be
+        // updated then.
+        foreach (var f in fragments)
+        {
+            Assert.Equal(0.0, f.BlockOffset, precision: 3);
+            Assert.Equal(200.0, f.BlockSize, precision: 3);
+        }
+    }
+
+    [Fact]
+    public void L3_align_items_container_height_auto_uses_max_item_height()
+    {
+        // Per Phase 3 Task 15 L3 — when the flex container's height
+        // is auto (= no LengthPx slot on PropertyId.Height), the
+        // containerCrossSize derivation uses max(item natural
+        // block-size). This is the spec's max-content cross-size
+        // simplification for the L1 default single-line case
+        // (CSS Flexbox L1 §9.4).
+        //
+        // Fixture: 3 items of heights 50/100/75 in a height-auto
+        // container, align-items: flex-end (= keyword index 12).
+        // containerCrossSize = max(50, 100, 75) = 100.
+        // crossSpace per item:
+        //   item 0 (h=50)  → 100 - 50 = 50  → flex-end offset 50
+        //   item 1 (h=100) → 100 - 100 = 0  → flex-end offset 0
+        //   item 2 (h=75)  → 100 - 75 = 25  → flex-end offset 25
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        // Don't set Height — leave it as auto (= the Unset slot).
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(12)); // flex-end
+
+        var heights = new[] { 50.0, 100.0, 75.0 };
+        var items = new Box[heights.Length];
+        for (var i = 0; i < heights.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, heights[i]);
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        // Per PR #63 Copilot review — derive contentBlockOffset from the
+        // flex wrapper's BoxFragment (the container has no border /
+        // padding in this fixture, so the wrapper's BlockOffset equals
+        // the content-block-start). Pre-fix used `baseOffset =
+        // fragments[0].BlockOffset - 50.0` which was tautological:
+        // asserting `baseOffset + 50.0 == fragments[0].BlockOffset` is
+        // trivially true. The new derivation roots the absolute offset
+        // in the wrapper's actual block-start, so the assertions pin
+        // both `containerCrossSize = max(50, 100, 75) = 100` AND the
+        // per-item flex-end placement against an independent reference.
+        BoxFragment? flexWrapper = null;
+        var fragments = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == flex) flexWrapper = f;
+            for (var i = 0; i < items.Length; i++)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+
+        Assert.NotNull(flexWrapper);
+        Assert.Equal(3, fragments.Count);
+        var contentBlockOffset = flexWrapper!.Value.BlockOffset;
+        // crossSpace per item = containerCrossSize - itemHeight; flex-
+        // end places each item at contentBlockOffset + crossSpace.
+        Assert.Equal(contentBlockOffset + 50.0, fragments[0].BlockOffset, precision: 3); // 100 - 50 = 50
+        Assert.Equal(contentBlockOffset + 0.0, fragments[1].BlockOffset, precision: 3);  // 100 - 100 = 0
+        Assert.Equal(contentBlockOffset + 25.0, fragments[2].BlockOffset, precision: 3); // 100 - 75 = 25
+        // Item 1 (the tallest) lands at the cross-start because
+        // crossSpace == 0; this independently verifies the
+        // containerCrossSize = max(item heights) derivation.
+        Assert.Equal(flexWrapper.Value.BlockOffset, fragments[1].BlockOffset, precision: 3);
+    }
+
+    // ====================================================================
+    //  Phase 3 Task 15 L3 post-PR-#63 review hardening tests
+    // ====================================================================
+
+    [Fact]
+    public void L3_hardening_flex_wrapper_height_auto_sizes_to_max_item_height()
+    {
+        // F#1 — when a flex container has height:auto, the wrapper's
+        // BoxFragment.BlockSize must reflect the spec-correct
+        // single-line cross-extent (= max(item natural cross-size))
+        // per CSS Flexbox L1 §9.4 — NOT the block-flow stacking sum.
+        //
+        // Fixture: 3 items of heights 50/100/75 in a height:auto flex
+        // container, align-items: flex-start. Pre-fix the wrapper
+        // BlockSize = sum (~225 from MeasureSubtreeVisualBlockExtent's
+        // block-flow stacking); post-fix it = max = 100 (the flex line
+        // cross-extent).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        // Don't set Height — leave it auto.
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(11)); // flex-start
+
+        var heights = new[] { 50.0, 100.0, 75.0 };
+        var items = new Box[heights.Length];
+        for (var i = 0; i < heights.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, heights[i]);
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? wrapper = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == flex) { wrapper = f; break; }
+        }
+        Assert.NotNull(wrapper);
+        // F#1 — wrapper sizes to max(50, 100, 75) = 100 (the flex
+        // line cross-extent), NOT 225 (the block-flow stacking sum).
+        Assert.Equal(100.0, wrapper!.Value.BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public void L3_hardening_flex_wrapper_advances_outer_cursor_by_flex_line_extent()
+    {
+        // F#1 — a sibling AFTER a height:auto flex container must
+        // land at flexWrapper.BlockOffset + flex_line_extent, NOT
+        // flexWrapper.BlockOffset + block_flow_stacking_sum. Pre-fix
+        // siblings sat ~125px (= 225 - 100) too low because the
+        // cursor advance over-reserved space for the flex container.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        // height:auto.
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(11)); // flex-start
+
+        var heights = new[] { 50.0, 100.0, 75.0 };
+        for (var i = 0; i < heights.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, heights[i]);
+            flex.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+        }
+
+        // Sibling AFTER the flex container — a plain block of height 30.
+        var siblingStyle = MakeStyle();
+        SetLengthPx(siblingStyle, PropertyId.Width, 100);
+        SetLengthPx(siblingStyle, PropertyId.Height, 30);
+        var sibling = Box.ForElement(BoxKind.BlockContainer, siblingStyle, MakeElement());
+
+        root.AppendChild(flex);
+        root.AppendChild(sibling);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? wrapper = null;
+        BoxFragment? siblingFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == flex) wrapper = f;
+            else if (f.Box == sibling) siblingFragment = f;
+        }
+        Assert.NotNull(wrapper);
+        Assert.NotNull(siblingFragment);
+        // F#1 — sibling lands directly after the flex line extent
+        // (= wrapper BlockOffset + 100). Pre-fix it landed at
+        // wrapper BlockOffset + 225.
+        Assert.Equal(wrapper!.Value.BlockOffset + 100.0,
+            siblingFragment!.Value.BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L3_hardening_stretch_honors_explicit_zero_height()
+    {
+        // F#2 — stretch applies only when the item's cross-size
+        // property computes to `auto`. Explicit `height: 0` (a
+        // LengthPx slot with payload 0) is NOT auto + must keep its
+        // declared 0 cross-size. Pre-fix `itemCrossSize > 0` test
+        // stretched explicit zeros to containerCrossSize.
+        //
+        // Fixture: 1 item with explicit height:0 in a 200px stretch
+        // container.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(1)); // stretch
+
+        var itemStyle = MakeStyle();
+        SetLengthPx(itemStyle, PropertyId.Width, 100);
+        SetLengthPx(itemStyle, PropertyId.Height, 0); // EXPLICIT 0
+        var item = Box.ForElement(BoxKind.BlockContainer, itemStyle, MakeElement());
+        flex.AppendChild(item);
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? itemFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == item) { itemFragment = f; break; }
+        }
+        Assert.NotNull(itemFragment);
+        // F#2 — explicit height:0 is honored, NOT stretched to 200.
+        Assert.Equal(0.0, itemFragment!.Value.BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public void L3_hardening_stretch_resizes_auto_height_item()
+    {
+        // F#2 — stretch applies when the cross-size property computes
+        // to `auto`. An item with no `height` declaration (= Unset
+        // slot, default auto) is auto + must be stretched to
+        // containerCrossSize.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(1)); // stretch
+
+        var itemStyle = MakeStyle();
+        SetLengthPx(itemStyle, PropertyId.Width, 100);
+        // No SetLengthPx for Height — leave it Unset (= default auto).
+        var item = Box.ForElement(BoxKind.BlockContainer, itemStyle, MakeElement());
+        flex.AppendChild(item);
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? itemFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == item) { itemFragment = f; break; }
+        }
+        Assert.NotNull(itemFragment);
+        // Auto-height item stretched to containerCrossSize.
+        Assert.Equal(200.0, itemFragment!.Value.BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public void L3_hardening_stretch_honors_explicit_positive_height()
+    {
+        // F#2 — explicit positive heights keep their declared value
+        // (the established behavior; pin to ensure the F#2 fix didn't
+        // break it).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(1)); // stretch
+
+        var itemStyle = MakeStyle();
+        SetLengthPx(itemStyle, PropertyId.Width, 100);
+        SetLengthPx(itemStyle, PropertyId.Height, 30); // EXPLICIT positive
+        var item = Box.ForElement(BoxKind.BlockContainer, itemStyle, MakeElement());
+        flex.AppendChild(item);
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? itemFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == item) { itemFragment = f; break; }
+        }
+        Assert.NotNull(itemFragment);
+        // Explicit positive height honored, NOT stretched.
+        Assert.Equal(30.0, itemFragment!.Value.BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public void L3_hardening_known_gap_cross_axis_margins_ignored_in_alignment()
+    {
+        // F#4 DEFERRAL PIN — per CSS Flexbox L1 §8.4, align-items
+        // operates on the item's MARGIN BOX. The L3 ComputeAlignItems
+        // Placement currently uses the item's border-box cross-size,
+        // ignoring the cross-axis margins entirely. Sub-cycle L4+
+        // will refactor to read item margins through FlexLayouter.
+        //
+        // Fixture: 1 item of height 50 with margin-top: 20px in a 200px
+        // container with align-items: flex-start. Spec-correct: item
+        // emits at contentBlockOffset + margin-top = 20. Current
+        // (buggy): item emits at contentBlockOffset = 0.
+        //
+        // When sub-cycle L4+ ships the margin-box alignment, this test
+        // should FAIL — update to assert 20 + remove the deferral
+        // bullet from docs/deferrals.md.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(11)); // flex-start
+
+        var itemStyle = MakeStyle();
+        SetLengthPx(itemStyle, PropertyId.Width, 100);
+        SetLengthPx(itemStyle, PropertyId.Height, 50);
+        SetLengthPx(itemStyle, PropertyId.MarginTop, 20); // CROSS-AXIS margin
+        var item = Box.ForElement(BoxKind.BlockContainer, itemStyle, MakeElement());
+        flex.AppendChild(item);
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? itemFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == item) { itemFragment = f; break; }
+        }
+        Assert.NotNull(itemFragment);
+        // F#4 deferral pin — items emit at contentBlockOffset = 0
+        // ignoring margin-top: 20. Spec-correct (sub-cycle L4+) is 20.
+        Assert.Equal(0.0, itemFragment!.Value.BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L3_hardening_known_gap_stretch_ignores_min_max_constraints()
+    {
+        // F#5 DEFERRAL PIN — per CSS Flexbox L1 §7.2, stretch
+        // computes the cross-size with min-height / max-height
+        // clamps. The L3 stretch branch currently sets
+        // BlockSize = containerCrossSize without consulting min /
+        // max constraints. Sub-cycle L4+ will fold them in.
+        //
+        // Fixture: 1 auto-height item with max-height: 50px in a
+        // 200px stretch container. Spec-correct: clamp to 50.
+        // Current (buggy): stretched to 200.
+        //
+        // When sub-cycle L4+ ships the min/max clamping, this test
+        // should FAIL — update to assert 50 + remove the deferral
+        // bullet from docs/deferrals.md.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(1)); // stretch
+
+        var itemStyle = MakeStyle();
+        SetLengthPx(itemStyle, PropertyId.Width, 100);
+        // No SetLengthPx for Height — leave it auto so stretch activates.
+        SetLengthPx(itemStyle, PropertyId.MaxHeight, 50); // should clamp the stretch
+        var item = Box.ForElement(BoxKind.BlockContainer, itemStyle, MakeElement());
+        flex.AppendChild(item);
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? itemFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == item) { itemFragment = f; break; }
+        }
+        Assert.NotNull(itemFragment);
+        // F#5 deferral pin — stretch ignores max-height: 50,
+        // resizes to containerCrossSize = 200. Spec-correct is 50.
+        Assert.Equal(200.0, itemFragment!.Value.BlockSize, precision: 3);
+    }
+
+    /// <summary>L3 helper — drive FlexLayouter with 3 identical items
+    /// + the requested align-items keyword. Returns the per-item
+    /// fragments in source order.
+    ///
+    /// <para>The flex container has an explicit height of
+    /// <paramref name="containerHeight"/> so the L3
+    /// <c>containerCrossSize</c> derivation reads the explicit slot
+    /// directly (= the LengthPx branch, not the height-auto max-item
+    /// fallback). Items get an explicit <paramref name="itemHeight"/>
+    /// so the stretch override doesn't activate + positional alignment
+    /// has a deterministic cross-space.</para></summary>
+    private static List<BoxFragment> LayoutThreeItemsWithAlignItems(
+        int keywordIndex, double containerHeight, double itemHeight)
+    {
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Height, containerHeight);
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(keywordIndex));
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, itemHeight);
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        // contentInlineSize 400 keeps the items fitting on the main
+        // axis (3 * 100 = 300 ≤ 400) so the alignment math is decoupled
+        // from any inline-axis overflow.
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var itemFragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i])
+                {
+                    itemFragments.Add(f);
+                    break;
+                }
+            }
+        }
+        return itemFragments;
+    }
+
+    // ====================================================================
     //  Helpers
     // ====================================================================
 

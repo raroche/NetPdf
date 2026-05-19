@@ -1355,6 +1355,51 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 }
             }
 
+            // Per Phase 3 Task 15 L3 post-PR-#63 hardening F#1 — flex
+            // container wrapper pre-measure. Mirrors the multicol
+            // pre-measure pattern above: for a flex container whose
+            // BlockLayouter-derived `borderBoxBlockSize` is smaller than
+            // the actual flex cross-extent (= max(item natural cross-
+            // size) for L3 single-line row direction), grow
+            // `borderBoxBlockSize` so the wrapper fragment painted at
+            // line 1797 visually contains the items + the cursor advance
+            // doesn't over-reserve page space.
+            //
+            // Pre-fix: when the flex container has `height: auto`,
+            // BlockLayouter's regular block-sizing path falls through to
+            // `MeasureSubtreeVisualBlockExtent` which stacks the items
+            // vertically (= as if they were block-flow children) — for
+            // items of cross-size 50/100/75 it returns ~225 px, while the
+            // actual single-line flex cross-extent is max = 100 px. The
+            // wrapper was over-large; siblings after the flex container
+            // landed ~125 px too low + page splits triggered prematurely.
+            //
+            // Post-fix: the flex pre-measure derives max(item cross-size)
+            // — matching FlexLayouter's own derivation for the same
+            // height-auto case (CSS Flexbox L1 §9.4's max-content cross-
+            // size simplification). The pre-fix subtree-stacking value
+            // can still dominate via the subtreeBlockExtent path below
+            // for legacy cases where the flex container has explicit
+            // height + the subtree extent reads larger; the
+            // `Math.Max(borderBoxBlockSize, subtreeBlockExtent)`
+            // composition keeps the spec-correct "wrapper paints at
+            // least its CSS height" floor.
+            //
+            // Sub-cycle L4+ scope: outer cross-size (item margins +
+            // borders + padding) + baseline alignment + multi-line wrap
+            // — move in lockstep with FlexLayouter's placement math.
+            if (IsFlexContainer(child))
+            {
+                var flexCrossExtent = PreMeasureFlexCrossExtent(child);
+                var flexBorderPaddingBlock =
+                    borderStart + paddingStart + paddingEnd + borderEnd;
+                var flexDrivenBorderBox = flexCrossExtent + flexBorderPaddingBlock;
+                if (flexDrivenBorderBox > borderBoxBlockSize)
+                {
+                    borderBoxBlockSize = flexDrivenBorderBox;
+                }
+            }
+
             // Per cycle 2c post-PR-29 review #7 — `marginBoxBlockSize`
             // (= `topShift + borderBoxBlockSize + marginEnd`) was
             // removed. Cycle 2c introduced the subtree-aware
@@ -1447,6 +1492,26 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // false PAGINATION-FORCED-OVERFLOW-001 even when the table
             // splits cleanly internally.
             if (pendingTableLayouter is not null
+                && subtreeBlockExtent > borderBoxBlockSize)
+            {
+                subtreeBlockExtent = borderBoxBlockSize;
+            }
+            // Per Phase 3 Task 15 L3 post-PR-#63 hardening F#1 — for
+            // flex containers in the OUTER dispatch path the
+            // `MeasureSubtreeVisualBlockExtent` walk sums the items'
+            // block-axis extents as if they were block-flow children
+            // (CSS Flexbox L1 §4 — flex items DON'T stack vertically
+            // in the cross axis; the spec uses the line's max
+            // hypothetical cross-size for single-line containers). The
+            // flex pre-measure above already grew `borderBoxBlockSize`
+            // to the spec-correct max(item cross-size); clamp the
+            // subtree extent back to that value so siblings after the
+            // flex container land at the right page offset + the outer
+            // pagination doesn't over-defer. Mirrors the
+            // pendingTableLayouter clamp above for the same reason
+            // (the recursive walk over-measures content that has its
+            // own internal layout discipline).
+            if (IsFlexContainer(child)
                 && subtreeBlockExtent > borderBoxBlockSize)
             {
                 subtreeBlockExtent = borderBoxBlockSize;
@@ -2691,6 +2756,51 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 if (nMcDriven > childEffectiveBlockSize)
                 {
                     childEffectiveBlockSize = nMcDriven;
+                }
+            }
+
+            // Per Phase 3 Task 15 L3 post-PR-#63 hardening F#1 — nested
+            // flex container wrapper pre-measure. Mirrors the outer
+            // dispatch path's pre-measure: grow childBorderBoxBlockSize
+            // (the wrapper's painted block extent) to fit the flex
+            // cross-extent (= max(item natural cross-size) for L3 single-
+            // line row direction). Without this:
+            //   (a) height-auto nested flex containers inherit the
+            //       block-flow stacking sum from MeasureSubtreeVisualBlockExtent
+            //       (= ~225 for items 50/100/75) into childEffectiveBlockSize
+            //       — over-reserving space + pushing siblings down;
+            //   (b) the wrapper fragment painted at line 2767 has
+            //       BlockSize ~0 (the no-explicit-height-no-padding case),
+            //       visually clipping the items.
+            // Sub-cycle L4+ scope: outer cross-size (item margins +
+            // borders + padding) + baseline alignment + multi-line wrap
+            // — move in lockstep with FlexLayouter's placement math.
+            if (IsFlexContainer(child))
+            {
+                var nFlexCrossExtent = PreMeasureFlexCrossExtent(child);
+                var nFlexBorderPaddingBlock =
+                    borderStart + paddingStart + paddingEnd + borderEnd;
+                var nFlexDriven = nFlexCrossExtent + nFlexBorderPaddingBlock;
+                if (nFlexDriven > childBorderBoxBlockSize)
+                {
+                    childBorderBoxBlockSize = nFlexDriven;
+                }
+                // Also clamp childEffectiveBlockSize back to the post-
+                // grow childBorderBoxBlockSize when the subtree extent
+                // (which stacked the items as block-flow) exceeded it.
+                // Mirrors the outer-loop's `subtreeBlockExtent` clamp
+                // for flex containers — the recursive walk over-measures
+                // children with their own layout discipline.
+                if (childEffectiveBlockSize > childBorderBoxBlockSize)
+                {
+                    childEffectiveBlockSize = childBorderBoxBlockSize;
+                }
+                // After the clamp, ensure the grown wrapper size still
+                // dominates if the spec'd cross extent now exceeds the
+                // (clamped) childEffectiveBlockSize.
+                if (nFlexDriven > childEffectiveBlockSize)
+                {
+                    childEffectiveBlockSize = nFlexDriven;
                 }
             }
 
@@ -4980,6 +5090,52 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             cancellationToken);
 
         return discardingSink.MaxColumnBlockExtent;
+    }
+
+    /// <summary>Per Phase 3 Task 15 L3 post-PR-#63 hardening F#1 —
+    /// compute the flex wrapper's auto cross-extent WITHOUT stacking
+    /// its children vertically. The default
+    /// <see cref="MeasureSubtreeVisualBlockExtent(Box, CancellationToken)"/>
+    /// path (used by every non-flex wrapper) sums the children's
+    /// block-axis extents as if they were laid out in block-flow — for
+    /// a flex container with <c>height: auto</c> + items 50/100/75 it
+    /// returns ~225, while the actual single-line flex cross-extent is
+    /// max(50,100,75) = 100. Without this helper the wrapper's
+    /// <see cref="BoxFragment.BlockSize"/> is over-large + the outer
+    /// cursor advance over-allocates page space, leaving phantom gaps
+    /// after the flex container.
+    ///
+    /// <para>For the L3 single-line <c>flex-direction: row</c> case the
+    /// cross-extent = max(item natural block-size). Mirrors
+    /// <see cref="FlexLayouter.AttemptLayout"/>'s own
+    /// <c>containerCrossSize</c> derivation for <c>height: auto</c>
+    /// containers (the spec's max-content cross-size simplification per
+    /// CSS Flexbox L1 §9.4). Surfacing it at premeasure time fixes the
+    /// wrapper's painted size + the cursor advance.</para>
+    ///
+    /// <para><b>Sub-cycle L4+ scope.</b> Outer cross-extent (item
+    /// margins + borders + padding contributions), baseline alignment's
+    /// hypothetical baseline-stretch math, and multi-line wrap's
+    /// per-line cross-extent sum all require integration the L3
+    /// FlexLayouter doesn't yet have — same scope boundary as the
+    /// FlexLayouter's own placement math. Both must move in lockstep.</para></summary>
+    /// <param name="flexContainer">The flex container box (must satisfy
+    /// <see cref="IsFlexContainer"/>; the caller is the gate).</param>
+    /// <returns>The maximum cross-axis (= block-axis under
+    /// <c>flex-direction: row</c>) extent reached by any item. Returns
+    /// 0 when the container has no block-level children — matching
+    /// FlexLayouter's own derivation, which skips inline-level
+    /// children + anonymous-flex-item wrapping in L3 scope.</returns>
+    private static double PreMeasureFlexCrossExtent(Box flexContainer)
+    {
+        var maxCross = 0.0;
+        foreach (var item in flexContainer.Children)
+        {
+            if (!item.IsBlockLevel) continue;
+            var itemHeight = item.Style.ReadLengthPxOrZero(PropertyId.Height);
+            if (itemHeight > maxCross) maxCross = itemHeight;
+        }
+        return maxCross;
     }
 
     /// <summary>Per Phase 3 Task 14 cycle 1 hardening (Finding 1) —

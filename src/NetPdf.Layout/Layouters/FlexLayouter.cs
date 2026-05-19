@@ -368,9 +368,14 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             // height: auto (or any non-length slot) — use max(item natural block-size).
             // The block-level filter mirrors the row-packing loop so the
             // max only counts items the emission loop will actually emit.
+            // Per Phase 3 Task 15 L3 post-PR-#63 hardening F#6 — check
+            // cancellation between items so a long item list doesn't
+            // burn through the caller's deadline. Mirrors the main-axis
+            // pre-pass + the emission loop above which both check.
             var maxItemCross = 0.0;
             for (var i = 0; i < _rootBox.Children.Count; i++)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 var c = _rootBox.Children[i];
                 if (!c.IsBlockLevel) continue;
                 var ih = c.Style.ReadLengthPxOrZero(PropertyId.Height);
@@ -421,15 +426,27 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             // Per cycle 1 — item's natural block-size = item's
             // declared `height` if set, else 0. Cycle 2+ will derive
             // a content-based block-size; L3's ComputeAlignItemsPlacement
-            // applies the stretch override below when itemBlockSize == 0
-            // (= the item's auto cross-size).
+            // applies the stretch override when the cross-size property
+            // computes to `auto` (NOT just when itemBlockSize == 0 —
+            // explicit `height: 0` reads as 0 too but is NOT auto per
+            // CSS Flexbox L1 §7.2 + the post-PR-#63 hardening F#2 fix).
             var itemBlockSize = item.Style.ReadLengthPxOrZero(PropertyId.Height);
+            // Per Phase 3 Task 15 L3 post-PR-#63 hardening F#2 — the
+            // stretch branch in ComputeAlignItemsPlacement needs to
+            // distinguish `height: auto` (Unset / Keyword slot, treated
+            // as auto) from explicit `height: 0` (LengthPx slot with
+            // value 0). Pre-fix the branch tested `itemCrossSize > 0`
+            // and treated `height: 0` as auto — stretching a deliberate
+            // 0-height spacer to the full container cross extent. Per
+            // CSS Flexbox §7.2 stretch applies only when the item's
+            // cross-size property computes to `auto`.
+            var itemIsCrossSizeAuto = IsCrossSizeAuto(item);
 
             // Per Phase 3 Task 15 L3 — cross-axis placement per CSS Box
             // Alignment L3 §6 + CSS Flexbox L1 §8.3. The helper returns
             // (a) the item's block-axis offset for the BoxFragment +
             // (b) the EFFECTIVE cross-axis size (= stretch overrides
-            // auto-sized items to the container's cross extent; all
+            // auto-cross-sized items to the container's cross extent; all
             // other values keep the item's declared block-size). The
             // L1 + L2 behavior was equivalent to always emitting at
             // (_contentBlockOffset, itemBlockSize) — this preserves
@@ -437,7 +454,8 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             // full alignment matrix.
             var (itemBlockOffset, itemEffectiveCrossSize) = ComputeAlignItemsPlacement(
                 alignItems.Value, alignItems.Mode,
-                containerCrossSize, itemBlockSize, _contentBlockOffset);
+                containerCrossSize, itemBlockSize, itemIsCrossSizeAuto,
+                _contentBlockOffset);
 
             _sink.Emit(new BoxFragment(
                 Box: item,
@@ -585,15 +603,18 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     /// container's <c>align-items</c> resolves to <c>stretch</c> (= the
     /// computed default for <c>normal</c>), an item's cross-axis size
     /// is resized to fill the container's cross extent IF the item's
-    /// own cross-axis size is <c>auto</c>. The L3 implementation uses
-    /// <c>itemCrossSize &gt; 0</c> as the proxy for "explicit cross-
-    /// size declared" — items with a declared <c>height</c> (a non-
-    /// zero LengthPx slot) keep their declared height; auto-height
-    /// items (= the cycle-1 reader returns 0) get resized to
-    /// <paramref name="containerCrossSize"/>. The block-axis offset
-    /// for stretch is always <paramref name="contentBlockOffset"/>
-    /// (= cross-start; stretch by definition fills the container so
-    /// the item starts at the cross-start edge).</para>
+    /// own cross-size property computes to <c>auto</c>. The
+    /// implementation reads the slot type via
+    /// <see cref="IsCrossSizeAuto(Box)"/> — Unset / Keyword (= explicit
+    /// <c>auto</c>) slots stretch; LengthPx slots (whether 0 or
+    /// positive) keep their declared cross-size. Per Phase 3 Task 15
+    /// L3 post-PR-#63 hardening F#2, this replaces the pre-fix proxy
+    /// of <c>itemCrossSize &gt; 0</c> which incorrectly stretched
+    /// explicit <c>height: 0</c> spacers to the full container cross
+    /// extent. The block-axis offset for stretch is always
+    /// <paramref name="contentBlockOffset"/> (= cross-start; stretch
+    /// by definition fills the container so the item starts at the
+    /// cross-start edge).</para>
     ///
     /// <para><b>Positional alignment.</b> For <see cref="AlignItemsValue.FlexStart"/>,
     /// <see cref="AlignItemsValue.FlexEnd"/>, and <see cref="AlignItemsValue.Center"/>
@@ -638,15 +659,19 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             OverflowAlignmentMode mode,
             double containerCrossSize,
             double itemCrossSize,
+            bool itemIsCrossSizeAuto,
             double contentBlockOffset)
     {
-        // Stretch — auto-sized items get resized to fill the container's
-        // cross extent; explicitly-sized items keep their declared size
-        // per CSS Flexbox L1 §7.2 (the item's `height` property wins
-        // over the container's `align-items: stretch`).
+        // Stretch — auto-cross-sized items get resized to fill the
+        // container's cross extent; explicitly-sized items keep their
+        // declared size per CSS Flexbox L1 §7.2. Per post-PR-#63 F#2
+        // we test the SLOT TYPE (via `itemIsCrossSizeAuto`) rather
+        // than `itemCrossSize > 0`: an explicit `height: 0` (= a
+        // LengthPx slot with payload 0) is NOT auto and must keep its
+        // declared 0 cross-size (e.g., a deliberate spacer).
         if (value == AlignItemsValue.Stretch)
         {
-            var effectiveCross = itemCrossSize > 0 ? itemCrossSize : containerCrossSize;
+            var effectiveCross = itemIsCrossSizeAuto ? containerCrossSize : itemCrossSize;
             return (contentBlockOffset, effectiveCross);
         }
 
@@ -682,6 +707,45 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         }
 
         return (natural, itemCrossSize);
+    }
+
+    /// <summary>Per Phase 3 Task 15 L3 post-PR-#63 hardening F#2 —
+    /// distinguish <c>height: auto</c> from explicit
+    /// <c>height: 0</c> / explicit <c>height: &lt;positive px&gt;</c>
+    /// on a flex item's computed style. Stretch applies only when the
+    /// item's cross-size property computes to <c>auto</c> per CSS
+    /// Flexbox §7.2; explicit <c>0</c> must be honored (e.g., a
+    /// deliberate spacer that overlaps siblings on the cross axis).
+    ///
+    /// <para>Slot semantics: <see cref="ComputedSlotTag.LengthPx"/>
+    /// slots are explicit (their payload is the declared px value,
+    /// which may be 0). Everything else — <see cref="ComputedSlotTag.Unset"/>
+    /// (= no declaration → default <c>auto</c>),
+    /// <see cref="ComputedSlotTag.Keyword"/> (= explicit <c>auto</c>),
+    /// <see cref="ComputedSlotTag.Percentage"/> /
+    /// <see cref="ComputedSlotTag.SideTableIndex"/> (= percentage /
+    /// calc values that the L3 reader can't resolve in cycle 1 + falls
+    /// back to 0 via <c>ReadLengthPxOrZero</c>) — is treated as auto
+    /// for the stretch-applicability check. Percentage / calc handling
+    /// in stretch is sub-cycle L4+ scope; for L3 single-line they
+    /// behave as auto, matching the rest of the layouter's percent /
+    /// calc deferral pattern.</para>
+    ///
+    /// <para>Mirrors <see cref="BlockLayouter"/>'s
+    /// <c>IsHeightAuto</c> predicate (BlockLayouter.cs ~5052) — same
+    /// shape, same caveat about <see cref="ComputedSlotTag.LengthPx"/>
+    /// being the only EXPLICIT-px slot tag.</para></summary>
+    /// <param name="item">A flex item box. The check reads
+    /// <c>Style.Get(PropertyId.Height)</c> (= the cross-size property
+    /// under the L3 default <c>flex-direction: row</c>). For
+    /// <c>flex-direction: column</c> (= L4+ scope) this would need to
+    /// read <c>Width</c> instead — the helper's name stays
+    /// "CrossSize" so the rename lands cleanly when column direction
+    /// arrives.</param>
+    private static bool IsCrossSizeAuto(Box item)
+    {
+        var slot = item.Style.Get(PropertyId.Height);
+        return slot.Tag != ComputedSlotTag.LengthPx;
     }
 
     /// <summary>Per cycle 1 (Hello World) — no per-instance state to

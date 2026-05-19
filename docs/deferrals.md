@@ -906,15 +906,42 @@ grepping the ID).
     `align-items` when the item's `align-self` is `auto`. The L3
     layouter reads only the container's `align-items` so every item
     in a flex container shares the same cross-axis alignment.
-  - `safe` / `unsafe` overflow containment for `align-items` —
-    L3 decodes the compound keywords (indices 13-26) into the
-    `OverflowAlignmentMode` channel + applies the spec-correct
-    behavior per CSS Box Alignment L3 §5.3 for positional values
-    (= same approach as L2's `justify-content`). Sub-cycle L4+
-    will refine if the L3 single-line / positional-value-only
-    treatment proves insufficient for the deferred-value families
-    (e.g., when baseline alignment lands and its overflow semantics
-    differ from positional values').
+  - Baseline-family overflow semantics + production parser
+    recovery refinement for compound `align-items` keywords — L3
+    decodes the compound `<overflow-position> <self-position>`
+    forms (indices 13-26) into the `OverflowAlignmentMode` channel
+    + applies the spec-correct positional-value behavior per CSS
+    Box Alignment L3 §5.3 (same approach as L2's
+    `justify-content`); per Phase 3 Task 15 L3 post-PR-#63
+    hardening F#3 the `CssPreprocessor.KnownDroppedProperties`
+    table now lists `align-items` so AngleSharp.Css's drop of
+    compound keywords is recovered (same precedent as
+    `justify-content`). Sub-cycle L4+ will refine the overflow
+    semantics for the deferred-value families (e.g., when baseline
+    alignment lands its overflow semantics differ from positional
+    values'), and revisit the preprocessor entry if AngleSharp.Css
+    upgrades its parser to recognize compound `align-items`
+    natively.
+  - **Cross-axis margins + auto-margins for align-items** (CSS
+    Flexbox L1 §8.4): L3's alignment math operates on the item's
+    border-box; the spec uses the item's margin-box and lets
+    cross-axis `margin: auto` override `align-items` /
+    `align-self`. Sub-cycle L4+ scope — requires plumbing margin
+    reads through FlexLayouter. Until then, items with non-zero
+    cross-axis margins produce slightly-off align-items
+    placements. Pinned by the
+    `L3_hardening_known_gap_cross_axis_margins_ignored_in_alignment`
+    test — when sub-cycle L4+ ships the margin-box math, that
+    test should fail + this bullet should be removed.
+  - **Stretch with margin-box + min/max constraints** (CSS Flexbox
+    L1 §7.2): L3 stretch sets `BlockSize = containerCrossSize` for
+    auto-cross-sized items, ignoring item margins and min-height /
+    max-height constraints. The spec computes stretch as the cross
+    margin-box size with min/max clamps. Sub-cycle L4+ scope.
+    Pinned by the
+    `L3_hardening_known_gap_stretch_ignores_min_max_constraints`
+    test — when sub-cycle L4+ ships the clamping, that test
+    should fail + this bullet should be removed.
   - `flex-grow` / `flex-shrink` / `flex-basis` resolution
   - `order` property
   - Anonymous flex-item wrapping for inline-level / text children

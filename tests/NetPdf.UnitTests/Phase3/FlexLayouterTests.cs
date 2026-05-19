@@ -1472,9 +1472,13 @@ public sealed class FlexLayouterTests
         // 3 items of height 50 in a column container of height 300.
         // Items pack along the main axis (= block axis) starting at the
         // content-block-start (= 0). Expected BlockOffsets: 0, 50, 100.
-        // The cross axis = inline; with the L3-default `stretch`
-        // align-items + the test fixture's auto-width items, items
-        // expand to the container's inline cross-size.
+        // The cross axis = inline; each item declares an explicit
+        // width: 100 so the L3-default `stretch` align-items DOES NOT
+        // resize them (stretch only fires for cross-size-auto items
+        // per CSS Flexbox §7.2). Items keep their declared inline-size.
+        // Per Phase 3 Task 15 L4 post-PR-#64 review F#5 — corrected
+        // from the prior "auto-width items expand to container" wording
+        // which contradicted the fixture's explicit widths.
         var sink = new RecordingFragmentSink();
         using var shaper = new SyntheticShaperResolver();
 
@@ -1887,6 +1891,421 @@ public sealed class FlexLayouterTests
             }
         }
         return itemFragments;
+    }
+
+    // ====================================================================
+    //  Phase 3 Task 15 L4 post-PR-#64 review hardening tests
+    // ====================================================================
+
+    [Fact]
+    public void L4_hardening_column_wrapper_height_auto_sums_item_block_sizes()
+    {
+        // F#1 — when a column-direction flex container has height:auto,
+        // the wrapper's BoxFragment.BlockSize must reflect the
+        // spec-correct main-axis content extent = SUM of item block-
+        // sizes (CSS Flexbox L1 §9.4 — max-content main-size for an
+        // auto-main-size single-line container is the sum of item
+        // hypothetical main-sizes).
+        //
+        // Fixture: 3 items of heights 50/100/75 in a height:auto column
+        // container. Pre-F#1 the column path skipped PreMeasureFlex*
+        // entirely, leaving the wrapper at the auto-resolved fallback
+        // (often 0 or a 1px clamp via the fragmentainer-remainder
+        // path); post-F#1 the wrapper paints at the spec sum = 225.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
+        // Leave Height auto.
+        SetLengthPx(flex.Style, PropertyId.Width, 200);
+
+        var heights = new[] { 50.0, 100.0, 75.0 };
+        var items = new Box[heights.Length];
+        for (var i = 0; i < heights.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, heights[i]);
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? wrapper = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == flex) { wrapper = f; break; }
+        }
+        Assert.NotNull(wrapper);
+        // F#1 — wrapper sizes to SUM(50, 100, 75) = 225 (the column
+        // main-axis content extent), NOT 0 / 1 (the pre-fix
+        // auto-resolved fallback) or 100 (max — that's the row-direction
+        // cross-extent).
+        Assert.Equal(225.0, wrapper!.Value.BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public void L4_hardening_column_justify_content_center_with_auto_height()
+    {
+        // F#1 — with the F#1 fix, a height:auto column container has
+        // its borderBoxBlockSize correctly grown to sum(items). The
+        // FlexLayouter then sees containerMainSize = sum =
+        // freeSpace = 0; justify-content: center → startOffset = 0;
+        // items land at BlockOffsets 0, 50, 100 (no overflow → no
+        // negative offsets).
+        //
+        // Pre-F#1: the wrapper was tiny (auto fallback), freeSpace
+        // was hugely negative, items emitted at strange offsets
+        // (positional-value overflow per CSS Box Alignment §5.3
+        // still produces negative offsets when freeSpace < 0 + the
+        // overflow mode is `default`).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
+        flex.Style.Set(PropertyId.JustifyContent, ComputedSlot.FromKeyword(5)); // center
+        // Leave Height auto.
+        SetLengthPx(flex.Style, PropertyId.Width, 200);
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Height, 50);
+            SetLengthPx(style, PropertyId.Width, 100);
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? wrapper = null;
+        var fragments = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == flex) wrapper = f;
+            for (var i = 0; i < items.Length; i++)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.NotNull(wrapper);
+        Assert.Equal(3, fragments.Count);
+        // F#1 — with the F#1 fix the wrapper grows to sum = 150
+        // (the container's content-block-size); freeSpace = 0;
+        // startOffset = 0 → items at 0/50/100 (no negative offsets,
+        // no overflow).
+        Assert.Equal(150.0, wrapper!.Value.BlockSize, precision: 3);
+        var wrapperTop = wrapper.Value.BlockOffset;
+        Assert.Equal(wrapperTop + 0.0, fragments[0].BlockOffset, precision: 3);
+        Assert.Equal(wrapperTop + 50.0, fragments[1].BlockOffset, precision: 3);
+        Assert.Equal(wrapperTop + 100.0, fragments[2].BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L4_hardening_column_sibling_lands_after_full_column_stack()
+    {
+        // F#1 — a sibling block AFTER a height:auto column flex
+        // container must land at wrapper.BlockOffset + sum(items),
+        // NOT at some other value derived from the pre-F#1 fallback.
+        // Mirrors the L3 row-direction sibling test but along the
+        // column main axis.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
+        // height:auto.
+        SetLengthPx(flex.Style, PropertyId.Width, 200);
+
+        var heights = new[] { 50.0, 100.0, 75.0 };
+        for (var i = 0; i < heights.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, heights[i]);
+            flex.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+        }
+
+        // Sibling AFTER the flex container — a plain block of height 30.
+        var siblingStyle = MakeStyle();
+        SetLengthPx(siblingStyle, PropertyId.Width, 100);
+        SetLengthPx(siblingStyle, PropertyId.Height, 30);
+        var sibling = Box.ForElement(BoxKind.BlockContainer, siblingStyle, MakeElement());
+
+        root.AppendChild(flex);
+        root.AppendChild(sibling);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? wrapper = null;
+        BoxFragment? siblingFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == flex) wrapper = f;
+            else if (f.Box == sibling) siblingFragment = f;
+        }
+        Assert.NotNull(wrapper);
+        Assert.NotNull(siblingFragment);
+        // F#1 — sibling lands directly after the column main-axis
+        // content sum (= wrapper BlockOffset + 225 = wrapper bottom
+        // edge given no padding/border). Pre-F#1 it landed at
+        // wrapper BlockOffset + the auto-resolved fallback (usually
+        // 0 / 1px), leaving the column items visually overlapping
+        // the sibling.
+        Assert.Equal(wrapper!.Value.BlockOffset + 225.0,
+            siblingFragment!.Value.BlockOffset, precision: 3);
+    }
+
+    [Fact(Skip =
+        "Phase 3 Task 15 L4 post-PR-#64 review F#2 — explicit-width "
+        + "honoring for flex containers requires the BlockLayouter "
+        + "width-resolution pipeline to honor declared `width` as a "
+        + "shrink-to-fit constraint (cycle-1 BlockLayouter derives "
+        + "borderBoxInlineSize from the available inline range + "
+        + "ignores declared width). The fix is out of L4 hardening "
+        + "scope; tracked as the BlockLayouter-flex-explicit-width "
+        + "Missing bullet under docs/deferrals.md#flex-layouter-features. "
+        + "When that gap is closed, remove the Skip + the assertion "
+        + "below verifies items center against the declared 200px "
+        + "container (not the 600px page).")]
+    public void L4_hardening_column_explicit_width_smaller_than_page_centers_correctly()
+    {
+        // F#2 — page = 600px wide. Flex container has explicit
+        // width:200 + flex-direction:column + align-items:center.
+        // Item is width:100. Expected: item centered in the
+        // 200-px container at InlineOffset = (200 - 100) / 2 = 50.
+        // (NOT (600 - 100) / 2 = 250, which would mean the layouter
+        // ignored the declared width.)
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(6)); // center
+        SetLengthPx(flex.Style, PropertyId.Height, 300);
+        SetLengthPx(flex.Style, PropertyId.Width, 200); // explicit
+
+        var itemStyle = MakeStyle();
+        SetLengthPx(itemStyle, PropertyId.Width, 100);
+        SetLengthPx(itemStyle, PropertyId.Height, 50);
+        var item = Box.ForElement(BoxKind.BlockContainer, itemStyle, MakeElement());
+        flex.AppendChild(item);
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        // Page-sized fragmentainer — NOT matched to the flex's
+        // declared width.
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? itemFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == item) { itemFragment = f; break; }
+        }
+        Assert.NotNull(itemFragment);
+        // F#2 expected: item centered in the 200-px declared width.
+        Assert.Equal(50.0, itemFragment!.Value.InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L4_hardening_known_gap_column_flex_ignores_declared_width()
+    {
+        // F#2 known-gap pin — paired with the Skip'd test above.
+        // Documents the CURRENT (incomplete) behavior: a column flex
+        // container with width:200 in a 600px page treats
+        // _contentInlineSize as the full page width, so align-items:
+        // center centers items against 600 (= page) instead of 200
+        // (= declared width). Reviewer-flagged at PR #64.
+        //
+        // When the BlockLayouter width-resolution fix lands + the
+        // Skip'd "smaller_than_page_centers_correctly" test starts
+        // passing, this test will start failing — at which point
+        // remove BOTH this pin AND the matching Missing bullet in
+        // docs/deferrals.md.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(6)); // center
+        SetLengthPx(flex.Style, PropertyId.Height, 300);
+        SetLengthPx(flex.Style, PropertyId.Width, 200);
+
+        var itemStyle = MakeStyle();
+        SetLengthPx(itemStyle, PropertyId.Width, 100);
+        SetLengthPx(itemStyle, PropertyId.Height, 50);
+        var item = Box.ForElement(BoxKind.BlockContainer, itemStyle, MakeElement());
+        flex.AppendChild(item);
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? itemFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == item) { itemFragment = f; break; }
+        }
+        Assert.NotNull(itemFragment);
+        // Known-gap — item centered against the 600px page, NOT
+        // against the declared 200px container width. Spec-correct
+        // is 50; current is 250.
+        Assert.Equal(250.0, itemFragment!.Value.InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L4_hardening_row_stretch_does_not_treat_percentage_height_as_auto()
+    {
+        // F#3 — `height: 50%` is an EXPLICIT cross-size declaration
+        // for a row-direction flex item. Per CSS Flexbox §7.2 stretch
+        // applies only when the cross-size property computes to
+        // `auto`; percentages are NOT auto. Pre-F#3 the check was
+        // `slot.Tag != ComputedSlotTag.LengthPx`, which incorrectly
+        // treated Percentage as auto + stretched the item. Post-F#3
+        // the check is `slot.Tag is Unset or Keyword`, matching the
+        // canonical IsHeightAuto predicate.
+        //
+        // The cycle-1 LengthResolver returns 0 for percentages via
+        // ReadLengthPxOrZero (= "percentage cross-size not yet
+        // resolved" is its own gap), so the item's recorded
+        // BlockSize is the declared-but-unresolved 0 — NOT the
+        // stretched 200. The pin is that BlockSize != 200 (stretch
+        // didn't override the declaration).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        // Row direction (default); explicit height = 200 so
+        // containerCrossSize = 200.
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(1)); // stretch
+
+        var itemStyle = MakeStyle();
+        SetLengthPx(itemStyle, PropertyId.Width, 100);
+        // EXPLICIT percentage cross-size — Percentage tag, NOT
+        // LengthPx, NOT Unset, NOT Keyword.
+        itemStyle.Set(PropertyId.Height, ComputedSlot.FromPercentage(50.0));
+        var item = Box.ForElement(BoxKind.BlockContainer, itemStyle, MakeElement());
+        flex.AppendChild(item);
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? itemFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == item) { itemFragment = f; break; }
+        }
+        Assert.NotNull(itemFragment);
+        // F#3 — explicit percentage is honored; stretch does NOT
+        // resize to 200 (the containerCrossSize). The cycle-1
+        // ReadLengthPxOrZero resolves percentage to 0 — that's a
+        // separate gap; the F#3 pin is that the slot tag's
+        // explicit-declaration status is respected.
+        Assert.NotEqual(200.0, itemFragment!.Value.BlockSize);
+    }
+
+    [Fact]
+    public void L4_hardening_column_stretch_does_not_treat_percentage_width_as_auto()
+    {
+        // F#3 — column-direction equivalent. A `width: 50%` item in
+        // a column container with align-items: stretch must NOT be
+        // stretched to containerCrossSize.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(1)); // stretch
+        SetLengthPx(flex.Style, PropertyId.Height, 300);
+        SetLengthPx(flex.Style, PropertyId.Width, 200);
+
+        var itemStyle = MakeStyle();
+        SetLengthPx(itemStyle, PropertyId.Height, 50);
+        // EXPLICIT percentage cross-size.
+        itemStyle.Set(PropertyId.Width, ComputedSlot.FromPercentage(50.0));
+        var item = Box.ForElement(BoxKind.BlockContainer, itemStyle, MakeElement());
+        flex.AppendChild(item);
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 200, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? itemFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == item) { itemFragment = f; break; }
+        }
+        Assert.NotNull(itemFragment);
+        // F#3 — explicit percentage is honored; stretch does NOT
+        // resize the item to 200 (containerCrossSize).
+        Assert.NotEqual(200.0, itemFragment!.Value.InlineSize);
     }
 
     // ====================================================================

@@ -810,21 +810,49 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     /// (read <see cref="PropertyId.Width"/>). The caller passes the
     /// resolved direction so this predicate stays direction-agnostic.</para>
     ///
-    /// <para>Slot semantics: <see cref="ComputedSlotTag.LengthPx"/>
-    /// slots are explicit (their payload is the declared px value,
-    /// which may be 0). Everything else — <see cref="ComputedSlotTag.Unset"/>
-    /// (= no declaration → default <c>auto</c>),
-    /// <see cref="ComputedSlotTag.Keyword"/> (= explicit <c>auto</c>),
-    /// <see cref="ComputedSlotTag.Percentage"/> /
-    /// <see cref="ComputedSlotTag.SideTableIndex"/> (= percentage /
-    /// calc values that the L3 reader can't resolve in cycle 1 + falls
-    /// back to 0 via <c>ReadLengthPxOrZero</c>) — is treated as auto
-    /// for the stretch-applicability check.</para>
+    /// <para><b>Slot semantics</b> — per CSS Flexbox §7.2 "auto" means
+    /// the cross-size property COMPUTES to <c>auto</c>:
+    /// <list type="bullet">
+    ///   <item><see cref="ComputedSlotTag.Unset"/> (= no declaration in
+    ///   the cascade — the property's initial value applies, which is
+    ///   <c>auto</c> for <c>width</c> / <c>height</c>) → auto.</item>
+    ///   <item><see cref="ComputedSlotTag.Keyword"/> (= explicit
+    ///   <c>auto</c> keyword, or one of the related intrinsic-sizing
+    ///   keywords <c>min-content</c> / <c>max-content</c> /
+    ///   <c>fit-content</c> — see L5+ refinement note below) → auto.</item>
+    ///   <item><see cref="ComputedSlotTag.LengthPx"/> (= explicit pixel
+    ///   value, including 0) → NOT auto.</item>
+    ///   <item><see cref="ComputedSlotTag.Percentage"/> (= percentage
+    ///   relative to the containing block's cross extent) → NOT auto.
+    ///   The author wrote an explicit declaration; stretch should honor
+    ///   it (resolving to 0 via <c>ReadLengthPxOrZero</c> in cycle 1
+    ///   is a separate "percentage cross-size not yet resolved" gap
+    ///   that's its own deferral — but it's NOT auto).</item>
+    ///   <item>Any other tag (defensive) → NOT auto.</item>
+    /// </list></para>
     ///
-    /// <para>Mirrors <see cref="BlockLayouter"/>'s
-    /// <c>IsHeightAuto</c> predicate (BlockLayouter.cs ~5052) — same
-    /// shape, same caveat about <see cref="ComputedSlotTag.LengthPx"/>
-    /// being the only EXPLICIT-px slot tag.</para></summary>
+    /// <para><b>Pre-hardening bug</b> — per Phase 3 Task 15 L4 post-PR-#64
+    /// review F#3 the previous implementation returned
+    /// <c>slot.Tag != ComputedSlotTag.LengthPx</c>, which incorrectly
+    /// reported <c>width: 50%</c> (Percentage) + <c>width: calc(...)</c>
+    /// (SideTableIndex) as auto. A <c>width: 50%</c> flex item in a
+    /// column container was stretched to 100% instead of remaining
+    /// an explicit-declaration item. Per the F#3 fix the predicate
+    /// now matches BlockLayouter's <c>IsHeightAuto</c>
+    /// (BlockLayouter.cs ~5052 → ComputedStyleLayoutExtensions
+    /// <see cref="ComputedStyleLayoutExtensions.IsHeightAuto"/>) — auto
+    /// iff Unset OR Keyword. Percentage / SideTableIndex /
+    /// LengthPx are all explicit declarations.</para>
+    ///
+    /// <para><b>Sub-cycle L5+ scope</b> — distinguishing the <c>auto</c>
+    /// keyword from <c>min-content</c> / <c>max-content</c> / <c>fit-content</c>
+    /// requires reading the keyword payload + cross-referencing the
+    /// property-specific keyword table. For L4 hardening all Keyword
+    /// tags on width / height resolve as auto (the most common case
+    /// + the others behave similarly for stretch in the L4 simplification).</para>
+    ///
+    /// <para><b>Cancellation</b> — none needed; this is a single-slot
+    /// read.</para></summary>
     /// <param name="item">A flex item box.</param>
     /// <param name="direction">Resolved <c>flex-direction</c> — selects
     /// which property is the cross axis.</param>
@@ -834,7 +862,14 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             ? PropertyId.Width   // column: cross = inline (width)
             : PropertyId.Height; // row: cross = block (height)
         var slot = item.Style.Get(crossProperty);
-        return slot.Tag != ComputedSlotTag.LengthPx;
+        // Per CSS Flexbox §7.2 + the F#3 hardening — auto iff Unset
+        // (no declaration → property's initial `auto` applies) OR
+        // Keyword (explicit `auto` / `min-content` / etc.). All other
+        // tags (LengthPx, Percentage, SideTableIndex, …) represent
+        // explicit declarations + must NOT be treated as auto. Mirrors
+        // the canonical IsHeightAuto predicate in
+        // ComputedStyleLayoutExtensions.
+        return slot.Tag is ComputedSlotTag.Unset or ComputedSlotTag.Keyword;
     }
 
     /// <summary>Per Phase 3 Task 15 L4 — return the property IDs to

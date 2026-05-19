@@ -958,6 +958,24 @@ grepping the ID).
     `L3_hardening_known_gap_stretch_ignores_min_max_constraints`
     test — when sub-cycle L4+ ships the clamping, that test
     should fail + this bullet should be removed.
+  - **Explicit-width honoring for flex containers**. Per Phase 3
+    Task 15 L4 post-PR-#64 review F#2 — a `display: flex;
+    flex-direction: column; width: 200px` container in a 600px page
+    currently has `_contentInlineSize = 600` (= the available
+    inline range from `BlockLayouter`'s float-adjusted derivation
+    at BlockLayouter.cs:1138). The FlexLayouter then computes
+    `align-items: center` against the 600 page width, not the
+    declared 200. The fix touches the BlockLayouter
+    width-resolution pipeline (cycle-1 BlockLayouter does NOT
+    honor declared `width` as a shrink-to-fit constraint —
+    `borderBoxInlineSize` is always the float-adjusted available
+    range). Tracked by the
+    `L4_hardening_known_gap_column_flex_ignores_declared_width`
+    pinning test + the Skip'd
+    `L4_hardening_column_explicit_width_smaller_than_page_centers_correctly`
+    test. When the BlockLayouter width-resolution fix lands the
+    pin starts failing + the Skip'd test starts passing — at
+    which point remove BOTH this bullet AND the pin.
   - `flex-grow` / `flex-shrink` / `flex-basis` resolution
   - `order` property
   - Anonymous flex-item wrapping for inline-level / text children
@@ -978,15 +996,21 @@ grepping the ID).
     `BoxKind.InlineFlexContainer`.
   - `src/NetPdf.Css/properties.json` — the `align-items`,
     `flex-direction`, `flex-wrap`, `justify-content` keyword
-    properties (already parsed; not yet honored by the layouter).
-- **Trigger** — sub-cycle 2 picks up flex-direction: column +
-  flex-wrap + real align-items; sub-cycle 3 picks up flex-grow /
-  shrink / basis. Sub-cycle 4 picks up the anonymous-flex-item
-  wrapping + the `FlexContinuation`-based multi-page split.
+    properties (cascade-parsed + honored at the layouter for the
+    L1-L4 subset; `flex-wrap` still deferred to L5+).
+- **Trigger** — L2 picked up `justify-content`; L3 picked up
+  `align-items` (base values + stretch); L4 picked up
+  `flex-direction: column` + the F#1 hardening for column auto-
+  height wrappers. Sub-cycle L5+ picks up `flex-wrap`, the
+  reversed variants' item-order reversal, the `flex-grow` /
+  `flex-shrink` / `flex-basis` interpolation, anonymous-flex-item
+  wrapping for inline/text children, and the
+  `FlexContinuation`-based multi-page split.
 - **Added** — Phase 3 Task 15 cycle 1 (Hello World).
-- **Removal condition** — Phase 3 Task 15 L2 + L3 ship the deferred
-  features (column / wrap / justify / align / grow / shrink / basis /
-  order / baseline / multi-page split / anonymous flex item).
+- **Removal condition** — Sub-cycle L5+ ships the remaining
+  deferred features (wrap / row-reverse + column-reverse item-order
+  reversal / grow / shrink / basis / order / baseline / multi-page
+  split / anonymous flex item).
 
 ---
 

@@ -839,12 +839,21 @@ grepping the ID).
 - **Behavior** — A block container with `display: flex` (=
   `BoxKind.FlexContainer`) or `display: inline-flex` (=
   `BoxKind.InlineFlexContainer`) lays out its direct block-level
-  children as a single horizontal row. Each item emits at its natural
-  inline-size (= the item's declared `width` if set, else 0) and
-  natural block-size (= declared `height` if set, else 0). Items pack
-  along the main-axis cursor; the cursor is offset by L2's
-  `justify-content` start-offset + advances by `itemInlineSize +
-  betweenSpacing`. L2's `justify-content` honors the full matrix per
+  children along the main axis selected by `flex-direction`. Per
+  Phase 3 Task 15 L4 the layouter honors two `flex-direction` values:
+  `row` (the L1-L3 default; main = inline axis, items flow left-to-
+  right) and `column` (L4 new; main = block axis, items stack top-to-
+  bottom). For column direction `justify-content` controls block-axis
+  packing + `align-items` controls inline-axis placement (the axis
+  swap is transparent to L2 + L3's alignment math — only the cursor
+  axis + the property reads change). The reversed variants
+  (`row-reverse` / `column-reverse`) are decoded but currently treated
+  as their non-reversed counterparts (L5+ scope). Each item emits at
+  its natural main-axis + cross-axis sizes from the direction-
+  appropriate property (= width / height for row → main / cross; height
+  / width for column). Items pack along the main-axis cursor; the
+  cursor is offset by L2's `justify-content` start-offset + advances
+  by `itemMainSize + betweenSpacing`. L2's `justify-content` honors the full matrix per
   CSS Box Alignment L3 §4.5 + §5.3: six base values (`flex-start`,
   `flex-end`, `center`, `space-between`, `space-around`,
   `space-evenly`) cross three overflow modes (default, `safe`,
@@ -866,13 +875,25 @@ grepping the ID).
   CSS Box Alignment L3 §5.3 (safe → safe-start fallback on overflow;
   unsafe → honor alignment on overflow; default → positional values
   keep natural offset on overflow). The container's cross-axis
-  extent (`containerCrossSize`) derives from the container's
-  explicit `height` when set, else max(item natural block-size).
-  The flex container is atomic to outer pagination (the entire
-  container's items emit on the page the wrapper landed on; no
-  `FlexContinuation` resume).
+  extent (`containerCrossSize`) is direction-dependent: row direction
+  (cross axis = block axis) uses explicit `height` when set else
+  max(item natural block-size) per CSS Flexbox L1 §9.4; column
+  direction (cross axis = inline axis) uses the wrapper's
+  content-inline-size (= available inline range from BlockLayouter's
+  ConfigureEmission) — `width: auto` on a block-level flex container
+  means "fill containing block" per CSS Sizing §3.4, NOT shrink-to-fit
+  (inline-flex shrink-to-fit is L5+ scope). The flex container is
+  atomic to outer pagination (the entire container's items emit on
+  the page the wrapper landed on; no `FlexContinuation` resume).
 - **Missing** —
-  - `flex-direction: column` / `row-reverse` / `column-reverse`
+  - `flex-direction: row-reverse` and `column-reverse` (CSS Flexbox L1
+    §5.1). The reversal of item order is orthogonal to the row/column
+    axis swap shipped in L4 — both reversed variants are decoded by
+    `ReadFlexDirection` but the FlexLayouter currently treats them as
+    their non-reversed counterparts (row-reverse → row, column-reverse
+    → column). Sub-cycle L5+ adds the item-order reversal in a single
+    pass over the per-item emission loop (cursor walks from main-end
+    inward instead of from main-start outward).
   - `flex-wrap: wrap` / `wrap-reverse`
   - Outer-main-size + auto-margins in `justify-content` free-space
     calculation (CSS Flexbox L1 §9.5): L2's pre-pass sums only
@@ -942,6 +963,24 @@ grepping the ID).
     `L3_hardening_known_gap_stretch_ignores_min_max_constraints`
     test — when sub-cycle L4+ ships the clamping, that test
     should fail + this bullet should be removed.
+  - **Explicit-width honoring for flex containers**. Per Phase 3
+    Task 15 L4 post-PR-#64 review F#2 — a `display: flex;
+    flex-direction: column; width: 200px` container in a 600px page
+    currently has `_contentInlineSize = 600` (= the available
+    inline range from `BlockLayouter`'s float-adjusted derivation
+    at BlockLayouter.cs:1138). The FlexLayouter then computes
+    `align-items: center` against the 600 page width, not the
+    declared 200. The fix touches the BlockLayouter
+    width-resolution pipeline (cycle-1 BlockLayouter does NOT
+    honor declared `width` as a shrink-to-fit constraint —
+    `borderBoxInlineSize` is always the float-adjusted available
+    range). Tracked by the
+    `L4_hardening_known_gap_column_flex_ignores_declared_width`
+    pinning test + the Skip'd
+    `L4_hardening_column_explicit_width_smaller_than_page_centers_correctly`
+    test. When the BlockLayouter width-resolution fix lands the
+    pin starts failing + the Skip'd test starts passing — at
+    which point remove BOTH this bullet AND the pin.
   - `flex-grow` / `flex-shrink` / `flex-basis` resolution
   - `order` property
   - Anonymous flex-item wrapping for inline-level / text children
@@ -962,15 +1001,21 @@ grepping the ID).
     `BoxKind.InlineFlexContainer`.
   - `src/NetPdf.Css/properties.json` — the `align-items`,
     `flex-direction`, `flex-wrap`, `justify-content` keyword
-    properties (already parsed; not yet honored by the layouter).
-- **Trigger** — sub-cycle 2 picks up flex-direction: column +
-  flex-wrap + real align-items; sub-cycle 3 picks up flex-grow /
-  shrink / basis. Sub-cycle 4 picks up the anonymous-flex-item
-  wrapping + the `FlexContinuation`-based multi-page split.
+    properties (cascade-parsed + honored at the layouter for the
+    L1-L4 subset; `flex-wrap` still deferred to L5+).
+- **Trigger** — L2 picked up `justify-content`; L3 picked up
+  `align-items` (base values + stretch); L4 picked up
+  `flex-direction: column` + the F#1 hardening for column auto-
+  height wrappers. Sub-cycle L5+ picks up `flex-wrap`, the
+  reversed variants' item-order reversal, the `flex-grow` /
+  `flex-shrink` / `flex-basis` interpolation, anonymous-flex-item
+  wrapping for inline/text children, and the
+  `FlexContinuation`-based multi-page split.
 - **Added** — Phase 3 Task 15 cycle 1 (Hello World).
-- **Removal condition** — Phase 3 Task 15 L2 + L3 ship the deferred
-  features (column / wrap / justify / align / grow / shrink / basis /
-  order / baseline / multi-page split / anonymous flex item).
+- **Removal condition** — Sub-cycle L5+ ships the remaining
+  deferred features (wrap / row-reverse + column-reverse item-order
+  reversal / grow / shrink / basis / order / baseline / multi-page
+  split / anonymous flex item).
 
 ---
 

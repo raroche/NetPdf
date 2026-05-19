@@ -573,6 +573,90 @@ public sealed class FlexLayouterProductionTests
         Assert.Equal(expectedBlockOffset, c.BlockOffset, precision: 3);
     }
 
+    [Fact]
+    public async Task L4_production_html_flex_direction_column()
+    {
+        // Per Phase 3 Task 15 L4 — real HTML <div> with
+        // `display: flex; flex-direction: column; align-items: center`
+        // containing 3 children with explicit widths + heights flows
+        // through every stage of the pipeline + emits per-item content
+        // fragments stacked vertically (= main axis = block) with
+        // cross-axis (= inline) center alignment.
+        //
+        // Container declared width matches the test fragmentainer's
+        // contentInlineSize (= 600) because the cycle-1 block-flow
+        // sizing inherits the available inline range as the wrapper's
+        // inline-size, regardless of the declared `width`. Container
+        // height = 300; items each height 50, width 100.
+        //
+        // align-items: center on cross axis (inline);
+        // crossSpace = 600 - 100 = 500 → InlineOffset per item = 250
+        // (relative to the flex wrapper's content-inline-start).
+        // BlockOffsets advance along main axis: 0, 50, 100 (relative
+        // to the wrapper's content-block-start).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    flex-direction: column;
+                    align-items: center;
+                    width: 600px;
+                    height: 300px;
+                }
+                .item-a { width: 100px; height: 50px; }
+                .item-b { width: 100px; height: 50px; }
+                .item-c { width: 100px; height: 50px; }
+            </style></head><body>
+            <div class="flex">
+              <div class="item-a"></div>
+              <div class="item-b"></div>
+              <div class="item-c"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        BoxFragment? flexFragment = null;
+        var (a, b, c) = FindThreeItems(sink);
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class");
+            if (classAttr == "flex" && f.Box.Kind == BoxKind.FlexContainer)
+            {
+                flexFragment = f;
+                break;
+            }
+        }
+        Assert.NotNull(flexFragment);
+
+        // BlockOffsets advance along the main axis (= block for column).
+        // Per PR #64 Copilot review — `BoxFragment.BlockOffset` is the
+        // BORDER-BOX start of the wrapper (not the content-box start).
+        // The two coincide in this fixture only because the flex
+        // container has no padding/border; future fixtures with
+        // padding will need to add `borderTop + paddingTop` to derive
+        // the content-block-start.
+        var wrapperBorderBoxBlockStart = flexFragment!.Value.BlockOffset;
+        Assert.Equal(wrapperBorderBoxBlockStart + 0.0, a.BlockOffset, precision: 3);
+        Assert.Equal(wrapperBorderBoxBlockStart + 50.0, b.BlockOffset, precision: 3);
+        Assert.Equal(wrapperBorderBoxBlockStart + 100.0, c.BlockOffset, precision: 3);
+
+        // InlineOffsets center on the cross axis (= inline for column).
+        // crossSpace = 600 - 100 = 500 → offset 250 per item.
+        var wrapperBorderBoxInlineStart = flexFragment.Value.InlineOffset;
+        Assert.Equal(wrapperBorderBoxInlineStart + 250.0, a.InlineOffset, precision: 3);
+        Assert.Equal(wrapperBorderBoxInlineStart + 250.0, b.InlineOffset, precision: 3);
+        Assert.Equal(wrapperBorderBoxInlineStart + 250.0, c.InlineOffset, precision: 3);
+
+        // Items keep declared sizes — positional alignment never resizes;
+        // the L4 stretch path is exercised by the unit tests.
+        Assert.Equal(100.0, a.InlineSize, precision: 3);
+        Assert.Equal(50.0, a.BlockSize, precision: 3);
+    }
+
     /// <summary>Per Phase 3 Task 15 L2 post-PR-#62 hardening F#4 —
     /// shared finder for the .item-a / .item-b / .item-c production
     /// fixture used by the bare-position tests

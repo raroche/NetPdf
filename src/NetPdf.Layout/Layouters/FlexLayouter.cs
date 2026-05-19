@@ -19,15 +19,31 @@ namespace NetPdf.Layout.Layouters;
 /// or <c>display: inline-flex</c> (= <see cref="BoxKind.InlineFlexContainer"/>)
 /// becomes a flex container; its direct children become flex items
 /// laid out along the main axis (the inline axis for the L1 default
-/// <c>flex-direction: row</c>).
+/// <c>flex-direction: row</c>, the block axis for <c>flex-direction:
+/// column</c> per Phase 3 Task 15 L4).
 ///
 /// <para><b>Cycle 1 (Hello World) scope.</b> The layouter implements
 /// the absolute minimum end-to-end path so subsequent cycles have a
 /// scaffold to grow:</para>
 /// <list type="bullet">
-///   <item>Only <c>flex-direction: row</c> (default). Items flow
-///   left-to-right along the inline axis. Column / row-reverse /
-///   column-reverse are sub-cycle 2+ scope.</item>
+///   <item><b>Per Phase 3 Task 15 L4</b> — <c>flex-direction: row</c>
+///   (L1-L3 default) and <c>flex-direction: column</c> (L4 new) are
+///   both honored. For <c>row</c>: main = inline axis (horizontal);
+///   cross = block axis (vertical); items flow left-to-right. For
+///   <c>column</c>: main = block axis (vertical); cross = inline axis
+///   (horizontal); items stack top-to-bottom. The axis-mapping layer
+///   (see <c>GetAxisProperties</c> below) translates the spec-abstract
+///   "main / cross" terminology to the property IDs the layouter reads
+///   (<c>PropertyId.Width</c> / <c>Height</c>) at each direction.
+///   <c>justify-content</c> always controls main-axis packing (so
+///   column direction makes it govern block-axis offsets), and
+///   <c>align-items</c> always controls cross-axis placement (so
+///   column direction makes it govern inline-axis offsets). The
+///   reversed variants <c>row-reverse</c> + <c>column-reverse</c>
+///   are decoded by <c>ReadFlexDirection</c> but the layouter
+///   currently treats them as their non-reversed counterparts; the
+///   reversal of item order is L5+ scope per
+///   <c>docs/deferrals.md#flex-layouter-features</c>.</item>
 ///   <item>Only <c>flex-wrap: nowrap</c> (default). Single-line; items
 ///   may overflow the container's inline extent if their natural
 ///   widths don't fit. <c>wrap</c> / <c>wrap-reverse</c> are sub-cycle
@@ -292,103 +308,168 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 + "the layouter knows where to anchor the items.");
         }
 
-        // Per cycle 1 (Hello World) — fixed-axis assumptions:
-        //   flex-direction: row (main axis = inline axis)
-        //   flex-wrap: nowrap (single line)
-        //   align-items: stretch (cycle 1 emits at content-block-start
-        //                         regardless of the value)
-        // Per L2 — justify-content is now honored (see ReadJustifyContent
-        //   + ComputeJustifyContentOffsets below).
-        // Cycle 2+ will read the actual computed values from
-        //   _rootBox.Style for PropertyId.FlexDirection / FlexWrap /
-        //   AlignItems.
+        // Per Phase 3 Task 15 L4 — resolve flex-direction. L1-L3 default
+        // is `row` (main = inline axis); L4 adds `column` (main = block
+        // axis). The reversed variants (`row-reverse` / `column-reverse`)
+        // are decoded but currently treated as their non-reversed
+        // counterparts — item-order reversal is L5+ scope per
+        // docs/deferrals.md#flex-layouter-features.
+        var flexDirection = _rootBox.Style.ReadFlexDirection();
+        var isColumn = flexDirection.IsFlexColumnDirection();
+        var (mainSizeProperty, crossSizeProperty) = GetAxisProperties(flexDirection);
+
+        // Resolve the container's main-axis + cross-axis content extents
+        // + offsets. For row direction the main axis is the inline axis
+        // (= _contentInlineSize / _contentInlineOffset); the cross axis
+        // is the block axis. For column direction the assignment swaps.
+        var containerMainSize = isColumn ? _contentBlockSize : _contentInlineSize;
+        var contentMainOffset = isColumn ? _contentBlockOffset : _contentInlineOffset;
+        var contentCrossOffset = isColumn ? _contentInlineOffset : _contentBlockOffset;
 
         // L2 — first pass: count block-level items + sum their natural
-        // inline-sizes so the alignment math knows the free-space + N.
+        // main-axis sizes so the alignment math knows the free-space + N.
         // Mirrors the row-packing loop's filter (only block-level
-        // children participate in cycle 1) so the count matches the
+        // children participate in L1+L2+L3) so the count matches the
         // emission pass below. The two-pass design is necessary because
         // start-offset + between-spacing both depend on N AND total
         // item size, neither of which is known until the items are
         // walked. The double pass is O(N) overall — same complexity
         // class as cycle 1.
         var itemCount = 0;
-        var totalItemInlineSize = 0.0;
+        var totalItemMainSize = 0.0;
         for (var itemIdx = 0; itemIdx < _rootBox.Children.Count; itemIdx++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var item = _rootBox.Children[itemIdx];
             if (!item.IsBlockLevel) continue;
             itemCount++;
-            totalItemInlineSize += item.Style.ReadLengthPxOrZero(PropertyId.Width);
+            totalItemMainSize += item.Style.ReadLengthPxOrZero(mainSizeProperty);
         }
 
-        // L2 — resolve justify-content + compute the start-offset +
-        // between-spacing per CSS Box Alignment L3 §4.5. Per Phase 3
-        // Task 15 L2 post-PR-#62 hardening F#1 + F#2 — the resolved
-        // value now carries TWO channels: the base alignment value +
-        // an overflow modifier (Default / Safe / Unsafe). Per §5.3 the
-        // overflow handling depends on BOTH: positional values keep
-        // their natural (possibly-negative) offset on overflow while
-        // distribution values fall back to safe-start; the explicit
-        // `safe` modifier forces safe-start fallback regardless; the
-        // explicit `unsafe` modifier preserves the alignment even on
-        // overflow.
+        // L2 — resolve justify-content + compute the main-axis
+        // start-offset + between-spacing per CSS Box Alignment L3 §4.5.
+        // The math is direction-agnostic (operates on abstract main-
+        // axis free-space + N); only the CURSOR-axis interpretation at
+        // the emission site changes between row + column.
         var resolvedJC = _rootBox.Style.ReadJustifyContent();
-        var freeSpace = _contentInlineSize - totalItemInlineSize;
+        var freeSpace = containerMainSize - totalItemMainSize;
         var (startOffset, betweenSpacing) = ComputeJustifyContentOffsets(
             resolvedJC.Value, resolvedJC.Mode, freeSpace, itemCount);
 
-        // Per Phase 3 Task 15 L3 — resolve align-items + derive the
-        // container's cross-axis extent so the per-item placement loop
-        // can position items along the block axis (the cross axis for
-        // the L1 default `flex-direction: row`). L1 + L2 emitted items
-        // at `_contentBlockOffset` regardless of align-items; L3 honors
-        // the full matrix (flex-start / flex-end / center / stretch +
-        // safe / unsafe overflow modes).
+        // Per Phase 3 Task 15 L3 + L4 — resolve align-items + derive
+        // the container's cross-axis extent so the per-item placement
+        // loop can position items along the cross axis.
         //
-        // containerCrossSize derivation:
-        //   - Explicit `height` (a LengthPx slot on the container's
-        //     ComputedStyle) → use that length.
-        //   - `height: auto` (Unset OR the `auto` Keyword) → use the
-        //     max of the items' natural block-sizes. This is the spec's
-        //     "max-content cross-size" simplification for the L1 default
-        //     single-line case (CSS Flexbox L1 §9.4). The full spec uses
-        //     the line's largest hypothetical cross size after the
-        //     min/max-content cascade; sub-cycle L4+ will refine.
+        // containerCrossSize derivation per direction:
+        //   - Row: cross = block axis. Explicit `height` → use it;
+        //     else max(item natural block-size).
+        //   - Column: cross = inline axis. Explicit `width` → use it;
+        //     else max(item natural inline-size).
+        //
+        // For the column-direction explicit-cross-size case, the
+        // wrapper's content-inline-size IS the resolved width (the
+        // BlockLayouter dispatch has already sized the wrapper); we use
+        // _contentInlineSize directly without re-reading the style slot.
+        // For the row-direction case we still consult the style slot
+        // because the wrapper's content-block-size may have been padded
+        // by remaining-fragmentainer derivation; reading the explicit
+        // declared height matches the spec.
         var alignItems = _rootBox.Style.ReadAlignItems();
-        var heightSlot = _rootBox.Style.Get(PropertyId.Height);
         double containerCrossSize;
-        if (heightSlot.Tag == ComputedSlotTag.LengthPx)
+        if (isColumn)
         {
-            containerCrossSize = heightSlot.AsLengthPx();
+            // Column direction — cross axis = inline axis.
+            // For column direction the wrapper's resolved inline-size
+            // IS the container's cross extent in all cases (block-flow
+            // sizing always assigns the wrapper an inline-size, whether
+            // from declared `width` or the available range). The
+            // explicit-width-vs-auto distinction at the WRAPPER level
+            // is invisible to the inner layouter — _contentInlineSize
+            // is the authoritative cross extent.
+            //
+            // EXCEPTION: when the wrapper's resolved inline-size is the
+            // default available-range fallback (a wide value like the
+            // fragmentainer's contentInlineSize), authors using
+            // `align-items: stretch` would get items stretched across
+            // hundreds of pixels even when the natural max-item-inline-
+            // size is much smaller. Per CSS Flexbox L1 §9.4 the spec's
+            // simplification for `width: auto` is max(item natural
+            // inline-size) — same shape as the row-direction `height:
+            // auto` fallback. We detect "the wrapper has no explicit
+            // width" by reading the style slot; when missing AND
+            // _contentInlineSize is wider than max(item inline-size),
+            // fall back to the max for the column direction's cross
+            // derivation. (When the wrapper has an explicit width, the
+            // declared length already constrained the layout so honor
+            // _contentInlineSize.)
+            var widthSlot = _rootBox.Style.Get(PropertyId.Width);
+            if (widthSlot.Tag == ComputedSlotTag.LengthPx)
+            {
+                // Explicit width — _contentInlineSize already reflects
+                // it (BlockLayouter inline-sizing). Use directly.
+                containerCrossSize = _contentInlineSize;
+            }
+            else
+            {
+                // Per PR #64 Copilot review — column direction with
+                // `width: auto` uses the wrapper's content-inline-size
+                // (= available inline range as set by BlockLayouter's
+                // ConfigureEmission). This differs from the row-direction
+                // `height: auto` path which uses max(item block-size):
+                //   - Row + height:auto: cross axis = block; the line's
+                //     extent IS the wrapper's auto-block-size (CSS
+                //     Flexbox §9.4).
+                //   - Column + width:auto: cross axis = inline; the
+                //     wrapper is block-level so width:auto means "fill
+                //     containing block" (CSS Sizing §3.4) — NOT
+                //     shrink-to-fit. Items wider than the available
+                //     range overflow (handled per CSS Box Alignment
+                //     §5.3 by the existing safe/unsafe modes).
+                //   Pre-fix this branch used max(item natural width),
+                //   which would have shrunk the wrapper below its
+                //   available range and miscentered items via
+                //   align-items when items were narrower than the
+                //   container. Inline-level flex (display: inline-flex)
+                //   shrink-to-fit is L5+ scope.
+                containerCrossSize = _contentInlineSize;
+            }
         }
         else
         {
-            // height: auto (or any non-length slot) — use max(item natural block-size).
-            // The block-level filter mirrors the row-packing loop so the
-            // max only counts items the emission loop will actually emit.
-            // Per Phase 3 Task 15 L3 post-PR-#63 hardening F#6 — check
-            // cancellation between items so a long item list doesn't
-            // burn through the caller's deadline. Mirrors the main-axis
-            // pre-pass + the emission loop above which both check.
-            var maxItemCross = 0.0;
-            for (var i = 0; i < _rootBox.Children.Count; i++)
+            // Row direction — cross axis = block axis.
+            var heightSlot = _rootBox.Style.Get(PropertyId.Height);
+            if (heightSlot.Tag == ComputedSlotTag.LengthPx)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                var c = _rootBox.Children[i];
-                if (!c.IsBlockLevel) continue;
-                var ih = c.Style.ReadLengthPxOrZero(PropertyId.Height);
-                if (ih > maxItemCross) maxItemCross = ih;
+                containerCrossSize = heightSlot.AsLengthPx();
             }
-            containerCrossSize = maxItemCross;
+            else
+            {
+                // height: auto (or any non-length slot) — use max(item
+                // natural block-size). The block-level filter mirrors
+                // the main-axis loop so the max only counts items the
+                // emission loop will actually emit. Per Phase 3 Task 15
+                // L3 post-PR-#63 hardening F#6 — check cancellation
+                // between items.
+                var maxItemCross = 0.0;
+                for (var i = 0; i < _rootBox.Children.Count; i++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var c = _rootBox.Children[i];
+                    if (!c.IsBlockLevel) continue;
+                    var ih = c.Style.ReadLengthPxOrZero(PropertyId.Height);
+                    if (ih > maxItemCross) maxItemCross = ih;
+                }
+                containerCrossSize = maxItemCross;
+            }
         }
 
         // The main-axis cursor walks from the container's content-
-        // inline-start edge plus the alignment start-offset across each
-        // item's natural inline-size. Between-spacing extends each
-        // post-item advance.
-        var mainCursor = _contentInlineOffset + startOffset;
+        // main-start edge plus the alignment start-offset across each
+        // item's natural main-size. Between-spacing extends each
+        // post-item advance. For row direction the cursor is an
+        // inline-axis position; for column direction it's a block-axis
+        // position.
+        var mainCursor = contentMainOffset + startOffset;
 
         for (var itemIdx = 0; itemIdx < _rootBox.Children.Count; itemIdx++)
         {
@@ -415,63 +496,66 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 continue;
             }
 
-            // Per cycle 1 — item's natural inline-size = item's
-            // declared `width` if set, else 0. The cycle-1
-            // BlockLayouter contract returns 0 for `width: auto`;
-            // production callers can declare an explicit width to
-            // exercise the layout. Cycle 2+ will derive a real
-            // intrinsic / flex-basis size.
-            var itemInlineSize = item.Style.ReadLengthPxOrZero(PropertyId.Width);
+            // Per L4 — read item sizes via direction-resolved property
+            // IDs. For row: mainSize = width, crossSize = height. For
+            // column: mainSize = height, crossSize = width. The cycle-1
+            // BlockLayouter contract returns 0 for `auto` lengths;
+            // production callers can declare explicit sizes to exercise
+            // the layout. Sub-cycle 2+ will derive intrinsic /
+            // flex-basis sizes.
+            var itemMainSize = item.Style.ReadLengthPxOrZero(mainSizeProperty);
+            var itemCrossSize = item.Style.ReadLengthPxOrZero(crossSizeProperty);
+            // Per Phase 3 Task 15 L3 post-PR-#63 hardening F#2 + L4 —
+            // the stretch branch needs to distinguish `auto` (Unset /
+            // Keyword slot) from explicit `0` (LengthPx slot with value
+            // 0). The cross-axis property is direction-dependent —
+            // IsCrossSizeAuto receives the resolved direction.
+            var itemIsCrossSizeAuto = IsCrossSizeAuto(item, flexDirection);
 
-            // Per cycle 1 — item's natural block-size = item's
-            // declared `height` if set, else 0. Cycle 2+ will derive
-            // a content-based block-size; L3's ComputeAlignItemsPlacement
-            // applies the stretch override when the cross-size property
-            // computes to `auto` (NOT just when itemBlockSize == 0 —
-            // explicit `height: 0` reads as 0 too but is NOT auto per
-            // CSS Flexbox L1 §7.2 + the post-PR-#63 hardening F#2 fix).
-            var itemBlockSize = item.Style.ReadLengthPxOrZero(PropertyId.Height);
-            // Per Phase 3 Task 15 L3 post-PR-#63 hardening F#2 — the
-            // stretch branch in ComputeAlignItemsPlacement needs to
-            // distinguish `height: auto` (Unset / Keyword slot, treated
-            // as auto) from explicit `height: 0` (LengthPx slot with
-            // value 0). Pre-fix the branch tested `itemCrossSize > 0`
-            // and treated `height: 0` as auto — stretching a deliberate
-            // 0-height spacer to the full container cross extent. Per
-            // CSS Flexbox §7.2 stretch applies only when the item's
-            // cross-size property computes to `auto`.
-            var itemIsCrossSizeAuto = IsCrossSizeAuto(item);
-
-            // Per Phase 3 Task 15 L3 — cross-axis placement per CSS Box
-            // Alignment L3 §6 + CSS Flexbox L1 §8.3. The helper returns
-            // (a) the item's block-axis offset for the BoxFragment +
-            // (b) the EFFECTIVE cross-axis size (= stretch overrides
-            // auto-cross-sized items to the container's cross extent; all
-            // other values keep the item's declared block-size). The
-            // L1 + L2 behavior was equivalent to always emitting at
-            // (_contentBlockOffset, itemBlockSize) — this preserves
-            // that for the legacy flex-start path while opening up the
-            // full alignment matrix.
-            var (itemBlockOffset, itemEffectiveCrossSize) = ComputeAlignItemsPlacement(
+            // Cross-axis placement per CSS Box Alignment L3 §6 + CSS
+            // Flexbox L1 §8.3. The helper returns abstract (cross-
+            // offset, effective-cross-size); the caller maps to the
+            // correct physical axis below based on direction.
+            var (itemCrossOffset, itemEffectiveCrossSize) = ComputeAlignItemsPlacement(
                 alignItems.Value, alignItems.Mode,
-                containerCrossSize, itemBlockSize, itemIsCrossSizeAuto,
-                _contentBlockOffset);
+                containerCrossSize, itemCrossSize, itemIsCrossSizeAuto,
+                contentCrossOffset);
+
+            // Map the abstract (main, cross) tuple to the physical
+            // (inline, block) axes per direction.
+            double inlineOffset, blockOffset, inlineSize, blockSize;
+            if (isColumn)
+            {
+                // Column: main = block, cross = inline.
+                blockOffset = mainCursor;
+                inlineOffset = itemCrossOffset;
+                blockSize = itemMainSize;
+                inlineSize = itemEffectiveCrossSize;
+            }
+            else
+            {
+                // Row: main = inline, cross = block.
+                inlineOffset = mainCursor;
+                blockOffset = itemCrossOffset;
+                inlineSize = itemMainSize;
+                blockSize = itemEffectiveCrossSize;
+            }
 
             _sink.Emit(new BoxFragment(
                 Box: item,
-                InlineOffset: mainCursor,
-                BlockOffset: itemBlockOffset,
-                InlineSize: itemInlineSize,
-                BlockSize: itemEffectiveCrossSize));
+                InlineOffset: inlineOffset,
+                BlockOffset: blockOffset,
+                InlineSize: inlineSize,
+                BlockSize: blockSize));
 
             // Advance the main-axis cursor past this item + the
             // L2 between-spacing. With flex-wrap: nowrap the cursor
-            // walks past _contentInlineSize for items that don't fit —
+            // walks past containerMainSize for items that don't fit —
             // overflow is the spec'd behavior for nowrap (CSS Flexbox
             // L1 §6 + §9.4). The between-spacing only contributes for
             // the distribution values (space-between / -around /
             // -evenly); position values leave it at 0.
-            mainCursor += itemInlineSize + betweenSpacing;
+            mainCursor += itemMainSize + betweenSpacing;
         }
 
         // Cycle 1 (Hello World) — flex container is atomic to outer
@@ -593,11 +677,26 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         return natural;
     }
 
-    /// <summary>Per Phase 3 Task 15 L3 — compute the per-item cross-
-    /// axis placement (block-axis offset + effective block-size) per
-    /// CSS Box Alignment L3 §6 + CSS Flexbox L1 §8.3. The returned
-    /// tuple is consumed by AttemptLayout's row-packing loop directly
-    /// inside the per-item <c>BoxFragment</c> emission.
+    /// <summary>Per Phase 3 Task 15 L3 + Phase 3 Task 15 L4 — compute
+    /// the per-item cross-axis placement (cross-axis offset + effective
+    /// cross-axis size) per CSS Box Alignment L3 §6 + CSS Flexbox L1
+    /// §8.3. The returned tuple is consumed by AttemptLayout's
+    /// per-item emission loop and is mapped to the appropriate
+    /// physical axis based on <c>flex-direction</c>:
+    /// <list type="bullet">
+    ///   <item><c>row</c> direction — cross axis = block axis, so the
+    ///   returned <c>itemCrossOffset</c> becomes the
+    ///   <c>BoxFragment.BlockOffset</c> + <c>itemEffectiveCrossSize</c>
+    ///   becomes the <c>BoxFragment.BlockSize</c>.</item>
+    ///   <item><c>column</c> direction (Phase 3 Task 15 L4) — cross
+    ///   axis = inline axis, so the returned <c>itemCrossOffset</c>
+    ///   becomes the <c>BoxFragment.InlineOffset</c> +
+    ///   <c>itemEffectiveCrossSize</c> becomes the
+    ///   <c>BoxFragment.InlineSize</c>.</item>
+    /// </list>
+    /// The placement math itself is direction-agnostic: it operates on
+    /// abstract "cross-axis space" + the spec's positional alignment
+    /// formulas. Only the caller mapping at the emission site differs.
     ///
     /// <para><b>Stretch.</b> Per CSS Flexbox L1 §8.3 + §7.2, when the
     /// container's <c>align-items</c> resolves to <c>stretch</c> (= the
@@ -605,23 +704,23 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     /// is resized to fill the container's cross extent IF the item's
     /// own cross-size property computes to <c>auto</c>. The
     /// implementation reads the slot type via
-    /// <see cref="IsCrossSizeAuto(Box)"/> — Unset / Keyword (= explicit
-    /// <c>auto</c>) slots stretch; LengthPx slots (whether 0 or
-    /// positive) keep their declared cross-size. Per Phase 3 Task 15
-    /// L3 post-PR-#63 hardening F#2, this replaces the pre-fix proxy
-    /// of <c>itemCrossSize &gt; 0</c> which incorrectly stretched
-    /// explicit <c>height: 0</c> spacers to the full container cross
-    /// extent. The block-axis offset for stretch is always
-    /// <paramref name="contentBlockOffset"/> (= cross-start; stretch
-    /// by definition fills the container so the item starts at the
-    /// cross-start edge).</para>
+    /// <see cref="IsCrossSizeAuto(Box, FlexDirectionValue)"/> — Unset /
+    /// Keyword (= explicit <c>auto</c>) slots stretch; LengthPx slots
+    /// (whether 0 or positive) keep their declared cross-size. Per
+    /// Phase 3 Task 15 L3 post-PR-#63 hardening F#2, this replaces the
+    /// pre-fix proxy of <c>itemCrossSize &gt; 0</c> which incorrectly
+    /// stretched explicit <c>height: 0</c> spacers to the full
+    /// container cross extent. The cross-axis offset for stretch is
+    /// always <paramref name="contentCrossOffset"/> (= cross-start;
+    /// stretch by definition fills the container so the item starts at
+    /// the cross-start edge).</para>
     ///
     /// <para><b>Positional alignment.</b> For <see cref="AlignItemsValue.FlexStart"/>,
     /// <see cref="AlignItemsValue.FlexEnd"/>, and <see cref="AlignItemsValue.Center"/>
     /// the cross-axis space is <c>containerCrossSize - itemCrossSize</c>;
-    /// the natural offset is then <c>contentBlockOffset</c> (start),
-    /// <c>contentBlockOffset + crossSpace</c> (end), or
-    /// <c>contentBlockOffset + crossSpace / 2</c> (center). Items keep
+    /// the natural offset is then <c>contentCrossOffset</c> (start),
+    /// <c>contentCrossOffset + crossSpace</c> (end), or
+    /// <c>contentCrossOffset + crossSpace / 2</c> (center). Items keep
     /// their declared cross-size — positional alignment never resizes,
     /// it only positions.</para>
     ///
@@ -630,7 +729,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     /// <list type="bullet">
     ///   <item><see cref="OverflowAlignmentMode.Safe"/> on overflow
     ///   (= negative crossSpace) — fall back to safe-start (=
-    ///   <paramref name="contentBlockOffset"/>) regardless of value.
+    ///   <paramref name="contentCrossOffset"/>) regardless of value.
     ///   Items pack at the container's cross-start edge + overflow off
     ///   the cross-end. On non-overflow the modifier is transparent.</item>
     ///   <item><see cref="OverflowAlignmentMode.Unsafe"/> on overflow —
@@ -639,40 +738,34 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     ///   <item><see cref="OverflowAlignmentMode.Default"/> on overflow
     ///   — positional values keep their natural (possibly-negative)
     ///   offset, allowing items to overflow EQUALLY on both sides for
-    ///   <c>center</c> etc. (Unlike L2's distribution values for
-    ///   justify-content, align-items has no distribution values in
-    ///   L3 scope; all bare values are positional + share the
-    ///   "natural offset on overflow" branch.)</item>
+    ///   <c>center</c> etc.</item>
     /// </list></para>
     ///
     /// <para><b>Stretch is overflow-immune.</b> The stretch branch
     /// returns BEFORE the overflow check: stretch by definition resizes
     /// the item to fit the container, so crossSpace is always non-
     /// negative AT the emission point (= the item's effective cross-
-    /// size IS the containerCrossSize when auto). Authoring
-    /// <c>safe stretch</c> / <c>unsafe stretch</c> compounds is admitted
-    /// by the keyword resolver but has no behavioral effect — stretch
-    /// can't overflow.</para></summary>
-    private static (double itemBlockOffset, double itemEffectiveCrossSize)
+    /// size IS the containerCrossSize when auto).</para></summary>
+    private static (double itemCrossOffset, double itemEffectiveCrossSize)
         ComputeAlignItemsPlacement(
             AlignItemsValue value,
             OverflowAlignmentMode mode,
             double containerCrossSize,
             double itemCrossSize,
             bool itemIsCrossSizeAuto,
-            double contentBlockOffset)
+            double contentCrossOffset)
     {
         // Stretch — auto-cross-sized items get resized to fill the
         // container's cross extent; explicitly-sized items keep their
         // declared size per CSS Flexbox L1 §7.2. Per post-PR-#63 F#2
         // we test the SLOT TYPE (via `itemIsCrossSizeAuto`) rather
-        // than `itemCrossSize > 0`: an explicit `height: 0` (= a
+        // than `itemCrossSize > 0`: an explicit cross-size of 0 (= a
         // LengthPx slot with payload 0) is NOT auto and must keep its
         // declared 0 cross-size (e.g., a deliberate spacer).
         if (value == AlignItemsValue.Stretch)
         {
             var effectiveCross = itemIsCrossSizeAuto ? containerCrossSize : itemCrossSize;
-            return (contentBlockOffset, effectiveCross);
+            return (contentCrossOffset, effectiveCross);
         }
 
         // Positional alignment — compute the natural offset for the
@@ -680,9 +773,9 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         var crossSpace = containerCrossSize - itemCrossSize;
         var natural = value switch
         {
-            AlignItemsValue.FlexEnd => contentBlockOffset + crossSpace,
-            AlignItemsValue.Center => contentBlockOffset + crossSpace / 2.0,
-            _ => contentBlockOffset,  // FlexStart
+            AlignItemsValue.FlexEnd => contentCrossOffset + crossSpace,
+            AlignItemsValue.Center => contentCrossOffset + crossSpace / 2.0,
+            _ => contentCrossOffset,  // FlexStart
         };
 
         // Overflow handling per CSS Box Alignment L3 §5.3. Only the
@@ -691,12 +784,12 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         if (crossSpace < 0)
         {
             // Explicit `safe` modifier — always fall back to safe-start
-            // (= contentBlockOffset) regardless of value. Items pack at
+            // (= contentCrossOffset) regardless of value. Items pack at
             // the container's cross-start edge + overflow off the
             // cross-end.
             if (mode == OverflowAlignmentMode.Safe)
             {
-                return (contentBlockOffset, itemCrossSize);
+                return (contentCrossOffset, itemCrossSize);
             }
             // Unsafe modifier OR default — positional values keep their
             // natural (possibly-negative) offset, allowing items to
@@ -709,43 +802,103 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         return (natural, itemCrossSize);
     }
 
-    /// <summary>Per Phase 3 Task 15 L3 post-PR-#63 hardening F#2 —
-    /// distinguish <c>height: auto</c> from explicit
-    /// <c>height: 0</c> / explicit <c>height: &lt;positive px&gt;</c>
-    /// on a flex item's computed style. Stretch applies only when the
-    /// item's cross-size property computes to <c>auto</c> per CSS
-    /// Flexbox §7.2; explicit <c>0</c> must be honored (e.g., a
-    /// deliberate spacer that overlaps siblings on the cross axis).
+    /// <summary>Per Phase 3 Task 15 L3 post-PR-#63 hardening F#2 +
+    /// Phase 3 Task 15 L4 — distinguish a flex item's cross-size
+    /// <c>auto</c> from an explicit length (<c>0</c> / positive px).
+    /// Stretch applies only when the item's cross-size property
+    /// computes to <c>auto</c> per CSS Flexbox §7.2; explicit <c>0</c>
+    /// must be honored (e.g., a deliberate spacer that overlaps
+    /// siblings on the cross axis).
     ///
-    /// <para>Slot semantics: <see cref="ComputedSlotTag.LengthPx"/>
-    /// slots are explicit (their payload is the declared px value,
-    /// which may be 0). Everything else — <see cref="ComputedSlotTag.Unset"/>
-    /// (= no declaration → default <c>auto</c>),
-    /// <see cref="ComputedSlotTag.Keyword"/> (= explicit <c>auto</c>),
-    /// <see cref="ComputedSlotTag.Percentage"/> /
-    /// <see cref="ComputedSlotTag.SideTableIndex"/> (= percentage /
-    /// calc values that the L3 reader can't resolve in cycle 1 + falls
-    /// back to 0 via <c>ReadLengthPxOrZero</c>) — is treated as auto
-    /// for the stretch-applicability check. Percentage / calc handling
-    /// in stretch is sub-cycle L4+ scope; for L3 single-line they
-    /// behave as auto, matching the rest of the layouter's percent /
-    /// calc deferral pattern.</para>
+    /// <para>Per L4 — the cross-axis property is direction-dependent:
+    /// for <c>flex-direction: row</c> the cross axis is the block axis
+    /// (read <see cref="PropertyId.Height"/>); for
+    /// <c>flex-direction: column</c> the cross axis is the inline axis
+    /// (read <see cref="PropertyId.Width"/>). The caller passes the
+    /// resolved direction so this predicate stays direction-agnostic.</para>
     ///
-    /// <para>Mirrors <see cref="BlockLayouter"/>'s
-    /// <c>IsHeightAuto</c> predicate (BlockLayouter.cs ~5052) — same
-    /// shape, same caveat about <see cref="ComputedSlotTag.LengthPx"/>
-    /// being the only EXPLICIT-px slot tag.</para></summary>
-    /// <param name="item">A flex item box. The check reads
-    /// <c>Style.Get(PropertyId.Height)</c> (= the cross-size property
-    /// under the L3 default <c>flex-direction: row</c>). For
-    /// <c>flex-direction: column</c> (= L4+ scope) this would need to
-    /// read <c>Width</c> instead — the helper's name stays
-    /// "CrossSize" so the rename lands cleanly when column direction
-    /// arrives.</param>
-    private static bool IsCrossSizeAuto(Box item)
+    /// <para><b>Slot semantics</b> — per CSS Flexbox §7.2 "auto" means
+    /// the cross-size property COMPUTES to <c>auto</c>:
+    /// <list type="bullet">
+    ///   <item><see cref="ComputedSlotTag.Unset"/> (= no declaration in
+    ///   the cascade — the property's initial value applies, which is
+    ///   <c>auto</c> for <c>width</c> / <c>height</c>) → auto.</item>
+    ///   <item><see cref="ComputedSlotTag.Keyword"/> (= explicit
+    ///   <c>auto</c> keyword, or one of the related intrinsic-sizing
+    ///   keywords <c>min-content</c> / <c>max-content</c> /
+    ///   <c>fit-content</c> — see L5+ refinement note below) → auto.</item>
+    ///   <item><see cref="ComputedSlotTag.LengthPx"/> (= explicit pixel
+    ///   value, including 0) → NOT auto.</item>
+    ///   <item><see cref="ComputedSlotTag.Percentage"/> (= percentage
+    ///   relative to the containing block's cross extent) → NOT auto.
+    ///   The author wrote an explicit declaration; stretch should honor
+    ///   it (resolving to 0 via <c>ReadLengthPxOrZero</c> in cycle 1
+    ///   is a separate "percentage cross-size not yet resolved" gap
+    ///   that's its own deferral — but it's NOT auto).</item>
+    ///   <item>Any other tag (defensive) → NOT auto.</item>
+    /// </list></para>
+    ///
+    /// <para><b>Pre-hardening bug</b> — per Phase 3 Task 15 L4 post-PR-#64
+    /// review F#3 the previous implementation returned
+    /// <c>slot.Tag != ComputedSlotTag.LengthPx</c>, which incorrectly
+    /// reported <c>width: 50%</c> (Percentage) + <c>width: calc(...)</c>
+    /// (SideTableIndex) as auto. A <c>width: 50%</c> flex item in a
+    /// column container was stretched to 100% instead of remaining
+    /// an explicit-declaration item. Per the F#3 fix the predicate
+    /// now matches BlockLayouter's <c>IsHeightAuto</c>
+    /// (BlockLayouter.cs ~5052 → ComputedStyleLayoutExtensions
+    /// <see cref="ComputedStyleLayoutExtensions.IsHeightAuto"/>) — auto
+    /// iff Unset OR Keyword. Percentage / SideTableIndex /
+    /// LengthPx are all explicit declarations.</para>
+    ///
+    /// <para><b>Sub-cycle L5+ scope</b> — distinguishing the <c>auto</c>
+    /// keyword from <c>min-content</c> / <c>max-content</c> / <c>fit-content</c>
+    /// requires reading the keyword payload + cross-referencing the
+    /// property-specific keyword table. For L4 hardening all Keyword
+    /// tags on width / height resolve as auto (the most common case
+    /// + the others behave similarly for stretch in the L4 simplification).</para>
+    ///
+    /// <para><b>Cancellation</b> — none needed; this is a single-slot
+    /// read.</para></summary>
+    /// <param name="item">A flex item box.</param>
+    /// <param name="direction">Resolved <c>flex-direction</c> — selects
+    /// which property is the cross axis.</param>
+    private static bool IsCrossSizeAuto(Box item, FlexDirectionValue direction)
     {
-        var slot = item.Style.Get(PropertyId.Height);
-        return slot.Tag != ComputedSlotTag.LengthPx;
+        var crossProperty = direction.IsFlexColumnDirection()
+            ? PropertyId.Width   // column: cross = inline (width)
+            : PropertyId.Height; // row: cross = block (height)
+        var slot = item.Style.Get(crossProperty);
+        // Per CSS Flexbox §7.2 + the F#3 hardening — auto iff Unset
+        // (no declaration → property's initial `auto` applies) OR
+        // Keyword (explicit `auto` / `min-content` / etc.). All other
+        // tags (LengthPx, Percentage, SideTableIndex, …) represent
+        // explicit declarations + must NOT be treated as auto. Mirrors
+        // the canonical IsHeightAuto predicate in
+        // ComputedStyleLayoutExtensions.
+        return slot.Tag is ComputedSlotTag.Unset or ComputedSlotTag.Keyword;
+    }
+
+    /// <summary>Per Phase 3 Task 15 L4 — return the property IDs to
+    /// read for an item's main-axis + cross-axis sizes given the
+    /// resolved <c>flex-direction</c>.
+    /// <list type="bullet">
+    ///   <item><c>row</c> (L1-L3 default): main = inline (<c>width</c>);
+    ///   cross = block (<c>height</c>).</item>
+    ///   <item><c>column</c> (L4 new): main = block (<c>height</c>);
+    ///   cross = inline (<c>width</c>).</item>
+    /// </list>
+    /// The reversed variants (<c>row-reverse</c> / <c>column-reverse</c>)
+    /// share the same axis assignment as their non-reversed counterparts
+    /// — reversal of item order is orthogonal to the row/column axis
+    /// swap and is L5+ scope per
+    /// <c>docs/deferrals.md#flex-layouter-features</c>.</summary>
+    private static (PropertyId mainSize, PropertyId crossSize) GetAxisProperties(
+        FlexDirectionValue direction)
+    {
+        return direction.IsFlexColumnDirection()
+            ? (PropertyId.Height, PropertyId.Width)
+            : (PropertyId.Width, PropertyId.Height);
     }
 
     /// <summary>Per cycle 1 (Hello World) — no per-instance state to

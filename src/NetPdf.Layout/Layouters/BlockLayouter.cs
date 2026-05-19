@@ -1390,10 +1390,42 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // — move in lockstep with FlexLayouter's placement math.
             if (IsFlexContainer(child))
             {
-                var flexCrossExtent = PreMeasureFlexCrossExtent(child);
+                // Per Phase 3 Task 15 L4 — the row-direction pre-measure
+                // grows the wrapper's block-axis extent to the flex
+                // cross-extent (= max(item natural block-size)). For
+                // column direction the main axis IS the block axis —
+                // per Phase 3 Task 15 L4 post-PR-#64 review hardening
+                // F#1 the wrapper's auto-block-size equals the SUM of
+                // items' block-sizes (= the spec-correct main-axis
+                // content extent under CSS Flexbox L1 §9.4's max-content
+                // main-size simplification). Pre-F#1 the column path
+                // SKIPPED the pre-measure entirely, leaving
+                // borderBoxBlockSize at the auto-resolved default
+                // (often 0 or the fragmentainer-remainder fallback);
+                // FlexLayouter's containerMainSize then read that tiny
+                // value + justify-content: center / flex-end / etc.
+                // computed negative freeSpace + items overflowed. The
+                // F#1 fix wires PreMeasureFlexMainExtent into the column
+                // branch — both directions now grow the wrapper to the
+                // spec-correct extent at premeasure time.
+                //
+                // Per F#4 — the helpers now take cancellationToken so
+                // a long item list honors caller cancellation.
+                var childFlexDirection = child.Style.ReadFlexDirection();
                 var flexBorderPaddingBlock =
                     borderStart + paddingStart + paddingEnd + borderEnd;
-                var flexDrivenBorderBox = flexCrossExtent + flexBorderPaddingBlock;
+                double flexAxisExtent;
+                if (childFlexDirection.IsFlexColumnDirection())
+                {
+                    flexAxisExtent = PreMeasureFlexMainExtent(
+                        child, cancellationToken);
+                }
+                else
+                {
+                    flexAxisExtent = PreMeasureFlexCrossExtent(
+                        child, cancellationToken);
+                }
+                var flexDrivenBorderBox = flexAxisExtent + flexBorderPaddingBlock;
                 if (flexDrivenBorderBox > borderBoxBlockSize)
                 {
                     borderBoxBlockSize = flexDrivenBorderBox;
@@ -1511,7 +1543,20 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // pendingTableLayouter clamp above for the same reason
             // (the recursive walk over-measures content that has its
             // own internal layout discipline).
+            // Per Phase 3 Task 15 L4 — the row-direction clamp only
+            // applies when the flex container's main axis is NOT the
+            // block axis. For column direction the main axis IS the
+            // block axis — the block-flow stacking sum that
+            // MeasureSubtreeVisualBlockExtent produces IS the correct
+            // wrapper extent (the items genuinely stack vertically
+            // along the main axis). The L3 hardening's clamp would
+            // shrink the column wrapper to max(item block-size) which
+            // truncates the lower items; the row-direction clamp
+            // correctly counteracted the over-measurement caused by
+            // the recursive walk treating items as block-flow children
+            // when the spec says they are single-line horizontally.
             if (IsFlexContainer(child)
+                && !child.Style.ReadFlexDirection().IsFlexColumnDirection()
                 && subtreeBlockExtent > borderBoxBlockSize)
             {
                 subtreeBlockExtent = borderBoxBlockSize;
@@ -2777,16 +2822,49 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // — move in lockstep with FlexLayouter's placement math.
             if (IsFlexContainer(child))
             {
-                var nFlexCrossExtent = PreMeasureFlexCrossExtent(child);
+                // Per Phase 3 Task 15 L4 — the row premeasure applies
+                // max(item cross-size) + a subtree clamp; column
+                // direction needs the SUM of items' main-axis sizes.
+                // Per Phase 3 Task 15 L4 post-PR-#64 review hardening
+                // F#1 the column branch now wires the dedicated
+                // PreMeasureFlexMainExtent helper so the nested flex
+                // wrapper paints at the spec-correct main extent (the
+                // pre-F#1 fall-through to the natural block-flow
+                // stacking sum produced by the recursive walk happened
+                // to be right for column direction BUT the subtree
+                // clamp's row-only gate left childEffectiveBlockSize
+                // unchanged + the FlexLayouter still read the original
+                // childBorderBoxBlockSize via ConfigureEmission). The
+                // F#1 fix surfaces the main extent at premeasure time
+                // so both axes' contracts are explicit.
+                //
+                // The cross-axis subtree clamp + post-grow re-clamp
+                // pattern still applies in BOTH directions: the
+                // recursive walk over-measures content that has its
+                // own layout discipline.
+                //
+                // Per F#4 — helpers now take cancellationToken.
+                var childFlexDirection = child.Style.ReadFlexDirection();
                 var nFlexBorderPaddingBlock =
                     borderStart + paddingStart + paddingEnd + borderEnd;
-                var nFlexDriven = nFlexCrossExtent + nFlexBorderPaddingBlock;
+                double nFlexAxisExtent;
+                if (childFlexDirection.IsFlexColumnDirection())
+                {
+                    nFlexAxisExtent = PreMeasureFlexMainExtent(
+                        child, cancellationToken);
+                }
+                else
+                {
+                    nFlexAxisExtent = PreMeasureFlexCrossExtent(
+                        child, cancellationToken);
+                }
+                var nFlexDriven = nFlexAxisExtent + nFlexBorderPaddingBlock;
                 if (nFlexDriven > childBorderBoxBlockSize)
                 {
                     childBorderBoxBlockSize = nFlexDriven;
                 }
-                // Also clamp childEffectiveBlockSize back to the post-
-                // grow childBorderBoxBlockSize when the subtree extent
+                // Clamp childEffectiveBlockSize back to the post-grow
+                // childBorderBoxBlockSize when the subtree extent
                 // (which stacked the items as block-flow) exceeded it.
                 // Mirrors the outer-loop's `subtreeBlockExtent` clamp
                 // for flex containers — the recursive walk over-measures
@@ -2796,7 +2874,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     childEffectiveBlockSize = childBorderBoxBlockSize;
                 }
                 // After the clamp, ensure the grown wrapper size still
-                // dominates if the spec'd cross extent now exceeds the
+                // dominates if the spec'd extent now exceeds the
                 // (clamped) childEffectiveBlockSize.
                 if (nFlexDriven > childEffectiveBlockSize)
                 {
@@ -5121,21 +5199,83 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// FlexLayouter's own placement math. Both must move in lockstep.</para></summary>
     /// <param name="flexContainer">The flex container box (must satisfy
     /// <see cref="IsFlexContainer"/>; the caller is the gate).</param>
+    /// <param name="cancellationToken">Per Phase 3 Task 15 L4 post-PR-#64
+    /// review hardening F#4 — propagate cancellation into the per-item
+    /// loop so a long flex container with many children honors the
+    /// caller's cancellation request. Mirrors the FlexLayouter's
+    /// own per-item cancellation checks in <c>AttemptLayout</c>'s
+    /// containerCrossSize fallback (FlexLayouter.cs ~449).</param>
     /// <returns>The maximum cross-axis (= block-axis under
     /// <c>flex-direction: row</c>) extent reached by any item. Returns
     /// 0 when the container has no block-level children — matching
     /// FlexLayouter's own derivation, which skips inline-level
     /// children + anonymous-flex-item wrapping in L3 scope.</returns>
-    private static double PreMeasureFlexCrossExtent(Box flexContainer)
+    private static double PreMeasureFlexCrossExtent(
+        Box flexContainer,
+        CancellationToken cancellationToken)
     {
         var maxCross = 0.0;
         foreach (var item in flexContainer.Children)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             if (!item.IsBlockLevel) continue;
             var itemHeight = item.Style.ReadLengthPxOrZero(PropertyId.Height);
             if (itemHeight > maxCross) maxCross = itemHeight;
         }
         return maxCross;
+    }
+
+    /// <summary>Per Phase 3 Task 15 L4 post-PR-#64 review hardening F#1 —
+    /// compute the flex wrapper's auto main-extent for column direction.
+    /// For L4 single-line column direction, the main extent = sum(item
+    /// natural main-size). Mirrors what <see cref="FlexLayouter"/>
+    /// itself uses for its main-axis cursor advance; surfacing it at
+    /// premeasure time fixes the wrapper's <see cref="BoxFragment.BlockSize"/>
+    /// + the outer cursor advance for column-direction auto-height
+    /// containers. Without this helper the wrapper paints at the
+    /// auto-resolved default (often 0 or the fragmentainer-remainder
+    /// fallback) + the FlexLayouter's <c>containerMainSize</c>
+    /// reads that tiny value as the column main-axis content extent,
+    /// producing negative <c>freeSpace</c> for <c>justify-content: center</c>
+    /// / <c>flex-end</c> + items overflowing the wrapper.
+    ///
+    /// <para><b>Mirrors</b> <see cref="PreMeasureFlexCrossExtent"/>'s
+    /// shape (same call-site discipline, same per-item cancellation
+    /// check). The two helpers are direction-orthogonal: row direction
+    /// uses cross-extent (max of items' block-sizes); column direction
+    /// uses main-extent (sum of items' block-sizes — the main axis IS
+    /// the block axis in column direction).</para>
+    ///
+    /// <para><b>Sub-cycle L5+ scope.</b> Outer main-size (item margins
+    /// + borders + padding contributions) + <c>flex-grow</c> /
+    /// <c>flex-shrink</c> / <c>flex-basis</c> interpolation. The current
+    /// L4 model treats each item's main-size as its declared
+    /// <c>height</c> directly — sufficient for L4 Hello World column-
+    /// stacking; sub-cycles refine.</para></summary>
+    /// <param name="flexContainer">The flex container box (must satisfy
+    /// <see cref="IsFlexContainer"/>; the caller is also responsible
+    /// for gating on <c>flex-direction: column</c>).</param>
+    /// <param name="cancellationToken">Propagate cancellation into the
+    /// per-item loop.</param>
+    /// <returns>The sum of items' natural main-axis (= block-axis under
+    /// column direction) sizes. Returns 0 when the container has no
+    /// block-level children.</returns>
+    private static double PreMeasureFlexMainExtent(
+        Box flexContainer,
+        CancellationToken cancellationToken)
+    {
+        var totalMain = 0.0;
+        foreach (var item in flexContainer.Children)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!item.IsBlockLevel) continue;
+            // For column direction (the only caller as of L4 hardening),
+            // main = block axis = Height. When L5+ adds direction-aware
+            // generalization, this helper can take a FlexDirectionValue
+            // parameter; for now the caller has already gated on column.
+            totalMain += item.Style.ReadLengthPxOrZero(PropertyId.Height);
+        }
+        return totalMain;
     }
 
     /// <summary>Per Phase 3 Task 14 cycle 1 hardening (Finding 1) —

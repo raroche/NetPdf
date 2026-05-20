@@ -1411,24 +1411,84 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 //
                 // Per F#4 — the helpers now take cancellationToken so
                 // a long item list honors caller cancellation.
+                //
+                // Per Phase 3 Task 15 L6 — flex-wrap: wrap changes the
+                // row-direction cross-extent derivation from max(item
+                // cross-size) (single line) to sum(line cross-extents)
+                // per CSS Flexbox L1 §9.4. The line-packing budget for
+                // the row case is the wrapper's available inline-size
+                // (= `borderBoxInlineSize` minus inline-axis border +
+                // padding); we pass the content-inline-size of the
+                // wrapper for the line-packing budget. For column
+                // direction + wrap the main axis is the block axis
+                // (= what we're computing here), so wrap can't change
+                // the main-extent derivation in a single-pass auto
+                // resolution — column + wrap + auto block-size falls
+                // back to the sum-of-items (= single-column) extent;
+                // wrap activates only when an explicit block-size is
+                // declared.
                 var childFlexDirection = child.Style.ReadFlexDirection();
+                var childFlexWrap = child.Style.ReadFlexWrap();
+                var childIsWrapping = childFlexWrap.IsFlexWrapping();
                 var flexBorderPaddingBlock =
                     borderStart + paddingStart + paddingEnd + borderEnd;
+                // Per Phase 3 Task 15 L6 — skip the main-extent grow
+                // for column + wrap with an EXPLICIT block-size.
+                // PreMeasureFlexMainExtent sums items' main-size (= the
+                // single-column total) which for the wrap case exceeds
+                // the declared block-size + would re-budget the
+                // FlexLayouter's `containerMainSize` past the wrap
+                // threshold, defeating the wrap. When the wrapper's
+                // block-size is auto (= the column-direction L4 F#1
+                // case), the grow remains correct: the column extends
+                // to contain all items.
+                var skipMainExtentGrow =
+                    childFlexDirection.IsFlexColumnDirection()
+                    && childIsWrapping
+                    && !IsHeightAuto(child);
                 double flexAxisExtent;
                 if (childFlexDirection.IsFlexColumnDirection())
                 {
                     flexAxisExtent = PreMeasureFlexMainExtent(
                         child, cancellationToken);
                 }
+                else if (childIsWrapping)
+                {
+                    // Row + wrap — sum of line cross-extents per the
+                    // multi-line algorithm. Use the wrapper's content-
+                    // inline-size as the line-packing budget. The
+                    // wrapper's inline-axis border + padding contribute
+                    // to the budget separately from the block-axis
+                    // contribution we add to flexBorderPaddingBlock.
+                    var inlineBorderStart =
+                        child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
+                    var inlineBorderEnd =
+                        child.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
+                    var inlinePaddingStart =
+                        child.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
+                    var inlinePaddingEnd =
+                        child.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
+                    var contentInlineSize = Math.Max(0,
+                        borderBoxInlineSize
+                        - inlineBorderStart - inlinePaddingStart
+                        - inlinePaddingEnd - inlineBorderEnd);
+                    flexAxisExtent = PreMeasureFlexMultiLineCrossExtent(
+                        child, childFlexDirection,
+                        containerMainSize: contentInlineSize,
+                        cancellationToken);
+                }
                 else
                 {
                     flexAxisExtent = PreMeasureFlexCrossExtent(
                         child, cancellationToken);
                 }
-                var flexDrivenBorderBox = flexAxisExtent + flexBorderPaddingBlock;
-                if (flexDrivenBorderBox > borderBoxBlockSize)
+                if (!skipMainExtentGrow)
                 {
-                    borderBoxBlockSize = flexDrivenBorderBox;
+                    var flexDrivenBorderBox = flexAxisExtent + flexBorderPaddingBlock;
+                    if (flexDrivenBorderBox > borderBoxBlockSize)
+                    {
+                        borderBoxBlockSize = flexDrivenBorderBox;
+                    }
                 }
             }
 
@@ -2844,19 +2904,66 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // own layout discipline.
                 //
                 // Per F#4 — helpers now take cancellationToken.
+                //
+                // Per Phase 3 Task 15 L6 — mirror the outer-dispatch
+                // wrap branch: row + wrap uses sum(line cross-extents)
+                // via PreMeasureFlexMultiLineCrossExtent; column + wrap
+                // falls back to the single-column sum (wrap requires
+                // an explicit main constraint; auto block-size in
+                // column direction can't wrap in a single pass).
                 var childFlexDirection = child.Style.ReadFlexDirection();
+                var childFlexWrap = child.Style.ReadFlexWrap();
+                var childIsWrapping = childFlexWrap.IsFlexWrapping();
                 var nFlexBorderPaddingBlock =
                     borderStart + paddingStart + paddingEnd + borderEnd;
+                // Per Phase 3 Task 15 L6 — same skip rule as the outer
+                // dispatch site: column + wrap + explicit block-size
+                // mustn't grow the wrapper past the declared height
+                // (that would re-budget the FlexLayouter's
+                // containerMainSize past the wrap threshold).
+                var nSkipMainExtentGrow =
+                    childFlexDirection.IsFlexColumnDirection()
+                    && childIsWrapping
+                    && !IsHeightAuto(child);
                 double nFlexAxisExtent;
                 if (childFlexDirection.IsFlexColumnDirection())
                 {
                     nFlexAxisExtent = PreMeasureFlexMainExtent(
                         child, cancellationToken);
                 }
+                else if (childIsWrapping)
+                {
+                    // Row + wrap — same line-budget derivation as the
+                    // outer dispatch site.
+                    var inlineBorderStart =
+                        child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
+                    var inlineBorderEnd =
+                        child.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
+                    var inlinePaddingStart =
+                        child.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
+                    var inlinePaddingEnd =
+                        child.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
+                    var nContentInlineSize = Math.Max(0,
+                        childBorderBoxInlineSize
+                        - inlineBorderStart - inlinePaddingStart
+                        - inlinePaddingEnd - inlineBorderEnd);
+                    nFlexAxisExtent = PreMeasureFlexMultiLineCrossExtent(
+                        child, childFlexDirection,
+                        containerMainSize: nContentInlineSize,
+                        cancellationToken);
+                }
                 else
                 {
                     nFlexAxisExtent = PreMeasureFlexCrossExtent(
                         child, cancellationToken);
+                }
+                if (nSkipMainExtentGrow)
+                {
+                    // Skip the grow path entirely; the declared block-
+                    // size already constrains the wrapper. Mirrors the
+                    // outer-dispatch skip + keeps the post-grow clamps
+                    // below as no-ops.
+                    nFlexAxisExtent = 0;
                 }
                 var nFlexDriven = nFlexAxisExtent + nFlexBorderPaddingBlock;
                 if (nFlexDriven > childBorderBoxBlockSize)
@@ -5276,6 +5383,110 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             totalMain += item.Style.ReadLengthPxOrZero(PropertyId.Height);
         }
         return totalMain;
+    }
+
+    /// <summary>Per Phase 3 Task 15 L6 — compute the flex wrapper's auto
+    /// cross-extent for the multi-line algorithm (= sum of line cross-
+    /// extents per CSS Flexbox L1 §9.4). Runs the same greedy line-
+    /// packing as <see cref="FlexLayouter"/>'s own <c>PackLines</c> but
+    /// returns only the cross-extent sum the wrapper's pre-measure
+    /// needs — there's no shared FlexLine list because the pre-measure
+    /// runs BEFORE FlexLayouter is constructed.
+    ///
+    /// <para><b>Algorithm.</b> Walk block-level items; accumulate main-
+    /// axis size + track per-line max cross-axis size. When adding the
+    /// next item would exceed <paramref name="containerMainSize"/>, the
+    /// current line is committed (its cross-extent added to the running
+    /// sum) and a new line starts. The first item on a line ALWAYS
+    /// lands per CSS Flexbox L1 §9.3 (oversized solo items emit on
+    /// their own line + overflow). After the loop the trailing line is
+    /// committed.</para>
+    ///
+    /// <para><b>Direction-agnostic.</b> The caller passes the resolved
+    /// <see cref="FlexDirectionValue"/>; this helper reads the
+    /// direction-appropriate property for each item (main + cross). For
+    /// the L6 outer-dispatch + recursion sites this is only called with
+    /// the row directions (the column-direction main extent doesn't
+    /// change with wrap in a single-pass auto derivation; see the
+    /// caller comments). The direction parameter still rides along so
+    /// the helper is reusable for the column case in L7+ if/when the
+    /// auto-block-size column-wrap derivation matures (e.g., once a
+    /// two-pass measure pipeline lands).</para>
+    ///
+    /// <para><b>Mirrors</b> <see cref="PreMeasureFlexCrossExtent"/>'s
+    /// shape (same call-site discipline + per-item cancellation) +
+    /// uses the same greedy algorithm as <see cref="FlexLayouter"/>'s
+    /// <c>PackLines</c>. The duplication is intentional for L6: the
+    /// pre-measure runs before the FlexLayouter is constructed, so it
+    /// can't reuse the layouter's packed-line list; consolidating to a
+    /// shared helper would require lifting <c>FlexLine</c> out of
+    /// FlexLayouter, which is L7+ scope.</para></summary>
+    /// <param name="flexContainer">The flex container box.</param>
+    /// <param name="direction">Resolved <c>flex-direction</c>; selects
+    /// which property feeds main + cross.</param>
+    /// <param name="containerMainSize">The container's main-axis content
+    /// extent — the line-packing budget. Must be the same value
+    /// FlexLayouter will see at AttemptLayout time (= the wrapper's
+    /// content-axis size after border + padding subtraction); otherwise
+    /// the pre-measure's packed lines could differ from the layouter's
+    /// + the wrapper would paint at the wrong cross-extent.</param>
+    /// <param name="cancellationToken">Propagates cancellation into the
+    /// per-item loop.</param>
+    /// <returns>The sum of line cross-extents. Returns 0 when the
+    /// container has no block-level children — matches the L1-L5
+    /// single-line path's behavior.</returns>
+    private static double PreMeasureFlexMultiLineCrossExtent(
+        Box flexContainer,
+        FlexDirectionValue direction,
+        double containerMainSize,
+        CancellationToken cancellationToken)
+    {
+        // Direction-resolved property IDs. The two helpers can't share
+        // GetAxisProperties with FlexLayouter (that one's a private
+        // method in FlexLayouter); the table is small + identical so
+        // the local pair stays in sync via the FlexDirectionValue
+        // axis-mapping contract.
+        var (mainProp, crossProp) = direction.IsFlexColumnDirection()
+            ? (PropertyId.Height, PropertyId.Width)
+            : (PropertyId.Width, PropertyId.Height);
+
+        var sumLineCross = 0.0;
+        var currentLineMain = 0.0;
+        var currentLineCross = 0.0;
+        var currentLineCount = 0;
+
+        foreach (var item in flexContainer.Children)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!item.IsBlockLevel) continue;
+
+            var itemMain = item.Style.ReadLengthPxOrZero(mainProp);
+            var itemCross = item.Style.ReadLengthPxOrZero(crossProp);
+
+            // CSS Flexbox L1 §9.3 — the first item on a line ALWAYS
+            // lands (oversized solo items emit on their own line +
+            // overflow); subsequent items wrap when adding would
+            // exceed the container's main extent.
+            if (currentLineCount > 0
+                && currentLineMain + itemMain > containerMainSize)
+            {
+                sumLineCross += currentLineCross;
+                currentLineMain = 0;
+                currentLineCross = 0;
+                currentLineCount = 0;
+            }
+
+            currentLineMain += itemMain;
+            if (itemCross > currentLineCross) currentLineCross = itemCross;
+            currentLineCount++;
+        }
+
+        if (currentLineCount > 0)
+        {
+            sumLineCross += currentLineCross;
+        }
+
+        return sumLineCross;
     }
 
     /// <summary>Per Phase 3 Task 14 cycle 1 hardening (Finding 1) —

@@ -911,8 +911,46 @@ grepping the ID).
   (inline-flex shrink-to-fit is L6+ scope). The flex container is
   atomic to outer pagination (the entire container's items emit on
   the page the wrapper landed on; no `FlexContinuation` resume).
+  **Per Phase 3 Task 15 L6** — `flex-wrap: wrap` ships in full per
+  CSS Flexbox L1 §6.3 + §9.3 + §9.4: greedy line packing along the
+  main axis (the first item on each line always lands even if it
+  itself overflows the container; subsequent items wrap when adding
+  would exceed `containerMainSize`); lines stack on the cross axis
+  at cross-start with no inter-line spacing (`align-content` is L7+
+  scope); each line runs its OWN justify-content + align-items per
+  CSS Flexbox L1 §6.3 ("each flex line is treated as the alignment
+  container for its items along the cross axis"); auto cross-size
+  = sum of line cross-extents (`PreMeasureFlexMultiLineCrossExtent`
+  at the BlockLayouter pre-measure sites). Direction-agnostic — wrap
+  works for both row + column. For column + wrap, an EXPLICIT
+  block-size is required (auto block-size in column direction can't
+  wrap in a single-pass measure; the L6 pre-measure skip rule
+  prevents `PreMeasureFlexMainExtent` from growing past the
+  declared height + defeating the wrap).
 - **Missing** —
-  - `flex-wrap: wrap` / `wrap-reverse`
+  - `flex-wrap: wrap-reverse` (cross-axis line-stacking reversal per
+    CSS Flexbox L1 §6.3 — "same as wrap but the cross-start and
+    cross-end directions are swapped"). L6 ships `wrap` in full
+    (multi-line greedy packing, per-line justify-content + align-
+    items against the LINE'S cross-extent, container auto cross-size
+    = sum of line cross-extents per CSS Flexbox L1 §9.4); the
+    `wrap-reverse` keyword decodes successfully + the FlexLayouter
+    treats it identically to `wrap` until L7+ adds the cross-axis
+    reversal transform (= reverse the line-stacking order +
+    invert each item's cross-axis offset within its line). The
+    cascade slot is lossless so pre-authored
+    `flex-wrap: wrap-reverse` declarations activate the new
+    behavior without a re-author. Tracked alongside `align-content`
+    (multi-line cross-axis alignment) which is the natural L7+
+    companion.
+  - `align-content` for multi-line flex containers (CSS Box
+    Alignment L3 §6). L6 stacks lines at cross-start with no
+    between-line spacing; the spec admits distribution +
+    positional values for the extra cross-axis space when the
+    sum of line cross-extents is less than the container's
+    cross extent. Sub-cycle L7+ scope. The `align-content`
+    property is parsed at properties.json + carried by the
+    cascade; the FlexLayouter ignores it.
   - Writing-mode and `direction` integration for `flex-direction`
     axis mapping (CSS Flexbox §3.1): all 4 directions are honored
     for LTR horizontal-tb but the axis mapping differs in RTL +
@@ -1034,13 +1072,17 @@ grepping the ID).
   - `src/NetPdf.Css/properties.json` — the `align-items`,
     `flex-direction`, `flex-wrap`, `justify-content` keyword
     properties (cascade-parsed + honored at the layouter for the
-    L1-L4 subset; `flex-wrap` still deferred to L5+).
+    L1-L6 subset; `wrap-reverse` cross-axis reversal still
+    deferred to L7+).
 - **Trigger** — L2 picked up `justify-content`; L3 picked up
   `align-items` (base values + stretch); L4 picked up
   `flex-direction: column` + the F#1 hardening for column auto-
   height wrappers; L5 picked up `flex-direction: row-reverse` +
   `column-reverse` (the offset-flip transform at the per-item
-  emission site). Sub-cycle L6+ picks up `flex-wrap`, the
+  emission site); L6 picked up `flex-wrap: wrap` (multi-line
+  greedy packing + per-line align math + sum-of-lines auto cross-
+  size). Sub-cycle L7+ picks up `flex-wrap: wrap-reverse`, the
+  `align-content` multi-line cross-axis distribution, the
   `flex-grow` / `flex-shrink` / `flex-basis` interpolation,
   anonymous-flex-item wrapping for inline/text children, and the
   `FlexContinuation`-based multi-page split.

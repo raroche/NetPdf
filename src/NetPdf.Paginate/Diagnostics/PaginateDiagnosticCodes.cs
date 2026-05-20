@@ -274,4 +274,26 @@ internal static class PaginateDiagnosticCodes
     /// Severity: <see cref="PaginateDiagnosticSeverity.Warning"/>.</summary>
     public const string LayoutFloatBreakInsideNested001 =
         "LAYOUT-FLOAT-BREAK-INSIDE-NESTED-001";
+
+    /// <summary>Per Phase 3 Task 15 L6 post-PR-#66 review F#4 —
+    /// emitted by <c>FlexLayouter</c> when the flex container's
+    /// <c>flex-wrap</c> property resolves to <c>wrap-reverse</c>. L6
+    /// ships <c>wrap</c> in full (multi-line greedy packing, per-line
+    /// alignment, sum-of-lines auto cross-size); <c>wrap-reverse</c>
+    /// requires an additional cross-axis line-stacking reversal
+    /// transform per CSS Flexbox L1 §6.3 ("same as wrap but the
+    /// cross-start and cross-end directions are swapped") which is
+    /// L7+ scope. Until then the layouter approximates
+    /// <c>wrap-reverse</c> as <c>wrap</c>: items still wrap correctly
+    /// in main-axis DOM order, but the lines stack in the natural
+    /// cross-axis direction rather than the reversed direction the
+    /// author requested. Without this diagnostic the wrong rendering
+    /// would be silent — the CSS declaration parses successfully but
+    /// behaves like <c>flex-wrap: wrap</c>. Fires at most once per
+    /// <c>AttemptLayout</c> invocation to avoid spam on per-item
+    /// dispatch. Mirrors
+    /// <c>NetPdf.DiagnosticCodes.LayoutFlexWrapReverseApproximated001</c>.
+    /// Severity: <see cref="PaginateDiagnosticSeverity.Warning"/>.</summary>
+    public const string LayoutFlexWrapReverseApproximated001 =
+        "LAYOUT-FLEX-WRAP-REVERSE-APPROXIMATED-001";
 }

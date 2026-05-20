@@ -811,6 +811,149 @@ public sealed class FlexLayouterProductionTests
         Assert.Equal(a.InlineOffset, c.InlineOffset, precision: 3);
     }
 
+    [Fact]
+    public async Task L6_production_html_flex_wrap_with_4_items_two_per_line()
+    {
+        // Phase 3 Task 15 L6 — production-pipeline coverage for
+        // `flex-wrap: wrap`. 4 items of width 100 in a 250px container.
+        // Greedy line packing produces:
+        //   Line 1: item-a + item-b (200px); item-c would push to 300 >
+        //     250 so wrap.
+        //   Line 2: item-c + item-d (200px).
+        // Cross-extent per line = 50; line 2 lands at BlockOffset 50.
+        //
+        // Uses a 250px-wide fragmentainer so the wrapper's effective
+        // content-inline-size matches the declared 250px width (the
+        // BlockLayouter doesn't yet honor declared `width` as a shrink-
+        // to-fit constraint — L4 deferral pinned at
+        // `L4_hardening_known_gap_column_flex_ignores_declared_width`).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    flex-wrap: wrap;
+                    width: 250px;
+                    height: 200px;
+                }
+                .item-a, .item-b, .item-c, .item-d {
+                    width: 100px;
+                    height: 50px;
+                }
+            </style></head><body>
+            <div class="flex">
+              <div class="item-a"></div>
+              <div class="item-b"></div>
+              <div class="item-c"></div>
+              <div class="item-d"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html, contentInlineSize: 250);
+
+        BoxFragment? flexFragment = null;
+        BoxFragment? itemA = null;
+        BoxFragment? itemB = null;
+        BoxFragment? itemC = null;
+        BoxFragment? itemD = null;
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class");
+            if (classAttr == "flex" && f.Box.Kind == BoxKind.FlexContainer)
+            {
+                flexFragment = f;
+            }
+            else if (classAttr == "item-a") itemA = f;
+            else if (classAttr == "item-b") itemB = f;
+            else if (classAttr == "item-c") itemC = f;
+            else if (classAttr == "item-d") itemD = f;
+        }
+        Assert.NotNull(flexFragment);
+        Assert.NotNull(itemA);
+        Assert.NotNull(itemB);
+        Assert.NotNull(itemC);
+        Assert.NotNull(itemD);
+
+        // The wrapper's content-block-start equals BlockOffset (no
+        // padding / border on the wrapper). Same for inline-start.
+        var wrapperBlockStart = flexFragment!.Value.BlockOffset;
+        var wrapperInlineStart = flexFragment!.Value.InlineOffset;
+
+        // Line 1: items a + b at InlineOffset start + (0, 100); same
+        // BlockOffset (= line 1 cross-start = wrapper content-block-
+        // start).
+        Assert.Equal(wrapperInlineStart, itemA!.Value.InlineOffset, precision: 3);
+        Assert.Equal(wrapperInlineStart + 100.0, itemB!.Value.InlineOffset, precision: 3);
+        Assert.Equal(wrapperBlockStart, itemA!.Value.BlockOffset, precision: 3);
+        Assert.Equal(wrapperBlockStart, itemB!.Value.BlockOffset, precision: 3);
+
+        // Line 2: items c + d at InlineOffset start + (0, 100);
+        // BlockOffset wrapperBlockStart + 50 (= line 1's cross-extent).
+        Assert.Equal(wrapperInlineStart, itemC!.Value.InlineOffset, precision: 3);
+        Assert.Equal(wrapperInlineStart + 100.0, itemD!.Value.InlineOffset, precision: 3);
+        Assert.Equal(wrapperBlockStart + 50.0, itemC!.Value.BlockOffset, precision: 3);
+        Assert.Equal(wrapperBlockStart + 50.0, itemD!.Value.BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public async Task L6_hardening_known_gap_narrow_flex_in_wide_page_does_not_wrap_yet()
+    {
+        // Per Phase 3 Task 15 L6 post-PR-#66 review F#2 — the L6
+        // production test masked this by narrowing the fragmentainer
+        // contentInlineSize to match the declared flex width. On a
+        // default 600px page, `.flex { width: 250px; flex-wrap: wrap;
+        // }` SHOULD wrap 4×100px items into 2 lines (4*100=400 > 250)
+        // per spec. Because BlockLayouter doesn't honor declared
+        // `width` on block containers (the
+        // `BlockLayouter-flex-explicit-width` deferral from PR #64
+        // F#2), the wrapper is 600px wide and 4×100=400 < 600 → no
+        // wrap. This test PINS the current incomplete behavior. When
+        // the BlockLayouter explicit-width fix lands, this test
+        // should flip to assert 2 lines.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    flex-wrap: wrap;
+                    width: 250px;
+                }
+                .item { width: 100px; height: 50px; }
+            </style></head><body>
+            <div class="flex">
+              <div class="item"></div>
+              <div class="item"></div>
+              <div class="item"></div>
+              <div class="item"></div>
+            </div>
+            </body></html>
+            """;
+
+        // Use default 600px page width (no contentInlineSize override).
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        // Collect item fragments. Currently — because BlockLayouter
+        // doesn't honor the 250px declared width — wrapper is 600px
+        // so all 4 items fit on one line.
+        var items = sink.Fragments.Where(f =>
+            f.Box.SourceElement is not null &&
+            f.Box.SourceElement.GetAttribute("class") == "item")
+            .OrderBy(f => f.BlockOffset).ThenBy(f => f.InlineOffset)
+            .ToList();
+        Assert.Equal(4, items.Count);
+
+        // KNOWN-GAP PIN — current behavior: all 4 items on one line
+        // at BlockOffset 0 (NOT the spec-correct 2 lines at 0/50).
+        foreach (var item in items)
+        {
+            Assert.Equal(0.0, item.BlockOffset, precision: 3);
+        }
+        // When BlockLayouter-flex-explicit-width is fixed, this
+        // should change to: items[0..1] at BlockOffset 0, items[2..3]
+        // at BlockOffset 50.
+    }
+
     /// <summary>Per Phase 3 Task 15 L2 post-PR-#62 hardening F#4 —
     /// shared finder for the .item-a / .item-b / .item-c production
     /// fixture used by the bare-position tests
@@ -843,7 +986,7 @@ public sealed class FlexLayouterProductionTests
 
     private static async Task<(RecordingFragmentSink sink,
         RecordingDiagnosticsSink diagnostics, Box root)>
-        RenderViaFullPipelineAsync(string html)
+        RenderViaFullPipelineAsync(string html, double contentInlineSize = 600)
     {
         var host = new HtmlParsingHost();
         var document = await host.ParseAsync(html, new HtmlPdfOptions());
@@ -864,7 +1007,7 @@ public sealed class FlexLayouterProductionTests
             diagnostics: diagSink,
             shaperResolver: shaper);
 
-        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var ctx = new FragmentainerContext(contentInlineSize: contentInlineSize, blockSize: 800);
         var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
         using var resolver = new BreakResolver();
         layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);

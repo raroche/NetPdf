@@ -32,7 +32,8 @@ namespace NetPdf.Layout.Layouters;
 ///   depends on the cascaded <c>direction</c> + <c>writing-mode</c>
 ///   properties; for RTL or vertical writing modes the spec-correct
 ///   axis mappings differ. Pipeline support for <c>direction</c> /
-///   <c>writing-mode</c> is L6+ scope; tracked in
+///   <c>writing-mode</c> is L7+ scope (L6 shipped <c>flex-wrap:
+///   wrap</c> without expanding the direction pipeline); tracked in
 ///   <c>docs/deferrals.md#flex-layouter-features</c>. Under the LTR
 ///   horizontal-tb assumption: for <c>row</c>: main = inline axis
 ///   (horizontal, left-to-right); cross = block axis (vertical); items
@@ -66,10 +67,44 @@ namespace NetPdf.Layout.Layouters;
 ///   Cross-axis behavior is unchanged: <c>row-reverse</c> still has
 ///   block as cross axis; <c>column-reverse</c> still has inline as
 ///   cross axis.</item>
-///   <item>Only <c>flex-wrap: nowrap</c> (default). Single-line; items
-///   may overflow the container's inline extent if their natural
-///   widths don't fit. <c>wrap</c> / <c>wrap-reverse</c> are sub-cycle
-///   2+ scope.</item>
+///   <item><b>Per Phase 3 Task 15 L6</b> — <c>flex-wrap: nowrap</c>
+///   (the L1-L5 default) preserves the single-line algorithm; items
+///   may overflow the container's main-axis extent if their natural
+///   sizes don't fit. <c>flex-wrap: wrap</c> activates the multi-line
+///   algorithm per CSS Flexbox L1 §6.3 + §9.3: items are greedy-packed
+///   onto lines along the main axis (adding an item that would exceed
+///   the container's main extent starts a new line; the first item on
+///   a line always lands even if it itself overflows), lines stack on
+///   the cross axis at cross-start with line[i] anchored at
+///   <c>contentCrossOffset + sum(line[0..i-1].LineCrossSize)</c>, and
+///   each line's <c>align-items</c> placement targets the LINE'S
+///   cross-extent (= max(item cross-size on the line)) rather than the
+///   container's full cross extent. Per CSS Flexbox L1 §9.4 the
+///   container's auto cross-size with wrapping = sum of line cross-
+///   extents (handled by <see cref="BlockLayouter"/>'s
+///   <c>PreMeasureFlexMultiLineCrossExtent</c>). <c>flex-wrap:
+///   wrap-reverse</c> decodes to <see cref="FlexWrapValue.WrapReverse"/>
+///   but L6 treats it identically to <see cref="FlexWrapValue.Wrap"/>
+///   — the cross-axis line-stacking reversal is L7+ scope; tracked in
+///   <c>docs/deferrals.md#flex-layouter-features</c>. Per Phase 3
+///   Task 15 L6 post-PR-#66 review F#4 the layouter now emits the
+///   <c>LAYOUT-FLEX-WRAP-REVERSE-APPROXIMATED-001</c> warning
+///   diagnostic on each <c>AttemptLayout</c> invocation that
+///   encounters <c>wrap-reverse</c>, so the silent approximation is
+///   visible to authors. L6 also defers <c>align-content</c>
+///   (multi-line cross-axis alignment per CSS Box Alignment L3 §6).
+///   Per CSS Flexbox L1 §8.4 + CSS Box Alignment L3 §6 the initial
+///   value of <c>align-content</c> is <c>stretch</c> — definite-cross-
+///   sized multi-line containers should stretch their line cross-
+///   extents to fill the container when the sum is less than the
+///   container's cross extent. L6 approximates <c>align-content</c>
+///   as <c>flex-start</c>: lines stack at cross-start at their
+///   natural sizes with no inter-line spacing, leaving extra cross-
+///   axis space empty (when the container is taller than the sum of
+///   line cross-extents). The <c>align-content</c> property itself is
+///   not yet in <c>properties.json</c> / the cascade — adding the
+///   parsed-and-honored support is L7+ scope per
+///   <c>docs/deferrals.md#flex-layouter-features</c>.</item>
 ///   <item><b>L2 — <c>justify-content</c> main-axis alignment.</b>
 ///   The layouter honors the six effective values per CSS Box
 ///   Alignment L3 §4.5: <c>flex-start</c> (default packing at main-
@@ -178,6 +213,15 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     private double _contentInlineSize;
     private double _contentBlockSize;
     private bool _emissionConfigured;
+
+    // Per Phase 3 Task 15 L6 post-PR-#66 review F#4 — one-shot guard
+    // for the wrap-reverse-approximated diagnostic. Reset on each
+    // AttemptLayout entry so a re-invocation (= different
+    // fragmentainer / retry attempt) re-emits the warning. Within a
+    // single AttemptLayout we only need to surface it once — the
+    // approximation is a property of the container declaration, not
+    // a per-item event.
+    private bool _emittedWrapReverseDiagnostic;
 
     /// <summary>Construct a layouter for the flex container
     /// <paramref name="rootBox"/>. The box's <see cref="Box.Kind"/>
@@ -350,12 +394,52 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // mapping differs (e.g., RTL row = right-to-left along the
         // inline axis = visually equivalent to LTR row-reverse).
         // Plumbing `direction` / `writing-mode` through the layout
-        // pipeline is L6+ scope; tracked in
+        // pipeline is L7+ scope (L6 shipped `flex-wrap: wrap` without
+        // expanding the direction pipeline); tracked in
         // `docs/deferrals.md#flex-layouter-features`.
         var flexDirection = _rootBox.Style.ReadFlexDirection();
         var isColumn = flexDirection.IsFlexColumnDirection();
         var isReverse = flexDirection.IsFlexReverseDirection();
         var (mainSizeProperty, crossSizeProperty) = GetAxisProperties(flexDirection);
+
+        // Per Phase 3 Task 15 L6 — read flex-wrap. When the value is
+        // `wrap` (or `wrap-reverse`; the latter behaves as `wrap` for
+        // L6) the layouter switches into multi-line mode: items are
+        // greedy-packed onto lines along the main axis, and lines stack
+        // along the cross axis at cross-start. The L1-L5 single-line
+        // behavior is preserved verbatim for `nowrap` (the default) by
+        // PackLines emitting exactly one line covering all items.
+        var flexWrap = _rootBox.Style.ReadFlexWrap();
+        var isWrapping = flexWrap.IsFlexWrapping();
+
+        // Per Phase 3 Task 15 L6 post-PR-#66 review F#4 — emit a
+        // one-shot warning when the author declared `wrap-reverse`
+        // but the layouter treats it as `wrap` (the cross-axis line-
+        // stacking reversal is L7+ scope; see
+        // `docs/deferrals.md#flex-layouter-features`). Without this
+        // diagnostic the wrong rendering is silent — the CSS
+        // declaration parses successfully + items wrap in the
+        // correct main-axis order, but the lines stack in the
+        // natural cross-axis direction rather than the author-
+        // requested reversed direction. Reset the guard at function
+        // entry so a re-invocation surfaces the warning again.
+        _emittedWrapReverseDiagnostic = false;
+        if (flexWrap == FlexWrapValue.WrapReverse && !_emittedWrapReverseDiagnostic)
+        {
+            OptimizingBreakResolver.SafeEmit(
+                layout.Diagnostics ?? _diagnostics,
+                new PaginateDiagnostic(
+                    PaginateDiagnosticCodes.LayoutFlexWrapReverseApproximated001,
+                    "FlexLayouter: `flex-wrap: wrap-reverse` is approximated as "
+                    + "`flex-wrap: wrap` in L6 — the cross-axis line stacking "
+                    + "reversal is L7+ scope (see "
+                    + "docs/deferrals.md#flex-layouter-features). The visual "
+                    + "result preserves item order but stacks lines in the "
+                    + "natural cross-axis direction rather than the reversed "
+                    + "direction the author requested.",
+                    PaginateDiagnosticSeverity.Warning));
+            _emittedWrapReverseDiagnostic = true;
+        }
 
         // Resolve the container's main-axis + cross-axis content extents
         // + offsets. For row direction the main axis is the inline axis
@@ -365,273 +449,246 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         var contentMainOffset = isColumn ? _contentBlockOffset : _contentInlineOffset;
         var contentCrossOffset = isColumn ? _contentInlineOffset : _contentBlockOffset;
 
-        // L2 — first pass: count block-level items + sum their natural
-        // main-axis sizes so the alignment math knows the free-space + N.
-        // Mirrors the row-packing loop's filter (only block-level
-        // children participate in L1+L2+L3) so the count matches the
-        // emission pass below. The two-pass design is necessary because
-        // start-offset + between-spacing both depend on N AND total
-        // item size, neither of which is known until the items are
-        // walked. The double pass is O(N) overall — same complexity
-        // class as cycle 1.
-        var itemCount = 0;
-        var totalItemMainSize = 0.0;
-        for (var itemIdx = 0; itemIdx < _rootBox.Children.Count; itemIdx++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var item = _rootBox.Children[itemIdx];
-            if (!item.IsBlockLevel) continue;
-            itemCount++;
-            totalItemMainSize += item.Style.ReadLengthPxOrZero(mainSizeProperty);
-        }
+        // Per Phase 3 Task 15 L6 — pack items into lines. For nowrap,
+        // PackLines returns a single FlexLine containing every block-
+        // level child (matches the L1-L5 single-line algorithm byte-
+        // for-byte: same total main-size + same max cross-size). For
+        // wrap, the greedy algorithm starts a new line when adding the
+        // next item would exceed containerMainSize (the first item on a
+        // line always lands even if it itself overflows). See
+        // PackLines's XML doc for the spec citation.
+        var lines = PackLines(
+            _rootBox, flexDirection, containerMainSize, isWrapping, cancellationToken);
 
-        // L2 — resolve justify-content + compute the main-axis
-        // start-offset + between-spacing per CSS Box Alignment L3 §4.5.
-        // The math is direction-agnostic (operates on abstract main-
-        // axis free-space + N); only the CURSOR-axis interpretation at
-        // the emission site changes between row + column.
         var resolvedJC = _rootBox.Style.ReadJustifyContent();
-        var freeSpace = containerMainSize - totalItemMainSize;
-        var (startOffset, betweenSpacing) = ComputeJustifyContentOffsets(
-            resolvedJC.Value, resolvedJC.Mode, freeSpace, itemCount);
-
-        // Per Phase 3 Task 15 L3 + L4 — resolve align-items + derive
-        // the container's cross-axis extent so the per-item placement
-        // loop can position items along the cross axis.
-        //
-        // containerCrossSize derivation per direction:
-        //   - Row: cross = block axis. Explicit `height` → use it;
-        //     else max(item natural block-size).
-        //   - Column: cross = inline axis. Explicit `width` → use it;
-        //     else max(item natural inline-size).
-        //
-        // For the column-direction explicit-cross-size case, the
-        // wrapper's content-inline-size IS the resolved width (the
-        // BlockLayouter dispatch has already sized the wrapper); we use
-        // _contentInlineSize directly without re-reading the style slot.
-        // For the row-direction case we still consult the style slot
-        // because the wrapper's content-block-size may have been padded
-        // by remaining-fragmentainer derivation; reading the explicit
-        // declared height matches the spec.
         var alignItems = _rootBox.Style.ReadAlignItems();
-        double containerCrossSize;
-        if (isColumn)
-        {
-            // Column direction — cross axis = inline axis.
-            // For column direction the wrapper's resolved inline-size
-            // IS the container's cross extent in all cases (block-flow
-            // sizing always assigns the wrapper an inline-size, whether
-            // from declared `width` or the available range). The
-            // explicit-width-vs-auto distinction at the WRAPPER level
-            // is invisible to the inner layouter — _contentInlineSize
-            // is the authoritative cross extent.
-            //
-            // EXCEPTION: when the wrapper's resolved inline-size is the
-            // default available-range fallback (a wide value like the
-            // fragmentainer's contentInlineSize), authors using
-            // `align-items: stretch` would get items stretched across
-            // hundreds of pixels even when the natural max-item-inline-
-            // size is much smaller. Per CSS Flexbox L1 §9.4 the spec's
-            // simplification for `width: auto` is max(item natural
-            // inline-size) — same shape as the row-direction `height:
-            // auto` fallback. We detect "the wrapper has no explicit
-            // width" by reading the style slot; when missing AND
-            // _contentInlineSize is wider than max(item inline-size),
-            // fall back to the max for the column direction's cross
-            // derivation. (When the wrapper has an explicit width, the
-            // declared length already constrained the layout so honor
-            // _contentInlineSize.)
-            var widthSlot = _rootBox.Style.Get(PropertyId.Width);
-            if (widthSlot.Tag == ComputedSlotTag.LengthPx)
-            {
-                // Explicit width — _contentInlineSize already reflects
-                // it (BlockLayouter inline-sizing). Use directly.
-                containerCrossSize = _contentInlineSize;
-            }
-            else
-            {
-                // Per PR #64 Copilot review — column direction with
-                // `width: auto` uses the wrapper's content-inline-size
-                // (= available inline range as set by BlockLayouter's
-                // ConfigureEmission). This differs from the row-direction
-                // `height: auto` path which uses max(item block-size):
-                //   - Row + height:auto: cross axis = block; the line's
-                //     extent IS the wrapper's auto-block-size (CSS
-                //     Flexbox §9.4).
-                //   - Column + width:auto: cross axis = inline; the
-                //     wrapper is block-level so width:auto means "fill
-                //     containing block" (CSS Sizing §3.4) — NOT
-                //     shrink-to-fit. Items wider than the available
-                //     range overflow (handled per CSS Box Alignment
-                //     §5.3 by the existing safe/unsafe modes).
-                //   Pre-fix this branch used max(item natural width),
-                //   which would have shrunk the wrapper below its
-                //   available range and miscentered items via
-                //   align-items when items were narrower than the
-                //   container. Inline-level flex (display: inline-flex)
-                //   shrink-to-fit is L6+ scope.
-                containerCrossSize = _contentInlineSize;
-            }
-        }
-        else
-        {
-            // Row direction — cross axis = block axis.
-            var heightSlot = _rootBox.Style.Get(PropertyId.Height);
-            if (heightSlot.Tag == ComputedSlotTag.LengthPx)
-            {
-                containerCrossSize = heightSlot.AsLengthPx();
-            }
-            else
-            {
-                // height: auto (or any non-length slot) — use max(item
-                // natural block-size). The block-level filter mirrors
-                // the main-axis loop so the max only counts items the
-                // emission loop will actually emit. Per Phase 3 Task 15
-                // L3 post-PR-#63 hardening F#6 — check cancellation
-                // between items.
-                var maxItemCross = 0.0;
-                for (var i = 0; i < _rootBox.Children.Count; i++)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    var c = _rootBox.Children[i];
-                    if (!c.IsBlockLevel) continue;
-                    var ih = c.Style.ReadLengthPxOrZero(PropertyId.Height);
-                    if (ih > maxItemCross) maxItemCross = ih;
-                }
-                containerCrossSize = maxItemCross;
-            }
-        }
 
-        // The main-axis cursor walks from the container's content-
-        // main-start edge plus the alignment start-offset across each
-        // item's natural main-size. Between-spacing extends each
-        // post-item advance. For row direction the cursor is an
-        // inline-axis position; for column direction it's a block-axis
-        // position.
-        var mainCursor = contentMainOffset + startOffset;
+        // Per Phase 3 Task 15 L6 — for align-items resolution against
+        // each line's cross-extent we need the CONTAINER's cross extent
+        // only in the stretch branch when there's a single line + no
+        // explicit cross-size declaration (then the container's auto
+        // cross-size IS the single line's cross-extent + matches the
+        // L1-L5 fallback exactly). When wrapping, each line gets its
+        // OWN cross-extent (= max(item cross-size on that line)) which
+        // the align-items algorithm targets per CSS Flexbox L1 §6.3
+        // ("each flex line is treated as the alignment container for
+        // its items along the cross axis"). The container's full cross
+        // extent (= sum of line cross-extents for wrapping; explicit
+        // declared cross-size when set) drives the cross-axis offset of
+        // line 0, not the per-line align-items math.
+        //
+        // For nowrap the L1-L5 derivation still applies. Note: the
+        // single line's per-line cross-extent (= max item cross-size)
+        // equals the container's cross-extent only when the container
+        // is auto-sized (height/width: auto). With an explicit cross-
+        // size (e.g., `height: 200px` in row direction), the line's
+        // cross-extent can be SMALLER than the container's, and items
+        // align against the container's cross-extent (not the line's).
+        // We still compute containerCrossSize uniformly for the
+        // wrapper's own sizing signal; the per-line align-items math
+        // below uses each line's own cross-extent (which for nowrap
+        // is the single line's max-item-cross — possibly smaller than
+        // containerCrossSize when explicit).
+        var containerCrossSize = ResolveContainerCrossSize(
+            isColumn, lines, cancellationToken);
 
-        for (var itemIdx = 0; itemIdx < _rootBox.Children.Count; itemIdx++)
+        // Per Phase 3 Task 15 L6 — walk lines along the cross axis. For
+        // L6 lines stack at cross-start with no extra spacing between
+        // them (align-content is L7+ scope). The cross cursor starts at
+        // contentCrossOffset and advances by each line's cross-extent.
+        var lineCrossCursor = contentCrossOffset;
+
+        foreach (var line in lines)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            var item = _rootBox.Children[itemIdx];
+            // Per Phase 3 Task 15 L6 — `align-items` operates against
+            // EACH LINE'S cross-extent (CSS Flexbox L1 §6.3): items on
+            // a line center / end-pack / stretch relative to that
+            // line's max item cross-size, not the container's full
+            // cross-extent. For nowrap (single line), line.LineCrossSize
+            // equals containerCrossSize so behavior is identical to L5.
+            //
+            // For wrapping, the line's cross extent is max(item cross-
+            // size) of the items it contains; an explicit container
+            // cross-size doesn't expand each line — it leaves the
+            // remaining cross-axis space empty (which align-content
+            // would distribute when it lands in L7+).
+            var lineCrossExtent = isWrapping
+                ? line.LineCrossSize
+                : containerCrossSize;
 
-            // Per cycle 1 (Hello World) — skip non-block-level
-            // children. CSS Flexbox L1 §4 says any in-flow child
-            // (block OR inline, including text runs) becomes a flex
-            // item (text is wrapped in an anonymous flex item).
-            // Cycle 1 punts on the anonymous-flex-item wrapping +
-            // ignores inline-level children to keep scope tight; the
-            // canonical Hello-World case is a flex container with
-            // explicit block-level <div> children. Sub-cycle 2+ will
-            // process inline runs through the anonymous-flex-item
-            // path (mirroring how BoxBuilder synthesizes
-            // AnonymousBlock wrappers for inline runs in block flow).
-            // Production BoxBuilder also inserts TextRun children for
-            // whitespace between flex item elements; cycle 1 skips
-            // those silently so the canonical case works end-to-end.
-            if (!item.IsBlockLevel)
+            // L2 — resolve justify-content + compute the main-axis
+            // start-offset + between-spacing per CSS Box Alignment L3
+            // §4.5. Per Phase 3 Task 15 L6 each line runs its own
+            // justify-content with the container's main extent as the
+            // alignment target — items within a line align relative to
+            // the container's main-axis range, not the line's used
+            // main-size. (CSS Flexbox L1 §6.3 says wrapped lines are
+            // formatted independently for main-axis alignment; the
+            // container's main extent remains the alignment basis.)
+            var freeSpace = containerMainSize - line.LineMainSize;
+            var (startOffset, betweenSpacing) = ComputeJustifyContentOffsets(
+                resolvedJC.Value, resolvedJC.Mode, freeSpace, line.ItemCount);
+
+            // The main-axis cursor walks from the container's content-
+            // main-start edge plus the alignment start-offset across
+            // each item's natural main-size. Between-spacing extends
+            // each post-item advance. For row direction the cursor is
+            // an inline-axis position; for column direction it's a
+            // block-axis position.
+            var mainCursor = contentMainOffset + startOffset;
+
+            // Per Phase 3 Task 15 L6 — iterate only the items on this
+            // line. line.FirstItemIndex points into _rootBox.Children;
+            // PackLines already filtered out non-block-level children
+            // when computing the line's item range BUT non-block-level
+            // children may interleave between block-level items in the
+            // child list (whitespace TextRuns from BoxBuilder), so we
+            // re-apply the IsBlockLevel filter here and count emitted
+            // items against line.ItemCount.
+            var lineItemsEmitted = 0;
+            for (var itemIdx = line.FirstItemIndex;
+                itemIdx < _rootBox.Children.Count
+                    && lineItemsEmitted < line.ItemCount;
+                itemIdx++)
             {
-                continue;
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var item = _rootBox.Children[itemIdx];
+
+                // Per cycle 1 (Hello World) — skip non-block-level
+                // children. CSS Flexbox L1 §4 says any in-flow child
+                // (block OR inline, including text runs) becomes a
+                // flex item (text is wrapped in an anonymous flex
+                // item). Cycle 1 punts on the anonymous-flex-item
+                // wrapping + ignores inline-level children to keep
+                // scope tight; the canonical Hello-World case is a
+                // flex container with explicit block-level <div>
+                // children. Sub-cycle 2+ will process inline runs
+                // through the anonymous-flex-item path (mirroring how
+                // BoxBuilder synthesizes AnonymousBlock wrappers for
+                // inline runs in block flow). Production BoxBuilder
+                // also inserts TextRun children for whitespace between
+                // flex item elements; cycle 1 skips those silently so
+                // the canonical case works end-to-end.
+                if (!item.IsBlockLevel)
+                {
+                    continue;
+                }
+
+                // Per L4 — read item sizes via direction-resolved
+                // property IDs. For row: mainSize = width, crossSize =
+                // height. For column: mainSize = height, crossSize =
+                // width. The cycle-1 BlockLayouter contract returns 0
+                // for `auto` lengths; production callers can declare
+                // explicit sizes to exercise the layout. Sub-cycle 2+
+                // will derive intrinsic / flex-basis sizes.
+                var itemMainSize = item.Style.ReadLengthPxOrZero(mainSizeProperty);
+                var itemCrossSize = item.Style.ReadLengthPxOrZero(crossSizeProperty);
+                // Per Phase 3 Task 15 L3 post-PR-#63 hardening F#2 +
+                // L4 — the stretch branch needs to distinguish `auto`
+                // (Unset / Keyword slot) from explicit `0` (LengthPx
+                // slot with value 0). The cross-axis property is
+                // direction-dependent — IsCrossSizeAuto receives the
+                // resolved direction.
+                var itemIsCrossSizeAuto = IsCrossSizeAuto(item, flexDirection);
+
+                // Per Phase 3 Task 15 L6 — pass the line's cross
+                // extent (= max(item cross-size on this line) for
+                // wrap, or the container's full cross extent for
+                // nowrap) and the line's cross cursor (= start of
+                // this line on the cross axis) into the align-items
+                // helper. Items align against the LINE'S cross
+                // extent per CSS Flexbox L1 §6.3.
+                var (itemCrossOffsetWithinLine, itemEffectiveCrossSize) =
+                    ComputeAlignItemsPlacement(
+                        alignItems.Value, alignItems.Mode,
+                        lineCrossExtent, itemCrossSize,
+                        itemIsCrossSizeAuto,
+                        lineCrossCursor);
+
+                // Per Phase 3 Task 15 L5 — for reversed directions,
+                // flip the main-axis offset around the container's
+                // main extent per CSS Flexbox L1 §5.1 ("row-reverse /
+                // column-reverse: same as row / column but main-start
+                // and main-end are swapped").
+                //
+                // The natural cursor walks 0 → containerMainSize in
+                // DOM order. The flip transform
+                //   actualMainOffset = (contentMainOffset + containerMainSize)
+                //                    - (mainCursor - contentMainOffset)
+                //                    - itemMainSize
+                // rewrites each item's main-axis offset relative to
+                // the container's main-END edge instead of its main-
+                // start edge, producing items packed against the
+                // reversed main-start (= the original main-end) in
+                // REVERSE DOM order without reversing the iteration
+                // loop.
+                //
+                // The flip is direction-agnostic (operates on the
+                // abstract main axis); only the physical mapping
+                // below differs between row-reverse (flip applies to
+                // inline) and column-reverse (flip applies to block).
+                //
+                // For Phase 3 Task 15 L6 wrapping — the reverse
+                // transform still operates per-line: each line's
+                // items reverse their own main-axis ordering, but
+                // line stacking on the cross axis is unaffected. This
+                // matches CSS Flexbox L1 §5.1 + §6.3: row-reverse
+                // swaps main-start / main-end PER LINE; wrap-reverse
+                // (the cross-axis reversal) is what would flip line
+                // ordering, and that's L7+ scope.
+                var mainOffsetForEmission = isReverse
+                    ? (contentMainOffset + containerMainSize) - (mainCursor - contentMainOffset) - itemMainSize
+                    : mainCursor;
+
+                // Map the abstract (main, cross) tuple to the physical
+                // (inline, block) axes per direction.
+                double inlineOffset, blockOffset, inlineSize, blockSize;
+                if (isColumn)
+                {
+                    // Column: main = block, cross = inline.
+                    blockOffset = mainOffsetForEmission;
+                    inlineOffset = itemCrossOffsetWithinLine;
+                    blockSize = itemMainSize;
+                    inlineSize = itemEffectiveCrossSize;
+                }
+                else
+                {
+                    // Row: main = inline, cross = block.
+                    inlineOffset = mainOffsetForEmission;
+                    blockOffset = itemCrossOffsetWithinLine;
+                    inlineSize = itemMainSize;
+                    blockSize = itemEffectiveCrossSize;
+                }
+
+                _sink.Emit(new BoxFragment(
+                    Box: item,
+                    InlineOffset: inlineOffset,
+                    BlockOffset: blockOffset,
+                    InlineSize: inlineSize,
+                    BlockSize: blockSize));
+
+                // Advance the main-axis cursor past this item + the
+                // L2 between-spacing. With flex-wrap: nowrap the
+                // cursor walks past containerMainSize for items that
+                // don't fit — overflow is the spec'd behavior for
+                // nowrap (CSS Flexbox L1 §6 + §9.4). With wrap the
+                // cursor stays within the line's items only; the
+                // outer line loop resets mainCursor on each line. The
+                // between-spacing only contributes for the
+                // distribution values (space-between / -around /
+                // -evenly); position values leave it at 0.
+                mainCursor += itemMainSize + betweenSpacing;
+                lineItemsEmitted++;
             }
 
-            // Per L4 — read item sizes via direction-resolved property
-            // IDs. For row: mainSize = width, crossSize = height. For
-            // column: mainSize = height, crossSize = width. The cycle-1
-            // BlockLayouter contract returns 0 for `auto` lengths;
-            // production callers can declare explicit sizes to exercise
-            // the layout. Sub-cycle 2+ will derive intrinsic /
-            // flex-basis sizes.
-            var itemMainSize = item.Style.ReadLengthPxOrZero(mainSizeProperty);
-            var itemCrossSize = item.Style.ReadLengthPxOrZero(crossSizeProperty);
-            // Per Phase 3 Task 15 L3 post-PR-#63 hardening F#2 + L4 —
-            // the stretch branch needs to distinguish `auto` (Unset /
-            // Keyword slot) from explicit `0` (LengthPx slot with value
-            // 0). The cross-axis property is direction-dependent —
-            // IsCrossSizeAuto receives the resolved direction.
-            var itemIsCrossSizeAuto = IsCrossSizeAuto(item, flexDirection);
-
-            // Cross-axis placement per CSS Box Alignment L3 §6 + CSS
-            // Flexbox L1 §8.3. The helper returns abstract (cross-
-            // offset, effective-cross-size); the caller maps to the
-            // correct physical axis below based on direction.
-            var (itemCrossOffset, itemEffectiveCrossSize) = ComputeAlignItemsPlacement(
-                alignItems.Value, alignItems.Mode,
-                containerCrossSize, itemCrossSize, itemIsCrossSizeAuto,
-                contentCrossOffset);
-
-            // Per Phase 3 Task 15 L5 — for reversed directions, flip the
-            // main-axis offset around the container's main extent per
-            // CSS Flexbox L1 §5.1 ("row-reverse / column-reverse: same
-            // as row / column but main-start and main-end are swapped").
-            //
-            // The natural cursor walks 0 → containerMainSize in DOM
-            // order. The flip transform
-            //   actualMainOffset = (contentMainOffset + containerMainSize)
-            //                    - (mainCursor - contentMainOffset)
-            //                    - itemMainSize
-            // rewrites each item's main-axis offset relative to the
-            // container's main-END edge instead of its main-start edge,
-            // producing items packed against the reversed main-start (=
-            // the original main-end) in REVERSE DOM order without
-            // reversing the iteration loop.
-            //
-            // Worked example — 3 items 50px each, container main-size
-            // 400, justify-content: flex-start, freeSpace = 250,
-            // startOffset = 0:
-            //   - DOM 0: natural mainCursor = contentMainOffset + 0 = 0;
-            //     flipped = contentMainOffset + 400 - 0 - 50 = 350.
-            //   - DOM 1: natural mainCursor = 50; flipped = 300.
-            //   - DOM 2: natural mainCursor = 100; flipped = 250.
-            // Items pack at the right / bottom edge in reverse DOM order
-            // (= visually [DOM2, DOM1, DOM0] from main-start to main-end
-            // along the new reversed axis). For justify-content: center
-            // the same flip produces the visually-centered cluster with
-            // reversed DOM order — see the L5 unit + production tests.
-            //
-            // The flip is direction-agnostic (operates on the abstract
-            // main axis); only the physical mapping below differs
-            // between row-reverse (flip applies to inline) and column-
-            // reverse (flip applies to block).
-            var mainOffsetForEmission = isReverse
-                ? (contentMainOffset + containerMainSize) - (mainCursor - contentMainOffset) - itemMainSize
-                : mainCursor;
-
-            // Map the abstract (main, cross) tuple to the physical
-            // (inline, block) axes per direction.
-            double inlineOffset, blockOffset, inlineSize, blockSize;
-            if (isColumn)
-            {
-                // Column: main = block, cross = inline.
-                blockOffset = mainOffsetForEmission;
-                inlineOffset = itemCrossOffset;
-                blockSize = itemMainSize;
-                inlineSize = itemEffectiveCrossSize;
-            }
-            else
-            {
-                // Row: main = inline, cross = block.
-                inlineOffset = mainOffsetForEmission;
-                blockOffset = itemCrossOffset;
-                inlineSize = itemMainSize;
-                blockSize = itemEffectiveCrossSize;
-            }
-
-            _sink.Emit(new BoxFragment(
-                Box: item,
-                InlineOffset: inlineOffset,
-                BlockOffset: blockOffset,
-                InlineSize: inlineSize,
-                BlockSize: blockSize));
-
-            // Advance the main-axis cursor past this item + the
-            // L2 between-spacing. With flex-wrap: nowrap the cursor
-            // walks past containerMainSize for items that don't fit —
-            // overflow is the spec'd behavior for nowrap (CSS Flexbox
-            // L1 §6 + §9.4). The between-spacing only contributes for
-            // the distribution values (space-between / -around /
-            // -evenly); position values leave it at 0.
-            mainCursor += itemMainSize + betweenSpacing;
+            // Advance the line cross cursor past this line's cross
+            // extent. Per Phase 3 Task 15 L6 lines stack at cross-
+            // start with no between-line spacing (align-content is
+            // L7+ scope).
+            lineCrossCursor += line.LineCrossSize;
         }
 
         // Cycle 1 (Hello World) — flex container is atomic to outer
@@ -639,6 +696,251 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // continuation.
         return LayoutAttemptResult.AllDone(cost: 0);
     }
+
+    /// <summary>Per Phase 3 Task 15 L6 — pack items into lines for the
+    /// multi-line algorithm per CSS Flexbox L1 §6.3 + §9.3.
+    /// <list type="bullet">
+    ///   <item><c>nowrap</c> — every block-level item lands on a single
+    ///   line (L1-L5 single-line algorithm preserved verbatim; the
+    ///   single FlexLine carries total main-size + max cross-size).</item>
+    ///   <item><c>wrap</c> — greedy packing: walk items in DOM order,
+    ///   accumulate main-axis sizes; when adding the next item would
+    ///   exceed <paramref name="containerMainSize"/>, commit the current
+    ///   line + start a new one. The first item on a line ALWAYS lands
+    ///   even if it itself overflows the container — per CSS Flexbox L1
+    ///   §9.3 "if the very first uncollected item wouldn't fit, collect
+    ///   just it into the line" (= an oversized solo item still emits
+    ///   on its own line + overflows).</item>
+    /// </list>
+    ///
+    /// <para><b>L6 simplifications.</b> The greedy decision uses each
+    /// item's declared natural main-size (= <c>ReadLengthPxOrZero</c>),
+    /// matching the rest of the L6 algorithm. Spec-correct line packing
+    /// uses each item's "flex item's hypothetical main size" (CSS
+    /// Flexbox L1 §9.2) which folds <c>flex-basis</c> + min/max
+    /// constraints + outer margins; those are L7+ scope (same deferrals
+    /// that block <c>flex-grow</c> / <c>flex-shrink</c> resolution).</para>
+    ///
+    /// <para><b>Cancellation.</b> The token is checked once per item.
+    /// Mirrors the per-item check in the AttemptLayout emission
+    /// loop.</para>
+    ///
+    /// <para><b>Item filter.</b> Only block-level children participate
+    /// in L6 line packing — same filter the emission loop applies.
+    /// Cross-line lookups use the returned <see cref="FlexLine.FirstItemIndex"/>
+    /// + <see cref="FlexLine.ItemCount"/> as an index range into
+    /// <c>flexContainer.Children</c>; the emission loop re-applies
+    /// IsBlockLevel when scanning that range so any non-block-level
+    /// children that interleave (whitespace TextRuns from BoxBuilder)
+    /// are skipped consistently in both places.</para></summary>
+    /// <param name="flexContainer">The flex container box.</param>
+    /// <param name="direction">Resolved <c>flex-direction</c>; selects
+    /// which property feeds the main + cross axes.</param>
+    /// <param name="containerMainSize">The container's main-axis content
+    /// extent — the line-packing budget for wrap.</param>
+    /// <param name="isWrapping">When <see langword="true"/>, run the
+    /// greedy multi-line packing; otherwise emit a single line covering
+    /// every block-level item (L1-L5 single-line algorithm).</param>
+    /// <param name="cancellationToken">Propagates cancellation into the
+    /// per-item loops.</param>
+    /// <returns>The packed flex lines; never null. Returns an empty list
+    /// when the container has no block-level children (matches the L1-L5
+    /// behavior of emitting no item fragments). The first line is always
+    /// at FlexLine.FirstItemIndex of the first block-level child; later
+    /// lines reference their first block-level child's index in the
+    /// original Children list.</returns>
+    // Per Phase 3 Task 15 L6 post-PR-#66 review F#5 TODO: this
+    // line-packing algorithm duplicates the line-packing inside
+    // <see cref="BlockLayouter"/>'s row+wrap pre-measure branch (see
+    // <c>PreMeasureFlexMultiLineCrossExtent</c> + its row-direction
+    // helper). Both walk the items + apply the greedy packing rule
+    // ("first item on a line always lands; later items wrap when
+    // adding would exceed containerMainSize") against the same
+    // container main-axis budget. L7+ scope: extract a shared
+    // <c>FlexLinePacker</c> consumed by both sites so they can't
+    // drift. Not done now (= medium-scope refactor; risk of
+    // regression).
+    private static System.Collections.Generic.List<FlexLine> PackLines(
+        Box flexContainer,
+        FlexDirectionValue direction,
+        double containerMainSize,
+        bool isWrapping,
+        CancellationToken cancellationToken)
+    {
+        var lines = new System.Collections.Generic.List<FlexLine>();
+        var (mainProp, crossProp) = GetAxisProperties(direction);
+
+        // First pass — collect indices of block-level children so the
+        // wrap algorithm's "first item on a line always lands" rule has
+        // a stable mapping from logical item position to Children
+        // index. Skipping non-block-level children inline would
+        // conflate "this would be the line's first item" with "wait
+        // for the next block-level child" cases.
+        var blockLevelIndices = new System.Collections.Generic.List<int>();
+        for (var i = 0; i < flexContainer.Children.Count; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (flexContainer.Children[i].IsBlockLevel)
+            {
+                blockLevelIndices.Add(i);
+            }
+        }
+
+        if (blockLevelIndices.Count == 0)
+        {
+            return lines;
+        }
+
+        if (!isWrapping)
+        {
+            // Single-line algorithm — L1-L5 preserved verbatim. Sum all
+            // items' main-axis sizes + take the max cross-axis size.
+            var totalMain = 0.0;
+            var maxCross = 0.0;
+            foreach (var idx in blockLevelIndices)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var item = flexContainer.Children[idx];
+                totalMain += item.Style.ReadLengthPxOrZero(mainProp);
+                var c = item.Style.ReadLengthPxOrZero(crossProp);
+                if (c > maxCross) maxCross = c;
+            }
+            lines.Add(new FlexLine(
+                FirstItemIndex: blockLevelIndices[0],
+                ItemCount: blockLevelIndices.Count,
+                LineMainSize: totalMain,
+                LineCrossSize: maxCross));
+            return lines;
+        }
+
+        // Wrap — greedy line packing. Per CSS Flexbox L1 §9.3 the spec-
+        // exact algorithm uses each item's "flex item's hypothetical
+        // main size"; L6 uses the natural main-size as the
+        // contribution.
+        var currentFirstIdx = blockLevelIndices[0];
+        var currentCount = 0;
+        var currentMain = 0.0;
+        var currentCross = 0.0;
+
+        foreach (var idx in blockLevelIndices)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var item = flexContainer.Children[idx];
+            var itemMain = item.Style.ReadLengthPxOrZero(mainProp);
+            var itemCross = item.Style.ReadLengthPxOrZero(crossProp);
+
+            // Per CSS Flexbox L1 §9.3 — "if the very first uncollected
+            // item wouldn't fit, collect just it into the line". The
+            // first item on a line always lands (it overflows alone)
+            // and the "would exceed" check applies only to subsequent
+            // items.
+            if (currentCount > 0 && currentMain + itemMain > containerMainSize)
+            {
+                lines.Add(new FlexLine(
+                    FirstItemIndex: currentFirstIdx,
+                    ItemCount: currentCount,
+                    LineMainSize: currentMain,
+                    LineCrossSize: currentCross));
+                currentFirstIdx = idx;
+                currentCount = 0;
+                currentMain = 0;
+                currentCross = 0;
+            }
+
+            currentMain += itemMain;
+            if (itemCross > currentCross) currentCross = itemCross;
+            currentCount++;
+        }
+
+        if (currentCount > 0)
+        {
+            lines.Add(new FlexLine(
+                FirstItemIndex: currentFirstIdx,
+                ItemCount: currentCount,
+                LineMainSize: currentMain,
+                LineCrossSize: currentCross));
+        }
+
+        return lines;
+    }
+
+    /// <summary>Per Phase 3 Task 15 L6 — resolve the container's cross-
+    /// axis extent for the L1-L5 single-line case + the L6 wrap case.
+    /// For column direction the wrapper's resolved inline-size IS the
+    /// container's cross extent in all cases (see L4 + L5 derivation;
+    /// preserved here verbatim). For row direction the cross axis is
+    /// the block axis: explicit <c>height</c> wins; for <c>height:
+    /// auto</c> the auto cross-size derives from sum(line cross-extents)
+    /// per CSS Flexbox L1 §9.4 — for nowrap this collapses to the
+    /// single line's max-item-cross (= L1-L5 behavior); for wrap it
+    /// sums each line's cross-extent.
+    ///
+    /// <para><b>Why the helper.</b> The two-channel derivation (explicit
+    /// height vs. auto-height fallback) is direction-specific + read
+    /// twice (once for the wrapper's cross-axis sizing signal here +
+    /// once at premeasure time in BlockLayouter). Extracting the read
+    /// from AttemptLayout keeps the main loop focused on the per-line
+    /// emission; the helper itself is direction-agnostic for the wrap
+    /// path (it just sums the pre-packed line cross-extents).</para></summary>
+    private double ResolveContainerCrossSize(
+        bool isColumn,
+        System.Collections.Generic.List<FlexLine> lines,
+        CancellationToken cancellationToken)
+    {
+        if (isColumn)
+        {
+            // Column direction — cross axis = inline axis. For column
+            // direction the wrapper's resolved inline-size IS the
+            // container's cross extent in all cases (BlockLayouter
+            // inline-sizing). Per PR #64 Copilot review this branch
+            // returns _contentInlineSize regardless of explicit
+            // `width` — the wrapper has already applied any declared
+            // width.
+            return _contentInlineSize;
+        }
+
+        // Row direction — cross axis = block axis.
+        var heightSlot = _rootBox.Style.Get(PropertyId.Height);
+        if (heightSlot.Tag == ComputedSlotTag.LengthPx)
+        {
+            return heightSlot.AsLengthPx();
+        }
+
+        // height: auto — sum of line cross-extents per CSS Flexbox L1
+        // §9.4. For nowrap (single line) this collapses to the L1-L5
+        // max(item natural block-size). For wrap the sum is the spec-
+        // correct multi-line cross extent.
+        var sum = 0.0;
+        foreach (var line in lines)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            sum += line.LineCrossSize;
+        }
+        return sum;
+    }
+
+    /// <summary>Per Phase 3 Task 15 L6 — a flex line produced by
+    /// <see cref="PackLines"/>. The line carries the index range into
+    /// the container's Children list (so the emission loop can re-walk
+    /// the same items in DOM order with IsBlockLevel filtering applied)
+    /// plus the line's pre-computed main + cross extents (so per-line
+    /// justify-content + align-items math doesn't have to re-walk the
+    /// items).
+    ///
+    /// <para><b>Index range semantics.</b> <see cref="FirstItemIndex"/>
+    /// is the index of the line's first block-level child in
+    /// <c>_rootBox.Children</c>. <see cref="ItemCount"/> is the count
+    /// of block-level children on the line; the emission loop walks
+    /// indices in order starting at FirstItemIndex and applies
+    /// IsBlockLevel — when it has emitted ItemCount items it stops.
+    /// Non-block-level children that interleave between the line's
+    /// items (whitespace TextRuns from BoxBuilder) are skipped without
+    /// affecting the count.</para></summary>
+    private readonly record struct FlexLine(
+        int FirstItemIndex,
+        int ItemCount,
+        double LineMainSize,
+        double LineCrossSize);
 
     /// <summary>Per Phase 3 Task 15 L2 — compute the start-offset +
     /// between-spacing for the main-axis cursor per CSS Box Alignment
@@ -927,12 +1229,14 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     /// iff Unset OR Keyword. Percentage / SideTableIndex /
     /// LengthPx are all explicit declarations.</para>
     ///
-    /// <para><b>Sub-cycle L6+ scope</b> — distinguishing the <c>auto</c>
+    /// <para><b>Sub-cycle L7+ scope</b> — distinguishing the <c>auto</c>
     /// keyword from <c>min-content</c> / <c>max-content</c> / <c>fit-content</c>
     /// requires reading the keyword payload + cross-referencing the
-    /// property-specific keyword table. For L4-L5 hardening all Keyword
-    /// tags on width / height resolve as auto (the most common case
-    /// + the others behave similarly for stretch in the L4-L5 simplification).</para>
+    /// property-specific keyword table (L6 shipped <c>flex-wrap: wrap</c>
+    /// without expanding the intrinsic-keyword resolution). For L4-L6
+    /// all Keyword tags on width / height resolve as auto (the most
+    /// common case + the others behave similarly for stretch in the
+    /// L4-L6 simplification).</para>
     ///
     /// <para><b>Cancellation</b> — none needed; this is a single-slot
     /// read.</para></summary>

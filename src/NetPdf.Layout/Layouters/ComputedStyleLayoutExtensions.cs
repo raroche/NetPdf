@@ -519,6 +519,31 @@ internal static class ComputedStyleLayoutExtensions
         };
     }
 
+    /// <summary>Per Phase 3 Task 15 L6 — decode
+    /// <see cref="PropertyId.FlexWrap"/> per CSS Flexbox L1 §6.3. L6
+    /// ships <c>nowrap</c> (the L1-L5 default) and <c>wrap</c> (multi-
+    /// line packing along the cross axis). <c>wrap-reverse</c> decodes
+    /// to <see cref="FlexWrapValue.WrapReverse"/> but for L6 it is
+    /// treated identically to <see cref="FlexWrapValue.Wrap"/> at the
+    /// layouter — the cross-axis line-stacking reversal is L7+ scope;
+    /// see <c>docs/deferrals.md#flex-layouter-features</c>.
+    ///
+    /// <para><b>Keyword index mapping.</b> The source-gen'd
+    /// <c>BuildFlexWrapTable</c> in
+    /// <see cref="NetPdf.Css.ComputedValues.PropertyResolvers.KeywordResolver"/>
+    /// emits indices in the <c>properties.json</c> order: 0=nowrap,
+    /// 1=wrap, 2=wrap-reverse.</para></summary>
+    public static FlexWrapValue ReadFlexWrap(this ComputedStyle style)
+    {
+        var keyword = style.ReadKeywordOrDefault(PropertyId.FlexWrap, defaultIndex: 0);
+        return keyword switch
+        {
+            1 => FlexWrapValue.Wrap,
+            2 => FlexWrapValue.WrapReverse,
+            _ => FlexWrapValue.NoWrap,
+        };
+    }
+
     /// <summary>Per Phase 3 Task 15 L3 — decode
     /// <see cref="PropertyId.AlignItems"/> per CSS Box Alignment L3 §6 +
     /// CSS Flexbox L1 §8.3. L3 ships the four commonly-used position
@@ -887,4 +912,48 @@ internal static class FlexDirectionValueExtensions
     public static bool IsFlexReverseDirection(this FlexDirectionValue value)
         => value == FlexDirectionValue.RowReverse
             || value == FlexDirectionValue.ColumnReverse;
+}
+
+/// <summary>Per Phase 3 Task 15 L6 — helper extensions on
+/// <see cref="FlexWrapValue"/>. Separated from
+/// <see cref="FlexDirectionValueExtensions"/> per the PR-#66 Copilot
+/// review (#3271026295 + #3271095597) so the extension class name
+/// matches the type it extends.</summary>
+internal static class FlexWrapValueExtensions
+{
+    /// <summary>Per Phase 3 Task 15 L6 — is this flex container
+    /// requesting multi-line layout? Returns <see langword="true"/> for
+    /// both <see cref="FlexWrapValue.Wrap"/> and
+    /// <see cref="FlexWrapValue.WrapReverse"/>. For L6 the two values
+    /// behave identically at the layouter — <c>wrap-reverse</c>'s
+    /// cross-axis line-stacking reversal is L7+ scope and is not yet
+    /// applied (a <c>LAYOUT-FLEX-WRAP-REVERSE-APPROXIMATED-001</c>
+    /// Warning surfaces the gap). The split exists so an L7+ addition
+    /// can branch on the raw <see cref="FlexWrapValue"/> while every
+    /// gate that just needs "single-line vs. multi-line" can use this
+    /// predicate.</summary>
+    public static bool IsFlexWrapping(this FlexWrapValue value)
+        => value == FlexWrapValue.Wrap || value == FlexWrapValue.WrapReverse;
+}
+
+/// <summary>Per Phase 3 Task 15 L6 — typed decode of
+/// <see cref="PropertyId.FlexWrap"/> per CSS Flexbox L1 §6.3. L6 ships
+/// the multi-line algorithm for <see cref="Wrap"/>; <see cref="NoWrap"/>
+/// preserves the L1-L5 single-line behavior.
+///
+/// <para><b>WrapReverse handling (L6).</b> <see cref="WrapReverse"/>
+/// decodes successfully so the cascade carries the authored value, but
+/// at the FlexLayouter L6 treats <see cref="WrapReverse"/> identically
+/// to <see cref="Wrap"/> — the cross-axis line-stacking reversal
+/// (CSS Flexbox L1 §6.3 "wrap-reverse: same as wrap but the
+/// cross-start and cross-end directions are swapped") is L7+ scope.
+/// See <c>docs/deferrals.md#flex-layouter-features</c>. The split keeps
+/// the cascade slot lossless so when L7+ adds the cross-axis reversal,
+/// pre-authored <c>flex-wrap: wrap-reverse</c> declarations activate
+/// the new behavior without a re-author.</para></summary>
+internal enum FlexWrapValue : byte
+{
+    NoWrap = 0,
+    Wrap = 1,
+    WrapReverse = 2,
 }

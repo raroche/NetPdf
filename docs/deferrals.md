@@ -844,8 +844,9 @@ grepping the ID).
   `flex-direction` values **for LTR horizontal-tb** (the L1 default
   writing mode; per Phase 3 Task 15 L5 post-PR-#65 review F#1 the
   spec-correct axis mapping for RTL or vertical writing modes per
-  CSS Flexbox §3.1 is L6+ scope — the L5 contract is LTR
-  horizontal-tb only): `row` (the L1-L3 default; main = inline
+  CSS Flexbox §3.1 is L7+ scope — the L5 contract is LTR
+  horizontal-tb only; L6 shipped `flex-wrap: wrap` without expanding
+  the direction-pipeline scope): `row` (the L1-L3 default; main = inline
   axis, items flow left-to-right), `column` (L4 new; main = block
   axis, items stack top-to-bottom), `row-reverse` (L5 new; main =
   inline axis, but main-start moves to the inline-end edge so items
@@ -908,11 +909,57 @@ grepping the ID).
   content-inline-size (= available inline range from BlockLayouter's
   ConfigureEmission) — `width: auto` on a block-level flex container
   means "fill containing block" per CSS Sizing §3.4, NOT shrink-to-fit
-  (inline-flex shrink-to-fit is L6+ scope). The flex container is
+  (inline-flex shrink-to-fit is L7+ scope; L6 shipped `flex-wrap:
+  wrap` without expanding the inline-flex sizing scope). The flex
+  container is
   atomic to outer pagination (the entire container's items emit on
   the page the wrapper landed on; no `FlexContinuation` resume).
+  **Per Phase 3 Task 15 L6** — `flex-wrap: wrap` ships in full per
+  CSS Flexbox L1 §6.3 + §9.3 + §9.4: greedy line packing along the
+  main axis (the first item on each line always lands even if it
+  itself overflows the container; subsequent items wrap when adding
+  would exceed `containerMainSize`); lines stack on the cross axis
+  at cross-start with no inter-line spacing (`align-content` is L7+
+  scope); each line runs its OWN justify-content + align-items per
+  CSS Flexbox L1 §6.3 ("each flex line is treated as the alignment
+  container for its items along the cross axis"); auto cross-size
+  = sum of line cross-extents (`PreMeasureFlexMultiLineCrossExtent`
+  at the BlockLayouter pre-measure sites). Direction-agnostic — wrap
+  works for both row + column. For column + wrap, an EXPLICIT
+  block-size is required (auto block-size in column direction can't
+  wrap in a single-pass measure; the L6 pre-measure skip rule
+  prevents `PreMeasureFlexMainExtent` from growing past the
+  declared height + defeating the wrap).
 - **Missing** —
-  - `flex-wrap: wrap` / `wrap-reverse`
+  - `flex-wrap: wrap-reverse` (cross-axis line-stacking reversal per
+    CSS Flexbox L1 §6.3 — "same as wrap but the cross-start and
+    cross-end directions are swapped"). L6 ships `wrap` in full
+    (multi-line greedy packing, per-line justify-content + align-
+    items against the LINE'S cross-extent, container auto cross-size
+    = sum of line cross-extents per CSS Flexbox L1 §9.4); the
+    `wrap-reverse` keyword decodes successfully + the FlexLayouter
+    treats it identically to `wrap` until L7+ adds the cross-axis
+    reversal transform (= reverse the line-stacking order +
+    invert each item's cross-axis offset within its line). The
+    cascade slot is lossless so pre-authored
+    `flex-wrap: wrap-reverse` declarations activate the new
+    behavior without a re-author. Tracked alongside `align-content`
+    (multi-line cross-axis alignment) which is the natural L7+
+    companion.
+  - **`align-content` property** (CSS Flexbox L1 §8.4 + CSS Box
+    Alignment L3 §6): not yet in `properties.json` /
+    `KeywordResolver`. The initial value is `stretch` (lines
+    stretch to fill the container's cross-extent when the sum of
+    line cross-extents is less than the container's cross extent);
+    L6 approximates as `flex-start` (lines stack at cross-start at
+    their natural sizes with the extra cross-axis space left
+    empty). L7+ scope — needs the property parsing + cascade entry
+    + the stretch-lines pass. Per Phase 3 Task 15 L6 post-PR-#66
+    review F#3 — pre-finding the deferral entry incorrectly claimed
+    the property was parsed and carried; corrected here. Pinned by
+    the `L6_hardening_known_gap_align_content_stretch_not_implemented`
+    test — when L7+ lands the stretch behavior + the property parses,
+    that test should fail + this bullet should be removed.
   - Writing-mode and `direction` integration for `flex-direction`
     axis mapping (CSS Flexbox §3.1): all 4 directions are honored
     for LTR horizontal-tb but the axis mapping differs in RTL +
@@ -920,11 +967,12 @@ grepping the ID).
     to-left along the inline axis (physically equivalent to LTR
     `row-reverse`); `row` in vertical-rl swaps the main + cross
     axes onto the block + inline directions of the rotated writing
-    mode. L6+ scope — requires plumbing `direction` +
-    `writing-mode` properties through the layout pipeline. Pinned
+    mode. L7+ scope — requires plumbing `direction` +
+    `writing-mode` properties through the layout pipeline (L6
+    shipped `flex-wrap: wrap` without addressing this gap). Pinned
     by the Skip'd
     `L5_known_gap_rtl_row_should_flip_main_axis_but_no_direction_pipeline_yet`
-    test — when L6+ adds the direction pipeline, that test should
+    test — when L7+ adds the direction pipeline, that test should
     flip to spec-correct expectations + this bullet should be
     removed.
   - Outer-main-size + auto-margins in `justify-content` free-space
@@ -1010,9 +1058,16 @@ grepping the ID).
     `L4_hardening_known_gap_column_flex_ignores_declared_width`
     pinning test + the Skip'd
     `L4_hardening_column_explicit_width_smaller_than_page_centers_correctly`
-    test. When the BlockLayouter width-resolution fix lands the
-    pin starts failing + the Skip'd test starts passing — at
-    which point remove BOTH this bullet AND the pin.
+    test. Per Phase 3 Task 15 L6 post-PR-#66 review F#2 — also
+    tracked by the
+    `L6_hardening_known_gap_narrow_flex_in_wide_page_does_not_wrap_yet`
+    production-pipeline test, which pins the wrap-related symptom:
+    `width: 250px` declared on a `flex-wrap: wrap` container in a
+    600px page → wrap fires against the page width (= 4×100=400 <
+    600 → no wrap) instead of the spec-correct declared width
+    (= 4×100=400 > 250 → 2 lines). When the BlockLayouter
+    width-resolution fix lands ALL THREE tests should flip — at
+    which point remove BOTH this bullet AND all three pins.
   - `flex-grow` / `flex-shrink` / `flex-basis` resolution
   - `order` property
   - Anonymous flex-item wrapping for inline-level / text children
@@ -1034,20 +1089,27 @@ grepping the ID).
   - `src/NetPdf.Css/properties.json` — the `align-items`,
     `flex-direction`, `flex-wrap`, `justify-content` keyword
     properties (cascade-parsed + honored at the layouter for the
-    L1-L4 subset; `flex-wrap` still deferred to L5+).
+    L1-L6 subset; `wrap-reverse` cross-axis reversal still
+    deferred to L7+).
 - **Trigger** — L2 picked up `justify-content`; L3 picked up
   `align-items` (base values + stretch); L4 picked up
   `flex-direction: column` + the F#1 hardening for column auto-
   height wrappers; L5 picked up `flex-direction: row-reverse` +
   `column-reverse` (the offset-flip transform at the per-item
-  emission site). Sub-cycle L6+ picks up `flex-wrap`, the
+  emission site); L6 picked up `flex-wrap: wrap` (multi-line
+  greedy packing + per-line align math + sum-of-lines auto cross-
+  size). Sub-cycle L7+ picks up `flex-wrap: wrap-reverse`, the
+  `align-content` multi-line cross-axis distribution, the
   `flex-grow` / `flex-shrink` / `flex-basis` interpolation,
   anonymous-flex-item wrapping for inline/text children, and the
   `FlexContinuation`-based multi-page split.
 - **Added** — Phase 3 Task 15 cycle 1 (Hello World).
-- **Removal condition** — Sub-cycle L6+ ships the remaining
-  deferred features (wrap / grow / shrink / basis / order /
-  baseline / multi-page split / anonymous flex item).
+- **Removal condition** — Sub-cycle L7+ ships the remaining
+  deferred features (wrap-reverse / align-content / grow / shrink /
+  basis / order / baseline / multi-page split / anonymous flex
+  item). L6 shipped `flex-wrap: wrap`; `wrap-reverse` + `align-
+  content` are the natural L7 companions (the cross-axis line-
+  stacking reversal + multi-line cross-axis distribution).
 
 ---
 

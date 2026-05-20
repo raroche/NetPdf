@@ -1447,7 +1447,20 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     && childIsWrapping
                     && !IsHeightAuto(child);
                 double flexAxisExtent;
-                if (childFlexDirection.IsFlexColumnDirection())
+                // Per Phase 3 Task 15 L6 post-PR-#66 review F#5 —
+                // short-circuit the pre-measure when its result will be
+                // skipped. Pre-fix the column+wrap+explicit-height
+                // path computed `PreMeasureFlexMainExtent` (which sums
+                // every item's main-axis size) and then discarded the
+                // result via `if (!skipMainExtentGrow)`. Skipping
+                // BEFORE the call avoids the wasted item walk —
+                // especially valuable for long item lists where the
+                // sum-of-items walk is O(N).
+                if (skipMainExtentGrow)
+                {
+                    flexAxisExtent = 0;
+                }
+                else if (childFlexDirection.IsFlexColumnDirection())
                 {
                     flexAxisExtent = PreMeasureFlexMainExtent(
                         child, cancellationToken);
@@ -1460,6 +1473,17 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     // wrapper's inline-axis border + padding contribute
                     // to the budget separately from the block-axis
                     // contribution we add to flexBorderPaddingBlock.
+                    //
+                    // Per Phase 3 Task 15 L6 post-PR-#66 review F#5
+                    // TODO: this multi-line line-packing routine
+                    // duplicates the algorithm in
+                    // <see cref="FlexLayouter"/>'s <c>PackLines</c> —
+                    // both walk the items + compute line breaks via
+                    // greedy packing against the same
+                    // containerMainSize budget. L7+ scope: extract a
+                    // shared <c>FlexLinePacker</c> helper consumed by
+                    // both sites. Not done now (= medium-scope
+                    // refactor; risk of regression).
                     var inlineBorderStart =
                         child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
                     var inlineBorderEnd =
@@ -1615,8 +1639,34 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // correctly counteracted the over-measurement caused by
             // the recursive walk treating items as block-flow children
             // when the spec says they are single-line horizontally.
+            //
+            // Per Phase 3 Task 15 L6 post-PR-#66 review F#1 — the
+            // column-direction case gets the SAME clamp when the
+            // container is wrapping AND has an explicit (LengthPx)
+            // block-size declared. Under those conditions the wrapper's
+            // block extent is fixed by the declaration (= the wrap
+            // threshold the FlexLayouter packed against); leaving
+            // `subtreeBlockExtent` at the un-wrapped block-flow sum
+            // (= sum of items along the main axis as if no wrap
+            // existed) would over-reserve space → siblings land too
+            // low + false page breaks. The clamp mirrors the
+            // row-direction path: bring the over-measured subtree
+            // extent back to the wrapper's declared border-box block
+            // size. (Column + wrap + auto-height falls through to the
+            // pre-clamp behavior: there's no explicit threshold so the
+            // sum-of-items IS the spec-correct extent.) The
+            // skipMainExtentGrow predicate above and this clamp move
+            // in lockstep — both fire on the same condition.
             if (IsFlexContainer(child)
                 && !child.Style.ReadFlexDirection().IsFlexColumnDirection()
+                && subtreeBlockExtent > borderBoxBlockSize)
+            {
+                subtreeBlockExtent = borderBoxBlockSize;
+            }
+            else if (IsFlexContainer(child)
+                && child.Style.ReadFlexDirection().IsFlexColumnDirection()
+                && child.Style.ReadFlexWrap().IsFlexWrapping()
+                && child.Style.Get(PropertyId.Height).Tag == ComputedSlotTag.LengthPx
                 && subtreeBlockExtent > borderBoxBlockSize)
             {
                 subtreeBlockExtent = borderBoxBlockSize;
@@ -2673,6 +2723,27 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // between measure + emit (avoiding the duplicate walk).
             var childSubtreeExtent = MeasureSubtreeVisualBlockExtentRecursive(
                 child, cancellationToken, depth + 1);
+            // Per Phase 3 Task 15 L6 post-PR-#66 review F#1 — mirror
+            // the outer-dispatch column-wrap clamp at the recursion
+            // site. The unconditional clamp later in the flex grow
+            // block (= `childEffectiveBlockSize > childBorderBoxBlockSize`
+            // after the post-grow recalc) ALSO catches this case, but
+            // a defensive symmetric clamp on `childSubtreeExtent`
+            // before the `Math.Max` keeps the two dispatch paths in
+            // lockstep — the same predicate fires the same shrinkage
+            // at both sites. Column + wrap + explicit (LengthPx)
+            // height: the wrapper's block extent is fixed by the
+            // declaration; over-measuring `childSubtreeExtent` past it
+            // would propagate into `childEffectiveBlockSize` via the
+            // Math.Max below.
+            if (IsFlexContainer(child)
+                && child.Style.ReadFlexDirection().IsFlexColumnDirection()
+                && child.Style.ReadFlexWrap().IsFlexWrapping()
+                && child.Style.Get(PropertyId.Height).Tag == ComputedSlotTag.LengthPx
+                && childSubtreeExtent > childBorderBoxBlockSize)
+            {
+                childSubtreeExtent = childBorderBoxBlockSize;
+            }
             var childEffectiveBlockSize = Math.Max(
                 childBorderBoxBlockSize, childSubtreeExtent);
 
@@ -2926,7 +2997,19 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     && childIsWrapping
                     && !IsHeightAuto(child);
                 double nFlexAxisExtent;
-                if (childFlexDirection.IsFlexColumnDirection())
+                // Per Phase 3 Task 15 L6 post-PR-#66 review F#5 —
+                // short-circuit the pre-measure when its result will
+                // be skipped (= the column+wrap+explicit-height path
+                // would zero out nFlexAxisExtent below anyway). Pre-
+                // fix the column branch called
+                // PreMeasureFlexMainExtent (= O(N) item walk) only to
+                // throw the result away. Same change as the outer
+                // dispatch site.
+                if (nSkipMainExtentGrow)
+                {
+                    nFlexAxisExtent = 0;
+                }
+                else if (childFlexDirection.IsFlexColumnDirection())
                 {
                     nFlexAxisExtent = PreMeasureFlexMainExtent(
                         child, cancellationToken);
@@ -2935,6 +3018,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 {
                     // Row + wrap — same line-budget derivation as the
                     // outer dispatch site.
+                    //
+                    // Per Phase 3 Task 15 L6 post-PR-#66 review F#5
+                    // TODO: see the outer dispatch site's matching TODO
+                    // — this multi-line line-packing routine duplicates
+                    // <see cref="FlexLayouter.PackLines"/>; L7+ scope
+                    // is to extract a shared <c>FlexLinePacker</c>
+                    // helper consumed by both sites. Not done now (=
+                    // medium-scope refactor; risk of regression).
                     var inlineBorderStart =
                         child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
                     var inlineBorderEnd =
@@ -2956,14 +3047,6 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 {
                     nFlexAxisExtent = PreMeasureFlexCrossExtent(
                         child, cancellationToken);
-                }
-                if (nSkipMainExtentGrow)
-                {
-                    // Skip the grow path entirely; the declared block-
-                    // size already constrains the wrapper. Mirrors the
-                    // outer-dispatch skip + keeps the post-grow clamps
-                    // below as no-ops.
-                    nFlexAxisExtent = 0;
                 }
                 var nFlexDriven = nFlexAxisExtent + nFlexBorderPaddingBlock;
                 if (nFlexDriven > childBorderBoxBlockSize)

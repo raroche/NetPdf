@@ -3571,6 +3571,284 @@ public sealed class FlexLayouterTests
     }
 
     // ====================================================================
+    //  Phase 3 Task 15 L6 post-PR-#66 review hardening (6 findings).
+    // ====================================================================
+
+    [Fact]
+    public void L6_hardening_column_wrap_explicit_height_clamps_outer_cursor_advance()
+    {
+        // F#1 — column + wrap + explicit height: a 4×60px column-flex
+        // declares height: 150px so wrap fires (4*60=240 > 150 → 2
+        // columns of items). Pre-F#1 the BlockLayouter's
+        // MeasureSubtreeVisualBlockExtent walked the flex children as
+        // block-flow and reserved 240px (the un-wrapped sum) on the
+        // outer cursor; a sibling block AFTER the flex container then
+        // landed at wrapper.BlockOffset + 240 instead of the
+        // spec-correct wrapper.BlockOffset + 150 (= the declared
+        // wrapper height). Post-F#1 the outer row-direction clamp
+        // extends to fire for column+wrap+explicit-LengthPx-height,
+        // bringing the over-measured subtree extent back to the
+        // wrapper's declared border-box block size.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1)); // wrap
+        SetLengthPx(flex.Style, PropertyId.Width, 300);
+        SetLengthPx(flex.Style, PropertyId.Height, 150);
+
+        // 4 items of 100x60 — main-axis sum = 240 > 150 → wrap into
+        // 2 columns of items each. The block-flow stacking sum (=
+        // 240) is the OVER-measurement we're guarding against.
+        for (var i = 0; i < 4; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 60);
+            flex.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+        }
+
+        // Sibling AFTER the flex container — a plain block of height
+        // 30. With the F#1 clamp, this sibling lands at
+        // wrapper.BlockOffset + 150 (= declared wrapper height).
+        // Without the clamp it would land at wrapper.BlockOffset +
+        // 240 (= un-wrapped sum).
+        var siblingStyle = MakeStyle();
+        SetLengthPx(siblingStyle, PropertyId.Width, 100);
+        SetLengthPx(siblingStyle, PropertyId.Height, 30);
+        var sibling = Box.ForElement(BoxKind.BlockContainer, siblingStyle, MakeElement());
+
+        root.AppendChild(flex);
+        root.AppendChild(sibling);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? wrapper = null;
+        BoxFragment? siblingFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == flex) wrapper = f;
+            else if (f.Box == sibling) siblingFragment = f;
+        }
+        Assert.NotNull(wrapper);
+        Assert.NotNull(siblingFragment);
+        // F#1 — sibling lands at wrapper.BlockOffset + 150 (= the
+        // declared wrapper height), NOT + 240 (= the un-wrapped
+        // block-flow stacking sum).
+        Assert.Equal(wrapper!.Value.BlockOffset + 150.0,
+            siblingFragment!.Value.BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L6_hardening_column_wrap_near_page_boundary_does_not_force_break()
+    {
+        // F#1 — a column+wrap flex container with declared height
+        // slightly below the page-remaining size; pre-F#1 the
+        // over-measurement of the un-wrapped block-flow sum could
+        // trigger a false page break because the outer pagination
+        // sees the wrapper as oversized. Post-F#1 the clamp brings
+        // the subtree extent back to the declared height + the flex
+        // emits cleanly on the current page with no diagnostic.
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1)); // wrap
+        SetLengthPx(flex.Style, PropertyId.Width, 400);
+        // Declared height = 150. Page size = 200. Without the F#1
+        // clamp the outer pagination saw the wrapper as 240 (un-
+        // wrapped sum) > 200 → forced overflow / break path.
+        SetLengthPx(flex.Style, PropertyId.Height, 150);
+
+        for (var i = 0; i < 4; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 60);
+            flex.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+        }
+
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: diagSink,
+            shaperResolver: shaper);
+        // Page size 200 — JUST enough to fit a 150-px-tall wrapper.
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        // Sanity — the wrapper fragment + all 4 items emit.
+        BoxFragment? wrapper = null;
+        var itemFragmentCount = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == flex) wrapper = f;
+            else if (f.Box.Kind == BoxKind.BlockContainer
+                && f.Box != root && f.Box != flex) itemFragmentCount++;
+        }
+        Assert.NotNull(wrapper);
+        // The 4 flex items + nothing else.
+        Assert.Equal(4, itemFragmentCount);
+        // The wrapper paints at its declared height (= the wrap
+        // threshold).
+        Assert.Equal(150.0, wrapper!.Value.BlockSize, precision: 3);
+        // No PAGINATION-FORCED-OVERFLOW-001 diagnostic — the F#1
+        // clamp prevents the false over-measurement that would have
+        // triggered it.
+        foreach (var d in diagSink.Diagnostics)
+        {
+            Assert.NotEqual("PAGINATION-FORCED-OVERFLOW-001", d.Code);
+        }
+    }
+
+    [Fact]
+    public void L6_hardening_known_gap_align_content_stretch_not_implemented()
+    {
+        // Per Phase 3 Task 15 L6 post-PR-#66 review F#3 — CSS
+        // Flexbox L1 §8.4 + CSS Box Alignment L3 §6 say the initial
+        // value of `align-content` is `stretch`. A 200px-tall multi-
+        // line container with two 50px lines SHOULD stretch the
+        // lines so they fill the 200px cross extent — line 1 at 0,
+        // line 2 at 100, each line conceptually 100px tall. L6
+        // approximates as `flex-start`: lines stack at natural sizes
+        // (line 1 at 0, line 2 at 50), leaving 100px empty space at
+        // the cross-end. PINS the current (incomplete) behavior. The
+        // `align-content` property is not in `properties.json` yet
+        // — L7+ scope (see docs/deferrals.md#flex-layouter-features).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        // Row direction (default) + wrap.
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1)); // wrap
+        SetLengthPx(flex.Style, PropertyId.Width, 250);
+        // Container cross-extent (height) = 200; two lines of 50px
+        // each leave 100px of empty cross space. align-content:
+        // stretch (the initial value) would expand each line to 100px
+        // so line 2 lands at BlockOffset 100; L6 ignores it + line 2
+        // lands at BlockOffset 50.
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+
+        // 4 items of 100×50 — line 1 = items 0+1, line 2 = items 2+3.
+        for (var i = 0; i < 4; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            flex.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 250, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var itemFragments = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box != root && f.Box != flex
+                && f.Box.Kind == BoxKind.BlockContainer)
+            {
+                itemFragments.Add(f);
+            }
+        }
+        Assert.Equal(4, itemFragments.Count);
+        // KNOWN-GAP PIN — line 2 items (items 2 + 3) land at
+        // BlockOffset 50 (= natural line stack), NOT at 100 (= what
+        // align-content: stretch would produce). When L7+ ships
+        // align-content: stretch + the property is added to the
+        // cascade, this assertion should flip.
+        // items[0..1] on line 1 at BlockOffset 0.
+        Assert.Equal(0.0, itemFragments[0].BlockOffset, precision: 3);
+        Assert.Equal(0.0, itemFragments[1].BlockOffset, precision: 3);
+        // items[2..3] on line 2 at BlockOffset 50 (NOT 100).
+        Assert.Equal(50.0, itemFragments[2].BlockOffset, precision: 3);
+        Assert.Equal(50.0, itemFragments[3].BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L6_hardening_wrap_reverse_emits_approximation_diagnostic()
+    {
+        // F#4 — `flex-wrap: wrap-reverse` decodes correctly to the
+        // WrapReverse enum value but the FlexLayouter approximates
+        // its behavior as `wrap` (the cross-axis line-stacking
+        // reversal is L7+ scope). Without a diagnostic this is
+        // silent: correct CSS, wrong rendering. The diagnostic
+        // surfaces the approximation. Should fire exactly once per
+        // AttemptLayout invocation (not per item).
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        // Keyword 2 = wrap-reverse (per ReadFlexWrap mapping at
+        // ComputedStyleLayoutExtensions.cs:542).
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(2));
+        SetLengthPx(flex.Style, PropertyId.Width, 250);
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+
+        // Several items so we can verify ONE diagnostic per AttemptLayout
+        // (not N diagnostics, one per item).
+        for (var i = 0; i < 4; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            flex.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: diagSink,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 250, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        // Find the LAYOUT-FLEX-WRAP-REVERSE-APPROXIMATED-001
+        // diagnostic; exactly one should fire.
+        var wrapReverseDiagnosticCount = 0;
+        foreach (var d in diagSink.Diagnostics)
+        {
+            if (d.Code == "LAYOUT-FLEX-WRAP-REVERSE-APPROXIMATED-001")
+            {
+                wrapReverseDiagnosticCount++;
+                Assert.Equal(PaginateDiagnosticSeverity.Warning, d.Severity);
+                Assert.Contains("wrap-reverse", d.Message);
+            }
+        }
+        Assert.Equal(1, wrapReverseDiagnosticCount);
+    }
+
+    // ====================================================================
     //  Helpers
     // ====================================================================
 

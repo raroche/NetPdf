@@ -32,7 +32,8 @@ namespace NetPdf.Layout.Layouters;
 ///   depends on the cascaded <c>direction</c> + <c>writing-mode</c>
 ///   properties; for RTL or vertical writing modes the spec-correct
 ///   axis mappings differ. Pipeline support for <c>direction</c> /
-///   <c>writing-mode</c> is L6+ scope; tracked in
+///   <c>writing-mode</c> is L7+ scope (L6 shipped <c>flex-wrap:
+///   wrap</c> without expanding the direction pipeline); tracked in
 ///   <c>docs/deferrals.md#flex-layouter-features</c>. Under the LTR
 ///   horizontal-tb assumption: for <c>row</c>: main = inline axis
 ///   (horizontal, left-to-right); cross = block axis (vertical); items
@@ -85,10 +86,25 @@ namespace NetPdf.Layout.Layouters;
 ///   wrap-reverse</c> decodes to <see cref="FlexWrapValue.WrapReverse"/>
 ///   but L6 treats it identically to <see cref="FlexWrapValue.Wrap"/>
 ///   — the cross-axis line-stacking reversal is L7+ scope; tracked in
-///   <c>docs/deferrals.md#flex-layouter-features</c>. L6 also defers
-///   <c>align-content</c> (multi-line cross-axis alignment per CSS Box
-///   Alignment L3 §6) — lines stack at cross-start with no extra
-///   spacing.</item>
+///   <c>docs/deferrals.md#flex-layouter-features</c>. Per Phase 3
+///   Task 15 L6 post-PR-#66 review F#4 the layouter now emits the
+///   <c>LAYOUT-FLEX-WRAP-REVERSE-APPROXIMATED-001</c> warning
+///   diagnostic on each <c>AttemptLayout</c> invocation that
+///   encounters <c>wrap-reverse</c>, so the silent approximation is
+///   visible to authors. L6 also defers <c>align-content</c>
+///   (multi-line cross-axis alignment per CSS Box Alignment L3 §6).
+///   Per CSS Flexbox L1 §8.4 + CSS Box Alignment L3 §6 the initial
+///   value of <c>align-content</c> is <c>stretch</c> — definite-cross-
+///   sized multi-line containers should stretch their line cross-
+///   extents to fill the container when the sum is less than the
+///   container's cross extent. L6 approximates <c>align-content</c>
+///   as <c>flex-start</c>: lines stack at cross-start at their
+///   natural sizes with no inter-line spacing, leaving extra cross-
+///   axis space empty (when the container is taller than the sum of
+///   line cross-extents). The <c>align-content</c> property itself is
+///   not yet in <c>properties.json</c> / the cascade — adding the
+///   parsed-and-honored support is L7+ scope per
+///   <c>docs/deferrals.md#flex-layouter-features</c>.</item>
 ///   <item><b>L2 — <c>justify-content</c> main-axis alignment.</b>
 ///   The layouter honors the six effective values per CSS Box
 ///   Alignment L3 §4.5: <c>flex-start</c> (default packing at main-
@@ -197,6 +213,15 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     private double _contentInlineSize;
     private double _contentBlockSize;
     private bool _emissionConfigured;
+
+    // Per Phase 3 Task 15 L6 post-PR-#66 review F#4 — one-shot guard
+    // for the wrap-reverse-approximated diagnostic. Reset on each
+    // AttemptLayout entry so a re-invocation (= different
+    // fragmentainer / retry attempt) re-emits the warning. Within a
+    // single AttemptLayout we only need to surface it once — the
+    // approximation is a property of the container declaration, not
+    // a per-item event.
+    private bool _emittedWrapReverseDiagnostic;
 
     /// <summary>Construct a layouter for the flex container
     /// <paramref name="rootBox"/>. The box's <see cref="Box.Kind"/>
@@ -369,7 +394,8 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // mapping differs (e.g., RTL row = right-to-left along the
         // inline axis = visually equivalent to LTR row-reverse).
         // Plumbing `direction` / `writing-mode` through the layout
-        // pipeline is L6+ scope; tracked in
+        // pipeline is L7+ scope (L6 shipped `flex-wrap: wrap` without
+        // expanding the direction pipeline); tracked in
         // `docs/deferrals.md#flex-layouter-features`.
         var flexDirection = _rootBox.Style.ReadFlexDirection();
         var isColumn = flexDirection.IsFlexColumnDirection();
@@ -385,6 +411,35 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // PackLines emitting exactly one line covering all items.
         var flexWrap = _rootBox.Style.ReadFlexWrap();
         var isWrapping = flexWrap.IsFlexWrapping();
+
+        // Per Phase 3 Task 15 L6 post-PR-#66 review F#4 — emit a
+        // one-shot warning when the author declared `wrap-reverse`
+        // but the layouter treats it as `wrap` (the cross-axis line-
+        // stacking reversal is L7+ scope; see
+        // `docs/deferrals.md#flex-layouter-features`). Without this
+        // diagnostic the wrong rendering is silent — the CSS
+        // declaration parses successfully + items wrap in the
+        // correct main-axis order, but the lines stack in the
+        // natural cross-axis direction rather than the author-
+        // requested reversed direction. Reset the guard at function
+        // entry so a re-invocation surfaces the warning again.
+        _emittedWrapReverseDiagnostic = false;
+        if (flexWrap == FlexWrapValue.WrapReverse && !_emittedWrapReverseDiagnostic)
+        {
+            OptimizingBreakResolver.SafeEmit(
+                layout.Diagnostics ?? _diagnostics,
+                new PaginateDiagnostic(
+                    PaginateDiagnosticCodes.LayoutFlexWrapReverseApproximated001,
+                    "FlexLayouter: `flex-wrap: wrap-reverse` is approximated as "
+                    + "`flex-wrap: wrap` in L6 — the cross-axis line stacking "
+                    + "reversal is L7+ scope (see "
+                    + "docs/deferrals.md#flex-layouter-features). The visual "
+                    + "result preserves item order but stacks lines in the "
+                    + "natural cross-axis direction rather than the reversed "
+                    + "direction the author requested.",
+                    PaginateDiagnosticSeverity.Warning));
+            _emittedWrapReverseDiagnostic = true;
+        }
 
         // Resolve the container's main-axis + cross-axis content extents
         // + offsets. For row direction the main axis is the inline axis
@@ -687,6 +742,17 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     /// at FlexLine.FirstItemIndex of the first block-level child; later
     /// lines reference their first block-level child's index in the
     /// original Children list.</returns>
+    // Per Phase 3 Task 15 L6 post-PR-#66 review F#5 TODO: this
+    // line-packing algorithm duplicates the line-packing inside
+    // <see cref="BlockLayouter"/>'s row+wrap pre-measure branch (see
+    // <c>PreMeasureFlexMultiLineCrossExtent</c> + its row-direction
+    // helper). Both walk the items + apply the greedy packing rule
+    // ("first item on a line always lands; later items wrap when
+    // adding would exceed containerMainSize") against the same
+    // container main-axis budget. L7+ scope: extract a shared
+    // <c>FlexLinePacker</c> consumed by both sites so they can't
+    // drift. Not done now (= medium-scope refactor; risk of
+    // regression).
     private static System.Collections.Generic.List<FlexLine> PackLines(
         Box flexContainer,
         FlexDirectionValue direction,
@@ -1156,12 +1222,14 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     /// iff Unset OR Keyword. Percentage / SideTableIndex /
     /// LengthPx are all explicit declarations.</para>
     ///
-    /// <para><b>Sub-cycle L6+ scope</b> — distinguishing the <c>auto</c>
+    /// <para><b>Sub-cycle L7+ scope</b> — distinguishing the <c>auto</c>
     /// keyword from <c>min-content</c> / <c>max-content</c> / <c>fit-content</c>
     /// requires reading the keyword payload + cross-referencing the
-    /// property-specific keyword table. For L4-L5 hardening all Keyword
-    /// tags on width / height resolve as auto (the most common case
-    /// + the others behave similarly for stretch in the L4-L5 simplification).</para>
+    /// property-specific keyword table (L6 shipped <c>flex-wrap: wrap</c>
+    /// without expanding the intrinsic-keyword resolution). For L4-L6
+    /// all Keyword tags on width / height resolve as auto (the most
+    /// common case + the others behave similarly for stretch in the
+    /// L4-L6 simplification).</para>
     ///
     /// <para><b>Cancellation</b> — none needed; this is a single-slot
     /// read.</para></summary>

@@ -897,6 +897,63 @@ public sealed class FlexLayouterProductionTests
         Assert.Equal(wrapperBlockStart + 50.0, itemD!.Value.BlockOffset, precision: 3);
     }
 
+    [Fact]
+    public async Task L6_hardening_known_gap_narrow_flex_in_wide_page_does_not_wrap_yet()
+    {
+        // Per Phase 3 Task 15 L6 post-PR-#66 review F#2 — the L6
+        // production test masked this by narrowing the fragmentainer
+        // contentInlineSize to match the declared flex width. On a
+        // default 600px page, `.flex { width: 250px; flex-wrap: wrap;
+        // }` SHOULD wrap 4×100px items into 2 lines (4*100=400 > 250)
+        // per spec. Because BlockLayouter doesn't honor declared
+        // `width` on block containers (the
+        // `BlockLayouter-flex-explicit-width` deferral from PR #64
+        // F#2), the wrapper is 600px wide and 4×100=400 < 600 → no
+        // wrap. This test PINS the current incomplete behavior. When
+        // the BlockLayouter explicit-width fix lands, this test
+        // should flip to assert 2 lines.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    flex-wrap: wrap;
+                    width: 250px;
+                }
+                .item { width: 100px; height: 50px; }
+            </style></head><body>
+            <div class="flex">
+              <div class="item"></div>
+              <div class="item"></div>
+              <div class="item"></div>
+              <div class="item"></div>
+            </div>
+            </body></html>
+            """;
+
+        // Use default 600px page width (no contentInlineSize override).
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        // Collect item fragments. Currently — because BlockLayouter
+        // doesn't honor the 250px declared width — wrapper is 600px
+        // so all 4 items fit on one line.
+        var items = sink.Fragments.Where(f =>
+            f.Box.SourceElement is not null &&
+            f.Box.SourceElement.GetAttribute("class") == "item")
+            .OrderBy(f => f.BlockOffset).ThenBy(f => f.InlineOffset)
+            .ToList();
+        Assert.Equal(4, items.Count);
+
+        // KNOWN-GAP PIN — current behavior: all 4 items on one line
+        // at BlockOffset 0 (NOT the spec-correct 2 lines at 0/50).
+        foreach (var item in items)
+        {
+            Assert.Equal(0.0, item.BlockOffset, precision: 3);
+        }
+        // When BlockLayouter-flex-explicit-width is fixed, this
+        // should change to: items[0..1] at BlockOffset 0, items[2..3]
+        // at BlockOffset 50.
+    }
+
     /// <summary>Per Phase 3 Task 15 L2 post-PR-#62 hardening F#4 —
     /// shared finder for the .item-a / .item-b / .item-c production
     /// fixture used by the bare-position tests

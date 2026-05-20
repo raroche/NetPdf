@@ -234,6 +234,51 @@ public sealed class LengthResolverTests
         Assert.True(result.IsInvalid);
     }
 
+    // Per Phase 3 Task 15 L8 post-PR-#68 hardening F#3 — flex-basis
+    // joined the non-negative set per CSS Flexbox L1 §7.2 (the
+    // `<'width'>` reference brings in CSS Sizing §5's non-negative
+    // rule). Pre-fix, `flex-basis: -10px` / `-10%` resolved
+    // successfully (because FlexBasis joined the LengthResolver
+    // dispatch in L8 without joining NonNegativeProperties), then
+    // floored silently in layout. Now they invalidate at parse time
+    // with CSS-PROPERTY-VALUE-INVALID-001 + the cascade falls back
+    // to the property's initial value (`auto`).
+    [Fact]
+    public void Flex_basis_rejects_negative_length()
+    {
+        var sink = new CapturingSink();
+        var result = LengthResolver.Resolve("-10px", PropertyType.FlexBasis,
+            PropertyId.FlexBasis, "flex-basis", sink, default);
+        Assert.True(result.IsInvalid);
+        Assert.Contains(sink.Diagnostics, d =>
+            d.Code == CssDiagnosticCodes.CssPropertyValueInvalid001 &&
+            d.Message.Contains("negative", System.StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Flex_basis_rejects_negative_percentage()
+    {
+        var sink = new CapturingSink();
+        var result = LengthResolver.Resolve("-5%", PropertyType.FlexBasis,
+            PropertyId.FlexBasis, "flex-basis", sink, default);
+        Assert.True(result.IsInvalid);
+        Assert.Contains(sink.Diagnostics, d =>
+            d.Code == CssDiagnosticCodes.CssPropertyValueInvalid001 &&
+            d.Message.Contains("negative", System.StringComparison.OrdinalIgnoreCase));
+    }
+
+    [Fact]
+    public void Flex_basis_accepts_zero_length()
+    {
+        // Per CSS Flexbox §7.2 + Sizing §5 — zero is valid for
+        // flex-basis (= the canonical `flex: 1 1 0` recipe). Sanity
+        // check that the non-negative gate doesn't trip on exactly 0.
+        var result = LengthResolver.Resolve("0px", PropertyType.FlexBasis,
+            PropertyId.FlexBasis, "flex-basis", null, default);
+        Assert.True(result.IsResolved);
+        Assert.Equal(0.0, result.Slot.AsLengthPx(), 3);
+    }
+
     [Theory]
     [InlineData("margin-top",    "MarginTop")]
     [InlineData("margin-bottom", "MarginBottom")]

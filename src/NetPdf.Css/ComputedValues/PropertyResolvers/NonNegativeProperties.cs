@@ -53,6 +53,16 @@ internal static class NonNegativeProperties
         PropertyId.MaxWidth, PropertyId.MaxHeight,
         // flex-grow / flex-shrink — Flexbox 1 §7.1
         PropertyId.FlexGrow, PropertyId.FlexShrink,
+        // Per Phase 3 Task 15 L8 post-PR-#68 hardening F#3 — flex-basis
+        // is non-negative per CSS Flexbox L1 §7.2 (the `<'width'>`
+        // reference subsumes Sizing §5's non-negative rule). Pre-fix,
+        // `flex-basis: -10px` / `-10%` resolved successfully (because
+        // FlexBasis joined the LengthResolver dispatch in L8 without
+        // joining this set), then floored to 0 silently in the
+        // hypothetical-size resolver. Now negatives invalidate cleanly
+        // with CSS-PROPERTY-VALUE-INVALID-001 + the cascade falls back
+        // to the property's initial value (`auto`).
+        PropertyId.FlexBasis,
         // Per Phase 3 Task 14 cycle 1 hardening (Finding 3) — multicol
         // length properties (CSS Multi-column L1 §3.1 + §6.1).
         // column-width specifies the IDEAL inline-size of each column;

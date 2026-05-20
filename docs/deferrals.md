@@ -1148,6 +1148,28 @@ grepping the ID).
     `L8_known_gap_min_width_does_not_clamp_resolved_size_yet` test;
     when L9+ adds the clamp + iteration, that test should flip to
     assert the spec-correct clamped sizes.
+  - **Shared `FlexItemSizing` model unification** (post-PR-#68
+    architecture recommendation): the L8 post-PR-#68 hardening F#1
+    extracted `ResolveFlexItemHypotheticalMainSize` to a shared
+    extension on `Boxes.Box` so PackLines + ResolveFlexibleMainSizes
+    + BlockLayouter's pre-measure all consume identical hypothetical
+    sizes. A broader refactor would lift `FlexItemSizing { Box,
+    ChildIndex, FlexBaseSize, HypotheticalMainSize, FlexGrow,
+    FlexShrink, CrossSize }` into a small read-once struct shared
+    across all three call sites, eliminating the repeated style reads
+    + making the §9.7 step-4 min/max-clamp iteration easier to add.
+    L9+ scope; the L8 extension is sufficient to close line-boundary
+    drift but the struct unification is a follow-up optimization.
+  - **`flex-basis: content` proper implementation** (CSS Flexbox L1
+    §7.2.1): post-PR-#68 F#4 — currently `Content` is approximated as
+    `Auto` (= delegate to declared main-size). Per spec, Content should
+    force the intrinsic content size REGARDLESS of declared
+    width/height; e.g., `width: 200; flex-basis: content` should
+    produce hypothetical = intrinsic content size (NOT 200). Requires
+    intrinsic-sizing integration with the BlockLayouter pre-measure
+    (= same prerequisite as `min-content` / `max-content` /
+    `fit-content` flex-basis keywords + the §9.7 step-4 min-clamp).
+    Pinned by `L8_hardening_known_gap_flex_basis_content_approximates_to_auto`.
   - Anonymous flex-item wrapping for inline-level / text children
     (cycle 1 skips non-block-level children silently; whitespace
     `TextRun`s between flex item elements are dropped without a

@@ -1232,6 +1232,108 @@ public sealed class FlexLayouterProductionTests
         Assert.Equal(400.0, items[2].InlineOffset, precision: 3);
     }
 
+    [Fact]
+    public async Task L8_hardening_production_html_flex_shrink_absorbs_overflow()
+    {
+        // Per Phase 3 Task 15 L8 post-PR-#68 hardening F#5 — production-
+        // pipeline test for flex-shrink (= the negative-free-space
+        // branch of §9.7). 3 items × width: 300 = 900 in a 600px
+        // container with flex-shrink: 1 (the cascade default) → each
+        // shrinks to 200. Cursors: 0, 200, 400.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    width: 600px;
+                    height: 60px;
+                }
+                .item { width: 300px; height: 50px; }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+              <div class="item c"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var items = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class");
+            if (classAttr != null && classAttr.StartsWith("item"))
+            {
+                items.Add(f);
+            }
+        }
+
+        Assert.Equal(3, items.Count);
+        // Each item shrinks from 300 to 200 to fit the 600px container.
+        Assert.Equal(200.0, items[0].InlineSize, precision: 3);
+        Assert.Equal(200.0, items[1].InlineSize, precision: 3);
+        Assert.Equal(200.0, items[2].InlineSize, precision: 3);
+        Assert.Equal(0.0, items[0].InlineOffset, precision: 3);
+        Assert.Equal(200.0, items[1].InlineOffset, precision: 3);
+        Assert.Equal(400.0, items[2].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public async Task L8_hardening_production_html_flex_basis_percentage_drives_size()
+    {
+        // Per Phase 3 Task 15 L8 post-PR-#68 hardening F#5 — production-
+        // pipeline test for flex-basis: <percentage>. 3 items in a
+        // 600px container with flex-basis: 25% (= 150 hypothetical
+        // each); flex-grow: 0 (cascade default) + flex-shrink: 0
+        // pinned → items stay at 150 each. Cursors: 0, 150, 300.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    width: 600px;
+                    height: 60px;
+                }
+                .item {
+                    height: 50px;
+                    flex-basis: 25%;
+                    flex-shrink: 0;
+                }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+              <div class="item c"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var items = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class");
+            if (classAttr != null && classAttr.StartsWith("item"))
+            {
+                items.Add(f);
+            }
+        }
+
+        Assert.Equal(3, items.Count);
+        // Each item resolves to 25% × 600 = 150px (no grow / shrink).
+        Assert.Equal(150.0, items[0].InlineSize, precision: 3);
+        Assert.Equal(150.0, items[1].InlineSize, precision: 3);
+        Assert.Equal(150.0, items[2].InlineSize, precision: 3);
+        Assert.Equal(0.0, items[0].InlineOffset, precision: 3);
+        Assert.Equal(150.0, items[1].InlineOffset, precision: 3);
+        Assert.Equal(300.0, items[2].InlineOffset, precision: 3);
+    }
+
     private sealed class RecordingDiagnosticsSink : IPaginateDiagnosticsSink
     {
         public List<PaginateDiagnostic> Diagnostics { get; } = new();

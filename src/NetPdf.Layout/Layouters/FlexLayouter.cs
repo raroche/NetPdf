@@ -609,6 +609,14 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 itemIdx < _rootBox.Children.Count && emitted < line.ItemCount;
                 itemIdx++)
             {
+                // Per Phase 3 Task 15 L8 post-PR-#68 Copilot low-
+                // confidence note — check cancellation per item inside
+                // the inner loop too. Mirrors the other §9.7 helpers'
+                // discipline; relevant for very large child lists
+                // where the outer per-line check would otherwise leave
+                // cancellation unobserved through O(itemsPerLine)
+                // work.
+                cancellationToken.ThrowIfCancellationRequested();
                 var item = _rootBox.Children[itemIdx];
                 if (!item.IsBlockLevel) continue;
                 sumResolved += resolvedItemMainSizes[itemIdx];
@@ -903,6 +911,18 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     // <c>FlexLinePacker</c> consumed by both sites so they can't
     // drift. Not done now (= medium-scope refactor; risk of
     // regression).
+    //
+    // Per Phase 3 Task 15 L8 post-PR-#68 hardening F#1 — line packing
+    // now uses each item's HYPOTHETICAL main-size (driven by
+    // flex-basis) per CSS Flexbox §9.3, NOT the raw declared main-size.
+    // Both PackLines AND BlockLayouter's pre-measure share the same
+    // <c>ResolveFlexItemHypotheticalMainSize</c> extension so the two
+    // passes always pack into the same lines. Pre-fix an item with
+    // <c>width: 300px; flex-basis: 0; flex-grow: 1</c> would land alone
+    // on its own line (because PackLines saw width=300 and a 300px
+    // container can only fit one); post-fix the item contributes 0 to
+    // the line packing (= flex-basis 0) so three such items fit on a
+    // single line and grow to 100px each per §9.7.
     private static List<FlexLine> PackLines(
         Box flexContainer,
         FlexDirectionValue direction,
@@ -937,14 +957,17 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         if (!isWrapping)
         {
             // Single-line algorithm — L1-L5 preserved verbatim. Sum all
-            // items' main-axis sizes + take the max cross-axis size.
+            // items' hypothetical main-axis sizes + take the max cross-
+            // axis size. (L8 post-PR-#68 F#1: uses flex-basis-driven
+            // hypothetical main-size; pre-L8 used the raw declared
+            // width.)
             var totalMain = 0.0;
             var maxCross = 0.0;
             foreach (var idx in blockLevelIndices)
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 var item = flexContainer.Children[idx];
-                totalMain += item.Style.ReadLengthPxOrZero(mainProp);
+                totalMain += item.ResolveFlexItemHypotheticalMainSize(mainProp, containerMainSize);
                 var c = item.Style.ReadLengthPxOrZero(crossProp);
                 if (c > maxCross) maxCross = c;
             }
@@ -956,10 +979,15 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             return lines;
         }
 
-        // Wrap — greedy line packing. Per CSS Flexbox L1 §9.3 the spec-
-        // exact algorithm uses each item's "flex item's hypothetical
-        // main size"; L6 uses the natural main-size as the
-        // contribution.
+        // Wrap — greedy line packing. Per CSS Flexbox L1 §9.3 the spec
+        // says line packing uses each item's "flex item's hypothetical
+        // main size" — derived from flex-basis per §9.2. The L8
+        // post-PR-#68 F#1 hardening switches the contribution from
+        // ReadLengthPxOrZero(mainProp) to
+        // ResolveFlexItemHypotheticalMainSize so wrap boundaries
+        // respect flex-basis (e.g., flex-basis: 0 with three items in
+        // 300px = one line of three; pre-fix would wrap into three
+        // separate lines).
         var currentFirstIdx = blockLevelIndices[0];
         var currentCount = 0;
         var currentMain = 0.0;
@@ -969,7 +997,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         {
             cancellationToken.ThrowIfCancellationRequested();
             var item = flexContainer.Children[idx];
-            var itemMain = item.Style.ReadLengthPxOrZero(mainProp);
+            var itemMain = item.ResolveFlexItemHypotheticalMainSize(mainProp, containerMainSize);
             var itemCross = item.Style.ReadLengthPxOrZero(crossProp);
 
             // Per CSS Flexbox L1 §9.3 — "if the very first uncollected
@@ -1165,6 +1193,22 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             //   (c) otherwise → items keep their hypothetical sizes.
             if (freeMainSpace > 0 && sumFlexGrow > 0)
             {
+                // Per Phase 3 Task 15 L8 post-PR-#68 hardening F#2 +
+                // CSS Flexbox L1 §9.7 — when the sum of flex-grow
+                // factors on the line is LESS THAN 1, the items only
+                // take a fraction of the free space; the remainder
+                // stays as alignment-axis free-space for
+                // justify-content. Equivalent formula: each item's
+                // share = (grow_i / max(sumFlexGrow, 1)) * freeSpace.
+                //
+                // Pre-F#2 the divisor was sumFlexGrow unconditionally,
+                // so 2 items with flex-grow: .25 each (sumFlexGrow =
+                // .5) would each get (.25 / .5) * freeSpace = .5 *
+                // freeSpace, consuming 100% of the free space.
+                // Post-F#2 the divisor is max(.5, 1) = 1, so each item
+                // gets .25 * freeSpace = 25% each = 50% total, leaving
+                // 50% of the free space for justify-content.
+                var growDivisor = sumFlexGrow >= 1 ? sumFlexGrow : 1.0;
                 emitted = 0;
                 for (var itemIdx = line.FirstItemIndex;
                     itemIdx < _rootBox.Children.Count && emitted < line.ItemCount;
@@ -1176,7 +1220,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                     var grow = item.Style.ReadFlexGrow();
                     if (grow > 0)
                     {
-                        resolved[itemIdx] += (grow / sumFlexGrow) * freeMainSpace;
+                        resolved[itemIdx] += (grow / growDivisor) * freeMainSpace;
                     }
                     emitted++;
                 }
@@ -1212,60 +1256,24 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         return resolved;
     }
 
-    /// <summary>Per Phase 3 Task 15 L8 — compute the hypothetical main-
-    /// size of one flex item per CSS Flexbox L1 §9.2 + the L8
-    /// flex-basis grammar (ReadFlexBasis):
-    /// <list type="bullet">
-    ///   <item><c>LengthPx</c> — return the explicit pixel value.</item>
-    ///   <item><c>Percentage</c> — resolve against
-    ///   <paramref name="containerMainSize"/> per §9.2.3.</item>
-    ///   <item><c>Auto</c> / <c>Content</c> — delegate to the item's
-    ///   declared main-size property (the L1-L7 behavior). Content is
-    ///   approximated as Auto in L8 (intrinsic sizing is L9+ scope).</item>
-    /// </list>
-    /// Per CSS Flexbox §7.1 negative flex-basis values are
-    /// spec-invalid and are floored to 0 here defensively (NumberResolver
-    /// rejects negatives at parse time so this branch should be
-    /// unreachable in practice).</summary>
+    /// <summary>Per Phase 3 Task 15 L8 + post-PR-#68 hardening F#1 —
+    /// compute one flex item's hypothetical main-size. Delegates to the
+    /// shared <see cref="ComputedStyleLayoutExtensions.ResolveFlexItemHypotheticalMainSize"/>
+    /// extension so the line-packing pass (<see cref="PackLines"/>) and
+    /// the flexibility-resolution pass
+    /// (<see cref="ResolveFlexibleMainSizes"/>) AND the BlockLayouter
+    /// pre-measure all use IDENTICAL sizing. Pre-PR-#68 the line-
+    /// packing pass used <c>ReadLengthPxOrZero</c> while the
+    /// flexibility-resolution pass used a private helper here that
+    /// honored flex-basis — line boundaries could drift from the
+    /// post-flex layout when flex-basis differed from the declared
+    /// main-size (e.g., <c>flex-basis: 0</c> with three items in 300px
+    /// = one line of three post-fix, three lines pre-fix).</summary>
     private static double ResolveHypotheticalMainSize(
         Box item,
         PropertyId mainSizeProperty,
-        double containerMainSize)
-    {
-        var basis = item.Style.ReadFlexBasis();
-        switch (basis.Kind)
-        {
-            case FlexBasisKind.LengthPx:
-                return basis.Value > 0 ? basis.Value : 0;
-            case FlexBasisKind.Percentage:
-                // basis.Value is the raw percentage (e.g., 50% → 50.0).
-                // Per CSS Values L4 a percentage flex-basis is
-                // (percentage / 100) * containerMainSize.
-                if (!double.IsFinite(containerMainSize) || containerMainSize <= 0)
-                {
-                    // Indefinite container main-size → percentage
-                    // flex-basis is treated as auto per §9.2.3. L8 only
-                    // supports definite-main-size containers, so the
-                    // BlockLayouter contract should never deliver a
-                    // non-finite or zero containerMainSize. Defensive
-                    // fallback to the declared main-size in case the
-                    // contract is violated.
-                    return item.Style.ReadLengthPxOrZero(mainSizeProperty);
-                }
-                var fraction = basis.Value / 100.0;
-                var pct = fraction * containerMainSize;
-                return pct > 0 ? pct : 0;
-            case FlexBasisKind.Auto:
-            case FlexBasisKind.Content:
-            default:
-                // Delegate to the item's declared main-size property.
-                // For row direction this is `width`; for column it's
-                // `height`. The cycle-1 ReadLengthPxOrZero returns 0
-                // when the property is `auto` / unset (intrinsic
-                // sizing is L9+ scope).
-                return item.Style.ReadLengthPxOrZero(mainSizeProperty);
-        }
-    }
+        double containerMainSize) =>
+        item.ResolveFlexItemHypotheticalMainSize(mainSizeProperty, containerMainSize);
 
     /// <summary>Per Phase 3 Task 15 L6 — a flex line produced by
     /// <see cref="PackLines"/>. The line carries the index range into

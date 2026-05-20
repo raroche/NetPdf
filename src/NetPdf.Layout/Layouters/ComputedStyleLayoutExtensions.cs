@@ -858,10 +858,16 @@ internal static class FlexDirectionValueExtensions
     /// <c>justify-content</c> start-offset + between-spacing) is
     /// UNCHANGED; only the main-axis ORIGIN flips. The L5 implementation
     /// applies a single offset-flip transform at the emission site
-    /// (<c>actualOffset = containerMainSize - naturalOffset - itemMainSize</c>)
-    /// so the natural-direction (row / column) algorithm produces both
-    /// the items' end-edge placements + the reversed visual ordering
-    /// in one pass.
+    /// IN FLEXLAYOUTER (not by this predicate itself); the formula
+    /// accounts for the wrapper's content-box origin:
+    /// <c>actualMainOffset = (contentMainOffset + containerMainSize) -
+    /// (mainCursor - contentMainOffset) - itemMainSize</c>. The
+    /// <c>contentMainOffset</c> term is the wrapper's content-box
+    /// start on the main axis (= padding/border-aware origin). The
+    /// natural-direction (row / column) algorithm produces both the
+    /// items' end-edge placements + the reversed visual ordering in
+    /// one pass. See <c>FlexLayouter.cs</c>'s emission loop for the
+    /// applied transform.
     ///
     /// <para><b>Reversal semantics.</b>
     /// <list type="bullet">

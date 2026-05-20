@@ -860,10 +860,18 @@ grepping the ID).
   stretch, justify-content start-offset + between-spacing) is
   unchanged from the non-reversed counterpart; only the FINAL
   main-axis offset assigned to each fragment is flipped around the
-  container's main-extent
-  (`actualMainOffset = containerMainSize - naturalMainOffset - itemMainSize`),
-  producing items packed against the reversed main-start edge in
-  reverse DOM order in a single emission pass. Cross-axis behavior is
+  container's main-extent — the spec-precise formula applied in
+  `FlexLayouter`'s emission loop accounts for the wrapper's content-
+  box origin:
+  `actualMainOffset = (contentMainOffset + containerMainSize) -
+  (mainCursor - contentMainOffset) - itemMainSize`, where
+  `contentMainOffset` is the wrapper's content-box start on the main
+  axis (padding/border-aware) and `mainCursor` is the natural
+  non-reversed cursor position from the justify-content algorithm.
+  The effect is that main-start and main-end swap per CSS Flexbox
+  §5.1; items are placed using the same justify-content algorithm
+  but their offsets are mirrored across the main-extent, yielding
+  reverse DOM ordering in a single emission pass. Cross-axis behavior is
   unchanged for reversed variants (row-reverse still has block as
   cross axis; column-reverse still has inline as cross axis). Each
   item emits at its natural main-axis + cross-axis sizes from the

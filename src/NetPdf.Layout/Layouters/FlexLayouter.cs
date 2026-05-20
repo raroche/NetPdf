@@ -53,11 +53,19 @@ namespace NetPdf.Layout.Layouters;
 ///   + between-spacing) is unchanged; only the FINAL main-axis offset
 ///   assigned to each fragment is flipped around the container's
 ///   main-extent (see the <c>mainOffsetForEmission</c> branch in the
-///   emission loop). This produces items packed against the reversed
-///   main-start edge (= the original main-end edge) in reverse DOM
-///   order. Cross-axis behavior is unchanged: <c>row-reverse</c>
-///   still has block as cross axis; <c>column-reverse</c> still has
-///   inline as cross axis.</item>
+///   emission loop). The effect is that main-start and main-end swap
+///   per CSS Flexbox §5.1 — items are placed using the SAME justify-
+///   content algorithm (flex-start / flex-end / center / space-* etc.)
+///   but the resulting main-axis offsets are mirrored across the
+///   container's main-extent, which yields reverse DOM ordering at
+///   the emission level. The specific packing edge depends on the
+///   justify-content value (flex-start in reverse → right/bottom
+///   edge; flex-end in reverse → left/top edge; center stays
+///   centered with items in reverse DOM order; distribution values
+///   honor their natural distribution in the reversed direction).
+///   Cross-axis behavior is unchanged: <c>row-reverse</c> still has
+///   block as cross axis; <c>column-reverse</c> still has inline as
+///   cross axis.</item>
 ///   <item>Only <c>flex-wrap: nowrap</c> (default). Single-line; items
 ///   may overflow the container's inline extent if their natural
 ///   widths don't fit. <c>wrap</c> / <c>wrap-reverse</c> are sub-cycle

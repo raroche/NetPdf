@@ -675,6 +675,18 @@ public sealed class FlexLayouterTests
             var style = MakeStyle();
             SetLengthPx(style, PropertyId.Width, itemWidth);
             SetLengthPx(style, PropertyId.Height, 50);
+            // Per Phase 3 Task 15 L8 — the cascade default for
+            // `flex-shrink` is `1` (= items shrink to fit when their
+            // sum exceeds the container's main size). The L2 / L5
+            // overflow tests below were authored pre-L8 against the
+            // implicit "items never shrink" behavior; they assume
+            // items overflow at their declared widths. Pin
+            // `flex-shrink: 0` on every item so the §9.7 shrink
+            // resolution stays inert + the overflow assertions hold
+            // unchanged. (Tests that EXERCISE flex-shrink set
+            // `flex-shrink: 1` explicitly on items + use a separate
+            // builder.)
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
             items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
             flex.AppendChild(items[i]);
         }
@@ -2893,6 +2905,13 @@ public sealed class FlexLayouterTests
             var style = MakeStyle();
             SetLengthPx(style, PropertyId.Width, 100);
             SetLengthPx(style, PropertyId.Height, 50);
+            // Per Phase 3 Task 15 L8 — pin `flex-shrink: 0` so items
+            // overflow at their declared widths instead of shrinking
+            // to fit. This test pre-dates L8 and exercises overflow
+            // semantics; the L8 §9.7 shrink resolution would otherwise
+            // absorb the -100 free space, defeating the overflow
+            // assertion.
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
             items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
             flex.AppendChild(items[i]);
         }
@@ -3234,6 +3253,14 @@ public sealed class FlexLayouterTests
         var itemStyle = MakeStyle();
         SetLengthPx(itemStyle, PropertyId.Width, 500);
         SetLengthPx(itemStyle, PropertyId.Height, 50);
+        // Per Phase 3 Task 15 L8 — pin `flex-shrink: 0` so the
+        // oversized item retains its 500px declared width instead of
+        // shrinking to fit the 100px container. The §9.3 "single
+        // oversized item lands alone + overflows" rule depends on the
+        // item NOT shrinking; with the L8 default `flex-shrink: 1` the
+        // item would shrink to 100px and the test's "overflow per
+        // §9.3" assertion (InlineSize == 500) would fail.
+        itemStyle.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
         var item = Box.ForElement(BoxKind.BlockContainer, itemStyle, MakeElement());
         flex.AppendChild(item);
         root.AppendChild(flex);
@@ -5031,6 +5058,1319 @@ public sealed class FlexLayouterTests
         // BlockSize stays at 50.
         Assert.Equal(50.0, itemFragments[0].BlockSize, precision: 3);
         Assert.Equal(50.0, itemFragments[1].BlockSize, precision: 3);
+    }
+
+    // ====================================================================
+    //  Phase 3 Task 15 L8 — flex-grow / flex-shrink / flex-basis.
+    //  CSS Flexbox L1 §7 + §9.7 — the flexibility algorithm.
+    // ====================================================================
+
+    [Fact]
+    public void L8_flex_grow_distributes_positive_free_space_proportionally()
+    {
+        // Per Phase 3 Task 15 L8 — §9.7 positive-free-space distribution.
+        // 3 items of width 100 in a 600px container = sumHypothetical
+        // 300, freeMainSpace = 300. Each item has flex-grow: 1, so
+        // sumFlexGrow = 3; each item grows by (1/3) * 300 = 100.
+        // Resolved widths: 200, 200, 200. Cursors: 0, 200, 400.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Width, 600);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.FlexGrow, ComputedSlot.FromNumber(1.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(0.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(200.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(400.0, fragments[2].InlineOffset, precision: 3);
+        Assert.Equal(200.0, fragments[0].InlineSize, precision: 3);
+        Assert.Equal(200.0, fragments[1].InlineSize, precision: 3);
+        Assert.Equal(200.0, fragments[2].InlineSize, precision: 3);
+    }
+
+    [Fact]
+    public void L8_flex_grow_weighted_distributes_proportionally()
+    {
+        // Per Phase 3 Task 15 L8 — §9.7 with unequal grow factors.
+        // 3 items of width 100 in a 600px container; flex-grow values:
+        // 1, 2, 3. sumFlexGrow = 6; freeMainSpace = 300. Each item gets
+        // (grow/6) * 300 of free space:
+        //   item 0: +50  → 150
+        //   item 1: +100 → 200
+        //   item 2: +150 → 250
+        // Sum: 600. Cursors: 0, 150, 350.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Width, 600);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        var grows = new[] { 1.0, 2.0, 3.0 };
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.FlexGrow, ComputedSlot.FromNumber(grows[i]));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(150.0, fragments[0].InlineSize, precision: 3);
+        Assert.Equal(200.0, fragments[1].InlineSize, precision: 3);
+        Assert.Equal(250.0, fragments[2].InlineSize, precision: 3);
+        Assert.Equal(0.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(150.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(350.0, fragments[2].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L8_flex_grow_zero_items_do_not_grow()
+    {
+        // Per Phase 3 Task 15 L8 — §9.7: items with flex-grow: 0 retain
+        // their hypothetical main-size; growable items absorb all the
+        // free space. 3 items of width 100 in 600px container; grow
+        // values: 1, 0, 1. sumFlexGrow = 2; freeMainSpace = 300. Each
+        // growable item grows by 150:
+        //   item 0: +150 → 250
+        //   item 1: 0    → 100 (unchanged)
+        //   item 2: +150 → 250
+        // Cursors: 0, 250, 350.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Width, 600);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        var grows = new[] { 1.0, 0.0, 1.0 };
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.FlexGrow, ComputedSlot.FromNumber(grows[i]));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(250.0, fragments[0].InlineSize, precision: 3);
+        Assert.Equal(100.0, fragments[1].InlineSize, precision: 3);
+        Assert.Equal(250.0, fragments[2].InlineSize, precision: 3);
+        Assert.Equal(0.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(250.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(350.0, fragments[2].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L8_flex_grow_no_growable_items_keeps_natural_sizes()
+    {
+        // Per Phase 3 Task 15 L8 — §9.7: when sumFlexGrow == 0 the
+        // grow phase is skipped (free space goes to justify-content).
+        // 3 items of width 100 in 600px container, no grow declarations
+        // (= cascade default 0) and justify-content default = flex-start.
+        // Items keep natural 100; freeMainSpace = 300 goes to padding-
+        // end. Cursors: 0, 100, 200; sizes: 100, 100, 100.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Width, 600);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            // Per Phase 3 Task 15 L8 — pin `flex-shrink: 0` so the
+            // §9.7 shrink branch is inert (free space > 0, but the
+            // shrink path doesn't even trigger here). Pin
+            // `flex-grow: 0` explicitly to make the no-grow intent
+            // unambiguous (the cascade default is 0 already).
+            style.Set(PropertyId.FlexGrow, ComputedSlot.FromNumber(0.0));
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(100.0, fragments[0].InlineSize, precision: 3);
+        Assert.Equal(100.0, fragments[1].InlineSize, precision: 3);
+        Assert.Equal(100.0, fragments[2].InlineSize, precision: 3);
+        Assert.Equal(0.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(100.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(200.0, fragments[2].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L8_flex_shrink_absorbs_negative_free_space_proportionally()
+    {
+        // Per Phase 3 Task 15 L8 — §9.7 shrink resolution. 3 items of
+        // width 300 (sumHypothetical 900) in a 600px container =
+        // freeMainSpace = -300; deficit = 300. Each item has the
+        // cascade default flex-shrink: 1, hypothetical 300; scaled
+        // shrink = 1 * 300 = 300 each; sumScaledShrinks = 900. Each
+        // item absorbs (300/900) * 300 = 100 → resolved size = 200.
+        // Cursors: 0, 200, 400; sizes: 200, 200, 200.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Width, 600);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 300);
+            SetLengthPx(style, PropertyId.Height, 50);
+            // No flex-shrink declaration → cascade default 1 (= shrink).
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(200.0, fragments[0].InlineSize, precision: 3);
+        Assert.Equal(200.0, fragments[1].InlineSize, precision: 3);
+        Assert.Equal(200.0, fragments[2].InlineSize, precision: 3);
+        Assert.Equal(0.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(200.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(400.0, fragments[2].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L8_flex_shrink_zero_items_do_not_shrink()
+    {
+        // Per Phase 3 Task 15 L8 — §9.7: items with flex-shrink: 0
+        // retain their hypothetical main-size on negative free space;
+        // other items absorb the deficit alone. 3 items of width 300
+        // in 600px container; shrink values: 1, 0, 1. sumScaledShrinks
+        // = 300 + 0 + 300 = 600; deficit = 300. Each shrinkable item
+        // absorbs (300/600) * 300 = 150:
+        //   item 0: 300 - 150 = 150
+        //   item 1: 300 (unchanged, flex-shrink: 0)
+        //   item 2: 300 - 150 = 150
+        // Cursors: 0, 150, 450.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Width, 600);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        var shrinks = new[] { 1.0, 0.0, 1.0 };
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 300);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(shrinks[i]));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(150.0, fragments[0].InlineSize, precision: 3);
+        Assert.Equal(300.0, fragments[1].InlineSize, precision: 3);
+        Assert.Equal(150.0, fragments[2].InlineSize, precision: 3);
+        Assert.Equal(0.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(150.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(450.0, fragments[2].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L8_flex_basis_explicit_length_overrides_declared_width()
+    {
+        // Per Phase 3 Task 15 L8 — flex-basis: <length> uses the
+        // explicit pixel value as the hypothetical main-size,
+        // overriding the declared width. 3 items with width: 50 but
+        // flex-basis: 100 in a 600px container with flex-grow: 1 each.
+        // Hypothetical = 100 each (NOT 50, since flex-basis wins);
+        // sumHypothetical = 300; freeMainSpace = 300; each grows by
+        // 100 → final size 200. Cursors: 0, 200, 400.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Width, 600);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 50);
+            SetLengthPx(style, PropertyId.Height, 50);
+            // flex-basis: 100 overrides the declared 50 width as the
+            // §9.2 hypothetical main-size input to §9.7.
+            SetLengthPx(style, PropertyId.FlexBasis, 100);
+            style.Set(PropertyId.FlexGrow, ComputedSlot.FromNumber(1.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(200.0, fragments[0].InlineSize, precision: 3);
+        Assert.Equal(200.0, fragments[1].InlineSize, precision: 3);
+        Assert.Equal(200.0, fragments[2].InlineSize, precision: 3);
+        Assert.Equal(0.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(200.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(400.0, fragments[2].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L8_flex_basis_zero_with_grow_one_equally_fills_container()
+    {
+        // Per Phase 3 Task 15 L8 — the canonical `flex: 1` recipe
+        // (`flex: 1 1 0`). With flex-basis: 0 + flex-grow: 1 on every
+        // item, sumHypothetical = 0 (regardless of declared widths);
+        // freeMainSpace = containerMainSize - 0 = 600; sumFlexGrow = 3;
+        // each item grows by (1/3) * 600 = 200. All three items end up
+        // at 200 — they equally fill the container regardless of their
+        // declared widths.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Width, 600);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        // Declare different widths to demonstrate flex-basis: 0
+        // overrides them — the resolved sizes should ignore the widths
+        // and partition the container equally.
+        var widths = new[] { 50.0, 150.0, 100.0 };
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, widths[i]);
+            SetLengthPx(style, PropertyId.Height, 50);
+            SetLengthPx(style, PropertyId.FlexBasis, 0);
+            style.Set(PropertyId.FlexGrow, ComputedSlot.FromNumber(1.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(200.0, fragments[0].InlineSize, precision: 3);
+        Assert.Equal(200.0, fragments[1].InlineSize, precision: 3);
+        Assert.Equal(200.0, fragments[2].InlineSize, precision: 3);
+        Assert.Equal(0.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(200.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(400.0, fragments[2].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L8_flex_basis_percentage_resolves_against_container_main_size()
+    {
+        // Per Phase 3 Task 15 L8 — flex-basis: <percentage> resolves
+        // against the container's main-size per §9.2.3. 3 items in a
+        // 600px container; each flex-basis: 25% → hypothetical = 150.
+        // sumHypothetical = 450; freeMainSpace = 150. With flex-grow: 0
+        // (= cascade default) the grow phase is skipped and items
+        // stay at 150 each. justify-content: flex-start (default) puts
+        // them at 0, 150, 300.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Width, 600);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            // No explicit width — flex-basis: 25% drives the hypothetical
+            // main-size.
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.FlexBasis, ComputedSlot.FromPercentage(25.0));
+            // flex-grow: 0 (the cascade default) so items stay at the
+            // percentage-derived hypothetical instead of growing to fill.
+            // flex-shrink: 0 so the (positive) free space doesn't enter
+            // the shrink branch — it goes to justify-content.
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(150.0, fragments[0].InlineSize, precision: 3);
+        Assert.Equal(150.0, fragments[1].InlineSize, precision: 3);
+        Assert.Equal(150.0, fragments[2].InlineSize, precision: 3);
+        Assert.Equal(0.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(150.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(300.0, fragments[2].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L8_flex_basis_auto_delegates_to_declared_width()
+    {
+        // Per Phase 3 Task 15 L8 — flex-basis: auto (the default)
+        // delegates to the declared width. 3 items of width 100 in a
+        // 600px container; flex-basis defaults to auto + width = 100
+        // → hypothetical = 100. sumHypothetical = 300; freeMainSpace =
+        // 300. With flex-grow: 1 on each, each grows by 100 → 200.
+        // Identical output to `L8_flex_grow_distributes_positive_free_space_proportionally`
+        // — sanity that the explicit flex-basis: auto produces the
+        // same result as no flex-basis declaration.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Width, 600);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            // Explicit flex-basis: auto (Keyword 0 = LengthResolver's
+            // KeywordIdAuto).
+            style.Set(PropertyId.FlexBasis, ComputedSlot.FromKeyword(0));
+            style.Set(PropertyId.FlexGrow, ComputedSlot.FromNumber(1.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(200.0, fragments[0].InlineSize, precision: 3);
+        Assert.Equal(200.0, fragments[1].InlineSize, precision: 3);
+        Assert.Equal(200.0, fragments[2].InlineSize, precision: 3);
+    }
+
+    [Fact]
+    public void L8_flex_grow_column_direction_distributes_along_block_axis()
+    {
+        // Per Phase 3 Task 15 L8 — direction parity. flex-direction:
+        // column → main axis = block. 3 items of height 50 in a column
+        // container of height 600; each flex-grow: 1. Hypothetical = 50
+        // each; sumHypothetical = 150; freeMainSpace = 450; each item
+        // grows by 150 → final block-size = 200. BlockOffsets: 0, 200,
+        // 400.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
+        SetLengthPx(flex.Style, PropertyId.Width, 200);
+        SetLengthPx(flex.Style, PropertyId.Height, 600);
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.FlexGrow, ComputedSlot.FromNumber(1.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 200, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.Equal(3, fragments.Count);
+        // Block axis = main axis under column direction; items grow on
+        // the block axis.
+        Assert.Equal(0.0, fragments[0].BlockOffset, precision: 3);
+        Assert.Equal(200.0, fragments[1].BlockOffset, precision: 3);
+        Assert.Equal(400.0, fragments[2].BlockOffset, precision: 3);
+        Assert.Equal(200.0, fragments[0].BlockSize, precision: 3);
+        Assert.Equal(200.0, fragments[1].BlockSize, precision: 3);
+        Assert.Equal(200.0, fragments[2].BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public void L8_known_gap_min_width_does_not_clamp_resolved_size_yet()
+    {
+        // Per Phase 3 Task 15 L8 — KNOWN GAP. Per CSS Flexbox L1 §9.7
+        // step 4 the §9.7 algorithm must clamp resolved sizes to
+        // [min-main-size, max-main-size] and iterate to redistribute
+        // the clamped-off space. L8 Hello World skips this clamp; the
+        // L9+ hardening will add it.
+        //
+        // Fixture: 3 items each with width: 300, min-width: 250,
+        // flex-shrink: 1 in a 600px container. sumHypothetical = 900;
+        // freeMainSpace = -300; each item absorbs 100 → resolved 200.
+        // BUT 200 < min-width 250, so the spec-correct behavior would
+        // be: clamp each to 250 + iterate (now sumScaledShrinks excludes
+        // the clamped items, redistribution might leave items at 250
+        // each = 750 total > 600 container so the container overflows).
+        // L8 currently produces 200/200/200 (= the un-clamped result).
+        // When L9+ adds the clamp, this test should flip to assert
+        // the spec-correct behavior.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Width, 600);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 300);
+            SetLengthPx(style, PropertyId.Height, 50);
+            SetLengthPx(style, PropertyId.MinWidth, 250);
+            // No flex-shrink declaration → cascade default 1.
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.Equal(3, fragments.Count);
+        // Pin the CURRENT (un-clamped) behavior. When L9+ adds the
+        // §9.7 step-4 clamp, this assertion should flip to (250, 250,
+        // 250).
+        Assert.Equal(200.0, fragments[0].InlineSize, precision: 3);
+        Assert.Equal(200.0, fragments[1].InlineSize, precision: 3);
+        Assert.Equal(200.0, fragments[2].InlineSize, precision: 3);
+    }
+
+    // ====================================================================
+    //  Phase 3 Task 15 L8 post-PR-#68 hardening tests (F#1 / F#2 /
+    //  F#3 / F#4 / F#5 — 5 findings, +9 unit tests).
+    // ====================================================================
+
+    [Fact]
+    public void L8_hardening_wrap_with_flex_basis_zero_packs_into_single_line()
+    {
+        // Per Phase 3 Task 15 L8 post-PR-#68 hardening F#1 — line
+        // packing uses the HYPOTHETICAL main-size (driven by
+        // flex-basis), NOT the declared width. The canonical bug case:
+        // 3 items of width: 300 + flex-basis: 0 in a 300px wrap
+        // container. Pre-F#1 line packing saw width=300 for each item
+        // → 3 separate lines (each item alone on its line). Post-F#1
+        // line packing sees flex-basis=0 → all 3 items fit on one
+        // line; flex-grow: 1 then grows each to 100px (= 300/3).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1)); // wrap
+        SetLengthPx(flex.Style, PropertyId.Width, 300);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 300);
+            SetLengthPx(style, PropertyId.Height, 50);
+            SetLengthPx(style, PropertyId.FlexBasis, 0);
+            style.Set(PropertyId.FlexGrow, ComputedSlot.FromNumber(1.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 300, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.Equal(3, fragments.Count);
+        // All 3 items on a single line (= BlockOffset 0 for all);
+        // each item grew from basis 0 to 100 (= 300/3).
+        Assert.Equal(0.0, fragments[0].BlockOffset, precision: 3);
+        Assert.Equal(0.0, fragments[1].BlockOffset, precision: 3);
+        Assert.Equal(0.0, fragments[2].BlockOffset, precision: 3);
+        Assert.Equal(100.0, fragments[0].InlineSize, precision: 3);
+        Assert.Equal(100.0, fragments[1].InlineSize, precision: 3);
+        Assert.Equal(100.0, fragments[2].InlineSize, precision: 3);
+        Assert.Equal(0.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(100.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(200.0, fragments[2].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L8_hardening_wrap_with_flex_basis_length_overrides_width_for_packing()
+    {
+        // Per Phase 3 Task 15 L8 post-PR-#68 hardening F#1 — flex-basis
+        // LENGTH (not just 0) drives line packing. 3 items of width: 50
+        // but flex-basis: 200 in a 500px wrap container. Pre-F#1 line
+        // packing saw width=50 → 3 items fit on one line; post-F#1 line
+        // packing sees flex-basis=200 → first item lands (200 fits in
+        // 500), second item adds to 400 (fits), third item would push
+        // to 600 > 500 → wraps to a new line. Lines: [item0, item1] /
+        // [item2]. With flex-grow: 0 (cascade default) + flex-shrink: 0
+        // pinned the items stay at flex-basis 200; remaining 100 on
+        // line 1 + 300 on line 2 go to justify-content (flex-start
+        // default).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1)); // wrap
+        // Pin align-content: flex-start so the §8.4 stretch default
+        // doesn't grow line 1's cross-extent (= shifting line 2's
+        // BlockOffset). The L7 align-content default of `normal →
+        // stretch` would otherwise expand each line's cross-extent
+        // to fill the 200px container, shifting line 2 from BlockOffset
+        // 50 to 100.
+        flex.Style.Set(PropertyId.AlignContent, ComputedSlot.FromKeyword(11)); // flex-start
+        SetLengthPx(flex.Style, PropertyId.Width, 500);
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 50);
+            SetLengthPx(style, PropertyId.Height, 50);
+            SetLengthPx(style, PropertyId.FlexBasis, 200);
+            // No grow, no shrink — items stay at basis 200.
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 500, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.Equal(3, fragments.Count);
+        // Line 1 = items 0 + 1; line 2 = item 2. Items 0, 1 at
+        // BlockOffset 0 + InlineOffsets 0, 200. Item 2 at BlockOffset
+        // 50 (= line 1's cross extent).
+        Assert.Equal(0.0, fragments[0].BlockOffset, precision: 3);
+        Assert.Equal(0.0, fragments[1].BlockOffset, precision: 3);
+        Assert.Equal(50.0, fragments[2].BlockOffset, precision: 3);
+        Assert.Equal(0.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(200.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(0.0, fragments[2].InlineOffset, precision: 3);
+        // Items stay at basis 200 (no grow, no shrink).
+        Assert.Equal(200.0, fragments[0].InlineSize, precision: 3);
+        Assert.Equal(200.0, fragments[1].InlineSize, precision: 3);
+        Assert.Equal(200.0, fragments[2].InlineSize, precision: 3);
+    }
+
+    [Fact]
+    public void L8_hardening_wrap_with_flex_basis_percentage_drives_line_packing()
+    {
+        // Per Phase 3 Task 15 L8 post-PR-#68 hardening F#1 — percentage
+        // flex-basis drives line packing (resolved against the
+        // container's main-size). 3 items with flex-basis: 40% in a
+        // 500px wrap container → each hypothetical = 200. Same line-
+        // packing math as the LENGTH test above: items 0 + 1 = 400 fit
+        // on line 1; item 2 wraps to line 2. Pre-F#1 line packing would
+        // have used the declared width (= 50 in this fixture →
+        // single-line 3-item layout).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1)); // wrap
+        // Pin align-content: flex-start so the §8.4 stretch default
+        // doesn't grow line 1's cross-extent (shifting line 2).
+        flex.Style.Set(PropertyId.AlignContent, ComputedSlot.FromKeyword(11)); // flex-start
+        SetLengthPx(flex.Style, PropertyId.Width, 500);
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 50);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.FlexBasis, ComputedSlot.FromPercentage(40.0));
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 500, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(0.0, fragments[0].BlockOffset, precision: 3);
+        Assert.Equal(0.0, fragments[1].BlockOffset, precision: 3);
+        Assert.Equal(50.0, fragments[2].BlockOffset, precision: 3);
+        Assert.Equal(200.0, fragments[0].InlineSize, precision: 3);
+        Assert.Equal(200.0, fragments[1].InlineSize, precision: 3);
+        Assert.Equal(200.0, fragments[2].InlineSize, precision: 3);
+    }
+
+    [Fact]
+    public void L8_hardening_fractional_flex_grow_sum_below_one_only_takes_fraction()
+    {
+        // Per Phase 3 Task 15 L8 post-PR-#68 hardening F#2 — when the
+        // sum of flex-grow factors on a line is LESS THAN 1, items
+        // take only that fraction of the free space (the remainder
+        // stays for justify-content) per CSS Flexbox L1 §9.7. 2 items
+        // of width: 100 in a 400px container with flex-grow: 0.25 each
+        // (sumFlexGrow = 0.5). freeMainSpace = 200; pre-F#2 each item
+        // grew by (0.25/0.5) * 200 = 100 → 200 each (consuming 100% of
+        // free space). Post-F#2 each item grows by 0.25 * 200 = 50 →
+        // 150 each (consuming 50% of free space, leaving 100 for
+        // justify-content's flex-start padding-end).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Width, 400);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        var items = new Box[2];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.FlexGrow, ComputedSlot.FromNumber(0.25));
+            // Pin flex-shrink: 0 so the (positive) free space stays
+            // positive — defensive (sumFlexGrow > 0 + freeSpace > 0
+            // triggers the grow branch anyway).
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.Equal(2, fragments.Count);
+        // Each item grows by 0.25 * 200 = 50 → 150. justify-content:
+        // flex-start (default) puts them at 0 and 150.
+        Assert.Equal(150.0, fragments[0].InlineSize, precision: 3);
+        Assert.Equal(150.0, fragments[1].InlineSize, precision: 3);
+        Assert.Equal(0.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(150.0, fragments[1].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L8_hardening_known_gap_flex_basis_content_approximates_to_auto()
+    {
+        // Per Phase 3 Task 15 L8 post-PR-#68 hardening F#4 — KNOWN GAP
+        // pin. Per CSS Flexbox L1 §7.2.1 `flex-basis: content` forces
+        // the intrinsic content size REGARDLESS of the declared
+        // width/height. L8 approximates Content as Auto (= delegates
+        // to ReadLengthPxOrZero on the main-size property), so an item
+        // with `width: 200` + `flex-basis: content` produces a
+        // hypothetical of 200 instead of the spec-correct intrinsic
+        // content size. When L9+ wires intrinsic sizing through the
+        // BlockLayouter pre-measure, this test should flip — the
+        // hypothetical will be the intrinsic content size (0 in this
+        // fixture with no children).
+        //
+        // Fixture: 1 item, width: 200, flex-basis: content (Keyword 1),
+        // no flex-grow, no flex-shrink, in a 600px container. With the
+        // Content → Auto approximation: hypothetical = 200; no grow/
+        // shrink → resolved = 200. With intrinsic sizing (L9+):
+        // hypothetical = intrinsic content size = 0 (no children); no
+        // grow/shrink → resolved = 0.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Width, 600);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        var itemStyle = MakeStyle();
+        SetLengthPx(itemStyle, PropertyId.Width, 200);
+        SetLengthPx(itemStyle, PropertyId.Height, 50);
+        // Keyword 1 = `content` per the L8 LengthResolver
+        // FlexBasis grammar.
+        itemStyle.Set(PropertyId.FlexBasis, ComputedSlot.FromKeyword(1));
+        itemStyle.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+        var item = Box.ForElement(BoxKind.BlockContainer, itemStyle, MakeElement());
+        flex.AppendChild(item);
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? itemFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == item) { itemFragment = f; break; }
+        }
+        Assert.NotNull(itemFragment);
+        // L8 Content → Auto approximation: hypothetical = declared
+        // width = 200. Pin the current behavior. When L9+ ships
+        // intrinsic sizing, this assertion should flip to 0 (= the
+        // intrinsic content size of an item with no children).
+        Assert.Equal(200.0, itemFragment!.Value.InlineSize, precision: 3);
+    }
+
+    [Fact]
+    public void L8_hardening_row_reverse_with_flex_grow_distributes_along_reversed_axis()
+    {
+        // Per Phase 3 Task 15 L8 post-PR-#68 hardening F#5 — direction
+        // parity. flex-direction: row-reverse + flex-grow: 1. 3 items
+        // of width: 100 in a 600px container. Hypothetical = 100 each;
+        // freeMainSpace = 300; sumFlexGrow = 3 ≥ 1 → each grows by
+        // (1/3) * 300 = 100 → 200 each. Natural cursor walks 0, 200,
+        // 400; the row-reverse flip transform repositions per item:
+        //   actual_i = (contentMainOffset + containerMainSize) - cursor_i - itemMainSize
+        // For DOM order 0, 1, 2:
+        //   DOM 0: 0 + 600 - 0 - 200 = 400
+        //   DOM 1: 0 + 600 - 200 - 200 = 200
+        //   DOM 2: 0 + 600 - 400 - 200 = 0
+        // Items at InlineOffset 400, 200, 0 (reverse order on the
+        // inline axis) with each at flexed size 200.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        // Keyword 1 = row-reverse per the L5 mapping.
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(1));
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.FlexGrow, ComputedSlot.FromNumber(1.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.Equal(3, fragments.Count);
+        // Items grew to 200 each (flexed); positioned in reverse order
+        // on the inline axis: DOM 0 at 400, DOM 1 at 200, DOM 2 at 0.
+        Assert.Equal(200.0, fragments[0].InlineSize, precision: 3);
+        Assert.Equal(200.0, fragments[1].InlineSize, precision: 3);
+        Assert.Equal(200.0, fragments[2].InlineSize, precision: 3);
+        Assert.Equal(400.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(200.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(0.0, fragments[2].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L8_hardening_negative_flex_basis_length_is_invalid_falls_back_to_auto()
+    {
+        // Per Phase 3 Task 15 L8 post-PR-#68 hardening F#3 — negative
+        // flex-basis length values are spec-invalid per CSS Flexbox
+        // L1 §7.2 (the <'width'> reference brings in the non-negative
+        // rule from CSS Sizing §5). The KeywordResolver/LengthResolver
+        // path now rejects negatives via NonNegativeProperties; the
+        // cascade falls back to the property's initial value (`auto`).
+        //
+        // We can't easily exercise the full CSS parser here, but we
+        // CAN verify the layout-level contract: setting the FlexBasis
+        // slot directly to a NEGATIVE LengthPx (= what a buggy
+        // upstream pipeline might produce) flows through the
+        // ResolveFlexItemHypotheticalMainSize floor at 0 — which is
+        // the same behavior as flex-basis: 0. Combined with the L8
+        // existing tests that pin LengthResolver negative-rejection
+        // through the production CSS path
+        // (Css.ComputedValues.PropertyResolvers.* tests), the cascade
+        // + layout contract is closed.
+        //
+        // Direct-resolver coverage of negative flex-basis is provided
+        // by a new KeywordResolverTests / NumberResolverTests-style
+        // test in the Css test project; this test pins the LAYOUT
+        // defensive behavior.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Width, 600);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        var itemStyle = MakeStyle();
+        SetLengthPx(itemStyle, PropertyId.Width, 100);
+        SetLengthPx(itemStyle, PropertyId.Height, 50);
+        // Inject a NEGATIVE LengthPx via the slot encoder — simulates
+        // a contract violation from an upstream resolver (the L8 +
+        // post-PR-#68 F#3 fix at the resolver level rejects this
+        // before reaching layout). The layout's floor-at-0 is a
+        // defense-in-depth check.
+        itemStyle.Set(PropertyId.FlexBasis, ComputedSlot.FromLengthPx(-10.0));
+        itemStyle.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+        var item = Box.ForElement(BoxKind.BlockContainer, itemStyle, MakeElement());
+        flex.AppendChild(item);
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? itemFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == item) { itemFragment = f; break; }
+        }
+        Assert.NotNull(itemFragment);
+        // Layout floors negative basis at 0 (= no contribution to
+        // line packing; with flex-grow: 0 + flex-shrink: 0 the
+        // resolved size is 0).
+        Assert.Equal(0.0, itemFragment!.Value.InlineSize, precision: 3);
+    }
+
+    [Fact]
+    public void L8_hardening_heterogeneous_shrink_with_zero_floor_caps_at_zero()
+    {
+        // Per Phase 3 Task 15 L8 post-PR-#68 hardening F#5 — pin the
+        // current behavior when shrink would push an item below 0.
+        // Without the §9.7 step-4 min-clamp + iteration (L9+ scope),
+        // L8 simply floors each item at 0; the leftover deficit
+        // remains unabsorbed (= the line overflows the container).
+        //
+        // Fixture: 2 items in a 100px container; item 0 width: 80
+        // shrink: 1, item 1 width: 200 shrink: 10. sumHypothetical
+        // = 280; freeMainSpace = -180. sumScaledShrinks = 1*80 +
+        // 10*200 = 2080. Each item's share:
+        //   item 0: (80 / 2080) * 180 ≈ 6.92 absorbed → resolved
+        //           80 - 6.92 ≈ 73.08
+        //   item 1: (2000 / 2080) * 180 ≈ 173.08 absorbed → resolved
+        //           200 - 173.08 ≈ 26.92
+        // Both items stay positive; no flooring triggers. This pins
+        // the proportional-shrink math itself (= no item reaches 0
+        // floor in this fixture; the floor is exercised separately
+        // when a single item's scaledShrink is large enough that the
+        // formula would drive it negative).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Width, 100);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        var widths = new[] { 80.0, 200.0 };
+        var shrinks = new[] { 1.0, 10.0 };
+        var items = new Box[2];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, widths[i]);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(shrinks[i]));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 100, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.Equal(2, fragments.Count);
+        // item 0: 80 - (80 / 2080) * 180 ≈ 73.0769
+        // item 1: 200 - (2000 / 2080) * 180 ≈ 26.9231
+        Assert.Equal(73.0769, fragments[0].InlineSize, precision: 2);
+        Assert.Equal(26.9231, fragments[1].InlineSize, precision: 2);
+    }
+
+    [Fact]
+    public void L8_hardening_pre_measure_and_layout_pack_into_same_lines_with_flex_basis()
+    {
+        // Per Phase 3 Task 15 L8 post-PR-#68 hardening F#1 — the
+        // BlockLayouter pre-measure (= multi-line cross-extent
+        // estimate) and the FlexLayouter's PackLines must agree on
+        // line boundaries when flex-basis differs from the declared
+        // width. The shared
+        // `ResolveFlexItemHypotheticalMainSize` extension closes the
+        // drift; this test verifies the wrapper emits at the correct
+        // cross-extent (sum of line cross-extents) when flex-basis: 0
+        // collapses items onto a single line.
+        //
+        // Fixture: 3 items of width: 300 + flex-basis: 0 in a 300px
+        // wrap container with HEIGHT: auto (so the wrapper grows to
+        // sum of line cross-extents). Pre-F#1 pre-measure saw width=
+        // 300 → 3 lines → wrapper block-extent 150 (= 3 * 50). Post-F#1
+        // pre-measure sees basis=0 → 1 line → wrapper block-extent 50.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1)); // wrap
+        SetLengthPx(flex.Style, PropertyId.Width, 300);
+        // No explicit height — wrapper sizes to sum of line cross-
+        // extents.
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 300);
+            SetLengthPx(style, PropertyId.Height, 50);
+            SetLengthPx(style, PropertyId.FlexBasis, 0);
+            style.Set(PropertyId.FlexGrow, ComputedSlot.FromNumber(1.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 300, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        // Find the flex container fragment.
+        BoxFragment? flexFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == flex) { flexFragment = f; break; }
+        }
+        Assert.NotNull(flexFragment);
+        // Wrapper cross-extent = single line's cross-extent = 50 (=
+        // max(item heights)). Pre-F#1 would have produced 150 (= 3
+        // separate lines × 50 each).
+        Assert.Equal(50.0, flexFragment!.Value.BlockSize, precision: 3);
     }
 
     [Fact]

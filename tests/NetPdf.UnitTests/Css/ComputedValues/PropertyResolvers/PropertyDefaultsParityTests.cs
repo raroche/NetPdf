@@ -118,6 +118,13 @@ public sealed class PropertyDefaultsParityTests
             PropertyType.TextSpacing,
             PropertyType.Number, PropertyType.Integer,
             PropertyType.Keyword,
+            // Per Phase 3 Task 15 L8 — FlexBasis joined the resolved
+            // family. Routes through LengthResolver (sharing the
+            // numeric grammar with LengthPercentageAuto) + admits the
+            // `auto` + `content` keywords specifically for §7.2. The
+            // default `auto` now resolves to Keyword(0); pre-L8 the
+            // dispatch returned UnsupportedUnvalidated.
+            PropertyType.FlexBasis,
         };
 
         var failures = new List<string>();
@@ -153,6 +160,13 @@ public sealed class PropertyDefaultsParityTests
             PropertyType.TextSpacing,
             PropertyType.Number, PropertyType.Integer,
             PropertyType.Keyword,
+            // Per Phase 3 Task 15 L8 — FlexBasis joined the resolved
+            // family. Routes through LengthResolver (sharing the
+            // numeric grammar with LengthPercentageAuto) + admits the
+            // `auto` + `content` keywords specifically for §7.2. The
+            // default `auto` now resolves to Keyword(0); pre-L8 the
+            // dispatch returned UnsupportedUnvalidated.
+            PropertyType.FlexBasis,
         };
 
         var failures = new List<string>();

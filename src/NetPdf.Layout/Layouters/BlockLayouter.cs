@@ -5503,7 +5503,20 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// pre-measure runs before the FlexLayouter is constructed, so it
     /// can't reuse the layouter's packed-line list; consolidating to a
     /// shared helper would require lifting <c>FlexLine</c> out of
-    /// FlexLayouter, which is L7+ scope.</para></summary>
+    /// FlexLayouter, which is L7+ scope.</para>
+    ///
+    /// <para>Per Phase 3 Task 15 L8 post-PR-#68 hardening F#1 — the
+    /// per-item main-size contribution comes from
+    /// <see cref="ComputedStyleLayoutExtensions.ResolveFlexItemHypotheticalMainSize"/>
+    /// instead of the raw <c>ReadLengthPxOrZero</c>. This guarantees
+    /// pre-measure parity with <see cref="FlexLayouter"/>'s
+    /// <c>PackLines</c> when <c>flex-basis</c> overrides the declared
+    /// main-size (= the spec-correct CSS Flexbox §9.3 input). Pre-fix,
+    /// an item with <c>width: 300px; flex-basis: 0</c> would wrap into
+    /// its own line during pre-measure (because pre-measure saw width
+    /// = 300) but pack into a shared line during the layout pass
+    /// (which now honors flex-basis = 0); the divergent line counts
+    /// would size the wrapper's cross-extent incorrectly.</para></summary>
     /// <param name="flexContainer">The flex container box.</param>
     /// <param name="direction">Resolved <c>flex-direction</c>; selects
     /// which property feeds main + cross.</param>
@@ -5543,7 +5556,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             cancellationToken.ThrowIfCancellationRequested();
             if (!item.IsBlockLevel) continue;
 
-            var itemMain = item.Style.ReadLengthPxOrZero(mainProp);
+            // Per Phase 3 Task 15 L8 post-PR-#68 F#1 — use the shared
+            // flex-basis-aware hypothetical main-size helper so this
+            // pre-measure pass packs into the SAME lines as
+            // FlexLayouter's PackLines. Cross-size still uses the raw
+            // declared property; cross-axis flexibility is L9+ scope.
+            var itemMain = item.ResolveFlexItemHypotheticalMainSize(
+                mainProp, containerMainSize);
             var itemCross = item.Style.ReadLengthPxOrZero(crossProp);
 
             // CSS Flexbox L1 §9.3 — the first item on a line ALWAYS

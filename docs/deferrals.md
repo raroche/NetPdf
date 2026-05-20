@@ -960,8 +960,31 @@ grepping the ID).
   (`baseline` / `first baseline` / `last baseline`) admitted by CSS
   Box Alignment L3 §6.3 are added to BuildAlignContentTable (29-entry
   table) but currently approximate to `stretch` — proper baseline
-  alignment is text-shaping-integration scope (L8+; see the bullet
+  alignment is text-shaping-integration scope (L9+; see the bullet
   below).
+  **Per Phase 3 Task 15 L8** — `flex-grow` / `flex-shrink` /
+  `flex-basis` ship the §7 + §9.7 flexibility algorithm. Per line:
+  compute each item's hypothetical main-size from its `flex-basis`
+  (Auto/Content delegate to declared main-size; LengthPx uses the
+  explicit pixel value; Percentage resolves against the container's
+  main-size); compute `freeMainSpace = containerMainSize -
+  sum(hypothetical)`; if positive AND any item has `flex-grow > 0`,
+  each item grows by `(item.flexGrow / sumFlexGrow) * freeMainSpace`;
+  if negative AND any item has `flex-shrink > 0`, each item shrinks
+  by `(item.flexShrink * hypothetical / sumScaledShrinks) *
+  |freeMainSpace|`. Resolved main-sizes feed the per-line emission
+  loop's main-axis placement (replacing the L1-L7
+  `ReadLengthPxOrZero(mainSizeProperty)` direct read). Each line's
+  `LineMainSize` is recomputed post-flex so `justify-content`'s
+  freeSpace calculation matches the flexed layout. The cascade-side
+  `flex-grow` (Number type, default 0) + `flex-shrink` (Number type,
+  default 1) properties were already in properties.json; L8 joined
+  the `flex-basis` (FlexBasis type, default `auto`) property to the
+  LengthResolver dispatch (admitting `auto` / `content` keywords +
+  the `<length-percentage>` production per §7.2). Three new reader
+  extensions (`ReadFlexGrow` / `ReadFlexShrink` / `ReadFlexBasis`)
+  + typed `ResolvedFlexBasis` (Kind + Value) mirror the L2/L3/L7
+  resolved-* patterns.
 - **Missing** —
   - `flex-wrap: wrap-reverse` (cross-axis line-stacking reversal per
     CSS Flexbox L1 §6.3 — "same as wrap but the cross-start and
@@ -1101,8 +1124,52 @@ grepping the ID).
     (= 4×100=400 > 250 → 2 lines). When the BlockLayouter
     width-resolution fix lands ALL THREE tests should flip — at
     which point remove BOTH this bullet AND all three pins.
-  - `flex-grow` / `flex-shrink` / `flex-basis` resolution
   - `order` property
+  - **`flex` shorthand parser** (CSS Flexbox L1 §7.4) — the shorthand
+    `flex: <flex-grow> <flex-shrink> <flex-basis>` (with sentinel
+    values `none` / `auto` / `<number>` per §7.4) is not yet parsed.
+    Authors writing `flex: 1` will see the declaration silently dropped
+    (AngleSharp.Css doesn't expand the shorthand to longhands either).
+    L9+ scope. Workaround until then: use the three longhand
+    properties (`flex-grow: 1; flex-shrink: 1; flex-basis: 0`).
+  - **`flex-basis: min-content` / `max-content` / `fit-content`**
+    intrinsic-sizing keywords (CSS Flexbox L1 §7.2 + CSS Sizing L3
+    §5.1). L8 admits `auto` + `content` + `<length-percentage>` only;
+    the three intrinsic keywords are L9+ scope (depend on intrinsic
+    sizing integration with the BlockLayouter pre-measure).
+  - **§9.7 step-4 min/max clamping** (CSS Flexbox L1 §9.7 + §9.5) —
+    L8's flexibility algorithm distributes free space in a SINGLE
+    PASS without honoring `min-width` / `max-width` clamps; per spec
+    the algorithm clamps each item to `[min-main-size, max-main-size]`
+    + iterates redistribution among the unclamped items until all
+    items either are within their clamps or there's no free space
+    left to distribute. L8 produces approximate sizes that may
+    violate min/max constraints. Pinned by the
+    `L8_known_gap_min_width_does_not_clamp_resolved_size_yet` test;
+    when L9+ adds the clamp + iteration, that test should flip to
+    assert the spec-correct clamped sizes.
+  - **Shared `FlexItemSizing` model unification** (post-PR-#68
+    architecture recommendation): the L8 post-PR-#68 hardening F#1
+    extracted `ResolveFlexItemHypotheticalMainSize` to a shared
+    extension on `Boxes.Box` so PackLines + ResolveFlexibleMainSizes
+    + BlockLayouter's pre-measure all consume identical hypothetical
+    sizes. A broader refactor would lift `FlexItemSizing { Box,
+    ChildIndex, FlexBaseSize, HypotheticalMainSize, FlexGrow,
+    FlexShrink, CrossSize }` into a small read-once struct shared
+    across all three call sites, eliminating the repeated style reads
+    + making the §9.7 step-4 min/max-clamp iteration easier to add.
+    L9+ scope; the L8 extension is sufficient to close line-boundary
+    drift but the struct unification is a follow-up optimization.
+  - **`flex-basis: content` proper implementation** (CSS Flexbox L1
+    §7.2.1): post-PR-#68 F#4 — currently `Content` is approximated as
+    `Auto` (= delegate to declared main-size). Per spec, Content should
+    force the intrinsic content size REGARDLESS of declared
+    width/height; e.g., `width: 200; flex-basis: content` should
+    produce hypothetical = intrinsic content size (NOT 200). Requires
+    intrinsic-sizing integration with the BlockLayouter pre-measure
+    (= same prerequisite as `min-content` / `max-content` /
+    `fit-content` flex-basis keywords + the §9.7 step-4 min-clamp).
+    Pinned by `L8_hardening_known_gap_flex_basis_content_approximates_to_auto`.
   - Anonymous flex-item wrapping for inline-level / text children
     (cycle 1 skips non-block-level children silently; whitespace
     `TextRun`s between flex item elements are dropped without a
@@ -1137,20 +1204,25 @@ grepping the ID).
   hardening F#1/F#2 added the multi-line gate per §9.4 and per-mode
   overflow handling per §5.3; F#6 admitted the
   `<baseline-position>` triple as a stretch approximation). Sub-
-  cycle L8+ picks up `flex-wrap: wrap-reverse`, proper
+  cycle L8 picked up `flex-grow` / `flex-shrink` / `flex-basis` (the
+  §7 + §9.7 flexibility algorithm — see the L8 entry above). Sub-
+  cycle L9+ picks up `flex-wrap: wrap-reverse`, proper
   `<baseline-position>` alignment for both `align-items` and
-  `align-content`, the `flex-grow` / `flex-shrink` / `flex-basis`
-  interpolation, anonymous-flex-item wrapping for inline/text
+  `align-content`, the `flex` shorthand parser, the §9.7 step-4
+  min/max clamping iteration, the `align-self` per-item override,
+  the `order` property, anonymous-flex-item wrapping for inline/text
   children, and the `FlexContinuation`-based multi-page split.
 - **Added** — Phase 3 Task 15 cycle 1 (Hello World).
-- **Removal condition** — Sub-cycle L8+ ships the remaining
+- **Removal condition** — Sub-cycle L9+ ships the remaining
   deferred features (wrap-reverse / proper baseline alignment /
-  grow / shrink / basis / order / multi-page split / anonymous
-  flex item). L6 shipped `flex-wrap: wrap`; L7 shipped
-  `align-content` (base values + §8.4 stretch default + post-PR-#67
-  per-mode overflow handling); `wrap-reverse` proper implementation
-  is the natural L8 companion (the cross-axis line-stacking
-  reversal).
+  order / align-self / `flex` shorthand / §9.7 min-max clamp /
+  multi-page split / anonymous flex item). L6 shipped `flex-wrap:
+  wrap`; L7 shipped `align-content` (base values + §8.4 stretch
+  default + post-PR-#67 per-mode overflow handling); L8 shipped the
+  §7 + §9.7 flexibility algorithm (`flex-grow` / `flex-shrink` /
+  `flex-basis` — single-pass distribution without min/max clamping).
+  `align-self` (per-item align-items override) and the `flex`
+  shorthand parser are the natural L9 candidates.
 
 ---
 

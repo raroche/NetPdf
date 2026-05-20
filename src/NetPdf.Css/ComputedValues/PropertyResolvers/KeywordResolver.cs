@@ -134,12 +134,16 @@ internal static class KeywordResolver
     {
         var b = new Dictionary<PropertyId, FrozenDictionary<string, int>>();
 
-        // align-items / align-self / justify-content — CSS Box Alignment L3 §4.
-        // Per §4.4: <baseline-position> is `[first | last]? baseline` — bare
-        // `first`/`last` are NOT valid, only the compound `first baseline` /
+        // align-content / align-items / align-self / justify-content — CSS Box
+        // Alignment L3 §4. Per §4.4: <baseline-position> is `[first | last]? baseline`
+        // — bare `first`/`last` are NOT valid, only the compound `first baseline` /
         // `last baseline`. Per §4.5: <self-position> + optional <overflow-position>
         // (safe / unsafe) gives the full positional grid. The compound forms are
         // looked up via whitespace-normalized matching (see NormalizeKeywordWhitespace).
+        // align-content + justify-content share the <content-position> +
+        // <content-distribution> grammar; align-items + align-self share the
+        // <self-position> grammar (with align-self additionally admitting `auto`).
+        b[PropertyId.AlignContent] = BuildAlignContentTable();
         b[PropertyId.AlignItems] = BuildAlignItemsTable();
         b[PropertyId.AlignSelf] = BuildAlignSelfTable();
         b[PropertyId.JustifyContent] = BuildJustifyContentTable();
@@ -316,6 +320,34 @@ internal static class KeywordResolver
     /// Grammar: <c>normal | &lt;content-distribution&gt; |
     /// [&lt;overflow-position&gt;? &amp;&amp; [&lt;content-position&gt; | left | right]]</c>.</summary>
     private static FrozenDictionary<string, int> BuildJustifyContentTable()
+    {
+        var entries = new List<string>(32) { "normal" };
+        // <content-distribution>.
+        foreach (var d in ContentDistributions) entries.Add(d);
+        // <content-position> on its own.
+        foreach (var p in ContentPositions) entries.Add(p);
+        // <overflow-position> <content-position>.
+        foreach (var op in new[] { "safe", "unsafe" })
+            foreach (var p in ContentPositions) entries.Add($"{op} {p}");
+        return T(entries.ToArray());
+    }
+
+    /// <summary>Per Phase 3 Task 15 L7 — build the align-content table per
+    /// CSS Box Alignment L3 §4.5 (= same grammar as justify-content but
+    /// applies to cross-axis line distribution per CSS Flexbox L1 §8.4).
+    /// Grammar: <c>normal | &lt;content-distribution&gt; |
+    /// [&lt;overflow-position&gt;? &amp;&amp; &lt;content-position&gt;]</c>.
+    /// Like justify-content this uses <see cref="ContentPositions"/> +
+    /// <see cref="ContentDistributions"/> rather than the
+    /// <see cref="SelfPositions"/> set used by align-items / align-self.
+    ///
+    /// <para><b>Index layout.</b> 0=normal, 1-4=&lt;content-distribution&gt;
+    /// (space-between, space-around, space-evenly, stretch), 5-11=
+    /// &lt;content-position&gt; (center, start, end, flex-start, flex-end,
+    /// left, right), 12-18=safe X (same 7 positions),
+    /// 19-25=unsafe X. Total = 26 entries — identical layout to
+    /// <see cref="BuildJustifyContentTable"/>.</para></summary>
+    private static FrozenDictionary<string, int> BuildAlignContentTable()
     {
         var entries = new List<string>(32) { "normal" };
         // <content-distribution>.

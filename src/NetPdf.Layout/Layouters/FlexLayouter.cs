@@ -85,26 +85,42 @@ namespace NetPdf.Layout.Layouters;
 ///   <c>PreMeasureFlexMultiLineCrossExtent</c>). <c>flex-wrap:
 ///   wrap-reverse</c> decodes to <see cref="FlexWrapValue.WrapReverse"/>
 ///   but L6 treats it identically to <see cref="FlexWrapValue.Wrap"/>
-///   — the cross-axis line-stacking reversal is L7+ scope; tracked in
+///   — the cross-axis line-stacking reversal is L8+ scope; tracked in
 ///   <c>docs/deferrals.md#flex-layouter-features</c>. Per Phase 3
-///   Task 15 L6 post-PR-#66 review F#4 the layouter now emits the
+///   Task 15 L6 post-PR-#66 review F#4 the layouter emits the
 ///   <c>LAYOUT-FLEX-WRAP-REVERSE-APPROXIMATED-001</c> warning
 ///   diagnostic on each <c>AttemptLayout</c> invocation that
 ///   encounters <c>wrap-reverse</c>, so the silent approximation is
-///   visible to authors. L6 also defers <c>align-content</c>
-///   (multi-line cross-axis alignment per CSS Box Alignment L3 §6).
-///   Per CSS Flexbox L1 §8.4 + CSS Box Alignment L3 §6 the initial
-///   value of <c>align-content</c> is <c>stretch</c> — definite-cross-
-///   sized multi-line containers should stretch their line cross-
-///   extents to fill the container when the sum is less than the
-///   container's cross extent. L6 approximates <c>align-content</c>
-///   as <c>flex-start</c>: lines stack at cross-start at their
-///   natural sizes with no inter-line spacing, leaving extra cross-
-///   axis space empty (when the container is taller than the sum of
-///   line cross-extents). The <c>align-content</c> property itself is
-///   not yet in <c>properties.json</c> / the cascade — adding the
-///   parsed-and-honored support is L7+ scope per
-///   <c>docs/deferrals.md#flex-layouter-features</c>.</item>
+///   visible to authors.</item>
+///   <item><b>L7 — <c>align-content</c> multi-line cross-axis
+///   distribution.</b> Per CSS Flexbox L1 §8.4 + CSS Box Alignment L3
+///   §6 the layouter honors seven base values for cross-axis line
+///   distribution on multi-line containers (= <c>flex-wrap: wrap</c>
+///   producing &gt;= 2 lines): <c>flex-start</c> (pack at cross-start
+///   — the L1-L6 default), <c>flex-end</c> (pack at cross-end),
+///   <c>center</c> (centered on cross axis), <c>space-between</c>
+///   (equal gaps between adjacent lines, no edge spacing),
+///   <c>space-around</c> (equal gaps with half-size leading + trailing
+///   edges), <c>space-evenly</c> (equal gaps including edges), and
+///   <c>stretch</c> (the spec default for <c>normal</c> per §8.4 —
+///   grows each line's cross-extent by an equal share of the free
+///   cross-space; items in a stretched line use the LARGER extent for
+///   their align-items math). The logical-axis aliases (<c>start</c> /
+///   <c>end</c>) and directional aliases (<c>left</c> / <c>right</c>)
+///   map to <c>flex-start</c> / <c>flex-end</c> under the L1 default
+///   LTR + <c>flex-direction: row</c>; writing-mode-aware mapping is
+///   L8+ scope. <c>safe</c> / <c>unsafe</c> overflow modifiers decode
+///   into the overflow-mode channel of <see cref="ResolvedAlignContent"/>
+///   but L7 applies a single safe-start overflow fallback across all
+///   modes (= when the sum of line cross extents already exceeds the
+///   container's cross extent, lines stack at cross-start at their
+///   natural extents). Fine-grained per-mode overflow refinement
+///   per CSS Box Alignment L3 §5.3 is L8+ scope (see
+///   <c>docs/deferrals.md#flex-layouter-features</c>). Single-line
+///   containers (= <c>flex-wrap: nowrap</c> OR wrapping that produced
+///   exactly one line) are unaffected by align-content per §8.4 — the
+///   helper short-circuits to <c>(0, 0, 0)</c> for
+///   <c>lineCount &lt;= 1</c>.</item>
 ///   <item><b>L2 — <c>justify-content</c> main-axis alignment.</b>
 ///   The layouter honors the six effective values per CSS Box
 ///   Alignment L3 §4.5: <c>flex-start</c> (default packing at main-
@@ -492,11 +508,51 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         var containerCrossSize = ResolveContainerCrossSize(
             isColumn, lines, cancellationToken);
 
-        // Per Phase 3 Task 15 L6 — walk lines along the cross axis. For
-        // L6 lines stack at cross-start with no extra spacing between
-        // them (align-content is L7+ scope). The cross cursor starts at
-        // contentCrossOffset and advances by each line's cross-extent.
-        var lineCrossCursor = contentCrossOffset;
+        // Per Phase 3 Task 15 L7 — resolve align-content + compute the
+        // cross-axis line distribution per CSS Flexbox L1 §8.4 + CSS Box
+        // Alignment L3 §6. align-content only applies to multi-line
+        // containers (single-line = no distribution); the helper returns
+        // (0, 0, 0) for the single-line and overflow cases.
+        //
+        // freeCrossSpace = container's cross extent - sum of each line's
+        // natural cross extent. Positive = lines fit with space left over
+        // (the L7 stretch / distribution branch). Zero = lines exactly
+        // fill the container (L1-L6 default + auto-cross-size case).
+        // Negative = lines overflow (L7 safe-start fallback).
+        var resolvedAC = _rootBox.Style.ReadAlignContent();
+        var sumLineCrossExtents = 0.0;
+        foreach (var line in lines) sumLineCrossExtents += line.LineCrossSize;
+        var freeCrossSpace = containerCrossSize - sumLineCrossExtents;
+
+        var (lineStartOffset, lineBetweenSpacing, lineStretchAddend) =
+            ComputeAlignContentOffsets(resolvedAC, freeCrossSpace, lines.Count);
+
+        // Per Phase 3 Task 15 L7 — apply the stretch addend BEFORE the
+        // emission loop. When align-content: stretch (the default per
+        // CSS Flexbox §8.4) AND multi-line AND freeCrossSpace > 0, grow
+        // each line's cross extent by lineStretchAddend so the lines
+        // collectively fill the container. Items within a stretched line
+        // use the LARGER cross extent for their align-items math (the
+        // emission loop reads line.LineCrossSize, so updating it in
+        // place propagates the new extent to the align-items helper).
+        if (lineStretchAddend > 0)
+        {
+            for (var i = 0; i < lines.Count; i++)
+            {
+                lines[i] = lines[i] with
+                {
+                    LineCrossSize = lines[i].LineCrossSize + lineStretchAddend,
+                };
+            }
+        }
+
+        // Per Phase 3 Task 15 L7 — apply the line start offset to the
+        // cross cursor. The cursor starts at the alignment-adjusted
+        // origin (cross-start + lineStartOffset) instead of L6's
+        // unadjusted contentCrossOffset. For align-content: flex-start
+        // (the L6 default behavior) the offset is 0 and we get the
+        // L6 cross-start stacking back unchanged.
+        var lineCrossCursor = contentCrossOffset + lineStartOffset;
 
         foreach (var line in lines)
         {
@@ -511,9 +567,13 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             //
             // For wrapping, the line's cross extent is max(item cross-
             // size) of the items it contains; an explicit container
-            // cross-size doesn't expand each line — it leaves the
-            // remaining cross-axis space empty (which align-content
-            // would distribute when it lands in L7+).
+            // cross-size doesn't expand each line on its own. Per Phase
+            // 3 Task 15 L7 — align-content now distributes the
+            // remaining cross-axis space (positional values absorb it
+            // into the line cursor's start offset + between-spacing;
+            // the stretch default grows each line's cross extent in
+            // place, which propagates to the align-items math below
+            // via the mutated lines[i].LineCrossSize).
             var lineCrossExtent = isWrapping
                 ? line.LineCrossSize
                 : containerCrossSize;
@@ -685,10 +745,14 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             }
 
             // Advance the line cross cursor past this line's cross
-            // extent. Per Phase 3 Task 15 L6 lines stack at cross-
-            // start with no between-line spacing (align-content is
-            // L7+ scope).
-            lineCrossCursor += line.LineCrossSize;
+            // extent + the L7 between-line spacing (= the per-line gap
+            // contributed by align-content's distribution values:
+            // space-between / -around / -evenly). For positional values
+            // (flex-start / flex-end / center) and stretch, the
+            // between-spacing is 0 — the gap is absorbed by the
+            // startOffset (positional) or by the line cross-extent
+            // (stretch).
+            lineCrossCursor += line.LineCrossSize + lineBetweenSpacing;
         }
 
         // Cycle 1 (Hello World) — flex container is atomic to outer
@@ -1053,6 +1117,118 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         }
 
         return natural;
+    }
+
+    /// <summary>Per Phase 3 Task 15 L7 — compute the cross-axis line
+    /// distribution offsets for <c>align-content</c> per CSS Box
+    /// Alignment L3 §6 + CSS Flexbox L1 §8.4. Returns the triple
+    /// <c>(startOffset, betweenSpacing, stretchAddend)</c> consumed by
+    /// AttemptLayout's per-line emission loop:
+    /// <list type="bullet">
+    ///   <item><b>startOffset</b> — where the FIRST line begins,
+    ///   relative to the container's content cross-start. Positional
+    ///   values (<c>flex-end</c>, <c>center</c>) push the first line
+    ///   away from cross-start; distribution values
+    ///   (<c>space-around</c>, <c>space-evenly</c>) absorb a leading
+    ///   half-gap (or full gap) into the first line's offset.</item>
+    ///   <item><b>betweenSpacing</b> — extra space added BETWEEN
+    ///   adjacent lines on the cross axis. Non-zero only for the three
+    ///   distribution values (<c>space-between</c> / -around / -evenly).
+    ///   Positional values fold their entire offset into startOffset.</item>
+    ///   <item><b>stretchAddend</b> — extra cross-extent added to EACH
+    ///   line for <c>align-content: stretch</c> (= the spec default per
+    ///   §8.4 for the initial <c>normal</c> value). The caller mutates
+    ///   each line's <c>LineCrossSize</c> by this amount BEFORE the
+    ///   emission loop so the per-line align-items math sees the
+    ///   stretched extent.</item>
+    /// </list>
+    ///
+    /// <para><b>Single-line short-circuit.</b> Per CSS Flexbox L1 §8.4
+    /// align-content has NO EFFECT on a single-line container (=
+    /// nowrap with any number of items, OR wrap that produced a single
+    /// line). The helper returns <c>(0, 0, 0)</c> for
+    /// <c>lineCount &lt;= 1</c> so the cursor stays at cross-start and
+    /// no stretch is applied (= L1-L6 behavior preserved).</para>
+    ///
+    /// <para><b>Overflow short-circuit.</b> When the sum of line cross
+    /// extents already exceeds the container cross-extent
+    /// (<c>freeCrossSpace &lt;= 0</c>) there is no space to distribute.
+    /// L7 applies a simple safe-start fallback: lines stack at cross-
+    /// start at their natural extents. Per CSS Box Alignment L3 §5.3
+    /// the explicit <c>safe</c> / <c>unsafe</c> modifiers refine this
+    /// (<c>unsafe</c> would still honor the alignment + let lines
+    /// overflow at the cross-end; <c>safe</c> matches the current
+    /// fallback). L7 treats all three modes identically for overflow;
+    /// the per-mode refinement is L8+ scope (see
+    /// <c>docs/deferrals.md#flex-layouter-features</c>).</para>
+    ///
+    /// <para><b>Stretch arithmetic.</b> For <c>align-content: stretch</c>
+    /// with N lines and positive freeCrossSpace F, each line grows by
+    /// F/N (= equal share). This is the CSS Flexbox §8.4-defined
+    /// "increase each line's cross-size by an equal portion of the
+    /// container's free cross-space" rule, simplified by Hello-World's
+    /// natural-size item model (no min-content / max-content
+    /// constraints folded in yet — that's L8+ scope when the full
+    /// hypothetical-cross-size math lands).</para>
+    ///
+    /// <para><b>N == 1 distribution edge cases.</b> <c>space-between</c>
+    /// with 1 line has no "between" gap to distribute, so it falls
+    /// back to <c>flex-start</c> (= return <c>(0, 0, 0)</c>) via the
+    /// <c>lineCount &lt;= 1</c> short-circuit above. <c>space-around</c>
+    /// + <c>space-evenly</c> are also handled by the same short-circuit
+    /// since a single line can't be "around" anything either; the
+    /// short-circuit predates the formula evaluation so the divisions
+    /// never see N=1.</para></summary>
+    private static (double startOffset, double betweenSpacing, double stretchAddend)
+        ComputeAlignContentOffsets(
+            ResolvedAlignContent resolved,
+            double freeCrossSpace,
+            int lineCount)
+    {
+        // Single line OR no positive free space — no distribution, no
+        // stretch. Multi-line containers with freeCrossSpace == 0 (=
+        // lines already fill the container, the auto-cross-size case)
+        // and overflow (freeCrossSpace < 0) take this branch.
+        if (lineCount <= 1 || freeCrossSpace <= 0)
+        {
+            return (0, 0, 0);
+        }
+
+        return resolved.Value switch
+        {
+            // Positional values — start offset puts the line stack at
+            // the cross-end (FlexEnd) or centered (Center). No between-
+            // spacing.
+            AlignContentValue.FlexEnd => (freeCrossSpace, 0, 0),
+            AlignContentValue.Center => (freeCrossSpace / 2.0, 0, 0),
+
+            // Distribution values — startOffset puts the first line
+            // either AT the cross-start (SpaceBetween) or with a
+            // leading half-gap (SpaceAround) or a leading full gap
+            // (SpaceEvenly). betweenSpacing fills the inter-line gaps.
+            // SpaceBetween divides among (N-1) gaps; SpaceAround
+            // divides among N gaps with half-size leading + trailing
+            // edges; SpaceEvenly divides among (N+1) equal gaps
+            // INCLUDING the leading + trailing edges.
+            AlignContentValue.SpaceBetween =>
+                (0, freeCrossSpace / (lineCount - 1), 0),
+            AlignContentValue.SpaceAround =>
+                (freeCrossSpace / (2.0 * lineCount), freeCrossSpace / lineCount, 0),
+            AlignContentValue.SpaceEvenly =>
+                (freeCrossSpace / (lineCount + 1), freeCrossSpace / (lineCount + 1), 0),
+
+            // Stretch — each line grows by an equal share of the free
+            // cross-space. No startOffset (first line still at cross-
+            // start); no betweenSpacing (the growth absorbs all of the
+            // free space).
+            AlignContentValue.Stretch =>
+                (0, 0, freeCrossSpace / lineCount),
+
+            // FlexStart (the safe default) and any unknown values keep
+            // the L1-L6 behavior: stack at cross-start, no spacing, no
+            // stretch.
+            _ => (0, 0, 0),
+        };
     }
 
     /// <summary>Per Phase 3 Task 15 L3 + Phase 3 Task 15 L4 — compute

@@ -629,6 +629,91 @@ internal static class ComputedStyleLayoutExtensions
         };
     }
 
+    /// <summary>Per Phase 3 Task 15 L7 — decode
+    /// <see cref="PropertyId.AlignContent"/> per CSS Box Alignment L3 §6 +
+    /// CSS Flexbox L1 §8.4. L7 ships the seven base values plus the
+    /// safe/unsafe overflow modes:
+    /// <see cref="AlignContentValue.FlexStart"/>,
+    /// <see cref="AlignContentValue.FlexEnd"/>,
+    /// <see cref="AlignContentValue.Center"/>,
+    /// <see cref="AlignContentValue.SpaceBetween"/>,
+    /// <see cref="AlignContentValue.SpaceAround"/>,
+    /// <see cref="AlignContentValue.SpaceEvenly"/>, and
+    /// <see cref="AlignContentValue.Stretch"/> (the computed default for
+    /// the initial <c>normal</c> value per CSS Flexbox L1 §8.4).
+    ///
+    /// <para><b>Spec defaults.</b> Per CSS Flexbox L1 §8.4 the
+    /// <c>align-content</c> property's computed value for a flex container
+    /// is <c>stretch</c> when the cascaded value is <c>normal</c> (= the
+    /// initial value). This decoder maps <c>normal</c> →
+    /// <see cref="AlignContentValue.Stretch"/>.</para>
+    ///
+    /// <para><b>L7+ deferrals.</b> Logical-axis aliases (<c>start</c> /
+    /// <c>end</c>) and directional aliases (<c>left</c> / <c>right</c>)
+    /// map to <c>flex-start</c> / <c>flex-end</c> under the L1 default
+    /// LTR + <c>flex-direction: row</c> — writing-mode-aware mapping is
+    /// L8+ scope. <c>safe</c> / <c>unsafe</c> overflow-position modifiers
+    /// (compound keywords like <c>safe center</c>) decode into the
+    /// <see cref="OverflowAlignmentMode"/> channel of
+    /// <see cref="ResolvedAlignContent"/>; L7 applies a simple safe-start
+    /// fallback on overflow regardless of the explicit modifier — fine-
+    /// grained safe-vs-unsafe overflow semantics per CSS Box Alignment
+    /// L3 §5.3 are an L7+ refinement (see
+    /// <c>docs/deferrals.md#flex-layouter-features</c>).</para>
+    ///
+    /// <para><b>Keyword index mapping.</b> The source-gen'd
+    /// <c>BuildAlignContentTable</c> in
+    /// <see cref="NetPdf.Css.ComputedValues.PropertyResolvers.KeywordResolver"/>
+    /// emits indices in this order (VERIFIED against KeywordResolver.cs
+    /// <c>BuildAlignContentTable</c> + the <c>ContentPositions</c> array
+    /// at KeywordResolver.cs:121-122 which orders the seven
+    /// <c>&lt;content-position&gt;</c> values as <c>center, start, end,
+    /// flex-start, flex-end, left, right</c>): 0=normal,
+    /// 1=space-between, 2=space-around, 3=space-evenly, 4=stretch,
+    /// 5=center, 6=start, 7=end, 8=flex-start, 9=flex-end, 10=left,
+    /// 11=right, 12-18=safe {center, start, end, flex-start, flex-end,
+    /// left, right}, 19-25=unsafe {…same 7…}.</para></summary>
+    public static ResolvedAlignContent ReadAlignContent(this ComputedStyle style)
+    {
+        var keyword = style.ReadKeywordOrDefault(PropertyId.AlignContent, defaultIndex: 0);
+        return keyword switch
+        {
+            // 0=normal → Stretch (CSS Flexbox §8.4 spec default).
+            0 => new ResolvedAlignContent(AlignContentValue.Stretch, OverflowAlignmentMode.Default),
+            // 1-4 = <content-distribution>.
+            1 => new ResolvedAlignContent(AlignContentValue.SpaceBetween, OverflowAlignmentMode.Default),
+            2 => new ResolvedAlignContent(AlignContentValue.SpaceAround, OverflowAlignmentMode.Default),
+            3 => new ResolvedAlignContent(AlignContentValue.SpaceEvenly, OverflowAlignmentMode.Default),
+            4 => new ResolvedAlignContent(AlignContentValue.Stretch, OverflowAlignmentMode.Default),
+            // 5-11 = <content-position>: center, start, end, flex-start,
+            // flex-end, left, right (LTR + horizontal-tb mapping).
+            5 => new ResolvedAlignContent(AlignContentValue.Center, OverflowAlignmentMode.Default),
+            6 => new ResolvedAlignContent(AlignContentValue.FlexStart, OverflowAlignmentMode.Default),    // start → flex-start (LTR)
+            7 => new ResolvedAlignContent(AlignContentValue.FlexEnd, OverflowAlignmentMode.Default),      // end → flex-end (LTR)
+            8 => new ResolvedAlignContent(AlignContentValue.FlexStart, OverflowAlignmentMode.Default),
+            9 => new ResolvedAlignContent(AlignContentValue.FlexEnd, OverflowAlignmentMode.Default),
+            10 => new ResolvedAlignContent(AlignContentValue.FlexStart, OverflowAlignmentMode.Default),   // left → flex-start (LTR)
+            11 => new ResolvedAlignContent(AlignContentValue.FlexEnd, OverflowAlignmentMode.Default),     // right → flex-end (LTR)
+            // 12-18 = safe <content-position>.
+            12 => new ResolvedAlignContent(AlignContentValue.Center, OverflowAlignmentMode.Safe),
+            13 => new ResolvedAlignContent(AlignContentValue.FlexStart, OverflowAlignmentMode.Safe),      // safe start
+            14 => new ResolvedAlignContent(AlignContentValue.FlexEnd, OverflowAlignmentMode.Safe),        // safe end
+            15 => new ResolvedAlignContent(AlignContentValue.FlexStart, OverflowAlignmentMode.Safe),      // safe flex-start
+            16 => new ResolvedAlignContent(AlignContentValue.FlexEnd, OverflowAlignmentMode.Safe),        // safe flex-end
+            17 => new ResolvedAlignContent(AlignContentValue.FlexStart, OverflowAlignmentMode.Safe),      // safe left (LTR)
+            18 => new ResolvedAlignContent(AlignContentValue.FlexEnd, OverflowAlignmentMode.Safe),        // safe right (LTR)
+            // 19-25 = unsafe <content-position>.
+            19 => new ResolvedAlignContent(AlignContentValue.Center, OverflowAlignmentMode.Unsafe),
+            20 => new ResolvedAlignContent(AlignContentValue.FlexStart, OverflowAlignmentMode.Unsafe),    // unsafe start
+            21 => new ResolvedAlignContent(AlignContentValue.FlexEnd, OverflowAlignmentMode.Unsafe),      // unsafe end
+            22 => new ResolvedAlignContent(AlignContentValue.FlexStart, OverflowAlignmentMode.Unsafe),    // unsafe flex-start
+            23 => new ResolvedAlignContent(AlignContentValue.FlexEnd, OverflowAlignmentMode.Unsafe),      // unsafe flex-end
+            24 => new ResolvedAlignContent(AlignContentValue.FlexStart, OverflowAlignmentMode.Unsafe),    // unsafe left (LTR)
+            25 => new ResolvedAlignContent(AlignContentValue.FlexEnd, OverflowAlignmentMode.Unsafe),      // unsafe right (LTR)
+            _ => new ResolvedAlignContent(AlignContentValue.Stretch, OverflowAlignmentMode.Default),      // unknown → safe default
+        };
+    }
+
     /// <summary>Per Phase 3 Task 14 cycle 3 + post-PR-#59 review
     /// hardening (Finding #7) — predicate distinguishing <c>height:
     /// auto</c> from any EXPLICIT sizing on a box's computed style.
@@ -827,6 +912,56 @@ internal enum AlignItemsValue : byte
 /// FlexLayouter has a single readable pattern for both axes.</summary>
 internal readonly record struct ResolvedAlignItems(
     AlignItemsValue Value,
+    OverflowAlignmentMode Mode);
+
+/// <summary>Per Phase 3 Task 15 L7 — typed decode of
+/// <see cref="PropertyId.AlignContent"/> per CSS Box Alignment L3 §6 +
+/// CSS Flexbox L1 §8.4. L7 ships the seven base values needed to
+/// implement multi-line cross-axis distribution: positional values
+/// (<see cref="FlexStart"/>, <see cref="FlexEnd"/>, <see cref="Center"/>),
+/// distribution values (<see cref="SpaceBetween"/>, <see cref="SpaceAround"/>,
+/// <see cref="SpaceEvenly"/>), and <see cref="Stretch"/> (the computed
+/// default for <c>align-content: normal</c> per §8.4 — lines grow their
+/// cross extents to fill the container).
+///
+/// <para><b>Single-line semantics.</b> Per CSS Flexbox L1 §8.4
+/// align-content has NO EFFECT on a single-line container (= flex-wrap:
+/// nowrap or wrapping with only one resulting line). The FlexLayouter
+/// gates application on <c>lineCount &gt; 1</c>.</para>
+///
+/// <para><b>L7+ deferrals.</b> The <c>safe</c> / <c>unsafe</c> overflow
+/// modifiers decode to <see cref="OverflowAlignmentMode"/> values but L7
+/// applies a single safe-start fallback across all overflow modes (=
+/// when sum-of-line-extents &gt; container cross-extent, lines stack at
+/// cross-start at their natural extents). Fine-grained safe-vs-unsafe-
+/// vs-default overflow rules per CSS Box Alignment L3 §5.3 are deferred
+/// to L8+ — see <c>docs/deferrals.md#flex-layouter-features</c>. The
+/// logical-axis aliases <c>start</c> / <c>end</c> + the directional
+/// aliases <c>left</c> / <c>right</c> map to <see cref="FlexStart"/> /
+/// <see cref="FlexEnd"/> under the L1 default LTR +
+/// <c>flex-direction: row</c>; writing-mode-aware mapping is L8+ scope.</para></summary>
+internal enum AlignContentValue : byte
+{
+    FlexStart = 0,
+    FlexEnd = 1,
+    Center = 2,
+    SpaceBetween = 3,
+    SpaceAround = 4,
+    SpaceEvenly = 5,
+    Stretch = 6,
+}
+
+/// <summary>Per Phase 3 Task 15 L7 — resolved <c>align-content</c> value
+/// carrying both the base alignment (<see cref="Value"/>) and the
+/// overflow modifier (<see cref="Mode"/>). Returned by
+/// <see cref="ComputedStyleLayoutExtensions.ReadAlignContent"/>; the two
+/// channels are consumed together by
+/// <c>FlexLayouter.ComputeAlignContentOffsets</c>. Mirrors
+/// <see cref="ResolvedJustifyContent"/>'s + <see cref="ResolvedAlignItems"/>'s
+/// shape so the FlexLayouter has a uniform pattern for the three
+/// alignment properties.</summary>
+internal readonly record struct ResolvedAlignContent(
+    AlignContentValue Value,
     OverflowAlignmentMode Mode);
 
 /// <summary>Per Phase 3 Task 15 L4 + L5 — typed decode of

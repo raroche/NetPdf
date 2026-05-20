@@ -822,6 +822,14 @@ public sealed class FlexLayouterProductionTests
         //   Line 2: item-c + item-d (200px).
         // Cross-extent per line = 50; line 2 lands at BlockOffset 50.
         //
+        // Per Phase 3 Task 15 L7 — the CSS now declares explicit
+        // `align-content: flex-start` to pin L6 natural-stacking
+        // behavior. The §8.4 default `normal` resolves to `stretch`
+        // which would grow each line to 100 (= 200/2) shifting line 2
+        // to BlockOffset 100; the dedicated
+        // `L7_production_html_align_content_stretch_default` test
+        // covers the stretch case end-to-end.
+        //
         // Uses a 250px-wide fragmentainer so the wrapper's effective
         // content-inline-size matches the declared 250px width (the
         // BlockLayouter doesn't yet honor declared `width` as a shrink-
@@ -832,6 +840,7 @@ public sealed class FlexLayouterProductionTests
                 .flex {
                     display: flex;
                     flex-wrap: wrap;
+                    align-content: flex-start;
                     width: 250px;
                     height: 200px;
                 }
@@ -895,6 +904,91 @@ public sealed class FlexLayouterProductionTests
         Assert.Equal(wrapperInlineStart + 100.0, itemD!.Value.InlineOffset, precision: 3);
         Assert.Equal(wrapperBlockStart + 50.0, itemC!.Value.BlockOffset, precision: 3);
         Assert.Equal(wrapperBlockStart + 50.0, itemD!.Value.BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public async Task L7_production_html_align_content_stretch_default()
+    {
+        // Phase 3 Task 15 L7 — production-pipeline coverage for
+        // `align-content: stretch` (the §8.4 default value resolved
+        // from `normal`). 4 items of 100x50 in a 250x200 container
+        // wrap into 2 lines of 50px each; freeCrossSpace = 100;
+        // stretchAddend = 50; lines grow to 100px each. Line 2 lands
+        // at BlockOffset 100 (= the stretched line 1's cross-end),
+        // NOT 50 (= the L1-L6 natural stack).
+        //
+        // No `align-content` declaration on the .flex selector —
+        // the cascade carries the initial `normal` value which §8.4
+        // resolves to `stretch` for flex containers. This verifies
+        // the end-to-end cascade-through-layout pipeline picks up
+        // the spec default.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    flex-wrap: wrap;
+                    width: 250px;
+                    height: 200px;
+                }
+                .item-a, .item-b, .item-c, .item-d {
+                    width: 100px;
+                    height: 50px;
+                }
+            </style></head><body>
+            <div class="flex">
+              <div class="item-a"></div>
+              <div class="item-b"></div>
+              <div class="item-c"></div>
+              <div class="item-d"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html, contentInlineSize: 250);
+
+        BoxFragment? flexFragment = null;
+        BoxFragment? itemA = null;
+        BoxFragment? itemB = null;
+        BoxFragment? itemC = null;
+        BoxFragment? itemD = null;
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class");
+            if (classAttr == "flex" && f.Box.Kind == BoxKind.FlexContainer)
+            {
+                flexFragment = f;
+            }
+            else if (classAttr == "item-a") itemA = f;
+            else if (classAttr == "item-b") itemB = f;
+            else if (classAttr == "item-c") itemC = f;
+            else if (classAttr == "item-d") itemD = f;
+        }
+        Assert.NotNull(flexFragment);
+        Assert.NotNull(itemA);
+        Assert.NotNull(itemB);
+        Assert.NotNull(itemC);
+        Assert.NotNull(itemD);
+
+        var wrapperBlockStart = flexFragment!.Value.BlockOffset;
+        var wrapperInlineStart = flexFragment!.Value.InlineOffset;
+
+        // Line 1 (stretched to 100px) — items a + b at BlockOffset
+        // wrapperBlockStart (= cross-start).
+        Assert.Equal(wrapperInlineStart, itemA!.Value.InlineOffset, precision: 3);
+        Assert.Equal(wrapperInlineStart + 100.0, itemB!.Value.InlineOffset, precision: 3);
+        Assert.Equal(wrapperBlockStart, itemA!.Value.BlockOffset, precision: 3);
+        Assert.Equal(wrapperBlockStart, itemB!.Value.BlockOffset, precision: 3);
+
+        // Line 2 (stretched to 100px) — items c + d at BlockOffset
+        // wrapperBlockStart + 100 (= the stretched first line's
+        // cross-end). The L1-L6 natural stack would place them at
+        // +50; the §8.4 stretch default doubles the gap.
+        Assert.Equal(wrapperInlineStart, itemC!.Value.InlineOffset, precision: 3);
+        Assert.Equal(wrapperInlineStart + 100.0, itemD!.Value.InlineOffset, precision: 3);
+        Assert.Equal(wrapperBlockStart + 100.0, itemC!.Value.BlockOffset, precision: 3);
+        Assert.Equal(wrapperBlockStart + 100.0, itemD!.Value.BlockOffset, precision: 3);
     }
 
     [Fact]

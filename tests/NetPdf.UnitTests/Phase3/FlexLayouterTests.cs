@@ -3067,6 +3067,14 @@ public sealed class FlexLayouterTests
         // Line 1's cross-extent = max(item block-size) = 50 (each item
         // is 100x50). Line 2 lands at BlockOffset = 50.
         //
+        // Per Phase 3 Task 15 L7 — explicit `align-content: flex-start`
+        // pins the L1-L6 natural-stacking behavior (lines packed at
+        // cross-start with no inter-line distribution). The §8.4
+        // default `align-content: normal` resolves to `stretch` which
+        // would grow each line to 100 (= half of 200), shifting line 2
+        // to BlockOffset 100; the L7 stretch behavior is covered by
+        // the dedicated `L7_align_content_*` tests above.
+        //
         // The fragmentainer's contentInlineSize is set to 250 so the
         // wrapper's _contentInlineSize matches the declared width.
         // BlockLayouter does NOT yet honor declared `width` as a
@@ -3080,6 +3088,7 @@ public sealed class FlexLayouterTests
         var root = Box.CreateRoot(MakeStyle());
         var flex = BuildFlexContainer();
         flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1)); // wrap
+        flex.Style.Set(PropertyId.AlignContent, ComputedSlot.FromKeyword(8)); // flex-start (pin L6 behavior)
         SetLengthPx(flex.Style, PropertyId.Width, 250);
         SetLengthPx(flex.Style, PropertyId.Height, 200);
 
@@ -3134,12 +3143,18 @@ public sealed class FlexLayouterTests
         // 3 items per line fit (240 <= 250); 4 wouldn't (320 > 250).
         // Lines: [0,1,2] = 240px, [3,4,5] = 240px, [6] = 80px.
         // Cross-extent per line = 30.
+        // Per L7 — pin L6 natural-stacking behavior via explicit
+        // `align-content: flex-start`; the §8.4 default `normal` →
+        // stretch would grow each of the 3 lines by 70 (= 210/3)
+        // shifting line 2 to BlockOffset 100, line 3 to 200. See
+        // dedicated `L7_align_content_stretch_*` test for stretch.
         var sink = new RecordingFragmentSink();
         using var shaper = new SyntheticShaperResolver();
 
         var root = Box.CreateRoot(MakeStyle());
         var flex = BuildFlexContainer();
         flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1)); // wrap
+        flex.Style.Set(PropertyId.AlignContent, ComputedSlot.FromKeyword(8)); // flex-start (pin L6 behavior)
         SetLengthPx(flex.Style, PropertyId.Width, 250);
         SetLengthPx(flex.Style, PropertyId.Height, 300);
 
@@ -3262,6 +3277,12 @@ public sealed class FlexLayouterTests
         var flex = BuildFlexContainer();
         flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1)); // wrap
         flex.Style.Set(PropertyId.JustifyContent, ComputedSlot.FromKeyword(5)); // center
+        // Per L7 — pin L6 natural-stacking behavior via explicit
+        // `align-content: flex-start` (the test exercises per-line
+        // justify-content; the default §8.4 stretch would expand
+        // lines + shift line 2 to BlockOffset 100, conflating the
+        // two alignment axes).
+        flex.Style.Set(PropertyId.AlignContent, ComputedSlot.FromKeyword(8)); // flex-start
         SetLengthPx(flex.Style, PropertyId.Width, 250);
         SetLengthPx(flex.Style, PropertyId.Height, 200);
 
@@ -3389,6 +3410,11 @@ public sealed class FlexLayouterTests
         var flex = BuildFlexContainer();
         flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1)); // wrap
         flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(6)); // center
+        // Per L7 — pin L6 natural-stacking via explicit
+        // `align-content: flex-start`; the test exercises per-line
+        // align-items center, and §8.4's stretch default would
+        // expand each line by 100 (= 200/2), conflating axes.
+        flex.Style.Set(PropertyId.AlignContent, ComputedSlot.FromKeyword(8)); // flex-start
         SetLengthPx(flex.Style, PropertyId.Width, 250);
         SetLengthPx(flex.Style, PropertyId.Height, 400);
 
@@ -3463,6 +3489,12 @@ public sealed class FlexLayouterTests
         var flex = BuildFlexContainer();
         flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
         flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1)); // wrap
+        // Per L7 — pin L6 natural-stacking via explicit
+        // `align-content: flex-start`; for column direction the
+        // cross axis is inline, so the §8.4 stretch default would
+        // grow each line's inline extent by 50 (= 100/2) shifting
+        // line 2 to InlineOffset 150 instead of the natural 100.
+        flex.Style.Set(PropertyId.AlignContent, ComputedSlot.FromKeyword(8)); // flex-start
         SetLengthPx(flex.Style, PropertyId.Width, 300);
         SetLengthPx(flex.Style, PropertyId.Height, 150);
 
@@ -3719,19 +3751,21 @@ public sealed class FlexLayouterTests
     }
 
     [Fact]
-    public void L6_hardening_known_gap_align_content_stretch_not_implemented()
+    public void L7_align_content_stretch_default_grows_lines_to_fill_container()
     {
-        // Per Phase 3 Task 15 L6 post-PR-#66 review F#3 — CSS
-        // Flexbox L1 §8.4 + CSS Box Alignment L3 §6 say the initial
-        // value of `align-content` is `stretch`. A 200px-tall multi-
-        // line container with two 50px lines SHOULD stretch the
-        // lines so they fill the 200px cross extent — line 1 at 0,
-        // line 2 at 100, each line conceptually 100px tall. L6
-        // approximates as `flex-start`: lines stack at natural sizes
-        // (line 1 at 0, line 2 at 50), leaving 100px empty space at
-        // the cross-end. PINS the current (incomplete) behavior. The
-        // `align-content` property is not in `properties.json` yet
-        // — L7+ scope (see docs/deferrals.md#flex-layouter-features).
+        // Per Phase 3 Task 15 L7 — CSS Flexbox L1 §8.4 + CSS Box
+        // Alignment L3 §6 say the initial value of `align-content` is
+        // `stretch`. A 200px-tall multi-line container with two 50px
+        // natural-cross-extent lines stretches the lines so they fill
+        // the 200px cross extent — line 1 at BlockOffset 0, line 2 at
+        // BlockOffset 100 (= the stretched first line's cross-end =
+        // start of line 2). Each line's cross-extent grows from 50 →
+        // 100 (= 50 + freeCrossSpace / lineCount = 50 + 100/2). This
+        // test was previously the L6_hardening_known_gap_*_not_implemented
+        // pin which asserted line 2 at BlockOffset 50 (= the L6
+        // approximation that stacked lines at natural sizes); the
+        // L7 implementation flips the assertion to the spec-correct
+        // value. PR #66 finding F#3.
         var sink = new RecordingFragmentSink();
         using var shaper = new SyntheticShaperResolver();
 
@@ -3741,10 +3775,10 @@ public sealed class FlexLayouterTests
         flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1)); // wrap
         SetLengthPx(flex.Style, PropertyId.Width, 250);
         // Container cross-extent (height) = 200; two lines of 50px
-        // each leave 100px of empty cross space. align-content:
-        // stretch (the initial value) would expand each line to 100px
-        // so line 2 lands at BlockOffset 100; L6 ignores it + line 2
-        // lands at BlockOffset 50.
+        // each (sumLineCross = 100) leave 100px of free cross space.
+        // align-content: stretch (the default, =`normal` per §8.4)
+        // grows each line by 100/2 = 50px, producing two 100px lines
+        // that exactly fill the container.
         SetLengthPx(flex.Style, PropertyId.Height, 200);
 
         // 4 items of 100×50 — line 1 = items 0+1, line 2 = items 2+3.
@@ -3777,17 +3811,509 @@ public sealed class FlexLayouterTests
             }
         }
         Assert.Equal(4, itemFragments.Count);
-        // KNOWN-GAP PIN — line 2 items (items 2 + 3) land at
-        // BlockOffset 50 (= natural line stack), NOT at 100 (= what
-        // align-content: stretch would produce). When L7+ ships
-        // align-content: stretch + the property is added to the
-        // cascade, this assertion should flip.
-        // items[0..1] on line 1 at BlockOffset 0.
+        // L7 spec-correct stretch assertions — items[0..1] on line 1
+        // at BlockOffset 0 (= cross-start); items[2..3] on line 2 at
+        // BlockOffset 100 (= the stretched line 1's cross-end).
         Assert.Equal(0.0, itemFragments[0].BlockOffset, precision: 3);
         Assert.Equal(0.0, itemFragments[1].BlockOffset, precision: 3);
-        // items[2..3] on line 2 at BlockOffset 50 (NOT 100).
+        Assert.Equal(100.0, itemFragments[2].BlockOffset, precision: 3);
+        Assert.Equal(100.0, itemFragments[3].BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L7_align_content_flex_start_packs_lines_at_cross_start()
+    {
+        // Per Phase 3 Task 15 L7 — `align-content: flex-start` packs
+        // wrapped lines at the cross-start edge with no inter-line
+        // spacing. 2 lines of 50px each in a 200px container → lines
+        // at BlockOffset 0 and 50 (= natural stack). The 100px of free
+        // cross-space stays empty at the cross-end. Keyword index 8 in
+        // BuildAlignContentTable (= position 8 of the ContentPositions
+        // suffix after `normal` + 4 distributions: flex-start).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1)); // wrap
+        flex.Style.Set(PropertyId.AlignContent, ComputedSlot.FromKeyword(8)); // flex-start
+        SetLengthPx(flex.Style, PropertyId.Width, 250);
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+
+        for (var i = 0; i < 4; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            flex.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 250, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var itemFragments = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box != root && f.Box != flex
+                && f.Box.Kind == BoxKind.BlockContainer)
+            {
+                itemFragments.Add(f);
+            }
+        }
+        Assert.Equal(4, itemFragments.Count);
+        Assert.Equal(0.0, itemFragments[0].BlockOffset, precision: 3);
+        Assert.Equal(0.0, itemFragments[1].BlockOffset, precision: 3);
         Assert.Equal(50.0, itemFragments[2].BlockOffset, precision: 3);
         Assert.Equal(50.0, itemFragments[3].BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L7_align_content_flex_end_packs_lines_at_cross_end()
+    {
+        // Per Phase 3 Task 15 L7 — `align-content: flex-end` packs
+        // lines at cross-end. 2 lines of 50px each in 200px container
+        // → freeCrossSpace = 100; lines at BlockOffset 100 + 150 (=
+        // freeCrossSpace + natural-offset shift). Keyword index 9 (=
+        // flex-end position in the ContentPositions sequence).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1)); // wrap
+        flex.Style.Set(PropertyId.AlignContent, ComputedSlot.FromKeyword(9)); // flex-end
+        SetLengthPx(flex.Style, PropertyId.Width, 250);
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+
+        for (var i = 0; i < 4; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            flex.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 250, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var itemFragments = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box != root && f.Box != flex
+                && f.Box.Kind == BoxKind.BlockContainer)
+            {
+                itemFragments.Add(f);
+            }
+        }
+        Assert.Equal(4, itemFragments.Count);
+        Assert.Equal(100.0, itemFragments[0].BlockOffset, precision: 3);
+        Assert.Equal(100.0, itemFragments[1].BlockOffset, precision: 3);
+        Assert.Equal(150.0, itemFragments[2].BlockOffset, precision: 3);
+        Assert.Equal(150.0, itemFragments[3].BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L7_align_content_center_centers_lines_on_cross_axis()
+    {
+        // Per Phase 3 Task 15 L7 — `align-content: center` centers the
+        // line stack on the cross axis. 2 lines of 50px each in 200px
+        // container → freeCrossSpace = 100; centering shifts the stack
+        // by 50; lines at BlockOffset 50 + 100. Keyword index 5
+        // (= center, first ContentPosition).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1)); // wrap
+        flex.Style.Set(PropertyId.AlignContent, ComputedSlot.FromKeyword(5)); // center
+        SetLengthPx(flex.Style, PropertyId.Width, 250);
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+
+        for (var i = 0; i < 4; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            flex.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 250, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var itemFragments = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box != root && f.Box != flex
+                && f.Box.Kind == BoxKind.BlockContainer)
+            {
+                itemFragments.Add(f);
+            }
+        }
+        Assert.Equal(4, itemFragments.Count);
+        Assert.Equal(50.0, itemFragments[0].BlockOffset, precision: 3);
+        Assert.Equal(50.0, itemFragments[1].BlockOffset, precision: 3);
+        Assert.Equal(100.0, itemFragments[2].BlockOffset, precision: 3);
+        Assert.Equal(100.0, itemFragments[3].BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L7_align_content_space_between_distributes_gaps()
+    {
+        // Per Phase 3 Task 15 L7 — `align-content: space-between` puts
+        // first line at cross-start, last line at cross-end, equal
+        // gaps between. 3 lines of 50px each in 300px container →
+        // sumLineCross = 150; freeCrossSpace = 150; betweenSpacing =
+        // 150 / (3-1) = 75; lines at BlockOffset 0, 125 (= 50+75),
+        // 250 (= 125+50+75). Keyword index 1 (= space-between, first
+        // ContentDistribution).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1)); // wrap
+        flex.Style.Set(PropertyId.AlignContent, ComputedSlot.FromKeyword(1)); // space-between
+        SetLengthPx(flex.Style, PropertyId.Width, 150);
+        SetLengthPx(flex.Style, PropertyId.Height, 300);
+
+        // 3 items of 100×50, each wraps to its own line (each item is
+        // 100 wide; the container is 150 wide; second item would push
+        // total to 200 > 150 so it wraps; same for third).
+        for (var i = 0; i < 3; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            flex.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 150, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var itemFragments = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box != root && f.Box != flex
+                && f.Box.Kind == BoxKind.BlockContainer)
+            {
+                itemFragments.Add(f);
+            }
+        }
+        Assert.Equal(3, itemFragments.Count);
+        Assert.Equal(0.0, itemFragments[0].BlockOffset, precision: 3);
+        Assert.Equal(125.0, itemFragments[1].BlockOffset, precision: 3);
+        Assert.Equal(250.0, itemFragments[2].BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L7_align_content_space_around_distributes_with_half_gaps()
+    {
+        // Per Phase 3 Task 15 L7 — `align-content: space-around` puts
+        // half-size gaps at the edges + full gaps between lines. 3
+        // lines of 50px each in 300px container → freeCrossSpace =
+        // 150; gap = 150 / 3 = 50; halfGap (= startOffset) = 25;
+        // lines at BlockOffset 25, 125 (= 25+50+50), 225 (= 125+50+50).
+        // Keyword index 2 (= space-around).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1)); // wrap
+        flex.Style.Set(PropertyId.AlignContent, ComputedSlot.FromKeyword(2)); // space-around
+        SetLengthPx(flex.Style, PropertyId.Width, 150);
+        SetLengthPx(flex.Style, PropertyId.Height, 300);
+
+        for (var i = 0; i < 3; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            flex.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 150, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var itemFragments = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box != root && f.Box != flex
+                && f.Box.Kind == BoxKind.BlockContainer)
+            {
+                itemFragments.Add(f);
+            }
+        }
+        Assert.Equal(3, itemFragments.Count);
+        Assert.Equal(25.0, itemFragments[0].BlockOffset, precision: 3);
+        Assert.Equal(125.0, itemFragments[1].BlockOffset, precision: 3);
+        Assert.Equal(225.0, itemFragments[2].BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L7_align_content_space_evenly_equal_gaps_everywhere()
+    {
+        // Per Phase 3 Task 15 L7 — `align-content: space-evenly` puts
+        // equal gaps at edges AND between lines. 3 lines of 50px in
+        // 300px container → freeCrossSpace = 150; gap = 150 / (3+1) =
+        // 37.5; lines at BlockOffset 37.5, 125 (= 37.5+50+37.5),
+        // 212.5 (= 125+50+37.5). Keyword index 3 (= space-evenly).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1)); // wrap
+        flex.Style.Set(PropertyId.AlignContent, ComputedSlot.FromKeyword(3)); // space-evenly
+        SetLengthPx(flex.Style, PropertyId.Width, 150);
+        SetLengthPx(flex.Style, PropertyId.Height, 300);
+
+        for (var i = 0; i < 3; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            flex.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 150, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var itemFragments = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box != root && f.Box != flex
+                && f.Box.Kind == BoxKind.BlockContainer)
+            {
+                itemFragments.Add(f);
+            }
+        }
+        Assert.Equal(3, itemFragments.Count);
+        Assert.Equal(37.5, itemFragments[0].BlockOffset, precision: 3);
+        Assert.Equal(125.0, itemFragments[1].BlockOffset, precision: 3);
+        Assert.Equal(212.5, itemFragments[2].BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L7_align_content_overflow_falls_back_to_flex_start()
+    {
+        // Per Phase 3 Task 15 L7 — when the sum of line cross extents
+        // EXCEEDS the container's cross extent (freeCrossSpace < 0),
+        // align-content's distribution is replaced by a safe-start
+        // fallback: lines stack at cross-start at their natural
+        // extents (= L1-L6 behavior preserved on overflow). 3 lines
+        // totaling 250px (= 3 × ~83.3 — but we use distinct integer
+        // sizes for clean assertions) in a 200px container with
+        // align-content: center. Without overflow, center would shift
+        // the stack; on overflow, the helper returns (0, 0, 0) and
+        // lines pack at cross-start at 0, 50, 100.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1)); // wrap
+        flex.Style.Set(PropertyId.AlignContent, ComputedSlot.FromKeyword(5)); // center
+        SetLengthPx(flex.Style, PropertyId.Width, 150);
+        // Container cross-extent = 200; 3 lines of 50px each sum to
+        // 150 — no overflow yet. To force overflow we use 3 lines of
+        // 80px each (sum = 240 > 200). freeCrossSpace = -40; helper
+        // returns (0,0,0); lines at 0, 80, 160 (the last partially
+        // off the cross-end edge).
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+
+        for (var i = 0; i < 3; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 80);
+            flex.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 150, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var itemFragments = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box != root && f.Box != flex
+                && f.Box.Kind == BoxKind.BlockContainer)
+            {
+                itemFragments.Add(f);
+            }
+        }
+        Assert.Equal(3, itemFragments.Count);
+        Assert.Equal(0.0, itemFragments[0].BlockOffset, precision: 3);
+        Assert.Equal(80.0, itemFragments[1].BlockOffset, precision: 3);
+        Assert.Equal(160.0, itemFragments[2].BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L7_align_content_single_line_has_no_effect()
+    {
+        // Per Phase 3 Task 15 L7 — CSS Flexbox §8.4 says align-content
+        // has NO EFFECT on a single-line container. With nowrap (no
+        // wrapping), `align-content: center` is ignored — the line
+        // stays at cross-start. Two 100×50 items in a 300×200
+        // container with align-content: center → both items at
+        // BlockOffset 0 (= cross-start), NOT shifted by 75 (= what
+        // center would produce on multi-line).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        // No flex-wrap declaration → nowrap (the default).
+        flex.Style.Set(PropertyId.AlignContent, ComputedSlot.FromKeyword(5)); // center
+        // Also disable align-items stretch (= the default) so items
+        // keep their declared 50px height; otherwise stretch would
+        // expand them to 200 + obscure the align-content gate.
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(11)); // flex-start
+        SetLengthPx(flex.Style, PropertyId.Width, 300);
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+
+        for (var i = 0; i < 2; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            flex.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 300, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var itemFragments = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box != root && f.Box != flex
+                && f.Box.Kind == BoxKind.BlockContainer)
+            {
+                itemFragments.Add(f);
+            }
+        }
+        Assert.Equal(2, itemFragments.Count);
+        // Both items at BlockOffset 0 — align-content: center has no
+        // effect on the single-line container.
+        Assert.Equal(0.0, itemFragments[0].BlockOffset, precision: 3);
+        Assert.Equal(0.0, itemFragments[1].BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L7_align_content_normal_resolves_to_stretch_per_spec()
+    {
+        // Per Phase 3 Task 15 L7 — sanity test for the §8.4 spec
+        // default. `align-content: normal` MUST produce identical
+        // behavior to explicit `align-content: stretch` for flex
+        // containers (= the property is unset = the cascade's initial
+        // `normal` keyword applies). 2 lines of 50px each in 200px
+        // container → both lines stretched to 100px → line 2 at
+        // BlockOffset 100. This is the same expected output as the
+        // stretch_default test, but with NO explicit align-content
+        // declaration on the container — the cascade default takes
+        // over and resolves to stretch via the §8.4 rule.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1)); // wrap
+        // NO explicit align-content set — cascade carries `normal` (=
+        // initial value); §8.4 says normal → stretch for flex.
+        SetLengthPx(flex.Style, PropertyId.Width, 250);
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+
+        for (var i = 0; i < 4; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            flex.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 250, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var itemFragments = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box != root && f.Box != flex
+                && f.Box.Kind == BoxKind.BlockContainer)
+            {
+                itemFragments.Add(f);
+            }
+        }
+        Assert.Equal(4, itemFragments.Count);
+        // Identical to L7_align_content_stretch_default_grows_lines_to_fill_container —
+        // normal resolves to stretch per §8.4.
+        Assert.Equal(0.0, itemFragments[0].BlockOffset, precision: 3);
+        Assert.Equal(0.0, itemFragments[1].BlockOffset, precision: 3);
+        Assert.Equal(100.0, itemFragments[2].BlockOffset, precision: 3);
+        Assert.Equal(100.0, itemFragments[3].BlockOffset, precision: 3);
     }
 
     [Fact]

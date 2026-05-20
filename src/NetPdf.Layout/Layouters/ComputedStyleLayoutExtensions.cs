@@ -648,18 +648,22 @@ internal static class ComputedStyleLayoutExtensions
     /// initial value). This decoder maps <c>normal</c> →
     /// <see cref="AlignContentValue.Stretch"/>.</para>
     ///
-    /// <para><b>L7+ deferrals.</b> Logical-axis aliases (<c>start</c> /
+    /// <para><b>L8+ deferrals.</b> Logical-axis aliases (<c>start</c> /
     /// <c>end</c>) and directional aliases (<c>left</c> / <c>right</c>)
     /// map to <c>flex-start</c> / <c>flex-end</c> under the L1 default
     /// LTR + <c>flex-direction: row</c> — writing-mode-aware mapping is
     /// L8+ scope. <c>safe</c> / <c>unsafe</c> overflow-position modifiers
     /// (compound keywords like <c>safe center</c>) decode into the
     /// <see cref="OverflowAlignmentMode"/> channel of
-    /// <see cref="ResolvedAlignContent"/>; L7 applies a simple safe-start
-    /// fallback on overflow regardless of the explicit modifier — fine-
-    /// grained safe-vs-unsafe overflow semantics per CSS Box Alignment
-    /// L3 §5.3 are an L7+ refinement (see
-    /// <c>docs/deferrals.md#flex-layouter-features</c>).</para>
+    /// <see cref="ResolvedAlignContent"/>. Per Phase 3 Task 15 L7
+    /// post-PR-#67 hardening F#2, the per-mode overflow semantics per
+    /// CSS Box Alignment L3 §5.3 are now implemented in L7 (mirroring
+    /// the L2 justify-content pattern): <c>safe X</c> falls back to
+    /// safe-start; <c>unsafe X</c> honors the natural (possibly-
+    /// negative) offset; default mode gives distribution values + stretch
+    /// the safe-start fallback while positional values keep their natural
+    /// offset. See <c>FlexLayouter.ComputeAlignContentOffsets</c> for the
+    /// branching logic.</para>
     ///
     /// <para><b>Keyword index mapping (Phase 3 Task 15 L7 post-PR-#67 F#6 —
     /// baseline added).</b> The source-gen'd <c>BuildAlignContentTable</c>

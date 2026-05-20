@@ -344,6 +344,19 @@ internal static class KeywordResolver
     /// but ADDS the three baseline keywords (per §6.3 align-content
     /// admits &lt;baseline-position&gt;, same as align-items).
     ///
+    /// <para><b>Note on <c>left</c> / <c>right</c> in the position set.</b>
+    /// <see cref="ContentPositions"/> includes <c>left</c> + <c>right</c>
+    /// per CSS Box Alignment L3 §4.5 (the &lt;content-position&gt;
+    /// production admits <c>center | start | end | flex-start | flex-end |
+    /// left | right</c>). For <c>align-content</c> per §6.3 the directional
+    /// keywords <c>left</c> / <c>right</c> compute to <c>start</c>
+    /// (justify-content uses the same set but with axis-meaningful
+    /// behavior); we admit them here uniformly with the other content-
+    /// positions so the cascade slot is lossless, and the reader
+    /// (<c>ReadAlignContent</c>) maps them to <c>flex-start</c> /
+    /// <c>flex-end</c> under the L1 default LTR + horizontal-tb writing-
+    /// mode (writing-mode-aware mapping is L8+ scope).</para>
+    ///
     /// <para><b>Index layout (Phase 3 Task 15 L7 post-PR-#67 F#6 — baseline
     /// added).</b> 0=normal, 1-4=&lt;content-distribution&gt;
     /// (space-between, space-around, space-evenly, stretch),

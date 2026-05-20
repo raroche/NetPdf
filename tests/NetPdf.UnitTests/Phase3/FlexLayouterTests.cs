@@ -2703,6 +2703,354 @@ public sealed class FlexLayouterTests
     }
 
     // ====================================================================
+    //  Phase 3 Task 15 L5 post-PR-#65 review hardening
+    // ====================================================================
+
+    // -- F#1 (P2) — direction/writing-mode pipeline known gap -----------
+
+    [Fact(Skip = "L6+ — direction/writing-mode pipeline not implemented; tracked in flex-layouter-features deferral")]
+    public void L5_known_gap_rtl_row_should_flip_main_axis_but_no_direction_pipeline_yet()
+    {
+        // Per CSS Flexbox §3.1 axis-mapping: `row` in RTL writing mode
+        // means right-to-left (= same physical layout as `row-reverse`
+        // in LTR). With L5's LTR-only main-axis mapping, an RTL
+        // container with `flex-direction: row` would still emit items
+        // left-to-right (= InlineOffsets 0/50/100). When L6+ adds the
+        // direction pipeline, this test will pin the spec-correct
+        // behavior: items emitted in physical right-to-left order so
+        // DOM 0 lands at the right edge (= InlineOffset 350 for 3×50
+        // items in 400px), DOM 1 at 300, DOM 2 at 250 — matching the
+        // current `row-reverse` LTR output for the same fixture.
+        //
+        // When the L6+ pipeline lands:
+        //   1. Plumb `direction` (cascaded) into FlexLayouter.
+        //   2. The axis mapping switches from "row → inline left-to-
+        //      right" to "row → inline right-to-left" under RTL.
+        //   3. Drop this test's [Skip] + assert spec-correct offsets.
+        //   4. Remove the corresponding Missing bullet in
+        //      docs/deferrals.md#flex-layouter-features.
+    }
+
+    // -- F#3 (P2) — reverse alignment matrix hardening ------------------
+
+    [Fact]
+    public void L5_hardening_row_reverse_with_flex_end_packs_at_left_edge()
+    {
+        // Per CSS Flexbox L1 §5.1 + CSS Box Alignment L3 §4.5 —
+        // `row-reverse` + `flex-end`: for 3×50px items in 400px,
+        // non-reverse flex-end positions the cluster at the right:
+        // cursor walks 250/300/350. The L5 flip transform
+        //   mainOffsetForEmission = (contentMainOffset + containerMainSize)
+        //                         - (mainCursor - contentMainOffset)
+        //                         - itemMainSize
+        // produces:
+        //   - DOM 0: 0 + 400 - (250 - 0) - 50 = 100
+        //   - DOM 1: 0 + 400 - (300 - 0) - 50 = 50
+        //   - DOM 2: 0 + 400 - (350 - 0) - 50 = 0
+        // Items pack against the LEFT edge (= the reversed main-end,
+        // which is what `flex-end` targets under row-reverse) in
+        // reverse DOM order.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(1)); // row-reverse
+        flex.Style.Set(PropertyId.JustifyContent, ComputedSlot.FromKeyword(9)); // flex-end
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 50);
+            SetLengthPx(style, PropertyId.Height, 50);
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(100.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(50.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(0.0, fragments[2].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L5_hardening_row_reverse_with_space_between_distributes_correctly()
+    {
+        // 3×50px items in 400px with `row-reverse` + `space-between`.
+        // freeSpace = 250; non-reverse cursor walks 0/175/350 (gap =
+        // 250/(3-1) = 125; between-spacing applied AFTER each item).
+        //   - DOM 0 cursor: 0
+        //   - DOM 1 cursor: 0 + 50 + 125 = 175
+        //   - DOM 2 cursor: 175 + 50 + 125 = 350
+        // Apply the L5 flip transform:
+        //   - DOM 0: 0 + 400 - 0 - 50 = 350
+        //   - DOM 1: 0 + 400 - 175 - 50 = 175
+        //   - DOM 2: 0 + 400 - 350 - 50 = 0
+        // Visually [0, 175, 350] from left to right with 125px gaps;
+        // DOM order is reversed (DOM 2 at left edge, DOM 0 at right).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(1)); // row-reverse
+        flex.Style.Set(PropertyId.JustifyContent, ComputedSlot.FromKeyword(1)); // space-between
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 50);
+            SetLengthPx(style, PropertyId.Height, 50);
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(350.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(175.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(0.0, fragments[2].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L5_hardening_row_reverse_with_unsafe_flex_end_overflow_honors_alignment()
+    {
+        // 5×100px items (total 500) in 400px container = overflow
+        // (freeSpace = -100). With `row-reverse` + `unsafe flex-end`
+        // (= keyword index 23; unsafe + flex-end): per CSS Box
+        // Alignment L3 §5.3 unsafe honors the alignment even on
+        // overflow. Non-reverse cursor walks (-100, 0, 100, 200, 300)
+        // because flex-end naturally starts at freeSpace = -100.
+        // Apply the L5 flip transform:
+        //   - DOM 0: 0 + 400 - (-100) - 100 = 400
+        //   - DOM 1: 0 + 400 - 0 - 100 = 300
+        //   - DOM 2: 0 + 400 - 100 - 100 = 200
+        //   - DOM 3: 0 + 400 - 200 - 100 = 100
+        //   - DOM 4: 0 + 400 - 300 - 100 = 0
+        // Items at 400/300/200/100/0 — fully overflowing past the
+        // container's right edge (= old main-end), in reverse DOM
+        // order. Pinning that unsafe + overflow + reverse compose
+        // correctly.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(1)); // row-reverse
+        // Keyword index 23 = unsafe flex-end (per
+        // KeywordResolver.BuildJustifyContentTable: indices 19-25 are
+        // unsafe + position; 19=unsafe center, 20=unsafe start,
+        // 21=unsafe end, 22=unsafe flex-start, 23=unsafe flex-end).
+        flex.Style.Set(PropertyId.JustifyContent, ComputedSlot.FromKeyword(23)); // unsafe flex-end
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        var items = new Box[5];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+
+        Assert.Equal(5, fragments.Count);
+        Assert.Equal(400.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(300.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(200.0, fragments[2].InlineOffset, precision: 3);
+        Assert.Equal(100.0, fragments[3].InlineOffset, precision: 3);
+        Assert.Equal(0.0, fragments[4].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L5_hardening_column_reverse_with_flex_end_packs_at_top()
+    {
+        // Column-reverse + flex-end equivalent of the row-reverse +
+        // flex-end test. 3×50px items in a 400px-tall column-reverse
+        // container with `justify-content: flex-end`. Non-reverse
+        // cursor (under column direction) walks 250/300/350 along the
+        // block axis. Apply the L5 flip transform:
+        //   - DOM 0: 0 + 400 - 250 - 50 = 100
+        //   - DOM 1: 0 + 400 - 300 - 50 = 50
+        //   - DOM 2: 0 + 400 - 350 - 50 = 0
+        // Items pack against the TOP edge (= the reversed main-end
+        // under column-reverse) in reverse DOM order.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(3)); // column-reverse
+        flex.Style.Set(PropertyId.JustifyContent, ComputedSlot.FromKeyword(9)); // flex-end
+        SetLengthPx(flex.Style, PropertyId.Height, 400);
+        SetLengthPx(flex.Style, PropertyId.Width, 200);
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Height, 50);
+            SetLengthPx(style, PropertyId.Width, 100);
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(100.0, fragments[0].BlockOffset, precision: 3);
+        Assert.Equal(50.0, fragments[1].BlockOffset, precision: 3);
+        Assert.Equal(0.0, fragments[2].BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L5_hardening_row_reverse_with_varied_item_sizes()
+    {
+        // Verify the flip transform on varied (non-uniform) item
+        // widths. 3 items of widths 30/80/50 (total 160) in 400px with
+        // `row-reverse` + `flex-start`. freeSpace = 240; startOffset =
+        // 0; non-reverse cursor walks:
+        //   - DOM 0 cursor: 0
+        //   - DOM 1 cursor: 0 + 30 = 30
+        //   - DOM 2 cursor: 30 + 80 = 110
+        // Apply the L5 flip transform with each item's own width:
+        //   - DOM 0: 0 + 400 - 0 - 30 = 370
+        //   - DOM 1: 0 + 400 - 30 - 80 = 290
+        //   - DOM 2: 0 + 400 - 110 - 50 = 240
+        // Sizes preserved (30/80/50); reverse DOM order along main
+        // axis. Pinning that the flip uses each item's own size, not
+        // a uniform value.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(1)); // row-reverse
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        var widths = new double[] { 30, 80, 50 };
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, widths[i]);
+            SetLengthPx(style, PropertyId.Height, 50);
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: null, diagnostics: null,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(370.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(290.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(240.0, fragments[2].InlineOffset, precision: 3);
+        // Sizes preserved.
+        Assert.Equal(30.0, fragments[0].InlineSize, precision: 3);
+        Assert.Equal(80.0, fragments[1].InlineSize, precision: 3);
+        Assert.Equal(50.0, fragments[2].InlineSize, precision: 3);
+    }
+
+    // ====================================================================
     //  Helpers
     // ====================================================================
 

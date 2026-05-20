@@ -26,31 +26,38 @@ namespace NetPdf.Layout.Layouters;
 /// the absolute minimum end-to-end path so subsequent cycles have a
 /// scaffold to grow:</para>
 /// <list type="bullet">
-///   <item><b>Per Phase 3 Task 15 L4 + L5</b> — all four
-///   <c>flex-direction</c> values are honored. For <c>row</c>: main =
-///   inline axis (horizontal); cross = block axis (vertical); items
+///   <item><b>Per Phase 3 Task 15 L4 + L5</b> — L5 honors all 4
+///   <c>flex-direction</c> values <b>for LTR horizontal-tb</b> (the
+///   L1 default writing mode). Per CSS Flexbox §3.1 the axis mapping
+///   depends on the cascaded <c>direction</c> + <c>writing-mode</c>
+///   properties; for RTL or vertical writing modes the spec-correct
+///   axis mappings differ. Pipeline support for <c>direction</c> /
+///   <c>writing-mode</c> is L6+ scope; tracked in
+///   <c>docs/deferrals.md#flex-layouter-features</c>. Under the LTR
+///   horizontal-tb assumption: for <c>row</c>: main = inline axis
+///   (horizontal, left-to-right); cross = block axis (vertical); items
 ///   flow left-to-right. For <c>column</c>: main = block axis
-///   (vertical); cross = inline axis (horizontal); items stack top-to-
-///   bottom. The axis-mapping layer (see <c>GetAxisProperties</c>
-///   below) translates the spec-abstract "main / cross" terminology to
-///   the property IDs the layouter reads (<c>PropertyId.Width</c> /
-///   <c>Height</c>) at each direction. <c>justify-content</c> always
-///   controls main-axis packing (so column direction makes it govern
-///   block-axis offsets), and <c>align-items</c> always controls
-///   cross-axis placement (so column direction makes it govern inline-
-///   axis offsets). For the reversed variants <c>row-reverse</c> +
-///   <c>column-reverse</c> (L5 new): per CSS Flexbox L1 §5.1 "same as
-///   row / column but main-start and main-end are swapped". The
-///   per-item placement math (cross-axis alignment, stretch,
-///   justify-content start-offset + between-spacing) is unchanged;
-///   only the FINAL main-axis offset assigned to each fragment is
-///   flipped around the container's main-extent (see the
-///   <c>mainOffsetForEmission</c> branch in the emission loop). This
-///   produces items packed against the reversed main-start edge (=
-///   the original main-end edge) in reverse DOM order. Cross-axis
-///   behavior is unchanged: <c>row-reverse</c> still has block as
-///   cross axis; <c>column-reverse</c> still has inline as cross
-///   axis.</item>
+///   (vertical, top-to-bottom); cross = inline axis (horizontal); items
+///   stack top-to-bottom. The axis-mapping layer (see
+///   <c>GetAxisProperties</c> below) translates the spec-abstract
+///   "main / cross" terminology to the property IDs the layouter reads
+///   (<c>PropertyId.Width</c> / <c>Height</c>) at each direction.
+///   <c>justify-content</c> always controls main-axis packing (so
+///   column direction makes it govern block-axis offsets), and
+///   <c>align-items</c> always controls cross-axis placement (so
+///   column direction makes it govern inline-axis offsets). For the
+///   reversed variants <c>row-reverse</c> + <c>column-reverse</c>
+///   (L5 new): per CSS Flexbox L1 §5.1 "same as row / column but
+///   main-start and main-end are swapped". The per-item placement
+///   math (cross-axis alignment, stretch, justify-content start-offset
+///   + between-spacing) is unchanged; only the FINAL main-axis offset
+///   assigned to each fragment is flipped around the container's
+///   main-extent (see the <c>mainOffsetForEmission</c> branch in the
+///   emission loop). This produces items packed against the reversed
+///   main-start edge (= the original main-end edge) in reverse DOM
+///   order. Cross-axis behavior is unchanged: <c>row-reverse</c>
+///   still has block as cross axis; <c>column-reverse</c> still has
+///   inline as cross axis.</item>
 ///   <item>Only <c>flex-wrap: nowrap</c> (default). Single-line; items
 ///   may overflow the container's inline extent if their natural
 ///   widths don't fit. <c>wrap</c> / <c>wrap-reverse</c> are sub-cycle
@@ -326,6 +333,17 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // between-spacing) is direction-agnostic and operates on the
         // natural (= non-reversed) cursor; only the FINAL main-axis
         // offset assigned to each fragment flips for reverse directions.
+        //
+        // Per Phase 3 Task 15 L5 post-PR-#65 review F#1 — the axis
+        // mapping below assumes LTR horizontal-tb (the L1 default
+        // writing mode). Per CSS Flexbox §3.1 the spec-correct axis
+        // mapping depends on the cascaded `direction` + `writing-mode`
+        // properties; under RTL or vertical writing modes the physical
+        // mapping differs (e.g., RTL row = right-to-left along the
+        // inline axis = visually equivalent to LTR row-reverse).
+        // Plumbing `direction` / `writing-mode` through the layout
+        // pipeline is L6+ scope; tracked in
+        // `docs/deferrals.md#flex-layouter-features`.
         var flexDirection = _rootBox.Style.ReadFlexDirection();
         var isColumn = flexDirection.IsFlexColumnDirection();
         var isReverse = flexDirection.IsFlexReverseDirection();
@@ -443,7 +461,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 //   available range and miscentered items via
                 //   align-items when items were narrower than the
                 //   container. Inline-level flex (display: inline-flex)
-                //   shrink-to-fit is L5+ scope.
+                //   shrink-to-fit is L6+ scope.
                 containerCrossSize = _contentInlineSize;
             }
         }
@@ -876,7 +894,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     ///   <item><see cref="ComputedSlotTag.Keyword"/> (= explicit
     ///   <c>auto</c> keyword, or one of the related intrinsic-sizing
     ///   keywords <c>min-content</c> / <c>max-content</c> /
-    ///   <c>fit-content</c> — see L5+ refinement note below) → auto.</item>
+    ///   <c>fit-content</c> — see L6+ refinement note below) → auto.</item>
     ///   <item><see cref="ComputedSlotTag.LengthPx"/> (= explicit pixel
     ///   value, including 0) → NOT auto.</item>
     ///   <item><see cref="ComputedSlotTag.Percentage"/> (= percentage
@@ -901,12 +919,12 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     /// iff Unset OR Keyword. Percentage / SideTableIndex /
     /// LengthPx are all explicit declarations.</para>
     ///
-    /// <para><b>Sub-cycle L5+ scope</b> — distinguishing the <c>auto</c>
+    /// <para><b>Sub-cycle L6+ scope</b> — distinguishing the <c>auto</c>
     /// keyword from <c>min-content</c> / <c>max-content</c> / <c>fit-content</c>
     /// requires reading the keyword payload + cross-referencing the
-    /// property-specific keyword table. For L4 hardening all Keyword
+    /// property-specific keyword table. For L4-L5 hardening all Keyword
     /// tags on width / height resolve as auto (the most common case
-    /// + the others behave similarly for stretch in the L4 simplification).</para>
+    /// + the others behave similarly for stretch in the L4-L5 simplification).</para>
     ///
     /// <para><b>Cancellation</b> — none needed; this is a single-slot
     /// read.</para></summary>

@@ -727,6 +727,90 @@ public sealed class FlexLayouterProductionTests
         Assert.Equal(50.0, c.InlineSize, precision: 3);
     }
 
+    [Fact]
+    public async Task L5_production_html_flex_direction_column_reverse()
+    {
+        // Per Phase 3 Task 15 L5 post-PR-#65 review F#2 — production-
+        // pipeline coverage for `flex-direction: column-reverse`
+        // mirroring the existing row-reverse production test + the L4
+        // column production test patterns. Pre-fix only unit tests
+        // (which set raw keyword IDs in ComputedSlot) covered column-
+        // reverse; a parser / cascade / keyword-index regression for
+        // column-reverse could ship without detection.
+        //
+        // Fixture: 3 items of height 50 in a 400px-tall column-reverse
+        // container; `justify-content` defaults to `flex-start`.
+        // Container width 200 fits inside the page's 600px content
+        // inline range, so the FlexLayouter sees:
+        //   - main axis = block, containerMainSize = 400
+        //   - freeSpace = 400 - 3*50 = 250
+        //   - startOffset = 0; non-reverse cursor walks 0/50/100
+        // Apply the L5 flip transform:
+        //   - DOM 0 (item-a): wrapperBlockStart + 400 - 0 - 50 = +350
+        //   - DOM 1 (item-b): wrapperBlockStart + 400 - 50 - 50 = +300
+        //   - DOM 2 (item-c): wrapperBlockStart + 400 - 100 - 50 = +250
+        // Items pack at the bottom edge in reverse DOM order per CSS
+        // Flexbox L1 §5.1. Cross-axis (inline) is unchanged.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    flex-direction: column-reverse;
+                    height: 400px;
+                    width: 200px;
+                }
+                .item-a { width: 100px; height: 50px; }
+                .item-b { width: 100px; height: 50px; }
+                .item-c { width: 100px; height: 50px; }
+            </style></head><body>
+            <div class="flex">
+              <div class="item-a"></div>
+              <div class="item-b"></div>
+              <div class="item-c"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        BoxFragment? flexFragment = null;
+        var (a, b, c) = FindThreeItems(sink);
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class");
+            if (classAttr == "flex" && f.Box.Kind == BoxKind.FlexContainer)
+            {
+                flexFragment = f;
+                break;
+            }
+        }
+        Assert.NotNull(flexFragment);
+
+        // Items pack against the block-end (bottom) edge in reverse
+        // DOM order. The wrapper's content-block-start equals
+        // BlockOffset here (no padding / border on the wrapper).
+        var wrapperBlockStart = flexFragment!.Value.BlockOffset;
+        Assert.Equal(wrapperBlockStart + 350.0, a.BlockOffset, precision: 3);
+        Assert.Equal(wrapperBlockStart + 300.0, b.BlockOffset, precision: 3);
+        Assert.Equal(wrapperBlockStart + 250.0, c.BlockOffset, precision: 3);
+
+        // Items keep their declared block-size 50.
+        Assert.Equal(50.0, a.BlockSize, precision: 3);
+        Assert.Equal(50.0, b.BlockSize, precision: 3);
+        Assert.Equal(50.0, c.BlockSize, precision: 3);
+
+        // Cross-axis (InlineOffset) is unaffected by the main-axis
+        // reversal. All 3 items share the same InlineOffset (=
+        // wrapper's content-inline-start since the default
+        // `align-items: stretch` resolves the cross axis identically
+        // for all items; with explicit item widths the stretch path
+        // honors the declared width per CSS Flexbox §7.2).
+        Assert.Equal(a.InlineOffset, b.InlineOffset, precision: 3);
+        Assert.Equal(a.InlineOffset, c.InlineOffset, precision: 3);
+    }
+
     /// <summary>Per Phase 3 Task 15 L2 post-PR-#62 hardening F#4 —
     /// shared finder for the .item-a / .item-b / .item-c production
     /// fixture used by the bare-position tests

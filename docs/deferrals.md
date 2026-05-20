@@ -841,7 +841,11 @@ grepping the ID).
   `BoxKind.InlineFlexContainer`) lays out its direct block-level
   children along the main axis selected by `flex-direction`. Per
   Phase 3 Task 15 L4 + L5 the layouter honors all four
-  `flex-direction` values: `row` (the L1-L3 default; main = inline
+  `flex-direction` values **for LTR horizontal-tb** (the L1 default
+  writing mode; per Phase 3 Task 15 L5 post-PR-#65 review F#1 the
+  spec-correct axis mapping for RTL or vertical writing modes per
+  CSS Flexbox §3.1 is L6+ scope — the L5 contract is LTR
+  horizontal-tb only): `row` (the L1-L3 default; main = inline
   axis, items flow left-to-right), `column` (L4 new; main = block
   axis, items stack top-to-bottom), `row-reverse` (L5 new; main =
   inline axis, but main-start moves to the inline-end edge so items
@@ -896,11 +900,25 @@ grepping the ID).
   content-inline-size (= available inline range from BlockLayouter's
   ConfigureEmission) — `width: auto` on a block-level flex container
   means "fill containing block" per CSS Sizing §3.4, NOT shrink-to-fit
-  (inline-flex shrink-to-fit is L5+ scope). The flex container is
+  (inline-flex shrink-to-fit is L6+ scope). The flex container is
   atomic to outer pagination (the entire container's items emit on
   the page the wrapper landed on; no `FlexContinuation` resume).
 - **Missing** —
   - `flex-wrap: wrap` / `wrap-reverse`
+  - Writing-mode and `direction` integration for `flex-direction`
+    axis mapping (CSS Flexbox §3.1): all 4 directions are honored
+    for LTR horizontal-tb but the axis mapping differs in RTL +
+    vertical writing modes. For example, `row` in RTL means right-
+    to-left along the inline axis (physically equivalent to LTR
+    `row-reverse`); `row` in vertical-rl swaps the main + cross
+    axes onto the block + inline directions of the rotated writing
+    mode. L6+ scope — requires plumbing `direction` +
+    `writing-mode` properties through the layout pipeline. Pinned
+    by the Skip'd
+    `L5_known_gap_rtl_row_should_flip_main_axis_but_no_direction_pipeline_yet`
+    test — when L6+ adds the direction pipeline, that test should
+    flip to spec-correct expectations + this bullet should be
+    removed.
   - Outer-main-size + auto-margins in `justify-content` free-space
     calculation (CSS Flexbox L1 §9.5): L2's pre-pass sums only
     declared `width`, ignoring item margins / padding / borders /

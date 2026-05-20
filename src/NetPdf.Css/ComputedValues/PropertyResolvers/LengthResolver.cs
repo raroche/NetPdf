@@ -56,6 +56,18 @@ internal static class LengthResolver
     public const int KeywordIdNormal = 0;
     /// <inheritdoc cref="KeywordIdAuto"/>
     public const int KeywordIdNone = 0;
+    /// <summary>Per Phase 3 Task 15 L8 — additional keyword admitted by
+    /// <see cref="PropertyType.FlexBasis"/> per CSS Flexbox L1 §7.2:
+    /// <c>content</c> sizes the item to its content size (an intrinsic
+    /// sizing keyword distinct from <c>auto</c> which delegates to the
+    /// item's <c>width</c>/<c>height</c>). L8 admits the keyword + the
+    /// reader maps it to the Content variant of
+    /// <c>ResolvedFlexBasis</c>; the §9.2.3.A "main-size keyword"
+    /// resolution to the item's intrinsic content size is deferred to
+    /// the broader intrinsic-sizing work (currently the layouter
+    /// approximates <c>content</c> as <c>auto</c> = delegate to declared
+    /// width).</summary>
+    public const int KeywordIdContent = 1;
 
     public static ResolverResult Resolve(
         string value,
@@ -182,6 +194,29 @@ internal static class LengthResolver
             slot = ComputedSlot.FromKeyword(KeywordIdNormal);
             return true;
         }
+        // Per Phase 3 Task 15 L8 — flex-basis grammar per CSS Flexbox L1
+        // §7.2: `content | <'width'>` where <'width'> admits
+        // `<length-percentage> | auto | min-content | max-content |
+        // fit-content(...)`. L8 Hello World admits `auto` + `content` +
+        // the generic length-percentage path; the three intrinsic-sizing
+        // keywords (min-content / max-content / fit-content) are L9+
+        // scope. The reader (ReadFlexBasis) decodes Keyword(0) → Auto
+        // and Keyword(1) → Content; the FlexLayouter currently
+        // approximates Content as Auto (= delegate to declared
+        // width/height) until intrinsic sizing lands.
+        if (type is PropertyType.FlexBasis)
+        {
+            if (value.Equals("auto", StringComparison.OrdinalIgnoreCase))
+            {
+                slot = ComputedSlot.FromKeyword(KeywordIdAuto);
+                return true;
+            }
+            if (value.Equals("content", StringComparison.OrdinalIgnoreCase))
+            {
+                slot = ComputedSlot.FromKeyword(KeywordIdContent);
+                return true;
+            }
+        }
         return false;
     }
 
@@ -237,6 +272,9 @@ internal static class LengthResolver
             case PropertyType.LengthPercentageAuto:
             case PropertyType.Percentage:
             case PropertyType.TextSpacing: // word-spacing falls through here
+            // Per Phase 3 Task 15 L8 — flex-basis admits the
+            // <length-percentage> production per CSS Flexbox L1 §7.2.
+            case PropertyType.FlexBasis:
                 return true;
             default:
                 reason = "percentage is not allowed for this property";

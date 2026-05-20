@@ -296,6 +296,11 @@ public sealed class FlexLayouterProductionTests
         // totalItemSize=800, freeSpace=-200), safe center →
         // safe modifier forces safe-start. Expected offsets:
         // 0, 200, 400, 600.
+        // Per Phase 3 Task 15 L8 — declare `flex-shrink: 0` on each
+        // item so the §9.7 shrink resolution doesn't absorb the -200
+        // overflow. Pre-L8 items effectively had no flex-shrink (= 0
+        // behavior); post-L8 the cascade default is 1 so we must opt
+        // out explicitly to preserve the overflow assertion.
         const string html = """
             <!DOCTYPE html><html><head><style>
                 .flex {
@@ -304,7 +309,7 @@ public sealed class FlexLayouterProductionTests
                     width: 600px;
                     height: 60px;
                 }
-                .item { width: 200px; height: 50px; }
+                .item { width: 200px; height: 50px; flex-shrink: 0; }
             </style></head><body>
             <div class="flex">
               <div class="item a"></div>
@@ -349,6 +354,9 @@ public sealed class FlexLayouterProductionTests
         // 4 items of width 200 in a 600px container (overflow:
         // freeSpace=-200), unsafe flex-end → honors flex-end →
         // startOffset = -200. Expected offsets: -200, 0, 200, 400.
+        // Per Phase 3 Task 15 L8 — declare `flex-shrink: 0` on each
+        // item so the §9.7 shrink resolution doesn't absorb the -200
+        // overflow.
         const string html = """
             <!DOCTYPE html><html><head><style>
                 .flex {
@@ -357,7 +365,7 @@ public sealed class FlexLayouterProductionTests
                     width: 600px;
                     height: 60px;
                 }
-                .item { width: 200px; height: 50px; }
+                .item { width: 200px; height: 50px; flex-shrink: 0; }
             </style></head><body>
             <div class="flex">
               <div class="item a"></div>
@@ -1159,6 +1167,69 @@ public sealed class FlexLayouterProductionTests
                 Fragments.RemoveRange(cursor, Fragments.Count - cursor);
             }
         }
+    }
+
+    [Fact]
+    public async Task L8_production_html_flex_grow_one_equally_partitions_container()
+    {
+        // Phase 3 Task 15 L8 — production-pipeline coverage for the
+        // canonical `flex: 1 1 0` recipe (longhand: flex-grow: 1 +
+        // flex-shrink: 1 + flex-basis: 0). 3 items of declared
+        // width: 100 in a 600px container, but with flex-basis: 0 +
+        // flex-grow: 1, each item's hypothetical = 0 + grows by 200
+        // of the 600 free-space → resolved = 200. The items
+        // partition the container equally regardless of declared
+        // widths. Cursors: 0, 200, 400.
+        //
+        // Exercises the full HTML → CSS → cascade → BoxBuilder →
+        // BlockLayouter → FlexLayouter pipeline including the
+        // newly-wired FlexBasis grammar in LengthResolver and the
+        // §9.7 algorithm in FlexLayouter.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    width: 600px;
+                    height: 60px;
+                }
+                .item {
+                    width: 100px;
+                    height: 50px;
+                    flex-grow: 1;
+                    flex-basis: 0;
+                }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+              <div class="item c"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var items = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class");
+            if (classAttr != null && classAttr.StartsWith("item"))
+            {
+                items.Add(f);
+            }
+        }
+
+        Assert.Equal(3, items.Count);
+        // Each item resolves to 200px (= container 600 / 3 items).
+        Assert.Equal(200.0, items[0].InlineSize, precision: 3);
+        Assert.Equal(200.0, items[1].InlineSize, precision: 3);
+        Assert.Equal(200.0, items[2].InlineSize, precision: 3);
+        // Equally partitioned across the container.
+        Assert.Equal(0.0, items[0].InlineOffset, precision: 3);
+        Assert.Equal(200.0, items[1].InlineOffset, precision: 3);
+        Assert.Equal(400.0, items[2].InlineOffset, precision: 3);
     }
 
     private sealed class RecordingDiagnosticsSink : IPaginateDiagnosticsSink

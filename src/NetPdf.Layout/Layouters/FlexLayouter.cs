@@ -557,6 +557,66 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             }
         }
 
+        // Per Phase 3 Task 15 L8 — resolve flexible lengths per CSS
+        // Flexbox L1 §7 + §9.7 (the flexibility algorithm). For each
+        // line: compute each item's hypothetical main-size from its
+        // flex-basis (Auto / Content delegate to declared main-size,
+        // LengthPx uses the explicit pixel value, Percentage resolves
+        // against containerMainSize); then distribute freeMainSpace
+        // among items by flex-grow factors (positive freeMainSpace) or
+        // by flex-shrink × flex-basis factors (negative freeMainSpace).
+        // The resolved sizes feed the emission loop's main-axis
+        // placement.
+        //
+        // Algorithm sketch (§9.7):
+        //   1. resolved[i] = hypothetical[i] initially.
+        //   2. If freeMainSpace > 0 AND sumFlexGrow > 0:
+        //        each item grows by (item.flexGrow / sumFlexGrow) * freeSpace.
+        //      Else: items stay at hypothetical (free space goes to
+        //      justify-content's between-spacing).
+        //   3. If freeMainSpace < 0 AND sumScaledShrinks > 0:
+        //        scaledShrink_i = item.flexShrink * hypothetical_i
+        //        each item shrinks by
+        //          (scaledShrink_i / sumScaledShrinks) * |freeSpace|.
+        //      Else: items stay at hypothetical (overflow).
+        //   4. (L9+ scope) clamp resolved[i] to [min-main-size,
+        //      max-main-size] and recompute.
+        //
+        // The resolved sizes are stored in a parallel array indexed by
+        // child index in _rootBox.Children. Items NOT on a flex line
+        // (e.g., non-block-level filler children) keep entry 0 — they
+        // get filtered out by IsBlockLevel in the emission loop anyway.
+        // The justify-content freeSpace also needs to be recomputed
+        // post-flexibility (= containerMainSize - sum(resolved on
+        // line)) so the between-spacing matches the flexed widths;
+        // ComputeJustifyContentOffsets now sees the post-flex line
+        // main-size.
+        var resolvedItemMainSizes = ResolveFlexibleMainSizes(
+            lines, mainSizeProperty, containerMainSize, cancellationToken);
+
+        // After flexibility resolution, each line's LineMainSize must
+        // be updated to the sum of RESOLVED item main-sizes (NOT the
+        // pre-flex sum from PackLines) so justify-content's freeSpace
+        // = containerMainSize - line.LineMainSize sees the post-flex
+        // layout. Recompute LineMainSize per line.
+        for (var i = 0; i < lines.Count; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var line = lines[i];
+            var sumResolved = 0.0;
+            var emitted = 0;
+            for (var itemIdx = line.FirstItemIndex;
+                itemIdx < _rootBox.Children.Count && emitted < line.ItemCount;
+                itemIdx++)
+            {
+                var item = _rootBox.Children[itemIdx];
+                if (!item.IsBlockLevel) continue;
+                sumResolved += resolvedItemMainSizes[itemIdx];
+                emitted++;
+            }
+            lines[i] = line with { LineMainSize = sumResolved };
+        }
+
         // Per Phase 3 Task 15 L7 — apply the line start offset to the
         // cross cursor. The cursor starts at the alignment-adjusted
         // origin (cross-start + lineStartOffset) instead of L6's
@@ -651,11 +711,19 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 // Per L4 — read item sizes via direction-resolved
                 // property IDs. For row: mainSize = width, crossSize =
                 // height. For column: mainSize = height, crossSize =
-                // width. The cycle-1 BlockLayouter contract returns 0
-                // for `auto` lengths; production callers can declare
-                // explicit sizes to exercise the layout. Sub-cycle 2+
-                // will derive intrinsic / flex-basis sizes.
-                var itemMainSize = item.Style.ReadLengthPxOrZero(mainSizeProperty);
+                // width. Per Phase 3 Task 15 L8 the main-size comes
+                // from the §9.7 flexibility resolution
+                // (`resolvedItemMainSizes`) instead of the raw declared
+                // length: an item with `flex-grow: 1` in a row of
+                // hypothetical-100 items splitting 200 free space grows
+                // to 150 (= 100 + 200/2), and the resolved array carries
+                // that flexed value. For items not on a flex line
+                // (skipped non-block-level children) the array entry is
+                // 0 — the IsBlockLevel filter above already skipped them.
+                // Cross-size still uses the declared property; cross-
+                // axis flexibility (= L8 align-self stretch + cross-
+                // axis intrinsic sizing) is L9+ scope.
+                var itemMainSize = resolvedItemMainSizes[itemIdx];
                 var itemCrossSize = item.Style.ReadLengthPxOrZero(crossSizeProperty);
                 // Per Phase 3 Task 15 L3 post-PR-#63 hardening F#2 +
                 // L4 — the stretch branch needs to distinguish `auto`
@@ -992,6 +1060,211 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             sum += line.LineCrossSize;
         }
         return sum;
+    }
+
+    /// <summary>Per Phase 3 Task 15 L8 — resolve flexible main-sizes
+    /// per CSS Flexbox L1 §9.7 (the flexibility algorithm). Walks each
+    /// packed line, computes each item's hypothetical main-size from
+    /// its <c>flex-basis</c>, then distributes the line's free main-
+    /// space among items via their <c>flex-grow</c> (positive free
+    /// space) or <c>flex-shrink × flex-basis</c> (negative free space)
+    /// factors. Returns an array indexed by child index in
+    /// <c>_rootBox.Children</c> carrying each item's RESOLVED main-size;
+    /// non-block-level children (filtered out by the emission loop's
+    /// <c>IsBlockLevel</c> gate) get entry 0.
+    ///
+    /// <para><b>Hypothetical main-size derivation</b> (per CSS Flexbox
+    /// L1 §9.2 + ReadFlexBasis):
+    /// <list type="bullet">
+    ///   <item><c>flex-basis: &lt;length&gt;</c> (LengthPx) — use the
+    ///   pixel value directly.</item>
+    ///   <item><c>flex-basis: &lt;percentage&gt;</c> — resolve against
+    ///   <paramref name="containerMainSize"/> per §9.2.3 (definite-
+    ///   container case; indefinite-container percentage flex-basis
+    ///   is L9+ scope).</item>
+    ///   <item><c>flex-basis: auto</c> / <c>content</c> — delegate to
+    ///   the item's declared main-size property (= the L1-L7 behavior
+    ///   reading <c>ReadLengthPxOrZero(mainSizeProperty)</c>). Content
+    ///   is approximated as Auto until intrinsic sizing lands.</item>
+    /// </list></para>
+    ///
+    /// <para><b>Free-space distribution</b> (per §9.7):
+    /// <list type="bullet">
+    ///   <item>Compute <c>freeMainSpace = containerMainSize -
+    ///   sum(hypothetical on line)</c>.</item>
+    ///   <item>If <c>freeMainSpace &gt; 0</c> AND any item has
+    ///   <c>flex-grow &gt; 0</c>: each item grows by <c>(item.flexGrow
+    ///   / sumFlexGrow) × freeMainSpace</c>. Items with
+    ///   <c>flex-grow: 0</c> don't grow; their share of free space goes
+    ///   to the items that do.</item>
+    ///   <item>If <c>freeMainSpace &lt; 0</c> AND any item has
+    ///   <c>flex-shrink &gt; 0</c>: each item shrinks by <c>(item.flexShrink
+    ///   × item.hypothetical / sumScaledShrinks) × |freeMainSpace|</c>.
+    ///   Items with <c>flex-shrink: 0</c> don't shrink.</item>
+    ///   <item>Otherwise (no grow or no shrink direction matches the
+    ///   free-space sign): items keep their hypothetical sizes —
+    ///   positive free space falls through to justify-content's
+    ///   between-spacing, negative free space causes overflow per
+    ///   justify-content's overflow semantics.</item>
+    /// </list>
+    /// </para>
+    ///
+    /// <para><b>Min/max clamps deferred (L9+).</b> Per §9.7 step 4 the
+    /// resolved sizes should clamp to <c>[min-main-size,
+    /// max-main-size]</c> and the algorithm iterate to redistribute
+    /// the clamped-off space. L8 Hello World skips clamping; min/max
+    /// resolution is L9+ scope (depends on intrinsic sizing for
+    /// <c>min-width: auto</c> / <c>min-height: auto</c>). Pinned by
+    /// a known-gap test.</para>
+    ///
+    /// <para><b>Cancellation:</b> Checked at each line + each item to
+    /// honor cancellation in hostile inputs with very many items.</para></summary>
+    private double[] ResolveFlexibleMainSizes(
+        List<FlexLine> lines,
+        PropertyId mainSizeProperty,
+        double containerMainSize,
+        CancellationToken cancellationToken)
+    {
+        var resolved = new double[_rootBox.Children.Count];
+
+        foreach (var line in lines)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // Pass 1 — compute hypothetical main-size for each item on
+            // the line. Sum the hypotheticals + the grow/shrink factor
+            // totals.
+            var sumHypothetical = 0.0;
+            var sumFlexGrow = 0.0;
+            var sumScaledShrinks = 0.0;
+            var emitted = 0;
+            for (var itemIdx = line.FirstItemIndex;
+                itemIdx < _rootBox.Children.Count && emitted < line.ItemCount;
+                itemIdx++)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var item = _rootBox.Children[itemIdx];
+                if (!item.IsBlockLevel) continue;
+
+                var hypothetical = ResolveHypotheticalMainSize(
+                    item, mainSizeProperty, containerMainSize);
+                resolved[itemIdx] = hypothetical;
+                sumHypothetical += hypothetical;
+                sumFlexGrow += item.Style.ReadFlexGrow();
+                sumScaledShrinks += item.Style.ReadFlexShrink() * hypothetical;
+                emitted++;
+            }
+
+            var freeMainSpace = containerMainSize - sumHypothetical;
+
+            // Pass 2 — distribute free space. Three exclusive branches:
+            //   (a) positive free space + at least one growable item →
+            //       grow phase.
+            //   (b) negative free space + at least one shrinkable item
+            //       with non-zero scaled shrink → shrink phase.
+            //   (c) otherwise → items keep their hypothetical sizes.
+            if (freeMainSpace > 0 && sumFlexGrow > 0)
+            {
+                emitted = 0;
+                for (var itemIdx = line.FirstItemIndex;
+                    itemIdx < _rootBox.Children.Count && emitted < line.ItemCount;
+                    itemIdx++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var item = _rootBox.Children[itemIdx];
+                    if (!item.IsBlockLevel) continue;
+                    var grow = item.Style.ReadFlexGrow();
+                    if (grow > 0)
+                    {
+                        resolved[itemIdx] += (grow / sumFlexGrow) * freeMainSpace;
+                    }
+                    emitted++;
+                }
+            }
+            else if (freeMainSpace < 0 && sumScaledShrinks > 0)
+            {
+                var deficit = -freeMainSpace; // positive amount to absorb
+                emitted = 0;
+                for (var itemIdx = line.FirstItemIndex;
+                    itemIdx < _rootBox.Children.Count && emitted < line.ItemCount;
+                    itemIdx++)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var item = _rootBox.Children[itemIdx];
+                    if (!item.IsBlockLevel) continue;
+                    var shrink = item.Style.ReadFlexShrink();
+                    if (shrink > 0)
+                    {
+                        var scaledShrink = shrink * resolved[itemIdx];
+                        var absorb = (scaledShrink / sumScaledShrinks) * deficit;
+                        // Floor at 0 — items never shrink below 0 main-
+                        // size in the L8 Hello World (proper min-size
+                        // clamping per §9.7 step 4 is L9+ scope).
+                        resolved[itemIdx] = Math.Max(0, resolved[itemIdx] - absorb);
+                    }
+                    emitted++;
+                }
+            }
+            // else: items stay at hypothetical (free space goes to
+            // justify-content / overflows the container).
+        }
+
+        return resolved;
+    }
+
+    /// <summary>Per Phase 3 Task 15 L8 — compute the hypothetical main-
+    /// size of one flex item per CSS Flexbox L1 §9.2 + the L8
+    /// flex-basis grammar (ReadFlexBasis):
+    /// <list type="bullet">
+    ///   <item><c>LengthPx</c> — return the explicit pixel value.</item>
+    ///   <item><c>Percentage</c> — resolve against
+    ///   <paramref name="containerMainSize"/> per §9.2.3.</item>
+    ///   <item><c>Auto</c> / <c>Content</c> — delegate to the item's
+    ///   declared main-size property (the L1-L7 behavior). Content is
+    ///   approximated as Auto in L8 (intrinsic sizing is L9+ scope).</item>
+    /// </list>
+    /// Per CSS Flexbox §7.1 negative flex-basis values are
+    /// spec-invalid and are floored to 0 here defensively (NumberResolver
+    /// rejects negatives at parse time so this branch should be
+    /// unreachable in practice).</summary>
+    private static double ResolveHypotheticalMainSize(
+        Box item,
+        PropertyId mainSizeProperty,
+        double containerMainSize)
+    {
+        var basis = item.Style.ReadFlexBasis();
+        switch (basis.Kind)
+        {
+            case FlexBasisKind.LengthPx:
+                return basis.Value > 0 ? basis.Value : 0;
+            case FlexBasisKind.Percentage:
+                // basis.Value is the raw percentage (e.g., 50% → 50.0).
+                // Per CSS Values L4 a percentage flex-basis is
+                // (percentage / 100) * containerMainSize.
+                if (!double.IsFinite(containerMainSize) || containerMainSize <= 0)
+                {
+                    // Indefinite container main-size → percentage
+                    // flex-basis is treated as auto per §9.2.3. L8 only
+                    // supports definite-main-size containers, so the
+                    // BlockLayouter contract should never deliver a
+                    // non-finite or zero containerMainSize. Defensive
+                    // fallback to the declared main-size in case the
+                    // contract is violated.
+                    return item.Style.ReadLengthPxOrZero(mainSizeProperty);
+                }
+                var fraction = basis.Value / 100.0;
+                var pct = fraction * containerMainSize;
+                return pct > 0 ? pct : 0;
+            case FlexBasisKind.Auto:
+            case FlexBasisKind.Content:
+            default:
+                // Delegate to the item's declared main-size property.
+                // For row direction this is `width`; for column it's
+                // `height`. The cycle-1 ReadLengthPxOrZero returns 0
+                // when the property is `auto` / unset (intrinsic
+                // sizing is L9+ scope).
+                return item.Style.ReadLengthPxOrZero(mainSizeProperty);
+        }
     }
 
     /// <summary>Per Phase 3 Task 15 L6 — a flex line produced by

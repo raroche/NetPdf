@@ -727,6 +727,79 @@ internal static class ComputedStyleLayoutExtensions
         };
     }
 
+    /// <summary>Per Phase 3 Task 15 L8 — read the <c>flex-grow</c>
+    /// factor per CSS Flexbox L1 §7.1. The cascade default is <c>0</c>
+    /// (= the item never grows). NumberResolver normalizes negative
+    /// values to invalid (rejected at parse time per CSS Flexbox §7.1
+    /// — negative grow/shrink factors are spec-disallowed), so the
+    /// read clamps the returned value at 0 defensively. A non-Number
+    /// slot (e.g., invalidated declaration that fell back to initial
+    /// value) also returns 0.</summary>
+    public static double ReadFlexGrow(this ComputedStyle style)
+    {
+        var slot = style.Get(PropertyId.FlexGrow);
+        if (slot.Tag != ComputedSlotTag.Number) return 0.0;
+        var n = slot.AsNumber();
+        return n > 0.0 ? n : 0.0;
+    }
+
+    /// <summary>Per Phase 3 Task 15 L8 — read the <c>flex-shrink</c>
+    /// factor per CSS Flexbox L1 §7.1. The cascade default is <c>1</c>
+    /// (= the item shrinks at the unit rate when free-space is
+    /// negative). NumberResolver normalizes negatives to invalid;
+    /// non-Number slots fall back to the spec default of 1 (NOT 0 —
+    /// flex-shrink's initial value is 1 per §7.1, which is the
+    /// foundation of "items shrink to fit"). The cascade-supplied
+    /// default <c>1</c> from properties.json should make this branch
+    /// unreachable in practice, but the explicit fallback documents
+    /// the spec invariant.</summary>
+    public static double ReadFlexShrink(this ComputedStyle style)
+    {
+        var slot = style.Get(PropertyId.FlexShrink);
+        if (slot.Tag != ComputedSlotTag.Number) return 1.0;
+        var n = slot.AsNumber();
+        return n > 0.0 ? n : 0.0;
+    }
+
+    /// <summary>Per Phase 3 Task 15 L8 — read the <c>flex-basis</c>
+    /// value per CSS Flexbox L1 §7.2. Decodes into a
+    /// <see cref="ResolvedFlexBasis"/>:
+    /// <list type="bullet">
+    ///   <item><c>auto</c> (KeywordIdAuto = 0) → delegate to the item's
+    ///   declared main-size (<c>width</c> for row, <c>height</c> for
+    ///   column).</item>
+    ///   <item><c>content</c> (KeywordIdContent = 1) → use the item's
+    ///   intrinsic content size. L8 approximates this as
+    ///   <see cref="FlexBasisKind.Auto"/> (= delegate to declared
+    ///   main-size) until intrinsic sizing lands; the Content variant
+    ///   is preserved on the resolved struct for future use.</item>
+    ///   <item><c>&lt;length&gt;</c> (LengthPx slot) → use the explicit
+    ///   pixel value as the hypothetical main-size.</item>
+    ///   <item><c>&lt;percentage&gt;</c> (Percentage slot) → resolve
+    ///   against the container's main-size; per §9.2.3 a percentage
+    ///   flex-basis is treated as <c>auto</c> if the container's main
+    ///   size is indefinite. L8 supports definite-main-size containers
+    ///   only.</item>
+    ///   <item>Any unset / invalid slot → Auto (spec default per
+    ///   §7.2).</item>
+    /// </list></summary>
+    public static ResolvedFlexBasis ReadFlexBasis(this ComputedStyle style)
+    {
+        var slot = style.Get(PropertyId.FlexBasis);
+        return slot.Tag switch
+        {
+            ComputedSlotTag.Keyword => slot.AsKeyword() switch
+            {
+                0 => new ResolvedFlexBasis(FlexBasisKind.Auto, 0.0),       // auto
+                1 => new ResolvedFlexBasis(FlexBasisKind.Content, 0.0),    // content
+                _ => new ResolvedFlexBasis(FlexBasisKind.Auto, 0.0),       // unknown → auto
+            },
+            ComputedSlotTag.LengthPx => new ResolvedFlexBasis(FlexBasisKind.LengthPx, slot.AsLengthPx()),
+            ComputedSlotTag.Percentage => new ResolvedFlexBasis(FlexBasisKind.Percentage, slot.AsPercentage()),
+            _ => new ResolvedFlexBasis(FlexBasisKind.Auto, 0.0),
+        };
+    }
+
     /// <summary>Per Phase 3 Task 14 cycle 3 + post-PR-#59 review
     /// hardening (Finding #7) — predicate distinguishing <c>height:
     /// auto</c> from any EXPLICIT sizing on a box's computed style.
@@ -1105,3 +1178,62 @@ internal enum FlexWrapValue : byte
     Wrap = 1,
     WrapReverse = 2,
 }
+
+/// <summary>Per Phase 3 Task 15 L8 — discriminator for the
+/// <c>flex-basis</c> property's value per CSS Flexbox L1 §7.2. The
+/// grammar admits four families:
+/// <list type="bullet">
+///   <item><see cref="Auto"/> — <c>flex-basis: auto</c> (the §7.2
+///   default). Delegates to the item's declared main-size
+///   (<c>width</c> for row, <c>height</c> for column). When the main-
+///   size is also <c>auto</c>, the hypothetical main-size is the
+///   item's intrinsic content size (= 0 for L8 since intrinsic sizing
+///   isn't wired yet).</item>
+///   <item><see cref="Content"/> — <c>flex-basis: content</c>. Forces
+///   the intrinsic content size regardless of the declared main-size.
+///   L8 approximates Content as Auto until intrinsic sizing lands; the
+///   variant is preserved so future intrinsic-sizing work activates
+///   without a re-author.</item>
+///   <item><see cref="LengthPx"/> — <c>flex-basis: &lt;length&gt;</c>
+///   (e.g., <c>flex-basis: 100px</c>). Uses the resolved pixel value
+///   as the hypothetical main-size, ignoring the item's declared
+///   main-size.</item>
+///   <item><see cref="Percentage"/> — <c>flex-basis:
+///   &lt;percentage&gt;</c> (e.g., <c>flex-basis: 50%</c>). Resolves
+///   against the container's main-size. Per §9.2.3 a percentage
+///   flex-basis is treated as <c>auto</c> when the container's main-
+///   size is indefinite; L8 only supports definite-main-size containers
+///   (= the FlexLayouter contract already requires a definite container
+///   main-size from BlockLayouter).</item>
+/// </list>
+/// The min-content / max-content / fit-content keywords + the
+/// fit-content(<c>length-percentage</c>) function are L9+ scope —
+/// they require intrinsic-sizing integration.</summary>
+internal enum FlexBasisKind : byte
+{
+    Auto = 0,
+    Content = 1,
+    LengthPx = 2,
+    Percentage = 3,
+}
+
+/// <summary>Per Phase 3 Task 15 L8 — resolved <c>flex-basis</c> value
+/// returned by <see cref="ComputedStyleLayoutExtensions.ReadFlexBasis"/>.
+/// The <see cref="Kind"/> discriminates four families per CSS Flexbox
+/// L1 §7.2; <see cref="Value"/> carries the pixel length for
+/// <see cref="FlexBasisKind.LengthPx"/> or the percentage (raw, NOT
+/// divided by 100 — e.g., <c>flex-basis: 50%</c> yields <c>50.0</c>)
+/// for <see cref="FlexBasisKind.Percentage"/>. For
+/// <see cref="FlexBasisKind.Auto"/> and <see cref="FlexBasisKind.Content"/>
+/// the <see cref="Value"/> field is unused (defaults to 0).
+///
+/// <para><b>Resolution to hypothetical main-size.</b> The FlexLayouter
+/// resolves Auto and Content variants against the item's declared
+/// main-size (or 0 when the main-size is also auto, since intrinsic
+/// sizing is L9+ scope). Percentage resolves against the container's
+/// main-size at the per-line resolution pass; LengthPx is used
+/// directly. The hypothetical main-size feeds the §9.7 flexibility
+/// algorithm (grow + shrink resolution).</para></summary>
+internal readonly record struct ResolvedFlexBasis(
+    FlexBasisKind Kind,
+    double Value);

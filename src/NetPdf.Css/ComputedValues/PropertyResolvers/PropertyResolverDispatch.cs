@@ -81,12 +81,17 @@ internal static class PropertyResolverDispatch
             // The dimension family — all five share LengthResolver's parser, with
             // per-type acceptance rules (auto / none / normal / percentage) plus
             // per-PropertyId rules (letter-spacing rejects %, padding/width/etc.
-            // reject negatives).
+            // reject negatives). Per Phase 3 Task 15 L8 the FlexBasis type
+            // joins the family: it accepts `auto` (KeywordIdAuto = 0) /
+            // `content` (KeywordIdContent = 1) / `<length-percentage>`
+            // per CSS Flexbox L1 §7.2. (`min-content` / `max-content` /
+            // `fit-content` are L9+ scope.)
             PropertyType.Length or
             PropertyType.LengthPercentage or
             PropertyType.LengthPercentageAuto or
             PropertyType.Percentage or
-            PropertyType.TextSpacing => LengthResolver.Resolve(
+            PropertyType.TextSpacing or
+            PropertyType.FlexBasis => LengthResolver.Resolve(
                 trimmed, meta.Type, propertyId, meta.Name, diagnostics, location),
 
             PropertyType.Number => NumberResolver.ResolveNumber(

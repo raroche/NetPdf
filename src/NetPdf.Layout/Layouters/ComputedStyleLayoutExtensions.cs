@@ -629,6 +629,100 @@ internal static class ComputedStyleLayoutExtensions
         };
     }
 
+    /// <summary>Per Phase 3 Task 15 L9 — decode
+    /// <see cref="PropertyId.AlignSelf"/> per CSS Box Alignment L3 §4.3.
+    /// Mirrors <see cref="ReadAlignItems"/>'s decoding (= the same
+    /// &lt;self-position&gt; family + the same safe/unsafe overflow
+    /// modes) but ADDS the <c>auto</c> keyword at index 0 — which
+    /// signals "defer to the container's <c>align-items</c>" per CSS
+    /// Box Alignment §4.3 ("If the value of align-self is auto, its
+    /// used value is the value of align-items on the parent").
+    ///
+    /// <para><b>Spec defaults.</b> The cascaded default per
+    /// properties.json is <c>auto</c>, so any item that doesn't
+    /// declare align-self gets the container's align-items behavior —
+    /// the L3 behavior is preserved verbatim.</para>
+    ///
+    /// <para><b>Keyword index mapping (verified against
+    /// <c>KeywordResolver.BuildAlignSelfTable</c>):</b> 0=auto,
+    /// 1=normal, 2=stretch, 3=anchor-center, 4=baseline, 5=first baseline,
+    /// 6=last baseline, 7-13=&lt;self-position&gt; (center, start, end,
+    /// self-start, self-end, flex-start, flex-end), 14-20=safe X,
+    /// 21-27=unsafe X. Total = 28 entries. Indices 1-13 mirror
+    /// align-items indices 0-12 shifted by +1; indices 14-27 mirror
+    /// align-items indices 13-26 shifted by +1. Baseline / anchor-center
+    /// approximate to Stretch in L9 (mirrors ReadAlignItems); proper
+    /// baseline alignment is L10+ scope (text-shaping integration).</para>
+    /// </summary>
+    public static ResolvedAlignSelf ReadAlignSelf(this ComputedStyle style)
+    {
+        var keyword = style.ReadKeywordOrDefault(PropertyId.AlignSelf, defaultIndex: 0);
+        return keyword switch
+        {
+            // 0 = auto (defer to container's align-items).
+            0 => new ResolvedAlignSelf(AlignSelfValue.Auto, OverflowAlignmentMode.Default),
+            // 1 = normal (per CSS Flexbox §8.3 — normal → stretch for flex).
+            1 => new ResolvedAlignSelf(AlignSelfValue.Stretch, OverflowAlignmentMode.Default),
+            // 2 = stretch.
+            2 => new ResolvedAlignSelf(AlignSelfValue.Stretch, OverflowAlignmentMode.Default),
+            // 3 = anchor-center (L10+ scope; approximates to stretch).
+            3 => new ResolvedAlignSelf(AlignSelfValue.Stretch, OverflowAlignmentMode.Default),
+            // 4-6 = baseline / first baseline / last baseline (L10+ scope;
+            // approximate to stretch — mirrors ReadAlignItems behavior).
+            4 => new ResolvedAlignSelf(AlignSelfValue.Stretch, OverflowAlignmentMode.Default),
+            5 => new ResolvedAlignSelf(AlignSelfValue.Stretch, OverflowAlignmentMode.Default),
+            6 => new ResolvedAlignSelf(AlignSelfValue.Stretch, OverflowAlignmentMode.Default),
+            // 7-13 = <self-position> (center, start, end, self-start,
+            // self-end, flex-start, flex-end) — LTR + horizontal-tb mapping.
+            7 => new ResolvedAlignSelf(AlignSelfValue.Center, OverflowAlignmentMode.Default),
+            8 => new ResolvedAlignSelf(AlignSelfValue.FlexStart, OverflowAlignmentMode.Default),  // start → flex-start
+            9 => new ResolvedAlignSelf(AlignSelfValue.FlexEnd, OverflowAlignmentMode.Default),    // end → flex-end
+            10 => new ResolvedAlignSelf(AlignSelfValue.FlexStart, OverflowAlignmentMode.Default), // self-start → flex-start
+            11 => new ResolvedAlignSelf(AlignSelfValue.FlexEnd, OverflowAlignmentMode.Default),   // self-end → flex-end
+            12 => new ResolvedAlignSelf(AlignSelfValue.FlexStart, OverflowAlignmentMode.Default),
+            13 => new ResolvedAlignSelf(AlignSelfValue.FlexEnd, OverflowAlignmentMode.Default),
+            // 14-20 = safe <self-position>.
+            14 => new ResolvedAlignSelf(AlignSelfValue.Center, OverflowAlignmentMode.Safe),
+            15 => new ResolvedAlignSelf(AlignSelfValue.FlexStart, OverflowAlignmentMode.Safe),    // safe start
+            16 => new ResolvedAlignSelf(AlignSelfValue.FlexEnd, OverflowAlignmentMode.Safe),      // safe end
+            17 => new ResolvedAlignSelf(AlignSelfValue.FlexStart, OverflowAlignmentMode.Safe),    // safe self-start
+            18 => new ResolvedAlignSelf(AlignSelfValue.FlexEnd, OverflowAlignmentMode.Safe),      // safe self-end
+            19 => new ResolvedAlignSelf(AlignSelfValue.FlexStart, OverflowAlignmentMode.Safe),    // safe flex-start
+            20 => new ResolvedAlignSelf(AlignSelfValue.FlexEnd, OverflowAlignmentMode.Safe),      // safe flex-end
+            // 21-27 = unsafe <self-position>.
+            21 => new ResolvedAlignSelf(AlignSelfValue.Center, OverflowAlignmentMode.Unsafe),
+            22 => new ResolvedAlignSelf(AlignSelfValue.FlexStart, OverflowAlignmentMode.Unsafe),  // unsafe start
+            23 => new ResolvedAlignSelf(AlignSelfValue.FlexEnd, OverflowAlignmentMode.Unsafe),    // unsafe end
+            24 => new ResolvedAlignSelf(AlignSelfValue.FlexStart, OverflowAlignmentMode.Unsafe),  // unsafe self-start
+            25 => new ResolvedAlignSelf(AlignSelfValue.FlexEnd, OverflowAlignmentMode.Unsafe),    // unsafe self-end
+            26 => new ResolvedAlignSelf(AlignSelfValue.FlexStart, OverflowAlignmentMode.Unsafe),  // unsafe flex-start
+            27 => new ResolvedAlignSelf(AlignSelfValue.FlexEnd, OverflowAlignmentMode.Unsafe),    // unsafe flex-end
+            _ => new ResolvedAlignSelf(AlignSelfValue.Auto, OverflowAlignmentMode.Default),       // unknown → auto (safe default)
+        };
+    }
+
+    /// <summary>Per Phase 3 Task 15 L9 — resolve an item's effective
+    /// align-items value by deferring to the container's
+    /// <see cref="ResolvedAlignItems"/> when the item's align-self is
+    /// <see cref="AlignSelfValue.Auto"/>. Returns the container's
+    /// (value, mode) tuple for the Auto case; otherwise converts the
+    /// item's align-self enum to the matching align-items enum + uses
+    /// the item's own overflow mode.</summary>
+    public static ResolvedAlignItems ResolveAgainstContainerAlignItems(
+        this ResolvedAlignSelf alignSelf,
+        ResolvedAlignItems containerAlignItems)
+    {
+        return alignSelf.Value switch
+        {
+            AlignSelfValue.Auto => containerAlignItems,
+            AlignSelfValue.Stretch => new ResolvedAlignItems(AlignItemsValue.Stretch, alignSelf.Mode),
+            AlignSelfValue.FlexStart => new ResolvedAlignItems(AlignItemsValue.FlexStart, alignSelf.Mode),
+            AlignSelfValue.FlexEnd => new ResolvedAlignItems(AlignItemsValue.FlexEnd, alignSelf.Mode),
+            AlignSelfValue.Center => new ResolvedAlignItems(AlignItemsValue.Center, alignSelf.Mode),
+            _ => containerAlignItems, // defensive — unknown self values fall back to container
+        };
+    }
+
     /// <summary>Per Phase 3 Task 15 L7 — decode
     /// <see cref="PropertyId.AlignContent"/> per CSS Box Alignment L3 §6 +
     /// CSS Flexbox L1 §8.4. L7 ships the seven base values plus the
@@ -1076,6 +1170,62 @@ internal enum AlignItemsValue : byte
 /// FlexLayouter has a single readable pattern for both axes.</summary>
 internal readonly record struct ResolvedAlignItems(
     AlignItemsValue Value,
+    OverflowAlignmentMode Mode);
+
+/// <summary>Per Phase 3 Task 15 L9 — typed decode of
+/// <see cref="PropertyId.AlignSelf"/> per CSS Box Alignment L3 §4.3.
+/// Mirrors <see cref="AlignItemsValue"/> but ADDS the <c>auto</c>
+/// variant that signals "defer to the container's
+/// <c>align-items</c>". Per CSS Box Alignment §4.3: "If the value of
+/// align-self is auto, its used value is the value of align-items on
+/// the parent". The L1-L8 behavior is the auto case — every item
+/// inherits the container's align-items unless it declares its own
+/// align-self.
+///
+/// <para><b>L9 ships</b> the five effective values needed for the
+/// per-item override: <see cref="Auto"/> (defer to container),
+/// <see cref="FlexStart"/>, <see cref="FlexEnd"/>,
+/// <see cref="Center"/>, <see cref="Stretch"/>. Logical-axis aliases
+/// (<c>start</c> / <c>end</c> / <c>self-start</c> / <c>self-end</c>)
+/// + directional aliases (<c>left</c> / <c>right</c>) map to
+/// <c>flex-start</c> / <c>flex-end</c> under the L1 default LTR +
+/// <c>flex-direction: row</c> (writing-mode-aware mapping is L10+
+/// scope). The three <c>&lt;baseline-position&gt;</c> keywords
+/// (<c>baseline</c> / <c>first baseline</c> / <c>last baseline</c>)
+/// approximate to <see cref="Stretch"/> — mirrors
+/// <see cref="ComputedStyleLayoutExtensions.ReadAlignItems"/>'s
+/// baseline approximation; proper baseline alignment is L10+ scope
+/// (text-shaping integration).</para>
+/// </summary>
+internal enum AlignSelfValue : byte
+{
+    Auto = 0,
+    FlexStart = 1,
+    FlexEnd = 2,
+    Center = 3,
+    Stretch = 4,
+}
+
+/// <summary>Per Phase 3 Task 15 L9 — resolved <c>align-self</c> value
+/// carrying both the per-item alignment value (<see cref="Value"/>) and
+/// the overflow modifier (<see cref="Mode"/>). Returned by
+/// <see cref="ComputedStyleLayoutExtensions.ReadAlignSelf"/>; resolves
+/// against the container's <see cref="ResolvedAlignItems"/> via
+/// <see cref="ComputedStyleLayoutExtensions.ResolveAgainstContainerAlignItems"/>
+/// to produce the effective alignment for one item.
+///
+/// <para><b>Composition with align-items.</b> The flow is:
+/// (a) read the container's <c>align-items</c> once per AttemptLayout;
+/// (b) for each item, read its <c>align-self</c>;
+/// (c) call <see cref="ComputedStyleLayoutExtensions.ResolveAgainstContainerAlignItems"/>
+/// to get the effective per-item <see cref="ResolvedAlignItems"/>;
+/// (d) pass the effective value into the existing
+/// <c>ComputeAlignItemsPlacement</c> helper. Items with
+/// <see cref="AlignSelfValue.Auto"/> get the container's full
+/// (value, mode) tuple unchanged — preserving the L1-L8 behavior.</para>
+/// </summary>
+internal readonly record struct ResolvedAlignSelf(
+    AlignSelfValue Value,
     OverflowAlignmentMode Mode);
 
 /// <summary>Per Phase 3 Task 15 L7 — typed decode of

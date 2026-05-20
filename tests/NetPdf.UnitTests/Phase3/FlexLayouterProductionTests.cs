@@ -1334,6 +1334,81 @@ public sealed class FlexLayouterProductionTests
         Assert.Equal(300.0, items[2].InlineOffset, precision: 3);
     }
 
+    [Fact]
+    public async Task L9_production_html_align_self_overrides_container_align_items()
+    {
+        // Phase 3 Task 15 L9 — production-pipeline test for align-self
+        // per CSS Box Alignment L3 §4.3. 3 items in a 200px-tall flex
+        // with container align-items: center. The middle item has
+        // align-self: flex-end → centers vs ends differently:
+        //   item .a: container center → BlockOffset (200-50)/2 = 75
+        //   item .b: align-self: flex-end → BlockOffset 200-50 = 150
+        //   item .c: container center → BlockOffset 75
+        // Exercises the full HTML → cascade → BoxBuilder →
+        // BlockLayouter → FlexLayouter chain including the new L9
+        // ReadAlignSelf + ResolveAgainstContainerAlignItems flow.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    align-items: center;
+                    width: 600px;
+                    height: 200px;
+                }
+                .item {
+                    width: 100px;
+                    height: 50px;
+                    flex-shrink: 0;
+                }
+                .b { align-self: flex-end; }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+              <div class="item c"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        BoxFragment? itemA = null;
+        BoxFragment? itemB = null;
+        BoxFragment? itemC = null;
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class");
+            if (classAttr == "item a") itemA = f;
+            else if (classAttr == "item b") itemB = f;
+            else if (classAttr == "item c") itemC = f;
+        }
+        Assert.NotNull(itemA);
+        Assert.NotNull(itemB);
+        Assert.NotNull(itemC);
+
+        var wrapperBlockStart = 0.0;
+        // Try to find flex container fragment for the base offset.
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            if (srcEl.GetAttribute("class") == "flex"
+                && f.Box.Kind == BoxKind.FlexContainer)
+            {
+                wrapperBlockStart = f.BlockOffset;
+                break;
+            }
+        }
+
+        // a, c → container center: BlockOffset = wrapperBlockStart + 75.
+        Assert.Equal(wrapperBlockStart + 75.0, itemA!.Value.BlockOffset, precision: 3);
+        Assert.Equal(wrapperBlockStart + 75.0, itemC!.Value.BlockOffset, precision: 3);
+        // b → align-self: flex-end: BlockOffset = wrapperBlockStart + 150.
+        Assert.Equal(wrapperBlockStart + 150.0, itemB!.Value.BlockOffset, precision: 3);
+    }
+
     private sealed class RecordingDiagnosticsSink : IPaginateDiagnosticsSink
     {
         public List<PaginateDiagnostic> Diagnostics { get; } = new();

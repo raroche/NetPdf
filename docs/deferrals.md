@@ -1057,12 +1057,16 @@ grepping the ID).
     scope for Flexbox L1; the L3 decoder maps it to `stretch`. Sub-
     cycle L4+ (or later — anchor positioning is a separate spec)
     will pick this up.
-  - `align-self` per-item alignment override (CSS Box Alignment L3
-    §7) — adds an extra cascade read per item to the row-packing
-    loop + a per-item resolver that falls back to the container's
-    `align-items` when the item's `align-self` is `auto`. The L3
-    layouter reads only the container's `align-items` so every item
-    in a flex container shares the same cross-axis alignment.
+  - ~~`align-self` per-item alignment override~~ — **shipped in
+    Phase 3 Task 15 L9.** `ResolvedAlignSelf` + `ReadAlignSelf` +
+    `ResolveAgainstContainerAlignItems` extension. The L9
+    FlexLayouter reads the per-item `align-self` and folds it
+    against the container's `align-items` at the per-item placement
+    site. The cascade default `auto` preserves the L1-L8
+    container-only behavior; explicit values override per-item. The
+    proper `<baseline-position>` family (CSS Box Alignment L3 §6.2)
+    still approximates to Stretch — L10+ scope (text-shaping
+    integration).
   - Baseline-family overflow semantics + production parser
     recovery refinement for compound `align-items` keywords — L3
     decodes the compound `<overflow-position> <self-position>`
@@ -1206,23 +1210,24 @@ grepping the ID).
   `<baseline-position>` triple as a stretch approximation). Sub-
   cycle L8 picked up `flex-grow` / `flex-shrink` / `flex-basis` (the
   §7 + §9.7 flexibility algorithm — see the L8 entry above). Sub-
-  cycle L9+ picks up `flex-wrap: wrap-reverse`, proper
+  cycle L9 picked up `align-self` (per-item alignment override per
+  CSS Box Alignment L3 §4.3 — see the L9 entry above). Sub-cycle
+  L10+ picks up `flex-wrap: wrap-reverse`, proper
   `<baseline-position>` alignment for both `align-items` and
   `align-content`, the `flex` shorthand parser, the §9.7 step-4
-  min/max clamping iteration, the `align-self` per-item override,
-  the `order` property, anonymous-flex-item wrapping for inline/text
-  children, and the `FlexContinuation`-based multi-page split.
+  min/max clamping iteration, the `order` property,
+  anonymous-flex-item wrapping for inline/text children, and the
+  `FlexContinuation`-based multi-page split.
 - **Added** — Phase 3 Task 15 cycle 1 (Hello World).
-- **Removal condition** — Sub-cycle L9+ ships the remaining
+- **Removal condition** — Sub-cycle L10+ ships the remaining
   deferred features (wrap-reverse / proper baseline alignment /
-  order / align-self / `flex` shorthand / §9.7 min-max clamp /
-  multi-page split / anonymous flex item). L6 shipped `flex-wrap:
-  wrap`; L7 shipped `align-content` (base values + §8.4 stretch
-  default + post-PR-#67 per-mode overflow handling); L8 shipped the
-  §7 + §9.7 flexibility algorithm (`flex-grow` / `flex-shrink` /
-  `flex-basis` — single-pass distribution without min/max clamping).
-  `align-self` (per-item align-items override) and the `flex`
-  shorthand parser are the natural L9 candidates.
+  order / `flex` shorthand / §9.7 min-max clamp / multi-page split /
+  anonymous flex item). L6 shipped `flex-wrap: wrap`; L7 shipped
+  `align-content` (base values + §8.4 stretch default + post-PR-#67
+  per-mode overflow handling); L8 shipped the §7 + §9.7
+  flexibility algorithm; L9 shipped `align-self` (per-item alignment
+  override per §4.3). The `flex` shorthand parser and `order` are
+  the natural L10 candidates.
 
 ---
 

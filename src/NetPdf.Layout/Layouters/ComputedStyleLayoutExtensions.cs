@@ -876,18 +876,6 @@ internal static class FlexDirectionValueExtensions
     public static bool IsFlexColumnDirection(this FlexDirectionValue value)
         => value == FlexDirectionValue.Column || value == FlexDirectionValue.ColumnReverse;
 
-    /// <summary>Per Phase 3 Task 15 L6 — is this flex container
-    /// requesting multi-line layout? Returns <see langword="true"/> for
-    /// both <see cref="FlexWrapValue.Wrap"/> and
-    /// <see cref="FlexWrapValue.WrapReverse"/>. For L6 the two values
-    /// behave identically at the layouter — <c>wrap-reverse</c>'s
-    /// cross-axis line-stacking reversal is L7+ scope and is not yet
-    /// applied. The split exists so an L7+ addition can branch on the
-    /// raw <see cref="FlexWrapValue"/> while every gate that just needs
-    /// "single-line vs. multi-line" can use this predicate.</summary>
-    public static bool IsFlexWrapping(this FlexWrapValue value)
-        => value == FlexWrapValue.Wrap || value == FlexWrapValue.WrapReverse;
-
     /// <summary>Per Phase 3 Task 15 L5 — is this a reverse direction?
     /// Per CSS Flexbox L1 §5.1, <c>row-reverse</c> and
     /// <c>column-reverse</c> "swap main-start and main-end". Item
@@ -924,6 +912,28 @@ internal static class FlexDirectionValueExtensions
     public static bool IsFlexReverseDirection(this FlexDirectionValue value)
         => value == FlexDirectionValue.RowReverse
             || value == FlexDirectionValue.ColumnReverse;
+}
+
+/// <summary>Per Phase 3 Task 15 L6 — helper extensions on
+/// <see cref="FlexWrapValue"/>. Separated from
+/// <see cref="FlexDirectionValueExtensions"/> per the PR-#66 Copilot
+/// review (#3271026295 + #3271095597) so the extension class name
+/// matches the type it extends.</summary>
+internal static class FlexWrapValueExtensions
+{
+    /// <summary>Per Phase 3 Task 15 L6 — is this flex container
+    /// requesting multi-line layout? Returns <see langword="true"/> for
+    /// both <see cref="FlexWrapValue.Wrap"/> and
+    /// <see cref="FlexWrapValue.WrapReverse"/>. For L6 the two values
+    /// behave identically at the layouter — <c>wrap-reverse</c>'s
+    /// cross-axis line-stacking reversal is L7+ scope and is not yet
+    /// applied (a <c>LAYOUT-FLEX-WRAP-REVERSE-APPROXIMATED-001</c>
+    /// Warning surfaces the gap). The split exists so an L7+ addition
+    /// can branch on the raw <see cref="FlexWrapValue"/> while every
+    /// gate that just needs "single-line vs. multi-line" can use this
+    /// predicate.</summary>
+    public static bool IsFlexWrapping(this FlexWrapValue value)
+        => value == FlexWrapValue.Wrap || value == FlexWrapValue.WrapReverse;
 }
 
 /// <summary>Per Phase 3 Task 15 L6 — typed decode of

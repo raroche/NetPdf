@@ -477,11 +477,18 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // declared cross-size when set) drives the cross-axis offset of
         // line 0, not the per-line align-items math.
         //
-        // For nowrap the L1-L5 derivation still applies + the single
-        // line's cross-extent equals the container's cross-extent at
-        // the layouter, so we keep computing containerCrossSize in the
-        // same way for the wrapper's own sizing signal — even though
-        // each line will use its OWN cross-extent below.
+        // For nowrap the L1-L5 derivation still applies. Note: the
+        // single line's per-line cross-extent (= max item cross-size)
+        // equals the container's cross-extent only when the container
+        // is auto-sized (height/width: auto). With an explicit cross-
+        // size (e.g., `height: 200px` in row direction), the line's
+        // cross-extent can be SMALLER than the container's, and items
+        // align against the container's cross-extent (not the line's).
+        // We still compute containerCrossSize uniformly for the
+        // wrapper's own sizing signal; the per-line align-items math
+        // below uses each line's own cross-extent (which for nowrap
+        // is the single line's max-item-cross — possibly smaller than
+        // containerCrossSize when explicit).
         var containerCrossSize = ResolveContainerCrossSize(
             isColumn, lines, cancellationToken);
 

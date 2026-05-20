@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using NetPdf.Css.ComputedValues;
 using NetPdf.Css.Properties;
@@ -109,18 +110,18 @@ namespace NetPdf.Layout.Layouters;
 ///   <c>end</c>) and directional aliases (<c>left</c> / <c>right</c>)
 ///   map to <c>flex-start</c> / <c>flex-end</c> under the L1 default
 ///   LTR + <c>flex-direction: row</c>; writing-mode-aware mapping is
-///   L8+ scope. <c>safe</c> / <c>unsafe</c> overflow modifiers decode
-///   into the overflow-mode channel of <see cref="ResolvedAlignContent"/>
-///   but L7 applies a single safe-start overflow fallback across all
-///   modes (= when the sum of line cross extents already exceeds the
-///   container's cross extent, lines stack at cross-start at their
-///   natural extents). Fine-grained per-mode overflow refinement
-///   per CSS Box Alignment L3 §5.3 is L8+ scope (see
-///   <c>docs/deferrals.md#flex-layouter-features</c>). Single-line
-///   containers (= <c>flex-wrap: nowrap</c> OR wrapping that produced
-///   exactly one line) are unaffected by align-content per §8.4 — the
-///   helper short-circuits to <c>(0, 0, 0)</c> for
-///   <c>lineCount &lt;= 1</c>.</item>
+///   L8+ scope. Per Phase 3 Task 15 L7 post-PR-#67 hardening F#1 + F#2:
+///   the single-line gate is <c>flex-wrap: nowrap</c> (NOT <c>lineCount
+///   &lt;= 1</c>) per CSS Flexbox §9.4 — a wrapping container with one
+///   produced line still gets align-content applied (the default
+///   <c>normal → stretch</c> still stretches that single line; <c>safe
+///   X</c> / <c>unsafe X</c> overflow modifiers are now applied per CSS
+///   Box Alignment L3 §5.3 mirroring the L2 justify-content pattern:
+///   <c>safe X</c> forces safe-start fallback on overflow regardless of
+///   value; <c>unsafe X</c> honors the alignment even on overflow;
+///   default mode gives distribution values + stretch the safe-start
+///   fallback (stretch never shrinks lines) + positional values their
+///   natural (possibly-negative) offset.</item>
 ///   <item><b>L2 — <c>justify-content</c> main-axis alignment.</b>
 ///   The layouter honors the six effective values per CSS Box
 ///   Alignment L3 §4.5: <c>flex-start</c> (default packing at main-
@@ -510,22 +511,31 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
 
         // Per Phase 3 Task 15 L7 — resolve align-content + compute the
         // cross-axis line distribution per CSS Flexbox L1 §8.4 + CSS Box
-        // Alignment L3 §6. align-content only applies to multi-line
-        // containers (single-line = no distribution); the helper returns
-        // (0, 0, 0) for the single-line and overflow cases.
+        // Alignment L3 §6. Per Phase 3 Task 15 L7 post-PR-#67 hardening
+        // F#1: the gate for "single-line container" is `flex-wrap:
+        // nowrap` (NOT lineCount <= 1) — a wrapping container that
+        // produces one line is still a multi-line container per §9.4
+        // and align-content still applies to it (the default normal →
+        // stretch still stretches that single line). Per F#2: overflow
+        // handling now mirrors justify-content's per-family + per-mode
+        // semantics (CSS Box Alignment L3 §5.3).
         //
         // freeCrossSpace = container's cross extent - sum of each line's
         // natural cross extent. Positive = lines fit with space left over
         // (the L7 stretch / distribution branch). Zero = lines exactly
         // fill the container (L1-L6 default + auto-cross-size case).
-        // Negative = lines overflow (L7 safe-start fallback).
+        // Negative = lines overflow (now per-mode + per-family handling).
         var resolvedAC = _rootBox.Style.ReadAlignContent();
         var sumLineCrossExtents = 0.0;
-        foreach (var line in lines) sumLineCrossExtents += line.LineCrossSize;
+        foreach (var line in lines)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            sumLineCrossExtents += line.LineCrossSize;
+        }
         var freeCrossSpace = containerCrossSize - sumLineCrossExtents;
 
         var (lineStartOffset, lineBetweenSpacing, lineStretchAddend) =
-            ComputeAlignContentOffsets(resolvedAC, freeCrossSpace, lines.Count);
+            ComputeAlignContentOffsets(resolvedAC, freeCrossSpace, lines.Count, isWrapping);
 
         // Per Phase 3 Task 15 L7 — apply the stretch addend BEFORE the
         // emission loop. When align-content: stretch (the default per
@@ -539,6 +549,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         {
             for (var i = 0; i < lines.Count; i++)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 lines[i] = lines[i] with
                 {
                     LineCrossSize = lines[i].LineCrossSize + lineStretchAddend,
@@ -824,14 +835,14 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     // <c>FlexLinePacker</c> consumed by both sites so they can't
     // drift. Not done now (= medium-scope refactor; risk of
     // regression).
-    private static System.Collections.Generic.List<FlexLine> PackLines(
+    private static List<FlexLine> PackLines(
         Box flexContainer,
         FlexDirectionValue direction,
         double containerMainSize,
         bool isWrapping,
         CancellationToken cancellationToken)
     {
-        var lines = new System.Collections.Generic.List<FlexLine>();
+        var lines = new List<FlexLine>();
         var (mainProp, crossProp) = GetAxisProperties(direction);
 
         // First pass — collect indices of block-level children so the
@@ -840,7 +851,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // index. Skipping non-block-level children inline would
         // conflate "this would be the line's first item" with "wait
         // for the next block-level child" cases.
-        var blockLevelIndices = new System.Collections.Generic.List<int>();
+        var blockLevelIndices = new List<int>();
         for (var i = 0; i < flexContainer.Children.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -948,7 +959,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     /// path (it just sums the pre-packed line cross-extents).</para></summary>
     private double ResolveContainerCrossSize(
         bool isColumn,
-        System.Collections.Generic.List<FlexLine> lines,
+        List<FlexLine> lines,
         CancellationToken cancellationToken)
     {
         if (isColumn)
@@ -1143,24 +1154,44 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     ///   stretched extent.</item>
     /// </list>
     ///
-    /// <para><b>Single-line short-circuit.</b> Per CSS Flexbox L1 §8.4
-    /// align-content has NO EFFECT on a single-line container (=
-    /// nowrap with any number of items, OR wrap that produced a single
-    /// line). The helper returns <c>(0, 0, 0)</c> for
-    /// <c>lineCount &lt;= 1</c> so the cursor stays at cross-start and
-    /// no stretch is applied (= L1-L6 behavior preserved).</para>
+    /// <para><b>Single-line gate (Phase 3 Task 15 L7 post-PR-#67 F#1).</b>
+    /// Per CSS Flexbox L1 §9.4 a flex container is "single-line" iff
+    /// <c>flex-wrap: nowrap</c> — NOT iff <c>flex-wrap: wrap</c> produced
+    /// a single line. align-content has no effect on a true single-line
+    /// container per §8.4 (nowrap forces the line cross-size to the
+    /// container's cross-size, leaving no space to distribute) but a
+    /// wrapping container that just happens to fit on one line is still
+    /// a multi-line container — the default <c>normal → stretch</c>
+    /// still stretches it, <c>align-content: center</c> still centers
+    /// it, etc. The helper short-circuits when EITHER <c>lineCount ==
+    /// 0</c> (no lines) OR <c>!isWrapping</c> (= nowrap; spec says no
+    /// effect).</para>
     ///
-    /// <para><b>Overflow short-circuit.</b> When the sum of line cross
-    /// extents already exceeds the container cross-extent
-    /// (<c>freeCrossSpace &lt;= 0</c>) there is no space to distribute.
-    /// L7 applies a simple safe-start fallback: lines stack at cross-
-    /// start at their natural extents. Per CSS Box Alignment L3 §5.3
-    /// the explicit <c>safe</c> / <c>unsafe</c> modifiers refine this
-    /// (<c>unsafe</c> would still honor the alignment + let lines
-    /// overflow at the cross-end; <c>safe</c> matches the current
-    /// fallback). L7 treats all three modes identically for overflow;
-    /// the per-mode refinement is L8+ scope (see
-    /// <c>docs/deferrals.md#flex-layouter-features</c>).</para>
+    /// <para><b>Overflow handling (Phase 3 Task 15 L7 post-PR-#67 F#2).</b>
+    /// Mirrors the L2 pattern in <see cref="ComputeJustifyContentOffsets"/>
+    /// per CSS Box Alignment L3 §5.3:
+    /// <list type="bullet">
+    ///   <item>Default mode + positional values
+    ///   (<see cref="AlignContentValue.FlexStart"/> /
+    ///   <see cref="AlignContentValue.FlexEnd"/> /
+    ///   <see cref="AlignContentValue.Center"/>) keep their natural
+    ///   (possibly-negative) offset on overflow — lines overflow
+    ///   equally on both sides for <c>center</c> etc.</item>
+    ///   <item>Default mode + distribution values
+    ///   (<see cref="AlignContentValue.SpaceBetween"/> /
+    ///   <see cref="AlignContentValue.SpaceAround"/> /
+    ///   <see cref="AlignContentValue.SpaceEvenly"/>) fall back to
+    ///   safe-start on overflow per §5.3.</item>
+    ///   <item>Default mode + <see cref="AlignContentValue.Stretch"/>
+    ///   on overflow returns no growth (a negative stretchAddend would
+    ///   SHRINK lines, which the spec forbids — stretch never reduces
+    ///   the cross-size).</item>
+    ///   <item><see cref="OverflowAlignmentMode.Safe"/> on overflow —
+    ///   always fall back to safe-start regardless of value family.</item>
+    ///   <item><see cref="OverflowAlignmentMode.Unsafe"/> on overflow —
+    ///   honor the natural offset even if negative (= author opt-in to
+    ///   overflow behavior).</item>
+    /// </list></para>
     ///
     /// <para><b>Stretch arithmetic.</b> For <c>align-content: stretch</c>
     /// with N lines and positive freeCrossSpace F, each line grows by
@@ -1173,62 +1204,91 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     ///
     /// <para><b>N == 1 distribution edge cases.</b> <c>space-between</c>
     /// with 1 line has no "between" gap to distribute, so it falls
-    /// back to <c>flex-start</c> (= return <c>(0, 0, 0)</c>) via the
-    /// <c>lineCount &lt;= 1</c> short-circuit above. <c>space-around</c>
-    /// + <c>space-evenly</c> are also handled by the same short-circuit
-    /// since a single line can't be "around" anything either; the
-    /// short-circuit predates the formula evaluation so the divisions
-    /// never see N=1.</para></summary>
+    /// back to <c>flex-start</c> (= natural <c>(0, 0, 0)</c>) per spec.
+    /// <c>space-around</c> + <c>space-evenly</c> with N=1 naturally
+    /// degenerate to center (formulas produce a leading half-gap or
+    /// full gap that places the single line in the middle — which is
+    /// the spec-correct behavior).</para></summary>
     private static (double startOffset, double betweenSpacing, double stretchAddend)
         ComputeAlignContentOffsets(
             ResolvedAlignContent resolved,
             double freeCrossSpace,
-            int lineCount)
+            int lineCount,
+            bool isWrapping)
     {
-        // Single line OR no positive free space — no distribution, no
-        // stretch. Multi-line containers with freeCrossSpace == 0 (=
-        // lines already fill the container, the auto-cross-size case)
-        // and overflow (freeCrossSpace < 0) take this branch.
-        if (lineCount <= 1 || freeCrossSpace <= 0)
+        // F#1 — short-circuit only when no lines OR nowrap. A wrapping
+        // container with one produced line still gets align-content
+        // applied per §9.4 (the line is a real multi-line line whose
+        // cross-size is the max item cross-size, NOT the container's
+        // cross-size — so there's space to distribute / stretch).
+        if (lineCount == 0 || !isWrapping)
         {
             return (0, 0, 0);
         }
 
-        return resolved.Value switch
+        // F#10 — NaN/Infinity sanity check. Box/extent measurement
+        // upstream can theoretically yield non-finite values
+        // (e.g., infinity propagation from a parent's content extent).
+        // Fall back to safe-start so the layout completes deterministically
+        // rather than emitting NaN-tainted offsets.
+        if (!double.IsFinite(freeCrossSpace))
         {
-            // Positional values — start offset puts the line stack at
-            // the cross-end (FlexEnd) or centered (Center). No between-
-            // spacing.
-            AlignContentValue.FlexEnd => (freeCrossSpace, 0, 0),
-            AlignContentValue.Center => (freeCrossSpace / 2.0, 0, 0),
+            return (0, 0, 0);
+        }
 
-            // Distribution values — startOffset puts the first line
-            // either AT the cross-start (SpaceBetween) or with a
-            // leading half-gap (SpaceAround) or a leading full gap
-            // (SpaceEvenly). betweenSpacing fills the inter-line gaps.
-            // SpaceBetween divides among (N-1) gaps; SpaceAround
-            // divides among N gaps with half-size leading + trailing
-            // edges; SpaceEvenly divides among (N+1) equal gaps
-            // INCLUDING the leading + trailing edges.
-            AlignContentValue.SpaceBetween =>
-                (0, freeCrossSpace / (lineCount - 1), 0),
+        // Compute the NATURAL offset for the value (ignoring overflow
+        // for now). This is the spec-defined offset assuming positive
+        // free space exists; the overflow branch below either preserves
+        // it (positional values + the unsafe modifier) or replaces it
+        // with safe-start fallback (distribution values + stretch +
+        // the safe modifier).
+        var natural = resolved.Value switch
+        {
+            AlignContentValue.FlexEnd => (freeCrossSpace, 0.0, 0.0),
+            AlignContentValue.Center => (freeCrossSpace / 2.0, 0.0, 0.0),
+            AlignContentValue.SpaceBetween => lineCount >= 2
+                ? (0.0, freeCrossSpace / (lineCount - 1), 0.0)
+                : (0.0, 0.0, 0.0), // N=1 → flex-start fallback per spec
             AlignContentValue.SpaceAround =>
-                (freeCrossSpace / (2.0 * lineCount), freeCrossSpace / lineCount, 0),
+                (freeCrossSpace / (2.0 * lineCount), freeCrossSpace / lineCount, 0.0),
             AlignContentValue.SpaceEvenly =>
-                (freeCrossSpace / (lineCount + 1), freeCrossSpace / (lineCount + 1), 0),
-
-            // Stretch — each line grows by an equal share of the free
-            // cross-space. No startOffset (first line still at cross-
-            // start); no betweenSpacing (the growth absorbs all of the
-            // free space).
+                (freeCrossSpace / (lineCount + 1), freeCrossSpace / (lineCount + 1), 0.0),
             AlignContentValue.Stretch =>
-                (0, 0, freeCrossSpace / lineCount),
-
-            // FlexStart (the safe default) and any unknown values keep
-            // the L1-L6 behavior: stack at cross-start, no spacing, no
-            // stretch.
-            _ => (0, 0, 0),
+                (0.0, 0.0, freeCrossSpace / lineCount),
+            _ => (0.0, 0.0, 0.0), // FlexStart + unknown
         };
+
+        // F#2 — overflow handling per CSS Box Alignment L3 §5.3. Only
+        // the `freeCrossSpace < 0` branch applies overflow rules;
+        // `freeCrossSpace == 0` falls through to natural (which is
+        // (0, 0, 0) for all values anyway since every formula
+        // multiplies by freeCrossSpace).
+        if (freeCrossSpace < 0)
+        {
+            // Explicit `safe` modifier — always fall back to safe start
+            // regardless of value family. Lines stack at cross-start.
+            if (resolved.Mode == OverflowAlignmentMode.Safe) return (0, 0, 0);
+            // Explicit `unsafe` modifier — honor the natural offset
+            // (= author opt-in to overflow even for distribution
+            // values; the resulting between-spacing may be negative,
+            // causing lines to overlap).
+            if (resolved.Mode == OverflowAlignmentMode.Unsafe) return natural;
+            // Default mode (no overflow modifier) — distribution
+            // values + stretch fall back to safe start; positional
+            // values keep their natural (possibly-negative) offset.
+            // Stretch falls back because a negative stretchAddend would
+            // shrink lines, which the spec forbids.
+            return resolved.Value switch
+            {
+                AlignContentValue.SpaceBetween or
+                AlignContentValue.SpaceAround or
+                AlignContentValue.SpaceEvenly or
+                AlignContentValue.Stretch => (0, 0, 0),
+                _ => natural, // FlexStart / FlexEnd / Center — allow overflow
+            };
+        }
+
+        return natural;
     }
 
     /// <summary>Per Phase 3 Task 15 L3 + Phase 3 Task 15 L4 — compute

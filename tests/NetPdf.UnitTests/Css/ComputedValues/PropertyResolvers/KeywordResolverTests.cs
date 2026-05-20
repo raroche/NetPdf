@@ -126,6 +126,82 @@ public sealed class KeywordResolverTests
         Assert.Equal(2, id2);
     }
 
+    // Phase 3 Task 15 L7 post-PR-#67 review hardening F#3 — pin EXACT
+    // keyword ids for the 29-entry align-content table. The ids are
+    // part of the parser → cascade → ReadAlignContent contract;
+    // reordering would silently break the reader's switch. Pins all
+    // four families: 0=normal, 1-4=<content-distribution>,
+    // 5-7=<baseline-position> (Phase 3 Task 15 L7 post-PR-#67 F#6),
+    // 8-14=<content-position>, 15-21=safe X, 22-28=unsafe X.
+    [Fact]
+    public void AlignContent_keyword_ids_are_pinned()
+    {
+        // 0 = normal.
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignContent, "normal", out var id0));
+        Assert.Equal(0, id0);
+        // 1-4 = <content-distribution>.
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignContent, "space-between", out var id1));
+        Assert.Equal(1, id1);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignContent, "space-around", out var id2));
+        Assert.Equal(2, id2);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignContent, "space-evenly", out var id3));
+        Assert.Equal(3, id3);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignContent, "stretch", out var id4));
+        Assert.Equal(4, id4);
+        // 5-7 = <baseline-position> (Phase 3 Task 15 L7 post-PR-#67 F#6).
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignContent, "baseline", out var id5));
+        Assert.Equal(5, id5);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignContent, "first baseline", out var id6));
+        Assert.Equal(6, id6);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignContent, "last baseline", out var id7));
+        Assert.Equal(7, id7);
+        // 8-14 = <content-position>.
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignContent, "center", out var id8));
+        Assert.Equal(8, id8);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignContent, "start", out var id9));
+        Assert.Equal(9, id9);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignContent, "end", out var id10));
+        Assert.Equal(10, id10);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignContent, "flex-start", out var id11));
+        Assert.Equal(11, id11);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignContent, "flex-end", out var id12));
+        Assert.Equal(12, id12);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignContent, "left", out var id13));
+        Assert.Equal(13, id13);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignContent, "right", out var id14));
+        Assert.Equal(14, id14);
+        // 15-21 = safe <content-position>.
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignContent, "safe center", out var id15));
+        Assert.Equal(15, id15);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignContent, "safe start", out var id16));
+        Assert.Equal(16, id16);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignContent, "safe end", out var id17));
+        Assert.Equal(17, id17);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignContent, "safe flex-start", out var id18));
+        Assert.Equal(18, id18);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignContent, "safe flex-end", out var id19));
+        Assert.Equal(19, id19);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignContent, "safe left", out var id20));
+        Assert.Equal(20, id20);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignContent, "safe right", out var id21));
+        Assert.Equal(21, id21);
+        // 22-28 = unsafe <content-position>.
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignContent, "unsafe center", out var id22));
+        Assert.Equal(22, id22);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignContent, "unsafe start", out var id23));
+        Assert.Equal(23, id23);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignContent, "unsafe end", out var id24));
+        Assert.Equal(24, id24);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignContent, "unsafe flex-start", out var id25));
+        Assert.Equal(25, id25);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignContent, "unsafe flex-end", out var id26));
+        Assert.Equal(26, id26);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignContent, "unsafe left", out var id27));
+        Assert.Equal(27, id27);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignContent, "unsafe right", out var id28));
+        Assert.Equal(28, id28);
+    }
+
     [Fact]
     public void Property_with_no_table_returns_UnsupportedUnvalidated_with_raw_text()
     {

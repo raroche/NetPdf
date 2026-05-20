@@ -333,28 +333,41 @@ internal static class KeywordResolver
     }
 
     /// <summary>Per Phase 3 Task 15 L7 — build the align-content table per
-    /// CSS Box Alignment L3 §4.5 (= same grammar as justify-content but
-    /// applies to cross-axis line distribution per CSS Flexbox L1 §8.4).
-    /// Grammar: <c>normal | &lt;content-distribution&gt; |
+    /// CSS Box Alignment L3 §4.5 + §6.3 (= same grammar as justify-content
+    /// but applies to cross-axis line distribution per CSS Flexbox L1
+    /// §8.4, plus the &lt;baseline-position&gt; family per §6.3). Grammar:
+    /// <c>normal | &lt;baseline-position&gt; | &lt;content-distribution&gt; |
     /// [&lt;overflow-position&gt;? &amp;&amp; &lt;content-position&gt;]</c>.
     /// Like justify-content this uses <see cref="ContentPositions"/> +
     /// <see cref="ContentDistributions"/> rather than the
-    /// <see cref="SelfPositions"/> set used by align-items / align-self.
+    /// <see cref="SelfPositions"/> set used by align-items / align-self,
+    /// but ADDS the three baseline keywords (per §6.3 align-content
+    /// admits &lt;baseline-position&gt;, same as align-items).
     ///
-    /// <para><b>Index layout.</b> 0=normal, 1-4=&lt;content-distribution&gt;
-    /// (space-between, space-around, space-evenly, stretch), 5-11=
-    /// &lt;content-position&gt; (center, start, end, flex-start, flex-end,
-    /// left, right), 12-18=safe X (same 7 positions),
-    /// 19-25=unsafe X. Total = 26 entries — identical layout to
-    /// <see cref="BuildJustifyContentTable"/>.</para></summary>
+    /// <para><b>Index layout (Phase 3 Task 15 L7 post-PR-#67 F#6 — baseline
+    /// added).</b> 0=normal, 1-4=&lt;content-distribution&gt;
+    /// (space-between, space-around, space-evenly, stretch),
+    /// 5-7=&lt;baseline-position&gt; (baseline, first baseline, last
+    /// baseline), 8-14=&lt;content-position&gt; (center, start, end,
+    /// flex-start, flex-end, left, right), 15-21=safe X (same 7
+    /// positions), 22-28=unsafe X. Total = 29 entries.</para></summary>
     private static FrozenDictionary<string, int> BuildAlignContentTable()
     {
         var entries = new List<string>(32) { "normal" };
-        // <content-distribution>.
+        // <content-distribution> — indices 1-4.
         foreach (var d in ContentDistributions) entries.Add(d);
-        // <content-position> on its own.
+        // <baseline-position> per §6.3 — indices 5-7. Mirrors the
+        // align-items grammar (BuildAlignItemsTable) which also admits
+        // these three keywords. L7 approximates them as Stretch (the
+        // safe default) at the reader level; proper baseline alignment
+        // is text-shaping integration scope (L8+).
+        entries.Add("baseline");
+        entries.Add("first baseline");
+        entries.Add("last baseline");
+        // <content-position> on its own — indices 8-14.
         foreach (var p in ContentPositions) entries.Add(p);
-        // <overflow-position> <content-position>.
+        // <overflow-position> <content-position> — indices 15-21 (safe)
+        // + 22-28 (unsafe).
         foreach (var op in new[] { "safe", "unsafe" })
             foreach (var p in ContentPositions) entries.Add($"{op} {p}");
         return T(entries.ToArray());

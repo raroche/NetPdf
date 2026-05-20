@@ -128,6 +128,18 @@ internal static class CssPreprocessor
         // compound was dropped + the cascade fell back to the
         // `normal` → `stretch` default).
         "align-items",
+        // Per Phase 3 Task 15 L7 post-PR-#67 review hardening F#3 —
+        // same precedent as `justify-content` + `align-items` above:
+        // AngleSharp.Css 1.0.0-beta.144 accepts the bare `align-content`
+        // values but DROPS the compound `<overflow-position>
+        // <content-position>` forms (= `safe center`, `unsafe flex-end`,
+        // etc.) per CSS Box Alignment L3 §4.5. Our
+        // `KeywordResolver.BuildAlignContentTable` produces all 26
+        // indices including the 14 compound forms; routing the recovery
+        // path through ScanDeclarations preserves the raw declaration
+        // text so the cascade resolver receives it verbatim + the
+        // KeywordResolver decodes it correctly.
+        "align-content",
     }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>

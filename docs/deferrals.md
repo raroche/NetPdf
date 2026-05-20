@@ -929,24 +929,39 @@ grepping the ID).
   measure; the L6 pre-measure skip rule prevents
   `PreMeasureFlexMainExtent` from growing past the declared height
   + defeating the wrap).
-  **Per Phase 3 Task 15 L7** — `align-content` ships in full per
-  CSS Flexbox L1 §8.4 + CSS Box Alignment L3 §6: the seven base
-  values (`flex-start` / `flex-end` / `center` / `space-between` /
-  `space-around` / `space-evenly` / `stretch`) distribute wrapped
+  **Per Phase 3 Task 15 L7 + post-PR-#67 hardening** — `align-content`
+  ships the seven base values (`flex-start` / `flex-end` / `center` /
+  `space-between` / `space-around` / `space-evenly` / `stretch`) per
+  CSS Flexbox L1 §8.4 + CSS Box Alignment L3 §6, distributing wrapped
   lines along the cross axis on multi-line containers. The §8.4
-  spec default `normal` resolves to `stretch` — definite-cross-
-  sized multi-line containers grow each line by `freeCrossSpace /
-  lineCount` so the lines collectively fill the container. Items
+  spec default `normal` resolves to `stretch` — definite-cross-sized
+  multi-line containers grow each line by an EQUAL share of the free
+  cross-space (= `freeCrossSpace / lineCount` per line) so the lines
+  collectively fill the container. (Post-PR-#67 F#5 — original
+  deferral wording said "proportionally"; that incorrectly implied
+  weighted distribution. The spec defines equal-share growth.) Items
   on a stretched line use the LARGER (stretched) cross extent for
-  their align-items math. Single-line containers (= nowrap OR
-  wrapping that produced exactly one line) are unaffected per
-  §8.4 — the `ComputeAlignContentOffsets` helper short-circuits to
-  `(0, 0, 0)` for `lineCount <= 1`. Overflow (sum of line cross
-  extents > container cross extent) falls back to safe-start
-  stacking regardless of overflow modifier (L7 applies a single
-  safe fallback across all `safe` / `unsafe` / default modes; per-
-  mode refinement per CSS Box Alignment L3 §5.3 is L8+ scope —
-  see the bullet below).
+  their align-items math. **Post-PR-#67 F#1 single-line gate
+  correction:** the single-line-vs-multi-line boundary is
+  `flex-wrap: nowrap` per CSS Flexbox §9.4 — NOT `lineCount <= 1`.
+  A wrapping container that happens to produce one line is still a
+  multi-line container, and align-content (including the §8.4 stretch
+  default) applies to it. The `ComputeAlignContentOffsets` helper
+  short-circuits only when `lineCount == 0 || !isWrapping`.
+  **Post-PR-#67 F#2 per-mode overflow handling:** when sum of line
+  cross extents > container cross extent, behavior now mirrors the
+  L2 `ComputeJustifyContentOffsets` pattern per CSS Box Alignment L3
+  §5.3: `safe X` falls back to safe-start regardless of value family;
+  `unsafe X` honors the natural (possibly-negative) offset; default
+  mode gives distribution values + stretch the safe-start fallback
+  while positional values keep their natural offset (allowing items
+  to overflow equally on both sides for `center`). **Post-PR-#67 F#6
+  baseline keyword family:** the three `<baseline-position>` keywords
+  (`baseline` / `first baseline` / `last baseline`) admitted by CSS
+  Box Alignment L3 §6.3 are added to BuildAlignContentTable (29-entry
+  table) but currently approximate to `stretch` — proper baseline
+  alignment is text-shaping-integration scope (L8+; see the bullet
+  below).
 - **Missing** —
   - `flex-wrap: wrap-reverse` (cross-axis line-stacking reversal per
     CSS Flexbox L1 §6.3 — "same as wrap but the cross-start and
@@ -966,25 +981,18 @@ grepping the ID).
     on each `AttemptLayout` invocation that encounters
     `wrap-reverse`, so the silent approximation is visible to
     authors.
-  - **`align-content` per-mode overflow refinement** (CSS Box
-    Alignment L3 §5.3): L7 ships the seven base values
-    (flex-start / -end / center / space-* / stretch) but applies a
-    single safe-start fallback for overflow regardless of the
-    explicit `safe` / `unsafe` / default overflow modifier. Per
-    §5.3 the three modes differ on overflow: `safe X` forces safe-
-    start fallback (= what L7 already does), `unsafe X` honors the
-    specified alignment even when items overflow (positional values
-    keep their natural — possibly negative — offset; distribution
-    values produce negative between-spacing → overlapping lines),
-    and the default mode gives distribution values safe-start
-    fallback but lets positional values keep their natural offset
-    (allowing items to overflow equally on both sides for
-    `center`). L8+ scope — mirrors the L2/L3 hardening pattern
-    that retrofitted the per-mode rules on `justify-content` +
-    `align-items` after the initial Hello-World ship. The cascade
-    slot already carries the overflow modifier; only the
-    `ComputeAlignContentOffsets` helper's overflow branch needs the
-    per-mode refinement.
+  - **`align-content` proper `<baseline-position>` alignment** (CSS
+    Box Alignment L3 §6.3): post-PR-#67 F#6 admits the three baseline
+    keywords (`baseline` / `first baseline` / `last baseline`) into
+    BuildAlignContentTable but the reader maps all three to `stretch`
+    as a safe approximation. Proper baseline alignment requires
+    text-shaping integration to align item baselines on the cross
+    axis (= the cross-axis cursor advances to the line's baseline
+    position rather than the line's cross-start, computed from
+    HarfBuzz-shaped runs); L8+ scope alongside `align-items: baseline`.
+    The cascade slot is lossless so pre-authored
+    `align-content: baseline` declarations activate the new behavior
+    without a re-author.
   - Writing-mode and `direction` integration for `flex-direction`
     axis mapping (CSS Flexbox §3.1): all 4 directions are honored
     for LTR horizontal-tb but the axis mapping differs in RTL +
@@ -1125,21 +1133,24 @@ grepping the ID).
   greedy packing + per-line align math + sum-of-lines auto cross-
   size); L7 picked up `align-content` (multi-line cross-axis
   distribution per CSS Flexbox L1 §8.4 + CSS Box Alignment L3 §6
-  — the seven base values + stretch default + single safe-start
-  overflow fallback). Sub-cycle L8+ picks up `flex-wrap:
-  wrap-reverse`, the `align-content` per-mode overflow refinement
-  (safe / unsafe / default distinctions per §5.3), the
-  `flex-grow` / `flex-shrink` / `flex-basis` interpolation,
-  anonymous-flex-item wrapping for inline/text children, and the
-  `FlexContinuation`-based multi-page split.
+  — the seven base values + §8.4 stretch default; post-PR-#67
+  hardening F#1/F#2 added the multi-line gate per §9.4 and per-mode
+  overflow handling per §5.3; F#6 admitted the
+  `<baseline-position>` triple as a stretch approximation). Sub-
+  cycle L8+ picks up `flex-wrap: wrap-reverse`, proper
+  `<baseline-position>` alignment for both `align-items` and
+  `align-content`, the `flex-grow` / `flex-shrink` / `flex-basis`
+  interpolation, anonymous-flex-item wrapping for inline/text
+  children, and the `FlexContinuation`-based multi-page split.
 - **Added** — Phase 3 Task 15 cycle 1 (Hello World).
 - **Removal condition** — Sub-cycle L8+ ships the remaining
-  deferred features (wrap-reverse / align-content per-mode overflow /
-  grow / shrink / basis / order / baseline / multi-page split /
-  anonymous flex item). L6 shipped `flex-wrap: wrap`; L7 shipped
-  `align-content` (base values + §8.4 stretch default + single
-  safe-start overflow fallback); `wrap-reverse` is the natural L8
-  companion (the cross-axis line-stacking reversal).
+  deferred features (wrap-reverse / proper baseline alignment /
+  grow / shrink / basis / order / multi-page split / anonymous
+  flex item). L6 shipped `flex-wrap: wrap`; L7 shipped
+  `align-content` (base values + §8.4 stretch default + post-PR-#67
+  per-mode overflow handling); `wrap-reverse` proper implementation
+  is the natural L8 companion (the cross-axis line-stacking
+  reversal).
 
 ---
 

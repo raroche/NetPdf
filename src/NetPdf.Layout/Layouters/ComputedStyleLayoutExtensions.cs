@@ -661,18 +661,19 @@ internal static class ComputedStyleLayoutExtensions
     /// L3 §5.3 are an L7+ refinement (see
     /// <c>docs/deferrals.md#flex-layouter-features</c>).</para>
     ///
-    /// <para><b>Keyword index mapping.</b> The source-gen'd
-    /// <c>BuildAlignContentTable</c> in
-    /// <see cref="NetPdf.Css.ComputedValues.PropertyResolvers.KeywordResolver"/>
+    /// <para><b>Keyword index mapping (Phase 3 Task 15 L7 post-PR-#67 F#6 —
+    /// baseline added).</b> The source-gen'd <c>BuildAlignContentTable</c>
+    /// in <see cref="NetPdf.Css.ComputedValues.PropertyResolvers.KeywordResolver"/>
     /// emits indices in this order (VERIFIED against KeywordResolver.cs
     /// <c>BuildAlignContentTable</c> + the <c>ContentPositions</c> array
     /// at KeywordResolver.cs:121-122 which orders the seven
     /// <c>&lt;content-position&gt;</c> values as <c>center, start, end,
     /// flex-start, flex-end, left, right</c>): 0=normal,
     /// 1=space-between, 2=space-around, 3=space-evenly, 4=stretch,
-    /// 5=center, 6=start, 7=end, 8=flex-start, 9=flex-end, 10=left,
-    /// 11=right, 12-18=safe {center, start, end, flex-start, flex-end,
-    /// left, right}, 19-25=unsafe {…same 7…}.</para></summary>
+    /// 5=baseline, 6=first baseline, 7=last baseline, 8=center, 9=start,
+    /// 10=end, 11=flex-start, 12=flex-end, 13=left, 14=right,
+    /// 15-21=safe {center, start, end, flex-start, flex-end, left,
+    /// right}, 22-28=unsafe {…same 7…}. Total = 29 entries.</para></summary>
     public static ResolvedAlignContent ReadAlignContent(this ComputedStyle style)
     {
         var keyword = style.ReadKeywordOrDefault(PropertyId.AlignContent, defaultIndex: 0);
@@ -685,31 +686,39 @@ internal static class ComputedStyleLayoutExtensions
             2 => new ResolvedAlignContent(AlignContentValue.SpaceAround, OverflowAlignmentMode.Default),
             3 => new ResolvedAlignContent(AlignContentValue.SpaceEvenly, OverflowAlignmentMode.Default),
             4 => new ResolvedAlignContent(AlignContentValue.Stretch, OverflowAlignmentMode.Default),
-            // 5-11 = <content-position>: center, start, end, flex-start,
+            // 5-7 = <baseline-position> (Phase 3 Task 15 L7 post-PR-#67
+            // F#6). L7 approximates as Stretch (the safe default);
+            // proper baseline alignment is text-shaping integration
+            // scope (L8+). Mirrors how align-items handles the same
+            // baseline triple (see ReadAlignItems above).
+            5 => new ResolvedAlignContent(AlignContentValue.Stretch, OverflowAlignmentMode.Default),      // baseline → stretch (L8+ scope)
+            6 => new ResolvedAlignContent(AlignContentValue.Stretch, OverflowAlignmentMode.Default),      // first baseline → stretch (L8+ scope)
+            7 => new ResolvedAlignContent(AlignContentValue.Stretch, OverflowAlignmentMode.Default),      // last baseline → stretch (L8+ scope)
+            // 8-14 = <content-position>: center, start, end, flex-start,
             // flex-end, left, right (LTR + horizontal-tb mapping).
-            5 => new ResolvedAlignContent(AlignContentValue.Center, OverflowAlignmentMode.Default),
-            6 => new ResolvedAlignContent(AlignContentValue.FlexStart, OverflowAlignmentMode.Default),    // start → flex-start (LTR)
-            7 => new ResolvedAlignContent(AlignContentValue.FlexEnd, OverflowAlignmentMode.Default),      // end → flex-end (LTR)
-            8 => new ResolvedAlignContent(AlignContentValue.FlexStart, OverflowAlignmentMode.Default),
-            9 => new ResolvedAlignContent(AlignContentValue.FlexEnd, OverflowAlignmentMode.Default),
-            10 => new ResolvedAlignContent(AlignContentValue.FlexStart, OverflowAlignmentMode.Default),   // left → flex-start (LTR)
-            11 => new ResolvedAlignContent(AlignContentValue.FlexEnd, OverflowAlignmentMode.Default),     // right → flex-end (LTR)
-            // 12-18 = safe <content-position>.
-            12 => new ResolvedAlignContent(AlignContentValue.Center, OverflowAlignmentMode.Safe),
-            13 => new ResolvedAlignContent(AlignContentValue.FlexStart, OverflowAlignmentMode.Safe),      // safe start
-            14 => new ResolvedAlignContent(AlignContentValue.FlexEnd, OverflowAlignmentMode.Safe),        // safe end
-            15 => new ResolvedAlignContent(AlignContentValue.FlexStart, OverflowAlignmentMode.Safe),      // safe flex-start
-            16 => new ResolvedAlignContent(AlignContentValue.FlexEnd, OverflowAlignmentMode.Safe),        // safe flex-end
-            17 => new ResolvedAlignContent(AlignContentValue.FlexStart, OverflowAlignmentMode.Safe),      // safe left (LTR)
-            18 => new ResolvedAlignContent(AlignContentValue.FlexEnd, OverflowAlignmentMode.Safe),        // safe right (LTR)
-            // 19-25 = unsafe <content-position>.
-            19 => new ResolvedAlignContent(AlignContentValue.Center, OverflowAlignmentMode.Unsafe),
-            20 => new ResolvedAlignContent(AlignContentValue.FlexStart, OverflowAlignmentMode.Unsafe),    // unsafe start
-            21 => new ResolvedAlignContent(AlignContentValue.FlexEnd, OverflowAlignmentMode.Unsafe),      // unsafe end
-            22 => new ResolvedAlignContent(AlignContentValue.FlexStart, OverflowAlignmentMode.Unsafe),    // unsafe flex-start
-            23 => new ResolvedAlignContent(AlignContentValue.FlexEnd, OverflowAlignmentMode.Unsafe),      // unsafe flex-end
-            24 => new ResolvedAlignContent(AlignContentValue.FlexStart, OverflowAlignmentMode.Unsafe),    // unsafe left (LTR)
-            25 => new ResolvedAlignContent(AlignContentValue.FlexEnd, OverflowAlignmentMode.Unsafe),      // unsafe right (LTR)
+            8 => new ResolvedAlignContent(AlignContentValue.Center, OverflowAlignmentMode.Default),
+            9 => new ResolvedAlignContent(AlignContentValue.FlexStart, OverflowAlignmentMode.Default),    // start → flex-start (LTR)
+            10 => new ResolvedAlignContent(AlignContentValue.FlexEnd, OverflowAlignmentMode.Default),     // end → flex-end (LTR)
+            11 => new ResolvedAlignContent(AlignContentValue.FlexStart, OverflowAlignmentMode.Default),
+            12 => new ResolvedAlignContent(AlignContentValue.FlexEnd, OverflowAlignmentMode.Default),
+            13 => new ResolvedAlignContent(AlignContentValue.FlexStart, OverflowAlignmentMode.Default),   // left → flex-start (LTR)
+            14 => new ResolvedAlignContent(AlignContentValue.FlexEnd, OverflowAlignmentMode.Default),     // right → flex-end (LTR)
+            // 15-21 = safe <content-position>.
+            15 => new ResolvedAlignContent(AlignContentValue.Center, OverflowAlignmentMode.Safe),
+            16 => new ResolvedAlignContent(AlignContentValue.FlexStart, OverflowAlignmentMode.Safe),      // safe start
+            17 => new ResolvedAlignContent(AlignContentValue.FlexEnd, OverflowAlignmentMode.Safe),        // safe end
+            18 => new ResolvedAlignContent(AlignContentValue.FlexStart, OverflowAlignmentMode.Safe),      // safe flex-start
+            19 => new ResolvedAlignContent(AlignContentValue.FlexEnd, OverflowAlignmentMode.Safe),        // safe flex-end
+            20 => new ResolvedAlignContent(AlignContentValue.FlexStart, OverflowAlignmentMode.Safe),      // safe left (LTR)
+            21 => new ResolvedAlignContent(AlignContentValue.FlexEnd, OverflowAlignmentMode.Safe),        // safe right (LTR)
+            // 22-28 = unsafe <content-position>.
+            22 => new ResolvedAlignContent(AlignContentValue.Center, OverflowAlignmentMode.Unsafe),
+            23 => new ResolvedAlignContent(AlignContentValue.FlexStart, OverflowAlignmentMode.Unsafe),    // unsafe start
+            24 => new ResolvedAlignContent(AlignContentValue.FlexEnd, OverflowAlignmentMode.Unsafe),      // unsafe end
+            25 => new ResolvedAlignContent(AlignContentValue.FlexStart, OverflowAlignmentMode.Unsafe),    // unsafe flex-start
+            26 => new ResolvedAlignContent(AlignContentValue.FlexEnd, OverflowAlignmentMode.Unsafe),      // unsafe flex-end
+            27 => new ResolvedAlignContent(AlignContentValue.FlexStart, OverflowAlignmentMode.Unsafe),    // unsafe left (LTR)
+            28 => new ResolvedAlignContent(AlignContentValue.FlexEnd, OverflowAlignmentMode.Unsafe),      // unsafe right (LTR)
             _ => new ResolvedAlignContent(AlignContentValue.Stretch, OverflowAlignmentMode.Default),      // unknown → safe default
         };
     }

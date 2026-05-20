@@ -918,18 +918,50 @@ grepping the ID).
   CSS Flexbox L1 §6.3 + §9.3 + §9.4: greedy line packing along the
   main axis (the first item on each line always lands even if it
   itself overflows the container; subsequent items wrap when adding
-  would exceed `containerMainSize`); lines stack on the cross axis
-  at cross-start with no inter-line spacing (`align-content` is L7+
-  scope); each line runs its OWN justify-content + align-items per
-  CSS Flexbox L1 §6.3 ("each flex line is treated as the alignment
-  container for its items along the cross axis"); auto cross-size
-  = sum of line cross-extents (`PreMeasureFlexMultiLineCrossExtent`
-  at the BlockLayouter pre-measure sites). Direction-agnostic — wrap
-  works for both row + column. For column + wrap, an EXPLICIT
-  block-size is required (auto block-size in column direction can't
-  wrap in a single-pass measure; the L6 pre-measure skip rule
-  prevents `PreMeasureFlexMainExtent` from growing past the
-  declared height + defeating the wrap).
+  would exceed `containerMainSize`); each line runs its OWN justify-
+  content + align-items per CSS Flexbox L1 §6.3 ("each flex line is
+  treated as the alignment container for its items along the cross
+  axis"); auto cross-size = sum of line cross-extents
+  (`PreMeasureFlexMultiLineCrossExtent` at the BlockLayouter pre-
+  measure sites). Direction-agnostic — wrap works for both row +
+  column. For column + wrap, an EXPLICIT block-size is required
+  (auto block-size in column direction can't wrap in a single-pass
+  measure; the L6 pre-measure skip rule prevents
+  `PreMeasureFlexMainExtent` from growing past the declared height
+  + defeating the wrap).
+  **Per Phase 3 Task 15 L7 + post-PR-#67 hardening** — `align-content`
+  ships the seven base values (`flex-start` / `flex-end` / `center` /
+  `space-between` / `space-around` / `space-evenly` / `stretch`) per
+  CSS Flexbox L1 §8.4 + CSS Box Alignment L3 §6, distributing wrapped
+  lines along the cross axis on multi-line containers. The §8.4
+  spec default `normal` resolves to `stretch` — definite-cross-sized
+  multi-line containers grow each line by an EQUAL share of the free
+  cross-space (= `freeCrossSpace / lineCount` per line) so the lines
+  collectively fill the container. (Post-PR-#67 F#5 — original
+  deferral wording said "proportionally"; that incorrectly implied
+  weighted distribution. The spec defines equal-share growth.) Items
+  on a stretched line use the LARGER (stretched) cross extent for
+  their align-items math. **Post-PR-#67 F#1 single-line gate
+  correction:** the single-line-vs-multi-line boundary is
+  `flex-wrap: nowrap` per CSS Flexbox §9.4 — NOT `lineCount <= 1`.
+  A wrapping container that happens to produce one line is still a
+  multi-line container, and align-content (including the §8.4 stretch
+  default) applies to it. The `ComputeAlignContentOffsets` helper
+  short-circuits only when `lineCount == 0 || !isWrapping`.
+  **Post-PR-#67 F#2 per-mode overflow handling:** when sum of line
+  cross extents > container cross extent, behavior now mirrors the
+  L2 `ComputeJustifyContentOffsets` pattern per CSS Box Alignment L3
+  §5.3: `safe X` falls back to safe-start regardless of value family;
+  `unsafe X` honors the natural (possibly-negative) offset; default
+  mode gives distribution values + stretch the safe-start fallback
+  while positional values keep their natural offset (allowing items
+  to overflow equally on both sides for `center`). **Post-PR-#67 F#6
+  baseline keyword family:** the three `<baseline-position>` keywords
+  (`baseline` / `first baseline` / `last baseline`) admitted by CSS
+  Box Alignment L3 §6.3 are added to BuildAlignContentTable (29-entry
+  table) but currently approximate to `stretch` — proper baseline
+  alignment is text-shaping-integration scope (L8+; see the bullet
+  below).
 - **Missing** —
   - `flex-wrap: wrap-reverse` (cross-axis line-stacking reversal per
     CSS Flexbox L1 §6.3 — "same as wrap but the cross-start and
@@ -938,28 +970,29 @@ grepping the ID).
     items against the LINE'S cross-extent, container auto cross-size
     = sum of line cross-extents per CSS Flexbox L1 §9.4); the
     `wrap-reverse` keyword decodes successfully + the FlexLayouter
-    treats it identically to `wrap` until L7+ adds the cross-axis
+    treats it identically to `wrap` until L8+ adds the cross-axis
     reversal transform (= reverse the line-stacking order +
     invert each item's cross-axis offset within its line). The
     cascade slot is lossless so pre-authored
     `flex-wrap: wrap-reverse` declarations activate the new
-    behavior without a re-author. Tracked alongside `align-content`
-    (multi-line cross-axis alignment) which is the natural L7+
-    companion.
-  - **`align-content` property** (CSS Flexbox L1 §8.4 + CSS Box
-    Alignment L3 §6): not yet in `properties.json` /
-    `KeywordResolver`. The initial value is `stretch` (lines
-    stretch to fill the container's cross-extent when the sum of
-    line cross-extents is less than the container's cross extent);
-    L6 approximates as `flex-start` (lines stack at cross-start at
-    their natural sizes with the extra cross-axis space left
-    empty). L7+ scope — needs the property parsing + cascade entry
-    + the stretch-lines pass. Per Phase 3 Task 15 L6 post-PR-#66
-    review F#3 — pre-finding the deferral entry incorrectly claimed
-    the property was parsed and carried; corrected here. Pinned by
-    the `L6_hardening_known_gap_align_content_stretch_not_implemented`
-    test — when L7+ lands the stretch behavior + the property parses,
-    that test should fail + this bullet should be removed.
+    behavior without a re-author. Per Phase 3 Task 15 L6 post-PR-#66
+    review F#4 the FlexLayouter now emits the
+    `LAYOUT-FLEX-WRAP-REVERSE-APPROXIMATED-001` Warning diagnostic
+    on each `AttemptLayout` invocation that encounters
+    `wrap-reverse`, so the silent approximation is visible to
+    authors.
+  - **`align-content` proper `<baseline-position>` alignment** (CSS
+    Box Alignment L3 §6.3): post-PR-#67 F#6 admits the three baseline
+    keywords (`baseline` / `first baseline` / `last baseline`) into
+    BuildAlignContentTable but the reader maps all three to `stretch`
+    as a safe approximation. Proper baseline alignment requires
+    text-shaping integration to align item baselines on the cross
+    axis (= the cross-axis cursor advances to the line's baseline
+    position rather than the line's cross-start, computed from
+    HarfBuzz-shaped runs); L8+ scope alongside `align-items: baseline`.
+    The cascade slot is lossless so pre-authored
+    `align-content: baseline` declarations activate the new behavior
+    without a re-author.
   - Writing-mode and `direction` integration for `flex-direction`
     axis mapping (CSS Flexbox §3.1): all 4 directions are honored
     for LTR horizontal-tb but the axis mapping differs in RTL +
@@ -1086,11 +1119,11 @@ grepping the ID).
   - `src/NetPdf.Layout/Boxes/DisplayMapper.cs` — `display: flex`
     `/ inline-flex` → `BoxKind.FlexContainer` /
     `BoxKind.InlineFlexContainer`.
-  - `src/NetPdf.Css/properties.json` — the `align-items`,
-    `flex-direction`, `flex-wrap`, `justify-content` keyword
-    properties (cascade-parsed + honored at the layouter for the
-    L1-L6 subset; `wrap-reverse` cross-axis reversal still
-    deferred to L7+).
+  - `src/NetPdf.Css/properties.json` — the `align-content`,
+    `align-items`, `flex-direction`, `flex-wrap`, `justify-content`
+    keyword properties (cascade-parsed + honored at the layouter
+    for the L1-L7 subset; `wrap-reverse` cross-axis reversal still
+    deferred to L8+).
 - **Trigger** — L2 picked up `justify-content`; L3 picked up
   `align-items` (base values + stretch); L4 picked up
   `flex-direction: column` + the F#1 hardening for column auto-
@@ -1098,18 +1131,26 @@ grepping the ID).
   `column-reverse` (the offset-flip transform at the per-item
   emission site); L6 picked up `flex-wrap: wrap` (multi-line
   greedy packing + per-line align math + sum-of-lines auto cross-
-  size). Sub-cycle L7+ picks up `flex-wrap: wrap-reverse`, the
-  `align-content` multi-line cross-axis distribution, the
-  `flex-grow` / `flex-shrink` / `flex-basis` interpolation,
-  anonymous-flex-item wrapping for inline/text children, and the
-  `FlexContinuation`-based multi-page split.
+  size); L7 picked up `align-content` (multi-line cross-axis
+  distribution per CSS Flexbox L1 §8.4 + CSS Box Alignment L3 §6
+  — the seven base values + §8.4 stretch default; post-PR-#67
+  hardening F#1/F#2 added the multi-line gate per §9.4 and per-mode
+  overflow handling per §5.3; F#6 admitted the
+  `<baseline-position>` triple as a stretch approximation). Sub-
+  cycle L8+ picks up `flex-wrap: wrap-reverse`, proper
+  `<baseline-position>` alignment for both `align-items` and
+  `align-content`, the `flex-grow` / `flex-shrink` / `flex-basis`
+  interpolation, anonymous-flex-item wrapping for inline/text
+  children, and the `FlexContinuation`-based multi-page split.
 - **Added** — Phase 3 Task 15 cycle 1 (Hello World).
-- **Removal condition** — Sub-cycle L7+ ships the remaining
-  deferred features (wrap-reverse / align-content / grow / shrink /
-  basis / order / baseline / multi-page split / anonymous flex
-  item). L6 shipped `flex-wrap: wrap`; `wrap-reverse` + `align-
-  content` are the natural L7 companions (the cross-axis line-
-  stacking reversal + multi-line cross-axis distribution).
+- **Removal condition** — Sub-cycle L8+ ships the remaining
+  deferred features (wrap-reverse / proper baseline alignment /
+  grow / shrink / basis / order / multi-page split / anonymous
+  flex item). L6 shipped `flex-wrap: wrap`; L7 shipped
+  `align-content` (base values + §8.4 stretch default + post-PR-#67
+  per-mode overflow handling); `wrap-reverse` proper implementation
+  is the natural L8 companion (the cross-axis line-stacking
+  reversal).
 
 ---
 

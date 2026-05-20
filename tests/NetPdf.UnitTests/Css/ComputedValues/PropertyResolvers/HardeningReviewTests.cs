@@ -202,6 +202,34 @@ public sealed class HardeningReviewTests
         Assert.True(result.IsResolved);
     }
 
+    // Per Phase 3 Task 15 L7 post-PR-#67 hardening F#3 — `align-content`
+    // uses the same content-alignment grammar as `justify-content`
+    // (CSS Box Alignment L3 §4.5 + §6.3): bare distribution +
+    // positional values, baseline-position triple (Phase 3 Task 15 L7
+    // post-PR-#67 F#6), and safe/unsafe compound forms. All must
+    // resolve through the KeywordResolver. Mirrors
+    // Justify_content_accepts_compound_keywords above.
+    [Theory]
+    [InlineData("space-between")]
+    [InlineData("space-around")]
+    [InlineData("space-evenly")]
+    [InlineData("stretch")]
+    [InlineData("baseline")]                       // §6.3 baseline triple
+    [InlineData("first baseline")]
+    [InlineData("last baseline")]
+    [InlineData("safe center")]
+    [InlineData("unsafe flex-start")]
+    [InlineData("safe left")]
+    [InlineData("unsafe right")]
+    [InlineData("safe flex-end")]
+    [InlineData("unsafe center")]
+    public void Align_content_accepts_compound_keywords(string value)
+    {
+        var result = KeywordResolver.Resolve(value, PropertyId.AlignContent, "align-content", null, default);
+        Assert.True(result.IsResolved);
+        Assert.Equal(ComputedSlotTag.Keyword, result.Slot.Tag);
+    }
+
     private static void AssertBareFirstLastInvalid(PropertyId pid)
     {
         // CSS Box Alignment 3 §4.4: <baseline-position> is `[first | last]? baseline`.

@@ -490,17 +490,17 @@ internal static class ComputedStyleLayoutExtensions
         return new ResolvedJustifyContent(value, mode);
     }
 
-    /// <summary>Per Phase 3 Task 15 L4 — decode
+    /// <summary>Per Phase 3 Task 15 L4 + L5 — decode
     /// <see cref="PropertyId.FlexDirection"/> per CSS Flexbox L1 §5.1.
     /// L4 ships the two axis-direction values: <c>row</c> (the default;
     /// main axis = inline axis) and <c>column</c> (main axis = block
-    /// axis). The reversed variants <c>row-reverse</c> /
-    /// <c>column-reverse</c> are admitted (parsed + decoded into the
-    /// enum) but the FlexLayouter does not yet honor the reversal —
-    /// reversed-axis item ordering is L5+ scope per
-    /// <c>docs/deferrals.md#flex-layouter-features</c>. The reversal
-    /// is orthogonal to the row/column axis swap, so it can be added
-    /// without re-architecting L4's axis-mapping layer.
+    /// axis). L5 ships the reversed variants <c>row-reverse</c> +
+    /// <c>column-reverse</c>, which per §5.1 "swap main-start and
+    /// main-end" along the same row / column axis — items are emitted
+    /// at their natural per-item placements but the main-axis ORIGIN
+    /// flips (see <see cref="FlexDirectionValueExtensions.IsFlexReverseDirection"/>
+    /// for the offset-flip transform applied at the FlexLayouter
+    /// emission site).
     ///
     /// <para><b>Keyword index mapping.</b> The source-gen'd
     /// <c>BuildFlexDirectionTable</c> in
@@ -804,28 +804,29 @@ internal readonly record struct ResolvedAlignItems(
     AlignItemsValue Value,
     OverflowAlignmentMode Mode);
 
-/// <summary>Per Phase 3 Task 15 L4 — typed decode of
+/// <summary>Per Phase 3 Task 15 L4 + L5 — typed decode of
 /// <see cref="PropertyId.FlexDirection"/> per CSS Flexbox L1 §5.1.
 /// L4 ships <c>row</c> (the default; main axis = inline axis) and
-/// <c>column</c> (main axis = block axis); the reversed variants
-/// <c>row-reverse</c> + <c>column-reverse</c> are decoded but the
-/// FlexLayouter does not yet honor the reversal — reversed item
-/// ordering is L5+ scope. The reversal is orthogonal to the row/column
-/// axis swap shipped in L4 (the axis-mapping layer accommodates both
-/// reversed variants by treating them as their non-reversed
-/// counterparts, leaving order-flip work for the sub-cycle that picks
-/// it up).
+/// <c>column</c> (main axis = block axis); L5 ships the reversed
+/// variants <c>row-reverse</c> + <c>column-reverse</c>, which per §5.1
+/// "swap main-start and main-end" along the same row / column axis.
+/// The reversal is orthogonal to the row/column axis swap shipped in
+/// L4 — the L5 implementation applies a single offset-flip transform
+/// at the FlexLayouter's emission site, leaving L4's axis-mapping
+/// layer untouched.
 ///
 /// <para>Per CSS Flexbox L1 §5.1 the four values control:
 /// <list type="bullet">
 ///   <item><see cref="Row"/> — main = inline (default); items flow
 ///   left-to-right under LTR.</item>
 ///   <item><see cref="RowReverse"/> — main = inline, items flow
-///   right-to-left under LTR (L5+ scope for the reversal).</item>
+///   right-to-left under LTR (L5 — items pack at the inline-end edge
+///   in reverse DOM order).</item>
 ///   <item><see cref="Column"/> — main = block; items stack top-to-
 ///   bottom.</item>
 ///   <item><see cref="ColumnReverse"/> — main = block, items stack
-///   bottom-to-top (L5+ scope for the reversal).</item>
+///   bottom-to-top (L5 — items pack at the block-end edge in reverse
+///   DOM order).</item>
 /// </list></para></summary>
 internal enum FlexDirectionValue : byte
 {
@@ -844,10 +845,46 @@ internal static class FlexDirectionValueExtensions
     /// <c>BlockLayouter</c>'s flex pre-measure dispatch.
     /// <c>row-reverse</c> remains a row direction (main = inline);
     /// <c>column-reverse</c> remains a column direction (main = block).
-    /// The L5+ reversal handling is orthogonal to this predicate — when
-    /// the reversal logic lands it will read the <c>FlexDirectionValue</c>
-    /// directly to distinguish the two row variants + the two column
-    /// variants.</summary>
+    /// The L5+ reversal handling is orthogonal to this predicate — the
+    /// L5 reversal logic reads <see cref="IsFlexReverseDirection"/> to
+    /// distinguish the two row variants + the two column variants.</summary>
     public static bool IsFlexColumnDirection(this FlexDirectionValue value)
         => value == FlexDirectionValue.Column || value == FlexDirectionValue.ColumnReverse;
+
+    /// <summary>Per Phase 3 Task 15 L5 — is this a reverse direction?
+    /// Per CSS Flexbox L1 §5.1, <c>row-reverse</c> and
+    /// <c>column-reverse</c> "swap main-start and main-end". Item
+    /// per-emission math (cross-axis alignment, stretch, the
+    /// <c>justify-content</c> start-offset + between-spacing) is
+    /// UNCHANGED; only the main-axis ORIGIN flips. The L5 implementation
+    /// applies a single offset-flip transform at the emission site
+    /// IN FLEXLAYOUTER (not by this predicate itself); the formula
+    /// accounts for the wrapper's content-box origin:
+    /// <c>actualMainOffset = (contentMainOffset + containerMainSize) -
+    /// (mainCursor - contentMainOffset) - itemMainSize</c>. The
+    /// <c>contentMainOffset</c> term is the wrapper's content-box
+    /// start on the main axis (= padding/border-aware origin). The
+    /// natural-direction (row / column) algorithm produces both the
+    /// items' end-edge placements + the reversed visual ordering in
+    /// one pass. See <c>FlexLayouter.cs</c>'s emission loop for the
+    /// applied transform.
+    ///
+    /// <para><b>Reversal semantics.</b>
+    /// <list type="bullet">
+    ///   <item><c>row-reverse</c> — main = inline (still), but main-start
+    ///   moves to the inline-end edge; under LTR the first DOM item
+    ///   appears at the right edge.</item>
+    ///   <item><c>column-reverse</c> — main = block (still), but
+    ///   main-start moves to the block-end edge; the first DOM item
+    ///   appears at the bottom of the container.</item>
+    /// </list>
+    /// Cross-axis behavior is unchanged: <c>flex-direction: row-reverse</c>
+    /// still has block as cross axis; <c>column-reverse</c> still has
+    /// inline as cross axis. <c>justify-content</c> values honor the
+    /// reversed main axis — <c>flex-start</c> packs at the (reversed)
+    /// main-start, which is visually the right edge for
+    /// <c>row-reverse</c> and the bottom edge for <c>column-reverse</c>.</para></summary>
+    public static bool IsFlexReverseDirection(this FlexDirectionValue value)
+        => value == FlexDirectionValue.RowReverse
+            || value == FlexDirectionValue.ColumnReverse;
 }

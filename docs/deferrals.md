@@ -840,20 +840,46 @@ grepping the ID).
   `BoxKind.FlexContainer`) or `display: inline-flex` (=
   `BoxKind.InlineFlexContainer`) lays out its direct block-level
   children along the main axis selected by `flex-direction`. Per
-  Phase 3 Task 15 L4 the layouter honors two `flex-direction` values:
-  `row` (the L1-L3 default; main = inline axis, items flow left-to-
-  right) and `column` (L4 new; main = block axis, items stack top-to-
-  bottom). For column direction `justify-content` controls block-axis
-  packing + `align-items` controls inline-axis placement (the axis
-  swap is transparent to L2 + L3's alignment math — only the cursor
-  axis + the property reads change). The reversed variants
-  (`row-reverse` / `column-reverse`) are decoded but currently treated
-  as their non-reversed counterparts (L5+ scope). Each item emits at
-  its natural main-axis + cross-axis sizes from the direction-
-  appropriate property (= width / height for row → main / cross; height
-  / width for column). Items pack along the main-axis cursor; the
-  cursor is offset by L2's `justify-content` start-offset + advances
-  by `itemMainSize + betweenSpacing`. L2's `justify-content` honors the full matrix per
+  Phase 3 Task 15 L4 + L5 the layouter honors all four
+  `flex-direction` values **for LTR horizontal-tb** (the L1 default
+  writing mode; per Phase 3 Task 15 L5 post-PR-#65 review F#1 the
+  spec-correct axis mapping for RTL or vertical writing modes per
+  CSS Flexbox §3.1 is L6+ scope — the L5 contract is LTR
+  horizontal-tb only): `row` (the L1-L3 default; main = inline
+  axis, items flow left-to-right), `column` (L4 new; main = block
+  axis, items stack top-to-bottom), `row-reverse` (L5 new; main =
+  inline axis, but main-start moves to the inline-end edge so items
+  pack at the right edge in reverse DOM order), and `column-reverse`
+  (L5 new; main = block axis, but main-start moves to the block-end
+  edge so items pack at the bottom in reverse DOM order). For column
+  direction `justify-content` controls block-axis packing +
+  `align-items` controls inline-axis placement (the axis swap is
+  transparent to L2 + L3's alignment math — only the cursor axis +
+  the property reads change). For the reversed variants per CSS
+  Flexbox L1 §5.1, the per-item placement math (cross-axis alignment,
+  stretch, justify-content start-offset + between-spacing) is
+  unchanged from the non-reversed counterpart; only the FINAL
+  main-axis offset assigned to each fragment is flipped around the
+  container's main-extent — the spec-precise formula applied in
+  `FlexLayouter`'s emission loop accounts for the wrapper's content-
+  box origin:
+  `actualMainOffset = (contentMainOffset + containerMainSize) -
+  (mainCursor - contentMainOffset) - itemMainSize`, where
+  `contentMainOffset` is the wrapper's content-box start on the main
+  axis (padding/border-aware) and `mainCursor` is the natural
+  non-reversed cursor position from the justify-content algorithm.
+  The effect is that main-start and main-end swap per CSS Flexbox
+  §5.1; items are placed using the same justify-content algorithm
+  but their offsets are mirrored across the main-extent, yielding
+  reverse DOM ordering in a single emission pass. Cross-axis behavior is
+  unchanged for reversed variants (row-reverse still has block as
+  cross axis; column-reverse still has inline as cross axis). Each
+  item emits at its natural main-axis + cross-axis sizes from the
+  direction-appropriate property (= width / height for row → main /
+  cross; height / width for column). Items pack along the main-axis
+  cursor; the cursor is offset by L2's `justify-content` start-offset
+  + advances by `itemMainSize + betweenSpacing`. L2's
+  `justify-content` honors the full matrix per
   CSS Box Alignment L3 §4.5 + §5.3: six base values (`flex-start`,
   `flex-end`, `center`, `space-between`, `space-around`,
   `space-evenly`) cross three overflow modes (default, `safe`,
@@ -882,19 +908,25 @@ grepping the ID).
   content-inline-size (= available inline range from BlockLayouter's
   ConfigureEmission) — `width: auto` on a block-level flex container
   means "fill containing block" per CSS Sizing §3.4, NOT shrink-to-fit
-  (inline-flex shrink-to-fit is L5+ scope). The flex container is
+  (inline-flex shrink-to-fit is L6+ scope). The flex container is
   atomic to outer pagination (the entire container's items emit on
   the page the wrapper landed on; no `FlexContinuation` resume).
 - **Missing** —
-  - `flex-direction: row-reverse` and `column-reverse` (CSS Flexbox L1
-    §5.1). The reversal of item order is orthogonal to the row/column
-    axis swap shipped in L4 — both reversed variants are decoded by
-    `ReadFlexDirection` but the FlexLayouter currently treats them as
-    their non-reversed counterparts (row-reverse → row, column-reverse
-    → column). Sub-cycle L5+ adds the item-order reversal in a single
-    pass over the per-item emission loop (cursor walks from main-end
-    inward instead of from main-start outward).
   - `flex-wrap: wrap` / `wrap-reverse`
+  - Writing-mode and `direction` integration for `flex-direction`
+    axis mapping (CSS Flexbox §3.1): all 4 directions are honored
+    for LTR horizontal-tb but the axis mapping differs in RTL +
+    vertical writing modes. For example, `row` in RTL means right-
+    to-left along the inline axis (physically equivalent to LTR
+    `row-reverse`); `row` in vertical-rl swaps the main + cross
+    axes onto the block + inline directions of the rotated writing
+    mode. L6+ scope — requires plumbing `direction` +
+    `writing-mode` properties through the layout pipeline. Pinned
+    by the Skip'd
+    `L5_known_gap_rtl_row_should_flip_main_axis_but_no_direction_pipeline_yet`
+    test — when L6+ adds the direction pipeline, that test should
+    flip to spec-correct expectations + this bullet should be
+    removed.
   - Outer-main-size + auto-margins in `justify-content` free-space
     calculation (CSS Flexbox L1 §9.5): L2's pre-pass sums only
     declared `width`, ignoring item margins / padding / borders /
@@ -1006,16 +1038,16 @@ grepping the ID).
 - **Trigger** — L2 picked up `justify-content`; L3 picked up
   `align-items` (base values + stretch); L4 picked up
   `flex-direction: column` + the F#1 hardening for column auto-
-  height wrappers. Sub-cycle L5+ picks up `flex-wrap`, the
-  reversed variants' item-order reversal, the `flex-grow` /
-  `flex-shrink` / `flex-basis` interpolation, anonymous-flex-item
-  wrapping for inline/text children, and the
+  height wrappers; L5 picked up `flex-direction: row-reverse` +
+  `column-reverse` (the offset-flip transform at the per-item
+  emission site). Sub-cycle L6+ picks up `flex-wrap`, the
+  `flex-grow` / `flex-shrink` / `flex-basis` interpolation,
+  anonymous-flex-item wrapping for inline/text children, and the
   `FlexContinuation`-based multi-page split.
 - **Added** — Phase 3 Task 15 cycle 1 (Hello World).
-- **Removal condition** — Sub-cycle L5+ ships the remaining
-  deferred features (wrap / row-reverse + column-reverse item-order
-  reversal / grow / shrink / basis / order / baseline / multi-page
-  split / anonymous flex item).
+- **Removal condition** — Sub-cycle L6+ ships the remaining
+  deferred features (wrap / grow / shrink / basis / order /
+  baseline / multi-page split / anonymous flex item).
 
 ---
 

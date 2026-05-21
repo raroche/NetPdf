@@ -1094,6 +1094,44 @@ internal static class ComputedStyleLayoutExtensions
         }
     }
 
+    /// <summary>Per Phase 3 Task 15 L12 — read the item's
+    /// (min, max) main-axis size for the §9.7 step-4 clamping
+    /// iteration. Returns <c>(min, max)</c> as doubles:
+    /// <list type="bullet">
+    ///   <item><c>min</c> = the resolved <c>min-width</c> (row) or
+    ///   <c>min-height</c> (column) length in pixels; 0 when the
+    ///   slot is auto / unset / non-LengthPx (= the L12 floor;
+    ///   spec-correct `min-width: auto` for flex items resolves to
+    ///   the item's intrinsic content size per CSS Sizing §5.5,
+    ///   which is L13+ scope pending intrinsic-sizing integration).</item>
+    ///   <item><c>max</c> = the resolved <c>max-width</c> /
+    ///   <c>max-height</c> length in pixels; <see cref="double.PositiveInfinity"/>
+    ///   when the slot is none / unset / non-LengthPx (= no upper
+    ///   bound). Percentages are L13+ scope (need container main-size
+    ///   resolution at the per-item site).</item>
+    /// </list>
+    ///
+    /// <para><b>Used by</b> <c>FlexLayouter.ResolveFlexibleMainSizes</c>
+    /// per CSS Flexbox L1 §9.7 step 4: after the initial grow/shrink
+    /// distribution, items are clamped to <c>[min, max]</c> + the
+    /// clamped-off space is redistributed among non-frozen items in
+    /// the next iteration.</para></summary>
+    public static (double Min, double Max) ResolveFlexItemMinMaxMainSize(
+        this Boxes.Box item,
+        PropertyId minSizeProperty,
+        PropertyId maxSizeProperty)
+    {
+        var minSlot = item.Style.Get(minSizeProperty);
+        var maxSlot = item.Style.Get(maxSizeProperty);
+        var min = minSlot.Tag == ComputedSlotTag.LengthPx
+            ? Math.Max(0, minSlot.AsLengthPx())
+            : 0.0;
+        var max = maxSlot.Tag == ComputedSlotTag.LengthPx
+            ? Math.Max(0, maxSlot.AsLengthPx())
+            : double.PositiveInfinity;
+        return (min, max);
+    }
+
     /// <summary>Per Phase 3 Task 14 cycle 3 + post-PR-#59 review
     /// hardening (Finding #7) — predicate distinguishing <c>height:
     /// auto</c> from any EXPLICIT sizing on a box's computed style.

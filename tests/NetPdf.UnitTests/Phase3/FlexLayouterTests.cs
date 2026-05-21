@@ -5711,24 +5711,28 @@ public sealed class FlexLayouterTests
     }
 
     [Fact]
-    public void L8_known_gap_min_width_does_not_clamp_resolved_size_yet()
+    public void L12_min_width_clamps_resolved_shrink_per_spec_step_4()
     {
-        // Per Phase 3 Task 15 L8 — KNOWN GAP. Per CSS Flexbox L1 §9.7
-        // step 4 the §9.7 algorithm must clamp resolved sizes to
-        // [min-main-size, max-main-size] and iterate to redistribute
-        // the clamped-off space. L8 Hello World skips this clamp; the
-        // L9+ hardening will add it.
+        // Per Phase 3 Task 15 L12 — replaces the L8 known-gap pin
+        // (`L8_known_gap_min_width_does_not_clamp_resolved_size_yet`).
+        // Per CSS Flexbox L1 §9.7 step 4 the algorithm clamps each
+        // item's resolved main-size to [min, max] + iterates to
+        // redistribute the clamped-off space among non-frozen items.
         //
-        // Fixture: 3 items each with width: 300, min-width: 250,
-        // flex-shrink: 1 in a 600px container. sumHypothetical = 900;
-        // freeMainSpace = -300; each item absorbs 100 → resolved 200.
-        // BUT 200 < min-width 250, so the spec-correct behavior would
-        // be: clamp each to 250 + iterate (now sumScaledShrinks excludes
-        // the clamped items, redistribution might leave items at 250
-        // each = 750 total > 600 container so the container overflows).
-        // L8 currently produces 200/200/200 (= the un-clamped result).
-        // When L9+ adds the clamp, this test should flip to assert
-        // the spec-correct behavior.
+        // Fixture: 3 items × width: 300 + min-width: 250 + flex-shrink: 1
+        // (cascade default) in a 600px container. Pre-fix:
+        // sumHypothetical = 900; freeSpace = -300; each item absorbs
+        // 100 → resolved 200 (= the L8 incomplete output).
+        // Post-fix (§9.7 step 4):
+        //   Iter 1: same distribution → 200 each. Clamp: 200 < 250
+        //           → clamp UP to 250. Violations: +50 each;
+        //           totalViolation = +150 > 0 → freeze min-violators.
+        //   Iter 2: all 3 items frozen at 250. No further distribution.
+        //           Convergence (totalViolation == 0).
+        // Final: each item at 250; total = 750 > 600 → container
+        // overflows by 150. This is the spec-correct behavior: items
+        // honor their min-width even if it means the container
+        // overflows.
         var sink = new RecordingFragmentSink();
         using var shaper = new SyntheticShaperResolver();
 
@@ -5768,12 +5772,10 @@ public sealed class FlexLayouterTests
             }
         }
         Assert.Equal(3, fragments.Count);
-        // Pin the CURRENT (un-clamped) behavior. When L9+ adds the
-        // §9.7 step-4 clamp, this assertion should flip to (250, 250,
-        // 250).
-        Assert.Equal(200.0, fragments[0].InlineSize, precision: 3);
-        Assert.Equal(200.0, fragments[1].InlineSize, precision: 3);
-        Assert.Equal(200.0, fragments[2].InlineSize, precision: 3);
+        // Spec-correct: each item clamped UP to min-width 250.
+        Assert.Equal(250.0, fragments[0].InlineSize, precision: 3);
+        Assert.Equal(250.0, fragments[1].InlineSize, precision: 3);
+        Assert.Equal(250.0, fragments[2].InlineSize, precision: 3);
     }
 
     // ====================================================================
@@ -8269,6 +8271,306 @@ public sealed class FlexLayouterTests
         Assert.Equal(150.0, fragments[1]!.Value.BlockOffset, precision: 3); // item 1 → line 0
         Assert.Equal(100.0, fragments[2]!.Value.BlockOffset, precision: 3); // item 2 → line 1
         Assert.Equal(150.0, fragments[3]!.Value.BlockOffset, precision: 3); // item 3 → line 0
+    }
+
+    // ====================================================================
+    //  Phase 3 Task 15 L12 — §9.7 step-4 min/max clamping iteration
+    //  (4 additional cases beyond the canonical
+    //  `L12_min_width_clamps_resolved_shrink_per_spec_step_4` above).
+    // ====================================================================
+
+    [Fact]
+    public void L12_max_width_clamps_resolved_grow_per_spec_step_4()
+    {
+        // Per Phase 3 Task 15 L12 — symmetric case for max-width on grow.
+        // Per CSS Flexbox L1 §9.7 step 4 the clamping iteration freezes
+        // max-violators (totalViolation < 0) on the same pass it freezes
+        // min-violators on the other sign.
+        //
+        // Fixture: 3 items × width: 100 + max-width: 150 + flex-grow: 1
+        // in a 600px container. Pre-fix:
+        //   sumHypothetical = 300; freeSpace = +300; each item absorbs
+        //   100 → resolved 200.
+        // Post-fix (§9.7 step 4):
+        //   Iter 1: same distribution → 200 each. Clamp: 200 > 150
+        //           → clamp DOWN to 150. Violations: -50 each;
+        //           totalViolation = -150 < 0 → freeze max-violators.
+        //   Iter 2: all 3 items frozen at 150. No further distribution.
+        //           Convergence (totalViolation == 0).
+        // Final: each item at 150; total = 450 < 600 → container has
+        // 150px of unused free space. Spec-correct: items honor
+        // max-width even if it means the container has leftover space.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Width, 600);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            SetLengthPx(style, PropertyId.MaxWidth, 150);
+            style.Set(PropertyId.FlexGrow, ComputedSlot.FromNumber(1.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.Equal(3, fragments.Count);
+        // Spec-correct: each item clamped DOWN to max-width 150.
+        Assert.Equal(150.0, fragments[0].InlineSize, precision: 3);
+        Assert.Equal(150.0, fragments[1].InlineSize, precision: 3);
+        Assert.Equal(150.0, fragments[2].InlineSize, precision: 3);
+    }
+
+    [Fact]
+    public void L12_mixed_min_and_max_violations_iterate_to_convergence()
+    {
+        // Per Phase 3 Task 15 L12 — combined violation case proves the
+        // §9.7 step-4 algorithm correctly handles the totalViolation
+        // sign rule: per spec, an iteration freezes EITHER min-violators
+        // (when totalViolation > 0) OR max-violators (when < 0). When
+        // both kinds exist, the larger-magnitude family freezes first
+        // and the other family resolves in subsequent iterations.
+        //
+        // Fixture (row direction, 600px container, all flex-grow: 1,
+        // hypothetical = width = 100 each):
+        //   item 0: width: 100, min-width: 250 (= +150 min violation
+        //           after the natural grow to 200)
+        //   item 1: width: 100, max-width: 150 (= -50 max violation
+        //           after the natural grow to 200)
+        //   item 2: width: 100, no min/max (= will absorb leftover)
+        //
+        // Iter 1: equal distribution → 200 each.
+        //   item 0: 200 < 250 → clamp UP, violation +50.
+        //   item 1: 200 > 150 → clamp DOWN, violation -50.
+        //   item 2: no violation.
+        //   totalViolation = 0 → spec says STOP. All items frozen at
+        //   clamped values: (250, 150, 200) = total 600 exactly.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Width, 600);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        var widths = new double[] { 100, 100, 100 };
+        var minWidths = new double[] { 250, 0, 0 };
+        var maxWidths = new double[] { 0, 150, 0 };
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, widths[i]);
+            SetLengthPx(style, PropertyId.Height, 50);
+            if (minWidths[i] > 0)
+            {
+                SetLengthPx(style, PropertyId.MinWidth, minWidths[i]);
+            }
+            if (maxWidths[i] > 0)
+            {
+                SetLengthPx(style, PropertyId.MaxWidth, maxWidths[i]);
+            }
+            style.Set(PropertyId.FlexGrow, ComputedSlot.FromNumber(1.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.Equal(3, fragments.Count);
+        // Item 0: clamped UP by min-width to 250.
+        Assert.Equal(250.0, fragments[0].InlineSize, precision: 3);
+        // Item 1: clamped DOWN by max-width to 150.
+        Assert.Equal(150.0, fragments[1].InlineSize, precision: 3);
+        // Item 2: no clamp; absorbs the natural distribution = 200.
+        Assert.Equal(200.0, fragments[2].InlineSize, precision: 3);
+    }
+
+    [Fact]
+    public void L12_min_width_clamps_when_basis_below_min_during_hypothetical()
+    {
+        // Per Phase 3 Task 15 L12 — covers the corner case where the
+        // declared flex-basis is itself BELOW min-width. Per CSS Flexbox
+        // L1 §9.7 the hypothetical main-size is the flex-basis value
+        // (before flexing); step-4 clamping pulls it up to min-width on
+        // the first iteration.
+        //
+        // Fixture: 2 items × flex-basis: 50 + min-width: 200 +
+        // flex-grow: 1 in a 600px container. Pre-fix:
+        //   sumHypothetical = 100; freeSpace = +500; each item absorbs
+        //   250 → resolved 300 (no clamping needed because grow exceeds
+        //   the min). But what if freeSpace can't bring it above min?
+        // This test uses a CASE where natural grow would land at 200
+        // exactly = the min boundary. Setting basis: 50, min: 250,
+        // container: 600 → naturally grows to 300 each (50 + 250),
+        // still above min. So we strengthen by adding flex-shrink: 0
+        // and reducing the container to make the test sharper:
+        //   2 items × flex-basis: 50 + min-width: 250 in a 200px
+        //   container. flex-grow: 0 (default basis path).
+        //   sumHypothetical = 100; freeSpace = 200 - 100 = 100. No
+        //   grow → resolved = basis = 50 each. Clamp: 50 < 250
+        //   → clamp UP to 250. Final: (250, 250); total = 500 >
+        //   container 200 → overflow by 300. Spec-correct.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Width, 200);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        var items = new Box[2];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.FlexBasis, 50);
+            SetLengthPx(style, PropertyId.Height, 50);
+            SetLengthPx(style, PropertyId.MinWidth, 250);
+            // grow: 0 (default), shrink: 1 (default). Free space is
+            // positive (no shrink kicks in) and there's no grow factor
+            // so resolved stays at basis until clamping.
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 200, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.Equal(2, fragments.Count);
+        // Both items clamped UP from basis 50 → min 250.
+        Assert.Equal(250.0, fragments[0].InlineSize, precision: 3);
+        Assert.Equal(250.0, fragments[1].InlineSize, precision: 3);
+    }
+
+    [Fact]
+    public void L12_column_direction_max_height_clamps_resolved_grow()
+    {
+        // Per Phase 3 Task 15 L12 — axis-symmetric variant proving the
+        // §9.7 step-4 clamping also fires under
+        // `flex-direction: column` where the main axis is the block
+        // axis and the relevant constraint properties are min-HEIGHT
+        // / max-HEIGHT (NOT min-width / max-width).
+        //
+        // Uses the GROW + MAX-HEIGHT direction because under column
+        // direction the BlockLayouter pre-grows the container's
+        // block extent to fit items' declared heights (= the
+        // column-direction auto-height path also applies to declared
+        // heights when items overflow), so naturally-arising shrink
+        // scenarios under column direction don't fire. Grow-clamp
+        // remains testable because we can declare a container TALLER
+        // than the item sum, letting flex-grow distribute the surplus
+        // until max-height kicks in.
+        //
+        // Fixture: 2 items × height: 100 + max-height: 200 +
+        // flex-grow: 1 in a 600px block-axis container; column
+        // direction.
+        //   sumHypothetical = 200; freeSpace = +400; sumFlexGrow = 2;
+        //   each item grows by (1/2)*400 = 200 → resolved 300.
+        //   Clamp: 300 > 200 → clamp DOWN to 200. totalViolation =
+        //   -200 < 0 → freeze max-violators.
+        //   Iter 2: all frozen. Final each at 200, total = 400 <
+        //   container 600 → 200px unused free space on the block axis.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        // column direction (KeywordIdColumn = 2 per the flex-direction
+        // properties.json mapping). Same as the L8 column-direction
+        // tests above.
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2));
+        SetLengthPx(flex.Style, PropertyId.Width, 200);
+        SetLengthPx(flex.Style, PropertyId.Height, 600);
+
+        var items = new Box[2];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 100);
+            SetLengthPx(style, PropertyId.MaxHeight, 200);
+            style.Set(PropertyId.FlexGrow, ComputedSlot.FromNumber(1.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 200, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.Equal(2, fragments.Count);
+        // Each item clamped DOWN to max-height 200.
+        Assert.Equal(200.0, fragments[0].BlockSize, precision: 3);
+        Assert.Equal(200.0, fragments[1].BlockSize, precision: 3);
     }
 
     // ====================================================================

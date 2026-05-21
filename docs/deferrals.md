@@ -1143,17 +1143,27 @@ grepping the ID).
     §5.1). L8 admits `auto` + `content` + `<length-percentage>` only;
     the three intrinsic keywords are L9+ scope (depend on intrinsic
     sizing integration with the BlockLayouter pre-measure).
-  - **§9.7 step-4 min/max clamping** (CSS Flexbox L1 §9.7 + §9.5) —
-    L8's flexibility algorithm distributes free space in a SINGLE
-    PASS without honoring `min-width` / `max-width` clamps; per spec
-    the algorithm clamps each item to `[min-main-size, max-main-size]`
-    + iterates redistribution among the unclamped items until all
-    items either are within their clamps or there's no free space
-    left to distribute. L8 produces approximate sizes that may
-    violate min/max constraints. Pinned by the
-    `L8_known_gap_min_width_does_not_clamp_resolved_size_yet` test;
-    when L9+ adds the clamp + iteration, that test should flip to
-    assert the spec-correct clamped sizes.
+  - **§9.7 step-4 min/max clamping** ✅ **shipped in L12** (CSS Flexbox L1
+    §9.7 + §9.5) — `ResolveFlexibleMainSizes` now delegates per line
+    to `ResolveLineWithMinMaxClamping`, which implements the full
+    iterative algorithm: each iteration recomputes remaining
+    free-space (excluding frozen items), redistributes among
+    unfrozen items by flex-grow / scaled-shrink, clamps each
+    unfrozen item to `[min-main-size, max-main-size]`, tracks
+    `totalViolation`, and freezes min-violators
+    (`totalViolation > 0`) or max-violators (`totalViolation < 0`)
+    per spec. Convergence is guaranteed in ≤ `itemCount + 1`
+    iterations. The L8 known-gap test
+    `L8_known_gap_min_width_does_not_clamp_resolved_size_yet` is
+    flipped to `L12_min_width_clamps_resolved_shrink_per_spec_step_4`
+    + asserts the spec-correct clamped sizes. Known L13+ gap:
+    `min-width: auto` (the cascade default for flex items) per CSS
+    Sizing L3 §5.5 resolves to the item's intrinsic content size;
+    L12's `ResolveFlexItemMinMaxMainSize` returns 0 for non-LengthPx
+    min slots (= a conservative floor pending intrinsic-sizing
+    integration). Percentage min/max-width also defers to L13+
+    (needs per-item container main-size resolution at the resolver
+    site).
   - **Shared `FlexItemSizing` model unification** (post-PR-#68
     architecture recommendation): the L8 post-PR-#68 hardening F#1
     extracted `ResolveFlexItemHypotheticalMainSize` to a shared
@@ -1215,12 +1225,15 @@ grepping the ID).
   cycle L9 picked up `align-self` (per-item alignment override per
   CSS Box Alignment L3 §4.3); sub-cycle L10 picked up the `order`
   property (per CSS Flexbox L1 §5.4 — items reorder via stable sort
-  by (order, DOM-index)). Sub-cycle L11+ picks up `flex-wrap:
-  wrap-reverse`, proper `<baseline-position>` alignment for both
-  `align-items` and `align-content`, the `flex` shorthand parser,
-  the §9.7 step-4 min/max clamping iteration, anonymous-flex-item
-  wrapping for inline/text children, and the
-  `FlexContinuation`-based multi-page split.
+  by (order, DOM-index)); L11 picked up `flex-wrap: wrap-reverse`
+  (proper cross-axis SWAP at offset-computation time per CSS Flexbox
+  L1 §6.3 — see PR-#71 hardening); L12 picked up the §9.7 step-4
+  min/max-width clamping iteration (closing the L8 known-gap pin).
+  Sub-cycle L13+ picks up proper `<baseline-position>` alignment
+  for both `align-items` and `align-content`, the `flex` shorthand
+  parser, `min-width: auto` intrinsic resolution per CSS Sizing L3
+  §5.5, anonymous-flex-item wrapping for inline/text children, and
+  the `FlexContinuation`-based multi-page split.
 - **Added** — Phase 3 Task 15 cycle 1 (Hello World).
 - **Removal condition** — Sub-cycle L11+ ships the remaining
   deferred features (wrap-reverse / proper baseline alignment /
@@ -1228,9 +1241,14 @@ grepping the ID).
   anonymous flex item). L6 shipped `flex-wrap: wrap`; L7 shipped
   `align-content` (base values + §8.4 stretch default + post-PR-#67
   per-mode overflow handling); L8 shipped the §7 + §9.7 flexibility
-  algorithm; L9 shipped `align-self`; L10 shipped `order`. The
-  `flex` shorthand parser and the §9.7 step-4 min/max-width clamping
-  iteration are the natural L11 candidates.
+  algorithm; L9 shipped `align-self`; L10 shipped `order`; L11
+  shipped `flex-wrap: wrap-reverse` (with the post-PR-#71 cross-axis
+  swap hardening); L12 shipped the §9.7 step-4 min/max-width
+  clamping iteration. The `flex` shorthand parser + proper
+  `<baseline-position>` alignment + `min-width: auto` intrinsic
+  resolution + multi-page flex split (`FlexContinuation`) +
+  anonymous-flex-item wrapping for inline/text children are the
+  natural L13+ candidates.
 
 ---
 

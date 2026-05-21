@@ -217,6 +217,17 @@ internal static class LengthResolver
                 return true;
             }
         }
+        // Per Phase 3 Task 15 L12 — MaxSize accepts `none` (= no upper
+        // bound) per CSS Sizing L3 §5.2 + the `<length-percentage>`
+        // production. The reader (ReadFlexMinMax / ReadMaxSizeOrInfinity)
+        // maps Keyword(KeywordIdNone = 0) → double.PositiveInfinity (=
+        // no clamp); LengthPx/Percentage → the explicit cap value.
+        if (type is PropertyType.MaxSize
+            && value.Equals("none", StringComparison.OrdinalIgnoreCase))
+        {
+            slot = ComputedSlot.FromKeyword(KeywordIdNone);
+            return true;
+        }
         return false;
     }
 
@@ -275,6 +286,9 @@ internal static class LengthResolver
             // Per Phase 3 Task 15 L8 — flex-basis admits the
             // <length-percentage> production per CSS Flexbox L1 §7.2.
             case PropertyType.FlexBasis:
+            // Per Phase 3 Task 15 L12 — MaxSize admits the
+            // <length-percentage> production per CSS Sizing L3 §5.2.
+            case PropertyType.MaxSize:
                 return true;
             default:
                 reason = "percentage is not allowed for this property";

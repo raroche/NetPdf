@@ -1058,15 +1058,15 @@ grepping the ID).
     cycle L4+ (or later — anchor positioning is a separate spec)
     will pick this up.
   - ~~`align-self` per-item alignment override~~ — **shipped in
-    Phase 3 Task 15 L9.** `ResolvedAlignSelf` + `ReadAlignSelf` +
-    `ResolveAgainstContainerAlignItems` extension. The L9
-    FlexLayouter reads the per-item `align-self` and folds it
-    against the container's `align-items` at the per-item placement
-    site. The cascade default `auto` preserves the L1-L8
-    container-only behavior; explicit values override per-item. The
-    proper `<baseline-position>` family (CSS Box Alignment L3 §6.2)
-    still approximates to Stretch — L10+ scope (text-shaping
-    integration).
+    Phase 3 Task 15 L9.** Per CSS Box Alignment L3 §4.3 the
+    FlexLayouter reads <c>item.Style.ReadAlignSelf()</c> for each
+    item + folds it against the container's <c>align-items</c> via
+    <c>ResolveAgainstContainerAlignItems</c>; the cascade default
+    <c>auto</c> preserves the container-only L1-L8 behavior.
+    Per Phase 3 Task 15 L10 post-PR-#70 review F#5 — this bullet
+    was accidentally re-introduced in the L10 hardening but L9 had
+    already removed it; restored to its post-L9 "shipped"
+    annotation.
   - Baseline-family overflow semantics + production parser
     recovery refinement for compound `align-items` keywords — L3
     decodes the compound `<overflow-position> <self-position>`
@@ -1128,7 +1128,17 @@ grepping the ID).
     (= 4×100=400 > 250 → 2 lines). When the BlockLayouter
     width-resolution fix lands ALL THREE tests should flip — at
     which point remove BOTH this bullet AND all three pins.
-  - `order` property
+  - ~~`order` property~~ — **shipped in Phase 3 Task 15 L10.** New
+    `order` Integer property (default 0, applies_to FlexItems) +
+    `ReadOrder` extension + `GetFlexChildrenInOrderSequence` shared
+    helper. The FlexLayouter's `PackLines` /
+    `ResolveFlexibleMainSizes` / emission loop AND the BlockLayouter's
+    `PreMeasureFlexMultiLineCrossExtent` all walk the sorted sequence
+    via `_sortedFlexChildIndices`; FlexLine.FirstItemIndex is now a
+    POSITION in the sorted sequence (not a DOM-children index).
+    Negative orders + equal-order DOM-stable ordering both supported.
+    Fast-path short-circuit returns DOM order when no item declares
+    a non-zero order, preserving L1-L9 behavior verbatim.
   - **`flex` shorthand parser** (CSS Flexbox L1 §7.4) — the shorthand
     `flex: <flex-grow> <flex-shrink> <flex-basis>` (with sentinel
     values `none` / `auto` / `<number>` per §7.4) is not yet parsed.
@@ -1211,23 +1221,24 @@ grepping the ID).
   cycle L8 picked up `flex-grow` / `flex-shrink` / `flex-basis` (the
   §7 + §9.7 flexibility algorithm — see the L8 entry above). Sub-
   cycle L9 picked up `align-self` (per-item alignment override per
-  CSS Box Alignment L3 §4.3 — see the L9 entry above). Sub-cycle
-  L10+ picks up `flex-wrap: wrap-reverse`, proper
-  `<baseline-position>` alignment for both `align-items` and
-  `align-content`, the `flex` shorthand parser, the §9.7 step-4
-  min/max clamping iteration, the `order` property,
-  anonymous-flex-item wrapping for inline/text children, and the
+  CSS Box Alignment L3 §4.3); sub-cycle L10 picked up the `order`
+  property (per CSS Flexbox L1 §5.4 — items reorder via stable sort
+  by (order, DOM-index)). Sub-cycle L11+ picks up `flex-wrap:
+  wrap-reverse`, proper `<baseline-position>` alignment for both
+  `align-items` and `align-content`, the `flex` shorthand parser,
+  the §9.7 step-4 min/max clamping iteration, anonymous-flex-item
+  wrapping for inline/text children, and the
   `FlexContinuation`-based multi-page split.
 - **Added** — Phase 3 Task 15 cycle 1 (Hello World).
-- **Removal condition** — Sub-cycle L10+ ships the remaining
+- **Removal condition** — Sub-cycle L11+ ships the remaining
   deferred features (wrap-reverse / proper baseline alignment /
-  order / `flex` shorthand / §9.7 min-max clamp / multi-page split /
+  `flex` shorthand / §9.7 min-max clamp / multi-page split /
   anonymous flex item). L6 shipped `flex-wrap: wrap`; L7 shipped
   `align-content` (base values + §8.4 stretch default + post-PR-#67
-  per-mode overflow handling); L8 shipped the §7 + §9.7
-  flexibility algorithm; L9 shipped `align-self` (per-item alignment
-  override per §4.3). The `flex` shorthand parser and `order` are
-  the natural L10 candidates.
+  per-mode overflow handling); L8 shipped the §7 + §9.7 flexibility
+  algorithm; L9 shipped `align-self`; L10 shipped `order`. The
+  `flex` shorthand parser and the §9.7 step-4 min/max-width clamping
+  iteration are the natural L11 candidates.
 
 ---
 

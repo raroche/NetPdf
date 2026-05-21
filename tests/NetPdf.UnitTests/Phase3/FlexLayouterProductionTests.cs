@@ -1585,6 +1585,95 @@ public sealed class FlexLayouterProductionTests
         Assert.Equal(wrapperBlockStart - 50.0, itemB!.Value.BlockOffset, precision: 3);
     }
 
+    [Fact]
+    public async Task L10_production_html_order_reorders_items_along_main_axis()
+    {
+        // Phase 3 Task 15 L10 — production-pipeline test for the
+        // `order` property per CSS Flexbox L1 §5.4. 3 items with
+        // explicit orders cycle through the full HTML → cascade →
+        // BoxBuilder → BlockLayouter → FlexLayouter chain. Effective
+        // order: item .c (-1) first, item .b (0) middle, item .a (2)
+        // last. Cursors: 0, 100, 200 for the sorted sequence.
+        // InlineOffsets in DOM order: a → 200, b → 100, c → 0.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    width: 600px;
+                    height: 60px;
+                }
+                .item {
+                    width: 100px;
+                    height: 50px;
+                    flex-shrink: 0;
+                }
+                .a { order: 2; }
+                .b { order: 0; }
+                .c { order: -1; }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+              <div class="item c"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        BoxFragment? itemA = null;
+        BoxFragment? itemB = null;
+        BoxFragment? itemC = null;
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class") ?? string.Empty;
+            var classes = classAttr.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var isItem = false;
+            foreach (var c in classes) if (c == "item") { isItem = true; break; }
+            if (!isItem) continue;
+            foreach (var c in classes)
+            {
+                if (c == "a") itemA = f;
+                else if (c == "b") itemB = f;
+                else if (c == "c") itemC = f;
+            }
+        }
+        Assert.NotNull(itemA);
+        Assert.NotNull(itemB);
+        Assert.NotNull(itemC);
+
+        // Per Phase 3 Task 15 L10 post-PR-#70 Copilot review — capture
+        // the flex container fragment + Assert.NotNull BEFORE
+        // dereferencing its InlineOffset, mirroring the other
+        // production tests in this file. Pre-fix the test defaulted
+        // wrapperInlineStart to 0.0, which would mask a wrapper-
+        // selection regression by producing a false-positive assert
+        // if the flex container box wasn't actually emitted.
+        BoxFragment? flexFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            if (srcEl.GetAttribute("class") == "flex"
+                && f.Box.Kind == BoxKind.FlexContainer)
+            {
+                flexFragment = f;
+                break;
+            }
+        }
+        Assert.NotNull(flexFragment);
+        var wrapperInlineStart = flexFragment!.Value.InlineOffset;
+
+        // a (order: 2) packs last → wrapper + 200.
+        // b (order: 0) packs middle → wrapper + 100.
+        // c (order: -1) packs first → wrapper + 0.
+        Assert.Equal(wrapperInlineStart + 200.0, itemA!.Value.InlineOffset, precision: 3);
+        Assert.Equal(wrapperInlineStart + 100.0, itemB!.Value.InlineOffset, precision: 3);
+        Assert.Equal(wrapperInlineStart, itemC!.Value.InlineOffset, precision: 3);
+    }
+
     private sealed class RecordingDiagnosticsSink : IPaginateDiagnosticsSink
     {
         public List<PaginateDiagnostic> Diagnostics { get; } = new();

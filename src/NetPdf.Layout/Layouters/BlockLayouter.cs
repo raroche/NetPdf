@@ -5551,10 +5551,22 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         var currentLineCross = 0.0;
         var currentLineCount = 0;
 
-        foreach (var item in flexContainer.Children)
+        // Per Phase 3 Task 15 L10 — walk the EFFECTIVE FLEX ORDER (=
+        // (order, DOM-index) sorted) so this pre-measure packs into
+        // the SAME lines as FlexLayouter's PackLines. Pre-fix, the
+        // pre-measure walked DOM order; with the `order` property
+        // items can wrap differently from DOM order (e.g., item 5
+        // with order: -1 might combine with item 0 onto the same
+        // line). Sharing
+        // <see cref="ComputedStyleLayoutExtensions.GetFlexChildrenInOrderSequence"/>
+        // between the two passes guarantees line-boundary parity per
+        // the L8 F#1 hardening pattern.
+        var sortedChildIndices = flexContainer.GetFlexChildrenInOrderSequence(cancellationToken);
+
+        foreach (var idx in sortedChildIndices)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (!item.IsBlockLevel) continue;
+            var item = flexContainer.Children[idx];
 
             // Per Phase 3 Task 15 L8 post-PR-#68 F#1 — use the shared
             // flex-basis-aware hypothetical main-size helper so this

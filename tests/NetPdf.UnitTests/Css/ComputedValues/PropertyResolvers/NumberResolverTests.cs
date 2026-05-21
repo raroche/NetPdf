@@ -155,4 +155,61 @@ public sealed class NumberResolverTests
         Assert.Equal(ComputedSlotTag.Integer, result.Slot.Tag);
         Assert.Equal(1, result.Slot.AsInteger());
     }
+
+    // Per Phase 3 Task 15 L10 post-PR-#70 review hardening F#3 —
+    // direct NumberResolver coverage for the `order` property (CSS
+    // Flexbox L1 §5.4). Order is one of the few CSS Integer
+    // properties that ADMITS negative values (per
+    // NonNegativeProperties.IsRequired = false for `order`); the
+    // resolver must accept signed integers + reject decimals/units.
+    // Pre-PR-#70 the only `order` coverage was through the
+    // FlexLayouter unit + production tests (= layout assertions) —
+    // this set pins the cascade-side contract.
+    [Theory]
+    [InlineData("-1", -1)]
+    [InlineData("0", 0)]
+    [InlineData("2", 2)]
+    [InlineData("100", 100)]
+    [InlineData("-100", -100)]
+    public void Order_accepts_signed_integer(string value, int expected)
+    {
+        var result = NumberResolver.ResolveInteger(
+            value, PropertyId.Order, "order", null, default);
+        Assert.True(result.IsResolved);
+        Assert.Equal(ComputedSlotTag.Integer, result.Slot.Tag);
+        Assert.Equal(expected, result.Slot.AsInteger());
+    }
+
+    [Theory]
+    [InlineData("1.5")]
+    [InlineData("-0.5")]
+    [InlineData("3.14")]
+    public void Order_rejects_decimal(string value)
+    {
+        // CSS Flexbox §5.4 — order's value type is <integer>, not
+        // <number>. NumberResolver.ResolveInteger uses int.TryParse
+        // which rejects decimals.
+        var sink = new CapturingSink();
+        var result = NumberResolver.ResolveInteger(
+            value, PropertyId.Order, "order", sink, default);
+        Assert.True(result.IsInvalid);
+        Assert.Contains(sink.Diagnostics, d =>
+            d.Code == CssDiagnosticCodes.CssPropertyValueInvalid001);
+    }
+
+    [Theory]
+    [InlineData("1px")]
+    [InlineData("2em")]
+    [InlineData("5%")]
+    public void Order_rejects_value_with_unit(string value)
+    {
+        // CSS Flexbox §5.4 — order's value type is <integer>, no
+        // units allowed.
+        var sink = new CapturingSink();
+        var result = NumberResolver.ResolveInteger(
+            value, PropertyId.Order, "order", sink, default);
+        Assert.True(result.IsInvalid);
+        Assert.Contains(sink.Diagnostics, d =>
+            d.Code == CssDiagnosticCodes.CssPropertyValueInvalid001);
+    }
 }

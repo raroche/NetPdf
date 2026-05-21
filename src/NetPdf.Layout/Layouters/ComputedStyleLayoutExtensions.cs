@@ -914,55 +914,157 @@ internal static class ComputedStyleLayoutExtensions
         };
     }
 
+    /// <summary>Per Phase 3 Task 15 L10 — read the <c>order</c>
+    /// property per CSS Flexbox L1 §5.4 ("order Property"). Items
+    /// with a lower order value visually pack earlier on the main
+    /// axis; items with equal order preserve DOM order (= stable
+    /// sort). Default is <c>0</c> (= source order). Negative values
+    /// are allowed and produce items that pack BEFORE the default-0
+    /// items.
+    ///
+    /// <para><b>Layout impact.</b> The FlexLayouter pre-sorts its
+    /// block-level children by (order, DOM-index) before line packing
+    /// + per-line emission. The BlockLayouter's
+    /// <c>PreMeasureFlexMultiLineCrossExtent</c> pre-measure performs
+    /// the same sort so pre-measure parity with the layout pass is
+    /// preserved (= the L8 F#1 hardening shared-sizing pattern).</para>
+    ///
+    /// <para><b>Non-Integer slot fallback.</b> Returns 0 when the
+    /// cascaded slot is not Integer (e.g., unset / invalid /
+    /// unsupported). NumberResolver's Integer path accepts negative
+    /// signed integers — <c>order</c> is one of the few non-negative-
+    /// gated CSS Integer properties (per CSS Flexbox §5.4 negatives
+    /// are spec-valid).</para></summary>
+    public static int ReadOrder(this ComputedStyle style)
+    {
+        var slot = style.Get(PropertyId.Order);
+        return slot.Tag == ComputedSlotTag.Integer ? slot.AsInteger() : 0;
+    }
+
+    /// <summary>Per Phase 3 Task 15 L10 — return the child-index
+    /// sequence of <paramref name="flexContainer"/>'s block-level
+    /// children in their EFFECTIVE FLEX ORDER per CSS Flexbox L1 §5.4
+    /// — sorted by (order ascending, DOM-index ascending). Items with
+    /// equal order preserve DOM order (stable-sort guarantee). The
+    /// returned list contains only block-level children; non-block-
+    /// level children (e.g., whitespace TextRuns) are excluded so the
+    /// flex algorithm doesn't conflate them with items.
+    ///
+    /// <para><b>Why a shared helper.</b> Per the L8 F#1 hardening
+    /// precedent, the FlexLayouter's <c>PackLines</c> +
+    /// <c>ResolveFlexibleMainSizes</c> + the BlockLayouter's
+    /// <c>PreMeasureFlexMultiLineCrossExtent</c> all must walk the
+    /// SAME effective-order sequence. Centralizing the read here
+    /// guarantees pre-measure parity with the layout pass — if the
+    /// sort drifted between sites, the wrapper's cross-extent
+    /// estimate would diverge from the actual emission.</para>
+    ///
+    /// <para><b>Stability.</b> .NET's <see cref="System.Collections.Generic.List{T}"/>.Sort
+    /// is unstable; we use a two-key comparer (order, DOM-index) so
+    /// the secondary key emulates stability.</para>
+    ///
+    /// <para><b>Per Phase 3 Task 15 L10 post-PR-#70 performance
+    /// hardening</b> — the comparator no longer calls
+    /// <see cref="ReadOrder"/> on every comparison
+    /// (= O(n log n) cascade slot lookups for non-trivial flex
+    /// containers). Pre-fix, a large flex container with N items
+    /// performed ~N log N <c>style.Get(PropertyId.Order)</c> calls
+    /// during sort; post-fix, the helper allocates a temporary
+    /// <c>(domIndex, order)</c> tuple list, reads each order once
+    /// (= O(N) cascade lookups), sorts the tuple list by order
+    /// (using a comparator that only touches the cached int field +
+    /// the int DOM index), then projects to a plain index list.</para>
+    ///
+    /// <para><b>Cancellation</b> (post-PR-#70 hardening): the helper
+    /// observes the supplied cancellation token at the start + per
+    /// item during the initial scan. Sorting a fixed-size list is
+    /// fast enough that mid-sort cancellation isn't needed.</para>
+    ///
+    /// <para><b>Allocation note.</b> Returns a fresh List every call;
+    /// callers may convert to a Span if hot. L10 keeps the List shape
+    /// to mirror the existing layouter style (PackLines, etc.); a
+    /// pooling refactor is L11+ scope.</para></summary>
+    /// <param name="flexContainer">The flex container box whose
+    /// children should be sorted.</param>
+    /// <param name="cancellationToken">Propagates cancellation
+    /// through the initial child scan. Optional; defaults to
+    /// <see cref="System.Threading.CancellationToken.None"/> so callers
+    /// that don't have a token in scope can still use the helper.</param>
+    /// <returns>A list of child indices (into <c>flexContainer.Children</c>)
+    /// in effective flex order. Non-block-level children are
+    /// excluded.</returns>
+    public static System.Collections.Generic.List<int>
+        GetFlexChildrenInOrderSequence(
+            this Boxes.Box flexContainer,
+            System.Threading.CancellationToken cancellationToken = default)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // Per Phase 3 Task 15 L10 post-PR-#70 performance hardening —
+        // read each item's order ONCE during the initial filter pass
+        // + carry the (domIndex, order) pair in a small struct that
+        // the comparator dereferences without touching the cascade.
+        // For containers with up to a few dozen items the saving is
+        // ~N cascade lookups (= the difference between O(N) and
+        // O(N log N)).
+        var indexedOrders = new System.Collections.Generic.List<(int DomIndex, int Order)>();
+        var hasNonZeroOrder = false;
+        for (var i = 0; i < flexContainer.Children.Count; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!flexContainer.Children[i].IsBlockLevel) continue;
+            var order = flexContainer.Children[i].Style.ReadOrder();
+            if (order != 0) hasNonZeroOrder = true;
+            indexedOrders.Add((i, order));
+        }
+
+        // Fast-path: every item has order 0 → DOM order IS effective
+        // order. Project the DOM indices directly without sorting.
+        if (!hasNonZeroOrder)
+        {
+            var domOrder = new System.Collections.Generic.List<int>(indexedOrders.Count);
+            foreach (var t in indexedOrders) domOrder.Add(t.DomIndex);
+            return domOrder;
+        }
+
+        // Two-key stable sort: primary (cached order asc), secondary
+        // (DOM index asc) emulates stability. The comparator only
+        // reads two ints per comparison — no cascade lookups.
+        indexedOrders.Sort((a, b) =>
+        {
+            if (a.Order != b.Order) return a.Order.CompareTo(b.Order);
+            return a.DomIndex.CompareTo(b.DomIndex);
+        });
+
+        // Project (DomIndex, Order) tuples → DomIndex.
+        var sorted = new System.Collections.Generic.List<int>(indexedOrders.Count);
+        foreach (var t in indexedOrders) sorted.Add(t.DomIndex);
+        return sorted;
+    }
+
     /// <summary>Per Phase 3 Task 15 L8 + post-PR-#68 hardening F#1 —
     /// compute a flex item's hypothetical main-size per CSS Flexbox L1
-    /// §9.2. SHARED between <see cref="NetPdf.Layout.Layouters.FlexLayouter"/>'s
-    /// <c>PackLines</c> + <c>ResolveFlexibleMainSizes</c> AND the
-    /// BlockLayouter's <c>PreMeasureFlexMultiLineCrossExtent</c> so
+    /// §9.2. Shared between <c>FlexLayouter.PackLines</c> +
+    /// <c>FlexLayouter.ResolveFlexibleMainSizes</c> and the
+    /// <c>BlockLayouter.PreMeasureFlexMultiLineCrossExtent</c> so
     /// line-collection uses the same flex-basis-aware size in both
     /// passes (= line-boundary parity per §9.3).
     ///
-    /// <para><b>Resolution table</b> (matches the L8 ReadFlexBasis →
-    /// FlexLayouter.ResolveHypotheticalMainSize chain):
-    /// <list type="bullet">
-    ///   <item><see cref="FlexBasisKind.LengthPx"/> — return the
-    ///   explicit pixel value (floored at 0 defensively, though parse
-    ///   should reject negatives per the F#3 hardening).</item>
-    ///   <item><see cref="FlexBasisKind.Percentage"/> — resolve against
-    ///   <paramref name="containerMainSize"/>. Percentage applies even
-    ///   when the container main-size is 0 (= a definite 0 yields 0,
-    ///   matching the spec); only non-finite container sizes fall back
-    ///   to the declared property (defensive guard for upstream
-    ///   contract violations).</item>
-    ///   <item><see cref="FlexBasisKind.Auto"/> /
-    ///   <see cref="FlexBasisKind.Content"/> — delegate to the item's
-    ///   declared main-size property
-    ///   (<see cref="ReadLengthPxOrZero"/>). The Content kind is
-    ///   approximated as Auto in L8 (intrinsic sizing is L9+ scope);
-    ///   pinned by a known-gap test.</item>
-    /// </list></para>
-    ///
-    /// <para><b>Why an extension method.</b> The L8 Hello World kept
-    /// this logic private to FlexLayouter, but per the post-PR-#68 F#1
-    /// hardening the BlockLayouter's pre-measure must use the SAME
-    /// hypothetical size during line packing. Exposing the helper on
-    /// <see cref="Boxes.Box"/> avoids duplicating the resolution logic
-    /// across both layouters + matches the existing extension pattern
-    /// for ReadFlex* readers. A broader <c>FlexItemSizing</c> struct
-    /// unification (per the post-PR-#68 architecture rec) is L9+
-    /// scope — for L8 the extension method is the minimum surface that
-    /// closes the line-boundary drift.</para>
-    ///
+    /// <para><b>Resolution table:</b> <see cref="FlexBasisKind.LengthPx"/>
+    /// returns the explicit pixel value (floored at 0);
+    /// <see cref="FlexBasisKind.Percentage"/> resolves against
+    /// <paramref name="containerMainSize"/> (definite 0 yields 0; non-
+    /// finite container size falls back to the declared property);
+    /// <see cref="FlexBasisKind.Auto"/> / <see cref="FlexBasisKind.Content"/>
+    /// delegate to the item's declared main-size property
+    /// (Content is approximated as Auto in L8 — intrinsic sizing is
+    /// L10+ scope).</para></summary>
     /// <param name="item">The flex item box.</param>
     /// <param name="mainSizeProperty">The direction-resolved main-size
     /// property (<see cref="PropertyId.Width"/> for row,
-    /// <see cref="PropertyId.Height"/> for column). The caller picks
-    /// this via the flex direction resolved upstream.</param>
+    /// <see cref="PropertyId.Height"/> for column).</param>
     /// <param name="containerMainSize">The container's main-axis
-    /// content extent — used to resolve percentage flex-basis values.
-    /// Caller is responsible for ensuring this is a definite value
-    /// (the BlockLayouter contract for flex containers).</param>
-    /// </summary>
+    /// content extent — used to resolve percentage flex-basis values.</param>
     public static double ResolveFlexItemHypotheticalMainSize(
         this Boxes.Box item,
         PropertyId mainSizeProperty,

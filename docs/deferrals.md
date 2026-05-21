@@ -1234,11 +1234,16 @@ grepping the ID).
   recovery pass — closes the gap where AngleSharp.Css 1.0.0-beta.144
   only partially handles the shorthand (handles `flex: <number>`
   but not `flex: none` / `auto` / `<basis>` / two- and three-value
-  forms). Sub-cycle L14+ picks up proper `<baseline-position>`
-  alignment for both `align-items` and `align-content`, `min-width:
-  auto` intrinsic resolution per CSS Sizing L3 §5.5,
-  anonymous-flex-item wrapping for inline/text children, and the
-  `FlexContinuation`-based multi-page split.
+  forms). L14 picked up the `CrossAxisFlow` refactor — pure refactor
+  extracting the wrap-reverse swap formula out of FlexLayouter's
+  emission loop into a `record struct CrossAxisFlow` with one
+  method (`PhysicalLineOffset`). Closes the L11 post-PR-#71 F#9
+  TODO seam; zero behavior change; 7 new direct unit tests pin
+  the swap contract. Sub-cycle L15+ picks up proper
+  `<baseline-position>` alignment for both `align-items` and
+  `align-content`, `min-width: auto` intrinsic resolution per CSS
+  Sizing L3 §5.5, anonymous-flex-item wrapping for inline/text
+  children, and the `FlexContinuation`-based multi-page split.
 - **Added** — Phase 3 Task 15 cycle 1 (Hello World).
 - **Removal condition** — Sub-cycle L11+ ships the remaining
   deferred features (wrap-reverse / proper baseline alignment /
@@ -1251,10 +1256,15 @@ grepping the ID).
   swap hardening); L12 shipped the §9.7 step-4 min/max-width
   clamping iteration; L13 shipped the `flex` shorthand parser
   (CSS Flexbox §7.4) via a new `FlexShorthandExpander` wired into
-  the preprocessor's recovery pass. Proper `<baseline-position>`
-  alignment + `min-width: auto` intrinsic resolution + multi-page
-  flex split (`FlexContinuation`) + anonymous-flex-item wrapping
-  for inline/text children are the natural L14+ candidates.
+  the preprocessor's recovery pass; L14 shipped the `CrossAxisFlow`
+  refactor — extracted the wrap-reverse swap math out of
+  FlexLayouter's emission loop into a one-method record
+  (`PhysicalLineOffset`) so the swap state has a named owner +
+  future writing-mode work picks up cleanly. Proper
+  `<baseline-position>` alignment + `min-width: auto` intrinsic
+  resolution + multi-page flex split (`FlexContinuation`) +
+  anonymous-flex-item wrapping for inline/text children are the
+  natural L15+ candidates.
 
 ---
 

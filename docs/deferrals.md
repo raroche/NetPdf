@@ -1260,11 +1260,15 @@ grepping the ID).
   refactor — extracted the wrap-reverse swap math out of
   FlexLayouter's emission loop into a one-method record
   (`PhysicalLineOffset`) so the swap state has a named owner +
-  future writing-mode work picks up cleanly. Proper
+  future writing-mode work picks up cleanly; L15 shipped
+  anonymous flex-item wrapping per §4 — BoxBuilder's new
+  `FixupFlexAnonymousItems` pass wraps contiguous runs of
+  inline-level children (TextRun / InlineBox / atomic inlines)
+  into anonymous block-level flex items + drops whitespace-only
+  TextRuns sandwiched between block-level siblings. Proper
   `<baseline-position>` alignment + `min-width: auto` intrinsic
-  resolution + multi-page flex split (`FlexContinuation`) +
-  anonymous-flex-item wrapping for inline/text children are the
-  natural L15+ candidates.
+  resolution + multi-page flex split (`FlexContinuation`) are
+  the natural L16+ candidates.
 
 ---
 

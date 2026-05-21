@@ -2147,6 +2147,220 @@ public sealed class FlexLayouterProductionTests
         Assert.Equal(FlexBasisKind.Auto, basisC.Kind);
     }
 
+    // ====================================================================
+    //  Phase 3 Task 15 L15 — anonymous flex-item wrapping (§4).
+    // ====================================================================
+
+    [Fact]
+    public async Task L15_production_html_text_between_flex_items_wraps_in_anonymous_item()
+    {
+        // Per Phase 3 Task 15 L15 — CSS Flexbox L1 §4: "Each in-flow
+        // child of a flex container becomes a flex item, and each
+        // contiguous sequence of child text runs is wrapped in an
+        // anonymous block container flex item." Pre-L15 the inline /
+        // text children of a flex container were silently dropped at
+        // the FlexLayouter's per-item emission loop (= the
+        // IsBlockLevel guard filtered them out). Post-L15 the
+        // BoxBuilder's `FixupFlexAnonymousItems` pass wraps them in
+        // anonymous BlockContainer flex items so the layouter sees
+        // them.
+        //
+        // Fixture: `<div class="flex">Hello<span>world</span></div>`
+        // (no whitespace = single inline run that wraps into ONE
+        // anonymous flex item). The flex container has 1 item — the
+        // anonymous wrapper containing TextRun "Hello" + the span
+        // element.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    width: 400px;
+                    height: 60px;
+                }
+            </style></head><body>
+            <div class="flex">Hello<span>world</span></div>
+            </body></html>
+            """;
+
+        var (_, _, root) = await RenderViaFullPipelineAsync(html);
+
+        // Find the flex container box.
+        Box? flex = null;
+        var stack = new Stack<Box>();
+        stack.Push(root);
+        while (stack.Count > 0)
+        {
+            var b = stack.Pop();
+            if (b.Kind == BoxKind.FlexContainer) { flex = b; break; }
+            foreach (var c in b.Children) stack.Push(c);
+        }
+        Assert.NotNull(flex);
+
+        // Per §4 — exactly ONE child: the anonymous wrapper. The
+        // TextRun "Hello" + the `<span>` get folded into one
+        // anonymous flex item.
+        Assert.Single(flex!.Children);
+        var wrapper = flex.Children[0];
+        Assert.Equal(BoxKind.AnonymousBlock, wrapper.Kind);
+    }
+
+    [Fact]
+    public async Task L15_production_html_whitespace_between_block_items_is_dropped()
+    {
+        // Per Phase 3 Task 15 L15 — §4 also drops whitespace-only
+        // TextRuns between two block-level flex items (= same intent
+        // as the Tables L3 §3.1 whitespace-stripping rule; otherwise
+        // every newline-indented flex item would generate a
+        // zero-width anonymous flex item next to it).
+        //
+        // Fixture: 2 explicit block flex items separated by HTML
+        // indentation (the parser preserves the whitespace as a
+        // TextRun child of the flex container). Pre-L15 + post-L15
+        // both: the flex container has exactly 2 children, NOT 3
+        // (= the whitespace TextRun is dropped, not wrapped).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    width: 400px;
+                    height: 60px;
+                }
+                .item {
+                    width: 100px;
+                    height: 50px;
+                }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, root) = await RenderViaFullPipelineAsync(html);
+
+        Box? flex = null;
+        var stack = new Stack<Box>();
+        stack.Push(root);
+        while (stack.Count > 0)
+        {
+            var b = stack.Pop();
+            if (b.Kind == BoxKind.FlexContainer) { flex = b; break; }
+            foreach (var c in b.Children) stack.Push(c);
+        }
+        Assert.NotNull(flex);
+
+        // Per §4 — exactly 2 block-level children (the two
+        // `.item` divs); the whitespace between them is dropped.
+        Assert.Equal(2, flex!.Children.Count);
+        Assert.Equal(BoxKind.BlockContainer, flex.Children[0].Kind);
+        Assert.Equal(BoxKind.BlockContainer, flex.Children[1].Kind);
+        // Sanity: both items get emitted (= they're not silently
+        // filtered by the layouter).
+        var emittedItems = 0;
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class") ?? string.Empty;
+            if (classAttr.StartsWith("item")) emittedItems++;
+        }
+        Assert.Equal(2, emittedItems);
+    }
+
+    [Fact]
+    public async Task L15_production_html_mixed_text_and_block_children_separated_into_runs()
+    {
+        // Per Phase 3 Task 15 L15 — when a flex container has BOTH
+        // text/inline children AND block-level children, the wrapping
+        // pass groups the inline runs separately from the block
+        // items. Per §4: each contiguous sequence of inline children
+        // becomes ONE anonymous flex item.
+        //
+        // Fixture (NO indentation whitespace to keep the counts
+        // unambiguous — production stylesheets that care about exact
+        // structure use `<>` blocks): text + block + text + block →
+        // 4 children post-wrap: [anon-1, block-1, anon-2, block-2].
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display: flex; width: 600px; height: 60px; }
+                .item { width: 100px; height: 50px; }
+            </style></head><body>
+            <div class="flex">Hello<div class="item a"></div>World<div class="item b"></div></div>
+            </body></html>
+            """;
+
+        var (_, _, root) = await RenderViaFullPipelineAsync(html);
+
+        Box? flex = null;
+        var stack = new Stack<Box>();
+        stack.Push(root);
+        while (stack.Count > 0)
+        {
+            var b = stack.Pop();
+            if (b.Kind == BoxKind.FlexContainer) { flex = b; break; }
+            foreach (var c in b.Children) stack.Push(c);
+        }
+        Assert.NotNull(flex);
+
+        // Expected 4 children: [anonymous text run, block, anonymous
+        // text run, block] in that order.
+        Assert.Equal(4, flex!.Children.Count);
+        Assert.Equal(BoxKind.AnonymousBlock, flex.Children[0].Kind);
+        Assert.Equal(BoxKind.BlockContainer, flex.Children[1].Kind);
+        Assert.Equal(BoxKind.AnonymousBlock, flex.Children[2].Kind);
+        Assert.Equal(BoxKind.BlockContainer, flex.Children[3].Kind);
+
+        // The anonymous wrappers wrap a single TextRun each.
+        Assert.Single(flex.Children[0].Children);
+        Assert.Equal(BoxKind.TextRun, flex.Children[0].Children[0].Kind);
+        Assert.Single(flex.Children[2].Children);
+        Assert.Equal(BoxKind.TextRun, flex.Children[2].Children[0].Kind);
+    }
+
+    [Fact]
+    public async Task L15_production_html_inline_block_child_wraps_into_anonymous_item()
+    {
+        // Per Phase 3 Task 15 L15 — atomic inlines like
+        // `display: inline-block` are also inline-level per §4 and
+        // get wrapped in anonymous flex items when they appear
+        // directly in a flex container. Pre-L15 they'd be filtered
+        // by IsBlockLevel.
+        //
+        // Fixture: a `display: inline-block` div inside a flex
+        // container. Post-L15 it gets wrapped in an anonymous flex
+        // item.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display: flex; width: 400px; height: 60px; }
+                .ib { display: inline-block; width: 80px; height: 40px; }
+            </style></head><body>
+            <div class="flex"><div class="ib"></div></div>
+            </body></html>
+            """;
+
+        var (_, _, root) = await RenderViaFullPipelineAsync(html);
+
+        Box? flex = null;
+        var stack = new Stack<Box>();
+        stack.Push(root);
+        while (stack.Count > 0)
+        {
+            var b = stack.Pop();
+            if (b.Kind == BoxKind.FlexContainer) { flex = b; break; }
+            foreach (var c in b.Children) stack.Push(c);
+        }
+        Assert.NotNull(flex);
+
+        // The inline-block child gets wrapped — flex container has
+        // ONE anonymous block child, which contains the
+        // inline-block.
+        Assert.Single(flex!.Children);
+        Assert.Equal(BoxKind.AnonymousBlock, flex.Children[0].Kind);
+        Assert.Single(flex.Children[0].Children);
+        Assert.Equal(BoxKind.InlineBlockContainer, flex.Children[0].Children[0].Kind);
+    }
+
     private sealed class RecordingDiagnosticsSink : IPaginateDiagnosticsSink
     {
         public List<PaginateDiagnostic> Diagnostics { get; } = new();

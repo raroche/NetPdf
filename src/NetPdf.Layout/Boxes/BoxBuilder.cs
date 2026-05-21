@@ -110,6 +110,21 @@ internal static class BoxBuilder
         }
         FixupAnonymousBlocks(root);
 
+        // Per Phase 3 Task 15 L15 — anonymous flex-item wrapping per
+        // CSS Flexbox L1 §4. Walks the box tree post-order; for each
+        // FlexContainer / InlineFlexContainer parent, wraps contiguous
+        // runs of inline-level children (TextRuns + InlineBox + atomic
+        // inlines) in anonymous block-level flex items so the
+        // FlexLayouter sees them as block-level items (= no longer
+        // silently filtered out by the IsBlockLevel guard in the
+        // per-item emission loop). Pre-L15 the text between flex item
+        // elements was silently dropped — production HTML like
+        // `<div style="display:flex">Hello <span>world</span></div>`
+        // lost both `Hello ` and the `<span>` because TextRun /
+        // InlineBox are not block-level. Post-L15 the items wrap into
+        // anonymous flex items per spec.
+        FixupFlexAnonymousItems(root);
+
         // Per Rec 1 (Tables L3 §3.1 — Generate Missing Parents): a final
         // tree-wide pass wraps loose table internals (a CSS-only
         // `display: table-cell` directly inside <body>, a stray <tr> outside
@@ -924,6 +939,132 @@ internal static class BoxBuilder
             or BoxKind.TableCell or BoxKind.TableCaption => true,
         _ => false,
     };
+
+    /// <summary>Per Phase 3 Task 15 L15 — anonymous flex-item wrapping
+    /// per CSS Flexbox L1 §4: "Each in-flow child of a flex container
+    /// becomes a flex item, and each contiguous sequence of child text
+    /// runs is wrapped in an anonymous block container flex item." Walks
+    /// the box tree; for each <see cref="BoxKind.FlexContainer"/> /
+    /// <see cref="BoxKind.InlineFlexContainer"/> parent, takes inline-level
+    /// children (<see cref="BoxKind.TextRun"/>, <see cref="BoxKind.InlineBox"/>,
+    /// atomic inlines, etc.) + wraps each CONTIGUOUS RUN in an anonymous
+    /// <see cref="BoxKind.AnonymousBlock"/> so the FlexLayouter's per-item
+    /// emission loop sees them as block-level flex items rather than
+    /// silently skipping them (pre-L15 the
+    /// <c>FlexLayouter.AttemptLayout</c> loop filtered non-block-level
+    /// children + lost any text between siblings).
+    ///
+    /// <para><b>Whitespace handling.</b> Per §4 the algorithm also drops
+    /// whitespace-only text runs between two flex items — same intent as
+    /// the table-fixup rule. A whitespace-only TextRun between two
+    /// block-level flex items would otherwise generate an empty anonymous
+    /// item (zero visible content, full margin / spacing impact). We
+    /// match that: whitespace-only TextRuns between block-level items are
+    /// dropped before wrapping. Whitespace-only TextRuns at the EDGES of
+    /// the container OR between two inline-level children (= within an
+    /// already-wrapped run) are kept (preserves intra-text whitespace
+    /// for line-builder shaping).</para>
+    ///
+    /// <para><b>Inline-level boxes.</b> The spec wraps every contiguous
+    /// inline-level run, not just text. E.g., <c>&lt;span&gt;a&lt;/span&gt;
+    /// &lt;span&gt;b&lt;/span&gt;</c> as a flex container's children
+    /// would produce ONE anonymous flex item containing both spans + the
+    /// whitespace between them. Atomic inlines like
+    /// <see cref="BoxKind.InlineFlexContainer"/> also wrap when they
+    /// appear directly in a flex container.</para>
+    ///
+    /// <para><b>Recursion.</b> Runs depth-first; recurses into every
+    /// child first so nested flex containers fix up bottom-up. This
+    /// matches <see cref="FixupAnonymousBlocks"/>'s post-order shape.</para>
+    /// </summary>
+    private static void FixupFlexAnonymousItems(Box parent)
+    {
+        // Recurse first so nested flex / block containers fix up bottom-up.
+        // Snapshot children so the iteration is stable against
+        // re-parenting that happens below.
+        var preSnapshot = new List<Box>(parent.Children.Count);
+        foreach (var c in parent.Children) preSnapshot.Add(c);
+        foreach (var c in preSnapshot) FixupFlexAnonymousItems(c);
+
+        if (parent.Kind != BoxKind.FlexContainer
+            && parent.Kind != BoxKind.InlineFlexContainer)
+        {
+            return;
+        }
+        if (parent.Children.Count == 0) return;
+
+        var snapshot = new List<Box>(parent.Children.Count);
+        foreach (var c in parent.Children) snapshot.Add(c);
+
+        // First pass — drop whitespace-only TextRuns that sit between
+        // two block-level siblings (= the "ignored whitespace between
+        // flex items" rule). Whitespace-only TextRuns at edges, or
+        // adjacent to inline-level siblings, are kept (they'll fold
+        // into the adjacent inline run's anonymous wrapper).
+        var filtered = new List<Box>(snapshot.Count);
+        for (var i = 0; i < snapshot.Count; i++)
+        {
+            var c = snapshot[i];
+            if (c.Kind == BoxKind.TextRun && IsWhitespaceOnly(c.Text))
+            {
+                var prev = i > 0 ? snapshot[i - 1] : null;
+                var next = i + 1 < snapshot.Count ? snapshot[i + 1] : null;
+                var prevIsBlock = prev?.IsBlockLevel == true;
+                var nextIsBlock = next?.IsBlockLevel == true;
+                // Drop only when sandwiched between block-level
+                // siblings OR at an edge next to a block-level sibling
+                // (= no inline run to fold into).
+                if ((prev is null || prevIsBlock) && (next is null || nextIsBlock))
+                {
+                    continue;
+                }
+            }
+            filtered.Add(c);
+        }
+
+        // Decide whether any work is required: only if at least one
+        // child is NOT block-level. Block-only children are already
+        // valid flex items per §4.
+        var hasInline = false;
+        foreach (var c in filtered)
+        {
+            if (!c.IsBlockLevel) { hasInline = true; break; }
+        }
+        if (!hasInline && filtered.Count == snapshot.Count) return;
+
+        // Re-parent every child under the wrapping pass.
+        foreach (var c in snapshot) parent.RemoveChild(c);
+
+        List<Box>? currentRun = null;
+        foreach (var c in filtered)
+        {
+            if (c.IsBlockLevel)
+            {
+                FlushFlexRun(parent, ref currentRun);
+                parent.AppendChild(c);
+            }
+            else
+            {
+                currentRun ??= new List<Box>();
+                currentRun.Add(c);
+            }
+        }
+        FlushFlexRun(parent, ref currentRun);
+
+        static void FlushFlexRun(Box parent, ref List<Box>? run)
+        {
+            if (run is null || run.Count == 0) return;
+            // Per §4 — the wrapper is an anonymous block container. Use
+            // BoxKind.AnonymousBlock (same kind FixupAnonymousBlocks
+            // produces) so the downstream FlexLayouter sees it as a
+            // block-level child + the inline FormattingContext inside
+            // is the regular block-flow FC the items participate in.
+            var wrapper = Box.Anonymous(BoxKind.AnonymousBlock, parent.Style);
+            foreach (var child in run) wrapper.AppendChild(child);
+            parent.AppendChild(wrapper);
+            run = null;
+        }
+    }
 
     // ============================================================
     // Task 13 — Table fixup per CSS Tables L3 §3

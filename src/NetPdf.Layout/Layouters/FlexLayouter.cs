@@ -649,8 +649,10 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // line)) so the between-spacing matches the flexed widths;
         // ComputeJustifyContentOffsets now sees the post-flex line
         // main-size.
+        var (minSizeProperty, maxSizeProperty) = GetMinMaxMainAxisProperties(flexDirection);
         var resolvedItemMainSizes = ResolveFlexibleMainSizes(
-            lines, mainSizeProperty, containerMainSize, cancellationToken);
+            lines, mainSizeProperty, minSizeProperty, maxSizeProperty,
+            containerMainSize, cancellationToken);
 
         // After flexibility resolution, each line's LineMainSize must
         // be updated to the sum of RESOLVED item main-sizes (NOT the
@@ -1242,6 +1244,8 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     private double[] ResolveFlexibleMainSizes(
         List<FlexLine> lines,
         PropertyId mainSizeProperty,
+        PropertyId minSizeProperty,
+        PropertyId maxSizeProperty,
         double containerMainSize,
         CancellationToken cancellationToken)
     {
@@ -1250,87 +1254,229 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         foreach (var line in lines)
         {
             cancellationToken.ThrowIfCancellationRequested();
+            ResolveLineWithMinMaxClamping(
+                line, resolved, mainSizeProperty,
+                minSizeProperty, maxSizeProperty,
+                containerMainSize, cancellationToken);
+        }
 
-            // Pass 1 — compute hypothetical main-size for each item on
-            // the line. Sum the hypotheticals + the grow/shrink factor
-            // totals. Per Phase 3 Task 15 L10 — walks the sorted
-            // sequence via FirstItemIndex (= sorted-position, not
-            // DOM-children index); the resolved[] array is still keyed
-            // by DOM-children index since downstream callers (emission
-            // loop) dereference by DOM index.
-            var sumHypothetical = 0.0;
+        return resolved;
+    }
+
+    /// <summary>Per Phase 3 Task 15 L12 — runs the full CSS Flexbox L1
+    /// §9.7 flexibility algorithm for one line, including step 4's
+    /// min/max clamping iteration. Mutates <paramref name="resolved"/>
+    /// in place (keyed by DOM-children index).
+    ///
+    /// <para><b>Algorithm</b> (§9.7 simplified):
+    /// <list type="number">
+    ///   <item>Compute each item's hypothetical main-size from its
+    ///   flex-basis (delegate to <see cref="ResolveHypotheticalMainSize"/>).</item>
+    ///   <item>Compute initial free-space = containerMainSize -
+    ///   sum(hypothetical).</item>
+    ///   <item>Distribute free-space among unfrozen items:
+    ///     <list type="bullet">
+    ///       <item>Positive free-space + sumFlexGrow > 0 → grow phase:
+    ///       each item += (grow / max(sumFlexGrow, 1)) * freeSpace.</item>
+    ///       <item>Negative free-space + sumScaledShrinks > 0 → shrink
+    ///       phase: each item -= (scaledShrink / sumScaledShrinks) *
+    ///       |freeSpace|.</item>
+    ///     </list></item>
+    ///   <item>Clamp each item to [min, max]. Items with violations
+    ///   are FROZEN at their clamped value; the clamped-off space is
+    ///   redistributed among unfrozen items in the next iteration.</item>
+    ///   <item>Repeat steps 2-4 until no items have violations OR an
+    ///   iteration cap is reached (= items per line, since each
+    ///   iteration freezes at least one item).</item>
+    /// </list></para>
+    ///
+    /// <para><b>Pre-L12 behavior</b> (= L8 Hello World): the
+    /// distribution ran once + items were floored at 0 without honoring
+    /// min/max. The L8 known-gap test
+    /// (<c>L8_known_gap_min_width_does_not_clamp_resolved_size_yet</c>)
+    /// pinned that incomplete behavior; L12 closes the deferral + flips
+    /// the test to assert spec-correct clamping.</para>
+    ///
+    /// <para><b>Hello World scope:</b> only explicit pixel min/max
+    /// values are honored. `min-width: auto` for flex items (spec-
+    /// correct = intrinsic content size per CSS Sizing §5.5) is L13+
+    /// scope pending intrinsic-sizing integration. Percentage min/max
+    /// values are also L13+ scope.</para></summary>
+    private void ResolveLineWithMinMaxClamping(
+        FlexLine line,
+        double[] resolved,
+        PropertyId mainSizeProperty,
+        PropertyId minSizeProperty,
+        PropertyId maxSizeProperty,
+        double containerMainSize,
+        CancellationToken cancellationToken)
+    {
+        var endPos = line.FirstItemIndex + line.ItemCount;
+        var itemCount = line.ItemCount;
+
+        // Stack-friendly per-item state: hypothetical + (min, max) +
+        // frozen flag, keyed by sorted-position within the line.
+        // Heap-allocated arrays of length itemCount; pool/Span refactor
+        // is L13+ scope.
+        var hypotheticals = new double[itemCount];
+        var mins = new double[itemCount];
+        var maxs = new double[itemCount];
+        var frozen = new bool[itemCount];
+
+        // Pass 1 — read hypothetical + min/max per item. The hypothetical
+        // is also the INITIAL resolved value (= the §9.7 starting point).
+        // Keep the resolved[] array's DOM-children indexing for the
+        // emission loop; the local arrays above are line-local (= the
+        // sorted-position view used by the iterative clamping loop).
+        for (var i = 0; i < itemCount; i++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var itemIdx = _sortedFlexChildIndices[line.FirstItemIndex + i];
+            var item = _rootBox.Children[itemIdx];
+
+            var hypothetical = ResolveHypotheticalMainSize(
+                item, mainSizeProperty, containerMainSize);
+            hypotheticals[i] = hypothetical;
+            resolved[itemIdx] = hypothetical;
+
+            var (min, max) = item.ResolveFlexItemMinMaxMainSize(
+                minSizeProperty, maxSizeProperty);
+            mins[i] = min;
+            maxs[i] = max;
+        }
+
+        // §9.7 iteration cap: each iteration freezes at least one item
+        // (when a violation occurs), so the loop converges in at most
+        // itemCount iterations. The +1 covers the no-violation final
+        // iteration that just confirms convergence.
+        for (var iter = 0; iter <= itemCount; iter++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            // Compute remaining free-space: containerMainSize minus
+            // frozen-items' resolved sizes minus unfrozen-items'
+            // hypothetical sizes (the unfrozen items' resolved values
+            // are recomputed below).
+            var sumFrozenResolved = 0.0;
+            var sumUnfrozenHypothetical = 0.0;
             var sumFlexGrow = 0.0;
             var sumScaledShrinks = 0.0;
-            var endPos = line.FirstItemIndex + line.ItemCount;
-            for (var sortedPos = line.FirstItemIndex; sortedPos < endPos; sortedPos++)
+            for (var i = 0; i < itemCount; i++)
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                var itemIdx = _sortedFlexChildIndices[sortedPos];
+                var itemIdx = _sortedFlexChildIndices[line.FirstItemIndex + i];
                 var item = _rootBox.Children[itemIdx];
-
-                var hypothetical = ResolveHypotheticalMainSize(
-                    item, mainSizeProperty, containerMainSize);
-                resolved[itemIdx] = hypothetical;
-                sumHypothetical += hypothetical;
-                sumFlexGrow += item.Style.ReadFlexGrow();
-                sumScaledShrinks += item.Style.ReadFlexShrink() * hypothetical;
+                if (frozen[i])
+                {
+                    sumFrozenResolved += resolved[itemIdx];
+                }
+                else
+                {
+                    sumUnfrozenHypothetical += hypotheticals[i];
+                    sumFlexGrow += item.Style.ReadFlexGrow();
+                    sumScaledShrinks += item.Style.ReadFlexShrink() * hypotheticals[i];
+                    // Reset unfrozen items to hypothetical before the
+                    // distribution pass — each iteration redistributes
+                    // the (smaller) remaining free-space from scratch.
+                    resolved[itemIdx] = hypotheticals[i];
+                }
             }
 
-            var freeMainSpace = containerMainSize - sumHypothetical;
+            var remainingFreeSpace = containerMainSize - sumFrozenResolved - sumUnfrozenHypothetical;
 
-            // Pass 2 — distribute free space. Three exclusive branches:
-            //   (a) positive free space + at least one growable item →
-            //       grow phase.
-            //   (b) negative free space + at least one shrinkable item
-            //       with non-zero scaled shrink → shrink phase.
-            //   (c) otherwise → items keep their hypothetical sizes.
-            if (freeMainSpace > 0 && sumFlexGrow > 0)
+            // Distribute remainingFreeSpace among unfrozen items.
+            if (remainingFreeSpace > 0 && sumFlexGrow > 0)
             {
-                // Per Phase 3 Task 15 L8 post-PR-#68 hardening F#2 +
-                // CSS Flexbox L1 §9.7 — when the sum of flex-grow
-                // factors on the line is LESS THAN 1, the items only
-                // take a fraction of the free space; the remainder
-                // stays as alignment-axis free-space for
-                // justify-content. Equivalent formula: each item's
-                // share = (grow_i / max(sumFlexGrow, 1)) * freeSpace.
+                // Per Phase 3 Task 15 L8 post-PR-#68 hardening F#2: when
+                // sum < 1 the items take only that fraction of free
+                // space; the remainder stays for justify-content.
                 var growDivisor = sumFlexGrow >= 1 ? sumFlexGrow : 1.0;
-                for (var sortedPos = line.FirstItemIndex; sortedPos < endPos; sortedPos++)
+                for (var i = 0; i < itemCount; i++)
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    var itemIdx = _sortedFlexChildIndices[sortedPos];
+                    if (frozen[i]) continue;
+                    var itemIdx = _sortedFlexChildIndices[line.FirstItemIndex + i];
                     var item = _rootBox.Children[itemIdx];
                     var grow = item.Style.ReadFlexGrow();
                     if (grow > 0)
                     {
-                        resolved[itemIdx] += (grow / growDivisor) * freeMainSpace;
+                        resolved[itemIdx] += (grow / growDivisor) * remainingFreeSpace;
                     }
                 }
             }
-            else if (freeMainSpace < 0 && sumScaledShrinks > 0)
+            else if (remainingFreeSpace < 0 && sumScaledShrinks > 0)
             {
-                var deficit = -freeMainSpace; // positive amount to absorb
-                for (var sortedPos = line.FirstItemIndex; sortedPos < endPos; sortedPos++)
+                var deficit = -remainingFreeSpace;
+                for (var i = 0; i < itemCount; i++)
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    var itemIdx = _sortedFlexChildIndices[sortedPos];
+                    if (frozen[i]) continue;
+                    var itemIdx = _sortedFlexChildIndices[line.FirstItemIndex + i];
                     var item = _rootBox.Children[itemIdx];
                     var shrink = item.Style.ReadFlexShrink();
                     if (shrink > 0)
                     {
-                        var scaledShrink = shrink * resolved[itemIdx];
+                        var scaledShrink = shrink * hypotheticals[i];
                         var absorb = (scaledShrink / sumScaledShrinks) * deficit;
-                        // Floor at 0 — items never shrink below 0 main-
-                        // size in the L8 Hello World (proper min-size
-                        // clamping per §9.7 step 4 is L9+ scope).
                         resolved[itemIdx] = Math.Max(0, resolved[itemIdx] - absorb);
                     }
                 }
             }
-            // else: items stay at hypothetical (free space goes to
-            // justify-content / overflows the container).
-        }
+            // else: items keep their hypothetical sizes (= no
+            // distribution this iteration).
 
-        return resolved;
+            // §9.7 step 4 — clamp each unfrozen item + freeze those
+            // with violations. Track totalViolation per spec:
+            //   positive → items were forced UP (min violations)
+            //   negative → items were forced DOWN (max violations)
+            //   zero → no violations, algorithm terminates.
+            var totalViolation = 0.0;
+            for (var i = 0; i < itemCount; i++)
+            {
+                if (frozen[i]) continue;
+                var itemIdx = _sortedFlexChildIndices[line.FirstItemIndex + i];
+                var pre = resolved[itemIdx];
+                var post = Math.Max(mins[i], Math.Min(maxs[i], pre));
+                if (post != pre)
+                {
+                    resolved[itemIdx] = post;
+                    totalViolation += post - pre;
+                }
+            }
+
+            if (totalViolation == 0)
+            {
+                // Convergence — no violations OR all items already at
+                // their clamped values. Algorithm terminates.
+                break;
+            }
+
+            // Freeze items whose violation matches the totalViolation
+            // sign: when totalViolation > 0 freeze min-violators (=
+            // items clamped UP), and vice versa. After freezing, loop
+            // re-enters with the remaining free-space recomputed.
+            var freezeMinViolators = totalViolation > 0;
+            for (var i = 0; i < itemCount; i++)
+            {
+                if (frozen[i]) continue;
+                var itemIdx = _sortedFlexChildIndices[line.FirstItemIndex + i];
+                var pre = hypotheticals[i];
+                var post = resolved[itemIdx];
+                if (freezeMinViolators ? (post > pre && post == mins[i])
+                    : (post < pre && post == maxs[i]))
+                {
+                    frozen[i] = true;
+                }
+                else if (post == mins[i] && mins[i] > 0 && freezeMinViolators)
+                {
+                    // Defensive: items already at their min that were
+                    // distributed (= reset to hypothetical) and clamped
+                    // back to min freeze here.
+                    frozen[i] = true;
+                }
+                else if (post == maxs[i] && !double.IsPositiveInfinity(maxs[i]) && !freezeMinViolators)
+                {
+                    frozen[i] = true;
+                }
+            }
+        }
     }
 
     /// <summary>Per Phase 3 Task 15 L8 + post-PR-#68 hardening F#1 —
@@ -1900,6 +2046,19 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         return direction.IsFlexColumnDirection()
             ? (PropertyId.Height, PropertyId.Width)
             : (PropertyId.Width, PropertyId.Height);
+    }
+
+    /// <summary>Per Phase 3 Task 15 L12 — direction-resolved min/max
+    /// main-size property ids for the §9.7 step-4 clamping iteration.
+    /// For row direction the main axis is the inline axis: min/max =
+    /// MinWidth/MaxWidth. For column: min/max = MinHeight/MaxHeight.
+    /// Used by <see cref="ResolveLineWithMinMaxClamping"/>.</summary>
+    private static (PropertyId minSize, PropertyId maxSize) GetMinMaxMainAxisProperties(
+        FlexDirectionValue direction)
+    {
+        return direction.IsFlexColumnDirection()
+            ? (PropertyId.MinHeight, PropertyId.MaxHeight)
+            : (PropertyId.MinWidth, PropertyId.MaxWidth);
     }
 
     /// <summary>Per cycle 1 (Hello World) — no per-instance state to

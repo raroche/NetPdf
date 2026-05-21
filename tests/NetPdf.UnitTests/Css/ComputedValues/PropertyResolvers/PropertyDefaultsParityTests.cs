@@ -125,6 +125,14 @@ public sealed class PropertyDefaultsParityTests
             // default `auto` now resolves to Keyword(0); pre-L8 the
             // dispatch returned UnsupportedUnvalidated.
             PropertyType.FlexBasis,
+            // Per Phase 3 Task 15 L12 — MaxSize joined the resolved
+            // family for §9.7 step-4 min/max-width clamping. Routes
+            // through LengthResolver (sharing the numeric grammar
+            // with LengthPercentageAuto) + admits the `none` keyword
+            // per CSS Sizing L3 §5.2 (= no upper bound). The default
+            // `none` now resolves to Keyword(0); pre-L12 the dispatch
+            // returned UnsupportedUnvalidated.
+            PropertyType.MaxSize,
         };
 
         var failures = new List<string>();
@@ -167,6 +175,14 @@ public sealed class PropertyDefaultsParityTests
             // default `auto` now resolves to Keyword(0); pre-L8 the
             // dispatch returned UnsupportedUnvalidated.
             PropertyType.FlexBasis,
+            // Per Phase 3 Task 15 L12 — MaxSize joined the resolved
+            // family for §9.7 step-4 min/max-width clamping. Routes
+            // through LengthResolver (sharing the numeric grammar
+            // with LengthPercentageAuto) + admits the `none` keyword
+            // per CSS Sizing L3 §5.2 (= no upper bound). The default
+            // `none` now resolves to Keyword(0); pre-L12 the dispatch
+            // returned UnsupportedUnvalidated.
+            PropertyType.MaxSize,
         };
 
         var failures = new List<string>();

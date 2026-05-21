@@ -78,22 +78,25 @@ internal static class PropertyResolverDispatch
             PropertyType.Color => ColorResolver.Resolve(
                 trimmed, propertyId, meta.Name, diagnostics, location),
 
-            // The dimension family — all six share LengthResolver's parser, with
+            // The dimension family — all seven share LengthResolver's parser, with
             // per-type acceptance rules (auto / none / normal / percentage) plus
             // per-PropertyId rules (letter-spacing rejects %, padding/width/etc.
             // reject negatives). Per Phase 3 Task 15 L8 the FlexBasis type
-            // joins the family (= the sixth member): it accepts `auto`
-            // (KeywordIdAuto = 0) / `content` (KeywordIdContent = 1) /
-            // `<length-percentage>` per CSS Flexbox L1 §7.2. (`min-content` /
-            // `max-content` / `fit-content` are L9+ scope.) Negative lengths
-            // and percentages are rejected per the post-PR-#68 F#3 hardening
-            // (FlexBasis joined NonNegativeProperties).
+            // joined the family: it accepts `auto` (KeywordIdAuto = 0) /
+            // `content` (KeywordIdContent = 1) / `<length-percentage>` per
+            // CSS Flexbox L1 §7.2. Per Phase 3 Task 15 L12 the MaxSize type
+            // joined the family (= the seventh member): it accepts `none`
+            // (= no upper bound, KeywordIdNone = 0) / `<length-percentage>`
+            // per CSS Sizing L3 §5.2 — used by `max-width` / `max-height`
+            // for the §9.7 step-4 min/max clamping iteration in the
+            // FlexLayouter.
             PropertyType.Length or
             PropertyType.LengthPercentage or
             PropertyType.LengthPercentageAuto or
             PropertyType.Percentage or
             PropertyType.TextSpacing or
-            PropertyType.FlexBasis => LengthResolver.Resolve(
+            PropertyType.FlexBasis or
+            PropertyType.MaxSize => LengthResolver.Resolve(
                 trimmed, meta.Type, propertyId, meta.Name, diagnostics, location),
 
             PropertyType.Number => NumberResolver.ResolveNumber(

@@ -1,6 +1,7 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
 using System.Linq;
@@ -1372,6 +1373,12 @@ public sealed class FlexLayouterProductionTests
 
         var (sink, _, _) = await RenderViaFullPipelineAsync(html);
 
+        // Per Phase 3 Task 15 L9 post-PR-#69 Copilot review — match
+        // items via class-list containment, not full-string equality.
+        // Class attribute whitespace / order can vary; the
+        // `item.StartsWith("item ")` + Contains-via-split pattern
+        // mirrors the convention used by other production tests in
+        // this file (`L8_production_html_*` / `L7_production_*`).
         BoxFragment? itemA = null;
         BoxFragment? itemB = null;
         BoxFragment? itemC = null;
@@ -1379,10 +1386,17 @@ public sealed class FlexLayouterProductionTests
         {
             var srcEl = f.Box.SourceElement;
             if (srcEl is null) continue;
-            var classAttr = srcEl.GetAttribute("class");
-            if (classAttr == "item a") itemA = f;
-            else if (classAttr == "item b") itemB = f;
-            else if (classAttr == "item c") itemC = f;
+            var classAttr = srcEl.GetAttribute("class") ?? string.Empty;
+            var classes = classAttr.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var isItem = false;
+            foreach (var c in classes) if (c == "item") { isItem = true; break; }
+            if (!isItem) continue;
+            foreach (var c in classes)
+            {
+                if (c == "a") itemA = f;
+                else if (c == "b") itemB = f;
+                else if (c == "c") itemC = f;
+            }
         }
         Assert.NotNull(itemA);
         Assert.NotNull(itemB);
@@ -1407,6 +1421,168 @@ public sealed class FlexLayouterProductionTests
         Assert.Equal(wrapperBlockStart + 75.0, itemC!.Value.BlockOffset, precision: 3);
         // b → align-self: flex-end: BlockOffset = wrapperBlockStart + 150.
         Assert.Equal(wrapperBlockStart + 150.0, itemB!.Value.BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public async Task L9_hardening_production_html_align_self_safe_center_overflow_recovers_through_cascade()
+    {
+        // Per Phase 3 Task 15 L9 post-PR-#69 hardening F#1 — production
+        // proof that the compound `align-self: safe center` value
+        // survives AngleSharp.Css's drop and reaches the layouter via
+        // the CssPreprocessor recovery path (KnownDroppedProperties now
+        // includes align-self). Pre-fix the compound declaration was
+        // dropped silently → cascade fell back to the default
+        // `align-self: auto` → container's align-items: flex-start →
+        // wrong rendering.
+        //
+        // Fixture: 2 items in a 200px-tall flex with container
+        // align-items: flex-start. Item .b has height: 250 (overflows
+        // the cross axis) + align-self: safe center. The safe modifier
+        // forces safe-start fallback on overflow → item .b at
+        // BlockOffset 0 (NOT centered at -25).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    align-items: flex-start;
+                    width: 600px;
+                    height: 200px;
+                }
+                .item {
+                    width: 100px;
+                    flex-shrink: 0;
+                }
+                .a { height: 50px; }
+                .b { height: 250px; align-self: safe center; }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        BoxFragment? itemA = null;
+        BoxFragment? itemB = null;
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class") ?? string.Empty;
+            var classes = classAttr.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var isItem = false;
+            foreach (var c in classes) if (c == "item") { isItem = true; break; }
+            if (!isItem) continue;
+            foreach (var c in classes)
+            {
+                if (c == "a") itemA = f;
+                else if (c == "b") itemB = f;
+            }
+        }
+        Assert.NotNull(itemA);
+        Assert.NotNull(itemB);
+
+        var wrapperBlockStart = 0.0;
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            if (srcEl.GetAttribute("class") == "flex"
+                && f.Box.Kind == BoxKind.FlexContainer)
+            {
+                wrapperBlockStart = f.BlockOffset;
+                break;
+            }
+        }
+
+        // .a at flex-start (container default).
+        Assert.Equal(wrapperBlockStart, itemA!.Value.BlockOffset, precision: 3);
+        // .b safe center on overflow → safe-start fallback (=
+        // wrapperBlockStart + 0). The compound declaration survived
+        // the cascade thanks to the KnownDroppedProperties recovery
+        // path. Pre-fix this would have been auto → flex-start →
+        // also 0, but the safe-modifier behavior would have been
+        // unreachable through CSS (the test caught only the
+        // ComputedSlot.FromKeyword(14) direct injection path).
+        Assert.Equal(wrapperBlockStart, itemB!.Value.BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public async Task L9_hardening_production_html_align_self_unsafe_flex_end_overflow_recovers_through_cascade()
+    {
+        // Per Phase 3 Task 15 L9 post-PR-#69 hardening F#1 — production
+        // proof that `align-self: unsafe flex-end` recovers through
+        // the cascade + the unsafe modifier honors the alignment even
+        // on overflow. Item .b has height: 250 (overflows the 200
+        // container) + align-self: unsafe flex-end. The unsafe
+        // modifier preserves flex-end → natural flex-end offset =
+        // freeSpace = 200 - 250 = -50 → item lands at BlockOffset -50
+        // (overflowing past the cross-start edge).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    align-items: flex-start;
+                    width: 600px;
+                    height: 200px;
+                }
+                .item {
+                    width: 100px;
+                    flex-shrink: 0;
+                }
+                .a { height: 50px; }
+                .b { height: 250px; align-self: unsafe flex-end; }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        BoxFragment? itemA = null;
+        BoxFragment? itemB = null;
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class") ?? string.Empty;
+            var classes = classAttr.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var isItem = false;
+            foreach (var c in classes) if (c == "item") { isItem = true; break; }
+            if (!isItem) continue;
+            foreach (var c in classes)
+            {
+                if (c == "a") itemA = f;
+                else if (c == "b") itemB = f;
+            }
+        }
+        Assert.NotNull(itemA);
+        Assert.NotNull(itemB);
+
+        var wrapperBlockStart = 0.0;
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            if (srcEl.GetAttribute("class") == "flex"
+                && f.Box.Kind == BoxKind.FlexContainer)
+            {
+                wrapperBlockStart = f.BlockOffset;
+                break;
+            }
+        }
+
+        Assert.Equal(wrapperBlockStart, itemA!.Value.BlockOffset, precision: 3);
+        // .b unsafe flex-end on overflow → natural flex-end offset
+        // (= freeSpace -50) honored. Pre-PR-#69 the compound was
+        // dropped silently → fallback to auto → flex-start → 0
+        // (wrong).
+        Assert.Equal(wrapperBlockStart - 50.0, itemB!.Value.BlockOffset, precision: 3);
     }
 
     private sealed class RecordingDiagnosticsSink : IPaginateDiagnosticsSink

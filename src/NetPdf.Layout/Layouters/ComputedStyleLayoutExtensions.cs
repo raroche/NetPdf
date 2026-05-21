@@ -560,15 +560,15 @@ internal static class ComputedStyleLayoutExtensions
     /// initial value). This decoder therefore maps <c>normal</c> →
     /// <see cref="AlignItemsValue.Stretch"/>.</para>
     ///
-    /// <para><b>L4+ deferrals.</b> Three value families fall through to
+    /// <para><b>L10+ deferrals.</b> Two value families fall through to
     /// <see cref="AlignItemsValue.Stretch"/> (the safe default) in L3:
     /// (a) <c>baseline</c> / <c>first baseline</c> / <c>last baseline</c>
     /// — requires text-shaping integration to align item baselines;
     /// (b) <c>anchor-center</c> — CSS Anchor Positioning, out of scope
-    /// for Flexbox L1; (c) <c>align-self</c> per-item override — adds
-    /// an extra cascade read per item. See
-    /// <c>docs/deferrals.md#flex-layouter-features</c> for the L4+
-    /// pickup criteria.</para>
+    /// for Flexbox L1. The <c>align-self</c> per-item override SHIPPED
+    /// in Phase 3 Task 15 L9 (see <see cref="ReadAlignSelf"/>). See
+    /// <c>docs/deferrals.md#flex-layouter-features</c> for the L10+
+    /// pickup criteria for the remaining items.</para>
     ///
     /// <para><b>Overflow mode.</b> Mirrors L2's two-channel pattern for
     /// <c>justify-content</c>: the bare <c>safe X</c> / <c>unsafe X</c>
@@ -592,42 +592,68 @@ internal static class ComputedStyleLayoutExtensions
     public static ResolvedAlignItems ReadAlignItems(this ComputedStyle style)
     {
         var keyword = style.ReadKeywordOrDefault(PropertyId.AlignItems, defaultIndex: 0);
-        return keyword switch
-        {
-            // Bare values (no overflow modifier).
-            0 => new ResolvedAlignItems(AlignItemsValue.Stretch, OverflowAlignmentMode.Default),  // normal → stretch for flex per CSS Flexbox L1 §8.3
-            1 => new ResolvedAlignItems(AlignItemsValue.Stretch, OverflowAlignmentMode.Default),
-            2 => new ResolvedAlignItems(AlignItemsValue.Stretch, OverflowAlignmentMode.Default),  // anchor-center → stretch (L4+ scope)
-            3 => new ResolvedAlignItems(AlignItemsValue.Stretch, OverflowAlignmentMode.Default),  // baseline → stretch (L4+ scope)
-            4 => new ResolvedAlignItems(AlignItemsValue.Stretch, OverflowAlignmentMode.Default),  // first baseline → stretch (L4+ scope)
-            5 => new ResolvedAlignItems(AlignItemsValue.Stretch, OverflowAlignmentMode.Default),  // last baseline → stretch (L4+ scope)
-            6 => new ResolvedAlignItems(AlignItemsValue.Center, OverflowAlignmentMode.Default),
-            7 => new ResolvedAlignItems(AlignItemsValue.FlexStart, OverflowAlignmentMode.Default), // start → flex-start (LTR row)
-            8 => new ResolvedAlignItems(AlignItemsValue.FlexEnd, OverflowAlignmentMode.Default),   // end → flex-end (LTR row)
-            9 => new ResolvedAlignItems(AlignItemsValue.FlexStart, OverflowAlignmentMode.Default), // self-start → flex-start (LTR row)
-            10 => new ResolvedAlignItems(AlignItemsValue.FlexEnd, OverflowAlignmentMode.Default),  // self-end → flex-end (LTR row)
-            11 => new ResolvedAlignItems(AlignItemsValue.FlexStart, OverflowAlignmentMode.Default),
-            12 => new ResolvedAlignItems(AlignItemsValue.FlexEnd, OverflowAlignmentMode.Default),
-            // safe <SelfPositions[0..6]> — indices 13..19
-            // (center, start, end, self-start, self-end, flex-start, flex-end)
-            13 => new ResolvedAlignItems(AlignItemsValue.Center, OverflowAlignmentMode.Safe),
-            14 => new ResolvedAlignItems(AlignItemsValue.FlexStart, OverflowAlignmentMode.Safe),   // safe start
-            15 => new ResolvedAlignItems(AlignItemsValue.FlexEnd, OverflowAlignmentMode.Safe),     // safe end
-            16 => new ResolvedAlignItems(AlignItemsValue.FlexStart, OverflowAlignmentMode.Safe),   // safe self-start
-            17 => new ResolvedAlignItems(AlignItemsValue.FlexEnd, OverflowAlignmentMode.Safe),     // safe self-end
-            18 => new ResolvedAlignItems(AlignItemsValue.FlexStart, OverflowAlignmentMode.Safe),   // safe flex-start
-            19 => new ResolvedAlignItems(AlignItemsValue.FlexEnd, OverflowAlignmentMode.Safe),     // safe flex-end
-            // unsafe <SelfPositions[0..6]> — indices 20..26
-            20 => new ResolvedAlignItems(AlignItemsValue.Center, OverflowAlignmentMode.Unsafe),
-            21 => new ResolvedAlignItems(AlignItemsValue.FlexStart, OverflowAlignmentMode.Unsafe), // unsafe start
-            22 => new ResolvedAlignItems(AlignItemsValue.FlexEnd, OverflowAlignmentMode.Unsafe),   // unsafe end
-            23 => new ResolvedAlignItems(AlignItemsValue.FlexStart, OverflowAlignmentMode.Unsafe), // unsafe self-start
-            24 => new ResolvedAlignItems(AlignItemsValue.FlexEnd, OverflowAlignmentMode.Unsafe),   // unsafe self-end
-            25 => new ResolvedAlignItems(AlignItemsValue.FlexStart, OverflowAlignmentMode.Unsafe), // unsafe flex-start
-            26 => new ResolvedAlignItems(AlignItemsValue.FlexEnd, OverflowAlignmentMode.Unsafe),   // unsafe flex-end
-            _ => new ResolvedAlignItems(AlignItemsValue.Stretch, OverflowAlignmentMode.Default),   // unknown → safe default
-        };
+        var (value, mode) = DecodeSelfPositionGrid(keyword);
+        return new ResolvedAlignItems(value, mode);
     }
+
+    /// <summary>Per Phase 3 Task 15 L9 post-PR-#69 architecture
+    /// recommendation — shared decoder for the 27-entry
+    /// &lt;self-position&gt; + safe/unsafe grid consumed by BOTH
+    /// <see cref="ReadAlignItems"/> AND <see cref="ReadAlignSelf"/>
+    /// (the latter shifts its keyword by -1 to skip the leading
+    /// <c>auto</c> entry per <c>BuildAlignSelfTable</c>). Returning a
+    /// tuple keeps the helper agnostic to which resolved-* record
+    /// wraps the (value, mode) pair.
+    ///
+    /// <para><b>Grid layout</b> (matches the SelfPositions ordering in
+    /// <c>KeywordResolver</c>): 0=normal → Stretch (per CSS Flexbox §8.3),
+    /// 1=stretch, 2=anchor-center → Stretch (L10+ scope), 3-5=baseline
+    /// triple → Stretch (L10+ scope), 6-12=&lt;self-position&gt; (center,
+    /// start, end, self-start, self-end, flex-start, flex-end), 13-19=
+    /// safe + 7 self-positions, 20-26=unsafe + 7 self-positions. Total
+    /// = 27 entries.</para>
+    ///
+    /// <para>Pre-PR-#69 the two readers held duplicate switch tables
+    /// with align-self shifted by +1 — the architecture-rec hardening
+    /// collapses them into a single source of truth so writing-mode
+    /// support, anchor-center, and proper baseline alignment (all
+    /// L10+) land in one site.</para>
+    /// </summary>
+    private static (AlignItemsValue Value, OverflowAlignmentMode Mode)
+        DecodeSelfPositionGrid(int keyword) => keyword switch
+    {
+        // Bare values (no overflow modifier).
+        0 => (AlignItemsValue.Stretch, OverflowAlignmentMode.Default),     // normal → stretch (CSS Flexbox §8.3)
+        1 => (AlignItemsValue.Stretch, OverflowAlignmentMode.Default),     // stretch
+        2 => (AlignItemsValue.Stretch, OverflowAlignmentMode.Default),     // anchor-center → stretch (L10+ scope)
+        3 => (AlignItemsValue.Stretch, OverflowAlignmentMode.Default),     // baseline → stretch (L10+ scope)
+        4 => (AlignItemsValue.Stretch, OverflowAlignmentMode.Default),     // first baseline → stretch (L10+ scope)
+        5 => (AlignItemsValue.Stretch, OverflowAlignmentMode.Default),     // last baseline → stretch (L10+ scope)
+        6 => (AlignItemsValue.Center, OverflowAlignmentMode.Default),
+        7 => (AlignItemsValue.FlexStart, OverflowAlignmentMode.Default),   // start → flex-start (LTR row)
+        8 => (AlignItemsValue.FlexEnd, OverflowAlignmentMode.Default),     // end → flex-end (LTR row)
+        9 => (AlignItemsValue.FlexStart, OverflowAlignmentMode.Default),   // self-start → flex-start (LTR row)
+        10 => (AlignItemsValue.FlexEnd, OverflowAlignmentMode.Default),    // self-end → flex-end (LTR row)
+        11 => (AlignItemsValue.FlexStart, OverflowAlignmentMode.Default),
+        12 => (AlignItemsValue.FlexEnd, OverflowAlignmentMode.Default),
+        // safe <SelfPositions[0..6]> — indices 13..19.
+        13 => (AlignItemsValue.Center, OverflowAlignmentMode.Safe),
+        14 => (AlignItemsValue.FlexStart, OverflowAlignmentMode.Safe),     // safe start
+        15 => (AlignItemsValue.FlexEnd, OverflowAlignmentMode.Safe),       // safe end
+        16 => (AlignItemsValue.FlexStart, OverflowAlignmentMode.Safe),     // safe self-start
+        17 => (AlignItemsValue.FlexEnd, OverflowAlignmentMode.Safe),       // safe self-end
+        18 => (AlignItemsValue.FlexStart, OverflowAlignmentMode.Safe),     // safe flex-start
+        19 => (AlignItemsValue.FlexEnd, OverflowAlignmentMode.Safe),       // safe flex-end
+        // unsafe <SelfPositions[0..6]> — indices 20..26.
+        20 => (AlignItemsValue.Center, OverflowAlignmentMode.Unsafe),
+        21 => (AlignItemsValue.FlexStart, OverflowAlignmentMode.Unsafe),   // unsafe start
+        22 => (AlignItemsValue.FlexEnd, OverflowAlignmentMode.Unsafe),     // unsafe end
+        23 => (AlignItemsValue.FlexStart, OverflowAlignmentMode.Unsafe),   // unsafe self-start
+        24 => (AlignItemsValue.FlexEnd, OverflowAlignmentMode.Unsafe),     // unsafe self-end
+        25 => (AlignItemsValue.FlexStart, OverflowAlignmentMode.Unsafe),   // unsafe flex-start
+        26 => (AlignItemsValue.FlexEnd, OverflowAlignmentMode.Unsafe),     // unsafe flex-end
+        _ => (AlignItemsValue.Stretch, OverflowAlignmentMode.Default),     // unknown → safe default
+    };
 
     /// <summary>Per Phase 3 Task 15 L9 — decode
     /// <see cref="PropertyId.AlignSelf"/> per CSS Box Alignment L3 §4.3.
@@ -657,49 +683,43 @@ internal static class ComputedStyleLayoutExtensions
     public static ResolvedAlignSelf ReadAlignSelf(this ComputedStyle style)
     {
         var keyword = style.ReadKeywordOrDefault(PropertyId.AlignSelf, defaultIndex: 0);
-        return keyword switch
+        // Per Phase 3 Task 15 L9 post-PR-#69 architecture rec — the
+        // shared <self-position> grid (DecodeSelfPositionGrid) is the
+        // single source of truth for the 27-entry grid that
+        // align-items + align-self both consume. align-self's table
+        // adds `auto` at index 0, so we shift the keyword by -1 before
+        // delegating; the special-case (index 0 = auto) is handled
+        // separately. Unknown indices (>=29 or negative) fall through
+        // to auto (the safe default per CSS Box Alignment §4.3).
+        if (keyword == 0) return new ResolvedAlignSelf(AlignSelfValue.Auto, OverflowAlignmentMode.Default);
+        var shifted = keyword - 1;
+        if (shifted < 0 || shifted > 26)
         {
-            // 0 = auto (defer to container's align-items).
-            0 => new ResolvedAlignSelf(AlignSelfValue.Auto, OverflowAlignmentMode.Default),
-            // 1 = normal (per CSS Flexbox §8.3 — normal → stretch for flex).
-            1 => new ResolvedAlignSelf(AlignSelfValue.Stretch, OverflowAlignmentMode.Default),
-            // 2 = stretch.
-            2 => new ResolvedAlignSelf(AlignSelfValue.Stretch, OverflowAlignmentMode.Default),
-            // 3 = anchor-center (L10+ scope; approximates to stretch).
-            3 => new ResolvedAlignSelf(AlignSelfValue.Stretch, OverflowAlignmentMode.Default),
-            // 4-6 = baseline / first baseline / last baseline (L10+ scope;
-            // approximate to stretch — mirrors ReadAlignItems behavior).
-            4 => new ResolvedAlignSelf(AlignSelfValue.Stretch, OverflowAlignmentMode.Default),
-            5 => new ResolvedAlignSelf(AlignSelfValue.Stretch, OverflowAlignmentMode.Default),
-            6 => new ResolvedAlignSelf(AlignSelfValue.Stretch, OverflowAlignmentMode.Default),
-            // 7-13 = <self-position> (center, start, end, self-start,
-            // self-end, flex-start, flex-end) — LTR + horizontal-tb mapping.
-            7 => new ResolvedAlignSelf(AlignSelfValue.Center, OverflowAlignmentMode.Default),
-            8 => new ResolvedAlignSelf(AlignSelfValue.FlexStart, OverflowAlignmentMode.Default),  // start → flex-start
-            9 => new ResolvedAlignSelf(AlignSelfValue.FlexEnd, OverflowAlignmentMode.Default),    // end → flex-end
-            10 => new ResolvedAlignSelf(AlignSelfValue.FlexStart, OverflowAlignmentMode.Default), // self-start → flex-start
-            11 => new ResolvedAlignSelf(AlignSelfValue.FlexEnd, OverflowAlignmentMode.Default),   // self-end → flex-end
-            12 => new ResolvedAlignSelf(AlignSelfValue.FlexStart, OverflowAlignmentMode.Default),
-            13 => new ResolvedAlignSelf(AlignSelfValue.FlexEnd, OverflowAlignmentMode.Default),
-            // 14-20 = safe <self-position>.
-            14 => new ResolvedAlignSelf(AlignSelfValue.Center, OverflowAlignmentMode.Safe),
-            15 => new ResolvedAlignSelf(AlignSelfValue.FlexStart, OverflowAlignmentMode.Safe),    // safe start
-            16 => new ResolvedAlignSelf(AlignSelfValue.FlexEnd, OverflowAlignmentMode.Safe),      // safe end
-            17 => new ResolvedAlignSelf(AlignSelfValue.FlexStart, OverflowAlignmentMode.Safe),    // safe self-start
-            18 => new ResolvedAlignSelf(AlignSelfValue.FlexEnd, OverflowAlignmentMode.Safe),      // safe self-end
-            19 => new ResolvedAlignSelf(AlignSelfValue.FlexStart, OverflowAlignmentMode.Safe),    // safe flex-start
-            20 => new ResolvedAlignSelf(AlignSelfValue.FlexEnd, OverflowAlignmentMode.Safe),      // safe flex-end
-            // 21-27 = unsafe <self-position>.
-            21 => new ResolvedAlignSelf(AlignSelfValue.Center, OverflowAlignmentMode.Unsafe),
-            22 => new ResolvedAlignSelf(AlignSelfValue.FlexStart, OverflowAlignmentMode.Unsafe),  // unsafe start
-            23 => new ResolvedAlignSelf(AlignSelfValue.FlexEnd, OverflowAlignmentMode.Unsafe),    // unsafe end
-            24 => new ResolvedAlignSelf(AlignSelfValue.FlexStart, OverflowAlignmentMode.Unsafe),  // unsafe self-start
-            25 => new ResolvedAlignSelf(AlignSelfValue.FlexEnd, OverflowAlignmentMode.Unsafe),    // unsafe self-end
-            26 => new ResolvedAlignSelf(AlignSelfValue.FlexStart, OverflowAlignmentMode.Unsafe),  // unsafe flex-start
-            27 => new ResolvedAlignSelf(AlignSelfValue.FlexEnd, OverflowAlignmentMode.Unsafe),    // unsafe flex-end
-            _ => new ResolvedAlignSelf(AlignSelfValue.Auto, OverflowAlignmentMode.Default),       // unknown → auto (safe default)
-        };
+            return new ResolvedAlignSelf(AlignSelfValue.Auto, OverflowAlignmentMode.Default);
+        }
+        var (value, mode) = DecodeSelfPositionGrid(shifted);
+        return new ResolvedAlignSelf(AlignItemsValueToAlignSelfValue(value), mode);
     }
+
+    /// <summary>Per Phase 3 Task 15 L9 post-PR-#69 architecture rec —
+    /// 1:1 mapping from <see cref="AlignItemsValue"/> (returned by the
+    /// shared <see cref="DecodeSelfPositionGrid"/>) to the
+    /// <see cref="AlignSelfValue"/> enum. The enums are parallel
+    /// (Stretch / FlexStart / FlexEnd / Center) but stored in separate
+    /// declarations because <see cref="AlignSelfValue"/> additionally
+    /// admits <see cref="AlignSelfValue.Auto"/> (= defer to the
+    /// container's align-items). This mapping never sees Auto — that
+    /// case is handled at the call site before delegating to the
+    /// shared decoder.</summary>
+    private static AlignSelfValue AlignItemsValueToAlignSelfValue(AlignItemsValue value) =>
+        value switch
+        {
+            AlignItemsValue.Stretch => AlignSelfValue.Stretch,
+            AlignItemsValue.FlexStart => AlignSelfValue.FlexStart,
+            AlignItemsValue.FlexEnd => AlignSelfValue.FlexEnd,
+            AlignItemsValue.Center => AlignSelfValue.Center,
+            _ => AlignSelfValue.Stretch, // defensive — never reached for known AlignItemsValue values
+        };
 
     /// <summary>Per Phase 3 Task 15 L9 — resolve an item's effective
     /// align-items value by deferring to the container's

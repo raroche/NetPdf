@@ -140,6 +140,19 @@ internal static class CssPreprocessor
         // text so the cascade resolver receives it verbatim + the
         // KeywordResolver decodes it correctly.
         "align-content",
+        // Per Phase 3 Task 15 L9 post-PR-#69 review hardening F#1 —
+        // same precedent as the four sibling alignment properties
+        // above. `align-self` (CSS Box Alignment L3 §6.2) admits the
+        // same `<overflow-position> <self-position>` compound grammar
+        // as `align-items`; AngleSharp.Css drops the safe / unsafe
+        // compound forms (`safe center`, `unsafe flex-end`, etc.) for
+        // the same reason. `KeywordResolver.BuildAlignSelfTable`
+        // produces all 28 indices including the 14 compound forms;
+        // adding `align-self` here routes the dropped declarations
+        // through the recovery path so the cascade + KeywordResolver
+        // see them verbatim. Pinned by the L9 hardening's production
+        // tests on safe + unsafe compounds.
+        "align-self",
     }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>

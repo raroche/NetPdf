@@ -202,6 +202,100 @@ public sealed class KeywordResolverTests
         Assert.Equal(28, id28);
     }
 
+    // Per Phase 3 Task 15 L9 post-PR-#69 review hardening F#2 — pin
+    // EXACT keyword ids for the 28-entry align-self table. The ids
+    // are part of the parser → cascade → ReadAlignSelf contract;
+    // reordering would silently break the reader's decoder (which
+    // delegates to the shared <self-position> grid via a -1 shift).
+    // Pins all four families: 0=auto, 1-6=bare alignment values
+    // (normal / stretch / anchor-center / baseline / first baseline /
+    // last baseline), 7-13=<self-position>, 14-20=safe X, 21-27=unsafe X.
+    [Fact]
+    public void AlignSelf_keyword_ids_are_pinned()
+    {
+        // 0 = auto (defers to container's align-items per §4.3).
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignSelf, "auto", out var id0));
+        Assert.Equal(0, id0);
+        // 1-3 = bare alignment values (normal / stretch / anchor-center).
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignSelf, "normal", out var id1));
+        Assert.Equal(1, id1);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignSelf, "stretch", out var id2));
+        Assert.Equal(2, id2);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignSelf, "anchor-center", out var id3));
+        Assert.Equal(3, id3);
+        // 4-6 = <baseline-position> triple.
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignSelf, "baseline", out var id4));
+        Assert.Equal(4, id4);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignSelf, "first baseline", out var id5));
+        Assert.Equal(5, id5);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignSelf, "last baseline", out var id6));
+        Assert.Equal(6, id6);
+        // 7-13 = <self-position> (center, start, end, self-start,
+        // self-end, flex-start, flex-end) per the SelfPositions array
+        // ordering in KeywordResolver.cs.
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignSelf, "center", out var id7));
+        Assert.Equal(7, id7);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignSelf, "start", out var id8));
+        Assert.Equal(8, id8);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignSelf, "end", out var id9));
+        Assert.Equal(9, id9);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignSelf, "self-start", out var id10));
+        Assert.Equal(10, id10);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignSelf, "self-end", out var id11));
+        Assert.Equal(11, id11);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignSelf, "flex-start", out var id12));
+        Assert.Equal(12, id12);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignSelf, "flex-end", out var id13));
+        Assert.Equal(13, id13);
+        // 14-20 = safe <self-position>.
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignSelf, "safe center", out var id14));
+        Assert.Equal(14, id14);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignSelf, "safe start", out var id15));
+        Assert.Equal(15, id15);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignSelf, "safe end", out var id16));
+        Assert.Equal(16, id16);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignSelf, "safe self-start", out var id17));
+        Assert.Equal(17, id17);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignSelf, "safe self-end", out var id18));
+        Assert.Equal(18, id18);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignSelf, "safe flex-start", out var id19));
+        Assert.Equal(19, id19);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignSelf, "safe flex-end", out var id20));
+        Assert.Equal(20, id20);
+        // 21-27 = unsafe <self-position>.
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignSelf, "unsafe center", out var id21));
+        Assert.Equal(21, id21);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignSelf, "unsafe start", out var id22));
+        Assert.Equal(22, id22);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignSelf, "unsafe end", out var id23));
+        Assert.Equal(23, id23);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignSelf, "unsafe self-start", out var id24));
+        Assert.Equal(24, id24);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignSelf, "unsafe self-end", out var id25));
+        Assert.Equal(25, id25);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignSelf, "unsafe flex-start", out var id26));
+        Assert.Equal(26, id26);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.AlignSelf, "unsafe flex-end", out var id27));
+        Assert.Equal(27, id27);
+    }
+
+    // Per Phase 3 Task 15 L9 post-PR-#69 review hardening F#2 — align-self
+    // uses <self-position> grammar (CSS Box Alignment §6.2), NOT
+    // <content-position>. The directional keywords `left` / `right`
+    // belong to <content-position> only (admitted by justify-content +
+    // align-content). align-self MUST reject them; pre-PR-#69 the
+    // negative case was untested.
+    [Fact]
+    public void AlignSelf_rejects_left_and_right_keywords()
+    {
+        Assert.False(KeywordResolver.TryGetId(PropertyId.AlignSelf, "left", out _));
+        Assert.False(KeywordResolver.TryGetId(PropertyId.AlignSelf, "right", out _));
+        Assert.False(KeywordResolver.TryGetId(PropertyId.AlignSelf, "safe left", out _));
+        Assert.False(KeywordResolver.TryGetId(PropertyId.AlignSelf, "safe right", out _));
+        Assert.False(KeywordResolver.TryGetId(PropertyId.AlignSelf, "unsafe left", out _));
+        Assert.False(KeywordResolver.TryGetId(PropertyId.AlignSelf, "unsafe right", out _));
+    }
+
     [Fact]
     public void Property_with_no_table_returns_UnsupportedUnvalidated_with_raw_text()
     {

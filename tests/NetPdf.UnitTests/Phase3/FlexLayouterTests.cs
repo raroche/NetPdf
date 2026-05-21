@@ -6755,6 +6755,132 @@ public sealed class FlexLayouterTests
     }
 
     [Fact]
+    public void L9_hardening_align_self_unsafe_center_overflow_honors_natural_negative_offset()
+    {
+        // Per Phase 3 Task 15 L9 post-PR-#69 hardening F#3 — mirrors
+        // the safe-center overflow test above but with the `unsafe`
+        // modifier. Per CSS Box Alignment L3 §5.3, `unsafe X` honors
+        // the requested alignment EVEN ON OVERFLOW (= items may be
+        // pushed offscreen). Item 1 has height: 250 in a 200px-tall
+        // container with align-self: unsafe center: cross-extent =
+        // 200; item cross = 250; freeSpace = -50; natural center
+        // offset = -25. Pre-fix the unsafe path was untested at the
+        // align-self call site.
+        //
+        // Keyword 21 = unsafe center per BuildAlignSelfTable (21-27 =
+        // unsafe + 7 self-positions ordered center/start/end/self-start/
+        // self-end/flex-start/flex-end).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(11)); // flex-start
+        SetLengthPx(flex.Style, PropertyId.Width, 600);
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+
+        var items = new Box[2];
+        var style0 = MakeStyle();
+        SetLengthPx(style0, PropertyId.Width, 100);
+        SetLengthPx(style0, PropertyId.Height, 50);
+        style0.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+        items[0] = Box.ForElement(BoxKind.BlockContainer, style0, MakeElement());
+
+        var style1 = MakeStyle();
+        SetLengthPx(style1, PropertyId.Width, 100);
+        SetLengthPx(style1, PropertyId.Height, 250); // overflows 200 container
+        style1.Set(PropertyId.AlignSelf, ComputedSlot.FromKeyword(21)); // unsafe center
+        style1.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+        items[1] = Box.ForElement(BoxKind.BlockContainer, style1, MakeElement());
+
+        flex.AppendChild(items[0]);
+        flex.AppendChild(items[1]);
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.Equal(2, fragments.Count);
+        Assert.Equal(0.0, fragments[0].BlockOffset, precision: 3);
+        // Item 1 unsafe center → natural negative offset honored.
+        // freeSpace = 200 - 250 = -50; natural center = -50/2 = -25.
+        Assert.Equal(-25.0, fragments[1].BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L9_hardening_align_self_unsafe_flex_end_overflow_honors_alignment()
+    {
+        // Per Phase 3 Task 15 L9 post-PR-#69 hardening F#3 — `unsafe
+        // flex-end` honors the flex-end alignment on overflow. Item 1
+        // overflows the cross axis (height 250 in 200 container) with
+        // align-self: unsafe flex-end (keyword 27): natural flex-end
+        // offset = freeSpace = -50. Item appears at BlockOffset -50.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(11)); // flex-start
+        SetLengthPx(flex.Style, PropertyId.Width, 600);
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+
+        var items = new Box[2];
+        var style0 = MakeStyle();
+        SetLengthPx(style0, PropertyId.Width, 100);
+        SetLengthPx(style0, PropertyId.Height, 50);
+        style0.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+        items[0] = Box.ForElement(BoxKind.BlockContainer, style0, MakeElement());
+
+        var style1 = MakeStyle();
+        SetLengthPx(style1, PropertyId.Width, 100);
+        SetLengthPx(style1, PropertyId.Height, 250);
+        style1.Set(PropertyId.AlignSelf, ComputedSlot.FromKeyword(27)); // unsafe flex-end
+        style1.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+        items[1] = Box.ForElement(BoxKind.BlockContainer, style1, MakeElement());
+
+        flex.AppendChild(items[0]);
+        flex.AppendChild(items[1]);
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.Equal(2, fragments.Count);
+        Assert.Equal(0.0, fragments[0].BlockOffset, precision: 3);
+        // Item 1 unsafe flex-end on overflow → natural flex-end offset
+        // = freeSpace = -50.
+        Assert.Equal(-50.0, fragments[1].BlockOffset, precision: 3);
+    }
+
+    [Fact]
     public void L6_hardening_wrap_reverse_emits_approximation_diagnostic()
     {
         // F#4 — `flex-wrap: wrap-reverse` decodes correctly to the

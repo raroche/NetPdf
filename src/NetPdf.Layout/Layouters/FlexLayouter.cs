@@ -248,14 +248,12 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     // to DOM order, so the L1-L9 behavior is preserved verbatim.
     private List<int> _sortedFlexChildIndices = new();
 
-    // Per Phase 3 Task 15 L6 post-PR-#66 review F#4 — one-shot guard
-    // for the wrap-reverse-approximated diagnostic. Reset on each
-    // AttemptLayout entry so a re-invocation (= different
-    // fragmentainer / retry attempt) re-emits the warning. Within a
-    // single AttemptLayout we only need to surface it once — the
-    // approximation is a property of the container declaration, not
-    // a per-item event.
-    private bool _emittedWrapReverseDiagnostic;
+    // Per Phase 3 Task 15 L11 — the `_emittedWrapReverseDiagnostic`
+    // one-shot guard was removed when the L6 hardening F#4
+    // diagnostic (LAYOUT-FLEX-WRAP-REVERSE-APPROXIMATED-001) stopped
+    // emitting (wrap-reverse now ships proper line-stacking
+    // reversal). The diagnostic code stays registered for backward
+    // compatibility but no longer fires from this layouter.
 
     /// <summary>Construct a layouter for the flex container
     /// <paramref name="rootBox"/>. The box's <see cref="Box.Kind"/>
@@ -446,34 +444,23 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         var flexWrap = _rootBox.Style.ReadFlexWrap();
         var isWrapping = flexWrap.IsFlexWrapping();
 
-        // Per Phase 3 Task 15 L6 post-PR-#66 review F#4 — emit a
-        // one-shot warning when the author declared `wrap-reverse`
-        // but the layouter treats it as `wrap` (the cross-axis line-
-        // stacking reversal is L7+ scope; see
-        // `docs/deferrals.md#flex-layouter-features`). Without this
-        // diagnostic the wrong rendering is silent — the CSS
-        // declaration parses successfully + items wrap in the
-        // correct main-axis order, but the lines stack in the
-        // natural cross-axis direction rather than the author-
-        // requested reversed direction. Reset the guard at function
-        // entry so a re-invocation surfaces the warning again.
-        _emittedWrapReverseDiagnostic = false;
-        if (flexWrap == FlexWrapValue.WrapReverse && !_emittedWrapReverseDiagnostic)
-        {
-            OptimizingBreakResolver.SafeEmit(
-                layout.Diagnostics ?? _diagnostics,
-                new PaginateDiagnostic(
-                    PaginateDiagnosticCodes.LayoutFlexWrapReverseApproximated001,
-                    "FlexLayouter: `flex-wrap: wrap-reverse` is approximated as "
-                    + "`flex-wrap: wrap` in L6 — the cross-axis line stacking "
-                    + "reversal is L7+ scope (see "
-                    + "docs/deferrals.md#flex-layouter-features). The visual "
-                    + "result preserves item order but stacks lines in the "
-                    + "natural cross-axis direction rather than the reversed "
-                    + "direction the author requested.",
-                    PaginateDiagnosticSeverity.Warning));
-            _emittedWrapReverseDiagnostic = true;
-        }
+        // Per Phase 3 Task 15 L11 — `flex-wrap: wrap-reverse` is now
+        // implemented properly per CSS Flexbox L1 §6.3 ("Behaves the
+        // same as wrap but cross-start and cross-end are permuted").
+        // The cross-axis line-stacking reversal happens at line
+        // 670-ish via `lines.Reverse()` after PackLines completes:
+        // line 0 (DOM order's first line) ends up at the NEW cross-
+        // start (= the physical cross-END for the L1 LTR + horizontal-
+        // tb default), so the visual result reflects the author's
+        // request.
+        //
+        // The L6 hardening F#4 diagnostic
+        // (LAYOUT-FLEX-WRAP-REVERSE-APPROXIMATED-001) is no longer
+        // emitted because the approximation is gone — wrap-reverse
+        // now produces the spec-correct stacking. The PaginateDiagnostic
+        // code remains registered for backward compat / cross-reference
+        // (older versions could have emitted it).
+        var isWrapReverse = flexWrap == FlexWrapValue.WrapReverse;
 
         // Resolve the container's main-axis + cross-axis content extents
         // + offsets. For row direction the main axis is the inline axis
@@ -513,6 +500,29 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         var lines = PackLines(
             _rootBox, _sortedFlexChildIndices, flexDirection,
             containerMainSize, isWrapping, cancellationToken);
+
+        // Per Phase 3 Task 15 L11 — wrap-reverse permutes cross-start
+        // and cross-end (CSS Flexbox L1 §6.3). Reversing the lines
+        // list AFTER PackLines (= keeping item DOM order WITHIN each
+        // line + flipping the line iteration order) produces the
+        // spec-correct stacking: line 0 (DOM first) ends up at the
+        // NEW cross-start (= the physical cross-END for the L1 LTR +
+        // horizontal-tb default). The emission loop's cursor walks
+        // from the wrapper's cross-start edge downward as before;
+        // because the list is reversed, the LAST-iterated line is
+        // line 0 (DOM first) and lands at the wrapper's cross-end.
+        //
+        // align-content's distribution math operates on the reversed
+        // list — which is the spec-correct behavior, since
+        // align-content distributes lines along the cross axis using
+        // the (permuted) cross-start as the origin per §8.4. Items
+        // WITHIN each line retain DOM order (= the per-line
+        // justify-content + align-items behavior is unchanged).
+        if (isWrapReverse && lines.Count > 1)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            lines.Reverse();
+        }
 
         var resolvedJC = _rootBox.Style.ReadJustifyContent();
         var alignItems = _rootBox.Style.ReadAlignItems();

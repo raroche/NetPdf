@@ -1674,6 +1674,99 @@ public sealed class FlexLayouterProductionTests
         Assert.Equal(wrapperInlineStart, itemC!.Value.InlineOffset, precision: 3);
     }
 
+    [Fact]
+    public async Task L11_production_html_flex_wrap_reverse_reverses_line_stacking()
+    {
+        // Phase 3 Task 15 L11 — production-pipeline test for
+        // `flex-wrap: wrap-reverse`. Per CSS Flexbox L1 §6.3 the
+        // cross-start and cross-end are permuted, so line 0 (DOM
+        // first) emits at the bottom and line 1 emits at the top.
+        // No diagnostic emitted (= the L6 approximation diagnostic
+        // is gone).
+        //
+        // Fixture: 4 items × 100×50 in a 250×200 flex with
+        // `flex-wrap: wrap-reverse` + `align-content: flex-start`.
+        // Items 0+1 = DOM line 0 → BlockOffset 50; items 2+3 = DOM
+        // line 1 → BlockOffset 0.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    flex-wrap: wrap-reverse;
+                    align-content: flex-start;
+                    width: 250px;
+                    height: 200px;
+                }
+                .item {
+                    width: 100px;
+                    height: 50px;
+                    flex-shrink: 0;
+                }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+              <div class="item c"></div>
+              <div class="item d"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html, contentInlineSize: 250);
+
+        BoxFragment? itemA = null;
+        BoxFragment? itemB = null;
+        BoxFragment? itemC = null;
+        BoxFragment? itemD = null;
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class") ?? string.Empty;
+            var classes = classAttr.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var isItem = false;
+            foreach (var c in classes) if (c == "item") { isItem = true; break; }
+            if (!isItem) continue;
+            foreach (var c in classes)
+            {
+                if (c == "a") itemA = f;
+                else if (c == "b") itemB = f;
+                else if (c == "c") itemC = f;
+                else if (c == "d") itemD = f;
+            }
+        }
+        Assert.NotNull(itemA);
+        Assert.NotNull(itemB);
+        Assert.NotNull(itemC);
+        Assert.NotNull(itemD);
+
+        BoxFragment? flexFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            if (srcEl.GetAttribute("class") == "flex"
+                && f.Box.Kind == BoxKind.FlexContainer)
+            {
+                flexFragment = f;
+                break;
+            }
+        }
+        Assert.NotNull(flexFragment);
+        var wrapperBlockStart = flexFragment!.Value.BlockOffset;
+
+        // After line reversal: DOM line 1 (items c, d) at the
+        // wrapper's cross-start (= NEW position, top of container);
+        // DOM line 0 (items a, b) at the wrapper's cross-start + 50
+        // (= the SECOND iteration position).
+        // Items a, b (DOM line 0) at BlockOffset wrapper + 50.
+        Assert.Equal(wrapperBlockStart + 50.0, itemA!.Value.BlockOffset, precision: 3);
+        Assert.Equal(wrapperBlockStart + 50.0, itemB!.Value.BlockOffset, precision: 3);
+        // Items c, d (DOM line 1) at BlockOffset wrapper + 0.
+        Assert.Equal(wrapperBlockStart, itemC!.Value.BlockOffset, precision: 3);
+        Assert.Equal(wrapperBlockStart, itemD!.Value.BlockOffset, precision: 3);
+    }
+
     private sealed class RecordingDiagnosticsSink : IPaginateDiagnosticsSink
     {
         public List<PaginateDiagnostic> Diagnostics { get; } = new();

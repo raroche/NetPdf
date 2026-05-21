@@ -1229,11 +1229,16 @@ grepping the ID).
   (proper cross-axis SWAP at offset-computation time per CSS Flexbox
   L1 §6.3 — see PR-#71 hardening); L12 picked up the §9.7 step-4
   min/max-width clamping iteration (closing the L8 known-gap pin).
-  Sub-cycle L13+ picks up proper `<baseline-position>` alignment
-  for both `align-items` and `align-content`, the `flex` shorthand
-  parser, `min-width: auto` intrinsic resolution per CSS Sizing L3
-  §5.5, anonymous-flex-item wrapping for inline/text children, and
-  the `FlexContinuation`-based multi-page split.
+  L13 picked up the `flex` shorthand parser (CSS Flexbox §7.4)
+  via a new `FlexShorthandExpander` wired into the preprocessor's
+  recovery pass — closes the gap where AngleSharp.Css 1.0.0-beta.144
+  only partially handles the shorthand (handles `flex: <number>`
+  but not `flex: none` / `auto` / `<basis>` / two- and three-value
+  forms). Sub-cycle L14+ picks up proper `<baseline-position>`
+  alignment for both `align-items` and `align-content`, `min-width:
+  auto` intrinsic resolution per CSS Sizing L3 §5.5,
+  anonymous-flex-item wrapping for inline/text children, and the
+  `FlexContinuation`-based multi-page split.
 - **Added** — Phase 3 Task 15 cycle 1 (Hello World).
 - **Removal condition** — Sub-cycle L11+ ships the remaining
   deferred features (wrap-reverse / proper baseline alignment /
@@ -1244,11 +1249,12 @@ grepping the ID).
   algorithm; L9 shipped `align-self`; L10 shipped `order`; L11
   shipped `flex-wrap: wrap-reverse` (with the post-PR-#71 cross-axis
   swap hardening); L12 shipped the §9.7 step-4 min/max-width
-  clamping iteration. The `flex` shorthand parser + proper
-  `<baseline-position>` alignment + `min-width: auto` intrinsic
-  resolution + multi-page flex split (`FlexContinuation`) +
-  anonymous-flex-item wrapping for inline/text children are the
-  natural L13+ candidates.
+  clamping iteration; L13 shipped the `flex` shorthand parser
+  (CSS Flexbox §7.4) via a new `FlexShorthandExpander` wired into
+  the preprocessor's recovery pass. Proper `<baseline-position>`
+  alignment + `min-width: auto` intrinsic resolution + multi-page
+  flex split (`FlexContinuation`) + anonymous-flex-item wrapping
+  for inline/text children are the natural L14+ candidates.
 
 ---
 

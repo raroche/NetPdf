@@ -5558,10 +5558,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // items can wrap differently from DOM order (e.g., item 5
         // with order: -1 might combine with item 0 onto the same
         // line). Sharing
-        // <see cref="Boxes.Box.GetFlexChildrenInOrderSequence"/>
+        // <see cref="ComputedStyleLayoutExtensions.GetFlexChildrenInOrderSequence"/>
         // between the two passes guarantees line-boundary parity per
         // the L8 F#1 hardening pattern.
-        var sortedChildIndices = flexContainer.GetFlexChildrenInOrderSequence();
+        var sortedChildIndices = flexContainer.GetFlexChildrenInOrderSequence(cancellationToken);
 
         foreach (var idx in sortedChildIndices)
         {

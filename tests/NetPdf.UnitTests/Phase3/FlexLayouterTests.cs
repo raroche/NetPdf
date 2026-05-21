@@ -7289,6 +7289,214 @@ public sealed class FlexLayouterTests
     }
 
     [Fact]
+    public void L10_hardening_order_affects_sink_emission_order_for_painting()
+    {
+        // Per Phase 3 Task 15 L10 post-PR-#70 review F#1 — CSS
+        // Display 3 §3 says flex/grid items are laid out in order-
+        // modified document order, which ALSO affects painting order.
+        // The L10 implementation walks _sortedFlexChildIndices in
+        // both PackLines + emission, so items emit to the sink in
+        // effective-order sequence (= the visual / paint order). The
+        // existing L10 tests only assert geometry (final offsets);
+        // this regression test asserts the SINK EMISSION ORDER —
+        // protecting painting behavior if a future refactor decouples
+        // positioning from emission.
+        //
+        // Fixture: 3 items with DOM order [a, b, c] but orders
+        // [a:2, b:0, c:-1]. Effective order: c, b, a. Sink should
+        // emit fragments in effective order (item c first, b second,
+        // a third).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Width, 600);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        var orders = new[] { 2, 0, -1 };
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.Order, ComputedSlot.FromInteger(orders[i]));
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        // Filter sink to just the flex items (skip root, flex
+        // wrapper). The order of these fragments in sink.Fragments
+        // is the EMISSION ORDER — which Phase 3 Paint translates
+        // directly to PDF z-order / painting sequence.
+        var itemEmissionOrder = new List<Box>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box != root && f.Box != flex && f.Box.Kind == BoxKind.BlockContainer)
+            {
+                itemEmissionOrder.Add(f.Box);
+            }
+        }
+        Assert.Equal(3, itemEmissionOrder.Count);
+        // Effective order: item 2 (c, order -1) first, item 1 (b,
+        // order 0) middle, item 0 (a, order 2) last.
+        Assert.Same(items[2], itemEmissionOrder[0]); // c emitted first
+        Assert.Same(items[1], itemEmissionOrder[1]); // b emitted middle
+        Assert.Same(items[0], itemEmissionOrder[2]); // a emitted last
+    }
+
+    [Fact]
+    public void L10_hardening_order_with_auto_height_wrap_pre_measure_packs_in_effective_order()
+    {
+        // Per Phase 3 Task 15 L10 post-PR-#70 review F#2 — pin the
+        // BlockLayouter pre-measure honors `order` for wrap line
+        // packing. Pre-fix the existing L10 wrap test used explicit
+        // height, so PreMeasureFlexMultiLineCrossExtent's line
+        // counting was bypassed by the explicit-height short-circuit.
+        // This test uses `height: auto` so the wrapper grows to the
+        // sum of line cross-extents — IF the pre-measure walks the
+        // sorted sequence it produces the correct line count.
+        //
+        // Fixture: 4 items of width 100 in a 250px row+wrap container
+        // with `height: auto`. Item heights differ to make the line
+        // cross-extent depend on which items group together:
+        //   item 0 (DOM 0, order: 1): height 50
+        //   item 1 (DOM 1, order: 0): height 80
+        //   item 2 (DOM 2, order: 0): height 80
+        //   item 3 (DOM 3, order: -1): height 50
+        // DOM-order line packing would group [0,1] / [2,3]:
+        //   line 1 (DOM 0, 1): max height = 80 → cross 80
+        //   line 2 (DOM 2, 3): max height = 80 → cross 80
+        //   total wrapper block-extent = 160
+        // Effective-order line packing groups [3,1] / [2,0]:
+        //   line 1 (item 3 first, item 1 second): max(50, 80) = 80
+        //   line 2 (item 2 first, item 0 second): max(80, 50) = 80
+        //   total wrapper block-extent = 160
+        // SAME TOTAL by coincidence in this fixture. Make the
+        // heights DIFFERENT to detect drift:
+        //   item 0 (order: 1): height 200 (= the LAST item, line 2)
+        //   item 1 (order: 0): height 30
+        //   item 2 (order: 0): height 30
+        //   item 3 (order: -1): height 30 (= the FIRST item, line 1)
+        // DOM-order packing groups [0,1] / [2,3]:
+        //   line 1: max(200, 30) = 200; line 2: max(30, 30) = 30
+        //   total wrapper block-extent = 230 (wrong — DOM order)
+        // Effective-order packing groups [3,1] / [2,0]:
+        //   line 1: max(30, 30) = 30; line 2: max(30, 200) = 200
+        //   total wrapper block-extent = 230 (same total but
+        //   different line block-offsets — sibling lands at 230 either
+        //   way for this case)
+        //
+        // Actually the most direct way to prove pre-measure parity is
+        // to assert wrapper.BlockSize equals the SUM of effective-
+        // order line cross-extents AND that the sibling block element
+        // lands AT that wrapper's bottom edge — both numbers come
+        // from pre-measure. Use a sibling div + assert its
+        // BlockOffset.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1)); // wrap
+        // Pin align-content: flex-start so §8.4 stretch doesn't shift
+        // line block-extents.
+        flex.Style.Set(PropertyId.AlignContent, ComputedSlot.FromKeyword(11)); // flex-start
+        SetLengthPx(flex.Style, PropertyId.Width, 250);
+        // No explicit height — wrapper auto-sizes to sum of line
+        // cross-extents.
+
+        // Heights chosen so DOM-order vs effective-order produce
+        // different total block-extents:
+        // DOM order:   [item0 h=200, item1 h=30] / [item2 h=30, item3 h=30]
+        //   line 1 max = 200, line 2 max = 30 → sum = 230
+        // Effective order: [item3 h=30, item1 h=30] / [item2 h=30, item0 h=200]
+        //   line 1 max = 30, line 2 max = 200 → sum = 230
+        // Same sum (by inline-item count parity) but the wrapper
+        // block-extent IS the sum, so we assert it.
+        var heights = new[] { 200, 30, 30, 30 };
+        var orders = new[] { 1, 0, 0, -1 };
+        var items = new Box[4];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, heights[i]);
+            style.Set(PropertyId.Order, ComputedSlot.FromInteger(orders[i]));
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+        // Add a sibling AFTER the flex container — its BlockOffset is
+        // driven by the pre-measure's wrapper.BlockSize estimate.
+        var siblingStyle = MakeStyle();
+        SetLengthPx(siblingStyle, PropertyId.Width, 100);
+        SetLengthPx(siblingStyle, PropertyId.Height, 10);
+        var sibling = Box.ForElement(BoxKind.BlockContainer, siblingStyle, MakeElement());
+        root.AppendChild(sibling);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 250, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        // Find the flex container fragment + the sibling.
+        BoxFragment? flexFragment = null;
+        BoxFragment? siblingFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == flex) flexFragment = f;
+            else if (f.Box == sibling) siblingFragment = f;
+        }
+        Assert.NotNull(flexFragment);
+        Assert.NotNull(siblingFragment);
+
+        // Effective-order line packing: line 1 = items 3 + 1 (max h
+        // = 30); line 2 = items 2 + 0 (max h = 200). Wrapper auto
+        // height = 30 + 200 = 230. Sibling lands at BlockOffset 230
+        // (= wrapper's BlockSize). If pre-measure walked DOM order
+        // instead, lines would be [0,1] / [2,3] with max h 200/30 →
+        // same 230 sum (coincidence). To distinguish: assert the
+        // ACTUAL emission positions item 0 at BlockOffset 30 (= line
+        // 2 starts after line 1's cross-extent 30). DOM-order would
+        // place item 0 at BlockOffset 0 (= line 1 starts at 0).
+        BoxFragment? item0Fragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == items[0]) { item0Fragment = f; break; }
+        }
+        Assert.NotNull(item0Fragment);
+        // Item 0 (DOM 0, order: 1) is in effective-order sequence
+        // position 3 (last). With wrap line packing producing
+        // line 1 = [item3, item1], line 2 = [item2, item0], item 0
+        // lands at BlockOffset 30 (= line 1's cross-extent).
+        Assert.Equal(30.0, item0Fragment!.Value.BlockOffset, precision: 3);
+
+        // Wrapper block-extent = 30 + 200 = 230 (sum of effective-
+        // order line cross-extents).
+        Assert.Equal(230.0, flexFragment!.Value.BlockSize, precision: 3);
+        // Sibling lands at BlockOffset 230 (= wrapper's BlockSize).
+        Assert.Equal(230.0, siblingFragment!.Value.BlockOffset, precision: 3);
+    }
+
+    [Fact]
     public void L6_hardening_wrap_reverse_emits_approximation_diagnostic()
     {
         // F#4 — `flex-wrap: wrap-reverse` decodes correctly to the

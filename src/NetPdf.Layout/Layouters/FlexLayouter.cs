@@ -171,20 +171,26 @@ namespace NetPdf.Layout.Layouters;
 ///   sizes (= the spec's max-content cross-size simplification for the
 ///   L1 default single-line case; sub-cycle L4+ will refine). The
 ///   following families fall through to <c>stretch</c> (the safe
-///   default) in L3: <c>baseline</c> / <c>first baseline</c> /
-///   <c>last baseline</c> (text-shaping integration needed),
+///   default): <c>baseline</c> / <c>first baseline</c> /
+///   <c>last baseline</c> (text-shaping integration needed) and
 ///   <c>anchor-center</c> (CSS Anchor Positioning, out of Flexbox L1
-///   scope), and the per-item <c>align-self</c> override (an extra
-///   cascade read per item). See
+///   scope). The per-item <c>align-self</c> override SHIPPED in
+///   Phase 3 Task 15 L9 (per CSS Box Alignment §4.3); see
 ///   <c>docs/deferrals.md#flex-layouter-features</c>.</item>
-///   <item>Items use their <b>natural inline-size</b>: the item's
-///   declared <c>width</c> if set (read as a length-px slot), else 0.
-///   No <c>flex-grow</c> / <c>flex-shrink</c> / <c>flex-basis</c>
-///   interpolation.</item>
-///   <item>Items use their <b>natural block-size</b>: the item's
-///   declared <c>height</c> if set, else 0.</item>
-///   <item>No <c>order</c> property handling (children render in
-///   source order).</item>
+///   <item><b>Item main-size resolution</b> (per Phase 3 Task 15
+///   L8 + L8 post-PR-#68 F#1 hardening): each item's main-size
+///   comes from the §9.7 flexibility resolution using the item's
+///   <c>flex-basis</c> (= hypothetical main-size; defaults to the
+///   declared <c>width</c>/<c>height</c> when <c>flex-basis: auto</c>),
+///   <c>flex-grow</c>, and <c>flex-shrink</c> factors. Cross-size
+///   still uses the declared property; cross-axis flexibility (=
+///   align-items stretch with auto cross-size) is L10+ scope for
+///   intrinsic cross-axis sizing.</item>
+///   <item><b>Item order</b> (per Phase 3 Task 15 L10): items
+///   visually pack in EFFECTIVE FLEX ORDER per CSS Flexbox §5.4 (=
+///   stable sort by (<c>order</c>, DOM index)). The cascade default
+///   <c>order: 0</c> preserves source order, so the L1-L9
+///   behavior is identical when no item declares a non-zero order.</item>
 ///   <item>No multi-page flex container splitting. The flex container
 ///   is atomic to the outer pagination — the entire container's
 ///   items emit on the page the wrapper landed on, same as
@@ -234,7 +240,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     // Per Phase 3 Task 15 L10 — block-level flex children in
     // EFFECTIVE FLEX ORDER per CSS Flexbox L1 §5.4 (= sorted by
     // (order, DOM-index)). Populated once per AttemptLayout entry by
-    // <see cref="Boxes.Box.GetFlexChildrenInOrderSequence"/>. Both
+    // <see cref="ComputedStyleLayoutExtensions.GetFlexChildrenInOrderSequence"/>. Both
     // PackLines (line packing) AND the emission loop / flexibility
     // helpers walk this list, so item visual ordering follows the
     // `order` property while preserving DOM order for ties. When no
@@ -487,7 +493,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // TextRuns from BoxBuilder) are already filtered out by the
         // helper, so the downstream loops can drop their IsBlockLevel
         // skip guards.
-        _sortedFlexChildIndices = _rootBox.GetFlexChildrenInOrderSequence();
+        _sortedFlexChildIndices = _rootBox.GetFlexChildrenInOrderSequence(cancellationToken);
 
         // Per Phase 3 Task 15 L6 — pack items into lines. For nowrap,
         // PackLines returns a single FlexLine containing every block-
@@ -878,26 +884,27 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     ///   on its own line + overflows).</item>
     /// </list>
     ///
-    /// <para><b>L6 simplifications.</b> The greedy decision uses each
-    /// item's declared natural main-size (= <c>ReadLengthPxOrZero</c>),
-    /// matching the rest of the L6 algorithm. Spec-correct line packing
-    /// uses each item's "flex item's hypothetical main size" (CSS
-    /// Flexbox L1 §9.2) which folds <c>flex-basis</c> + min/max
-    /// constraints + outer margins; those are L7+ scope (same deferrals
-    /// that block <c>flex-grow</c> / <c>flex-shrink</c> resolution).</para>
+    /// <para><b>Hypothetical main-size</b> (per Phase 3 Task 15 L8
+    /// post-PR-#68 F#1): the greedy decision uses each item's
+    /// flex-basis-driven hypothetical main-size (= CSS Flexbox L1
+    /// §9.2) via
+    /// <see cref="ComputedStyleLayoutExtensions.ResolveFlexItemHypotheticalMainSize"/>.
+    /// Pre-L8 the decision used the raw declared main-size; L8 made
+    /// PackLines + ResolveFlexibleMainSizes + the BlockLayouter pre-
+    /// measure all consume identical sizing for line-boundary parity.</para>
     ///
     /// <para><b>Cancellation.</b> The token is checked once per item.
     /// Mirrors the per-item check in the AttemptLayout emission
     /// loop.</para>
     ///
-    /// <para><b>Item filter.</b> Only block-level children participate
-    /// in L6 line packing — same filter the emission loop applies.
-    /// Cross-line lookups use the returned <see cref="FlexLine.FirstItemIndex"/>
-    /// + <see cref="FlexLine.ItemCount"/> as an index range into
-    /// <c>flexContainer.Children</c>; the emission loop re-applies
-    /// IsBlockLevel when scanning that range so any non-block-level
-    /// children that interleave (whitespace TextRuns from BoxBuilder)
-    /// are skipped consistently in both places.</para></summary>
+    /// <para><b>Index semantics</b> (per Phase 3 Task 15 L10): the
+    /// returned <see cref="FlexLine.FirstItemIndex"/> is a POSITION
+    /// in <paramref name="sortedChildIndices"/> (NOT a DOM-children
+    /// index). The emission loop dereferences DOM-children indices
+    /// via <c>sortedChildIndices[FirstItemIndex + i]</c>. The sorted
+    /// sequence is PRE-FILTERED to block-level children only — the
+    /// emission loop no longer carries the per-item IsBlockLevel
+    /// skip the L1-L9 code held inline.</para></summary>
     /// <param name="flexContainer">The flex container box.</param>
     /// <param name="sortedChildIndices">Block-level children of
     /// <paramref name="flexContainer"/> in effective flex order
@@ -915,7 +922,10 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     /// per-item loops.</param>
     /// <returns>The packed flex lines; never null. Returns an empty list
     /// when the container has no block-level children (matches the L1-L5
-    /// behavior of emitting no item fragments). The first line is always
+    /// behavior of emitting no item fragments). Per Phase 3 Task 15 L10,
+    /// FlexLine.FirstItemIndex is a POSITION in
+    /// <paramref name="sortedChildIndices"/>, not a DOM-children index.
+    /// (Removed L1-L9 semantics): the first line is always
     /// at FlexLine.FirstItemIndex of the first block-level child; later
     /// lines reference their first block-level child's index in the
     /// original Children list.</returns>
@@ -1275,22 +1285,23 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         item.ResolveFlexItemHypotheticalMainSize(mainSizeProperty, containerMainSize);
 
     /// <summary>Per Phase 3 Task 15 L6 — a flex line produced by
-    /// <see cref="PackLines"/>. The line carries the index range into
-    /// the container's Children list (so the emission loop can re-walk
-    /// the same items in DOM order with IsBlockLevel filtering applied)
-    /// plus the line's pre-computed main + cross extents (so per-line
-    /// justify-content + align-items math doesn't have to re-walk the
-    /// items).
+    /// <see cref="PackLines"/>. The line carries an index range into
+    /// the SORTED-SEQUENCE list (per Phase 3 Task 15 L10) plus the
+    /// line's pre-computed main + cross extents (so per-line
+    /// justify-content + align-items math doesn't have to re-walk
+    /// the items).
     ///
-    /// <para><b>Index range semantics.</b> <see cref="FirstItemIndex"/>
-    /// is the index of the line's first block-level child in
-    /// <c>_rootBox.Children</c>. <see cref="ItemCount"/> is the count
-    /// of block-level children on the line; the emission loop walks
-    /// indices in order starting at FirstItemIndex and applies
-    /// IsBlockLevel — when it has emitted ItemCount items it stops.
-    /// Non-block-level children that interleave between the line's
-    /// items (whitespace TextRuns from BoxBuilder) are skipped without
-    /// affecting the count.</para></summary>
+    /// <para><b>Index range semantics</b> (per Phase 3 Task 15 L10
+    /// — UPDATED from the original L6 contract).
+    /// <see cref="FirstItemIndex"/> is a POSITION in
+    /// <c>_sortedFlexChildIndices</c>, NOT a DOM-children index.
+    /// <see cref="ItemCount"/> is the count of items on the line.
+    /// The emission loop walks
+    /// <c>sortedChildIndices[FirstItemIndex .. FirstItemIndex +
+    /// ItemCount)</c> and dereferences each position to a DOM-
+    /// children index. The sorted sequence is pre-filtered to block-
+    /// level children only, so the emission loop no longer carries
+    /// the per-item IsBlockLevel skip the L1-L9 code held inline.</para></summary>
     private readonly record struct FlexLine(
         int FirstItemIndex,
         int ItemCount,

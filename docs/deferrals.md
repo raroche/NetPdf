@@ -1057,12 +1057,16 @@ grepping the ID).
     scope for Flexbox L1; the L3 decoder maps it to `stretch`. Sub-
     cycle L4+ (or later — anchor positioning is a separate spec)
     will pick this up.
-  - `align-self` per-item alignment override (CSS Box Alignment L3
-    §7) — adds an extra cascade read per item to the row-packing
-    loop + a per-item resolver that falls back to the container's
-    `align-items` when the item's `align-self` is `auto`. The L3
-    layouter reads only the container's `align-items` so every item
-    in a flex container shares the same cross-axis alignment.
+  - ~~`align-self` per-item alignment override~~ — **shipped in
+    Phase 3 Task 15 L9.** Per CSS Box Alignment L3 §4.3 the
+    FlexLayouter reads <c>item.Style.ReadAlignSelf()</c> for each
+    item + folds it against the container's <c>align-items</c> via
+    <c>ResolveAgainstContainerAlignItems</c>; the cascade default
+    <c>auto</c> preserves the container-only L1-L8 behavior.
+    Per Phase 3 Task 15 L10 post-PR-#70 review F#5 — this bullet
+    was accidentally re-introduced in the L10 hardening but L9 had
+    already removed it; restored to its post-L9 "shipped"
+    annotation.
   - Baseline-family overflow semantics + production parser
     recovery refinement for compound `align-items` keywords — L3
     decodes the compound `<overflow-position> <self-position>`

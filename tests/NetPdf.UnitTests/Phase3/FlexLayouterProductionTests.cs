@@ -1644,7 +1644,14 @@ public sealed class FlexLayouterProductionTests
         Assert.NotNull(itemB);
         Assert.NotNull(itemC);
 
-        var wrapperInlineStart = 0.0;
+        // Per Phase 3 Task 15 L10 post-PR-#70 Copilot review — capture
+        // the flex container fragment + Assert.NotNull BEFORE
+        // dereferencing its InlineOffset, mirroring the other
+        // production tests in this file. Pre-fix the test defaulted
+        // wrapperInlineStart to 0.0, which would mask a wrapper-
+        // selection regression by producing a false-positive assert
+        // if the flex container box wasn't actually emitted.
+        BoxFragment? flexFragment = null;
         foreach (var f in sink.Fragments)
         {
             var srcEl = f.Box.SourceElement;
@@ -1652,10 +1659,12 @@ public sealed class FlexLayouterProductionTests
             if (srcEl.GetAttribute("class") == "flex"
                 && f.Box.Kind == BoxKind.FlexContainer)
             {
-                wrapperInlineStart = f.InlineOffset;
+                flexFragment = f;
                 break;
             }
         }
+        Assert.NotNull(flexFragment);
+        var wrapperInlineStart = flexFragment!.Value.InlineOffset;
 
         // a (order: 2) packs last → wrapper + 200.
         // b (order: 0) packs middle → wrapper + 100.

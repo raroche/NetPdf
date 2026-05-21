@@ -961,8 +961,24 @@ internal static class ComputedStyleLayoutExtensions
     ///
     /// <para><b>Stability.</b> .NET's <see cref="System.Collections.Generic.List{T}"/>.Sort
     /// is unstable; we use a two-key comparer (order, DOM-index) so
-    /// the secondary key emulates stability. The returned indices map
-    /// into <paramref name="flexContainer"/><c>.Children</c>.</para>
+    /// the secondary key emulates stability.</para>
+    ///
+    /// <para><b>Per Phase 3 Task 15 L10 post-PR-#70 performance
+    /// hardening</b> — the comparator no longer calls
+    /// <see cref="ReadOrder"/> on every comparison
+    /// (= O(n log n) cascade slot lookups for non-trivial flex
+    /// containers). Pre-fix, a large flex container with N items
+    /// performed ~N log N <c>style.Get(PropertyId.Order)</c> calls
+    /// during sort; post-fix, the helper allocates a temporary
+    /// <c>(domIndex, order)</c> tuple list, reads each order once
+    /// (= O(N) cascade lookups), sorts the tuple list by order
+    /// (using a comparator that only touches the cached int field +
+    /// the int DOM index), then projects to a plain index list.</para>
+    ///
+    /// <para><b>Cancellation</b> (post-PR-#70 hardening): the helper
+    /// observes the supplied cancellation token at the start + per
+    /// item during the initial scan. Sorting a fixed-size list is
+    /// fast enough that mid-sort cancellation isn't needed.</para>
     ///
     /// <para><b>Allocation note.</b> Returns a fresh List every call;
     /// callers may convert to a Span if hot. L10 keeps the List shape
@@ -970,46 +986,60 @@ internal static class ComputedStyleLayoutExtensions
     /// pooling refactor is L11+ scope.</para></summary>
     /// <param name="flexContainer">The flex container box whose
     /// children should be sorted.</param>
+    /// <param name="cancellationToken">Propagates cancellation
+    /// through the initial child scan. Optional; defaults to
+    /// <see cref="System.Threading.CancellationToken.None"/> so callers
+    /// that don't have a token in scope can still use the helper.</param>
     /// <returns>A list of child indices (into <c>flexContainer.Children</c>)
     /// in effective flex order. Non-block-level children are
     /// excluded.</returns>
     public static System.Collections.Generic.List<int>
-        GetFlexChildrenInOrderSequence(this Boxes.Box flexContainer)
+        GetFlexChildrenInOrderSequence(
+            this Boxes.Box flexContainer,
+            System.Threading.CancellationToken cancellationToken = default)
     {
-        var blockLevelIndices = new System.Collections.Generic.List<int>();
+        cancellationToken.ThrowIfCancellationRequested();
+
+        // Per Phase 3 Task 15 L10 post-PR-#70 performance hardening —
+        // read each item's order ONCE during the initial filter pass
+        // + carry the (domIndex, order) pair in a small struct that
+        // the comparator dereferences without touching the cascade.
+        // For containers with up to a few dozen items the saving is
+        // ~N cascade lookups (= the difference between O(N) and
+        // O(N log N)).
+        var indexedOrders = new System.Collections.Generic.List<(int DomIndex, int Order)>();
+        var hasNonZeroOrder = false;
         for (var i = 0; i < flexContainer.Children.Count; i++)
         {
-            if (flexContainer.Children[i].IsBlockLevel)
-            {
-                blockLevelIndices.Add(i);
-            }
+            cancellationToken.ThrowIfCancellationRequested();
+            if (!flexContainer.Children[i].IsBlockLevel) continue;
+            var order = flexContainer.Children[i].Style.ReadOrder();
+            if (order != 0) hasNonZeroOrder = true;
+            indexedOrders.Add((i, order));
         }
 
-        // Fast-path: if no item has a non-zero order, DOM order IS
-        // effective order — avoid the sort allocation/branch. Reading
-        // the order slot is cheap (one cascade lookup per item).
-        var hasNonZeroOrder = false;
-        foreach (var idx in blockLevelIndices)
+        // Fast-path: every item has order 0 → DOM order IS effective
+        // order. Project the DOM indices directly without sorting.
+        if (!hasNonZeroOrder)
         {
-            if (flexContainer.Children[idx].Style.ReadOrder() != 0)
-            {
-                hasNonZeroOrder = true;
-                break;
-            }
+            var domOrder = new System.Collections.Generic.List<int>(indexedOrders.Count);
+            foreach (var t in indexedOrders) domOrder.Add(t.DomIndex);
+            return domOrder;
         }
-        if (!hasNonZeroOrder) return blockLevelIndices;
 
-        // Two-key stable sort: primary (order ascending), secondary
-        // (DOM index ascending). The secondary key emulates
-        // List.Sort's stability across the order comparator.
-        blockLevelIndices.Sort((a, b) =>
+        // Two-key stable sort: primary (cached order asc), secondary
+        // (DOM index asc) emulates stability. The comparator only
+        // reads two ints per comparison — no cascade lookups.
+        indexedOrders.Sort((a, b) =>
         {
-            var orderA = flexContainer.Children[a].Style.ReadOrder();
-            var orderB = flexContainer.Children[b].Style.ReadOrder();
-            if (orderA != orderB) return orderA.CompareTo(orderB);
-            return a.CompareTo(b); // DOM index tiebreaker (stable)
+            if (a.Order != b.Order) return a.Order.CompareTo(b.Order);
+            return a.DomIndex.CompareTo(b.DomIndex);
         });
-        return blockLevelIndices;
+
+        // Project (DomIndex, Order) tuples → DomIndex.
+        var sorted = new System.Collections.Generic.List<int>(indexedOrders.Count);
+        foreach (var t in indexedOrders) sorted.Add(t.DomIndex);
+        return sorted;
     }
 
     /// <summary>Per Phase 3 Task 15 L8 + post-PR-#68 hardening F#1 —

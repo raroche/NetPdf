@@ -1674,6 +1674,101 @@ public sealed class FlexLayouterProductionTests
         Assert.Equal(wrapperInlineStart, itemC!.Value.InlineOffset, precision: 3);
     }
 
+    [Fact]
+    public async Task L11_production_html_flex_wrap_reverse_reverses_line_stacking()
+    {
+        // Phase 3 Task 15 L11 — production-pipeline test for
+        // `flex-wrap: wrap-reverse`. Per CSS Flexbox L1 §6.3 the
+        // cross-start and cross-end are permuted, so line 0 (DOM
+        // first) emits at the bottom and line 1 emits at the top.
+        // No diagnostic emitted (= the L6 approximation diagnostic
+        // is gone).
+        //
+        // Fixture: 4 items × 100×50 in a 250×200 flex with
+        // `flex-wrap: wrap-reverse` + `align-content: flex-start`.
+        // Items 0+1 = DOM line 0 → BlockOffset 50; items 2+3 = DOM
+        // line 1 → BlockOffset 0.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    flex-wrap: wrap-reverse;
+                    align-content: flex-start;
+                    width: 250px;
+                    height: 200px;
+                }
+                .item {
+                    width: 100px;
+                    height: 50px;
+                    flex-shrink: 0;
+                }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+              <div class="item c"></div>
+              <div class="item d"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html, contentInlineSize: 250);
+
+        BoxFragment? itemA = null;
+        BoxFragment? itemB = null;
+        BoxFragment? itemC = null;
+        BoxFragment? itemD = null;
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class") ?? string.Empty;
+            var classes = classAttr.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var isItem = false;
+            foreach (var c in classes) if (c == "item") { isItem = true; break; }
+            if (!isItem) continue;
+            foreach (var c in classes)
+            {
+                if (c == "a") itemA = f;
+                else if (c == "b") itemB = f;
+                else if (c == "c") itemC = f;
+                else if (c == "d") itemD = f;
+            }
+        }
+        Assert.NotNull(itemA);
+        Assert.NotNull(itemB);
+        Assert.NotNull(itemC);
+        Assert.NotNull(itemD);
+
+        BoxFragment? flexFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            if (srcEl.GetAttribute("class") == "flex"
+                && f.Box.Kind == BoxKind.FlexContainer)
+            {
+                flexFragment = f;
+                break;
+            }
+        }
+        Assert.NotNull(flexFragment);
+        var wrapperBlockStart = flexFragment!.Value.BlockOffset;
+
+        // Per Phase 3 Task 15 L11 + post-PR-#71 hardening F#1 —
+        // wrap-reverse swaps cross-start/cross-end. With a 200px-tall
+        // container + 2 lines × 50 cross + align-content: flex-start,
+        // DOM line 0 lands at the swapped cross-start (= physical
+        // bottom of the container = wrapperBlockStart + 150) and
+        // DOM line 1 above it at wrapperBlockStart + 100.
+        // (Pre-PR-#71 the test asserted +50 / +0 — that locked in
+        // the L11 Hello World's incomplete implementation.)
+        Assert.Equal(wrapperBlockStart + 150.0, itemA!.Value.BlockOffset, precision: 3);
+        Assert.Equal(wrapperBlockStart + 150.0, itemB!.Value.BlockOffset, precision: 3);
+        Assert.Equal(wrapperBlockStart + 100.0, itemC!.Value.BlockOffset, precision: 3);
+        Assert.Equal(wrapperBlockStart + 100.0, itemD!.Value.BlockOffset, precision: 3);
+    }
+
     private sealed class RecordingDiagnosticsSink : IPaginateDiagnosticsSink
     {
         public List<PaginateDiagnostic> Diagnostics { get; } = new();

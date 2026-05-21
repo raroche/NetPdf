@@ -986,24 +986,16 @@ grepping the ID).
   + typed `ResolvedFlexBasis` (Kind + Value) mirror the L2/L3/L7
   resolved-* patterns.
 - **Missing** —
-  - `flex-wrap: wrap-reverse` (cross-axis line-stacking reversal per
-    CSS Flexbox L1 §6.3 — "same as wrap but the cross-start and
-    cross-end directions are swapped"). L6 ships `wrap` in full
-    (multi-line greedy packing, per-line justify-content + align-
-    items against the LINE'S cross-extent, container auto cross-size
-    = sum of line cross-extents per CSS Flexbox L1 §9.4); the
-    `wrap-reverse` keyword decodes successfully + the FlexLayouter
-    treats it identically to `wrap` until L8+ adds the cross-axis
-    reversal transform (= reverse the line-stacking order +
-    invert each item's cross-axis offset within its line). The
-    cascade slot is lossless so pre-authored
-    `flex-wrap: wrap-reverse` declarations activate the new
-    behavior without a re-author. Per Phase 3 Task 15 L6 post-PR-#66
-    review F#4 the FlexLayouter now emits the
-    `LAYOUT-FLEX-WRAP-REVERSE-APPROXIMATED-001` Warning diagnostic
-    on each `AttemptLayout` invocation that encounters
-    `wrap-reverse`, so the silent approximation is visible to
-    authors.
+  - ~~`flex-wrap: wrap-reverse`~~ — **shipped in Phase 3 Task 15 L11.**
+    Per CSS Flexbox L1 §6.3 wrap-reverse permutes cross-start +
+    cross-end. The FlexLayouter reverses the `lines` list after
+    PackLines when `flex-wrap: wrap-reverse` AND there are 2+ lines;
+    item DOM order within each line is preserved. align-content
+    distribution applies to the reversed list per §8.4. The L6
+    hardening F#4 `LAYOUT-FLEX-WRAP-REVERSE-APPROXIMATED-001`
+    diagnostic no longer fires (the approximation is gone). The
+    diagnostic code remains registered in `PaginateDiagnosticCodes`
+    for backward-compat / cross-reference.
   - **`align-content` proper `<baseline-position>` alignment** (CSS
     Box Alignment L3 §6.3): post-PR-#67 F#6 admits the three baseline
     keywords (`baseline` / `first baseline` / `last baseline`) into

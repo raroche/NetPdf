@@ -4837,36 +4837,42 @@ public sealed class FlexLayouterTests
     }
 
     [Fact]
-    public void L7_align_content_wrap_reverse_emits_diagnostic_and_applies_distribution()
+    public void L11_align_content_wrap_reverse_applies_distribution_with_reversed_lines()
     {
-        // Per Phase 3 Task 15 L7 post-PR-#67 hardening F#9 — wrap-
-        // reverse × align-content interaction. wrap-reverse is
-        // approximated as wrap (the cross-axis line-stacking reversal
-        // is L8+ scope; diagnostic emitted per L6 hardening F#4) BUT
-        // align-content still applies on top of the wrap approximation
-        // — distribution values absorb the freeCrossSpace just as if
-        // the author had written `flex-wrap: wrap`. 4 items of 100×50
-        // in 250×200 wrap-reverse + align-content: center → 2 lines of
-        // 50 each; freeCrossSpace = 100; center startOffset = 50.
-        // Lines at BlockOffset 50 + 100.
+        // Per Phase 3 Task 15 L11 — replaces the L7 post-PR-#67 F#9
+        // approximation test. wrap-reverse now ships proper line
+        // stacking (no diagnostic). The align-content distribution
+        // applies to the REVERSED line list — line 0 (DOM first)
+        // emits at the NEW cross-start (= the bottom for L1 LTR +
+        // horizontal-tb default).
+        //
+        // Fixture: 4 items of 100×50 in 250×200 wrap-reverse +
+        // align-content: center → 2 lines × 50 cross each; sum = 100;
+        // freeCrossSpace = 100; center startOffset = 50.
+        // Reversed iteration: line 1 (DOM 1) first at BlockOffset 50;
+        // line 0 (DOM 0) second at BlockOffset 100.
+        // DOM items 0+1 are on the FIRST DOM line → BlockOffset 100.
+        // DOM items 2+3 are on the SECOND DOM line → BlockOffset 50.
         var sink = new RecordingFragmentSink();
         var diagSink = new RecordingDiagnosticsSink();
         using var shaper = new SyntheticShaperResolver();
 
         var root = Box.CreateRoot(MakeStyle());
         var flex = BuildFlexContainer();
-        // Keyword 2 = wrap-reverse.
-        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(2));
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(2)); // wrap-reverse
         flex.Style.Set(PropertyId.AlignContent, ComputedSlot.FromKeyword(8)); // center
         SetLengthPx(flex.Style, PropertyId.Width, 250);
         SetLengthPx(flex.Style, PropertyId.Height, 200);
 
+        var items = new Box[4];
         for (var i = 0; i < 4; i++)
         {
             var style = MakeStyle();
             SetLengthPx(style, PropertyId.Width, 100);
             SetLengthPx(style, PropertyId.Height, 50);
-            flex.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
         }
         root.AppendChild(flex);
 
@@ -4879,37 +4885,31 @@ public sealed class FlexLayouterTests
         layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
             LayoutAttemptStrategy.LastResort);
 
-        // (a) wrap-reverse approximation diagnostic fires.
-        var wrapReverseDiags = new List<PaginateDiagnostic>();
+        // (a) No more LAYOUT-FLEX-WRAP-REVERSE-APPROXIMATED-001
+        // diagnostic — wrap-reverse is now spec-correct.
         foreach (var d in diagSink.Diagnostics)
         {
-            if (d.Code == PaginateDiagnosticCodes.LayoutFlexWrapReverseApproximated001)
-            {
-                wrapReverseDiags.Add(d);
-            }
+            Assert.NotEqual("LAYOUT-FLEX-WRAP-REVERSE-APPROXIMATED-001", d.Code);
         }
-        Assert.Single(wrapReverseDiags);
 
-        // (b) align-content distribution still applies — lines
-        // centered just as if the author had written wrap.
-        var itemFragments = new List<BoxFragment>();
+        // (b) align-content: center distributes lines after reversal.
+        // Lines in iteration order: DOM line 1 first at BlockOffset
+        // 50 (= startOffset for center), DOM line 0 second at
+        // BlockOffset 100 (= 50 + 50 line 1 cross).
+        // DOM items 0+1 (= DOM line 0) at BlockOffset 100.
+        // DOM items 2+3 (= DOM line 1) at BlockOffset 50.
+        var fragments = new BoxFragment?[4];
         foreach (var f in sink.Fragments)
         {
-            if (f.Box != root && f.Box != flex
-                && f.Box.Kind == BoxKind.BlockContainer)
+            for (var i = 0; i < items.Length; i++)
             {
-                itemFragments.Add(f);
+                if (f.Box == items[i]) { fragments[i] = f; break; }
             }
         }
-        Assert.Equal(4, itemFragments.Count);
-        // Lines centered: line 1 at 50; line 2 at 100 (= 50 + 50).
-        Assert.Equal(50.0, itemFragments[0].BlockOffset, precision: 3);
-        Assert.Equal(50.0, itemFragments[1].BlockOffset, precision: 3);
-        Assert.Equal(100.0, itemFragments[2].BlockOffset, precision: 3);
-        Assert.Equal(100.0, itemFragments[3].BlockOffset, precision: 3);
-        // (c) The current approximation is documented — proper wrap-
-        // reverse line stacking reversal would put line 2 at the cross-
-        // start edge instead of line 1; that's L8+ scope.
+        Assert.Equal(100.0, fragments[0]!.Value.BlockOffset, precision: 3);
+        Assert.Equal(100.0, fragments[1]!.Value.BlockOffset, precision: 3);
+        Assert.Equal(50.0, fragments[2]!.Value.BlockOffset, precision: 3);
+        Assert.Equal(50.0, fragments[3]!.Value.BlockOffset, precision: 3);
     }
 
     [Fact]
@@ -7497,35 +7497,56 @@ public sealed class FlexLayouterTests
     }
 
     [Fact]
-    public void L6_hardening_wrap_reverse_emits_approximation_diagnostic()
+    public void L11_flex_wrap_reverse_reverses_line_stacking_on_cross_axis()
     {
-        // F#4 — `flex-wrap: wrap-reverse` decodes correctly to the
-        // WrapReverse enum value but the FlexLayouter approximates
-        // its behavior as `wrap` (the cross-axis line-stacking
-        // reversal is L7+ scope). Without a diagnostic this is
-        // silent: correct CSS, wrong rendering. The diagnostic
-        // surfaces the approximation. Should fire exactly once per
-        // AttemptLayout invocation (not per item).
+        // Per Phase 3 Task 15 L11 + post-PR-#71 hardening F#1 — pin
+        // the spec-correct wrap-reverse behavior per CSS Flexbox L1
+        // §6.3: "Behaves the same as wrap but cross-start and cross-
+        // end are permuted". The diagnostic
+        // LAYOUT-FLEX-WRAP-REVERSE-APPROXIMATED-001 is no longer
+        // emitted; DOM line 0 lands at the NEW cross-start (= the
+        // physical cross-END = container bottom for L1 LTR +
+        // horizontal-tb default).
+        //
+        // Fixture: 4 items of 100w × 50h in a 250w × 200h flex with
+        // `flex-wrap: wrap-reverse` + `align-content: flex-start`.
+        // Wrap math:
+        //   line 0 (DOM): items 0+1 → cross-extent 50
+        //   line 1 (DOM): items 2+3 → cross-extent 50
+        //   sumLineCross = 100
+        // With wrap-reverse + align-content: flex-start:
+        //   freeCrossSpace = 100; lineStartOffset = 0.
+        //   Swap formula puts DOM line 0 at:
+        //     physical = 0 + 200 - 0 - 50 = 150
+        //   And DOM line 1 at:
+        //     physical = 0 + 200 - 50 - 50 = 100
+        // Items 0+1 (= DOM line 0) at BlockOffset 150 (physical
+        // bottom). Items 2+3 (= DOM line 1) at BlockOffset 100.
+        //
+        // Pre-PR-#71 the test asserted items 0+1 at 50 and items 2+3
+        // at 0 — that locked in the L11 Hello World's incomplete
+        // implementation (it reversed `lines` iteration but did not
+        // move the stack to the swapped cross-start origin).
         var sink = new RecordingFragmentSink();
         var diagSink = new RecordingDiagnosticsSink();
         using var shaper = new SyntheticShaperResolver();
 
         var root = Box.CreateRoot(MakeStyle());
         var flex = BuildFlexContainer();
-        // Keyword 2 = wrap-reverse (per ReadFlexWrap mapping at
-        // ComputedStyleLayoutExtensions.cs:542).
-        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(2));
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(2)); // wrap-reverse
+        flex.Style.Set(PropertyId.AlignContent, ComputedSlot.FromKeyword(11)); // flex-start
         SetLengthPx(flex.Style, PropertyId.Width, 250);
         SetLengthPx(flex.Style, PropertyId.Height, 200);
 
-        // Several items so we can verify ONE diagnostic per AttemptLayout
-        // (not N diagnostics, one per item).
+        var items = new Box[4];
         for (var i = 0; i < 4; i++)
         {
             var style = MakeStyle();
             SetLengthPx(style, PropertyId.Width, 100);
             SetLengthPx(style, PropertyId.Height, 50);
-            flex.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
         }
         root.AppendChild(flex);
 
@@ -7539,19 +7560,715 @@ public sealed class FlexLayouterTests
         layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
             LayoutAttemptStrategy.LastResort);
 
-        // Find the LAYOUT-FLEX-WRAP-REVERSE-APPROXIMATED-001
-        // diagnostic; exactly one should fire.
-        var wrapReverseDiagnosticCount = 0;
+        // (a) The LAYOUT-FLEX-WRAP-REVERSE-APPROXIMATED-001
+        // diagnostic NO LONGER fires — wrap-reverse is now properly
+        // implemented.
         foreach (var d in diagSink.Diagnostics)
         {
-            if (d.Code == "LAYOUT-FLEX-WRAP-REVERSE-APPROXIMATED-001")
+            Assert.NotEqual("LAYOUT-FLEX-WRAP-REVERSE-APPROXIMATED-001", d.Code);
+        }
+
+        // (b) Line ordering is REVERSED. Items 0 + 1 (= DOM line 0)
+        // emit at the BOTTOM (BlockOffset 50); items 2 + 3 (= DOM
+        // line 1) emit at the TOP (BlockOffset 0). The within-line
+        // ordering (items 0 before 1, items 2 before 3 on each line)
+        // is unchanged per §6.3.
+        var fragments = new BoxFragment?[4];
+        foreach (var f in sink.Fragments)
+        {
+            for (var i = 0; i < items.Length; i++)
             {
-                wrapReverseDiagnosticCount++;
-                Assert.Equal(PaginateDiagnosticSeverity.Warning, d.Severity);
-                Assert.Contains("wrap-reverse", d.Message);
+                if (f.Box == items[i]) { fragments[i] = f; break; }
             }
         }
-        Assert.Equal(1, wrapReverseDiagnosticCount);
+        // items 0 + 1 (DOM line 0) at NEW cross-start (= physical
+        // bottom of container) = BlockOffset 150.
+        Assert.Equal(150.0, fragments[0]!.Value.BlockOffset, precision: 3);
+        Assert.Equal(150.0, fragments[1]!.Value.BlockOffset, precision: 3);
+        // items 2 + 3 (DOM line 1) at BlockOffset 100 (just above
+        // DOM line 0, toward the swapped cross-end = physical top).
+        Assert.Equal(100.0, fragments[2]!.Value.BlockOffset, precision: 3);
+        Assert.Equal(100.0, fragments[3]!.Value.BlockOffset, precision: 3);
+        // Within-line item order preserved: item 0 at InlineOffset 0,
+        // item 1 at 100 (and similarly for items 2+3 on the other
+        // line).
+        Assert.Equal(0.0, fragments[0]!.Value.InlineOffset, precision: 3);
+        Assert.Equal(100.0, fragments[1]!.Value.InlineOffset, precision: 3);
+        Assert.Equal(0.0, fragments[2]!.Value.InlineOffset, precision: 3);
+        Assert.Equal(100.0, fragments[3]!.Value.InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L11_flex_wrap_reverse_single_line_packs_at_swapped_cross_start()
+    {
+        // Per Phase 3 Task 15 L11 post-PR-#71 hardening F#1 — even
+        // when wrap-reverse produces only ONE line, the cross-axis
+        // SWAP still applies. The line-reversal step is a no-op (=
+        // nothing to reverse), but the line stack still moves to
+        // the NEW cross-start origin (= physical cross-end).
+        //
+        // Fixture: 2 items × 100w × 50h in 400w × 200h wrap-reverse
+        // container with align-items: flex-start + align-content:
+        // flex-start. Both items fit on one line. The line lands at
+        // the swapped cross-start = physical bottom:
+        //   sumLineCross = 50; freeCrossSpace = 150; lineStartOffset = 0
+        //   physical = 0 + 200 - 0 - 50 = 150
+        // Within the line, align-items: flex-start under wrap-reverse
+        // means the line's NEW cross-start = the line's PHYSICAL-
+        // BOTTOM edge (= y=200). Items with cross-size 50 anchor to
+        // the bottom = y=150 (top edge of items, items span y=150..200).
+        // Since item cross-size == line cross-size (50 == 50), the
+        // item's top edge IS the line's top edge.
+        //
+        // Pre-PR-#71 this test was named "...does_not_reverse" and
+        // asserted items at BlockOffset 0, which was semantically
+        // misleading: the line-ORDER reversal is a no-op, but the
+        // cross-axis SWAP is not.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(2)); // wrap-reverse
+        flex.Style.Set(PropertyId.AlignContent, ComputedSlot.FromKeyword(11)); // flex-start
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(11)); // flex-start
+        SetLengthPx(flex.Style, PropertyId.Width, 400);
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+
+        var items = new Box[2];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new BoxFragment?[2];
+        foreach (var f in sink.Fragments)
+        {
+            for (var i = 0; i < items.Length; i++)
+            {
+                if (f.Box == items[i]) { fragments[i] = f; break; }
+            }
+        }
+        Assert.NotNull(fragments[0]);
+        Assert.NotNull(fragments[1]);
+        // Both items on the (single) line at BlockOffset 150 (= the
+        // swapped cross-start = physical bottom of the 200px container
+        // minus the 50px line cross-extent). Within-line DOM order
+        // preserved: item 0 at InlineOffset 0, item 1 at 100.
+        Assert.Equal(150.0, fragments[0]!.Value.BlockOffset, precision: 3);
+        Assert.Equal(150.0, fragments[1]!.Value.BlockOffset, precision: 3);
+        Assert.Equal(0.0, fragments[0]!.Value.InlineOffset, precision: 3);
+        Assert.Equal(100.0, fragments[1]!.Value.InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L11_flex_wrap_reverse_column_direction_swaps_inline_cross_start()
+    {
+        // Per Phase 3 Task 15 L11 + post-PR-#71 hardening F#1 —
+        // column-direction wrap-reverse swaps cross-start/cross-end
+        // on the INLINE axis (= cross axis for column direction).
+        // For column + horizontal-tb LTR, the swap moves cross-start
+        // from the physical LEFT edge to the physical RIGHT edge.
+        //
+        // Fixture: 4 items of 100w × 50h in a 400w × 150h column
+        // flex with wrap-reverse + align-content: flex-start.
+        //   PackLines (DOM): line 0 = items 0+1+2 (block sum 150),
+        //   line 1 = item 3.
+        //   Each line's inline-extent = max item inline = 100.
+        //   sumLineCross = 200.
+        // Swap formula for align-content: flex-start (lineStartOffset
+        // = 0):
+        //   DOM line 0 (items 0+1+2): physical = 0 + 400 - 0 - 100
+        //     = 300 (anchored at the swapped cross-start = right
+        //     edge minus line extent).
+        //   DOM line 1 (item 3): physical = 0 + 400 - 100 - 100 = 200.
+        // Items 0+1+2 at InlineOffset 300; item 3 at InlineOffset 200.
+        //
+        // Pre-PR-#71 assertion was 100/100/100/0 — locked in the
+        // bug (lines stayed at the physical left after just reversing
+        // the iteration order).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(2)); // wrap-reverse
+        flex.Style.Set(PropertyId.AlignContent, ComputedSlot.FromKeyword(11)); // flex-start
+        SetLengthPx(flex.Style, PropertyId.Width, 400);
+        SetLengthPx(flex.Style, PropertyId.Height, 150);
+
+        var items = new Box[4];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new BoxFragment?[4];
+        foreach (var f in sink.Fragments)
+        {
+            for (var i = 0; i < items.Length; i++)
+            {
+                if (f.Box == items[i]) { fragments[i] = f; break; }
+            }
+        }
+        // Swapped cross-start (= physical right) is at InlineOffset
+        // 300 for DOM line 0 + 200 for DOM line 1.
+        Assert.Equal(300.0, fragments[0]!.Value.InlineOffset, precision: 3);
+        Assert.Equal(300.0, fragments[1]!.Value.InlineOffset, precision: 3);
+        Assert.Equal(300.0, fragments[2]!.Value.InlineOffset, precision: 3);
+        Assert.Equal(200.0, fragments[3]!.Value.InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L11_flex_wrap_reverse_sink_emission_order_matches_dom_order()
+    {
+        // Per Phase 3 Task 15 L11 + post-PR-#71 hardening F#1 — sink
+        // emission order (= painting order per CSS Display §3)
+        // follows DOM order under wrap-reverse. The cross-axis SWAP
+        // is applied at offset-computation time (the line stack
+        // moves to the swapped cross-start), NOT by reversing the
+        // iteration order. Each line emits its items in DOM order;
+        // lines emit in DOM order; the only difference from wrap is
+        // the physical cross-offset of each line.
+        //
+        // Fixture: 4 items in 250×200 → 2 lines. Emission order
+        // (= sink fragment order) is DOM order: items 0, 1, 2, 3.
+        // (Pre-PR-#71 the test asserted reversed emission [2, 3, 0, 1]
+        // — that was a side effect of the lines.Reverse() approach
+        // which the F#1 hardening removed.)
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(2)); // wrap-reverse
+        flex.Style.Set(PropertyId.AlignContent, ComputedSlot.FromKeyword(11)); // flex-start
+        SetLengthPx(flex.Style, PropertyId.Width, 250);
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+
+        var items = new Box[4];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 250, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var emissionOrder = new List<Box>();
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box != root && f.Box != flex && f.Box.Kind == BoxKind.BlockContainer)
+            {
+                emissionOrder.Add(f.Box);
+            }
+        }
+        Assert.Equal(4, emissionOrder.Count);
+        // DOM order preserved (the swap is purely an offset
+        // computation, not an iteration reorder).
+        Assert.Same(items[0], emissionOrder[0]);
+        Assert.Same(items[1], emissionOrder[1]);
+        Assert.Same(items[2], emissionOrder[2]);
+        Assert.Same(items[3], emissionOrder[3]);
+    }
+
+    // ====================================================================
+    //  Phase 3 Task 15 L11 post-PR-#71 hardening — new test coverage.
+    // ====================================================================
+
+    [Fact]
+    public void L11_hardening_wrap_reverse_align_content_flex_end_packs_at_swapped_cross_end()
+    {
+        // Per Phase 3 Task 15 L11 post-PR-#71 F#4 — wrap-reverse +
+        // align-content: flex-end packs lines at the swapped cross-
+        // end (= physical TOP for row + horizontal-tb LTR). DOM line
+        // 0 (first) is at the swapped cross-START side of the packed
+        // stack; DOM line 1 (later) is at the swapped cross-END.
+        //
+        // Fixture: 2 lines × 50 in 200; freeCrossSpace = 100;
+        // lineStartOffset for flex-end = 100.
+        //   DOM line 0: swappedCursor=100; physical=200-100-50=50.
+        //   DOM line 1: swappedCursor=150; physical=200-150-50=0.
+        // DOM items 0+1 at y=50; items 2+3 at y=0 (top of container).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(2)); // wrap-reverse
+        flex.Style.Set(PropertyId.AlignContent, ComputedSlot.FromKeyword(12)); // flex-end
+        SetLengthPx(flex.Style, PropertyId.Width, 250);
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+
+        var items = new Box[4];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 250, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new BoxFragment?[4];
+        foreach (var f in sink.Fragments)
+        {
+            for (var i = 0; i < items.Length; i++)
+            {
+                if (f.Box == items[i]) { fragments[i] = f; break; }
+            }
+        }
+        Assert.Equal(50.0, fragments[0]!.Value.BlockOffset, precision: 3);
+        Assert.Equal(50.0, fragments[1]!.Value.BlockOffset, precision: 3);
+        Assert.Equal(0.0, fragments[2]!.Value.BlockOffset, precision: 3);
+        Assert.Equal(0.0, fragments[3]!.Value.BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L11_hardening_wrap_reverse_align_content_space_between_distributes_with_swap()
+    {
+        // Per Phase 3 Task 15 L11 post-PR-#71 F#4 — wrap-reverse +
+        // align-content: space-between distributes lines on the
+        // cross axis with no edge spacing in the SWAPPED axis.
+        // For 2 lines × 50 in 200 with space-between:
+        //   lineStartOffset = 0; lineBetweenSpacing = 100.
+        //   DOM line 0: swappedCursor=0; physical=200-0-50=150.
+        //   DOM line 1: swappedCursor=150; physical=200-150-50=0.
+        // DOM line 0 at the swapped cross-start (= physical bottom);
+        // DOM line 1 at the swapped cross-end (= physical top); a
+        // 100px gap between them.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(2)); // wrap-reverse
+        flex.Style.Set(PropertyId.AlignContent, ComputedSlot.FromKeyword(1)); // space-between
+        SetLengthPx(flex.Style, PropertyId.Width, 250);
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+
+        var items = new Box[4];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 250, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new BoxFragment?[4];
+        foreach (var f in sink.Fragments)
+        {
+            for (var i = 0; i < items.Length; i++)
+            {
+                if (f.Box == items[i]) { fragments[i] = f; break; }
+            }
+        }
+        Assert.Equal(150.0, fragments[0]!.Value.BlockOffset, precision: 3);
+        Assert.Equal(150.0, fragments[1]!.Value.BlockOffset, precision: 3);
+        Assert.Equal(0.0, fragments[2]!.Value.BlockOffset, precision: 3);
+        Assert.Equal(0.0, fragments[3]!.Value.BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L11_hardening_wrap_reverse_align_items_flex_start_anchors_at_swapped_line_edge()
+    {
+        // Per Phase 3 Task 15 L11 post-PR-#71 F#2 — under wrap-reverse,
+        // align-items: flex-start anchors items at the LINE's new
+        // cross-start (= the line's PHYSICAL-BOTTOM edge for row +
+        // horizontal-tb LTR). Test with UNEQUAL item cross-sizes to
+        // distinguish flex-start from flex-end.
+        //
+        // Fixture: 2 items × 100 inline with HEIGHTS 30 + 50 in a
+        // 250 × 200 wrap-reverse + align-content: flex-start +
+        // align-items: flex-start. Both fit on one line (combined
+        // inline 200 ≤ 250). Line cross-extent = max(30, 50) = 50.
+        // Line physical offset = 200 - 50 = 150 (top edge of the
+        // line; line spans y=150..200).
+        // Within the line, align-items: flex-start under wrap-reverse
+        // anchors items at the line's new cross-start = y=200 (the
+        // PHYSICAL BOTTOM of the line). Item with height 30 lands at
+        // y=200-30=170 (its top edge); item with height 50 lands at
+        // y=200-50=150 (its top edge = also the line's top edge).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(2)); // wrap-reverse
+        flex.Style.Set(PropertyId.AlignContent, ComputedSlot.FromKeyword(11)); // flex-start
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(11)); // flex-start
+        SetLengthPx(flex.Style, PropertyId.Width, 250);
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+
+        var heights = new[] { 30, 50 };
+        var items = new Box[2];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, heights[i]);
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 250, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new BoxFragment?[2];
+        foreach (var f in sink.Fragments)
+        {
+            for (var i = 0; i < items.Length; i++)
+            {
+                if (f.Box == items[i]) { fragments[i] = f; break; }
+            }
+        }
+        // Item 0 (h=30): anchored at the line's bottom edge (y=200),
+        // top edge at y=170.
+        Assert.Equal(170.0, fragments[0]!.Value.BlockOffset, precision: 3);
+        // Item 1 (h=50): also anchored at the bottom; top edge at y=150
+        // (= line's top edge since item fills line cross).
+        Assert.Equal(150.0, fragments[1]!.Value.BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L11_hardening_wrap_reverse_align_items_flex_end_anchors_at_swapped_line_top()
+    {
+        // Per Phase 3 Task 15 L11 post-PR-#71 F#2 — align-items:
+        // flex-end under wrap-reverse anchors items at the LINE's new
+        // cross-end (= the line's PHYSICAL-TOP edge). Test with
+        // UNEQUAL heights to distinguish from flex-start.
+        //
+        // Same fixture as above but align-items: flex-end.
+        // Line physical offset = 150 (line spans y=150..200).
+        // Within the line, flex-end anchors items at the line's
+        // new cross-end = y=150 (PHYSICAL TOP of the line).
+        // Item with height 30: top edge at y=150; bottom at y=180.
+        // Item with height 50: top edge at y=150; bottom at y=200.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(2)); // wrap-reverse
+        flex.Style.Set(PropertyId.AlignContent, ComputedSlot.FromKeyword(11)); // flex-start
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(12)); // flex-end
+        SetLengthPx(flex.Style, PropertyId.Width, 250);
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+
+        var heights = new[] { 30, 50 };
+        var items = new Box[2];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, heights[i]);
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 250, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new BoxFragment?[2];
+        foreach (var f in sink.Fragments)
+        {
+            for (var i = 0; i < items.Length; i++)
+            {
+                if (f.Box == items[i]) { fragments[i] = f; break; }
+            }
+        }
+        // Both items anchored at the line's TOP edge (= y=150).
+        Assert.Equal(150.0, fragments[0]!.Value.BlockOffset, precision: 3);
+        Assert.Equal(150.0, fragments[1]!.Value.BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L11_hardening_wrap_reverse_align_self_override_respects_swapped_axis()
+    {
+        // Per Phase 3 Task 15 L11 post-PR-#71 F#2 — align-self
+        // overrides align-items per item. Under wrap-reverse, the
+        // override's FlexStart/FlexEnd meaning also flips with the
+        // axis. Fixture: 2 items × h=30, container align-items:
+        // flex-start. Item 1 sets align-self: flex-end → it should
+        // anchor at the line's TOP edge (= swapped cross-end) while
+        // item 0 remains at the line's BOTTOM edge (= swapped
+        // cross-start). Line spans y=150..200 (under wrap-reverse +
+        // align-content: flex-start; max height for 1 line of 2 items
+        // is 30, so line cross-extent = 30; physical line offset =
+        // 200 - 30 = 170; line spans y=170..200).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(2)); // wrap-reverse
+        flex.Style.Set(PropertyId.AlignContent, ComputedSlot.FromKeyword(11)); // flex-start
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(11)); // flex-start
+        SetLengthPx(flex.Style, PropertyId.Width, 250);
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+
+        var items = new Box[2];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 30);
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            if (i == 1)
+            {
+                // Keyword 12 = flex-end per BuildAlignSelfTable
+                // (offset by +1 from the align-items index since
+                // align-self has `auto` at index 0).
+                style.Set(PropertyId.AlignSelf, ComputedSlot.FromKeyword(13));
+            }
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 250, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new BoxFragment?[2];
+        foreach (var f in sink.Fragments)
+        {
+            for (var i = 0; i < items.Length; i++)
+            {
+                if (f.Box == items[i]) { fragments[i] = f; break; }
+            }
+        }
+        // Line cross-extent = 30; line physical offset = 200 - 30 =
+        // 170; line spans y=170..200. Item 0 (align-items: flex-start
+        // under wrap-reverse = anchored at line bottom y=200, top edge
+        // = 200 - 30 = 170). Item 1 (align-self: flex-end under
+        // wrap-reverse = anchored at line top y=170, top edge = 170).
+        // In this fixture both happen to be at y=170 because each
+        // item fills the line cross-extent. The behavior differs
+        // visually only when items have different heights from the
+        // line cross-extent; pin the offsets here.
+        Assert.Equal(170.0, fragments[0]!.Value.BlockOffset, precision: 3);
+        Assert.Equal(170.0, fragments[1]!.Value.BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L11_hardening_wrap_reverse_auto_height_wrapper_sums_line_cross_extents()
+    {
+        // Per Phase 3 Task 15 L11 post-PR-#71 F#6 — wrap-reverse +
+        // height: auto pre-measure parity. The BlockLayouter pre-
+        // measure must produce the SAME wrapper cross-extent for
+        // wrap vs wrap-reverse (the swap is purely a placement
+        // decision, not a sizing decision).
+        //
+        // Fixture: 4 items × 100w × 50h in a 250w wrap-reverse
+        // container with auto-height. Wrap math → 2 lines × 50 each
+        // → wrapper.BlockSize = 100. Sibling lands at BlockOffset
+        // 100 (= wrapper bottom).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(2)); // wrap-reverse
+        flex.Style.Set(PropertyId.AlignContent, ComputedSlot.FromKeyword(11)); // flex-start
+        SetLengthPx(flex.Style, PropertyId.Width, 250);
+        // No explicit height — wrapper auto-sizes.
+
+        var items = new Box[4];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+        var siblingStyle = MakeStyle();
+        SetLengthPx(siblingStyle, PropertyId.Width, 100);
+        SetLengthPx(siblingStyle, PropertyId.Height, 10);
+        var sibling = Box.ForElement(BoxKind.BlockContainer, siblingStyle, MakeElement());
+        root.AppendChild(sibling);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 250, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        BoxFragment? flexFragment = null;
+        BoxFragment? siblingFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == flex) flexFragment = f;
+            else if (f.Box == sibling) siblingFragment = f;
+        }
+        Assert.NotNull(flexFragment);
+        Assert.NotNull(siblingFragment);
+        // Wrapper sizes to sum of line cross-extents = 100.
+        Assert.Equal(100.0, flexFragment!.Value.BlockSize, precision: 3);
+        // Sibling lands at the wrapper's bottom edge.
+        Assert.Equal(100.0, siblingFragment!.Value.BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L11_hardening_wrap_reverse_with_order_swaps_after_reorder()
+    {
+        // Per Phase 3 Task 15 L11 post-PR-#71 F#7 — `order` reorders
+        // items BEFORE line packing (L10 sorted-sequence pre-pass);
+        // wrap-reverse swaps cross-start/cross-end AFTER PackLines
+        // at emission time. The two transforms are orthogonal.
+        //
+        // Fixture: 4 items × 100w × 50h in 250 × 200 wrap-reverse.
+        // Orders: [2, 0, 0, -1]. Effective sorted order: item 3
+        // (order -1), item 1 (order 0), item 2 (order 0), item 0
+        // (order 2). Line packing: line 0 = item 3 + item 1 (inline
+        // sum 200 ≤ 250). line 1 = item 2 + item 0.
+        // align-content: flex-start under wrap-reverse:
+        //   DOM line 0 at swappedCursor 0; physical = 200-0-50 = 150.
+        //     (Contains item 3 + item 1.)
+        //   DOM line 1 at swappedCursor 50; physical = 200-50-50 = 100.
+        //     (Contains item 2 + item 0.)
+        // So items 3 + 1 at BlockOffset 150; items 2 + 0 at BlockOffset 100.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(2)); // wrap-reverse
+        flex.Style.Set(PropertyId.AlignContent, ComputedSlot.FromKeyword(11)); // flex-start
+        SetLengthPx(flex.Style, PropertyId.Width, 250);
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+
+        var orders = new[] { 2, 0, 0, -1 };
+        var items = new Box[4];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.Order, ComputedSlot.FromInteger(orders[i]));
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 250, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new BoxFragment?[4];
+        foreach (var f in sink.Fragments)
+        {
+            for (var i = 0; i < items.Length; i++)
+            {
+                if (f.Box == items[i]) { fragments[i] = f; break; }
+            }
+        }
+        // Effective DOM order: item 3 + item 1 on line 0 (BlockOffset
+        // 150); item 2 + item 0 on line 1 (BlockOffset 100).
+        Assert.Equal(100.0, fragments[0]!.Value.BlockOffset, precision: 3); // item 0 → line 1
+        Assert.Equal(150.0, fragments[1]!.Value.BlockOffset, precision: 3); // item 1 → line 0
+        Assert.Equal(100.0, fragments[2]!.Value.BlockOffset, precision: 3); // item 2 → line 1
+        Assert.Equal(150.0, fragments[3]!.Value.BlockOffset, precision: 3); // item 3 → line 0
     }
 
     // ====================================================================

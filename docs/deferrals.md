@@ -1262,13 +1262,15 @@ grepping the ID).
   (`PhysicalLineOffset`) so the swap state has a named owner +
   future writing-mode work picks up cleanly; L15 shipped
   anonymous flex-item wrapping per §4 — BoxBuilder's new
-  `FixupFlexAnonymousItems` pass wraps contiguous runs of
-  inline-level children (TextRun / InlineBox / atomic inlines)
-  into anonymous block-level flex items + drops whitespace-only
-  TextRuns sandwiched between block-level siblings. Proper
+  `FixupFlexAnonymousItems` pass blockifies inline element
+  children + wraps TextRun runs into anonymous block-level flex
+  items + drops whitespace-only TextRuns per §4; L16 shipped
+  the `flex-flow` shorthand parser (CSS Flexbox §6.1) via a new
+  `FlexFlowShorthandExpander` wired into the preprocessor's
+  recovery pass (mirrors L13's `flex` shorthand pattern). Proper
   `<baseline-position>` alignment + `min-width: auto` intrinsic
   resolution + multi-page flex split (`FlexContinuation`) are
-  the natural L16+ candidates.
+  the natural L17+ candidates.
 
 ---
 

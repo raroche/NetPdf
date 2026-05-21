@@ -167,6 +167,13 @@ internal static class CssPreprocessor
         // shape would extend to `font` / `border` / `background` /
         // etc. when they land.
         "flex",
+        // Per Phase 3 Task 15 L16 — `flex-flow` shorthand. Mirrors the
+        // L13 pattern for the `<flex-direction> || <flex-wrap>`
+        // shorthand per CSS Flexbox L1 §6.1.
+        // <see cref="FlexFlowShorthandExpander.TryExpand"/> emits TWO
+        // longhand recovery records (`flex-direction` / `flex-wrap`)
+        // in place of the single dropped `flex-flow` declaration.
+        "flex-flow",
     }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
@@ -619,6 +626,21 @@ internal static class CssPreprocessor
                         "flex-shrink", fShrink, isImportant));
                     output.Add(new CssDeclarationRecovery(
                         "flex-basis", fBasis, isImportant));
+                }
+                else if (normalizedName == "flex-flow"
+                    && FlexFlowShorthandExpander.TryExpand(
+                        cleanValue,
+                        out var ffDir,
+                        out var ffWrap))
+                {
+                    // Per Phase 3 Task 15 L16 — multi-emit recovery
+                    // for the `flex-flow` shorthand per CSS Flexbox
+                    // L1 §6.1. Two longhand records replace the
+                    // single dropped shorthand.
+                    output.Add(new CssDeclarationRecovery(
+                        "flex-direction", ffDir, isImportant));
+                    output.Add(new CssDeclarationRecovery(
+                        "flex-wrap", ffWrap, isImportant));
                 }
                 else
                 {

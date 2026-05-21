@@ -748,9 +748,24 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 // this line on the cross axis) into the align-items
                 // helper. Items align against the LINE'S cross
                 // extent per CSS Flexbox L1 §6.3.
+                //
+                // Per Phase 3 Task 15 L9 — `align-self` overrides
+                // `align-items` per item per CSS Box Alignment L3 §4.3:
+                // "If the value of align-self is auto, its used value
+                // is the value of align-items on the parent" — i.e.,
+                // align-self: auto (the cascade default) preserves the
+                // L1-L8 container-only behavior; any other value
+                // overrides the container's align-items for this one
+                // item. The reader returns ResolvedAlignSelf; the
+                // ResolveAgainstContainerAlignItems extension folds the
+                // per-item enum + the container's (value, mode) tuple
+                // into the effective ResolvedAlignItems passed to the
+                // placement helper.
+                var alignSelf = item.Style.ReadAlignSelf();
+                var effectiveAlign = alignSelf.ResolveAgainstContainerAlignItems(alignItems);
                 var (itemCrossOffsetWithinLine, itemEffectiveCrossSize) =
                     ComputeAlignItemsPlacement(
-                        alignItems.Value, alignItems.Mode,
+                        effectiveAlign.Value, effectiveAlign.Mode,
                         lineCrossExtent, itemCrossSize,
                         itemIsCrossSizeAuto,
                         lineCrossCursor);

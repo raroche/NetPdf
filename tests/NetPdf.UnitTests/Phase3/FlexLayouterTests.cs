@@ -6373,6 +6373,513 @@ public sealed class FlexLayouterTests
         Assert.Equal(50.0, flexFragment!.Value.BlockSize, precision: 3);
     }
 
+    // ====================================================================
+    //  Phase 3 Task 15 L9 — align-self per-item alignment override.
+    //  CSS Box Alignment L3 §4.3 — "If the value of align-self is auto,
+    //  its used value is the value of align-items on the parent".
+    // ====================================================================
+
+    [Fact]
+    public void L9_align_self_auto_falls_back_to_container_align_items()
+    {
+        // Per Phase 3 Task 15 L9 — cascade default `align-self: auto`
+        // preserves the L1-L8 behavior: every item picks up the
+        // container's align-items. 3 items in a 200px-tall flex with
+        // `align-items: center`. No align-self declarations → all 3
+        // items center at BlockOffset 75 (= (200-50)/2).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(6)); // center
+        SetLengthPx(flex.Style, PropertyId.Width, 600);
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            // No align-self declaration → cascade default `auto`.
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.Equal(3, fragments.Count);
+        // All centered at BlockOffset (200 - 50) / 2 = 75.
+        Assert.Equal(75.0, fragments[0].BlockOffset, precision: 3);
+        Assert.Equal(75.0, fragments[1].BlockOffset, precision: 3);
+        Assert.Equal(75.0, fragments[2].BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L9_align_self_overrides_container_align_items_per_item()
+    {
+        // Per Phase 3 Task 15 L9 — `align-self` on individual items
+        // overrides the container's align-items. 3 items in a 200px-
+        // tall flex with container align-items: center. Items 0 + 2
+        // have align-self: flex-start (= top); item 1 has align-self:
+        // flex-end (= bottom). Expected BlockOffsets:
+        //   item 0: 0 (flex-start, ignore container center)
+        //   item 1: 150 (flex-end = 200 - 50)
+        //   item 2: 0 (flex-start)
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(6)); // center
+        SetLengthPx(flex.Style, PropertyId.Width, 600);
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+
+        // align-self keyword indices per BuildAlignSelfTable:
+        //   12 = flex-start, 13 = flex-end.
+        var alignSelfIndices = new[] { 12, 13, 12 };
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.AlignSelf, ComputedSlot.FromKeyword(alignSelfIndices[i]));
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(0.0, fragments[0].BlockOffset, precision: 3);   // flex-start
+        Assert.Equal(150.0, fragments[1].BlockOffset, precision: 3); // flex-end
+        Assert.Equal(0.0, fragments[2].BlockOffset, precision: 3);   // flex-start
+    }
+
+    [Fact]
+    public void L9_align_self_stretch_grows_auto_cross_size_item()
+    {
+        // Per Phase 3 Task 15 L9 — `align-self: stretch` on an item
+        // with auto cross-size grows the item to fill the line's
+        // cross-extent (mirrors the L3 align-items: stretch behavior).
+        // 3 items in 200px-tall flex with container align-items:
+        // flex-start (= no stretch). Item 1 declares align-self:
+        // stretch + height: auto → item 1 grows to fill the container
+        // cross-extent (200). Items 0 + 2 stay at their declared 50.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(11)); // flex-start
+        SetLengthPx(flex.Style, PropertyId.Width, 600);
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            if (i == 1)
+            {
+                // Item 1: no explicit height (= auto) + align-self:
+                // stretch → grows to fill cross-extent. Keyword 2 =
+                // stretch.
+                style.Set(PropertyId.AlignSelf, ComputedSlot.FromKeyword(2));
+            }
+            else
+            {
+                SetLengthPx(style, PropertyId.Height, 50);
+            }
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.Equal(3, fragments.Count);
+        // Items 0 + 2 at flex-start with their declared 50.
+        Assert.Equal(0.0, fragments[0].BlockOffset, precision: 3);
+        Assert.Equal(50.0, fragments[0].BlockSize, precision: 3);
+        Assert.Equal(0.0, fragments[2].BlockOffset, precision: 3);
+        Assert.Equal(50.0, fragments[2].BlockSize, precision: 3);
+        // Item 1 stretched to fill the container's full cross-extent
+        // (200) at offset 0.
+        Assert.Equal(0.0, fragments[1].BlockOffset, precision: 3);
+        Assert.Equal(200.0, fragments[1].BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public void L9_align_self_center_overrides_container_stretch()
+    {
+        // Per Phase 3 Task 15 L9 — `align-self: center` on one item
+        // overrides the container's default stretch (= normal →
+        // stretch per §8.3). 3 items × 50 height in a 200px-tall flex
+        // with no align-items declaration (= default stretch). Items 0
+        // + 2 are stretched (no align-self → fall back to container);
+        // item 1 has align-self: center → stays at declared 50,
+        // centered at (200-50)/2 = 75.
+        //
+        // For items 0 + 2: BlockOffset 0; BlockSize 50 (= declared
+        // height; IsCrossSizeAuto is false for explicit LengthPx, so
+        // even container-stretch leaves them at 50 — same as the
+        // L3 post-PR-#63 IsCrossSizeAuto detection).
+        // For item 1: align-self: center → BlockOffset 75, BlockSize 50.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        // No align-items → default normal → stretch.
+        SetLengthPx(flex.Style, PropertyId.Width, 600);
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            if (i == 1)
+            {
+                // Keyword 7 = center per BuildAlignSelfTable.
+                style.Set(PropertyId.AlignSelf, ComputedSlot.FromKeyword(7));
+            }
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(0.0, fragments[0].BlockOffset, precision: 3);   // stretch on explicit-height item ≈ flex-start
+        Assert.Equal(75.0, fragments[1].BlockOffset, precision: 3);  // align-self: center
+        Assert.Equal(0.0, fragments[2].BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L9_align_self_column_direction_distributes_along_inline_axis()
+    {
+        // Per Phase 3 Task 15 L9 — column-direction parity. Cross
+        // axis = inline axis under flex-direction: column; align-self
+        // distributes the item along inline. 3 items of width: 50 in
+        // a 400w × 200h column container with container align-items:
+        // flex-start. Item 1 declares align-self: center.
+        // InlineOffsets:
+        //   item 0: 0 (flex-start)
+        //   item 1: (400 - 50) / 2 = 175 (center)
+        //   item 2: 0 (flex-start)
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(11)); // flex-start
+        SetLengthPx(flex.Style, PropertyId.Width, 400);
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 50);
+            SetLengthPx(style, PropertyId.Height, 50);
+            if (i == 1)
+            {
+                style.Set(PropertyId.AlignSelf, ComputedSlot.FromKeyword(7)); // center
+            }
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.Equal(3, fragments.Count);
+        Assert.Equal(0.0, fragments[0].InlineOffset, precision: 3);
+        Assert.Equal(175.0, fragments[1].InlineOffset, precision: 3);
+        Assert.Equal(0.0, fragments[2].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L9_align_self_safe_center_overflow_falls_back_to_safe_start()
+    {
+        // Per Phase 3 Task 15 L9 — `align-self`'s overflow mode honors
+        // the safe/unsafe modifier per CSS Box Alignment L3 §5.3
+        // (mirrors L3 post-PR-#63 align-items overflow). Item 1 has
+        // height: 250 in a 200px-tall container = overflow on the
+        // cross axis (item cross > container cross). With safe center,
+        // the safe modifier forces safe-start fallback → item 1 at
+        // BlockOffset 0 (NOT centered at -25).
+        //
+        // Keyword 14 = safe center per BuildAlignSelfTable
+        // (14-20 = safe + 7 self-positions ordered center/start/end/
+        // self-start/self-end/flex-start/flex-end).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(11)); // flex-start (so item 0 is at 0)
+        SetLengthPx(flex.Style, PropertyId.Width, 600);
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+
+        var items = new Box[2];
+        var style0 = MakeStyle();
+        SetLengthPx(style0, PropertyId.Width, 100);
+        SetLengthPx(style0, PropertyId.Height, 50);
+        style0.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+        items[0] = Box.ForElement(BoxKind.BlockContainer, style0, MakeElement());
+
+        var style1 = MakeStyle();
+        SetLengthPx(style1, PropertyId.Width, 100);
+        SetLengthPx(style1, PropertyId.Height, 250); // overflows the 200 container
+        style1.Set(PropertyId.AlignSelf, ComputedSlot.FromKeyword(14)); // safe center
+        style1.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+        items[1] = Box.ForElement(BoxKind.BlockContainer, style1, MakeElement());
+
+        flex.AppendChild(items[0]);
+        flex.AppendChild(items[1]);
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.Equal(2, fragments.Count);
+        // Item 0 at flex-start (container default).
+        Assert.Equal(0.0, fragments[0].BlockOffset, precision: 3);
+        // Item 1 overflow → safe-start fallback (BlockOffset 0, NOT
+        // centered at -25).
+        Assert.Equal(0.0, fragments[1].BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L9_hardening_align_self_unsafe_center_overflow_honors_natural_negative_offset()
+    {
+        // Per Phase 3 Task 15 L9 post-PR-#69 hardening F#3 — mirrors
+        // the safe-center overflow test above but with the `unsafe`
+        // modifier. Per CSS Box Alignment L3 §5.3, `unsafe X` honors
+        // the requested alignment EVEN ON OVERFLOW (= items may be
+        // pushed offscreen). Item 1 has height: 250 in a 200px-tall
+        // container with align-self: unsafe center: cross-extent =
+        // 200; item cross = 250; freeSpace = -50; natural center
+        // offset = -25. Pre-fix the unsafe path was untested at the
+        // align-self call site.
+        //
+        // Keyword 21 = unsafe center per BuildAlignSelfTable (21-27 =
+        // unsafe + 7 self-positions ordered center/start/end/self-start/
+        // self-end/flex-start/flex-end).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(11)); // flex-start
+        SetLengthPx(flex.Style, PropertyId.Width, 600);
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+
+        var items = new Box[2];
+        var style0 = MakeStyle();
+        SetLengthPx(style0, PropertyId.Width, 100);
+        SetLengthPx(style0, PropertyId.Height, 50);
+        style0.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+        items[0] = Box.ForElement(BoxKind.BlockContainer, style0, MakeElement());
+
+        var style1 = MakeStyle();
+        SetLengthPx(style1, PropertyId.Width, 100);
+        SetLengthPx(style1, PropertyId.Height, 250); // overflows 200 container
+        style1.Set(PropertyId.AlignSelf, ComputedSlot.FromKeyword(21)); // unsafe center
+        style1.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+        items[1] = Box.ForElement(BoxKind.BlockContainer, style1, MakeElement());
+
+        flex.AppendChild(items[0]);
+        flex.AppendChild(items[1]);
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.Equal(2, fragments.Count);
+        Assert.Equal(0.0, fragments[0].BlockOffset, precision: 3);
+        // Item 1 unsafe center → natural negative offset honored.
+        // freeSpace = 200 - 250 = -50; natural center = -50/2 = -25.
+        Assert.Equal(-25.0, fragments[1].BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L9_hardening_align_self_unsafe_flex_end_overflow_honors_alignment()
+    {
+        // Per Phase 3 Task 15 L9 post-PR-#69 hardening F#3 — `unsafe
+        // flex-end` honors the flex-end alignment on overflow. Item 1
+        // overflows the cross axis (height 250 in 200 container) with
+        // align-self: unsafe flex-end (keyword 27): natural flex-end
+        // offset = freeSpace = -50. Item appears at BlockOffset -50.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.AlignItems, ComputedSlot.FromKeyword(11)); // flex-start
+        SetLengthPx(flex.Style, PropertyId.Width, 600);
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+
+        var items = new Box[2];
+        var style0 = MakeStyle();
+        SetLengthPx(style0, PropertyId.Width, 100);
+        SetLengthPx(style0, PropertyId.Height, 50);
+        style0.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+        items[0] = Box.ForElement(BoxKind.BlockContainer, style0, MakeElement());
+
+        var style1 = MakeStyle();
+        SetLengthPx(style1, PropertyId.Width, 100);
+        SetLengthPx(style1, PropertyId.Height, 250);
+        style1.Set(PropertyId.AlignSelf, ComputedSlot.FromKeyword(27)); // unsafe flex-end
+        style1.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+        items[1] = Box.ForElement(BoxKind.BlockContainer, style1, MakeElement());
+
+        flex.AppendChild(items[0]);
+        flex.AppendChild(items[1]);
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new List<BoxFragment>();
+        for (var i = 0; i < items.Length; i++)
+        {
+            foreach (var f in sink.Fragments)
+            {
+                if (f.Box == items[i]) { fragments.Add(f); break; }
+            }
+        }
+        Assert.Equal(2, fragments.Count);
+        Assert.Equal(0.0, fragments[0].BlockOffset, precision: 3);
+        // Item 1 unsafe flex-end on overflow → natural flex-end offset
+        // = freeSpace = -50.
+        Assert.Equal(-50.0, fragments[1].BlockOffset, precision: 3);
+    }
+
     [Fact]
     public void L6_hardening_wrap_reverse_emits_approximation_diagnostic()
     {

@@ -83,16 +83,16 @@ namespace NetPdf.Layout.Layouters;
 ///   container's full cross extent. Per CSS Flexbox L1 §9.4 the
 ///   container's auto cross-size with wrapping = sum of line cross-
 ///   extents (handled by <see cref="BlockLayouter"/>'s
-///   <c>PreMeasureFlexMultiLineCrossExtent</c>). <c>flex-wrap:
-///   wrap-reverse</c> decodes to <see cref="FlexWrapValue.WrapReverse"/>
-///   but L6 treats it identically to <see cref="FlexWrapValue.Wrap"/>
-///   — the cross-axis line-stacking reversal is L8+ scope; tracked in
-///   <c>docs/deferrals.md#flex-layouter-features</c>. Per Phase 3
-///   Task 15 L6 post-PR-#66 review F#4 the layouter emits the
-///   <c>LAYOUT-FLEX-WRAP-REVERSE-APPROXIMATED-001</c> warning
-///   diagnostic on each <c>AttemptLayout</c> invocation that
-///   encounters <c>wrap-reverse</c>, so the silent approximation is
-///   visible to authors.</item>
+///   <c>PreMeasureFlexMultiLineCrossExtent</c>). Per Phase 3 Task 15
+///   L11 + post-PR-#71 hardening F#1/F#2: <c>flex-wrap: wrap-reverse</c>
+///   ships proper cross-axis SWAP per CSS Flexbox L1 §6.3 — the
+///   container's cross-start moves to the physical cross-end (= the
+///   line stack lands at the swapped origin), and each LINE's cross-
+///   start swaps too (= per-item <c>align-items</c> / <c>align-self</c>
+///   FlexStart/FlexEnd anchor to the line's new cross-edges). The
+///   <c>LAYOUT-FLEX-WRAP-REVERSE-APPROXIMATED-001</c> diagnostic is
+///   no longer emitted (the approximation closed in L11); the code
+///   stays registered for backward-compat.</item>
 ///   <item><b>L7 — <c>align-content</c> multi-line cross-axis
 ///   distribution.</b> Per CSS Flexbox L1 §8.4 + CSS Box Alignment L3
 ///   §6 the layouter honors seven base values for cross-axis line
@@ -435,12 +435,16 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         var (mainSizeProperty, crossSizeProperty) = GetAxisProperties(flexDirection);
 
         // Per Phase 3 Task 15 L6 — read flex-wrap. When the value is
-        // `wrap` (or `wrap-reverse`; the latter behaves as `wrap` for
-        // L6) the layouter switches into multi-line mode: items are
-        // greedy-packed onto lines along the main axis, and lines stack
-        // along the cross axis at cross-start. The L1-L5 single-line
-        // behavior is preserved verbatim for `nowrap` (the default) by
-        // PackLines emitting exactly one line covering all items.
+        // `wrap` OR `wrap-reverse` the layouter switches into multi-
+        // line mode: items are greedy-packed onto lines along the
+        // main axis, and lines stack along the cross axis. For wrap
+        // the stack origin is the cross-start edge; for wrap-reverse
+        // (per Phase 3 Task 15 L11 + post-PR-#71 F#1) the cross-axis
+        // is SWAPPED — the stack origin becomes the physical cross-
+        // end, and per-line align-items / align-self FlexStart/FlexEnd
+        // anchors swap too. The L1-L5 single-line behavior is preserved
+        // verbatim for `nowrap` (the default) by PackLines emitting
+        // exactly one line covering all items.
         var flexWrap = _rootBox.Style.ReadFlexWrap();
         var isWrapping = flexWrap.IsFlexWrapping();
 
@@ -501,28 +505,35 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             _rootBox, _sortedFlexChildIndices, flexDirection,
             containerMainSize, isWrapping, cancellationToken);
 
-        // Per Phase 3 Task 15 L11 — wrap-reverse permutes cross-start
-        // and cross-end (CSS Flexbox L1 §6.3). Reversing the lines
-        // list AFTER PackLines (= keeping item DOM order WITHIN each
-        // line + flipping the line iteration order) produces the
-        // spec-correct stacking: line 0 (DOM first) ends up at the
-        // NEW cross-start (= the physical cross-END for the L1 LTR +
-        // horizontal-tb default). The emission loop's cursor walks
-        // from the wrapper's cross-start edge downward as before;
-        // because the list is reversed, the LAST-iterated line is
-        // line 0 (DOM first) and lands at the wrapper's cross-end.
+        // Per Phase 3 Task 15 L11 post-PR-#71 hardening F#1 — the
+        // cross-axis SWAP per CSS Flexbox L1 §6.3 ("Behaves the same
+        // as wrap but the cross-start and cross-end directions are
+        // swapped") is applied at line-emission time below, NOT by
+        // mutating the `lines` list. Items + lines iterate in DOM
+        // order; the emission loop computes each line's PHYSICAL
+        // cross-offset via a swap formula when `isWrapReverse`:
+        //   physical = contentCrossOffset + containerCrossSize
+        //            - swappedCursor - line.LineCrossSize
+        // Where `swappedCursor` is the same align-content-derived
+        // cursor used for wrap (= cursor in the swapped-axis space
+        // where 0 = swapped cross-start = physical cross-end).
         //
-        // align-content's distribution math operates on the reversed
-        // list — which is the spec-correct behavior, since
-        // align-content distributes lines along the cross axis using
-        // the (permuted) cross-start as the origin per §8.4. Items
-        // WITHIN each line retain DOM order (= the per-line
-        // justify-content + align-items behavior is unchanged).
-        if (isWrapReverse && lines.Count > 1)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            lines.Reverse();
-        }
+        // The L11 Hello World shipped only the iteration-order
+        // reversal (= `lines.Reverse()`) which produced reversed
+        // DOM-to-physical mapping for the LINE STACK but did not
+        // move the stack to the swapped cross-start origin. The
+        // post-PR-#71 F#1 hardening introduces the origin swap;
+        // the per-line emission cursor walks DOM order without
+        // mutating the lines list.
+        //
+        // TODO (L12+ CrossAxisFlow refactor): the swap logic is
+        // currently inline at three sites (line cursor, ComputeAlign-
+        // ItemsPlacement parameter, align-content's cursor origin).
+        // Per the post-PR-#71 architecture rec, extracting a single
+        // CrossAxisFlow helper that encapsulates (isReversed,
+        // containerCrossSize, contentCrossOffset, lineStartOffset,
+        // lineBetweenSpacing) would centralize the swap math + ease
+        // the L7+ writing-mode-aware logical-axis mapping work.
 
         var resolvedJC = _rootBox.Style.ReadJustifyContent();
         var alignItems = _rootBox.Style.ReadAlignItems();
@@ -672,11 +683,36 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // unadjusted contentCrossOffset. For align-content: flex-start
         // (the L6 default behavior) the offset is 0 and we get the
         // L6 cross-start stacking back unchanged.
-        var lineCrossCursor = contentCrossOffset + lineStartOffset;
+        //
+        // Per Phase 3 Task 15 L11 post-PR-#71 hardening F#1: the
+        // `swappedAxisCursor` walks in SWAPPED-axis coordinates (=
+        // 0 at the (possibly-swapped) cross-start, increasing toward
+        // the (possibly-swapped) cross-end). For wrap (`!isWrapReverse`)
+        // the swapped axis IS the physical axis: physicalCrossOffset
+        // = contentCrossOffset + swappedAxisCursor. For wrap-reverse,
+        // the swap formula converts to physical:
+        //   physicalCrossOffset = contentCrossOffset + containerCrossSize
+        //                       - swappedAxisCursor - line.LineCrossSize
+        // (the line's PHYSICAL-TOP edge is at containerCrossEnd minus
+        // the line's "depth" from the swapped cross-start). Both
+        // formulas produce the spec-correct stacking origin + the
+        // correct align-content offsets relative to the swapped
+        // edges.
+        var swappedAxisCursor = lineStartOffset;
 
         foreach (var line in lines)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            // Per Phase 3 Task 15 L11 post-PR-#71 F#1 — convert the
+            // swapped-axis cursor to a physical cross-offset for
+            // emission. The cursor walks in the swapped axis (always
+            // increasing toward the swapped cross-end); the physical
+            // offset is the line's TOP edge in the wrapper's content-
+            // box coordinate system.
+            var lineCrossCursor = isWrapReverse
+                ? contentCrossOffset + containerCrossSize - swappedAxisCursor - line.LineCrossSize
+                : contentCrossOffset + swappedAxisCursor;
 
             // Per Phase 3 Task 15 L6 — `align-items` operates against
             // EACH LINE'S cross-extent (CSS Flexbox L1 §6.3): items on
@@ -779,12 +815,28 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 // placement helper.
                 var alignSelf = item.Style.ReadAlignSelf();
                 var effectiveAlign = alignSelf.ResolveAgainstContainerAlignItems(alignItems);
+                // Per Phase 3 Task 15 L11 post-PR-#71 F#2 — under
+                // wrap-reverse the cross-axis is swapped uniformly:
+                // each LINE's cross-start = the line's PHYSICAL-
+                // BOTTOM edge (for row + horizontal-tb LTR). Pass
+                // `isWrapReverse` to ComputeAlignItemsPlacement so
+                // flex-start/flex-end positional values swap within
+                // the line (FlexStart now means "physical bottom of
+                // line"; FlexEnd means "physical top of line").
+                // Center is symmetric and unaffected. Stretch is
+                // unaffected (= grow the item to the line's full
+                // cross-extent). The line's PHYSICAL-TOP edge
+                // (`lineCrossCursor`) is the helper's reference
+                // origin in both modes; the swap parameter only
+                // affects which END of the line FlexStart/FlexEnd
+                // anchor to.
                 var (itemCrossOffsetWithinLine, itemEffectiveCrossSize) =
                     ComputeAlignItemsPlacement(
                         effectiveAlign.Value, effectiveAlign.Mode,
                         lineCrossExtent, itemCrossSize,
                         itemIsCrossSizeAuto,
-                        lineCrossCursor);
+                        lineCrossCursor,
+                        isCrossAxisReversed: isWrapReverse);
 
                 // Per Phase 3 Task 15 L5 — for reversed directions,
                 // flip the main-axis offset around the container's
@@ -869,7 +921,13 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             // between-spacing is 0 — the gap is absorbed by the
             // startOffset (positional) or by the line cross-extent
             // (stretch).
-            lineCrossCursor += line.LineCrossSize + lineBetweenSpacing;
+            // Per Phase 3 Task 15 L11 post-PR-#71 F#1 — the SWAPPED-
+            // axis cursor advances toward the swapped cross-end (=
+            // physical cross-start for wrap-reverse). The next line's
+            // physical offset is computed by the swap formula at the
+            // top of the loop body. For wrap (= !isWrapReverse) this
+            // is identical to L1-L10 cursor behavior.
+            swappedAxisCursor += line.LineCrossSize + lineBetweenSpacing;
         }
 
         // Cycle 1 (Hello World) — flex container is atomic to outer
@@ -1668,7 +1726,8 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             double containerCrossSize,
             double itemCrossSize,
             bool itemIsCrossSizeAuto,
-            double contentCrossOffset)
+            double contentCrossOffset,
+            bool isCrossAxisReversed = false)
     {
         // Stretch — auto-cross-sized items get resized to fill the
         // container's cross extent; explicitly-sized items keep their
@@ -1676,21 +1735,38 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // we test the SLOT TYPE (via `itemIsCrossSizeAuto`) rather
         // than `itemCrossSize > 0`: an explicit cross-size of 0 (= a
         // LengthPx slot with payload 0) is NOT auto and must keep its
-        // declared 0 cross-size (e.g., a deliberate spacer).
+        // declared 0 cross-size (e.g., a deliberate spacer). Stretch
+        // is direction-agnostic — the item fills the line regardless
+        // of wrap-reverse.
         if (value == AlignItemsValue.Stretch)
         {
             var effectiveCross = itemIsCrossSizeAuto ? containerCrossSize : itemCrossSize;
             return (contentCrossOffset, effectiveCross);
         }
 
-        // Positional alignment — compute the natural offset for the
-        // value (ignoring overflow for now).
+        // Per Phase 3 Task 15 L11 post-PR-#71 F#2 — under wrap-reverse
+        // the LINE's cross axis is swapped: FlexStart means the line's
+        // NEW cross-start (= physical-BOTTOM edge of the line for row
+        // + horizontal-tb LTR), FlexEnd means the new cross-end
+        // (= physical-TOP edge of the line). The math swaps the
+        // FlexStart ↔ FlexEnd offsets:
+        //   wrap (default):  FlexStart → contentCrossOffset (top)
+        //                    FlexEnd   → contentCrossOffset + crossSpace (bottom)
+        //   wrap-reverse:    FlexStart → contentCrossOffset + crossSpace (bottom)
+        //                    FlexEnd   → contentCrossOffset (top)
+        // Center is symmetric → unaffected. Stretch (above) is
+        // unaffected. The container's PHYSICAL-TOP edge of the line
+        // (`contentCrossOffset`) stays the same — only the FlexStart
+        // / FlexEnd anchor flips.
         var crossSpace = containerCrossSize - itemCrossSize;
-        var natural = value switch
+        var natural = (value, isCrossAxisReversed) switch
         {
-            AlignItemsValue.FlexEnd => contentCrossOffset + crossSpace,
-            AlignItemsValue.Center => contentCrossOffset + crossSpace / 2.0,
-            _ => contentCrossOffset,  // FlexStart
+            (AlignItemsValue.FlexEnd, false) => contentCrossOffset + crossSpace,
+            (AlignItemsValue.FlexEnd, true) => contentCrossOffset,
+            (AlignItemsValue.Center, _) => contentCrossOffset + crossSpace / 2.0,
+            (AlignItemsValue.FlexStart, false) => contentCrossOffset,
+            (AlignItemsValue.FlexStart, true) => contentCrossOffset + crossSpace,
+            _ => contentCrossOffset, // defensive — unknown value
         };
 
         // Overflow handling per CSS Box Alignment L3 §5.3. Only the
@@ -1699,18 +1775,24 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         if (crossSpace < 0)
         {
             // Explicit `safe` modifier — always fall back to safe-start
-            // (= contentCrossOffset) regardless of value. Items pack at
-            // the container's cross-start edge + overflow off the
-            // cross-end.
+            // regardless of value. Per Phase 3 Task 15 L11 post-PR-#71
+            // F#2: safe-start under wrap-reverse is the line's NEW
+            // cross-start (= line bottom = contentCrossOffset +
+            // crossSpace, which is negative). Items pack at the new
+            // cross-start edge + overflow off the new cross-end edge.
             if (mode == OverflowAlignmentMode.Safe)
             {
-                return (contentCrossOffset, itemCrossSize);
+                var safeStartOffset = isCrossAxisReversed
+                    ? contentCrossOffset + crossSpace
+                    : contentCrossOffset;
+                return (safeStartOffset, itemCrossSize);
             }
             // Unsafe modifier OR default — positional values keep their
             // natural (possibly-negative) offset, allowing items to
             // overflow equally on both sides for `center` etc. (Unlike
             // justify-content, align-items has no distribution values
-            // in L3 scope.)
+            // in L3 scope.) The `natural` value above already accounts
+            // for the wrap-reverse swap.
             return (natural, itemCrossSize);
         }
 

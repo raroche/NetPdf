@@ -1755,16 +1755,18 @@ public sealed class FlexLayouterProductionTests
         Assert.NotNull(flexFragment);
         var wrapperBlockStart = flexFragment!.Value.BlockOffset;
 
-        // After line reversal: DOM line 1 (items c, d) at the
-        // wrapper's cross-start (= NEW position, top of container);
-        // DOM line 0 (items a, b) at the wrapper's cross-start + 50
-        // (= the SECOND iteration position).
-        // Items a, b (DOM line 0) at BlockOffset wrapper + 50.
-        Assert.Equal(wrapperBlockStart + 50.0, itemA!.Value.BlockOffset, precision: 3);
-        Assert.Equal(wrapperBlockStart + 50.0, itemB!.Value.BlockOffset, precision: 3);
-        // Items c, d (DOM line 1) at BlockOffset wrapper + 0.
-        Assert.Equal(wrapperBlockStart, itemC!.Value.BlockOffset, precision: 3);
-        Assert.Equal(wrapperBlockStart, itemD!.Value.BlockOffset, precision: 3);
+        // Per Phase 3 Task 15 L11 + post-PR-#71 hardening F#1 —
+        // wrap-reverse swaps cross-start/cross-end. With a 200px-tall
+        // container + 2 lines × 50 cross + align-content: flex-start,
+        // DOM line 0 lands at the swapped cross-start (= physical
+        // bottom of the container = wrapperBlockStart + 150) and
+        // DOM line 1 above it at wrapperBlockStart + 100.
+        // (Pre-PR-#71 the test asserted +50 / +0 — that locked in
+        // the L11 Hello World's incomplete implementation.)
+        Assert.Equal(wrapperBlockStart + 150.0, itemA!.Value.BlockOffset, precision: 3);
+        Assert.Equal(wrapperBlockStart + 150.0, itemB!.Value.BlockOffset, precision: 3);
+        Assert.Equal(wrapperBlockStart + 100.0, itemC!.Value.BlockOffset, precision: 3);
+        Assert.Equal(wrapperBlockStart + 100.0, itemD!.Value.BlockOffset, precision: 3);
     }
 
     private sealed class RecordingDiagnosticsSink : IPaginateDiagnosticsSink

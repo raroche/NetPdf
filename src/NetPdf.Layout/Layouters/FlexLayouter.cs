@@ -526,14 +526,25 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // the per-line emission cursor walks DOM order without
         // mutating the lines list.
         //
-        // TODO (L12+ CrossAxisFlow refactor): the swap logic is
-        // currently inline at three sites (line cursor, ComputeAlign-
-        // ItemsPlacement parameter, align-content's cursor origin).
-        // Per the post-PR-#71 architecture rec, extracting a single
-        // CrossAxisFlow helper that encapsulates (isReversed,
-        // containerCrossSize, contentCrossOffset, lineStartOffset,
-        // lineBetweenSpacing) would centralize the swap math + ease
-        // the L7+ writing-mode-aware logical-axis mapping work.
+        // Per Phase 3 Task 15 L14 — the swap logic that was previously
+        // inline at the line-cursor site lives in <see cref="CrossAxisFlow"/>
+        // now (= one record carrying isReversed + contentCrossOffset
+        // + containerCrossSize; the emission loop calls
+        // <see cref="CrossAxisFlow.PhysicalLineOffset"/> to convert
+        // the swapped-axis cursor to the line's physical TOP edge).
+        // Two other swap callsites remain pinned to the loop-local
+        // state for cycle 1: (a) the <c>isCrossAxisReversed</c>
+        // parameter on ComputeAlignItemsPlacement which threads the
+        // FlexStart/FlexEnd anchor swap into the per-line item
+        // placement helper — they're per-item rather than per-line
+        // and live inside the inner loop body, so passing
+        // <c>isWrapReverse</c> directly stays simpler than threading
+        // the whole flow record; (b) the swappedAxisCursor cursor
+        // walks the SWAPPED axis (always 0 → end regardless of swap)
+        // so its accumulation site doesn't need swap-aware math. Both
+        // can fold into the flow helper if a later sub-cycle adds
+        // writing-mode-aware logical mapping that needs to swap them
+        // too.
 
         var resolvedJC = _rootBox.Style.ReadJustifyContent();
         var alignItems = _rootBox.Style.ReadAlignItems();
@@ -702,19 +713,35 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // edges.
         var swappedAxisCursor = lineStartOffset;
 
+        // Per Phase 3 Task 15 L14 — encapsulate the cross-axis swap
+        // state into one record so the line-emission formula has a
+        // single named expression. Pre-L14 the swap math
+        //   isWrapReverse
+        //     ? contentCrossOffset + containerCrossSize - swappedAxisCursor - line.LineCrossSize
+        //     : contentCrossOffset + swappedAxisCursor
+        // was inline at the cursor site. Extracting it makes the swap
+        // a first-class concept that future writing-mode work can
+        // reuse without re-deriving the formula. See
+        // <see cref="CrossAxisFlow"/>'s xmldoc for the coordinate-
+        // system contract.
+        var crossFlow = new CrossAxisFlow(
+            IsReversed: isWrapReverse,
+            ContentCrossOffset: contentCrossOffset,
+            ContainerCrossSize: containerCrossSize);
+
         foreach (var line in lines)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
-            // Per Phase 3 Task 15 L11 post-PR-#71 F#1 — convert the
-            // swapped-axis cursor to a physical cross-offset for
+            // Per Phase 3 Task 15 L11 post-PR-#71 F#1 + L14 — convert
+            // the swapped-axis cursor to a physical cross-offset for
             // emission. The cursor walks in the swapped axis (always
-            // increasing toward the swapped cross-end); the physical
-            // offset is the line's TOP edge in the wrapper's content-
-            // box coordinate system.
-            var lineCrossCursor = isWrapReverse
-                ? contentCrossOffset + containerCrossSize - swappedAxisCursor - line.LineCrossSize
-                : contentCrossOffset + swappedAxisCursor;
+            // increasing toward the swapped cross-end); the helper
+            // returns the line's TOP edge in the wrapper's content-
+            // box coordinate system per the
+            // <see cref="CrossAxisFlow.PhysicalLineOffset"/> formula.
+            var lineCrossCursor = crossFlow.PhysicalLineOffset(
+                swappedAxisCursor, line.LineCrossSize);
 
             // Per Phase 3 Task 15 L6 — `align-items` operates against
             // EACH LINE'S cross-extent (CSS Flexbox L1 §6.3): items on

@@ -6880,6 +6880,414 @@ public sealed class FlexLayouterTests
         Assert.Equal(-50.0, fragments[1].BlockOffset, precision: 3);
     }
 
+    // ====================================================================
+    //  Phase 3 Task 15 L10 — `order` property reorders items before
+    //  line packing per CSS Flexbox L1 §5.4. Items with equal order
+    //  preserve DOM order (stable sort).
+    // ====================================================================
+
+    [Fact]
+    public void L10_order_reorders_items_along_main_axis()
+    {
+        // Per Phase 3 Task 15 L10 — `order` reorders items per CSS
+        // Flexbox L1 §5.4. 3 items of width 100 in a 600px row flex:
+        //   item 0 (DOM): order = 2  → packs last
+        //   item 1 (DOM): order = 0  → packs in middle (after order: -1)
+        //   item 2 (DOM): order = -1 → packs first
+        // Effective order: item 2, item 1, item 0
+        // Cursors: 0, 100, 200 for the sorted sequence.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Width, 600);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        var orders = new[] { 2, 0, -1 };
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.Order, ComputedSlot.FromInteger(orders[i]));
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new BoxFragment?[3];
+        foreach (var f in sink.Fragments)
+        {
+            for (var i = 0; i < items.Length; i++)
+            {
+                if (f.Box == items[i]) { fragments[i] = f; break; }
+            }
+        }
+        Assert.NotNull(fragments[0]);
+        Assert.NotNull(fragments[1]);
+        Assert.NotNull(fragments[2]);
+        // Effective order: item 2 first (order=-1), item 1 middle
+        // (order=0), item 0 last (order=2).
+        Assert.Equal(200.0, fragments[0]!.Value.InlineOffset, precision: 3); // DOM 0 → last
+        Assert.Equal(100.0, fragments[1]!.Value.InlineOffset, precision: 3); // DOM 1 → middle
+        Assert.Equal(0.0, fragments[2]!.Value.InlineOffset, precision: 3);   // DOM 2 → first
+    }
+
+    [Fact]
+    public void L10_order_equal_values_preserve_dom_order_stable_sort()
+    {
+        // Per Phase 3 Task 15 L10 — items with equal `order` preserve
+        // DOM order (stable sort). 4 items all with order: 0 (the
+        // cascade default) should pack in DOM order — identical to
+        // the L1-L9 behavior. Plus a 5th item with order: 1 to verify
+        // the comparator is exercised (so we're not in the fast-path
+        // short-circuit).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Width, 600);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        var orders = new[] { 0, 0, 0, 0, 1 };
+        var items = new Box[5];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.Order, ComputedSlot.FromInteger(orders[i]));
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new BoxFragment?[5];
+        foreach (var f in sink.Fragments)
+        {
+            for (var i = 0; i < items.Length; i++)
+            {
+                if (f.Box == items[i]) { fragments[i] = f; break; }
+            }
+        }
+        // DOM 0-3 keep DOM order (all order: 0); DOM 4 packs last
+        // (order: 1).
+        Assert.Equal(0.0, fragments[0]!.Value.InlineOffset, precision: 3);
+        Assert.Equal(100.0, fragments[1]!.Value.InlineOffset, precision: 3);
+        Assert.Equal(200.0, fragments[2]!.Value.InlineOffset, precision: 3);
+        Assert.Equal(300.0, fragments[3]!.Value.InlineOffset, precision: 3);
+        Assert.Equal(400.0, fragments[4]!.Value.InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L10_order_default_zero_preserves_dom_order_fast_path()
+    {
+        // Per Phase 3 Task 15 L10 — when no item declares a non-zero
+        // `order`, `GetFlexChildrenInOrderSequence` short-circuits to
+        // DOM order without sorting. This test pins the
+        // L1-L9-equivalent behavior — no order declarations =
+        // identical to pre-L10 layout. 3 items, no order set.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Width, 600);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            // No order set — cascade default 0.
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new BoxFragment?[3];
+        foreach (var f in sink.Fragments)
+        {
+            for (var i = 0; i < items.Length; i++)
+            {
+                if (f.Box == items[i]) { fragments[i] = f; break; }
+            }
+        }
+        Assert.Equal(0.0, fragments[0]!.Value.InlineOffset, precision: 3);
+        Assert.Equal(100.0, fragments[1]!.Value.InlineOffset, precision: 3);
+        Assert.Equal(200.0, fragments[2]!.Value.InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L10_order_with_row_reverse_combines_reorder_then_flip()
+    {
+        // Per Phase 3 Task 15 L10 — `order` reorders BEFORE the L5
+        // row-reverse flip. 3 items with orders [2, 0, -1] in a
+        // row-reverse 600px container. Effective order before flip:
+        // item 2, item 1, item 0 (sorted by order). Natural cursors:
+        // item 2 at 0, item 1 at 100, item 0 at 200. row-reverse flip
+        // transform: actual = (0 + 600) - cursor - 100. So:
+        //   item 2 (sorted-pos 0, natural 0):   600 - 0 - 100 = 500
+        //   item 1 (sorted-pos 1, natural 100): 600 - 100 - 100 = 400
+        //   item 0 (sorted-pos 2, natural 200): 600 - 200 - 100 = 300
+        // InlineOffsets: item 0 → 300, item 1 → 400, item 2 → 500.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(1)); // row-reverse
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        var orders = new[] { 2, 0, -1 };
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.Order, ComputedSlot.FromInteger(orders[i]));
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new BoxFragment?[3];
+        foreach (var f in sink.Fragments)
+        {
+            for (var i = 0; i < items.Length; i++)
+            {
+                if (f.Box == items[i]) { fragments[i] = f; break; }
+            }
+        }
+        Assert.Equal(300.0, fragments[0]!.Value.InlineOffset, precision: 3);
+        Assert.Equal(400.0, fragments[1]!.Value.InlineOffset, precision: 3);
+        Assert.Equal(500.0, fragments[2]!.Value.InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L10_order_with_column_direction_distributes_along_block_axis()
+    {
+        // Per Phase 3 Task 15 L10 — `order` parity with column
+        // direction. 3 items × height 50 in a 300px column flex with
+        // orders [2, -1, 0]. Effective order: item 1 (-1), item 2 (0),
+        // item 0 (2). BlockOffsets: 0, 50, 100 for the sorted
+        // sequence.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexDirection, ComputedSlot.FromKeyword(2)); // column
+        SetLengthPx(flex.Style, PropertyId.Width, 200);
+        SetLengthPx(flex.Style, PropertyId.Height, 300);
+
+        var orders = new[] { 2, -1, 0 };
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.Order, ComputedSlot.FromInteger(orders[i]));
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 200, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new BoxFragment?[3];
+        foreach (var f in sink.Fragments)
+        {
+            for (var i = 0; i < items.Length; i++)
+            {
+                if (f.Box == items[i]) { fragments[i] = f; break; }
+            }
+        }
+        // Effective order: item 1 (-1) first, item 2 (0) middle, item 0 (2) last.
+        // Block-axis cursors: sorted-pos 0 → 0, 1 → 50, 2 → 100.
+        Assert.Equal(100.0, fragments[0]!.Value.BlockOffset, precision: 3); // DOM 0 → last
+        Assert.Equal(0.0, fragments[1]!.Value.BlockOffset, precision: 3);   // DOM 1 → first
+        Assert.Equal(50.0, fragments[2]!.Value.BlockOffset, precision: 3);  // DOM 2 → middle
+    }
+
+    [Fact]
+    public void L10_order_with_wrap_packs_lines_in_effective_order()
+    {
+        // Per Phase 3 Task 15 L10 — `order` affects wrap line packing.
+        // 4 items of width 100 in a 250px wrap container with orders
+        // [10, 0, -10, 5]. Effective order: item 2 (-10), item 1 (0),
+        // item 3 (5), item 0 (10). Line packing greedy: line 1 = items
+        // 2, 1 (200 ≤ 250); item 3 (300 > 250) → line 2. Line 2 =
+        // items 3, 0 (200 ≤ 250). Lines: [item2, item1] / [item3, item0].
+        // BlockOffsets: line 1 at 0, line 2 at 50.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1)); // wrap
+        // Pin align-content: flex-start so §8.4 stretch default
+        // doesn't shift line 2.
+        flex.Style.Set(PropertyId.AlignContent, ComputedSlot.FromKeyword(11)); // flex-start
+        SetLengthPx(flex.Style, PropertyId.Width, 250);
+        SetLengthPx(flex.Style, PropertyId.Height, 200);
+
+        var orders = new[] { 10, 0, -10, 5 };
+        var items = new Box[4];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.Order, ComputedSlot.FromInteger(orders[i]));
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 250, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new BoxFragment?[4];
+        foreach (var f in sink.Fragments)
+        {
+            for (var i = 0; i < items.Length; i++)
+            {
+                if (f.Box == items[i]) { fragments[i] = f; break; }
+            }
+        }
+        // Effective order: item 2, item 1, item 3, item 0.
+        // Line 1: item 2 at InlineOffset 0, item 1 at 100 (both BlockOffset 0).
+        // Line 2: item 3 at InlineOffset 0, item 0 at 100 (both BlockOffset 50).
+        Assert.Equal(100.0, fragments[0]!.Value.InlineOffset, precision: 3); // DOM 0 → line 2 right
+        Assert.Equal(50.0, fragments[0]!.Value.BlockOffset, precision: 3);
+        Assert.Equal(100.0, fragments[1]!.Value.InlineOffset, precision: 3); // DOM 1 → line 1 right
+        Assert.Equal(0.0, fragments[1]!.Value.BlockOffset, precision: 3);
+        Assert.Equal(0.0, fragments[2]!.Value.InlineOffset, precision: 3);   // DOM 2 → line 1 left
+        Assert.Equal(0.0, fragments[2]!.Value.BlockOffset, precision: 3);
+        Assert.Equal(0.0, fragments[3]!.Value.InlineOffset, precision: 3);   // DOM 3 → line 2 left
+        Assert.Equal(50.0, fragments[3]!.Value.BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public void L10_order_with_flex_grow_distributes_after_reorder()
+    {
+        // Per Phase 3 Task 15 L10 — `order` happens BEFORE the §9.7
+        // flexibility resolution. 3 items × width 100 in 600px row,
+        // orders [2, 0, -1], each flex-grow: 1. Effective order:
+        // item 2, item 1, item 0. After grow: each grows from 100 to
+        // 200 (freeMainSpace = 300, distributed 100 to each). Cursors
+        // in effective order: 0, 200, 400.
+        // InlineOffsets: item 2 → 0, item 1 → 200, item 0 → 400.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.Width, 600);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        var orders = new[] { 2, 0, -1 };
+        var items = new Box[3];
+        for (var i = 0; i < items.Length; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.Order, ComputedSlot.FromInteger(orders[i]));
+            style.Set(PropertyId.FlexGrow, ComputedSlot.FromNumber(1.0));
+            items[i] = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(items[i]);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        var fragments = new BoxFragment?[3];
+        foreach (var f in sink.Fragments)
+        {
+            for (var i = 0; i < items.Length; i++)
+            {
+                if (f.Box == items[i]) { fragments[i] = f; break; }
+            }
+        }
+        Assert.Equal(200.0, fragments[0]!.Value.InlineSize, precision: 3);
+        Assert.Equal(200.0, fragments[1]!.Value.InlineSize, precision: 3);
+        Assert.Equal(200.0, fragments[2]!.Value.InlineSize, precision: 3);
+        Assert.Equal(400.0, fragments[0]!.Value.InlineOffset, precision: 3); // DOM 0 → last
+        Assert.Equal(200.0, fragments[1]!.Value.InlineOffset, precision: 3); // DOM 1 → middle
+        Assert.Equal(0.0, fragments[2]!.Value.InlineOffset, precision: 3);   // DOM 2 → first
+    }
+
     [Fact]
     public void L6_hardening_wrap_reverse_emits_approximation_diagnostic()
     {

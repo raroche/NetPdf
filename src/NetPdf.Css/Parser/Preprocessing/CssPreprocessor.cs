@@ -153,6 +153,20 @@ internal static class CssPreprocessor
         // see them verbatim. Pinned by the L9 hardening's production
         // tests on safe + unsafe compounds.
         "align-self",
+        // Per Phase 3 Task 15 L13 — `flex` shorthand. AngleSharp.Css
+        // 1.0.0-beta.144 only correctly handles `flex: <number>` (it
+        // sets `flex-grow` to the number but doesn't always expand
+        // `flex: none` / `flex: auto` / `flex: 100px` / two- or
+        // three-value forms into all three longhands per CSS Flexbox
+        // L1 §7.4). The recovery path calls
+        // <see cref="FlexShorthandExpander.TryExpand"/> at emission
+        // time + emits THREE longhand recovery records
+        // (`flex-grow` / `flex-shrink` / `flex-basis`) in place of
+        // the single dropped `flex` declaration. This is the first
+        // shorthand to use the multi-emit recovery pattern; the same
+        // shape would extend to `font` / `border` / `background` /
+        // etc. when they land.
+        "flex",
     }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
@@ -584,10 +598,35 @@ internal static class CssPreprocessor
             {
                 var (cleanValue, isImportant) = ImportantParser.Strip(rawValue);
                 var normalizedName = NormalizePropertyName(lowerName);
-                output.Add(new CssDeclarationRecovery(
-                    normalizedName,
-                    cleanValue,
-                    isImportant));
+
+                // Per Phase 3 Task 15 L13 — the `flex` shorthand
+                // expands into THREE longhand recovery records per
+                // CSS Flexbox L1 §7.4. AngleSharp.Css 1.0.0-beta.144
+                // only partially handles the shorthand, so emitting
+                // explicit longhand declarations via the recovery
+                // path guarantees the cascade sees the correct
+                // (grow, shrink, basis) tuple.
+                if (normalizedName == "flex"
+                    && FlexShorthandExpander.TryExpand(
+                        cleanValue,
+                        out var fGrow,
+                        out var fShrink,
+                        out var fBasis))
+                {
+                    output.Add(new CssDeclarationRecovery(
+                        "flex-grow", fGrow, isImportant));
+                    output.Add(new CssDeclarationRecovery(
+                        "flex-shrink", fShrink, isImportant));
+                    output.Add(new CssDeclarationRecovery(
+                        "flex-basis", fBasis, isImportant));
+                }
+                else
+                {
+                    output.Add(new CssDeclarationRecovery(
+                        normalizedName,
+                        cleanValue,
+                        isImportant));
+                }
             }
 
             if (tok.PeekChar() == ';') tok.ReadChar();

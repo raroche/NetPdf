@@ -1769,6 +1769,384 @@ public sealed class FlexLayouterProductionTests
         Assert.Equal(wrapperBlockStart + 100.0, itemD!.Value.BlockOffset, precision: 3);
     }
 
+    // ====================================================================
+    //  Phase 3 Task 15 L13 — `flex` shorthand (CSS Flexbox L1 §7.4).
+    // ====================================================================
+
+    [Fact]
+    public async Task L13_production_html_flex_shorthand_one_partitions_container()
+    {
+        // Phase 3 Task 15 L13 — `flex: 1` is the canonical short
+        // recipe for `flex: 1 1 0%` (= flex-grow: 1; flex-shrink: 1;
+        // flex-basis: 0%) per CSS Flexbox L1 §7.4. The shorthand
+        // expansion happens at the AngleSharp.Css parser layer (which
+        // expands declared shorthands into their longhand form before
+        // the CSSOM surfaces them to the cascade), so the resolved
+        // values reaching the layouter should be IDENTICAL to writing
+        // the three longhands separately.
+        //
+        // Fixture: 3 items in a 600px container, each `flex: 1`. With
+        // basis=0 + grow=1, each item's hypothetical = 0 + grows by
+        // 200 of the 600 free-space → resolved = 200. Cursors: 0,
+        // 200, 400. Mirrors `L8_production_html_flex_grow_one_*`
+        // exactly except for the CSS surface (`flex: 1` here instead
+        // of three separate properties).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    width: 600px;
+                    height: 60px;
+                }
+                .item {
+                    width: 100px;
+                    height: 50px;
+                    flex: 1;
+                }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+              <div class="item c"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var items = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class");
+            if (classAttr != null && classAttr.StartsWith("item"))
+            {
+                items.Add(f);
+            }
+        }
+        Assert.Equal(3, items.Count);
+        // Per §7.4 + §9.7: each item grows from basis 0 by (1/3)*600
+        // = 200 → final size 200.
+        Assert.Equal(200.0, items[0].InlineSize, precision: 3);
+        Assert.Equal(200.0, items[1].InlineSize, precision: 3);
+        Assert.Equal(200.0, items[2].InlineSize, precision: 3);
+        Assert.Equal(0.0, items[0].InlineOffset, precision: 3);
+        Assert.Equal(200.0, items[1].InlineOffset, precision: 3);
+        Assert.Equal(400.0, items[2].InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public async Task L13_production_html_flex_shorthand_none_disables_growth_and_shrink()
+    {
+        // Per Phase 3 Task 15 L13 — `flex: none` is the canonical
+        // short recipe for `flex: 0 0 auto` per CSS Flexbox L1 §7.4:
+        // items neither grow nor shrink, basis = auto (= declared
+        // main-size). Differs from the cascade default (`0 1 auto`)
+        // by disabling shrink — items at their declared width even
+        // when total exceeds container.
+        //
+        // Fixture: 3 items × width: 300 + `flex: none` in a 600px
+        // container. Pre-§7.4: items would shrink to fit (declared
+        // sum = 900 > container 600; with default shrink=1, each
+        // shrinks 100 → 200). Post-§7.4 with `flex: none`: shrink=0
+        // → items stay at declared 300 each, total = 900 (overflows
+        // container by 300). This proves the shrink longhand is
+        // expanded correctly.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    width: 600px;
+                    height: 60px;
+                }
+                .item {
+                    width: 300px;
+                    height: 50px;
+                    flex: none;
+                }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+              <div class="item c"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var items = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class");
+            if (classAttr != null && classAttr.StartsWith("item"))
+            {
+                items.Add(f);
+            }
+        }
+        Assert.Equal(3, items.Count);
+        // shrink=0 → items stay at declared 300 each.
+        Assert.Equal(300.0, items[0].InlineSize, precision: 3);
+        Assert.Equal(300.0, items[1].InlineSize, precision: 3);
+        Assert.Equal(300.0, items[2].InlineSize, precision: 3);
+    }
+
+    [Fact]
+    public async Task L13_production_html_flex_shorthand_auto_grows_from_declared_basis()
+    {
+        // Per Phase 3 Task 15 L13 — `flex: auto` is the canonical
+        // short recipe for `flex: 1 1 auto` per CSS Flexbox L1 §7.4:
+        // items grow + shrink from `flex-basis: auto` (= declared
+        // main-size). Differs from `flex: 1` (`1 1 0%`) by using the
+        // declared width as the basis instead of 0.
+        //
+        // Fixture: 3 items × width: 50 + `flex: auto` in a 600px
+        // container. sumHypothetical = 150 (= 3*50); freeSpace = 450;
+        // each item grows by (1/3)*450 = 150 → final size 200.
+        // Identical final positions to `flex: 1` because items have
+        // equal basis, but the algorithm path differs.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    width: 600px;
+                    height: 60px;
+                }
+                .item {
+                    width: 50px;
+                    height: 50px;
+                    flex: auto;
+                }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+              <div class="item c"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var items = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class");
+            if (classAttr != null && classAttr.StartsWith("item"))
+            {
+                items.Add(f);
+            }
+        }
+        Assert.Equal(3, items.Count);
+        // Each item: basis=50 + grow=(1/3)*450 = 150 → final 200.
+        Assert.Equal(200.0, items[0].InlineSize, precision: 3);
+        Assert.Equal(200.0, items[1].InlineSize, precision: 3);
+        Assert.Equal(200.0, items[2].InlineSize, precision: 3);
+    }
+
+    [Fact]
+    public async Task L13_production_html_flex_shorthand_three_value_form_honored()
+    {
+        // Per Phase 3 Task 15 L13 — `flex: 2 0 100px` per CSS Flexbox
+        // L1 §7.4 expands to flex-grow: 2; flex-shrink: 0;
+        // flex-basis: 100px. Combined heterogeneous test:
+        //   item A: `flex: 2 0 100px` (grow=2, shrink=0, basis=100)
+        //   item B: `flex: 1 0 100px` (grow=1, shrink=0, basis=100)
+        //   item C: `flex: 1 0 100px` (grow=1, shrink=0, basis=100)
+        // Container 600. sumHypothetical = 100+100+100 = 300;
+        // freeSpace = +300; sumFlexGrow = 4. Each grow share = 300/4
+        // = 75.
+        //   item A grows by 2*75 = 150 → 250
+        //   items B+C grow by 1*75 = 75 → 175 each
+        // Total: 250+175+175 = 600 exactly. Cursors: 0, 250, 425.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    width: 600px;
+                    height: 60px;
+                }
+                .a { flex: 2 0 100px; }
+                .b { flex: 1 0 100px; }
+                .c { flex: 1 0 100px; }
+                .item {
+                    height: 50px;
+                }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+              <div class="item c"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        BoxFragment? itemA = null, itemB = null, itemC = null;
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class") ?? string.Empty;
+            if (classAttr.Contains('a')) itemA = f;
+            else if (classAttr.Contains('b')) itemB = f;
+            else if (classAttr.Contains('c')) itemC = f;
+        }
+        Assert.NotNull(itemA);
+        Assert.NotNull(itemB);
+        Assert.NotNull(itemC);
+        Assert.Equal(250.0, itemA!.Value.InlineSize, precision: 3);
+        Assert.Equal(175.0, itemB!.Value.InlineSize, precision: 3);
+        Assert.Equal(175.0, itemC!.Value.InlineSize, precision: 3);
+        Assert.Equal(0.0, itemA.Value.InlineOffset, precision: 3);
+        Assert.Equal(250.0, itemB.Value.InlineOffset, precision: 3);
+        Assert.Equal(425.0, itemC.Value.InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public async Task L13_production_html_flex_shorthand_length_basis_form()
+    {
+        // Per Phase 3 Task 15 L13 — `flex: 100px` per CSS Flexbox L1
+        // §7.4 expands to flex-grow: 1; flex-shrink: 1;
+        // flex-basis: 100px (= basis is the explicit length; grow +
+        // shrink default to 1).
+        //
+        // Fixture: 3 items × `flex: 100px` in a 600px container.
+        // sumHypothetical = 100+100+100 = 300; freeSpace = +300;
+        // sumFlexGrow = 3. Each grows by 100 → final 200. Cursors: 0,
+        // 200, 400. Matches `flex: 1` output (because basis 0 vs.
+        // basis 100 both end up at the same final after grow:
+        // 0 + 200 = 200 for `flex: 1`; 100 + 100 = 200 for
+        // `flex: 100px`).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    width: 600px;
+                    height: 60px;
+                }
+                .item {
+                    height: 50px;
+                    flex: 100px;
+                }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+              <div class="item c"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var items = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class");
+            if (classAttr != null && classAttr.StartsWith("item"))
+            {
+                items.Add(f);
+            }
+        }
+        Assert.Equal(3, items.Count);
+        Assert.Equal(200.0, items[0].InlineSize, precision: 3);
+        Assert.Equal(200.0, items[1].InlineSize, precision: 3);
+        Assert.Equal(200.0, items[2].InlineSize, precision: 3);
+    }
+
+    [Fact]
+    public async Task L13_production_html_flex_shorthand_writes_to_three_longhands()
+    {
+        // Per Phase 3 Task 15 L13 — direct cascade-level proof that
+        // the `flex` shorthand expands to the three longhands per
+        // CSS Flexbox L1 §7.4. Walks the BoxBuilder output + reads
+        // each item's box.Style to verify:
+        //   item A: `flex: 2 3 100px` → grow=2, shrink=3, basis=100
+        //   item B: `flex: none` → grow=0, shrink=0, basis=auto
+        //   item C: `flex: auto` → grow=1, shrink=1, basis=auto
+        //
+        // This catches regressions where the shorthand silently fails
+        // to expand (= one or more longhands stay at their cascade
+        // default), which the layout-position tests above can mask
+        // if the numbers happen to coincide.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display: flex; width: 600px; height: 60px; }
+                .a { flex: 2 3 100px; height: 50px; }
+                .b { flex: none; width: 50px; height: 50px; }
+                .c { flex: auto; width: 50px; height: 50px; }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+              <div class="item c"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (_, _, root) = await RenderViaFullPipelineAsync(html);
+
+        // Walk the box tree to find the flex container's children.
+        Box? flex = null;
+        foreach (var topChild in root.Children)
+        {
+            if (topChild.Kind == BoxKind.FlexContainer) { flex = topChild; break; }
+            // Walk one more level (the HTML wrapper / body etc.).
+            foreach (var nested in topChild.Children)
+            {
+                if (nested.Kind == BoxKind.FlexContainer) { flex = nested; break; }
+                foreach (var nested2 in nested.Children)
+                {
+                    if (nested2.Kind == BoxKind.FlexContainer) { flex = nested2; break; }
+                }
+                if (flex is not null) break;
+            }
+            if (flex is not null) break;
+        }
+        Assert.NotNull(flex);
+        Box? itemA = null, itemB = null, itemC = null;
+        foreach (var child in flex!.Children)
+        {
+            var el = child.SourceElement;
+            if (el is null) continue;
+            var classAttr = el.GetAttribute("class") ?? string.Empty;
+            if (classAttr.Contains('a')) itemA = child;
+            else if (classAttr.Contains('b')) itemB = child;
+            else if (classAttr.Contains('c')) itemC = child;
+        }
+        Assert.NotNull(itemA);
+        Assert.NotNull(itemB);
+        Assert.NotNull(itemC);
+
+        // item A: flex: 2 3 100px
+        Assert.Equal(2.0, itemA!.Style.ReadFlexGrow());
+        Assert.Equal(3.0, itemA.Style.ReadFlexShrink());
+        var basisA = itemA.Style.ReadFlexBasis();
+        Assert.Equal(FlexBasisKind.LengthPx, basisA.Kind);
+        Assert.Equal(100.0, basisA.Value, precision: 3);
+
+        // item B: flex: none → 0 0 auto
+        Assert.Equal(0.0, itemB!.Style.ReadFlexGrow());
+        Assert.Equal(0.0, itemB.Style.ReadFlexShrink());
+        var basisB = itemB.Style.ReadFlexBasis();
+        Assert.Equal(FlexBasisKind.Auto, basisB.Kind);
+
+        // item C: flex: auto → 1 1 auto
+        Assert.Equal(1.0, itemC!.Style.ReadFlexGrow());
+        Assert.Equal(1.0, itemC.Style.ReadFlexShrink());
+        var basisC = itemC.Style.ReadFlexBasis();
+        Assert.Equal(FlexBasisKind.Auto, basisC.Kind);
+    }
+
     private sealed class RecordingDiagnosticsSink : IPaginateDiagnosticsSink
     {
         public List<PaginateDiagnostic> Diagnostics { get; } = new();

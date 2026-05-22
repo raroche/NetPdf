@@ -531,6 +531,95 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             _rootBox, _sortedFlexChildIndices, flexDirection,
             containerMainSize, isWrapping, cancellationToken);
 
+        // Per Phase 3 Task 16 cycle 1 (Hello World) — multi-page flex
+        // split fragment range determination per CSS Flexbox L1 §10
+        // (Fragmenting Flex Layout). Sample algorithm: "lay out as
+        // many row flex lines as possible BEFORE finishing Cross
+        // Axis Alignment for each fragment". We compute the fragment
+        // range (= which lines belong to this page) HERE — BEFORE
+        // the align-content offsets are computed below at line ~632
+        // — using a RAW cursor that only sums `line.LineCrossSize`
+        // (= ignoring align-content's lineStartOffset +
+        // lineBetweenSpacing, which the post-PR-#78 P1 review
+        // correctly flagged as wrong: align-content's
+        // center/flex-end/space-* would mis-compute which lines fit
+        // a fragment).
+        //
+        // Cycle 1 support boundary (per P2 review): pagination only
+        // for ROW direction + WRAP mode + NOT wrap-reverse. Other
+        // modes fall through to atomic behavior:
+        //   - column direction: lines stack on inline axis (doesn't
+        //     paginate naturally without a writing-mode rotation).
+        //   - nowrap: only one line; per-item splitting is a later
+        //     sub-cycle.
+        //   - wrap-reverse: the cross-axis SWAP uses the
+        //     unfragmented containerCrossSize; emitting partial
+        //     content on a resumed page would place lines at the
+        //     wrong physical offset. Sub-cycle 2 will recompute
+        //     CrossAxisFlow against the per-fragment cross extent.
+        var isRowNormalWrapPaginationSupported =
+            _allowPagination && !isColumn && isWrapping && !isWrapReverse;
+
+        // Per Phase 3 Task 16 post-PR-#78 P1 #3 — validate the
+        // resume index against the packed line count. Out-of-range
+        // values silently drop content or produce nonsensical resume
+        // behavior; surface them loudly with
+        // <see cref="ArgumentOutOfRangeException"/>. The boundary
+        // value `LineIndex == lines.Count` is allowed (= the
+        // "everything was emitted on the prior page" case which
+        // resumes as a no-op AllDone).
+        var resumeLineIndex = _incomingFlexContinuation?.LineIndex ?? 0;
+        if (resumeLineIndex < 0 || resumeLineIndex > lines.Count)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(_incomingFlexContinuation),
+                $"FlexContinuation.LineIndex must be in [0, {lines.Count}]; "
+                + $"got {resumeLineIndex}. A misrouted continuation has "
+                + "corrupted the resume index — surface immediately rather "
+                + "than silently dropping the remaining flex content.");
+        }
+
+        // Determine the fragment's end-of-range (exclusive). Default:
+        // emit every remaining line. Pagination: emit lines up to
+        // (but not including) the first one that overflows the
+        // available block extent. Always emit at least the FIRST
+        // remaining line per CSS Fragmentation L3 §4.4 ("at least
+        // one line must commit per page") — prevents infinite defer
+        // when a single line is taller than the fragmentainer.
+        var fragmentEndIndex = lines.Count;
+        if (isRowNormalWrapPaginationSupported && resumeLineIndex < lines.Count)
+        {
+            var rawCursor = 0.0;
+            for (var i = resumeLineIndex; i < lines.Count; i++)
+            {
+                var isFirstOnPage = i == resumeLineIndex;
+                if (!isFirstOnPage
+                    && rawCursor + lines[i].LineCrossSize > _contentBlockSize)
+                {
+                    fragmentEndIndex = i;
+                    break;
+                }
+                rawCursor += lines[i].LineCrossSize;
+            }
+        }
+
+        // Slice `lines` to the fragment range. Pre-resume lines (=
+        // emitted on a prior page) + post-split lines (= deferred to
+        // the next page) are removed. The rest of AttemptLayout
+        // (align-content offsets, line emission) operates on this
+        // fragment's lines only — = the spec's "lay out as many
+        // lines as possible, THEN apply Cross Axis Alignment per
+        // fragment" model.
+        var originalLineCount = lines.Count;
+        if (resumeLineIndex > 0 || fragmentEndIndex < originalLineCount)
+        {
+            lines = lines.GetRange(
+                resumeLineIndex, fragmentEndIndex - resumeLineIndex);
+        }
+        var outgoingContinuationLineIndex = fragmentEndIndex < originalLineCount
+            ? fragmentEndIndex
+            : -1;
+
         // Per Phase 3 Task 15 L11 post-PR-#71 hardening F#1 — the
         // cross-axis SWAP per CSS Flexbox L1 §6.3 ("Behaves the same
         // as wrap but the cross-start and cross-end directions are
@@ -755,75 +844,17 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             ContentCrossOffset: contentCrossOffset,
             ContainerCrossSize: containerCrossSize);
 
-        // Per Phase 3 Task 16 cycle 1 — multi-page flex split resume +
-        // outgoing-continuation state. `resumeLineIndex` is the first
-        // line we'll emit (lines [0, resumeLineIndex) were emitted on
-        // a prior page). `outgoingContinuationLineIndex` is the index
-        // of the first line we COULDN'T fit on this page (= -1 when
-        // every remaining line fit, in which case the result is
-        // <see cref="LayoutAttemptResult.AllDone"/>). Cycle 1 supports
-        // row direction wrap-mode multi-line splits where lines stack
-        // on the block axis; column direction splits are sub-cycle 2+
-        // scope because the lines stack on the inline axis which
-        // doesn't paginate naturally.
-        var resumeLineIndex = _incomingFlexContinuation?.LineIndex ?? 0;
-        var outgoingContinuationLineIndex = -1;
-
-        for (var lineIdx = 0; lineIdx < lines.Count; lineIdx++)
+        // Per Phase 3 Task 16 cycle 1 — the fragment range
+        // determination above already sliced `lines` to the lines
+        // for THIS fragment. The emission loop iterates them
+        // verbatim from index 0 (= the swap formula in
+        // CrossAxisFlow + the align-content offsets computed above
+        // operate on the fragment's lines, not the full unfragmented
+        // line list). The outgoing continuation's LineIndex was
+        // already computed (`outgoingContinuationLineIndex`).
+        foreach (var line in lines)
         {
             cancellationToken.ThrowIfCancellationRequested();
-
-            // Per Task 16 cycle 1 — skip lines that were emitted on a
-            // prior page. We still walk the cursor through them so the
-            // physical offsets for the resumed lines align with the
-            // pre-split layout (= equivalent to a fresh page emitting
-            // ONLY the lines [resumeLineIndex, lines.Count) at the
-            // page origin). Cursor advancement comes AFTER emission so
-            // the skip logic just continues the loop body.
-            var line = lines[lineIdx];
-            if (lineIdx < resumeLineIndex)
-            {
-                // Don't advance swappedAxisCursor for skipped lines —
-                // when we resume, the FIRST emitted line should land
-                // at the page origin, not at its pre-split position.
-                continue;
-            }
-
-            // Per Task 16 cycle 1 — check whether this line fits in
-            // the fragmentainer's REMAINING block size. The cursor
-            // walks in the SWAPPED axis (= block axis for row mode +
-            // wrap, since cross axis = block axis); for wrap-reverse
-            // the swap is handled by CrossAxisFlow at emission time
-            // but the per-line size is the same. We compare cumulative
-            // cross extent (cursor + this line's cross size) against
-            // the container's cross size. Column direction (cross =
-            // inline) doesn't paginate naturally so we skip the check
-            // there (= same as cycle 0 atomic behavior).
-            //
-            // We always emit the FIRST line on this page even when it
-            // overflows (= the `lineIdx > resumeLineIndex` guard) per
-            // CSS Fragmentation L3 §6.3 — at least one line must
-            // commit so we never infinitely defer a too-tall single
-            // line.
-            // Per Phase 3 Task 16 cycle 1 — split when the cumulative
-            // cross extent (= block extent for row direction) exceeds
-            // `_contentBlockSize` (= the available block space passed
-            // by ConfigureEmission, which BlockLayouter dispatch sets
-            // to the fragmentainer's remaining block size). Use
-            // `_contentBlockSize` rather than `containerCrossSize`
-            // because in auto-height containers containerCrossSize
-            // resolves to the SUM of lines (which always equals
-            // total content extent) — useless for pagination. The
-            // contentBlockSize passed in is the integrator's signal
-            // for "how much can fit on this page".
-            if (_allowPagination
-                && !isColumn
-                && lineIdx > resumeLineIndex
-                && swappedAxisCursor + line.LineCrossSize > _contentBlockSize)
-            {
-                outgoingContinuationLineIndex = lineIdx;
-                break;
-            }
 
             // Per Phase 3 Task 15 L11 post-PR-#71 F#1 + L14 — convert
             // the swapped-axis cursor to a physical cross-offset for

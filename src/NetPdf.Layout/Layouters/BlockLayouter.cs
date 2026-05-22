@@ -1396,6 +1396,17 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 }
             }
 
+            // Per Phase 3 Task 16 cycle 4b — set by the
+            // paginatable-flex clamp inside the IsFlexContainer
+            // pre-grow block below + read by the outer flex dispatch
+            // block at line ~2213 to flip <c>allowPagination</c> ON
+            // when the wrapper would otherwise overflow the remaining
+            // fragmentainer space. Declared OUTSIDE the pre-grow block
+            // because the dispatch block is a separate
+            // <c>if (IsFlexContainer(child))</c> sibling at the same
+            // loop-iteration scope.
+            bool paginateFlexForOuterChild = false;
+
             // Per Phase 3 Task 15 L3 post-PR-#63 hardening F#1 — flex
             // container wrapper pre-measure. Mirrors the multicol
             // pre-measure pattern above: for a flex container whose
@@ -1553,6 +1564,52 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     if (flexDrivenBorderBox > borderBoxBlockSize)
                     {
                         borderBoxBlockSize = flexDrivenBorderBox;
+                    }
+                }
+
+                // Per Phase 3 Task 16 cycle 4b — paginatable-flex extent
+                // clamp at the outer-dispatch site. Mirrors the recursive
+                // site's clamp at the EmitBlockSubtreeRecursive
+                // sibling block: when the wrapper's grown natural extent
+                // would overflow the remaining fragmentainer space AND
+                // the container is eligible per
+                // <see cref="IsPaginatableFlex"/>, clamp
+                // <c>borderBoxBlockSize</c> to what fits + flip
+                // <c>paginateFlexForOuterChild</c> ON so the dispatch
+                // block at line ~2213 passes <c>allowPagination: true</c>
+                // through to FlexLayouter. With the clamp in place the
+                // break-check below sees a fitting chunk (= no
+                // forced-overflow path) + the normal Continue path
+                // dispatches with pagination ENABLED — FlexLayouter
+                // packs lines up to the clamped budget + emits a
+                // FlexContinuation for the rest (CSS Flexbox L1 §10).
+                //
+                // <para><b>Why clamp before the break check.</b>
+                // The break check uses chunkForBreakCheck which derives
+                // from borderBoxBlockSize; clamping here makes the
+                // chunk fit the remaining page space + skips the
+                // forced-overflow path that would otherwise paint the
+                // full natural extent + silently drop overflow lines.
+                // The clamp is mathematically safe: FlexLayouter (with
+                // allowPagination: true) always emits at least the
+                // first remaining line on each fragment per CSS
+                // Fragmentation L3 §4.4, so the clamped wrapper
+                // visually contains at least one line of content (=
+                // no zero-progress page).</para>
+                if (IsPaginatableFlex(child))
+                {
+                    var pageRemainingForOuterFlex =
+                        fragmentainer.BlockSize
+                        - fragmentainer.UsedBlockSize - topShift;
+                    // Eligibility identical to the recursive site —
+                    // wrapper would overflow + remaining can host
+                    // chrome plus content.
+                    if (pageRemainingForOuterFlex > 0
+                        && pageRemainingForOuterFlex < borderBoxBlockSize
+                        && pageRemainingForOuterFlex > flexBorderPaddingBlock)
+                    {
+                        borderBoxBlockSize = pageRemainingForOuterFlex;
+                        paginateFlexForOuterChild = true;
                     }
                 }
             }
@@ -2283,7 +2340,19 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     contentInlineSize: flexContentInlineSize,
                     contentBlockSize: flexContentBlockSize,
                     incomingContinuation: flexContinuationForChild,
-                    allowPagination: false,
+                    // Per Phase 3 Task 16 cycle 4b — gate flipped ON by
+                    // the paginatable-flex extent clamp earlier in
+                    // this iteration (see <c>paginateFlexForOuterChild</c>
+                    // initialization just before the pre-grow block).
+                    // When true, FlexLayouter packs lines up to the
+                    // clamped contentBlockSize budget + emits a
+                    // FlexContinuation for the rest; when false (=
+                    // wrapper fits in remaining space OR container
+                    // isn't paginatable), FlexLayouter emits
+                    // atomically as in L1-L17. The dormant
+                    // PageComplete propagation below activates when
+                    // this flag is true.
+                    allowPagination: paginateFlexForOuterChild,
                     fragmentainer: fragmentainer,
                     layout: ref layout,
                     cancellationToken: cancellationToken);
@@ -3030,6 +3099,17 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 }
             }
 
+            // Per Phase 3 Task 16 cycle 4b — set by the
+            // paginatable-flex clamp inside the IsFlexContainer
+            // pre-grow block below + read by the recursive dispatch
+            // block further down to flip <c>allowPagination</c>
+            // ON when the wrapper would otherwise overflow the
+            // remaining fragmentainer space. Declared OUTSIDE the
+            // pre-grow block because the dispatch block is a
+            // separate <c>if (IsFlexContainer(child))</c> sibling at
+            // the same loop-iteration scope.
+            bool paginateFlexForChild = false;
+
             // Per Phase 3 Task 15 L3 post-PR-#63 hardening F#1 — nested
             // flex container wrapper pre-measure. Mirrors the outer
             // dispatch path's pre-measure: grow childBorderBoxBlockSize
@@ -3164,6 +3244,63 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 if (nFlexDriven > childEffectiveBlockSize)
                 {
                     childEffectiveBlockSize = nFlexDriven;
+                }
+
+                // Per Phase 3 Task 16 cycle 4b — paginatable-flex extent
+                // clamp at the recursive site. When the wrapper's grown
+                // natural extent overflows the remaining fragmentainer
+                // space AND the container is eligible per
+                // <see cref="IsPaginatableFlex"/> (row + wrap + not
+                // wrap-reverse), clamp the wrapper to the page-remaining
+                // block + flip the dispatch's <c>allowPagination</c> flag
+                // ON below. The FlexLayouter packs lines up to the
+                // clamped budget + returns a FlexContinuation for the
+                // overflow lines (CSS Flexbox L1 §10 fragmentation + CSS
+                // Fragmentation L3 §4.4 progress rule). The wrapper
+                // fragment emitted below paints at the clamped size (=
+                // the visual extent actually consumed on this page); the
+                // resume page's BlockLayouter dispatches the
+                // FlexContinuation back via the cycle-3 propagation
+                // chain.
+                //
+                // <para><b>Why not extend to the column / wrap-reverse
+                // cases.</b> Column direction places line breaks on the
+                // inline axis (not a fragment boundary); wrap-reverse
+                // derives the cross-axis SWAP origin from the
+                // unfragmented container size + needs per-fragment
+                // re-derivation. Both are documented under the cycle-4b
+                // deferral block in <c>docs/deferrals.md</c>.</para>
+                //
+                // <para><b>Why this site, not pre-break-check.</b> The
+                // recursive walk doesn't consult the resolver — there's
+                // no break-check to pre-empt at this depth. The clamp +
+                // pagination here is the EQUIVALENT of the outer
+                // forced-overflow re-route (added below in the same
+                // cycle): both intercept the moment where the wrapper
+                // would otherwise paint at its natural extent + overflow
+                // the page.</para>
+                if (IsPaginatableFlex(child)
+                    && _capturedFragmentainer is not null)
+                {
+                    var pageRemainingForFlex =
+                        _capturedFragmentainer.BlockSize - childBlockOffset;
+                    // Eligibility: the wrapper would otherwise overflow
+                    // (childBorderBoxBlockSize > remaining) AND the
+                    // remaining space exceeds the wrapper's own chrome
+                    // (borders + padding) — i.e., there's positive
+                    // content room. Pathological case (remaining <=
+                    // chrome) falls through to the natural-extent emit;
+                    // FlexLayouter would receive a non-positive content
+                    // budget which it rejects via
+                    // ConfigureEmission's argument validation.
+                    if (pageRemainingForFlex > 0
+                        && pageRemainingForFlex < childBorderBoxBlockSize
+                        && pageRemainingForFlex > nFlexBorderPaddingBlock)
+                    {
+                        childBorderBoxBlockSize = pageRemainingForFlex;
+                        childEffectiveBlockSize = pageRemainingForFlex;
+                        paginateFlexForChild = true;
+                    }
                 }
             }
 
@@ -3372,10 +3509,17 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         contentInlineSize: nestedFlexContentInlineSize,
                         contentBlockSize: nestedFlexContentBlockSize,
                         incomingContinuation: nestedFlexContinuationForChild,
-                        // Per cycle 3 / 4a — pagination remains OFF
-                        // here pending cycle 4b's pre-break-check
-                        // routing.
-                        allowPagination: false,
+                        // Per Phase 3 Task 16 cycle 4b — gate flipped ON
+                        // by the paginatable-flex extent clamp above
+                        // when (a) the container is row + wrap +
+                        // non-wrap-reverse, (b) its grown natural extent
+                        // overflows the remaining fragmentainer space,
+                        // AND (c) the remaining space exceeds the
+                        // wrapper's chrome (so positive content-block
+                        // budget is available). Otherwise stays OFF —
+                        // FlexLayouter emits everything atomically as in
+                        // L1-L17 (the pre-cycle-4b behavior).
+                        allowPagination: paginateFlexForChild,
                         fragmentainer: _capturedFragmentainer,
                         layout: ref nestedFlexLayoutCtx,
                         cancellationToken: cancellationToken);
@@ -4028,6 +4172,60 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// the kind.</para></summary>
     private static bool IsFlexContainer(Box box)
         => box.Kind is BoxKind.FlexContainer or BoxKind.InlineFlexContainer;
+
+    /// <summary>Per Phase 3 Task 16 cycle 4b — predicate identifying
+    /// flex containers eligible for multi-page line splitting via the
+    /// pre-break-check / forced-overflow re-route paths.
+    ///
+    /// <para><b>Eligibility</b> mirrors
+    /// <see cref="FlexLayouter"/>'s <c>isRowNormalWrapPaginationSupported</c>
+    /// predicate: the container must be (a) a flex container per
+    /// <see cref="IsFlexContainer"/>, (b) row-direction (so the
+    /// cross-axis IS the block axis where pagination boundaries live —
+    /// column direction would put line breaks on the inline axis which
+    /// is not a fragment boundary), AND (c) wrapping (single-line
+    /// containers have no line boundary to split on; lines are atomic),
+    /// AND (d) NOT wrap-reverse (the cross-axis SWAP places lines at
+    /// physical offsets derived from the unfragmented container size;
+    /// splitting + re-deriving cross-axis flow per fragment is
+    /// deferred to a later cycle — see
+    /// <see cref="FlexLayouter"/>'s pagination-eligibility comment).</para>
+    ///
+    /// <para><b>Why this matches the layouter's predicate.</b> If the
+    /// BlockLayouter dispatches with <c>allowPagination: true</c> for
+    /// an INELIGIBLE container, the FlexLayouter would silently treat
+    /// it as <c>allowPagination: false</c> (= no continuation emitted)
+    /// + we'd lose content. Keeping the predicates in lockstep ensures
+    /// the dispatch + layouter agree on which containers can split.
+    /// Cycle 4b is the first site that consults this predicate; future
+    /// cycles will hoist it (or its callees) into a shared
+    /// flex-pagination policy module if/when grid layout grows a
+    /// similar predicate.</para></summary>
+    private static bool IsPaginatableFlex(Box box)
+    {
+        if (!IsFlexContainer(box))
+        {
+            return false;
+        }
+        var direction = box.Style.ReadFlexDirection();
+        if (direction.IsFlexColumnDirection())
+        {
+            return false;
+        }
+        var wrap = box.Style.ReadFlexWrap();
+        if (!wrap.IsFlexWrapping())
+        {
+            return false;
+        }
+        // wrap-reverse: cross-axis flow derives from the unfragmented
+        // container size; multi-fragment cross-flow re-derivation is
+        // deferred. See FlexLayouter's matching exclusion.
+        if (wrap == FlexWrapValue.WrapReverse)
+        {
+            return false;
+        }
+        return true;
+    }
 
     /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 — predicate
     /// distinguishing block containers whose children are entirely

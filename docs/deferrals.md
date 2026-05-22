@@ -1268,13 +1268,16 @@ grepping the ID).
       recursive paths to eliminate drift between them. 135 + 107
       LOC consolidated; the helper owns FlexLayouter +
       BreakResolver lifetime via `using var`.
-    - **P3 #8 (PR-#79)**: shared `FlexLinePacker` between
-      `BlockLayouter` pre-measure + `FlexLayouter` packing.
-      Pre-measure (`PreMeasureFlexMultiLineCrossExtent`) still
-      duplicates the packing algorithm in `FlexLayouter.PackLines`.
-      Cycle 4b's clamp + the existing pre-grow consume the
-      pre-measure result; refactoring to a shared packer is a pure
-      DRY win.
+    - ✅ **P3 #8 (PR-#79) shipped in cycle 4c**: shared
+      `FlexLinePacker` extracted to
+      `src/NetPdf.Layout/Layouters/FlexLinePacker.cs`. Both
+      `FlexLayouter.PackLines` (8-line delegating forward) +
+      `BlockLayouter.PreMeasureFlexMultiLineCrossExtent` (calls Pack
+      + sums `LineCrossSize`) now consume one shared
+      implementation. `FlexLine` promoted from FlexLayouter's
+      private nested record struct to internal at the namespace
+      level. 6 direct unit tests in `FlexLinePackerTests` pin the
+      algorithm contract.
     - **P2 from PR-#82 review #2**: extend `DispatchFlexInner`
       (or add a `FlexGeometryHelper`) to also encapsulate
       border/padding reads + content-box geometry math.

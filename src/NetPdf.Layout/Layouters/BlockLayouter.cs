@@ -2189,15 +2189,27 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // content area. Skips the EmitBlockSubtreeRecursive call
             // below (FlexLayouter owns the inner emission).
             //
-            // Cycle 1 keeps geometry simple: the flex container's
-            // content-box is derived directly from the wrapper's
-            // border-box minus the wrapper's own borders + paddings
-            // — no fragmentainer-remaining-space derivation (that's
-            // multicol's auto-height column-fill semantic; flex's
-            // cross-axis sizing is sub-cycle 2+ scope). Cycle 1's
-            // FlexLayouter is atomic to outer pagination so the
-            // returned LayoutAttemptResult is always AllDone — no
-            // continuation packaging needed.
+            // Geometry: the flex container's content-box is derived
+            // directly from the wrapper's border-box minus the
+            // wrapper's own borders + paddings — no fragmentainer-
+            // remaining-space derivation (= cycle 4+ scope to make
+            // that integrate with multi-page split).
+            //
+            // Task 16 cycle 2/3 status (post-PR-#80 review): this
+            // dispatch site has SCAFFOLDING for capturing the
+            // FlexLayouter's result + propagating
+            // PageComplete(BlockContinuation(LayouterState=FlexContinuation))
+            // up the recursion chain. The propagation code below is
+            // currently DORMANT because `allowPagination: false`
+            // makes FlexLayouter always return AllDone. The cycle-4
+            // work (= introducing a paginatable-flex pre-break-check
+            // dispatch that bypasses forced-overflow + flipping
+            // `allowPagination: true` here) will activate the
+            // scaffolding. Direct-construction unit tests verify the
+            // FlexLayouter side of the contract; the
+            // BlockLayouter-side propagation is unit-testable via
+            // the same construction path (= the data flow IS wired,
+            // just not triggered by production HTML yet).
             if (IsFlexContainer(child))
             {
                 // Derive the flex container's content-box geometry

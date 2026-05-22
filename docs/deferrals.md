@@ -1190,9 +1190,40 @@ grepping the ID).
     (cycle 1 skips non-block-level children silently; whitespace
     `TextRun`s between flex item elements are dropped without a
     fragment)
-  - Multi-page flex container splitting (atomic to outer pagination
-    in L1; `FlexContinuation` exists in
-    `src/NetPdf.Paginate/LayoutContinuation.cs` for sub-cycle 2+)
+  - **Multi-page flex container splitting** (Task 16, in progress;
+    cycles 1-3 shipped the FlexLayouter resume contract + scaffolded
+    BlockLayouter dispatch propagation; **cycle 4 remains** = the
+    architectural rework that the PR-#79 + PR-#80 reviews documented:
+    - **P1 #1 (PR-#79)**: introduce a paginatable-flex specialized
+      dispatch BEFORE the generic break check fires forced-overflow.
+      Currently the row+wrap pre-grow makes wrapper huge → break
+      check triggers forced-overflow → bypasses flex dispatch.
+      Needs routing paginatable flex through a pre-break-check path.
+    - **P1 #2 (PR-#80) proper close**: wire
+      `EmitBlockSubtreeRecursive`'s nested flex branch to walk the
+      incoming BlockContinuation chain + extract the inner
+      FlexContinuation when targeting the deferred-at child.
+      Cycle 3's scaffolding has the propagation outbound but the
+      inbound chain-walk is still null.
+    - **P1 #3 (PR-#79 + PR-#80)**: active production-pipeline test
+      through full HTML→cascade→BoxBuilder→BlockLayouter→FlexLayouter
+      chain. The
+      `Task16_cycle2_production_html_flex_container_splits_across_two_pages`
+      test is `[Fact(Skip = ...)]` pending this work.
+    - **P2 #4 (PR-#79)**: derive `pageRemainingBlock` from actual
+      content block offset (= post margin-collapse) rather than
+      `effectiveTopGap` (= avoid double-counting collapsed margins).
+    - **P2 #5 (PR-#79)**: FlexLayouter returns emitted-fragment
+      block extent so cursor advancement on PageComplete reflects
+      only the current fragment's contribution.
+    - **P3 #7 (PR-#79 + PR-#80)**: extract `DispatchFlexInner`
+      helper used by BOTH direct + recursive paths to eliminate
+      drift between them.
+    - **P3 #8 (PR-#79)**: shared `FlexLinePacker` between
+      `BlockLayouter` pre-measure + `FlexLayouter` packing.
+    `FlexContinuation` exists in `src/NetPdf.Paginate/LayoutContinuation.cs`;
+    the data flow is wired but `allowPagination: false` at both
+    dispatch sites keeps the propagation dormant pending cycle 4.)
 - **Owner files** —
   - `src/NetPdf.Layout/Layouters/FlexLayouter.cs` — the layouter
     itself.

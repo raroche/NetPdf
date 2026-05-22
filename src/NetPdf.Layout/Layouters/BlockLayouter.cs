@@ -364,6 +364,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// every AttemptLayout entry.</summary>
     private bool _consumedIncomingMulticolContinuation;
 
+    /// <summary>Per Phase 3 Task 16 cycle 2 — mirrors
+    /// <see cref="_consumedIncomingMulticolContinuation"/> for the
+    /// flex multi-page resume contract. The incoming
+    /// <see cref="FlexContinuation"/> piggy-backed on the resume
+    /// <see cref="BlockContinuation.LayouterState"/> is one-shot:
+    /// once forwarded to the FlexLayouter at the deferred-at child
+    /// index, subsequent flex children in the same attempt start
+    /// fresh (= no continuation forwarded).</summary>
+    private bool _consumedIncomingFlexContinuation;
+
     /// <summary>Per Phase 3 Task 14 cycle 2 hardening (Finding #1) —
     /// one-shot consumption flag for the incoming chained
     /// <see cref="BlockContinuation"/> in
@@ -680,6 +690,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // resumed index; subsequent multicol children in the same
         // attempt start fresh.
         _consumedIncomingMulticolContinuation = false;
+        // Per Phase 3 Task 16 cycle 2 — same one-shot reset for the
+        // flex multi-page resume contract.
+        _consumedIncomingFlexContinuation = false;
 
         // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) — reset
         // the one-shot consumption flag for an incoming chained
@@ -2186,29 +2199,84 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     borderBoxInlineSize
                     - flexBorderInlineStart - flexPaddingInlineStart
                     - flexBorderInlineEnd - flexPaddingInlineEnd);
-                var flexContentBlockSize = Math.Max(1.0,
+                var naturalFlexContentBlockSize = Math.Max(1.0,
                     borderBoxBlockSize
                     - flexBorderBlockStart - flexPaddingBlockStart
                     - flexBorderBlockEnd - flexPaddingBlockEnd);
+
+                // Per Phase 3 Task 16 cycle 2 — constrain the
+                // FlexLayouter's content block size to the
+                // fragmentainer's REMAINING block space, so the
+                // multi-page split fires at the page boundary even
+                // when the wrapper's natural extent (= the
+                // pre-grown borderBoxBlockSize) exceeds the page.
+                // Pre-cycle-2 passing the natural extent meant
+                // FlexLayouter's pagination check never triggered
+                // for the canonical case where the flex container's
+                // content overflows the fragmentainer block axis.
+                //
+                // The pre-grow logic above (line ~1511-1516) sets
+                // `borderBoxBlockSize` to the natural extent for
+                // most cases, which is correct for the wrapper
+                // fragment's PAINTED border-box. But the inner
+                // FlexLayouter's per-page work needs the PAGE-
+                // limited extent. Math.Min picks the smaller of the
+                // two: when the wrapper fits on this page,
+                // naturalFlexContentBlockSize wins (= existing
+                // L7+ atomic behavior preserved); when the wrapper
+                // exceeds the page, the page-remaining wins (=
+                // triggers the split).
+                var pageRemainingBlock = Math.Max(1.0,
+                    fragmentainer.BlockSize - fragmentainer.UsedBlockSize
+                    - effectiveTopGap
+                    - flexBorderBlockStart - flexPaddingBlockStart);
+                var flexContentBlockSize = Math.Min(
+                    naturalFlexContentBlockSize,
+                    pageRemainingBlock);
                 var flexContentInlineOffset =
                     inFlowInlineOffset + flexBorderInlineStart + flexPaddingInlineStart;
                 var flexContentBlockOffset =
                     blockOffset + flexBorderBlockStart + flexPaddingBlockStart;
 
+                // Per Phase 3 Task 16 cycle 2 — multi-page flex
+                // resume. Mirrors the multicol dispatch above: when
+                // the incoming BlockContinuation carries a
+                // FlexContinuation in LayouterState AND we're at the
+                // flex child it deferred at, pass the
+                // FlexContinuation through to the new FlexLayouter
+                // so it resumes at the correct line. The carried
+                // continuation is one-shot: subsequent flex children
+                // in the same attempt start fresh.
+                FlexContinuation? flexContinuationForChild = null;
+                if (incomingBlock?.LayouterState is FlexContinuation incomingFlexCont
+                    && childIdx == incomingBlock.ResumeAtChild
+                    && !_consumedIncomingFlexContinuation)
+                {
+                    flexContinuationForChild = incomingFlexCont;
+                    _consumedIncomingFlexContinuation = true;
+                }
+
                 using var flexLayouter = new FlexLayouter(
                     rootBox: child,
                     sink: _sink,
-                    incomingContinuation: null,
+                    incomingContinuation: flexContinuationForChild,
                     diagnostics: _diagnostics,
                     shaperResolver: _shaperResolver);
                 flexLayouter.ConfigureEmission(
                     contentInlineOffset: flexContentInlineOffset,
                     contentBlockOffset: flexContentBlockOffset,
                     contentInlineSize: flexContentInlineSize,
-                    contentBlockSize: flexContentBlockSize);
+                    contentBlockSize: flexContentBlockSize,
+                    // Per Phase 3 Task 16 cycle 2 — enable
+                    // pagination via the explicit gate. The
+                    // FlexLayouter's internal support boundary
+                    // (`isWrapping && !isWrapReverse && !isColumn`)
+                    // still applies — unsupported modes fall
+                    // through to atomic behavior.
+                    allowPagination: true);
 
                 using var flexResolver = new BreakResolver();
-                _ = flexLayouter.AttemptLayout(
+                var flexResult = flexLayouter.AttemptLayout(
                     fragmentainer,
                     ref layout,
                     flexResolver,
@@ -2216,15 +2284,37 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     cancellationToken);
 
                 // Cursor advance + bookkeeping mirror the multicol
-                // dispatch above. Cycle 1 flex is atomic — no
-                // PageComplete propagation needed (FlexLayouter
-                // always returns AllDone).
+                // dispatch above.
                 fragmentainer.UsedBlockSize = Math.Max(0,
                     fragmentainer.UsedBlockSize + marginBoxBlockSizeForCursor);
                 prevBlockMarginEnd = marginEnd;
                 hasPriorAdjoiningBlock = true;
                 emittedThisAttempt++;
                 lastEmittedIdx = childIdx;
+
+                // Per Phase 3 Task 16 cycle 2 — propagate
+                // PageComplete(FlexContinuation) up. Mirrors the
+                // multicol pattern at line ~2122: the wrapper's
+                // outer fragment is already emitted; the resume
+                // page's BlockLayouter sees a BlockContinuation
+                // whose LayouterState is the FlexContinuation +
+                // dispatches it back to FlexLayouter via the resume
+                // contract above.
+                if (flexResult.Outcome == LayoutAttemptOutcome.PageComplete
+                    && flexResult.Continuation is FlexContinuation flexCont)
+                {
+                    return LayoutAttemptResult.PageComplete(
+                        new BlockContinuation(
+                            ResumeAtChild: childIdx,
+                            ConsumedBlockSize: priorPagesConsumed
+                                + (fragmentainer.UsedBlockSize - _pageStartUsedBlockSize),
+                            LayouterState: flexCont),
+                        cost: flexResult.Cost);
+                }
+
+                // AllDone case: skip the rest of the Continue path
+                // for this child; the flex container's inner
+                // content was committed in full on this page.
                 continue;
             }
 

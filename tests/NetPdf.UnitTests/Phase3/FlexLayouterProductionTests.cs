@@ -2797,6 +2797,155 @@ public sealed class FlexLayouterProductionTests
     }
 
     [Fact]
+    public async Task L17_production_html_later_shorthand_wins_over_intervening_explicit()
+    {
+        // Per post-PR-#77 review P1 #2 — the multi-shorthand case:
+        //   `.flex { flex-flow: row wrap; flex-wrap: nowrap;
+        //            flex-flow: row wrap-reverse; }`
+        // Per CSS Cascade §7.4 the LAST shorthand wins. The merge
+        // compares the last shorthand-expansion recovery (ordinal 2)
+        // against the explicit longhand (ordinal 1) → recovery's
+        // ordinal 2 > 1 → shorthand wins. Final: flex-wrap = wrap-reverse.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    flex-flow: row wrap;
+                    flex-wrap: nowrap;
+                    flex-flow: row wrap-reverse;
+                    width: 250px;
+                    height: 200px;
+                }
+                .item {
+                    width: 100px;
+                    height: 50px;
+                    flex-shrink: 0;
+                }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+              <div class="item c"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (_, _, root) = await RenderViaFullPipelineAsync(html, contentInlineSize: 250);
+        var flex = FindFlexContainer(root);
+        Assert.NotNull(flex);
+
+        // Cascade-level: last shorthand wins → flex-wrap = wrap-reverse.
+        Assert.Equal(FlexDirectionValue.Row, flex!.Style.ReadFlexDirection());
+        Assert.Equal(FlexWrapValue.WrapReverse, flex.Style.ReadFlexWrap());
+    }
+
+    [Fact]
+    public async Task L17_production_html_important_shorthand_beats_normal_explicit_longhand()
+    {
+        // Per post-PR-#77 review P1 #2 — !important interaction:
+        //   `.flex { flex-flow: row wrap !important; flex-wrap: nowrap; }`
+        // Per CSS Cascade §5 the !important shorthand wins over the
+        // later normal explicit longhand. Final: flex-wrap = wrap.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    flex-flow: row wrap !important;
+                    flex-wrap: nowrap;
+                    width: 250px;
+                    height: 200px;
+                }
+                .item {
+                    width: 100px;
+                    height: 50px;
+                    flex-shrink: 0;
+                }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+              <div class="item c"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (_, _, root) = await RenderViaFullPipelineAsync(html, contentInlineSize: 250);
+        var flex = FindFlexContainer(root);
+        Assert.NotNull(flex);
+
+        // Per §5 !important: shorthand !important beats normal explicit.
+        Assert.Equal(FlexWrapValue.Wrap, flex!.Style.ReadFlexWrap());
+    }
+
+    [Fact]
+    public async Task L17_production_html_important_explicit_beats_normal_shorthand()
+    {
+        // Per post-PR-#77 review P1 #2 — !important interaction in
+        // the other direction:
+        //   `.flex { flex-flow: row wrap; flex-wrap: nowrap !important; }`
+        // Per §5 the !important explicit longhand wins. Final:
+        // flex-wrap = nowrap.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    flex-flow: row wrap;
+                    flex-wrap: nowrap !important;
+                    width: 250px;
+                    height: 200px;
+                }
+                .item {
+                    width: 100px;
+                    height: 50px;
+                    flex-shrink: 0;
+                }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+              <div class="item c"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (_, _, root) = await RenderViaFullPipelineAsync(html, contentInlineSize: 250);
+        var flex = FindFlexContainer(root);
+        Assert.NotNull(flex);
+
+        Assert.Equal(FlexWrapValue.NoWrap, flex!.Style.ReadFlexWrap());
+    }
+
+    [Fact]
+    public async Task L17_production_html_inline_style_shorthand_then_longhand_wins_per_cascade()
+    {
+        // Per post-PR-#77 review P1 #1 — inline-style coverage.
+        // Pre-fix `AdaptInlineStyleWithRecovery` used `ScanForModernDeclarations`
+        // without order info, so the inline path silently bypassed
+        // the cascade-correctness fix.
+        //
+        // Fixture: `<div style="flex-flow: row wrap; flex-wrap: nowrap">`
+        // — same cascade rule as the <style> block tests. Explicit
+        // longhand at ordinal 1 must beat the shorthand expansion's
+        // ordinal-0 value.
+        const string html = """
+            <!DOCTYPE html><html><head></head><body>
+            <div style="display: flex; flex-flow: row wrap; flex-wrap: nowrap; width: 250px; height: 200px">
+              <div style="width: 100px; height: 50px; flex-shrink: 0" class="a"></div>
+              <div style="width: 100px; height: 50px; flex-shrink: 0" class="b"></div>
+              <div style="width: 100px; height: 50px; flex-shrink: 0" class="c"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (_, _, root) = await RenderViaFullPipelineAsync(html, contentInlineSize: 250);
+        var flex = FindFlexContainer(root);
+        Assert.NotNull(flex);
+
+        // Per §7.4: explicit longhand at later position wins.
+        Assert.Equal(FlexWrapValue.NoWrap, flex!.Style.ReadFlexWrap());
+    }
+
+    [Fact]
     public async Task L16_production_html_flex_flow_resets_omitted_wrap_after_explicit_longhand()
     {
         // Per post-PR-#76 review (Copilot inline) + CSS Cascade §7.4

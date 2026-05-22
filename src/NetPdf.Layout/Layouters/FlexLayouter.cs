@@ -1090,10 +1090,16 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // call back with the continuation on the next page. When -1
         // (= every remaining line fit), the container is fully
         // emitted + we return <see cref="LayoutAttemptResult.AllDone"/>.
-        // BlockLayouter dispatch integration (= capturing this result
-        // + propagating PageComplete up the recursion chain) is
-        // sub-cycle 2 scope; cycle 1 ships the layouter-side resume
-        // contract so the data flow is testable in isolation.
+        // BlockLayouter dispatch integration: cycle 2 wired the
+        // direct + recursive path code to capture this result +
+        // propagate PageComplete + FlexContinuation up the
+        // recursion chain. Pagination is gated off at the
+        // BlockLayouter dispatch sites (allowPagination: false)
+        // pending cycle 4 — the pre-break-check routing needed to
+        // prevent forced-overflow from preempting the dispatch
+        // before paginatable flex containers reach this code path.
+        // Direct-construction tests bypass this gate + verify the
+        // resume contract in isolation.
         if (outgoingContinuationLineIndex >= 0)
         {
             return LayoutAttemptResult.PageComplete(

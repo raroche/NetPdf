@@ -2531,15 +2531,22 @@ public sealed class FlexLayouterProductionTests
         var flex = FindFlexContainer(root);
         Assert.NotNull(flex);
 
-        // Verify the cascade saw `flex-wrap: wrap` (= would be `nowrap`
-        // = KeywordIdNowrap = 0 without the expansion).
-        var wrapSlot = flex!.Style.Get(PropertyId.FlexWrap);
+        // Per post-PR-#76 review P3 — assert BOTH longhands at the
+        // cascade. Pre-fix only the wrap longhand was checked; a
+        // bug in the expander that emitted only wrap (without
+        // direction) would have escaped.
+        var dirSlot = flex!.Style.Get(PropertyId.FlexDirection);
+        Assert.Equal(ComputedSlotTag.Keyword, dirSlot.Tag);
+        Assert.Equal(0, dirSlot.AsKeyword()); // row = KeywordId 0
+        var wrapSlot = flex.Style.Get(PropertyId.FlexWrap);
         Assert.Equal(ComputedSlotTag.Keyword, wrapSlot.Tag);
-        Assert.Equal(1, wrapSlot.AsKeyword()); // KeywordIdWrap = 1
+        Assert.Equal(1, wrapSlot.AsKeyword()); // wrap = KeywordId 1
 
-        // Verify wrapping happened: 3 items × 200 in a 300-wide
-        // container → 3 lines. Each item lands at BlockOffset 0,
-        // 50, 100 relative to the flex container's content origin.
+        // Per post-PR-#76 review P3 — assert EXACT BlockOffsets.
+        // 3 items × 200px in a 300-wide container → 1 item per line
+        // → 3 lines. With container height: 300 + multi-line wrap,
+        // align-content: stretch (= the default) stretches each line
+        // to 100px (= 300/3), so items land at flex-top + (0, 100, 200).
         BoxFragment? a = null, b = null, c = null;
         foreach (var f in sink.Fragments)
         {
@@ -2553,9 +2560,26 @@ public sealed class FlexLayouterProductionTests
         Assert.NotNull(a);
         Assert.NotNull(b);
         Assert.NotNull(c);
-        // 3 different BlockOffsets = 3 lines (= proves wrapping).
-        Assert.NotEqual(a!.Value.BlockOffset, b!.Value.BlockOffset);
-        Assert.NotEqual(b.Value.BlockOffset, c!.Value.BlockOffset);
+
+        // Find the flex container fragment to anchor offsets.
+        BoxFragment? flexFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == flex) { flexFragment = f; break; }
+        }
+        Assert.NotNull(flexFragment);
+        var flexTop = flexFragment!.Value.BlockOffset;
+        // Items land at flexTop + (0, 100, 200) per align-content:
+        // stretch (= default for explicit-height multi-line containers).
+        Assert.Equal(flexTop + 0, a!.Value.BlockOffset, precision: 3);
+        Assert.Equal(flexTop + 100, b!.Value.BlockOffset, precision: 3);
+        Assert.Equal(flexTop + 200, c!.Value.BlockOffset, precision: 3);
+        // Each item lands at the container's left edge (inline
+        // offset = flex container's inline offset).
+        var flexLeft = flexFragment.Value.InlineOffset;
+        Assert.Equal(flexLeft, a.Value.InlineOffset, precision: 3);
+        Assert.Equal(flexLeft, b.Value.InlineOffset, precision: 3);
+        Assert.Equal(flexLeft, c.Value.InlineOffset, precision: 3);
     }
 
     [Fact]

@@ -634,7 +634,21 @@ internal static class CssParserAdapter
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         // First pass: emit AngleSharp's declarations, overriding values for any property
-        // that has a recovery entry.
+        // that has a recovery entry. Per Phase 3 Task 15 L16 post-PR-#76 review #1 (P1)
+        // — this override is too aggressive for shorthand-derived recoveries when an
+        // explicit longhand comes LATER in source order than the shorthand. AngleSharp
+        // 1.0.0-beta.144 reliably emits incorrect longhand values for `flex: auto` /
+        // `flex: 100px` (= our recovery must override to fix them), so a pure
+        // append-only switch breaks the L13/L16 single-shorthand cases. The proper
+        // fix needs source-position tracking on both AngleSharp's emit + the
+        // recovery records so the merge respects CSS Cascade §7.4 last-decl-wins
+        // INTERLEAVED — that's a substantial refactor pinned by the
+        // `Mixed_shorthand_then_longhand_known_gap_*` regression tests in
+        // `CssPreprocessorShorthandRecoveryTests`. Until that lands, the current
+        // override stays + the known-gap tests document the limitation. Note: the
+        // <see cref="CssDeclarationRecovery.IsFromShorthandExpansion"/> flag is
+        // wired through the data model so the future fix can switch on it without
+        // re-plumbing the recovery emitter.
         foreach (var decl in fromAngleSharp)
         {
             seen.Add(decl.Property);

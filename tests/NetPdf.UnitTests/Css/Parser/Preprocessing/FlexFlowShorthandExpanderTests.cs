@@ -130,7 +130,10 @@ public sealed class FlexFlowShorthandExpanderTests
     public void Css_wide_keywords_pass_through_to_both_longhands()
     {
         // Per CSS Cascade §7 — wide keywords are property-agnostic
-        // and apply uniformly to each longhand.
+        // and apply uniformly to each longhand. Post-PR-#76 review P2
+        // added the `revert-layer` keyword (CSS Cascade L5 §7.3)
+        // which had been silently supported by the implementation
+        // but not pinned by the test suite.
         Assert.True(FlexFlowShorthandExpander.TryExpand("inherit", out var d, out var w));
         Assert.Equal("inherit", d);
         Assert.Equal("inherit", w);
@@ -146,6 +149,12 @@ public sealed class FlexFlowShorthandExpanderTests
         Assert.True(FlexFlowShorthandExpander.TryExpand("revert", out d, out w));
         Assert.Equal("revert", d);
         Assert.Equal("revert", w);
+
+        // Per CSS Cascade L5 §7.3 — `revert-layer` reverts a value to
+        // the cascaded value from a previous cascade layer.
+        Assert.True(FlexFlowShorthandExpander.TryExpand("revert-layer", out d, out w));
+        Assert.Equal("revert-layer", d);
+        Assert.Equal("revert-layer", w);
     }
 
     [Fact]

@@ -6063,33 +6063,40 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// nested <see cref="BlockContinuation"/>).</para>
     ///
     /// <para><b>Resolver + strategy contract (per PR-#82 review P2
-    /// #3).</b> The helper always constructs a fresh
-    /// <see cref="BreakResolver"/> + always passes
-    /// <see cref="LayoutAttemptStrategy.LastResort"/>. This
-    /// preserves the pre-extraction behavior identically at both
-    /// call sites. Rationale:
+    /// #3, refreshed post-PR-#87 review).</b> The helper always
+    /// constructs a fresh <see cref="BreakResolver"/> + always
+    /// passes <see cref="LayoutAttemptStrategy.LastResort"/>.
+    /// <b>Currently both parameters are INERT for FlexLayouter</b>:
+    /// <see cref="FlexLayouter.AttemptLayout"/> null-checks the
+    /// resolver argument but never consults it for break
+    /// decisions; the strategy argument is entirely unused. The
+    /// FlexLayouter's pagination logic is self-contained (=
+    /// fragment-range determination via line packing in
+    /// <see cref="FlexLayouter"/>'s emission loop; no resolver
+    /// callout). Cycle-4b's production pagination ships using
+    /// these inert defaults — no caller has surfaced a legitimate
+    /// need for parameterization.</para>
+    ///
+    /// <para><b>Why we still pass them at all.</b>
     /// <list type="bullet">
-    ///   <item><b>Fresh resolver</b> — the inner flex emission must
-    ///   not consult the outer BlockLayouter's checkpoint state.
-    ///   Sharing the outer resolver would let an inner
-    ///   <c>Rewind</c> decision unwind work the outer layouter
-    ///   already committed. This mirrors the TableLayouter
-    ///   per-cell resolver isolation + the MulticolLayouter
-    ///   per-column resolver isolation (= the established
-    ///   pattern for nested layouter dispatch).</item>
-    ///   <item><b><c>LastResort</c></b> — the inner flex emission
-    ///   is the LAST attempt for this flex container; the outer
-    ///   <c>LayoutRetryCoordinator</c> has already escalated through
-    ///   <c>Strict</c> / <c>DropAvoidInside</c> by the time we
-    ///   reach this dispatch. Passing through the caller's strategy
-    ///   would re-introduce the avoid-inside retry decision at the
-    ///   inner level which is meaningless (the flex container is
-    ///   an atomic-to-outer-pagination unit until cycle 4b's
-    ///   pre-break-check routing lands).</item>
+    ///   <item><b>API symmetry</b> — the <c>ILayouter</c> /
+    ///   AttemptLayout signature is shared with TableLayouter +
+    ///   MulticolLayouter (which DO consult the resolver for
+    ///   nested break decisions). Calling with fresh resolver +
+    ///   LastResort matches the established nested-layouter
+    ///   dispatch pattern in this codebase.</item>
+    ///   <item><b>Future-isolation contract</b> — if FlexLayouter
+    ///   ever starts consulting the resolver (= e.g., to defer
+    ///   to outer break decisions for nested-flex resume
+    ///   continuations), the fresh-resolver pattern prevents
+    ///   inner break decisions from unwinding outer checkpointed
+    ///   work. Mirrors TableLayouter's per-cell + MulticolLayouter's
+    ///   per-column resolver isolation.</item>
     /// </list>
-    /// When cycle 4b enables production pagination + we discover
-    /// the inner level legitimately wants its own strategy /
-    /// resolver, parameterize this helper at that point.</para>
+    /// If FlexLayouter starts using the resolver/strategy, revisit
+    /// this helper — parameterize the args at that point so the
+    /// caller can choose isolation policy / pass through its own
+    /// strategy.</para>
     ///
     /// <para><b>Disposal contract.</b> The helper owns the
     /// FlexLayouter + BreakResolver lifetime via <c>using var</c>

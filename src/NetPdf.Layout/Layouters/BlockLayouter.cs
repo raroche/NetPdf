@@ -559,6 +559,34 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 + "consistent. Per Phase 3 Task 14 cycle 2 resume contract.");
         }
 
+        // Per Phase 3 Task 16 cycle 2 post-PR-#79 review P2 #6 —
+        // symmetric validation for an incoming FlexContinuation in
+        // LayouterState. Mirrors the TableContinuation +
+        // MulticolContinuation checks above. The child at
+        // ResumeAtChild MUST be a flex container OR a block-flow
+        // container that recursively contains the flex (= same
+        // single-level-nested propagation contract as multicol). Pre-
+        // fix a misrouted FlexContinuation was silently ignored
+        // unless it happened to land on the direct flex child path.
+        if (incomingBlock?.LayouterState is FlexContinuation
+            && startChildIdx >= 0
+            && startChildIdx < _rootBox.Children.Count
+            && _rootBox.Children[startChildIdx].Kind is not
+                (BoxKind.FlexContainer or BoxKind.InlineFlexContainer)
+            && !IsBlockFlowContainerOwnedByBlockLayouter(_rootBox.Children[startChildIdx]))
+        {
+            throw new InvalidOperationException(
+                "BlockLayouter.AttemptLayout: incoming BlockContinuation carries "
+                + "a FlexContinuation in LayouterState but the child at "
+                + $"ResumeAtChild={startChildIdx} has BoxKind."
+                + $"{_rootBox.Children[startChildIdx].Kind}, which is neither "
+                + "a FlexContainer / InlineFlexContainer nor a block-flow "
+                + "container that could contain one. The dispatching "
+                + "layouter must produce continuations where the "
+                + "ResumeAtChild + LayouterState pair are mutually "
+                + "consistent. Per Phase 3 Task 16 cycle 2 resume contract.");
+        }
+
         // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) — when
         // the incoming BlockContinuation carries a nested
         // BlockContinuation (the recursion-chain protocol introduced
@@ -2199,40 +2227,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     borderBoxInlineSize
                     - flexBorderInlineStart - flexPaddingInlineStart
                     - flexBorderInlineEnd - flexPaddingInlineEnd);
-                var naturalFlexContentBlockSize = Math.Max(1.0,
+                var flexContentBlockSize = Math.Max(1.0,
                     borderBoxBlockSize
                     - flexBorderBlockStart - flexPaddingBlockStart
                     - flexBorderBlockEnd - flexPaddingBlockEnd);
-
-                // Per Phase 3 Task 16 cycle 2 — constrain the
-                // FlexLayouter's content block size to the
-                // fragmentainer's REMAINING block space, so the
-                // multi-page split fires at the page boundary even
-                // when the wrapper's natural extent (= the
-                // pre-grown borderBoxBlockSize) exceeds the page.
-                // Pre-cycle-2 passing the natural extent meant
-                // FlexLayouter's pagination check never triggered
-                // for the canonical case where the flex container's
-                // content overflows the fragmentainer block axis.
-                //
-                // The pre-grow logic above (line ~1511-1516) sets
-                // `borderBoxBlockSize` to the natural extent for
-                // most cases, which is correct for the wrapper
-                // fragment's PAINTED border-box. But the inner
-                // FlexLayouter's per-page work needs the PAGE-
-                // limited extent. Math.Min picks the smaller of the
-                // two: when the wrapper fits on this page,
-                // naturalFlexContentBlockSize wins (= existing
-                // L7+ atomic behavior preserved); when the wrapper
-                // exceeds the page, the page-remaining wins (=
-                // triggers the split).
-                var pageRemainingBlock = Math.Max(1.0,
-                    fragmentainer.BlockSize - fragmentainer.UsedBlockSize
-                    - effectiveTopGap
-                    - flexBorderBlockStart - flexPaddingBlockStart);
-                var flexContentBlockSize = Math.Min(
-                    naturalFlexContentBlockSize,
-                    pageRemainingBlock);
                 var flexContentInlineOffset =
                     inFlowInlineOffset + flexBorderInlineStart + flexPaddingInlineStart;
                 var flexContentBlockOffset =
@@ -2267,13 +2265,32 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     contentBlockOffset: flexContentBlockOffset,
                     contentInlineSize: flexContentInlineSize,
                     contentBlockSize: flexContentBlockSize,
-                    // Per Phase 3 Task 16 cycle 2 — enable
-                    // pagination via the explicit gate. The
-                    // FlexLayouter's internal support boundary
-                    // (`isWrapping && !isWrapReverse && !isColumn`)
-                    // still applies — unsupported modes fall
-                    // through to atomic behavior.
-                    allowPagination: true);
+                    // Per Phase 3 Task 16 cycle 2 post-PR-#79 review —
+                    // pagination remains OFF in the cycle-2 dispatch
+                    // pending cycle-3 architectural fixes. The data
+                    // flow (capture result + propagate
+                    // FlexContinuation + forward incoming
+                    // continuation) is wired so unit-level resume
+                    // tests verify the contract; production-pipeline
+                    // pagination needs cycle 3 to address:
+                    //   - P1 #1: forced-overflow preempts flex
+                    //     dispatch before it runs (= the row+wrap
+                    //     pre-grow makes wrapper huge, break check
+                    //     fires forced-overflow, my dispatch never
+                    //     reached). Fixing this requires routing
+                    //     paginatable flex through a specialized
+                    //     pre-break-check dispatch.
+                    //   - P1 #2: EmitBlockSubtreeRecursive's flex
+                    //     branch at line ~3284 still uses atomic
+                    //     dispatch. Needs the same continuation
+                    //     wiring as this site.
+                    //   - P2 #4/#5: page-remaining sizing +
+                    //     wrapper extent accounting on PageComplete.
+                    // The dispatch code below DOES capture +
+                    // propagate FlexContinuation when allowPagination
+                    // is later enabled by direct-construction tests
+                    // OR by cycle-3 routing.
+                    allowPagination: false);
 
                 using var flexResolver = new BreakResolver();
                 var flexResult = flexLayouter.AttemptLayout(

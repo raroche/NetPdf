@@ -3277,6 +3277,119 @@ public sealed class FlexLayouterProductionTests
     }
 
     [Fact]
+    public async Task Task16_cycle4_closeout_margin_collapse_before_flex_still_round_trips()
+    {
+        // Per Phase 3 Task 16 cycle 4 closeout (verifies P2 #4 from
+        // PR-#79 is closed-by-implementation; the deferral worried
+        // that the cycle-4b page-remaining derivation might
+        // under-count when a preceding sibling's margin-bottom
+        // collapses with the flex container's margin-top). Fixture:
+        // a 50-tall block with margin-bottom: 30 immediately
+        // followed by a paginated flex container with margin-top:
+        // 20. CSS 2.1 §8.3.1 margin collapse: the effective gap is
+        // max(30, 20) = 30; the flex container's top lands at
+        // [prev block's border-box bottom] + 30. If the
+        // page-remaining derivation double-counted the collapsed
+        // margins, the flex container's pagination budget would be
+        // 20 smaller than it should be + emit fewer lines per page.
+        //
+        // The test loops the pagination + asserts all items emit
+        // exactly once. Pre-cycle-4b this would have failed (=
+        // pagination not active); post-cycle-4b + post-margin-bottom
+        // hardening (PR-#83 review P2 #3) this round-trips even
+        // through the forced-overflow path.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .head {
+                    width: 200px;
+                    height: 50px;
+                    margin-bottom: 30px;
+                }
+                .flex {
+                    display: flex;
+                    flex-wrap: wrap;
+                    width: 200px;
+                    height: 80px;
+                    margin-top: 20px;
+                }
+                .item {
+                    width: 200px;
+                    height: 50px;
+                    flex-shrink: 0;
+                }
+            </style></head><body>
+            <div class="head"></div>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+              <div class="item c"></div>
+              <div class="item d"></div>
+            </div>
+            </body></html>
+            """;
+
+        var host = new HtmlParsingHost();
+        var document = await host.ParseAsync(html, new HtmlPdfOptions());
+        var sheets = AdaptAllSheetsViaPreprocessor(document);
+        var cascade = CascadeResolver.Resolve(document, sheets, CssMediaContext.DefaultPrint);
+        var resolved = VarResolver.Resolve(cascade, document);
+        var box = BoxBuilder.Build(document, resolved);
+
+        var allItemFragments = new List<BoxFragment>();
+        LayoutContinuation? incoming = null;
+        var pageCount = 0;
+        const int maxPages = 10;
+
+        while (pageCount < maxPages)
+        {
+            var sink = new RecordingFragmentSink();
+            var diagSink = new RecordingDiagnosticsSink();
+            using var shaper = new SyntheticShaperResolver();
+
+            using var layouter = new BlockLayouter(
+                rootBox: box,
+                sink: sink,
+                incomingContinuation: incoming,
+                diagnostics: diagSink,
+                shaperResolver: shaper);
+
+            var ctx = new FragmentainerContext(contentInlineSize: 200, blockSize: 200);
+            var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+            using var resolver = new BreakResolver();
+            var result = layouter.AttemptLayout(
+                ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+            foreach (var f in sink.Fragments)
+            {
+                var srcEl = f.Box.SourceElement;
+                if (srcEl is null) continue;
+                var classAttr = srcEl.GetAttribute("class");
+                if (classAttr != null && classAttr.StartsWith("item"))
+                {
+                    allItemFragments.Add(f);
+                }
+            }
+
+            pageCount++;
+            if (result.Outcome == LayoutAttemptOutcome.AllDone)
+            {
+                break;
+            }
+            Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+            incoming = result.Continuation;
+            Assert.NotNull(incoming);
+        }
+
+        // Every item appears exactly once + we don't run away in
+        // the loop. If the margin-collapse boundary corrupted the
+        // page-remaining derivation, we'd see duplicate items OR
+        // dropped items OR an infinite loop.
+        Assert.True(pageCount < maxPages,
+            $"Margin-collapse-aware page-remaining: exceeded {maxPages} pages.");
+        Assert.Equal(4, allItemFragments.Count);
+    }
+
+    [Fact]
     public async Task Task16_cycle4b_paginated_flex_with_margin_bottom_still_round_trips()
     {
         // Per Phase 3 Task 16 cycle 4b post-PR-#83 review P2 #3 —

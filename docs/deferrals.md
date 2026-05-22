@@ -1244,16 +1244,16 @@ grepping the ID).
       HTML → cascade → BoxBuilder → BlockLayouter → FlexLayouter
       pipeline. The chain-walk pattern matches
       `MulticolLayouterProductionTests`' walker.
-    - **P2 #4 (PR-#79)**: derive `pageRemainingBlock` from actual
-      content block offset (= post margin-collapse) rather than
-      `effectiveTopGap` (= avoid double-counting collapsed margins).
-      Cycle 4b uses `fragmentainer.BlockSize - childBlockOffset`
-      directly at the recursive site + `fragmentainer.BlockSize
-      - fragmentainer.UsedBlockSize - topShift` at the outer site,
-      which are correct for the production test shape but
-      mathematically a margin-collapse boundary could still
-      undercount; defer for a P2 follow-on once a regression
-      surfaces.
+    - ✅ **P2 #4 (PR-#79) verified closed-by-implementation in
+      cycle 4 closeout**: the cycle-4b derivation already uses
+      `topShift` (= the post-margin-collapse delta) at the outer
+      site + `childBlockOffset` (= post-collapse absolute) at the
+      recursive site, NOT `effectiveTopGap` (= the
+      pre-subtraction value the deferral worried about).
+      `Task16_cycle4_closeout_margin_collapse_before_flex_still_round_trips`
+      pins the contract: a preceding sibling with margin-bottom + a
+      flex container with margin-top still rounds-trips through the
+      paginated path with all items emitting exactly once.
     - 🚧 **P2 #5 (PR-#79) contract shipped in cycle 4e** —
       `FlexContinuation.EmittedBlockExtent` field added + populated
       by FlexLayouter on PageComplete (= cumulative sum of
@@ -1291,13 +1291,21 @@ grepping the ID).
       content-block-size always derives from the wrapper's
       border-box (no auto-height/fragmentainer-remaining branch).
       4 direct tests in `FlexGeometryHelperTests` pin the math.
-    - **P2 from PR-#82 review #3**: parameterize the helper's
-      `IBreakResolver` + `LayoutAttemptStrategy`. The current
-      hardcoded fresh `BreakResolver` + `LastResort` preserves
-      pre-extraction behavior; cycle 4b leaves it alone because
-      production multi-page flex now works without parameterization.
-      Pick this up when a caller wants to share resolver state
-      or use a different optimizer.
+    - ✅ **P2 from PR-#82 review #3 closed via documentation**:
+      `DispatchFlexInner`'s hardcoded fresh `BreakResolver` +
+      `LastResort` strategy are the established nested-layouter
+      isolation pattern (= mirrors `TableLayouter`'s per-cell +
+      `MulticolLayouter`'s per-column resolver isolation). The
+      review's "Either parameterize OR document why" — the helper's
+      xmldoc explains both rationale + the trigger condition for
+      future parameterization (= "When… we discover the inner level
+      legitimately wants its own strategy / resolver, parameterize
+      this helper at that point"). Cycle 4b's production pagination
+      ships without any caller demanding parameterization; the
+      deferral closes as docs-only. If a future caller surfaces a
+      legitimate need (= e.g., a profile-driven optimizer wants
+      checkpoint sharing across nested layouters), reopen the
+      deferral + add the parameters at that point.
 
     **Cycle 4 execution order** — UPDATED post-cycle-4c. Most items
     shipped through cycles 4a–4c; the remaining active follow-ons
@@ -1323,12 +1331,12 @@ grepping the ID).
        through a chain that includes a flex container's parent flex
        container) is still deferred — current production tests
        don't exercise that nesting depth.
-    4. **Compute margin-collapse-aware `pageRemainingBlock`**
-       (P2 #4) — DEFERRED. Current derivation
-       (`fragmentainer.BlockSize - childBlockOffset`) is correct for
-       the production test shape; mathematically a margin-collapse
-       boundary could still undercount. Pick up when a regression
-       surfaces.
+    4. ✅ **Compute margin-collapse-aware `pageRemainingBlock`**
+       (P2 #4) — closed-by-implementation in cycle 4 closeout. The
+       cycle-4b derivation already uses post-collapse values
+       (`topShift` + `childBlockOffset`); regression test
+       `Task16_cycle4_closeout_margin_collapse_before_flex_still_round_trips`
+       pins the contract.
     5. 🚧 **Return emitted-fragment block extent from FlexLayouter**
        (P2 #5) — contract SHIPPED in cycle 4e (PR #86): new
        `FlexContinuation.EmittedBlockExtent` field populated on

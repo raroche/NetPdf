@@ -2968,9 +2968,16 @@ public sealed class FlexLayouterProductionTests
         // Per Phase 3 Task 16 cycle 2 — end-to-end production-pipeline
         // proof that the multi-page flex split works through the full
         // HTML → CSS → cascade → BoxBuilder → BlockLayouter →
-        // FlexLayouter chain. Skipped pending cycle 3 (= page-relative
-        // sizing through nested BlockLayouter calls); the dispatch
-        // integration code + unit-level tests verify the contract.
+        // FlexLayouter chain. Skipped pending Task 16 cycle 4+ (=
+        // the architectural rework documented in
+        // `docs/deferrals.md` under flex-layouter-features:
+        // pre-break-check paginatable-flex dispatch, recursive-path
+        // chain-walk for inbound FlexContinuation, margin-collapse-
+        // aware page-remaining, emitted-fragment block extent, +
+        // flipping `allowPagination: true` at both dispatch sites).
+        // The cycle-3 dispatch scaffolding handles propagation but
+        // is dormant; unit-level resume contract is covered by the
+        // `Task16_*` tests via direct FlexLayouter construction.
         const string html = """
             <!DOCTYPE html><html><head><style>
                 .flex {

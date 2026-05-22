@@ -911,9 +911,13 @@ grepping the ID).
   means "fill containing block" per CSS Sizing §3.4, NOT shrink-to-fit
   (inline-flex shrink-to-fit is L7+ scope; L6 shipped `flex-wrap:
   wrap` without expanding the inline-flex sizing scope). The flex
-  container is
-  atomic to outer pagination (the entire container's items emit on
-  the page the wrapper landed on; no `FlexContinuation` resume).
+  container production dispatch remains atomic (the entire
+  container's items emit on the page the wrapper landed on)
+  because both BlockLayouter dispatch sites pass
+  `allowPagination: false`; the FlexLayouter resume contract +
+  `FlexContinuation` scaffolding exist as of Task 16 cycles 1-3
+  but remain DORMANT until cycle 4 introduces the
+  paginatable-flex pre-break-check dispatch.
   **Per Phase 3 Task 15 L6** — `flex-wrap: wrap` ships in full per
   CSS Flexbox L1 §6.3 + §9.3 + §9.4: greedy line packing along the
   main axis (the first item on each line always lands even if it
@@ -1186,10 +1190,13 @@ grepping the ID).
     (= same prerequisite as `min-content` / `max-content` /
     `fit-content` flex-basis keywords + the §9.7 step-4 min-clamp).
     Pinned by `L8_hardening_known_gap_flex_basis_content_approximates_to_auto`.
-  - Anonymous flex-item wrapping for inline-level / text children
-    (cycle 1 skips non-block-level children silently; whitespace
-    `TextRun`s between flex item elements are dropped without a
-    fragment)
+  - ~~Anonymous flex-item wrapping for inline-level / text children~~
+    ✅ shipped in Phase 3 Task 15 L15 (PR #75). The L1-L14 cycle-1
+    skip was replaced by `BoxBuilder.FixupFlexAnonymousItems`
+    which blockifies inline element children + wraps TextRun
+    runs into anonymous block flex items per CSS Flexbox L1 §4.
+    See the L15 entry in the "Removal condition" trigger list
+    below for the historical fix.
   - **Multi-page flex container splitting** (Task 16, in progress;
     cycles 1-3 shipped the FlexLayouter resume contract + scaffolded
     BlockLayouter dispatch propagation; **cycle 4 remains** = the
@@ -1221,9 +1228,37 @@ grepping the ID).
       drift between them.
     - **P3 #8 (PR-#79)**: shared `FlexLinePacker` between
       `BlockLayouter` pre-measure + `FlexLayouter` packing.
-    `FlexContinuation` exists in `src/NetPdf.Paginate/LayoutContinuation.cs`;
-    the data flow is wired but `allowPagination: false` at both
-    dispatch sites keeps the propagation dormant pending cycle 4.)
+
+    **Cycle 4 execution order** (per PR-#81 review P3 #6 — the
+    suggested sequence that minimizes drift + builds the
+    foundation incrementally):
+    1. **Extract `DispatchFlexInner` + shared `FlexLinePacker`**
+       first (P3 #7 + P3 #8). Pure refactor; both direct +
+       recursive paths converge on one helper. Eliminates drift
+       risk for the subsequent steps.
+    2. **Add pre-break-check paginatable-flex dispatch** (P1 #1).
+       Intercept row+wrap+pagination-eligible flex children
+       BEFORE the generic break check fires forced-overflow.
+       Route through `DispatchFlexInner` with `allowPagination:
+       true` + page-remaining-block budget.
+    3. **Wire inbound recursive FlexContinuation chain-walk**
+       (P1 #2). The chain extract in
+       `EmitBlockSubtreeRecursive`'s nested flex branch now reads
+       the incoming `BlockContinuation.LayouterState` chain +
+       forwards the inner `FlexContinuation` to the helper.
+    4. **Compute margin-collapse-aware `pageRemainingBlock`**
+       (P2 #4). Derive from actual content block offset
+       post-collapse rather than `effectiveTopGap`.
+    5. **Return emitted-fragment block extent from FlexLayouter**
+       (P2 #5). Cursor advancement on PageComplete uses the
+       fragment's extent, not the wrapper's natural extent.
+    6. **Unskip the production-pipeline test** (P1 #3) — at this
+       point the full chain works end-to-end through real HTML.
+
+    `FlexContinuation` exists in
+    `src/NetPdf.Paginate/LayoutContinuation.cs`; the data flow is
+    wired but `allowPagination: false` at both dispatch sites
+    keeps the propagation dormant pending cycle 4.)
 - **Owner files** —
   - `src/NetPdf.Layout/Layouters/FlexLayouter.cs` — the layouter
     itself.
@@ -1234,10 +1269,12 @@ grepping the ID).
     `/ inline-flex` → `BoxKind.FlexContainer` /
     `BoxKind.InlineFlexContainer`.
   - `src/NetPdf.Css/properties.json` — the `align-content`,
-    `align-items`, `flex-direction`, `flex-wrap`, `justify-content`
-    keyword properties (cascade-parsed + honored at the layouter
-    for the L1-L7 subset; `wrap-reverse` cross-axis reversal still
-    deferred to L8+).
+    `align-items`, `align-self`, `flex-direction`, `flex-wrap`,
+    `flex-grow`, `flex-shrink`, `flex-basis`, `justify-content`,
+    `order`, `min-width`, `max-width`, `min-height`, `max-height`
+    properties (all cascade-parsed + honored at the layouter
+    through L17; `wrap-reverse` cross-axis reversal shipped in L11
+    with the proper SWAP formula).
 - **Trigger** — L2 picked up `justify-content`; L3 picked up
   `align-items` (base values + stretch); L4 picked up
   `flex-direction: column` + the F#1 hardening for column auto-
@@ -1270,11 +1307,22 @@ grepping the ID).
   emission loop into a `record struct CrossAxisFlow` with one
   method (`PhysicalLineOffset`). Closes the L11 post-PR-#71 F#9
   TODO seam; zero behavior change; 7 new direct unit tests pin
-  the swap contract. Sub-cycle L15+ picks up proper
-  `<baseline-position>` alignment for both `align-items` and
-  `align-content`, `min-width: auto` intrinsic resolution per CSS
-  Sizing L3 §5.5, anonymous-flex-item wrapping for inline/text
-  children, and the `FlexContinuation`-based multi-page split.
+  the swap contract. L15 picked up anonymous-flex-item wrapping
+  per CSS Flexbox §4 (`BoxBuilder.FixupFlexAnonymousItems`);
+  L16 picked up the `flex-flow` shorthand parser via the new
+  `FlexFlowShorthandExpander`; L17 picked up proper cascade
+  source-order tracking for shorthand-vs-explicit-longhand
+  conflicts (§5 importance + §7.4 ordering). Task 16 cycles
+  1-3 shipped the FlexLayouter resume contract +
+  `FlexContinuation` data flow + BlockLayouter dispatch
+  scaffolding (DORMANT — `allowPagination: false` at both
+  dispatch sites pending cycle 4). The remaining L18+ /
+  Task 16 cycle 4+ work picks up proper `<baseline-position>`
+  alignment for both `align-items` and `align-content`,
+  `min-width: auto` intrinsic resolution per CSS Sizing L3 §5.5,
+  `flex-basis: content` proper intrinsic-sizing integration,
+  and Task 16 cycle 4's pre-break-check paginatable-flex
+  dispatch (= the actual production multi-page flex split).
 - **Added** — Phase 3 Task 15 cycle 1 (Hello World).
 - **Removal condition** — Sub-cycle L11+ ships the remaining
   deferred features (wrap-reverse / proper baseline alignment /

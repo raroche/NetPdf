@@ -1223,19 +1223,40 @@ grepping the ID).
     - **P2 #5 (PR-#79)**: FlexLayouter returns emitted-fragment
       block extent so cursor advancement on PageComplete reflects
       only the current fragment's contribution.
-    - **P3 #7 (PR-#79 + PR-#80)**: extract `DispatchFlexInner`
-      helper used by BOTH direct + recursive paths to eliminate
-      drift between them.
+    - ✅ **P3 #7 (PR-#79 + PR-#80) shipped in cycle 4a (PR #82)**:
+      `DispatchFlexInner` helper now used by BOTH direct +
+      recursive paths to eliminate drift between them. 135 + 107
+      LOC consolidated; the helper owns FlexLayouter +
+      BreakResolver lifetime via `using var`.
     - **P3 #8 (PR-#79)**: shared `FlexLinePacker` between
       `BlockLayouter` pre-measure + `FlexLayouter` packing.
+    - **P2 from PR-#82 review #2**: extend `DispatchFlexInner`
+      (or add a `FlexGeometryHelper`) to also encapsulate
+      border/padding reads + content-box geometry math.
+      Currently each call site still duplicates that
+      ~10-line geometry derivation. Cycle 4b's page-relative
+      sizing is geometry-sensitive, so consolidating before
+      that change reduces drift risk.
+    - **P2 from PR-#82 review #3**: parameterize the helper's
+      `IBreakResolver` + `LayoutAttemptStrategy`. The current
+      hardcoded fresh `BreakResolver` + `LastResort` preserves
+      pre-extraction behavior, but once production flex
+      pagination is enabled the caller may want to pass its
+      own resolver policy / checkpoint ownership / optimizer
+      choice. Either parameterize, or document why flex inner
+      dispatch must always use a fresh greedy resolver +
+      `LastResort`.
 
     **Cycle 4 execution order** (per PR-#81 review P3 #6 — the
     suggested sequence that minimizes drift + builds the
     foundation incrementally):
-    1. **Extract `DispatchFlexInner` + shared `FlexLinePacker`**
-       first (P3 #7 + P3 #8). Pure refactor; both direct +
-       recursive paths converge on one helper. Eliminates drift
-       risk for the subsequent steps.
+    1. ✅ **Extract `DispatchFlexInner`** — shipped in cycle 4a
+       (PR #82). Eliminates drift between direct + recursive
+       dispatch paths. Geometry-helper extension (PR-#82 review
+       #2) + resolver/strategy parameterization (PR-#82 review
+       #3) tracked as follow-on tightening above; shared
+       `FlexLinePacker` (P3 #8) remains for cycle 4a-bis or
+       can roll into the cycle 4b work below.
     2. **Add pre-break-check paginatable-flex dispatch** (P1 #1).
        Intercept row+wrap+pagination-eligible flex children
        BEFORE the generic break check fires forced-overflow.
@@ -1258,7 +1279,7 @@ grepping the ID).
     `FlexContinuation` exists in
     `src/NetPdf.Paginate/LayoutContinuation.cs`; the data flow is
     wired but `allowPagination: false` at both dispatch sites
-    keeps the propagation dormant pending cycle 4.)
+    keeps the propagation dormant pending cycle 4b.)
 - **Owner files** —
   - `src/NetPdf.Layout/Layouters/FlexLayouter.cs` — the layouter
     itself.

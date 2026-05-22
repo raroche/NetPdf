@@ -2189,15 +2189,27 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // content area. Skips the EmitBlockSubtreeRecursive call
             // below (FlexLayouter owns the inner emission).
             //
-            // Cycle 1 keeps geometry simple: the flex container's
-            // content-box is derived directly from the wrapper's
-            // border-box minus the wrapper's own borders + paddings
-            // — no fragmentainer-remaining-space derivation (that's
-            // multicol's auto-height column-fill semantic; flex's
-            // cross-axis sizing is sub-cycle 2+ scope). Cycle 1's
-            // FlexLayouter is atomic to outer pagination so the
-            // returned LayoutAttemptResult is always AllDone — no
-            // continuation packaging needed.
+            // Geometry: the flex container's content-box is derived
+            // directly from the wrapper's border-box minus the
+            // wrapper's own borders + paddings — no fragmentainer-
+            // remaining-space derivation (= cycle 4+ scope to make
+            // that integrate with multi-page split).
+            //
+            // Task 16 cycle 2/3 status (post-PR-#80 review): this
+            // dispatch site has SCAFFOLDING for capturing the
+            // FlexLayouter's result + propagating
+            // PageComplete(BlockContinuation(LayouterState=FlexContinuation))
+            // up the recursion chain. The propagation code below is
+            // currently DORMANT because `allowPagination: false`
+            // makes FlexLayouter always return AllDone. The cycle-4
+            // work (= introducing a paginatable-flex pre-break-check
+            // dispatch that bypasses forced-overflow + flipping
+            // `allowPagination: true` here) will activate the
+            // scaffolding. Direct-construction unit tests verify the
+            // FlexLayouter side of the contract; the
+            // BlockLayouter-side propagation is unit-testable via
+            // the same construction path (= the data flow IS wired,
+            // just not triggered by production HTML yet).
             if (IsFlexContainer(child))
             {
                 // Derive the flex container's content-box geometry
@@ -3298,17 +3310,23 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 continue;
             }
 
-            // Per Phase 3 Task 15 cycle 1 (Hello World) — nested flex
-            // container dispatch. A nested block-flow descendant with
-            // BoxKind.FlexContainer / InlineFlexContainer (= display:
-            // flex / inline-flex) dispatches to FlexLayouter for per-
-            // item emission INSIDE its border box. Skip the
+            // Per Phase 3 Task 15 cycle 1 (Hello World) → Task 16
+            // cycle 3 — nested flex container dispatch. A nested
+            // block-flow descendant with BoxKind.FlexContainer /
+            // InlineFlexContainer (= display: flex / inline-flex)
+            // dispatches to FlexLayouter for per-item emission
+            // INSIDE its border box. Skip the
             // EmitBlockSubtreeRecursive call below for this child
             // (the flex layouter owns the inner content emission).
-            // Mirrors the outer-loop dispatch above for the depth-0
-            // case. Cycle 1 is atomic to outer pagination (no
-            // FlexContinuation propagation up the recursion chain
-            // yet); sub-cycle 2+ will gain that contract.
+            //
+            // Cycle 3 post-PR-#79 P1 #2: the recursive path now
+            // mirrors the direct dispatch at line ~2182 — captures
+            // the LayoutAttemptResult + propagates PageComplete +
+            // FlexContinuation up the recursion chain (= matches the
+            // multicol recursive propagation at line ~3270). The
+            // `allowPagination` gate stays OFF at this site (= same
+            // as the direct dispatch) until cycle 4 introduces the
+            // pre-break-check routing per P1 #1.
             if (IsFlexContainer(child))
             {
                 var nestedFlexBorderInlineStart =
@@ -3341,31 +3359,72 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 var nestedFlexContentBlockOffset =
                     childBlockOffset + nestedFlexBorderBlockStart + nestedFlexPaddingBlockStart;
 
+                // Per Task 16 cycle 3 P1 #2 — forward incoming
+                // FlexContinuation when this nested child is the
+                // resume-at target. The chain-protocol is:
+                // BlockContinuation(LayouterState=BlockContinuation(...))
+                // up to depth-1; the LayouterState payload at the
+                // leaf is the FlexContinuation. Cycle 4 will
+                // formalize the multi-level walk; cycle 3 ships the
+                // single-level case mirroring multicol at line ~3270.
+                FlexContinuation? nestedFlexContinuationForChild = null;
+                // Note: the recursive path doesn't have direct access
+                // to the BlockContinuation that initiated this
+                // recursion; the chain unwrap happens at the outer
+                // BlockLayouter.AttemptLayout entry guard. Cycle 4
+                // will hoist the unwrap state into a field readable
+                // here.
+
                 using var nestedFlexLayouter = new FlexLayouter(
                     rootBox: child,
                     sink: _sink,
-                    incomingContinuation: null,
+                    incomingContinuation: nestedFlexContinuationForChild,
                     diagnostics: _diagnostics,
                     shaperResolver: _shaperResolver);
                 nestedFlexLayouter.ConfigureEmission(
                     contentInlineOffset: nestedFlexContentInlineOffset,
                     contentBlockOffset: nestedFlexContentBlockOffset,
                     contentInlineSize: nestedFlexContentInlineSize,
-                    contentBlockSize: nestedFlexContentBlockSize);
+                    contentBlockSize: nestedFlexContentBlockSize,
+                    // Per cycle 3 — pagination remains OFF at this
+                    // site (matches the direct dispatch). Cycle 4
+                    // will flip this on when the pre-break-check
+                    // routing is in place to prevent forced-
+                    // overflow from preempting the dispatch.
+                    allowPagination: false);
 
                 using var nestedFlexResolver = new BreakResolver();
+                LayoutAttemptResult? nestedFlexResult = null;
                 if (_capturedFragmentainer is not null)
                 {
                     var nestedFlexLayoutCtx = new LayoutContext(_capturedFragmentainer)
                     {
                         Diagnostics = _diagnostics,
                     };
-                    _ = nestedFlexLayouter.AttemptLayout(
+                    nestedFlexResult = nestedFlexLayouter.AttemptLayout(
                         _capturedFragmentainer,
                         ref nestedFlexLayoutCtx,
                         nestedFlexResolver,
                         LayoutAttemptStrategy.LastResort,
                         cancellationToken);
+                }
+
+                // Per Task 16 cycle 3 P1 #2 — propagate
+                // PageComplete(FlexContinuation) up the recursion
+                // chain as a nested BlockContinuation. Mirrors the
+                // multicol nested-propagation pattern at line ~3284.
+                // The outer BlockLayouter sees the returned
+                // BlockContinuation + dispatches it back to the
+                // appropriate level. Cycle 4 will flip allowPagination
+                // on which makes this branch reachable in production
+                // shapes.
+                if (nestedFlexResult is { Outcome: LayoutAttemptOutcome.PageComplete }
+                    && nestedFlexResult.Value.Continuation is FlexContinuation nestedFlexCont)
+                {
+                    return new BlockContinuation(
+                        ResumeAtChild: childIdx,
+                        ConsumedBlockSize: 0,
+                        LayouterState: nestedFlexCont);
                 }
 
                 // Advance the cursor + bookkeeping; skip the

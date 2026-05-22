@@ -2951,17 +2951,18 @@ public sealed class FlexLayouterProductionTests
         Assert.Equal(FlexWrapValue.NoWrap, flex!.Style.ReadFlexWrap());
     }
 
-    [Fact(Skip = "Task 16 cycle 3+ scope: the BlockLayouter pre-grow logic for "
-        + "row+wrap flex containers sets borderBoxBlockSize to the natural extent (= sum "
-        + "of line cross sizes); the cycle-2 page-remaining-block clamp on flexContentBlockSize "
-        + "covers most but not all paths through the dispatch — production HTML with default "
-        + "<html>/<body> wrappers + nested block layouters appears to bypass the page-remaining "
-        + "check in some recursion shapes. Cycle 3 will hoist the page-remaining derivation up "
-        + "the BlockLayouter recursion chain so every nested AttemptLayout sees the page-relative "
-        + "limit. Unit-level dispatch integration is covered by the Task16_* tests in "
-        + "FlexLayouterTests + the BlockLayouter dispatch reads FlexContinuation correctly + "
-        + "passes allowPagination: true; the data flow is wired, just the page-relative sizing "
-        + "needs the recursion-chain hoist.")]
+    [Fact(Skip = "Task 16 cycle 4+ scope (post-PR-#80 honest revision): both BlockLayouter "
+        + "dispatch sites (direct + recursive) pass allowPagination: false so FlexLayouter "
+        + "never returns PageComplete from production HTML. The dispatch-site scaffolding "
+        + "(capture LayoutAttemptResult + propagate PageComplete(BlockContinuation(LayouterState"
+        + "=FlexContinuation))) is wired but currently DORMANT. Cycle 4 will: (1) introduce a "
+        + "paginatable-flex specialized dispatch BEFORE the generic break check fires forced-"
+        + "overflow (P1 #1 from PR-#79); (2) plumb the incoming-FlexContinuation chain unwrap "
+        + "into EmitBlockSubtreeRecursive's nested flex branch (P1 #2 from PR-#80); (3) flip "
+        + "allowPagination: true at both dispatch sites; (4) add active production-pipeline "
+        + "tests through the full HTML->cascade->BoxBuilder->BlockLayouter->FlexLayouter chain. "
+        + "Unit-level resume contract is covered by the Task16_* tests in FlexLayouterTests "
+        + "via direct FlexLayouter construction with allowPagination: true.")]
     public async Task Task16_cycle2_production_html_flex_container_splits_across_two_pages()
     {
         // Per Phase 3 Task 16 cycle 2 — end-to-end production-pipeline

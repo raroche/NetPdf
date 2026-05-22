@@ -9144,6 +9144,52 @@ public sealed class FlexLayouterTests
         Assert.Equal(4, sink.Fragments.Count(f => f.Box.Kind == BoxKind.BlockContainer));
     }
 
+    [Fact]
+    public void Task16_block_layouter_rejects_misrouted_flex_continuation()
+    {
+        // Per PR-#79 P2 #6 closure — `BlockLayouter.AttemptLayout`
+        // entry guard validates that a `BlockContinuation` carrying
+        // a `FlexContinuation` in `LayouterState` targets a
+        // `FlexContainer` / `InlineFlexContainer` / block-flow
+        // container that could contain one. Misrouted (= pointing at
+        // a leaf non-flex non-block-flow kind) surfaces loudly with
+        // `InvalidOperationException` rather than silently ignoring
+        // the resume state.
+        //
+        // Fixture: a root containing a `TableCell` child + a
+        // BlockContinuation pointing at the TableCell with a
+        // FlexContinuation in LayouterState (= the misrouted case).
+        var root = Box.CreateRoot(MakeStyle());
+        var tableCellStyle = MakeStyle();
+        var tableCell = Box.ForElement(BoxKind.TableCell, tableCellStyle, MakeElement());
+        root.AppendChild(tableCell);
+
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+        var misrouted = new BlockContinuation(
+            ResumeAtChild: 0,
+            ConsumedBlockSize: 0.0,
+            LayouterState: new FlexContinuation(LineIndex: 0));
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: misrouted,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 200, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        InvalidOperationException? thrown = null;
+        try
+        {
+            layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+                LayoutAttemptStrategy.LastResort);
+        }
+        catch (InvalidOperationException ex) { thrown = ex; }
+        Assert.NotNull(thrown);
+        Assert.Contains("FlexContinuation", thrown!.Message);
+    }
+
     // ====================================================================
     //  Helpers
     // ====================================================================

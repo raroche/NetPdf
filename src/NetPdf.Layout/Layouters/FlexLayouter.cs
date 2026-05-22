@@ -1246,29 +1246,22 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     /// at FlexLine.FirstItemIndex of the first block-level child; later
     /// lines reference their first block-level child's index in the
     /// original Children list.</returns>
-    // Per Phase 3 Task 15 L6 post-PR-#66 review F#5 TODO: this
-    // line-packing algorithm duplicates the line-packing inside
-    // <see cref="BlockLayouter"/>'s row+wrap pre-measure branch (see
-    // <c>PreMeasureFlexMultiLineCrossExtent</c> + its row-direction
-    // helper). Both walk the items + apply the greedy packing rule
-    // ("first item on a line always lands; later items wrap when
-    // adding would exceed containerMainSize") against the same
-    // container main-axis budget. L7+ scope: extract a shared
-    // <c>FlexLinePacker</c> consumed by both sites so they can't
-    // drift. Not done now (= medium-scope refactor; risk of
-    // regression).
+    // Per Phase 3 Task 16 cycle 4c (P3 #8 from PR-#79) — the
+    // line-packing algorithm has been extracted to the shared
+    // <see cref="FlexLinePacker.Pack"/> helper. Both this layouter +
+    // <c>BlockLayouter.PreMeasureFlexMultiLineCrossExtent</c> now
+    // delegate to that one implementation; line-boundary parity is
+    // guaranteed by construction (no more duplicate algorithm to
+    // keep in lockstep through L8 F#1, L10 sort-by-order, etc.).
     //
     // Per Phase 3 Task 15 L8 post-PR-#68 hardening F#1 — line packing
-    // now uses each item's HYPOTHETICAL main-size (driven by
-    // flex-basis) per CSS Flexbox §9.3, NOT the raw declared main-size.
-    // Both PackLines AND BlockLayouter's pre-measure share the same
-    // <c>ResolveFlexItemHypotheticalMainSize</c> extension so the two
-    // passes always pack into the same lines. Pre-fix an item with
-    // <c>width: 300px; flex-basis: 0; flex-grow: 1</c> would land alone
-    // on its own line (because PackLines saw width=300 and a 300px
-    // container can only fit one); post-fix the item contributes 0 to
-    // the line packing (= flex-basis 0) so three such items fit on a
-    // single line and grow to 100px each per §9.7.
+    // uses each item's HYPOTHETICAL main-size (driven by flex-basis)
+    // per CSS Flexbox §9.3, NOT the raw declared main-size. The
+    // shared packer uses
+    // <see cref="ComputedStyleLayoutExtensions.ResolveFlexItemHypotheticalMainSize"/>
+    // so an item with <c>width: 300; flex-basis: 0; flex-grow: 1</c>
+    // contributes 0 to the line packing + three such items fit on a
+    // single line in a 300-px container.
     private static List<FlexLine> PackLines(
         Box flexContainer,
         List<int> sortedChildIndices,
@@ -1276,105 +1269,9 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         double containerMainSize,
         bool isWrapping,
         CancellationToken cancellationToken)
-    {
-        var lines = new List<FlexLine>();
-        var (mainProp, crossProp) = GetAxisProperties(direction);
-
-        // Per Phase 3 Task 15 L10 — <paramref name="sortedChildIndices"/>
-        // is the block-level children in EFFECTIVE FLEX ORDER per
-        // CSS Flexbox L1 §5.4 (sorted by (order, DOM-index)). The
-        // caller produces this via Box.GetFlexChildrenInOrderSequence;
-        // non-block-level children are already filtered out so this
-        // method drops the IsBlockLevel skip the L1-L9 code held
-        // inline. FlexLine.FirstItemIndex is now a POSITION in this
-        // sorted sequence (NOT a DOM-children index) — the emission
-        // loop dereferences via sortedChildIndices[FirstItemIndex + i].
-        if (sortedChildIndices.Count == 0)
-        {
-            return lines;
-        }
-
-        if (!isWrapping)
-        {
-            // Single-line algorithm — L1-L5 preserved verbatim. Sum all
-            // items' hypothetical main-axis sizes + take the max cross-
-            // axis size. (L8 post-PR-#68 F#1: uses flex-basis-driven
-            // hypothetical main-size; pre-L8 used the raw declared
-            // width. L10: walks the sorted sequence so visual order
-            // honors `order`.)
-            var totalMain = 0.0;
-            var maxCross = 0.0;
-            foreach (var idx in sortedChildIndices)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-                var item = flexContainer.Children[idx];
-                totalMain += item.ResolveFlexItemHypotheticalMainSize(mainProp, containerMainSize);
-                var c = item.Style.ReadLengthPxOrZero(crossProp);
-                if (c > maxCross) maxCross = c;
-            }
-            lines.Add(new FlexLine(
-                FirstItemIndex: 0,  // sorted-sequence position
-                ItemCount: sortedChildIndices.Count,
-                LineMainSize: totalMain,
-                LineCrossSize: maxCross));
-            return lines;
-        }
-
-        // Wrap — greedy line packing. Per CSS Flexbox L1 §9.3 the spec
-        // says line packing uses each item's "flex item's hypothetical
-        // main size" — derived from flex-basis per §9.2. The L8
-        // post-PR-#68 F#1 hardening switches the contribution from
-        // ReadLengthPxOrZero(mainProp) to
-        // ResolveFlexItemHypotheticalMainSize. The L10 refactor walks
-        // the sorted sequence so wrap boundaries respect both
-        // flex-basis AND `order`.
-        var currentFirstSortedPos = 0;
-        var currentCount = 0;
-        var currentMain = 0.0;
-        var currentCross = 0.0;
-
-        for (var sortedPos = 0; sortedPos < sortedChildIndices.Count; sortedPos++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var domIdx = sortedChildIndices[sortedPos];
-            var item = flexContainer.Children[domIdx];
-            var itemMain = item.ResolveFlexItemHypotheticalMainSize(mainProp, containerMainSize);
-            var itemCross = item.Style.ReadLengthPxOrZero(crossProp);
-
-            // Per CSS Flexbox L1 §9.3 — "if the very first uncollected
-            // item wouldn't fit, collect just it into the line". The
-            // first item on a line always lands (it overflows alone)
-            // and the "would exceed" check applies only to subsequent
-            // items.
-            if (currentCount > 0 && currentMain + itemMain > containerMainSize)
-            {
-                lines.Add(new FlexLine(
-                    FirstItemIndex: currentFirstSortedPos,
-                    ItemCount: currentCount,
-                    LineMainSize: currentMain,
-                    LineCrossSize: currentCross));
-                currentFirstSortedPos = sortedPos;
-                currentCount = 0;
-                currentMain = 0;
-                currentCross = 0;
-            }
-
-            currentMain += itemMain;
-            if (itemCross > currentCross) currentCross = itemCross;
-            currentCount++;
-        }
-
-        if (currentCount > 0)
-        {
-            lines.Add(new FlexLine(
-                FirstItemIndex: currentFirstSortedPos,
-                ItemCount: currentCount,
-                LineMainSize: currentMain,
-                LineCrossSize: currentCross));
-        }
-
-        return lines;
-    }
+        => FlexLinePacker.Pack(
+            flexContainer, sortedChildIndices, direction,
+            containerMainSize, isWrapping, cancellationToken);
 
     /// <summary>Per Phase 3 Task 15 L6 — resolve the container's cross-
     /// axis extent for the L1-L5 single-line case + the L6 wrap case.
@@ -1745,29 +1642,13 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         double containerMainSize) =>
         item.ResolveFlexItemHypotheticalMainSize(mainSizeProperty, containerMainSize);
 
-    /// <summary>Per Phase 3 Task 15 L6 — a flex line produced by
-    /// <see cref="PackLines"/>. The line carries an index range into
-    /// the SORTED-SEQUENCE list (per Phase 3 Task 15 L10) plus the
-    /// line's pre-computed main + cross extents (so per-line
-    /// justify-content + align-items math doesn't have to re-walk
-    /// the items).
-    ///
-    /// <para><b>Index range semantics</b> (per Phase 3 Task 15 L10
-    /// — UPDATED from the original L6 contract).
-    /// <see cref="FirstItemIndex"/> is a POSITION in
-    /// <c>_sortedFlexChildIndices</c>, NOT a DOM-children index.
-    /// <see cref="ItemCount"/> is the count of items on the line.
-    /// The emission loop walks
-    /// <c>sortedChildIndices[FirstItemIndex .. FirstItemIndex +
-    /// ItemCount)</c> and dereferences each position to a DOM-
-    /// children index. The sorted sequence is pre-filtered to block-
-    /// level children only, so the emission loop no longer carries
-    /// the per-item IsBlockLevel skip the L1-L9 code held inline.</para></summary>
-    private readonly record struct FlexLine(
-        int FirstItemIndex,
-        int ItemCount,
-        double LineMainSize,
-        double LineCrossSize);
+    // Per Phase 3 Task 16 cycle 4c (P3 #8) — <c>FlexLine</c> promoted
+    // to an internal type in <see cref="FlexLinePacker"/> + the
+    // packing algorithm moved out so BlockLayouter's pre-measure
+    // shares the same packer. The previously-private nested struct
+    // is replaced by <see cref="FlexLine"/> at the namespace level;
+    // FlexLayouter consumes it via the shared
+    // <see cref="FlexLinePacker.Pack"/> entry point.
 
     /// <summary>Per Phase 3 Task 15 L2 — compute the start-offset +
     /// between-spacing for the main-axis cursor per CSS Box Alignment
@@ -2271,29 +2152,17 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         return slot.Tag is ComputedSlotTag.Unset or ComputedSlotTag.Keyword;
     }
 
-    /// <summary>Per Phase 3 Task 15 L4 — return the property IDs to
-    /// read for an item's main-axis + cross-axis sizes given the
-    /// resolved <c>flex-direction</c>.
-    /// <list type="bullet">
-    ///   <item><c>row</c> (L1-L3 default): main = inline (<c>width</c>);
-    ///   cross = block (<c>height</c>).</item>
-    ///   <item><c>column</c> (L4 new): main = block (<c>height</c>);
-    ///   cross = inline (<c>width</c>).</item>
-    /// </list>
-    /// The reversed variants (<c>row-reverse</c> / <c>column-reverse</c>)
-    /// share the same axis assignment as their non-reversed counterparts
-    /// per CSS Flexbox L1 §5.1 — reversal only swaps main-start and
-    /// main-end edges, not the row/column axis itself. The L5
-    /// reversal logic flips the main-axis offset at the emission site
-    /// (see <c>mainOffsetForEmission</c> in <see cref="AttemptLayout"/>);
-    /// the property reads here stay direction-agnostic.</summary>
+    /// <summary>Per Phase 3 Task 15 L4 → cycle 4c post-PR-#84 review
+    /// P3 #5 — return the property IDs to read for an item's
+    /// main-axis + cross-axis sizes given the resolved
+    /// <c>flex-direction</c>. Delegates to the shared
+    /// <see cref="FlexDirectionValueExtensions.GetAxisProperties"/>
+    /// extension so the layouter + <see cref="FlexLinePacker"/> share
+    /// ONE axis-mapping source of truth (= no drift on writing-mode
+    /// or axis updates).</summary>
     private static (PropertyId mainSize, PropertyId crossSize) GetAxisProperties(
         FlexDirectionValue direction)
-    {
-        return direction.IsFlexColumnDirection()
-            ? (PropertyId.Height, PropertyId.Width)
-            : (PropertyId.Width, PropertyId.Height);
-    }
+        => direction.GetAxisProperties();
 
     /// <summary>Per Phase 3 Task 15 L12 — direction-resolved min/max
     /// main-size property ids for the §9.7 step-4 clamping iteration.

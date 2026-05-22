@@ -1526,16 +1526,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     // to the budget separately from the block-axis
                     // contribution we add to flexBorderPaddingBlock.
                     //
-                    // Per Phase 3 Task 15 L6 post-PR-#66 review F#5
-                    // TODO: this multi-line line-packing routine
-                    // duplicates the algorithm in
-                    // <see cref="FlexLayouter"/>'s <c>PackLines</c> —
-                    // both walk the items + compute line breaks via
-                    // greedy packing against the same
-                    // containerMainSize budget. L7+ scope: extract a
-                    // shared <c>FlexLinePacker</c> helper consumed by
-                    // both sites. Not done now (= medium-scope
-                    // refactor; risk of regression).
+                    // Per Phase 3 Task 16 cycle 4c (P3 #8 from PR-#79)
+                    // — the line-packing algorithm has been extracted
+                    // to <see cref="FlexLinePacker"/>.
+                    // <see cref="PreMeasureFlexMultiLineCrossExtent"/>
+                    // below delegates to
+                    // <see cref="FlexLinePacker.SumCrossExtent"/> (=
+                    // streaming variant per PR-#84 P2 #1) +
+                    // <see cref="FlexLayouter.PackLines"/> calls
+                    // <see cref="FlexLinePacker.Pack"/>. The pre-L7
+                    // duplication is gone.
                     var inlineBorderStart =
                         child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
                     var inlineBorderEnd =
@@ -3345,13 +3345,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     // Row + wrap — same line-budget derivation as the
                     // outer dispatch site.
                     //
-                    // Per Phase 3 Task 15 L6 post-PR-#66 review F#5
-                    // TODO: see the outer dispatch site's matching TODO
-                    // — this multi-line line-packing routine duplicates
-                    // <see cref="FlexLayouter.PackLines"/>; L7+ scope
-                    // is to extract a shared <c>FlexLinePacker</c>
-                    // helper consumed by both sites. Not done now (=
-                    // medium-scope refactor; risk of regression).
+                    // Per Phase 3 Task 16 cycle 4c (P3 #8 from
+                    // PR-#79) — the line-packing algorithm has been
+                    // extracted to <see cref="FlexLinePacker"/>.
+                    // <see cref="PreMeasureFlexMultiLineCrossExtent"/>
+                    // (called immediately below) delegates to
+                    // <see cref="FlexLinePacker.SumCrossExtent"/> (=
+                    // streaming variant per PR-#84 P2 #1) + shares
+                    // line boundaries with
+                    // <see cref="FlexLayouter.PackLines"/> by
+                    // construction.
                     var inlineBorderStart =
                         child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
                     var inlineBorderEnd =
@@ -5960,27 +5963,21 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// auto-block-size column-wrap derivation matures (e.g., once a
     /// two-pass measure pipeline lands).</para>
     ///
-    /// <para><b>Mirrors</b> <see cref="PreMeasureFlexCrossExtent"/>'s
-    /// shape (same call-site discipline + per-item cancellation) +
-    /// uses the same greedy algorithm as <see cref="FlexLayouter"/>'s
-    /// <c>PackLines</c>. The duplication is intentional for L6: the
-    /// pre-measure runs before the FlexLayouter is constructed, so it
-    /// can't reuse the layouter's packed-line list; consolidating to a
-    /// shared helper would require lifting <c>FlexLine</c> out of
-    /// FlexLayouter, which is L7+ scope.</para>
+    /// <para><b>Phase 3 Task 16 cycle 4c (P3 #8 from PR-#79):</b> the
+    /// duplicate line-packing implementation that used to live here
+    /// has been consolidated into the shared
+    /// <see cref="FlexLinePacker.Pack"/> helper. The pre-measure
+    /// now delegates: it calls Pack to get the FlexLine list + sums
+    /// <see cref="FlexLine.LineCrossSize"/>. Line-boundary parity
+    /// with <see cref="FlexLayouter"/>'s emission packer is
+    /// guaranteed by construction — both call the same Pack
+    /// implementation against the same sorted-by-order input.</para>
     ///
     /// <para>Per Phase 3 Task 15 L8 post-PR-#68 hardening F#1 — the
     /// per-item main-size contribution comes from
     /// <see cref="ComputedStyleLayoutExtensions.ResolveFlexItemHypotheticalMainSize"/>
-    /// instead of the raw <c>ReadLengthPxOrZero</c>. This guarantees
-    /// pre-measure parity with <see cref="FlexLayouter"/>'s
-    /// <c>PackLines</c> when <c>flex-basis</c> overrides the declared
-    /// main-size (= the spec-correct CSS Flexbox §9.3 input). Pre-fix,
-    /// an item with <c>width: 300px; flex-basis: 0</c> would wrap into
-    /// its own line during pre-measure (because pre-measure saw width
-    /// = 300) but pack into a shared line during the layout pass
-    /// (which now honors flex-basis = 0); the divergent line counts
-    /// would size the wrapper's cross-extent incorrectly.</para></summary>
+    /// (inside <see cref="FlexLinePacker.Pack"/>) so flex-basis
+    /// drives the wrap boundary, NOT the raw declared width.</para></summary>
     /// <param name="flexContainer">The flex container box.</param>
     /// <param name="direction">Resolved <c>flex-direction</c>; selects
     /// which property feeds main + cross.</param>
@@ -6001,70 +5998,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         double containerMainSize,
         CancellationToken cancellationToken)
     {
-        // Direction-resolved property IDs. The two helpers can't share
-        // GetAxisProperties with FlexLayouter (that one's a private
-        // method in FlexLayouter); the table is small + identical so
-        // the local pair stays in sync via the FlexDirectionValue
-        // axis-mapping contract.
-        var (mainProp, crossProp) = direction.IsFlexColumnDirection()
-            ? (PropertyId.Height, PropertyId.Width)
-            : (PropertyId.Width, PropertyId.Height);
-
-        var sumLineCross = 0.0;
-        var currentLineMain = 0.0;
-        var currentLineCross = 0.0;
-        var currentLineCount = 0;
-
-        // Per Phase 3 Task 15 L10 — walk the EFFECTIVE FLEX ORDER (=
-        // (order, DOM-index) sorted) so this pre-measure packs into
-        // the SAME lines as FlexLayouter's PackLines. Pre-fix, the
-        // pre-measure walked DOM order; with the `order` property
-        // items can wrap differently from DOM order (e.g., item 5
-        // with order: -1 might combine with item 0 onto the same
-        // line). Sharing
-        // <see cref="ComputedStyleLayoutExtensions.GetFlexChildrenInOrderSequence"/>
-        // between the two passes guarantees line-boundary parity per
-        // the L8 F#1 hardening pattern.
-        var sortedChildIndices = flexContainer.GetFlexChildrenInOrderSequence(cancellationToken);
-
-        foreach (var idx in sortedChildIndices)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var item = flexContainer.Children[idx];
-
-            // Per Phase 3 Task 15 L8 post-PR-#68 F#1 — use the shared
-            // flex-basis-aware hypothetical main-size helper so this
-            // pre-measure pass packs into the SAME lines as
-            // FlexLayouter's PackLines. Cross-size still uses the raw
-            // declared property; cross-axis flexibility is L9+ scope.
-            var itemMain = item.ResolveFlexItemHypotheticalMainSize(
-                mainProp, containerMainSize);
-            var itemCross = item.Style.ReadLengthPxOrZero(crossProp);
-
-            // CSS Flexbox L1 §9.3 — the first item on a line ALWAYS
-            // lands (oversized solo items emit on their own line +
-            // overflow); subsequent items wrap when adding would
-            // exceed the container's main extent.
-            if (currentLineCount > 0
-                && currentLineMain + itemMain > containerMainSize)
-            {
-                sumLineCross += currentLineCross;
-                currentLineMain = 0;
-                currentLineCross = 0;
-                currentLineCount = 0;
-            }
-
-            currentLineMain += itemMain;
-            if (itemCross > currentLineCross) currentLineCross = itemCross;
-            currentLineCount++;
-        }
-
-        if (currentLineCount > 0)
-        {
-            sumLineCross += currentLineCross;
-        }
-
-        return sumLineCross;
+        // Per Phase 3 Task 16 cycle 4c — delegate to the shared
+        // packer. Per post-PR-#84 review P2 #1, the pre-measure uses
+        // the streaming <see cref="FlexLinePacker.SumCrossExtent"/>
+        // entry point so we don't allocate a
+        // <see cref="List{FlexLine}"/> just to sum + discard. Same
+        // packing algorithm as <see cref="FlexLayouter"/>'s
+        // emission-time call; only the return value differs.
+        var sortedChildIndices =
+            flexContainer.GetFlexChildrenInOrderSequence(cancellationToken);
+        return FlexLinePacker.SumCrossExtent(
+            flexContainer, sortedChildIndices, direction,
+            containerMainSize, isWrapping: true, cancellationToken);
     }
 
     /// <summary>Per Phase 3 Task 14 cycle 1 hardening (Finding 1) —

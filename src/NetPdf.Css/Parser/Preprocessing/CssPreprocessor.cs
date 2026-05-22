@@ -286,10 +286,20 @@ internal static class CssPreprocessor
             rawBody = bodyWithBraces.Length >= 2 ? bodyWithBraces[1..^1].ToString() : string.Empty;
 
             // Walk the body for modern function declarations.
-            var modernDecls = ScanForModernDeclarations(rawBody);
+            // Per Phase 3 Task 15 L17 post-PR-#77 — also pick up the
+            // list of explicit longhand declarations + their source
+            // ordinals + importance so the merge respects CSS Cascade
+            // §5 importance + §7.4 source-order for shorthand-vs-
+            // explicit-longhand conflicts.
+            var (modernDecls, explicitLonghands) =
+                ScanForModernDeclarationsWithOrder(rawBody);
             if (!modernDecls.IsEmpty)
             {
-                styleRuleRecoveries.Add(new CssStyleRuleRecovery(ordinal, modernDecls));
+                styleRuleRecoveries.Add(
+                    new CssStyleRuleRecovery(
+                        ordinal,
+                        modernDecls,
+                        explicitLonghands));
             }
         }
         else if (tok.PeekChar() == ';')
@@ -527,6 +537,24 @@ internal static class CssPreprocessor
     /// inline-style parser loses modern colors + multi-arg attr() before the typed
     /// pipeline gets a chance to diagnose them.</summary>
     internal static ImmutableArray<CssDeclarationRecovery> ScanForModernDeclarations(string body) =>
+        ScanDeclarations(body, modernOnly: true).Recoveries;
+
+    /// <summary>Per Phase 3 Task 15 L17 post-PR-#77 review — extended
+    /// scan that also returns the list of EXPLICIT longhand
+    /// declarations (non-shorthand) with their source ordinals + importance.
+    /// The merge in
+    /// <see cref="CssParserAdapter.AdaptDeclarationsWithRecovery"/> uses
+    /// this list together with the recovery records' own
+    /// <see cref="CssDeclarationRecovery.SourceOrdinal"/> /
+    /// <see cref="CssDeclarationRecovery.IsImportant"/> to apply CSS
+    /// Cascade §5 importance + §7.4 source-order rules properly. This
+    /// supports the multi-shorthand case
+    /// (<c>flex-flow ...; flex-wrap ...; flex-flow ...</c>) AND
+    /// <c>!important</c> interactions that a per-property set could not
+    /// represent.</summary>
+    internal static (ImmutableArray<CssDeclarationRecovery> Recoveries,
+        ImmutableArray<ExplicitLonghandRef> ExplicitLonghands)
+        ScanForModernDeclarationsWithOrder(string body) =>
         ScanDeclarations(body, modernOnly: true);
 
     /// <summary>
@@ -544,13 +572,50 @@ internal static class CssPreprocessor
     /// but emits every parsed declaration. Property name is lower-cased per
     /// CSS Syntax §2 (case-insensitive).</remarks>
     internal static ImmutableArray<CssDeclarationRecovery> ScanAllDeclarations(string body) =>
-        ScanDeclarations(body, modernOnly: false);
+        ScanDeclarations(body, modernOnly: false).Recoveries;
 
-    private static ImmutableArray<CssDeclarationRecovery> ScanDeclarations(string body, bool modernOnly)
+    /// <summary>Per Phase 3 Task 15 L17 post-PR-#77 review — scan
+    /// declarations + emit:
+    /// <list type="bullet">
+    ///   <item><c>Recoveries</c>: the recovered declarations (each
+    ///   carrying its own <see cref="CssDeclarationRecovery.SourceOrdinal"/>);
+    ///   shorthand expansions emit multiple records that share an
+    ///   ordinal.</item>
+    ///   <item><c>ExplicitLonghands</c>: every EXPLICIT longhand
+    ///   declaration (= NOT a shorthand expansion) with its source
+    ///   ordinal + importance flag. The merge in
+    ///   <see cref="CssParserAdapter.AdaptDeclarationsWithRecovery"/>
+    ///   uses this list to apply CSS Cascade §5 importance + §7.4
+    ///   source-order rules when a shorthand-expansion recovery
+    ///   conflicts with an explicit longhand.</item>
+    /// </list>
+    /// Allocation profile: the explicit-longhand list is built
+    /// LAZILY (= no allocation until the first shorthand expansion
+    /// is detected, since the list is only consumed for rules that
+    /// contain shorthand recovery).</summary>
+    private static (ImmutableArray<CssDeclarationRecovery> Recoveries,
+        ImmutableArray<ExplicitLonghandRef> ExplicitLonghands)
+        ScanDeclarations(string body, bool modernOnly)
     {
-        if (string.IsNullOrWhiteSpace(body)) return ImmutableArray<CssDeclarationRecovery>.Empty;
+        if (string.IsNullOrWhiteSpace(body))
+            return (ImmutableArray<CssDeclarationRecovery>.Empty,
+                ImmutableArray<ExplicitLonghandRef>.Empty);
 
         var output = ImmutableArray.CreateBuilder<CssDeclarationRecovery>();
+        // Per Phase 3 Task 15 L17 post-PR-#77 — lazily-allocated state
+        // for cascade-correct merge:
+        //   - explicitLonghands: the per-rule list of explicit (non-
+        //     shorthand-expansion) longhand declarations w/ their
+        //     source ordinals + importance flags. Allocated lazily on
+        //     first need; the typical rule (no shorthands or only
+        //     shorthands) doesn't allocate this list.
+        //   - sawShorthand: tracks whether any shorthand expansion
+        //     emitted yet. While false we don't bother recording
+        //     explicit longhands.
+        List<ExplicitLonghandRef>? explicitLonghands = null;
+        var sawShorthand = false;
+        var ordinal = 0;
+
         var tok = new CssTokenizer(body.AsSpan(), null);
         tok.SkipWhitespaceAndComments();
 
@@ -620,25 +685,23 @@ internal static class CssPreprocessor
                         out var fShrink,
                         out var fBasis))
                 {
-                    // Per Phase 3 Task 15 L13 + post-PR-#76 review #1 —
-                    // shorthand-expansion recoveries carry the
-                    // `IsFromShorthandExpansion: true` flag so the
-                    // downstream merge uses APPEND-ONLY semantics: any
-                    // explicit longhand that AngleSharp emitted (e.g.,
-                    // `flex: 1; flex-grow: 0` → AngleSharp's
-                    // last-wins `flex-grow: 0` plus our expansion's
-                    // `flex-grow: 1`) survives the merge. Pre-fix the
-                    // expansion's `flex-grow: 1` would silently
-                    // override the author's later `flex-grow: 0`.
+                    // Per Phase 3 Task 15 L17 post-PR-#77 — emit 3
+                    // longhand recovery records, all sharing the
+                    // SAME source ordinal (= they expanded from this
+                    // one shorthand declaration).
                     output.Add(new CssDeclarationRecovery(
                         "flex-grow", fGrow, isImportant,
-                        IsFromShorthandExpansion: true));
+                        IsFromShorthandExpansion: true,
+                        SourceOrdinal: ordinal));
                     output.Add(new CssDeclarationRecovery(
                         "flex-shrink", fShrink, isImportant,
-                        IsFromShorthandExpansion: true));
+                        IsFromShorthandExpansion: true,
+                        SourceOrdinal: ordinal));
                     output.Add(new CssDeclarationRecovery(
                         "flex-basis", fBasis, isImportant,
-                        IsFromShorthandExpansion: true));
+                        IsFromShorthandExpansion: true,
+                        SourceOrdinal: ordinal));
+                    sawShorthand = true;
                 }
                 else if (normalizedName == "flex-flow"
                     && FlexFlowShorthandExpander.TryExpand(
@@ -646,32 +709,76 @@ internal static class CssPreprocessor
                         out var ffDir,
                         out var ffWrap))
                 {
-                    // Per Phase 3 Task 15 L16 — multi-emit recovery
-                    // for the `flex-flow` shorthand per CSS Flexbox
-                    // L1 §6.1. Two longhand records replace the
-                    // single dropped shorthand; see L13 above for the
-                    // append-only semantics rationale.
+                    // Per Phase 3 Task 15 L17 post-PR-#77 — emit 2
+                    // longhand recovery records sharing the same
+                    // source ordinal.
                     output.Add(new CssDeclarationRecovery(
                         "flex-direction", ffDir, isImportant,
-                        IsFromShorthandExpansion: true));
+                        IsFromShorthandExpansion: true,
+                        SourceOrdinal: ordinal));
                     output.Add(new CssDeclarationRecovery(
                         "flex-wrap", ffWrap, isImportant,
-                        IsFromShorthandExpansion: true));
+                        IsFromShorthandExpansion: true,
+                        SourceOrdinal: ordinal));
+                    sawShorthand = true;
                 }
                 else
                 {
+                    // Non-shorthand recovery (modern colors,
+                    // align-items compounds, etc.). Carries its own
+                    // source ordinal for completeness; the merge
+                    // doesn't use the ordinal for these (override is
+                    // unconditional).
                     output.Add(new CssDeclarationRecovery(
                         normalizedName,
                         cleanValue,
-                        isImportant));
+                        isImportant,
+                        SourceOrdinal: ordinal));
+                    // Per Phase 3 Task 15 L17 post-PR-#77 — even a
+                    // recovered EXPLICIT-longhand declaration (= not
+                    // a shorthand expansion) counts as an explicit
+                    // longhand for cascade comparison purposes. Only
+                    // start tracking once we've seen a shorthand
+                    // (= avoid allocation for shorthand-free rules).
+                    if (sawShorthand)
+                    {
+                        explicitLonghands ??= new List<ExplicitLonghandRef>();
+                        explicitLonghands.Add(new ExplicitLonghandRef(
+                            normalizedName, ordinal, isImportant));
+                    }
+                }
+            }
+            else
+            {
+                // Per Phase 3 Task 15 L17 post-PR-#77 — even when the
+                // declaration is excluded from recovery (= the typical
+                // case for explicit longhands AngleSharp handles
+                // natively), it still counts as an explicit longhand
+                // for source-order comparison against any preceding
+                // shorthand expansion. Track when sawShorthand is true.
+                if (sawShorthand)
+                {
+                    var (excludedClean, excludedImportant) = ImportantParser.Strip(rawValue);
+                    _ = excludedClean; // value text not needed; merge reads from AngleSharp
+                    var unconditionalNormalizedName = NormalizePropertyName(lowerName);
+                    explicitLonghands ??= new List<ExplicitLonghandRef>();
+                    explicitLonghands.Add(new ExplicitLonghandRef(
+                        unconditionalNormalizedName, ordinal, excludedImportant));
                 }
             }
 
+            ordinal++;
             if (tok.PeekChar() == ';') tok.ReadChar();
             tok.SkipWhitespaceAndComments();
         }
 
-        return output.Count == 0 ? ImmutableArray<CssDeclarationRecovery>.Empty : output.ToImmutable();
+        return (
+            output.Count == 0
+                ? ImmutableArray<CssDeclarationRecovery>.Empty
+                : output.ToImmutable(),
+            explicitLonghands is null
+                ? ImmutableArray<ExplicitLonghandRef>.Empty
+                : explicitLonghands.ToImmutableArray());
     }
 
     /// <summary>

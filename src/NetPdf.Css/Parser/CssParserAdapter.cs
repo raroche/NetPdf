@@ -164,12 +164,21 @@ internal static class CssParserAdapter
         ArgumentNullException.ThrowIfNull(style);
         if (string.IsNullOrWhiteSpace(rawStyleText)) return AdaptProperties(style);
 
-        var recoveredDeclarations = CssPreprocessor.ScanForModernDeclarations(rawStyleText);
+        // Per Phase 3 Task 15 L17 post-PR-#77 review #1 (P1) — inline
+        // styles MUST use the order-aware scan so the cascade-correct
+        // merge sees the explicit-longhand source positions for
+        // shorthand-vs-longhand conflicts. Pre-fix the inline path
+        // dropped the ordinal info → recovery's shorthand expansion
+        // silently overrode a later explicit longhand in
+        // `style="flex-flow: row wrap; flex-wrap: nowrap"`.
+        var (recoveredDeclarations, explicitLonghands) =
+            CssPreprocessor.ScanForModernDeclarationsWithOrder(rawStyleText);
         if (recoveredDeclarations.IsEmpty) return AdaptProperties(style);
 
         var recovery = new CssStyleRuleRecovery(
             OrdinalIndex: 0,
-            Declarations: recoveredDeclarations);
+            Declarations: recoveredDeclarations,
+            ExplicitLonghandOrdinals: explicitLonghands);
         return AdaptDeclarationsWithRecovery(style, recovery, location);
     }
 
@@ -634,30 +643,35 @@ internal static class CssParserAdapter
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         // First pass: emit AngleSharp's declarations, overriding values for any property
-        // that has a recovery entry. Per Phase 3 Task 15 L16 post-PR-#76 review #1 (P1)
-        // — this override is too aggressive for shorthand-derived recoveries when an
-        // explicit longhand comes LATER in source order than the shorthand. AngleSharp
-        // 1.0.0-beta.144 reliably emits incorrect longhand values for `flex: auto` /
-        // `flex: 100px` (= our recovery must override to fix them), so a pure
-        // append-only switch breaks the L13/L16 single-shorthand cases. The proper
-        // fix needs source-position tracking on both AngleSharp's emit + the
-        // recovery records so the merge respects CSS Cascade §7.4 last-decl-wins
-        // INTERLEAVED — that's a substantial refactor pinned by the
-        // `Mixed_shorthand_then_longhand_known_gap_*` regression tests in
-        // `CssPreprocessorShorthandRecoveryTests`. Until that lands, the current
-        // override stays + the known-gap tests document the limitation. Note: the
-        // <see cref="CssDeclarationRecovery.IsFromShorthandExpansion"/> flag is
-        // wired through the data model so the future fix can switch on it without
-        // re-plumbing the recovery emitter.
+        // that has a recovery entry. Per Phase 3 Task 15 L17 post-PR-#77 review #2 (P1)
+        // — the merge applies CSS Cascade §5 importance + §7.4 source-order rules
+        // properly when a shorthand-expansion recovery conflicts with an explicit
+        // longhand. Pre-fix used a per-property set which broke:
+        //   - multi-shorthand cases (`flex-flow ...; flex-wrap ...; flex-flow ...`)
+        //   - !important interactions (`flex-flow ... !important; flex-wrap ...`)
+        // The new fix uses each recovery's `SourceOrdinal` + `IsImportant` and
+        // compares against the rule's `ExplicitLonghandOrdinals` list using the
+        // <see cref="ShouldShorthandWinAgainstExplicitLonghands"/> cascade helper.
+        // For non-shorthand recoveries (modern colors, align-items compounds) the
+        // override stays unconditional — those recoveries fix what AngleSharp
+        // corrupted entirely.
+        var explicitLonghands = recovery.ExplicitLonghandOrdinals.IsDefault
+            ? ImmutableArray<ExplicitLonghandRef>.Empty
+            : recovery.ExplicitLonghandOrdinals;
         foreach (var decl in fromAngleSharp)
         {
             seen.Add(decl.Property);
             var match = FindRecovery(recovery.Declarations, decl.Property);
-            if (match is not null)
+            var shouldOverride =
+                match is not null
+                && (!match.IsFromShorthandExpansion
+                    || ShouldShorthandWinAgainstExplicitLonghands(
+                        match, explicitLonghands));
+            if (shouldOverride)
             {
                 output.Add(new CssDeclaration(
                     Property: decl.Property,
-                    Value: new CssValue(match.RawValueText),
+                    Value: new CssValue(match!.RawValueText),
                     IsImportant: match.IsImportant,
                     Location: location));
             }
@@ -699,6 +713,79 @@ internal static class CssParserAdapter
                 last = item;
         }
         return last;
+    }
+
+    /// <summary>Per Phase 3 Task 15 L17 post-PR-#77 review #2 (P1) —
+    /// determine whether a shorthand-expansion <paramref name="recovery"/>
+    /// wins against the explicit longhand declarations in the same rule
+    /// per CSS Cascade §5 (importance) + §7.4 (source-order
+    /// last-decl-wins).
+    ///
+    /// <para><b>Cascade rules applied:</b>
+    /// <list type="number">
+    ///   <item>An <c>!important</c> declaration beats a normal
+    ///   declaration regardless of source order.</item>
+    ///   <item>Within the same importance level, the LATER source
+    ///   position wins.</item>
+    /// </list>
+    /// </para>
+    ///
+    /// <para><b>Examples:</b>
+    /// <list type="bullet">
+    ///   <item>Recovery <c>flex-wrap: wrap</c> at ordinal 0 (normal)
+    ///   vs. explicit <c>flex-wrap: nowrap</c> at ordinal 1 (normal):
+    ///   explicit at ordinal 1 &gt; 0 + same importance →
+    ///   <b>explicit wins</b> (= return false).</item>
+    ///   <item>Recovery <c>flex-wrap: wrap</c> at ordinal 0
+    ///   (!important) vs. explicit <c>flex-wrap: nowrap</c> at ordinal
+    ///   1 (normal): recovery is important, explicit is normal →
+    ///   <b>recovery wins</b> (= return true).</item>
+    ///   <item>Recovery <c>flex-wrap: wrap-reverse</c> at ordinal 2
+    ///   (normal) — i.e., a LATER shorthand — vs. explicit
+    ///   <c>flex-wrap: nowrap</c> at ordinal 1 (normal): recovery's
+    ///   ordinal 2 &gt; 1 + same importance → <b>recovery wins</b>.</item>
+    /// </list>
+    /// </para>
+    ///
+    /// <para>The check iterates over every explicit longhand
+    /// declaration for the same property; finding one that beats the
+    /// recovery is sufficient to return <see langword="false"/>. When
+    /// no explicit longhand beats the recovery, returns
+    /// <see langword="true"/>.</para></summary>
+    private static bool ShouldShorthandWinAgainstExplicitLonghands(
+        CssDeclarationRecovery recovery,
+        ImmutableArray<ExplicitLonghandRef> explicitLonghands)
+    {
+        if (explicitLonghands.IsDefaultOrEmpty) return true;
+        foreach (var exp in explicitLonghands)
+        {
+            if (!string.Equals(
+                    exp.Property, recovery.Property,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+            if (BeatsRecoveryPerCascade(exp, recovery))
+            {
+                return false; // explicit longhand wins
+            }
+        }
+        return true; // recovery wins (no explicit longhand beat it)
+    }
+
+    /// <summary>Per CSS Cascade §5 + §7.4 — does the explicit longhand
+    /// declaration <paramref name="exp"/> beat the shorthand-expansion
+    /// recovery <paramref name="recovery"/>?</summary>
+    private static bool BeatsRecoveryPerCascade(
+        ExplicitLonghandRef exp,
+        CssDeclarationRecovery recovery)
+    {
+        if (exp.IsImportant && !recovery.IsImportant)
+            return true; // !important beats normal regardless of order
+        if (!exp.IsImportant && recovery.IsImportant)
+            return false; // normal cannot beat !important
+        // Same importance level — later source-order wins.
+        return exp.Ordinal > recovery.SourceOrdinal;
     }
 
     private static CssAtRule AdaptMediaRule(ICssMediaRule rule, CssSourceLocation location) => new(

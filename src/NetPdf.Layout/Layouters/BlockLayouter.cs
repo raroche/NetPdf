@@ -364,6 +364,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// every AttemptLayout entry.</summary>
     private bool _consumedIncomingMulticolContinuation;
 
+    /// <summary>Per Phase 3 Task 16 cycle 2 — mirrors
+    /// <see cref="_consumedIncomingMulticolContinuation"/> for the
+    /// flex multi-page resume contract. The incoming
+    /// <see cref="FlexContinuation"/> piggy-backed on the resume
+    /// <see cref="BlockContinuation.LayouterState"/> is one-shot:
+    /// once forwarded to the FlexLayouter at the deferred-at child
+    /// index, subsequent flex children in the same attempt start
+    /// fresh (= no continuation forwarded).</summary>
+    private bool _consumedIncomingFlexContinuation;
+
     /// <summary>Per Phase 3 Task 14 cycle 2 hardening (Finding #1) —
     /// one-shot consumption flag for the incoming chained
     /// <see cref="BlockContinuation"/> in
@@ -549,6 +559,34 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 + "consistent. Per Phase 3 Task 14 cycle 2 resume contract.");
         }
 
+        // Per Phase 3 Task 16 cycle 2 post-PR-#79 review P2 #6 —
+        // symmetric validation for an incoming FlexContinuation in
+        // LayouterState. Mirrors the TableContinuation +
+        // MulticolContinuation checks above. The child at
+        // ResumeAtChild MUST be a flex container OR a block-flow
+        // container that recursively contains the flex (= same
+        // single-level-nested propagation contract as multicol). Pre-
+        // fix a misrouted FlexContinuation was silently ignored
+        // unless it happened to land on the direct flex child path.
+        if (incomingBlock?.LayouterState is FlexContinuation
+            && startChildIdx >= 0
+            && startChildIdx < _rootBox.Children.Count
+            && _rootBox.Children[startChildIdx].Kind is not
+                (BoxKind.FlexContainer or BoxKind.InlineFlexContainer)
+            && !IsBlockFlowContainerOwnedByBlockLayouter(_rootBox.Children[startChildIdx]))
+        {
+            throw new InvalidOperationException(
+                "BlockLayouter.AttemptLayout: incoming BlockContinuation carries "
+                + "a FlexContinuation in LayouterState but the child at "
+                + $"ResumeAtChild={startChildIdx} has BoxKind."
+                + $"{_rootBox.Children[startChildIdx].Kind}, which is neither "
+                + "a FlexContainer / InlineFlexContainer nor a block-flow "
+                + "container that could contain one. The dispatching "
+                + "layouter must produce continuations where the "
+                + "ResumeAtChild + LayouterState pair are mutually "
+                + "consistent. Per Phase 3 Task 16 cycle 2 resume contract.");
+        }
+
         // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) — when
         // the incoming BlockContinuation carries a nested
         // BlockContinuation (the recursion-chain protocol introduced
@@ -680,6 +718,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // resumed index; subsequent multicol children in the same
         // attempt start fresh.
         _consumedIncomingMulticolContinuation = false;
+        // Per Phase 3 Task 16 cycle 2 — same one-shot reset for the
+        // flex multi-page resume contract.
+        _consumedIncomingFlexContinuation = false;
 
         // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) — reset
         // the one-shot consumption flag for an incoming chained
@@ -2195,20 +2236,64 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 var flexContentBlockOffset =
                     blockOffset + flexBorderBlockStart + flexPaddingBlockStart;
 
+                // Per Phase 3 Task 16 cycle 2 — multi-page flex
+                // resume. Mirrors the multicol dispatch above: when
+                // the incoming BlockContinuation carries a
+                // FlexContinuation in LayouterState AND we're at the
+                // flex child it deferred at, pass the
+                // FlexContinuation through to the new FlexLayouter
+                // so it resumes at the correct line. The carried
+                // continuation is one-shot: subsequent flex children
+                // in the same attempt start fresh.
+                FlexContinuation? flexContinuationForChild = null;
+                if (incomingBlock?.LayouterState is FlexContinuation incomingFlexCont
+                    && childIdx == incomingBlock.ResumeAtChild
+                    && !_consumedIncomingFlexContinuation)
+                {
+                    flexContinuationForChild = incomingFlexCont;
+                    _consumedIncomingFlexContinuation = true;
+                }
+
                 using var flexLayouter = new FlexLayouter(
                     rootBox: child,
                     sink: _sink,
-                    incomingContinuation: null,
+                    incomingContinuation: flexContinuationForChild,
                     diagnostics: _diagnostics,
                     shaperResolver: _shaperResolver);
                 flexLayouter.ConfigureEmission(
                     contentInlineOffset: flexContentInlineOffset,
                     contentBlockOffset: flexContentBlockOffset,
                     contentInlineSize: flexContentInlineSize,
-                    contentBlockSize: flexContentBlockSize);
+                    contentBlockSize: flexContentBlockSize,
+                    // Per Phase 3 Task 16 cycle 2 post-PR-#79 review —
+                    // pagination remains OFF in the cycle-2 dispatch
+                    // pending cycle-3 architectural fixes. The data
+                    // flow (capture result + propagate
+                    // FlexContinuation + forward incoming
+                    // continuation) is wired so unit-level resume
+                    // tests verify the contract; production-pipeline
+                    // pagination needs cycle 3 to address:
+                    //   - P1 #1: forced-overflow preempts flex
+                    //     dispatch before it runs (= the row+wrap
+                    //     pre-grow makes wrapper huge, break check
+                    //     fires forced-overflow, my dispatch never
+                    //     reached). Fixing this requires routing
+                    //     paginatable flex through a specialized
+                    //     pre-break-check dispatch.
+                    //   - P1 #2: EmitBlockSubtreeRecursive's flex
+                    //     branch at line ~3284 still uses atomic
+                    //     dispatch. Needs the same continuation
+                    //     wiring as this site.
+                    //   - P2 #4/#5: page-remaining sizing +
+                    //     wrapper extent accounting on PageComplete.
+                    // The dispatch code below DOES capture +
+                    // propagate FlexContinuation when allowPagination
+                    // is later enabled by direct-construction tests
+                    // OR by cycle-3 routing.
+                    allowPagination: false);
 
                 using var flexResolver = new BreakResolver();
-                _ = flexLayouter.AttemptLayout(
+                var flexResult = flexLayouter.AttemptLayout(
                     fragmentainer,
                     ref layout,
                     flexResolver,
@@ -2216,15 +2301,37 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     cancellationToken);
 
                 // Cursor advance + bookkeeping mirror the multicol
-                // dispatch above. Cycle 1 flex is atomic — no
-                // PageComplete propagation needed (FlexLayouter
-                // always returns AllDone).
+                // dispatch above.
                 fragmentainer.UsedBlockSize = Math.Max(0,
                     fragmentainer.UsedBlockSize + marginBoxBlockSizeForCursor);
                 prevBlockMarginEnd = marginEnd;
                 hasPriorAdjoiningBlock = true;
                 emittedThisAttempt++;
                 lastEmittedIdx = childIdx;
+
+                // Per Phase 3 Task 16 cycle 2 — propagate
+                // PageComplete(FlexContinuation) up. Mirrors the
+                // multicol pattern at line ~2122: the wrapper's
+                // outer fragment is already emitted; the resume
+                // page's BlockLayouter sees a BlockContinuation
+                // whose LayouterState is the FlexContinuation +
+                // dispatches it back to FlexLayouter via the resume
+                // contract above.
+                if (flexResult.Outcome == LayoutAttemptOutcome.PageComplete
+                    && flexResult.Continuation is FlexContinuation flexCont)
+                {
+                    return LayoutAttemptResult.PageComplete(
+                        new BlockContinuation(
+                            ResumeAtChild: childIdx,
+                            ConsumedBlockSize: priorPagesConsumed
+                                + (fragmentainer.UsedBlockSize - _pageStartUsedBlockSize),
+                            LayouterState: flexCont),
+                        cost: flexResult.Cost);
+                }
+
+                // AllDone case: skip the rest of the Continue path
+                // for this child; the flex container's inner
+                // content was committed in full on this page.
                 continue;
             }
 

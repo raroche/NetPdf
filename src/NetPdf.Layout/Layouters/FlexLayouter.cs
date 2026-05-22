@@ -315,33 +315,36 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
                 nameof(rootBox));
         }
 
-        // Per cycle 1 (Hello World) — multi-page flex container
-        // splitting is sub-cycle 2+ scope; the container is atomic to
-        // the outer pagination. Reject any non-null continuation so
-        // misrouted continuations surface loudly. Cycle 2 will accept
-        // a FlexContinuation here. Mirrors MulticolLayouter cycle 1's
-        // blanket non-null rejection (Finding 5 on the post-PR-#60
-        // review hardening pass).
-        if (incomingContinuation is not null)
+        // Per Phase 3 Task 16 cycle 1 — accept a non-null
+        // <see cref="FlexContinuation"/> for the multi-page flex split
+        // resume contract. The continuation's <c>LineIndex</c> is the
+        // first line to emit on this page (= lines [0, LineIndex)
+        // were emitted on a prior page). Any other continuation type
+        // is misrouted + surfaces loudly. Mirrors MulticolLayouter
+        // cycle 2's pattern (Finding 5 on the post-PR-#60 review
+        // hardening pass).
+        if (incomingContinuation is not null
+            && incomingContinuation is not FlexContinuation)
         {
             throw new ArgumentException(
-                "FlexLayouter cycle 1 (Hello World) does not support "
-                + "multi-page flex container splitting; "
-                + $"incomingContinuation must be null, got "
-                + $"{incomingContinuation.GetType().Name}. The cycle 1 "
-                + "contract treats the flex container as atomic to the "
-                + "outer pagination (= the wrapper's first-page fit "
-                + "succeeds OR the entire container is deferred). "
-                + "FlexContinuation-based multi-page resume is sub-"
-                + "cycle 2+ scope; see docs/deferrals.md#flex-layouter-features.",
+                "FlexLayouter accepts only FlexContinuation; "
+                + $"got {incomingContinuation.GetType().Name}. "
+                + "Misrouted continuation is a layouter-dispatch bug.",
                 nameof(incomingContinuation));
         }
+        _incomingFlexContinuation = incomingContinuation as FlexContinuation;
 
         _rootBox = rootBox;
         _sink = sink;
         _diagnostics = diagnostics;
         _shaperResolver = shaperResolver;
     }
+
+    /// <summary>Per Phase 3 Task 16 cycle 1 — the incoming
+    /// <see cref="FlexContinuation"/> when this layouter was created
+    /// to resume a multi-page flex split, or <see langword="null"/>
+    /// when this is a fresh layout (= first page).</summary>
+    private readonly FlexContinuation? _incomingFlexContinuation;
 
     /// <summary>Per cycle 1 — set the flex container's content-box
     /// geometry in the outer fragmentainer's coordinate space. The
@@ -362,11 +365,20 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     /// extent.</param>
     /// <param name="contentBlockSize">Container's content-box block
     /// extent.</param>
+    /// <param name="allowPagination">Per Phase 3 Task 16 cycle 1 —
+    /// when <see langword="true"/>, the layouter splits at line
+    /// boundaries when cumulative cross-extent exceeds the
+    /// container's cross size + emits a <see cref="FlexContinuation"/>
+    /// for the next page. When <see langword="false"/> (default),
+    /// lines overflow freely (= the L1-L17 atomic behavior). The
+    /// BlockLayouter dispatch will pass <see langword="true"/> in
+    /// sub-cycle 2 when wiring the multi-page integration.</param>
     public void ConfigureEmission(
         double contentInlineOffset,
         double contentBlockOffset,
         double contentInlineSize,
-        double contentBlockSize)
+        double contentBlockSize,
+        bool allowPagination = false)
     {
         if (!double.IsFinite(contentInlineSize) || contentInlineSize <= 0)
         {
@@ -382,8 +394,22 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         _contentBlockOffset = contentBlockOffset;
         _contentInlineSize = contentInlineSize;
         _contentBlockSize = contentBlockSize;
+        _allowPagination = allowPagination;
         _emissionConfigured = true;
     }
+
+    /// <summary>Per Phase 3 Task 16 cycle 1 — when
+    /// <see langword="true"/>, the layouter splits a multi-line flex
+    /// container at line boundaries when lines exceed the container's
+    /// cross extent + emits a <see cref="FlexContinuation"/> for the
+    /// next page. When <see langword="false"/> (the cycle-0 default),
+    /// lines overflow the container freely (= the existing L1-L17
+    /// behavior); this preserves the L7 + L8 hardening overflow tests
+    /// that deliberately exercise the "lines exceed container cross
+    /// extent" path. BlockLayouter dispatch will pass
+    /// <see langword="true"/> in sub-cycle 2 when wiring the resume
+    /// chain.</summary>
+    private bool _allowPagination;
 
     /// <inheritdoc />
     public LayoutAttemptResult AttemptLayout(
@@ -504,6 +530,95 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         var lines = PackLines(
             _rootBox, _sortedFlexChildIndices, flexDirection,
             containerMainSize, isWrapping, cancellationToken);
+
+        // Per Phase 3 Task 16 cycle 1 (Hello World) — multi-page flex
+        // split fragment range determination per CSS Flexbox L1 §10
+        // (Fragmenting Flex Layout). Sample algorithm: "lay out as
+        // many row flex lines as possible BEFORE finishing Cross
+        // Axis Alignment for each fragment". We compute the fragment
+        // range (= which lines belong to this page) HERE — BEFORE
+        // the align-content offsets are computed below at line ~632
+        // — using a RAW cursor that only sums `line.LineCrossSize`
+        // (= ignoring align-content's lineStartOffset +
+        // lineBetweenSpacing, which the post-PR-#78 P1 review
+        // correctly flagged as wrong: align-content's
+        // center/flex-end/space-* would mis-compute which lines fit
+        // a fragment).
+        //
+        // Cycle 1 support boundary (per P2 review): pagination only
+        // for ROW direction + WRAP mode + NOT wrap-reverse. Other
+        // modes fall through to atomic behavior:
+        //   - column direction: lines stack on inline axis (doesn't
+        //     paginate naturally without a writing-mode rotation).
+        //   - nowrap: only one line; per-item splitting is a later
+        //     sub-cycle.
+        //   - wrap-reverse: the cross-axis SWAP uses the
+        //     unfragmented containerCrossSize; emitting partial
+        //     content on a resumed page would place lines at the
+        //     wrong physical offset. Sub-cycle 2 will recompute
+        //     CrossAxisFlow against the per-fragment cross extent.
+        var isRowNormalWrapPaginationSupported =
+            _allowPagination && !isColumn && isWrapping && !isWrapReverse;
+
+        // Per Phase 3 Task 16 post-PR-#78 P1 #3 — validate the
+        // resume index against the packed line count. Out-of-range
+        // values silently drop content or produce nonsensical resume
+        // behavior; surface them loudly with
+        // <see cref="ArgumentOutOfRangeException"/>. The boundary
+        // value `LineIndex == lines.Count` is allowed (= the
+        // "everything was emitted on the prior page" case which
+        // resumes as a no-op AllDone).
+        var resumeLineIndex = _incomingFlexContinuation?.LineIndex ?? 0;
+        if (resumeLineIndex < 0 || resumeLineIndex > lines.Count)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(_incomingFlexContinuation),
+                $"FlexContinuation.LineIndex must be in [0, {lines.Count}]; "
+                + $"got {resumeLineIndex}. A misrouted continuation has "
+                + "corrupted the resume index — surface immediately rather "
+                + "than silently dropping the remaining flex content.");
+        }
+
+        // Determine the fragment's end-of-range (exclusive). Default:
+        // emit every remaining line. Pagination: emit lines up to
+        // (but not including) the first one that overflows the
+        // available block extent. Always emit at least the FIRST
+        // remaining line per CSS Fragmentation L3 §4.4 ("at least
+        // one line must commit per page") — prevents infinite defer
+        // when a single line is taller than the fragmentainer.
+        var fragmentEndIndex = lines.Count;
+        if (isRowNormalWrapPaginationSupported && resumeLineIndex < lines.Count)
+        {
+            var rawCursor = 0.0;
+            for (var i = resumeLineIndex; i < lines.Count; i++)
+            {
+                var isFirstOnPage = i == resumeLineIndex;
+                if (!isFirstOnPage
+                    && rawCursor + lines[i].LineCrossSize > _contentBlockSize)
+                {
+                    fragmentEndIndex = i;
+                    break;
+                }
+                rawCursor += lines[i].LineCrossSize;
+            }
+        }
+
+        // Slice `lines` to the fragment range. Pre-resume lines (=
+        // emitted on a prior page) + post-split lines (= deferred to
+        // the next page) are removed. The rest of AttemptLayout
+        // (align-content offsets, line emission) operates on this
+        // fragment's lines only — = the spec's "lay out as many
+        // lines as possible, THEN apply Cross Axis Alignment per
+        // fragment" model.
+        var originalLineCount = lines.Count;
+        if (resumeLineIndex > 0 || fragmentEndIndex < originalLineCount)
+        {
+            lines = lines.GetRange(
+                resumeLineIndex, fragmentEndIndex - resumeLineIndex);
+        }
+        var outgoingContinuationLineIndex = fragmentEndIndex < originalLineCount
+            ? fragmentEndIndex
+            : -1;
 
         // Per Phase 3 Task 15 L11 post-PR-#71 hardening F#1 — the
         // cross-axis SWAP per CSS Flexbox L1 §6.3 ("Behaves the same
@@ -729,6 +844,14 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             ContentCrossOffset: contentCrossOffset,
             ContainerCrossSize: containerCrossSize);
 
+        // Per Phase 3 Task 16 cycle 1 — the fragment range
+        // determination above already sliced `lines` to the lines
+        // for THIS fragment. The emission loop iterates them
+        // verbatim from index 0 (= the swap formula in
+        // CrossAxisFlow + the align-content offsets computed above
+        // operate on the fragment's lines, not the full unfragmented
+        // line list). The outgoing continuation's LineIndex was
+        // already computed (`outgoingContinuationLineIndex`).
         foreach (var line in lines)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -959,9 +1082,24 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             swappedAxisCursor += line.LineCrossSize + lineBetweenSpacing;
         }
 
-        // Cycle 1 (Hello World) — flex container is atomic to outer
-        // pagination; all items committed on this page. No
-        // continuation.
+        // Per Phase 3 Task 16 cycle 1 — multi-page flex split outcome.
+        // When `outgoingContinuationLineIndex` is set (≥ 0), at least
+        // one line did NOT fit on this page and we emit a
+        // <see cref="LayoutAttemptResult.PageComplete"/> carrying a
+        // <see cref="FlexContinuation"/> so the outer pagination can
+        // call back with the continuation on the next page. When -1
+        // (= every remaining line fit), the container is fully
+        // emitted + we return <see cref="LayoutAttemptResult.AllDone"/>.
+        // BlockLayouter dispatch integration (= capturing this result
+        // + propagating PageComplete up the recursion chain) is
+        // sub-cycle 2 scope; cycle 1 ships the layouter-side resume
+        // contract so the data flow is testable in isolation.
+        if (outgoingContinuationLineIndex >= 0)
+        {
+            return LayoutAttemptResult.PageComplete(
+                new FlexContinuation(outgoingContinuationLineIndex),
+                cost: 0);
+        }
         return LayoutAttemptResult.AllDone(cost: 0);
     }
 

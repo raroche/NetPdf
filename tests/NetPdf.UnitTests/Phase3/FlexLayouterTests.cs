@@ -8574,6 +8574,201 @@ public sealed class FlexLayouterTests
     }
 
     // ====================================================================
+    //  Phase 3 Task 16 cycle 1 (Hello World) — multi-page flex split
+    //  via FlexContinuation. The layouter accepts a non-null
+    //  FlexContinuation + emits a PageComplete result when lines
+    //  don't fit, carrying a continuation for the next page. Gated
+    //  behind `allowPagination: true` on ConfigureEmission so L1-L17
+    //  fixtures (atomic, may overflow) stay byte-identical.
+    // ====================================================================
+
+    [Fact]
+    public void Task16_pagination_off_by_default_preserves_atomic_behavior()
+    {
+        // Sanity baseline — without `allowPagination: true`,
+        // ConfigureEmission preserves the L1-L17 contract:
+        // overflow is allowed, no split, single AllDone result.
+        // 3 items × height 100 in a wrap container of width 250
+        // (so 100+100 fits per row → 2 lines of 2 items, last
+        // line has 1) + container height 30 (= insufficient for
+        // 2 lines). With pagination off → all lines emit, container
+        // overflows on the block axis.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var root = Box.CreateRoot(MakeStyle());
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1)); // wrap
+        SetLengthPx(flex.Style, PropertyId.Width, 250);
+        SetLengthPx(flex.Style, PropertyId.Height, 30);
+
+        for (var i = 0; i < 4; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            var item = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(item);
+        }
+        root.AppendChild(flex);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 250, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        // All 4 items emitted on a single page → 4 fragments.
+        var itemFragments = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.BlockContainer) itemFragments++;
+        }
+        Assert.Equal(4, itemFragments);
+    }
+
+    [Fact]
+    public void Task16_with_pagination_splits_when_lines_dont_fit_in_container()
+    {
+        // Cycle 1: directly construct a FlexLayouter (bypassing
+        // BlockLayouter dispatch which doesn't wire pagination yet)
+        // + verify the resume contract. Pre-Task-16 the constructor
+        // rejected any non-null continuation; post-Task-16 it accepts
+        // a FlexContinuation + skips lines [0, LineIndex).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1));
+        SetLengthPx(flex.Style, PropertyId.Width, 250);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        // 4 items of 100×50, 2 per line, 2 lines total (LineCrossSize = 50).
+        for (var i = 0; i < 4; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            var item = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(item);
+        }
+
+        // Construct the layouter directly; pretend the wrapper
+        // provides only 50 of block space (= room for 1 line, NOT 2).
+        using var layouter = new NetPdf.Layout.Layouters.FlexLayouter(
+            rootBox: flex, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        layouter.ConfigureEmission(
+            contentInlineOffset: 0,
+            contentBlockOffset: 0,
+            contentInlineSize: 250,
+            contentBlockSize: 50,
+            allowPagination: true);
+
+        var ctx = new FragmentainerContext(contentInlineSize: 250, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        // Per Task 16 cycle 1 — split happens at line 1 (= second
+        // line). Result is PageComplete with FlexContinuation{LineIndex=1}.
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        Assert.NotNull(result.Continuation);
+        var flexCont = Assert.IsType<FlexContinuation>(result.Continuation);
+        Assert.Equal(1, flexCont.LineIndex);
+
+        // First page emitted 2 items (the first line).
+        var pageOneItems = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.BlockContainer) pageOneItems++;
+        }
+        Assert.Equal(2, pageOneItems);
+    }
+
+    [Fact]
+    public void Task16_resume_with_continuation_skips_emitted_lines()
+    {
+        // Continuation of the test above: re-run with a non-null
+        // FlexContinuation{LineIndex=1} to verify the layouter skips
+        // line 0 + emits only line 1.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1));
+        SetLengthPx(flex.Style, PropertyId.Width, 250);
+        SetLengthPx(flex.Style, PropertyId.Height, 100);
+
+        for (var i = 0; i < 4; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            var item = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(item);
+        }
+
+        // Resume from line 1 (= the second line on a fresh page).
+        var continuation = new FlexContinuation(LineIndex: 1);
+        using var layouter = new NetPdf.Layout.Layouters.FlexLayouter(
+            rootBox: flex, sink: sink, incomingContinuation: continuation,
+            diagnostics: null, shaperResolver: shaper);
+        layouter.ConfigureEmission(
+            contentInlineOffset: 0,
+            contentBlockOffset: 0,
+            contentInlineSize: 250,
+            contentBlockSize: 200,
+            allowPagination: true);
+
+        var ctx = new FragmentainerContext(contentInlineSize: 250, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        // Per Task 16 cycle 1 — all remaining lines (= just line 1)
+        // fit on this page → AllDone.
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+        Assert.Null(result.Continuation);
+
+        // Second page emitted only the 2 items from line 1 (= items
+        // 2 + 3 in DOM order).
+        var itemFragments = 0;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.BlockContainer) itemFragments++;
+        }
+        Assert.Equal(2, itemFragments);
+    }
+
+    [Fact]
+    public void Task16_constructor_rejects_non_flex_continuation()
+    {
+        // Sanity: a misrouted MulticolContinuation surfaces loudly.
+        var flex = BuildFlexContainer();
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        // Build a non-FlexContinuation continuation for the negative
+        // test. MulticolContinuation is internal; use a minimal stub.
+        var badContinuation = new MulticolContinuation(NextChildIndex: 0);
+
+        Assert.Throws<ArgumentException>(() =>
+            new NetPdf.Layout.Layouters.FlexLayouter(
+                rootBox: flex, sink: sink,
+                incomingContinuation: badContinuation,
+                diagnostics: null, shaperResolver: shaper));
+    }
+
+    // ====================================================================
     //  Helpers
     // ====================================================================
 

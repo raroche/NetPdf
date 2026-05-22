@@ -1178,8 +1178,29 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // EmitBlockSubtreeRecursive's nested flex branch.
         if (outgoingContinuationLineIndex >= 0)
         {
+            // Per Phase 3 Task 16 cycle 4e (P2 #5 from PR-#79) —
+            // report the actual emitted block extent (= cumulative
+            // sum of <c>LineCrossSize</c> for emitted lines) on the
+            // PageComplete continuation. The dispatching BlockLayouter
+            // can use this to:
+            //   (a) account ConsumedBlockSize more accurately on the
+            //       PageComplete propagation path; and
+            //   (b) eventually shrink the wrapper's BoxFragment
+            //       block-size (cycle 4f scope per the z-order
+            //       constraint documented on FlexContinuation).
+            // `lines` at this point has been sliced to the fragment
+            // range (= just the lines emitted on this fragment); the
+            // sum is therefore the emit-time content extent.
+            var emittedBlockExtent = 0.0;
+            foreach (var line in lines)
+            {
+                emittedBlockExtent += line.LineCrossSize;
+            }
             return LayoutAttemptResult.PageComplete(
-                new FlexContinuation(outgoingContinuationLineIndex),
+                new FlexContinuation(
+                    LineIndex: outgoingContinuationLineIndex,
+                    BaselineState: null,
+                    EmittedBlockExtent: emittedBlockExtent),
                 cost: 0);
         }
         return LayoutAttemptResult.AllDone(cost: 0);

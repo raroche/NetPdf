@@ -8693,6 +8693,111 @@ public sealed class FlexLayouterTests
     }
 
     [Fact]
+    public void Task16_cycle4e_PageComplete_reports_emitted_block_extent()
+    {
+        // Per Phase 3 Task 16 cycle 4e (P2 #5 from PR-#79) —
+        // FlexLayouter populates FlexContinuation.EmittedBlockExtent
+        // with the cumulative sum of LineCrossSize for the lines
+        // actually emitted on this fragment. The dispatching
+        // BlockLayouter consumes this for accurate cross-page
+        // ConsumedBlockSize accounting + future cycle 4f wrapper
+        // resize.
+        //
+        // Fixture: 4 items of 100×50 in a 250-wide / 50-block
+        // container (= room for 1 line of 50 tall). 2 items per
+        // line (100+100 = 200 fits in 250), 2 lines total. The
+        // first line (= 2 items at 50 tall each → LineCrossSize=50)
+        // emits on page 1; the 2nd line defers via
+        // FlexContinuation{LineIndex=1}. The emitted block extent =
+        // sum of emitted line cross-sizes = 50.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var flex = BuildFlexContainer();
+        SetLengthPx(flex.Style, PropertyId.FlexWrap, 0);  // wrap
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1));
+        for (var i = 0; i < 4; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 100);
+            SetLengthPx(style, PropertyId.Height, 50);
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            var item = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(item);
+        }
+
+        using var layouter = new NetPdf.Layout.Layouters.FlexLayouter(
+            rootBox: flex, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        layouter.ConfigureEmission(
+            contentInlineOffset: 0,
+            contentBlockOffset: 0,
+            contentInlineSize: 250,
+            contentBlockSize: 50,
+            allowPagination: true);
+
+        var ctx = new FragmentainerContext(contentInlineSize: 250, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var flexCont = Assert.IsType<FlexContinuation>(result.Continuation);
+        Assert.Equal(1, flexCont.LineIndex);
+
+        // The cycle-4e contract: EmittedBlockExtent = 50 (= LineCrossSize
+        // of the single emitted line). Pre-cycle-4e the field
+        // didn't exist + the BlockLayouter caller used the clamped
+        // budget instead — over-counting when emitted content was
+        // smaller than the budget.
+        Assert.Equal(50.0, flexCont.EmittedBlockExtent, precision: 3);
+    }
+
+    [Fact]
+    public void Task16_cycle4e_PageComplete_reports_emitted_extent_for_two_lines()
+    {
+        // Variant of the above: budget that fits 2 lines of 30 tall
+        // (= 60 of budget) but 3 lines exist. EmittedBlockExtent
+        // should be 60 (= 30 + 30).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1));
+        for (var i = 0; i < 3; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 250);  // each item = full line
+            SetLengthPx(style, PropertyId.Height, 30);
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            var item = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(item);
+        }
+
+        using var layouter = new NetPdf.Layout.Layouters.FlexLayouter(
+            rootBox: flex, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        layouter.ConfigureEmission(
+            contentInlineOffset: 0,
+            contentBlockOffset: 0,
+            contentInlineSize: 250,
+            contentBlockSize: 70,  // fits 2 lines (60); line 3 would exceed
+            allowPagination: true);
+
+        var ctx = new FragmentainerContext(contentInlineSize: 250, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var flexCont = Assert.IsType<FlexContinuation>(result.Continuation);
+        Assert.Equal(2, flexCont.LineIndex);
+        Assert.Equal(60.0, flexCont.EmittedBlockExtent, precision: 3);
+    }
+
+    [Fact]
     public void Task16_resume_with_continuation_skips_emitted_lines()
     {
         // Continuation of the test above: re-run with a non-null

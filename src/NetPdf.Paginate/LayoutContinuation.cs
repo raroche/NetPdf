@@ -93,10 +93,24 @@ internal sealed record TableContinuation(
 /// emit. <paramref name="BaselineState"/> per Phase 3 plan §"Flex
 /// baseline alignment across fragments" + review fix #7 — opaque
 /// cross-fragment baseline snapshot so a flex line that splits across
-/// pages keeps its baseline alignment.</summary>
+/// pages keeps its baseline alignment.
+/// <paramref name="EmittedBlockExtent"/> per Phase 3 Task 16 cycle 4e
+/// (P2 #5 from PR-#79) — the cross-axis extent the FlexLayouter
+/// actually consumed for the lines emitted on THIS fragment (=
+/// cumulative sum of <c>LineCrossSize</c> for emitted lines).
+/// BlockLayouter's PageComplete propagation uses this for accurate
+/// cross-page <c>ConsumedBlockSize</c> accounting; future cycle 4f
+/// will use it to shrink the wrapper's BoxFragment block-size when
+/// the cycle-4b paginatable-flex clamp's budget exceeded what
+/// actually got emitted. <b>Z-order constraint for cycle 4f:</b>
+/// the wrapper fragment must precede its children in the sink's
+/// fragment list (= painter's draw order), so the wrapper emit
+/// can't simply move to post-dispatch; a sink-mutation or
+/// pre-emit-with-backfill API is required.</summary>
 internal sealed record FlexContinuation(
     int LineIndex,
-    object? BaselineState = null) : LayoutContinuation;
+    object? BaselineState = null,
+    double EmittedBlockExtent = 0.0) : LayoutContinuation;
 
 /// <summary>Grid container split between grid rows.
 /// <paramref name="RowIndex"/> identifies the next grid row to emit.

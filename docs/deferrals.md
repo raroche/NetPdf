@@ -1254,15 +1254,17 @@ grepping the ID).
       mathematically a margin-collapse boundary could still
       undercount; defer for a P2 follow-on once a regression
       surfaces.
-    - **P2 #5 (PR-#79)**: FlexLayouter returns emitted-fragment
-      block extent so cursor advancement on PageComplete reflects
-      only the current fragment's contribution. Cycle 4b consumes
-      the page-remaining-block as the wrapper's painted size +
-      the cursor advance, which is overconservative when
-      FlexLayouter emits fewer lines than the clamped budget would
-      allow (= AllDone case after clamping). Functional but not
-      pixel-perfect for the AllDone-after-clamp case; tracked as
-      cycle 4c.
+    - 🚧 **P2 #5 (PR-#79) contract shipped in cycle 4e** —
+      `FlexContinuation.EmittedBlockExtent` field added + populated
+      by FlexLayouter on PageComplete (= cumulative sum of
+      `LineCrossSize` for emitted lines). The BlockLayouter
+      consumer side is **cycle 4f scope** because of the z-order
+      constraint: the wrapper fragment must precede its children
+      in the sink's fragment list (= painter draw order), so the
+      wrapper emit can't simply move to post-dispatch. Cycle 4f
+      will add a sink-mutation or pre-emit-with-backfill API to
+      let the wrapper's BlockSize be retro-adjusted to the actual
+      emitted extent.
     - ✅ **P3 #7 (PR-#79 + PR-#80) shipped in cycle 4a (PR #82)**:
       `DispatchFlexInner` helper now used by BOTH direct +
       recursive paths to eliminate drift between them. 135 + 107
@@ -1327,12 +1329,12 @@ grepping the ID).
        the production test shape; mathematically a margin-collapse
        boundary could still undercount. Pick up when a regression
        surfaces.
-    5. **Return emitted-fragment block extent from FlexLayouter**
-       (P2 #5) — DEFERRED. Cycle 4b consumes the
-       page-remaining-block as the wrapper's painted size + cursor
-       advance, which is overconservative when FlexLayouter emits
-       fewer lines than the clamped budget allows. Functional but
-       not pixel-perfect for the AllDone-after-clamp case.
+    5. 🚧 **Return emitted-fragment block extent from FlexLayouter**
+       (P2 #5) — contract SHIPPED in cycle 4e (PR #86): new
+       `FlexContinuation.EmittedBlockExtent` field populated on
+       PageComplete. The BlockLayouter consumer-side wrapper-resize
+       is cycle 4f scope (= z-order constraint requires sink
+       mutation or pre-emit-with-backfill).
     6. ✅ **Unskip the production-pipeline test** (P1 #3) — shipped
        in cycle 4b.
     7. ✅ **Forced-overflow flex re-route via `DispatchFlexInner`**

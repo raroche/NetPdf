@@ -1278,14 +1278,17 @@ grepping the ID).
       private nested record struct to internal at the namespace
       level. 6 direct unit tests in `FlexLinePackerTests` pin the
       algorithm contract.
-    - **P2 from PR-#82 review #2**: extend `DispatchFlexInner`
-      (or add a `FlexGeometryHelper`) to also encapsulate
-      border/padding reads + content-box geometry math.
-      Each call site still duplicates that ~10-line geometry
-      derivation (now THREE sites with the cycle-4b outer +
-      recursive sites consulting the clamp ahead of the
-      dispatch). Consolidating becomes more valuable as the
-      paths converge.
+    - ✅ **P2 from PR-#82 review #2 shipped in cycle 4d**:
+      extracted `FlexGeometryHelper` to
+      `src/NetPdf.Layout/Layouters/FlexGeometryHelper.cs`. The 3
+      dispatch sites (outer, recursive, forced-overflow re-route)
+      each now call
+      `FlexGeometryHelper.ComputeContentGeometry(box, borderBox*,
+      offset*) → FlexContentGeometry`. Pattern mirrors
+      `MulticolGeometryHelper`; simpler since flex's
+      content-block-size always derives from the wrapper's
+      border-box (no auto-height/fragmentainer-remaining branch).
+      4 direct tests in `FlexGeometryHelperTests` pin the math.
     - **P2 from PR-#82 review #3**: parameterize the helper's
       `IBreakResolver` + `LayoutAttemptStrategy`. The current
       hardcoded fresh `BreakResolver` + `LastResort` preserves

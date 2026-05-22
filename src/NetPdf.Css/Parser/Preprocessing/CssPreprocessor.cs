@@ -286,10 +286,18 @@ internal static class CssPreprocessor
             rawBody = bodyWithBraces.Length >= 2 ? bodyWithBraces[1..^1].ToString() : string.Empty;
 
             // Walk the body for modern function declarations.
-            var modernDecls = ScanForModernDeclarations(rawBody);
+            // Per Phase 3 Task 15 L17 — also pick up the explicit-
+            // longhand-wins set so the merge respects CSS Cascade §7.4
+            // for cases like `flex-flow: row wrap; flex-wrap: nowrap`.
+            var (modernDecls, explicitWinners) =
+                ScanForModernDeclarationsWithOrder(rawBody);
             if (!modernDecls.IsEmpty)
             {
-                styleRuleRecoveries.Add(new CssStyleRuleRecovery(ordinal, modernDecls));
+                styleRuleRecoveries.Add(
+                    new CssStyleRuleRecovery(
+                        ordinal,
+                        modernDecls,
+                        explicitWinners));
             }
         }
         else if (tok.PeekChar() == ';')
@@ -527,6 +535,21 @@ internal static class CssPreprocessor
     /// inline-style parser loses modern colors + multi-arg attr() before the typed
     /// pipeline gets a chance to diagnose them.</summary>
     internal static ImmutableArray<CssDeclarationRecovery> ScanForModernDeclarations(string body) =>
+        ScanDeclarations(body, modernOnly: true).Recoveries;
+
+    /// <summary>Per Phase 3 Task 15 L17 — extended modern-declaration
+    /// scan that also returns the closed set of longhand property names
+    /// that appear AT A LATER source-order position than a shorthand
+    /// expansion targeting the same longhand. The merge in
+    /// <see cref="CssParserAdapter.AdaptDeclarationsWithRecovery"/> uses
+    /// this set to skip the shorthand-expansion override per CSS
+    /// Cascade §7.4 last-decl-wins: when this set contains (say)
+    /// <c>flex-wrap</c>, an explicit <c>flex-wrap:</c> declaration
+    /// appeared AFTER a <c>flex-flow:</c> shorthand in the same rule
+    /// + must win over the shorthand's expansion.</summary>
+    internal static (ImmutableArray<CssDeclarationRecovery> Recoveries,
+        ImmutableArray<string> ExplicitLonghandsAfterShorthand)
+        ScanForModernDeclarationsWithOrder(string body) =>
         ScanDeclarations(body, modernOnly: true);
 
     /// <summary>
@@ -544,13 +567,33 @@ internal static class CssPreprocessor
     /// but emits every parsed declaration. Property name is lower-cased per
     /// CSS Syntax §2 (case-insensitive).</remarks>
     internal static ImmutableArray<CssDeclarationRecovery> ScanAllDeclarations(string body) =>
-        ScanDeclarations(body, modernOnly: false);
+        ScanDeclarations(body, modernOnly: false).Recoveries;
 
-    private static ImmutableArray<CssDeclarationRecovery> ScanDeclarations(string body, bool modernOnly)
+    /// <summary>Per Phase 3 Task 15 L17 — emit recovery records + the
+    /// closed set of explicit longhands that appear at a later source
+    /// position than a shorthand expansion targeting the same longhand.
+    /// Returns a tuple so the existing callers stay source-compatible
+    /// via the
+    /// <see cref="ScanForModernDeclarations(string)"/> /
+    /// <see cref="ScanAllDeclarations(string)"/> wrappers that drop the
+    /// second item.</summary>
+    private static (ImmutableArray<CssDeclarationRecovery> Recoveries,
+        ImmutableArray<string> ExplicitLonghandsAfterShorthand)
+        ScanDeclarations(string body, bool modernOnly)
     {
-        if (string.IsNullOrWhiteSpace(body)) return ImmutableArray<CssDeclarationRecovery>.Empty;
+        if (string.IsNullOrWhiteSpace(body))
+            return (ImmutableArray<CssDeclarationRecovery>.Empty,
+                ImmutableArray<string>.Empty);
 
         var output = ImmutableArray.CreateBuilder<CssDeclarationRecovery>();
+        // Per Phase 3 Task 15 L17 — track shorthand expansions seen so
+        // far + the longhand names they targeted. When a later explicit
+        // longhand declaration matches one of those targets, record it
+        // in `explicitWinners` so the merge knows to skip the
+        // shorthand-expansion override for that property.
+        var shorthandExpansionTargets = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var explicitWinners = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         var tok = new CssTokenizer(body.AsSpan(), null);
         tok.SkipWhitespaceAndComments();
 
@@ -620,16 +663,8 @@ internal static class CssPreprocessor
                         out var fShrink,
                         out var fBasis))
                 {
-                    // Per Phase 3 Task 15 L13 + post-PR-#76 review #1 —
-                    // shorthand-expansion recoveries carry the
-                    // `IsFromShorthandExpansion: true` flag so the
-                    // downstream merge uses APPEND-ONLY semantics: any
-                    // explicit longhand that AngleSharp emitted (e.g.,
-                    // `flex: 1; flex-grow: 0` → AngleSharp's
-                    // last-wins `flex-grow: 0` plus our expansion's
-                    // `flex-grow: 1`) survives the merge. Pre-fix the
-                    // expansion's `flex-grow: 1` would silently
-                    // override the author's later `flex-grow: 0`.
+                    // Per Phase 3 Task 15 L13 — emit 3 longhand
+                    // recovery records marked IsFromShorthandExpansion.
                     output.Add(new CssDeclarationRecovery(
                         "flex-grow", fGrow, isImportant,
                         IsFromShorthandExpansion: true));
@@ -639,6 +674,13 @@ internal static class CssPreprocessor
                     output.Add(new CssDeclarationRecovery(
                         "flex-basis", fBasis, isImportant,
                         IsFromShorthandExpansion: true));
+                    // Per Phase 3 Task 15 L17 — record the three
+                    // longhand targets so any subsequent explicit
+                    // longhand for one of these names is marked as
+                    // an "explicit winner" per CSS Cascade §7.4.
+                    shorthandExpansionTargets.Add("flex-grow");
+                    shorthandExpansionTargets.Add("flex-shrink");
+                    shorthandExpansionTargets.Add("flex-basis");
                 }
                 else if (normalizedName == "flex-flow"
                     && FlexFlowShorthandExpander.TryExpand(
@@ -646,17 +688,19 @@ internal static class CssPreprocessor
                         out var ffDir,
                         out var ffWrap))
                 {
-                    // Per Phase 3 Task 15 L16 — multi-emit recovery
-                    // for the `flex-flow` shorthand per CSS Flexbox
-                    // L1 §6.1. Two longhand records replace the
-                    // single dropped shorthand; see L13 above for the
-                    // append-only semantics rationale.
+                    // Per Phase 3 Task 15 L16 — emit 2 longhand
+                    // recovery records.
                     output.Add(new CssDeclarationRecovery(
                         "flex-direction", ffDir, isImportant,
                         IsFromShorthandExpansion: true));
                     output.Add(new CssDeclarationRecovery(
                         "flex-wrap", ffWrap, isImportant,
                         IsFromShorthandExpansion: true));
+                    // Per Phase 3 Task 15 L17 — record the two
+                    // longhand targets for the same reason as `flex`
+                    // above.
+                    shorthandExpansionTargets.Add("flex-direction");
+                    shorthandExpansionTargets.Add("flex-wrap");
                 }
                 else
                 {
@@ -665,13 +709,53 @@ internal static class CssPreprocessor
                         cleanValue,
                         isImportant));
                 }
+
+                // Per Phase 3 Task 15 L17 — also check whether THIS
+                // declaration's normalized property name matches one
+                // of the SHORTHAND TARGETS recorded by an EARLIER
+                // iteration. If so, an explicit longhand has
+                // appeared at a later source position than its
+                // matching shorthand → record as an explicit winner
+                // so the merge can skip the shorthand-expansion
+                // override per CSS Cascade §7.4. Self-match is
+                // impossible because the shorthand cases above don't
+                // add their OWN name to `shorthandExpansionTargets`
+                // (they add their longhand targets instead).
+                if (shorthandExpansionTargets.Contains(normalizedName))
+                {
+                    explicitWinners.Add(normalizedName);
+                }
+            }
+            else
+            {
+                // Per Phase 3 Task 15 L17 — even when the declaration
+                // is NOT included in the recovery list (= the typical
+                // case for explicit longhands that AngleSharp handles
+                // natively), we still need to detect when it's an
+                // explicit longhand following a shorthand expansion.
+                // The exclude path: include = false because the
+                // property is not in KnownDroppedProperties + the
+                // value text is not modern. The declaration STILL
+                // exists in source + counts for the shorthand-vs-
+                // explicit-longhand source-order comparison.
+                var unconditionalNormalizedName = NormalizePropertyName(lowerName);
+                if (shorthandExpansionTargets.Contains(unconditionalNormalizedName))
+                {
+                    explicitWinners.Add(unconditionalNormalizedName);
+                }
             }
 
             if (tok.PeekChar() == ';') tok.ReadChar();
             tok.SkipWhitespaceAndComments();
         }
 
-        return output.Count == 0 ? ImmutableArray<CssDeclarationRecovery>.Empty : output.ToImmutable();
+        return (
+            output.Count == 0
+                ? ImmutableArray<CssDeclarationRecovery>.Empty
+                : output.ToImmutable(),
+            explicitWinners.Count == 0
+                ? ImmutableArray<string>.Empty
+                : explicitWinners.ToImmutableArray());
     }
 
     /// <summary>

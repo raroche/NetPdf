@@ -76,7 +76,7 @@ public sealed class CssPreprocessorShorthandRecoveryTests
     }
 
     [Fact]
-    public void Mixed_flex_flow_then_explicit_flex_wrap_known_gap_pins_current_behavior()
+    public void Mixed_flex_flow_then_explicit_flex_wrap_records_explicit_winner()
     {
         // Per CSS Cascade §7.4 last-decl-wins:
         //   `.flex { flex-flow: row wrap; flex-wrap: nowrap; }`
@@ -84,38 +84,32 @@ public sealed class CssPreprocessorShorthandRecoveryTests
         // (the LATER explicit longhand wins over the shorthand
         // expansion's earlier flex-wrap: wrap).
         //
-        // CURRENT BEHAVIOR (= the post-PR-#76 P1 finding's known
-        // gap): the recovery's expansion-derived flex-wrap: wrap
-        // appears in the recovery list. AdaptDeclarationsWithRecovery
-        // overrides AngleSharp's emit for flex-wrap, regardless of
-        // source order. So the merged output is incorrectly
-        // flex-wrap: wrap.
-        //
-        // This test pins the CURRENT incorrect behavior — it should
-        // flip when source-position tracking lands. The test exists
-        // so the limitation doesn't drift silently.
+        // Per Phase 3 Task 15 L17 the source-order tracking landed:
+        // `ScanDeclarations` records the explicit `flex-wrap:
+        // nowrap` as an "explicit winner" because it appears AFTER
+        // a `flex-flow` shorthand expansion that targets `flex-wrap`.
+        // The merge in `CssParserAdapter.AdaptDeclarationsWithRecovery`
+        // uses this set to skip the shorthand-expansion override for
+        // `flex-wrap`, letting AngleSharp's emit (which respects
+        // last-decl-wins for explicit longhands) survive intact.
         var result = CssPreprocessor.Process(
             ".flex { flex-flow: row wrap; flex-wrap: nowrap; }");
         var rule = result.StyleRuleRecoveries.Single();
         var decls = rule.Declarations;
-        // The recovery list contains:
-        //   - flex-direction: row (from flex-flow shorthand)
-        //   - flex-wrap: wrap (from flex-flow shorthand)
-        //   - flex-wrap: nowrap (NOT in recovery — AngleSharp
-        //     handles the explicit longhand directly + recovery
-        //     only picks up shorthands per the KnownDroppedProperties
-        //     filter).
-        var flexWrapRecoveries = decls
-            .Where(d => d.Property == "flex-wrap")
-            .ToList();
-        // CURRENT BEHAVIOR: only the shorthand-expansion entry is in
-        // the recovery list. The explicit `flex-wrap: nowrap` is
-        // expected to come through AngleSharp's emit + survive the
-        // merge if AngleSharp emits it correctly. If the merge
-        // override fires, recovery's `wrap` will win incorrectly.
-        Assert.Single(flexWrapRecoveries);
-        Assert.Equal("wrap", flexWrapRecoveries[0].RawValueText);
-        Assert.True(flexWrapRecoveries[0].IsFromShorthandExpansion);
+        // Recovery list still contains BOTH shorthand-expansion
+        // longhands (flex-direction + flex-wrap), but the merge will
+        // skip the flex-wrap override because the rule's
+        // ExplicitLonghandsAfterShorthand set contains it.
+        Assert.Contains(decls,
+            d => d.Property == "flex-wrap"
+                && d.RawValueText == "wrap"
+                && d.IsFromShorthandExpansion);
+        // Per Phase 3 Task 15 L17 — `flex-wrap` IS in the
+        // explicit-winners set for this rule.
+        Assert.Contains("flex-wrap", rule.ExplicitLonghandsAfterShorthand);
+        // `flex-direction` is NOT in the set (no later explicit
+        // longhand for it).
+        Assert.DoesNotContain("flex-direction", rule.ExplicitLonghandsAfterShorthand);
     }
 
     [Fact]
@@ -155,29 +149,31 @@ public sealed class CssPreprocessorShorthandRecoveryTests
     }
 
     [Fact]
-    public void Flex_shorthand_then_explicit_flex_grow_known_gap_pins_current_behavior()
+    public void Flex_shorthand_then_explicit_flex_grow_records_explicit_winner()
     {
         // Per CSS Cascade §7.4: `.a { flex: 1; flex-grow: 0; }`
         // should produce flex-grow: 0 (the LATER explicit longhand
-        // wins). CURRENT BEHAVIOR (= known gap, same root cause as
-        // Mixed_flex_flow above): the recovery's expansion-derived
-        // `flex-grow: 1` overrides AngleSharp's emit for flex-grow,
-        // regardless of source order. So the merged output is
-        // incorrectly flex-grow: 1.
+        // wins). Per Phase 3 Task 15 L17 source-order tracking the
+        // explicit `flex-grow: 0` is recorded as an explicit winner
+        // (= it appears AFTER the `flex` shorthand expansion's
+        // `flex-grow: 1` target), so the merge skips the override
+        // and AngleSharp's emit survives.
         var result = CssPreprocessor.Process(
             ".a { flex: 1; flex-grow: 0; }");
         var rule = result.StyleRuleRecoveries.Single();
-        var decls = rule.Declarations;
-        var flexGrowRecoveries = decls
-            .Where(d => d.Property == "flex-grow")
-            .ToList();
-        // Pin the broken-by-spec behavior: recovery only carries the
-        // expansion's flex-grow: 1 (the explicit `flex-grow: 0` from
-        // the author surfaces via AngleSharp's emit, NOT via
-        // recovery — `flex-grow` is not in KnownDroppedProperties).
-        Assert.Single(flexGrowRecoveries);
-        Assert.Equal("1", flexGrowRecoveries[0].RawValueText);
-        Assert.True(flexGrowRecoveries[0].IsFromShorthandExpansion);
+        // Recovery list contains all three shorthand expansions.
+        Assert.Contains(rule.Declarations,
+            d => d.Property == "flex-grow"
+                && d.RawValueText == "1"
+                && d.IsFromShorthandExpansion);
+        // Per Phase 3 Task 15 L17 — `flex-grow` is in the
+        // explicit-winners set (= later explicit longhand wins).
+        Assert.Contains("flex-grow", rule.ExplicitLonghandsAfterShorthand);
+        // The other two longhands (flex-shrink, flex-basis) are
+        // NOT in the explicit-winners set (no later explicit
+        // declaration overrode them).
+        Assert.DoesNotContain("flex-shrink", rule.ExplicitLonghandsAfterShorthand);
+        Assert.DoesNotContain("flex-basis", rule.ExplicitLonghandsAfterShorthand);
     }
 
     [Fact]
@@ -220,29 +216,32 @@ public sealed class CssPreprocessorShorthandRecoveryTests
     }
 
     [Fact]
-    public void Comments_between_tokens_known_gap_pins_current_behavior()
+    public void Comments_inside_flex_flow_value_are_stripped()
     {
-        // Per post-PR-#76 review P2 — `flex-flow: row /* comment */
-        // wrap` is valid CSS. The current
-        // FlexFlowShorthandExpander tokenizes via string.Split on
-        // whitespace + does NOT strip comments, so the comment
-        // remains a token + expansion fails (returns false).
-        // CssTokenizer.ReadUntilAnyTopLevel preserves the original
-        // span including comments.
-        //
-        // Pin the CURRENT behavior so future comment-stripping work
-        // surfaces this test. (Fix: pre-normalize comments to
-        // whitespace before splitting, OR use a CSS-aware token
-        // reader instead of string.Split.)
+        // Per Phase 3 Task 15 L17 (post-PR-#76 P2 closeout) — CSS
+        // block comments (`/* ... */`) per CSS Syntax §4.3.2 are
+        // syntactic whitespace + must not affect the value's
+        // tokenization. The expander pre-normalizes comments to
+        // single spaces before splitting via
+        // `CssShorthandHelpers.StripBlockComments`.
         var raw = "row /* hello */ wrap";
         var ok = FlexFlowShorthandExpander.TryExpand(
-            raw, out _, out _);
-        // CURRENT: returns false because comment is treated as a
-        // bogus 3rd token. This SHOULD return true post-fix.
-        Assert.False(ok,
-            "Known gap: comments inside flex-flow values are not "
-            + "stripped before tokenization; the expansion fails. "
-            + "Flip this assertion when the expander gains CSS-aware "
-            + "comment skipping (= P2 from PR-#76 review).");
+            raw, out var d, out var w);
+        Assert.True(ok);
+        Assert.Equal("row", d);
+        Assert.Equal("wrap", w);
+    }
+
+    [Fact]
+    public void Comments_inside_flex_value_are_stripped()
+    {
+        // Same as above, for the `flex` shorthand expander.
+        var raw = "1 /* grow */ 0 /* shrink */ 100px";
+        var ok = FlexShorthandExpander.TryExpand(
+            raw, out var g, out var s, out var b);
+        Assert.True(ok);
+        Assert.Equal("1", g);
+        Assert.Equal("0", s);
+        Assert.Equal("100px", b);
     }
 }

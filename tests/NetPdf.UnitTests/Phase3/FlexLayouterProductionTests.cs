@@ -2669,6 +2669,134 @@ public sealed class FlexLayouterProductionTests
     }
 
     [Fact]
+    public async Task L17_production_html_explicit_flex_wrap_after_flex_flow_wins_per_cascade()
+    {
+        // Per Phase 3 Task 15 L17 — closes the PR-#76 P1 known gap.
+        // CSS Cascade §7.4 last-decl-wins:
+        // `.flex { flex-flow: row wrap; flex-wrap: nowrap; }` MUST
+        // produce flex-direction: row + flex-wrap: nowrap (later
+        // explicit longhand wins over the shorthand expansion's
+        // earlier `flex-wrap: wrap`). Pre-L17 was a known gap: the
+        // recovery's expansion-derived `flex-wrap: wrap` always
+        // overrode AngleSharp's emit. L17's source-order tracking
+        // records `flex-wrap` as an explicit winner + the merge
+        // skips the override.
+        //
+        // Verifies via layout: nowrap → 3×200 items overflow the
+        // 300-wide container on a single line. If the override had
+        // fired (= wrap), items would land on 3 lines (= different
+        // BlockOffsets).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    flex-flow: row wrap;
+                    flex-wrap: nowrap;
+                    width: 300px;
+                    height: 100px;
+                }
+                .item {
+                    width: 200px;
+                    height: 50px;
+                    flex-shrink: 0;
+                }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+              <div class="item c"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, root) = await RenderViaFullPipelineAsync(html, contentInlineSize: 300);
+        var flex = FindFlexContainer(root);
+        Assert.NotNull(flex);
+
+        // Cascade-level: explicit `flex-wrap: nowrap` wins.
+        Assert.Equal(FlexDirectionValue.Row, flex!.Style.ReadFlexDirection());
+        Assert.Equal(FlexWrapValue.NoWrap, flex.Style.ReadFlexWrap());
+
+        // Layout-level: nowrap → items on ONE line + overflow.
+        BoxFragment? a = null, b = null, c = null;
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class") ?? string.Empty;
+            var classes = classAttr.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            foreach (var cls in classes)
+            {
+                if (cls == "a") a = f;
+                else if (cls == "b") b = f;
+                else if (cls == "c") c = f;
+            }
+        }
+        Assert.NotNull(a);
+        Assert.NotNull(b);
+        Assert.NotNull(c);
+        // All 3 items on the same line.
+        Assert.Equal(a!.Value.BlockOffset, b!.Value.BlockOffset, precision: 3);
+        Assert.Equal(b.Value.BlockOffset, c!.Value.BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public async Task L17_production_html_explicit_flex_grow_after_flex_shorthand_wins_per_cascade()
+    {
+        // Per Phase 3 Task 15 L17 — closes the PR-#76 P1 known gap
+        // for the `flex` shorthand. `.item { flex: 1; flex-grow: 0; }`
+        // MUST produce flex-grow: 0 (NOT the shorthand's 1) per CSS
+        // Cascade §7.4 last-decl-wins.
+        //
+        // Verifies via layout: grow=0 → items at basis 0 (from
+        // `flex: 1` expansion) WITHOUT growing to fill container.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    width: 600px;
+                    height: 60px;
+                }
+                .item {
+                    width: 100px;
+                    height: 50px;
+                    flex: 1;
+                    flex-grow: 0;
+                }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+              <div class="item c"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, root) = await RenderViaFullPipelineAsync(html);
+
+        var items = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class");
+            if (classAttr != null && classAttr.StartsWith("item"))
+            {
+                items.Add(f);
+            }
+        }
+        Assert.Equal(3, items.Count);
+        // Per L17: grow=0 wins. Items at basis 0 (from `flex: 1` →
+        // basis=0) + no growth → final size 0 each.
+        foreach (var item in items)
+        {
+            Assert.True(item.InlineSize < 100,
+                $"Expected item size < 100 (= no growth from basis 0); got {item.InlineSize}. "
+                + "If this fails, the shorthand's grow=1 leaked through L17's source-order fix.");
+        }
+    }
+
+    [Fact]
     public async Task L16_production_html_flex_flow_resets_omitted_wrap_after_explicit_longhand()
     {
         // Per post-PR-#76 review (Copilot inline) + CSS Cascade §7.4

@@ -16,6 +16,16 @@ namespace NetPdf.Css.Parser.Preprocessing;
 /// order. Aligns with the adapter's iteration over AngleSharp's emitted style rules.</param>
 /// <param name="Declarations">Recovered declarations. Empty array means no modern-function
 /// declarations were detected; the rule is fully described by AngleSharp's output.</param>
+/// <param name="ExplicitLonghandsAfterShorthand">Per Phase 3 Task 15 L17 — the closed
+/// set of longhand property names that appear in the rule body AT A LATER source-order
+/// position than a shorthand expansion that would set the same longhand. Used by
+/// <c>CssParserAdapter.AdaptDeclarationsWithRecovery</c> to skip the shorthand-expansion
+/// recovery's override per CSS Cascade §7.4 last-decl-wins: when this set contains
+/// (say) <c>flex-wrap</c>, an explicit <c>flex-wrap:</c> declaration appeared AFTER
+/// a <c>flex-flow:</c> shorthand in the same rule + must win over the shorthand's
+/// expansion. Empty array means no shorthand-vs-explicit-longhand conflicts in this
+/// rule.</param>
 internal sealed record CssStyleRuleRecovery(
     int OrdinalIndex,
-    ImmutableArray<CssDeclarationRecovery> Declarations);
+    ImmutableArray<CssDeclarationRecovery> Declarations,
+    ImmutableArray<string> ExplicitLonghandsAfterShorthand = default);

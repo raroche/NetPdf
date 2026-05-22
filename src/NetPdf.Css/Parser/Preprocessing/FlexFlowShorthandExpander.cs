@@ -68,7 +68,16 @@ internal static class FlexFlowShorthandExpander
 
         if (string.IsNullOrWhiteSpace(rawValue)) return false;
 
-        var trimmed = rawValue.Trim();
+        // Per Phase 3 Task 15 L17 (post-PR-#76 P2) — strip CSS block
+        // comments (`/* ... */`) per CSS Syntax §4 before tokenizing.
+        // Pre-fix: `flex-flow: row /* comment */ wrap` tokenized as
+        // 3 tokens (= invalid 3-token grammar for flex-flow); the
+        // expansion failed + the cascade fell back to AngleSharp's
+        // buggy partial expansion. Post-fix: comments are normalized
+        // to single spaces before the whitespace split.
+        var stripped = CssShorthandHelpers.StripBlockComments(rawValue);
+        if (string.IsNullOrWhiteSpace(stripped)) return false;
+        var trimmed = stripped.Trim();
 
         // CSS-wide keywords pass through to both longhands per CSS
         // Cascade §7.

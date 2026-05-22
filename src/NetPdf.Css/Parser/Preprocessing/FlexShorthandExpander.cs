@@ -64,7 +64,12 @@ internal static class FlexShorthandExpander
 
         if (string.IsNullOrWhiteSpace(rawValue)) return false;
 
-        var trimmed = rawValue.Trim();
+        // Per Phase 3 Task 15 L17 — strip CSS block comments per CSS
+        // Syntax §4 before tokenizing (mirrors the FlexFlowShorthandExpander
+        // fix for the same gap).
+        var stripped = CssShorthandHelpers.StripBlockComments(rawValue);
+        if (string.IsNullOrWhiteSpace(stripped)) return false;
+        var trimmed = stripped.Trim();
 
         // CSS-wide keywords (initial / inherit / unset / revert / etc.)
         // — pass through to each longhand verbatim so the cascade

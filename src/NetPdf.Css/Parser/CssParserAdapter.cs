@@ -634,26 +634,26 @@ internal static class CssParserAdapter
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
         // First pass: emit AngleSharp's declarations, overriding values for any property
-        // that has a recovery entry. Per Phase 3 Task 15 L16 post-PR-#76 review #1 (P1)
-        // — this override is too aggressive for shorthand-derived recoveries when an
-        // explicit longhand comes LATER in source order than the shorthand. AngleSharp
-        // 1.0.0-beta.144 reliably emits incorrect longhand values for `flex: auto` /
-        // `flex: 100px` (= our recovery must override to fix them), so a pure
-        // append-only switch breaks the L13/L16 single-shorthand cases. The proper
-        // fix needs source-position tracking on both AngleSharp's emit + the
-        // recovery records so the merge respects CSS Cascade §7.4 last-decl-wins
-        // INTERLEAVED — that's a substantial refactor pinned by the
-        // `Mixed_shorthand_then_longhand_known_gap_*` regression tests in
-        // `CssPreprocessorShorthandRecoveryTests`. Until that lands, the current
-        // override stays + the known-gap tests document the limitation. Note: the
-        // <see cref="CssDeclarationRecovery.IsFromShorthandExpansion"/> flag is
-        // wired through the data model so the future fix can switch on it without
-        // re-plumbing the recovery emitter.
+        // that has a recovery entry. Per Phase 3 Task 15 L17 — the merge now respects
+        // CSS Cascade §7.4 last-decl-wins for shorthand-vs-later-explicit-longhand
+        // cases: when a SHORTHAND-EXPANSION recovery is present AND the same longhand
+        // appears as an EXPLICIT declaration AT A LATER SOURCE POSITION than the
+        // shorthand (= captured in `recovery.ExplicitLonghandsAfterShorthand`),
+        // AngleSharp's emit is preserved (= the explicit longhand wins). Pre-L17 the
+        // override always fired, silently overwriting a later `flex-wrap: nowrap`
+        // with the shorthand-expansion's earlier `flex-wrap: wrap`. For non-shorthand
+        // recoveries (modern colors, align-items compounds) the override stays
+        // unconditional — those recoveries fix what AngleSharp corrupted entirely.
+        var explicitWinners = recovery.ExplicitLonghandsAfterShorthand.IsDefault
+            ? ImmutableArray<string>.Empty
+            : recovery.ExplicitLonghandsAfterShorthand;
         foreach (var decl in fromAngleSharp)
         {
             seen.Add(decl.Property);
             var match = FindRecovery(recovery.Declarations, decl.Property);
-            if (match is not null)
+            if (match is not null
+                && !(match.IsFromShorthandExpansion
+                     && IsExplicitWinner(explicitWinners, decl.Property)))
             {
                 output.Add(new CssDeclaration(
                     Property: decl.Property,
@@ -699,6 +699,21 @@ internal static class CssParserAdapter
                 last = item;
         }
         return last;
+    }
+
+    /// <summary>Per Phase 3 Task 15 L17 — case-insensitive lookup in
+    /// the rule's explicit-longhands-after-shorthand set. The merge
+    /// uses this to decide whether to skip the shorthand-expansion
+    /// override per CSS Cascade §7.4.</summary>
+    private static bool IsExplicitWinner(ImmutableArray<string> winners, string property)
+    {
+        if (winners.IsDefaultOrEmpty) return false;
+        foreach (var w in winners)
+        {
+            if (string.Equals(w, property, StringComparison.OrdinalIgnoreCase))
+                return true;
+        }
+        return false;
     }
 
     private static CssAtRule AdaptMediaRule(ICssMediaRule rule, CssSourceLocation location) => new(

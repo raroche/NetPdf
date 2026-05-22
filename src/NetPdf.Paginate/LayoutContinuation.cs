@@ -89,28 +89,62 @@ internal sealed record TableContinuation(
     object? ColumnLayoutCache = null) : LayoutContinuation;
 
 /// <summary>Multi-line flex container split between flex lines.
-/// <paramref name="LineIndex"/> identifies the next flex line to
-/// emit. <paramref name="BaselineState"/> per Phase 3 plan §"Flex
-/// baseline alignment across fragments" + review fix #7 — opaque
-/// cross-fragment baseline snapshot so a flex line that splits across
-/// pages keeps its baseline alignment.
-/// <paramref name="EmittedBlockExtent"/> per Phase 3 Task 16 cycle 4e
-/// (P2 #5 from PR-#79) — the cross-axis extent the FlexLayouter
-/// actually consumed for the lines emitted on THIS fragment (=
-/// cumulative sum of <c>LineCrossSize</c> for emitted lines).
-/// BlockLayouter's PageComplete propagation uses this for accurate
-/// cross-page <c>ConsumedBlockSize</c> accounting; future cycle 4f
-/// will use it to shrink the wrapper's BoxFragment block-size when
-/// the cycle-4b paginatable-flex clamp's budget exceeded what
-/// actually got emitted. <b>Z-order constraint for cycle 4f:</b>
-/// the wrapper fragment must precede its children in the sink's
-/// fragment list (= painter's draw order), so the wrapper emit
-/// can't simply move to post-dispatch; a sink-mutation or
-/// pre-emit-with-backfill API is required.</summary>
-internal sealed record FlexContinuation(
-    int LineIndex,
-    object? BaselineState = null,
-    double EmittedBlockExtent = 0.0) : LayoutContinuation;
+/// <c>LineIndex</c> identifies the next flex line to emit.
+/// <c>BaselineState</c> per Phase 3 plan §"Flex baseline alignment
+/// across fragments" + review fix #7 — opaque cross-fragment
+/// baseline snapshot so a flex line that splits across pages keeps
+/// its baseline alignment.
+/// <c>EmittedBlockExtent</c> per Phase 3 Task 16 cycle 4e (P2 #5
+/// from PR-#79) — the TRUE occupied cross-axis extent the
+/// FlexLayouter consumed for the lines emitted on THIS fragment.
+/// Computed in FlexLayouter's emission loop as the content-cross-box
+/// 0-based bottom of the deepest emitted line (= INCLUDES
+/// align-content's <c>lineStartOffset</c> + <c>lineBetweenSpacing</c>;
+/// NOT a naive sum of LineCrossSize). Cycle 4f will use this value
+/// to shrink the wrapper's BoxFragment block-size when the cycle-4b
+/// paginatable-flex clamp's budget exceeded what actually got
+/// emitted; BlockLayouter does NOT yet consume the field — current
+/// production code keeps the wrapper at the clamped budget per the
+/// z-order constraint below.
+/// <b>Z-order constraint for cycle 4f:</b> the wrapper fragment must
+/// precede its children in the sink's fragment list (= painter's
+/// draw order), so the wrapper emit can't simply move to
+/// post-dispatch; a sink-mutation or pre-emit-with-backfill API is
+/// required.</summary>
+internal sealed record FlexContinuation : LayoutContinuation
+{
+    public int LineIndex { get; }
+    public object? BaselineState { get; }
+    public double EmittedBlockExtent { get; }
+
+    /// <summary>Per Phase 3 Task 16 cycle 4e post-PR-#86 review P2 #2
+    /// — defensive validation. <c>LineIndex</c> validation lives on
+    /// the FlexLayouter resume path (= it must fall within the
+    /// container's packed line count). <c>EmittedBlockExtent</c> is
+    /// validated here at construction so cycle 4f's consumer side
+    /// can trust the value as finite + non-negative. NaN, ±Infinity,
+    /// or negative values would poison page accounting + fragment
+    /// geometry; surface a contract violation at the source instead
+    /// of silently corrupting downstream layout.</summary>
+    public FlexContinuation(
+        int LineIndex,
+        object? BaselineState = null,
+        double EmittedBlockExtent = 0.0)
+    {
+        if (!double.IsFinite(EmittedBlockExtent) || EmittedBlockExtent < 0)
+        {
+            throw new System.ArgumentOutOfRangeException(
+                nameof(EmittedBlockExtent),
+                $"FlexContinuation.EmittedBlockExtent must be finite + "
+                + $"non-negative; got {EmittedBlockExtent}. NaN / ±Infinity / "
+                + "negative values would corrupt cycle 4f's wrapper-resize "
+                + "+ ConsumedBlockSize accounting.");
+        }
+        this.LineIndex = LineIndex;
+        this.BaselineState = BaselineState;
+        this.EmittedBlockExtent = EmittedBlockExtent;
+    }
+}
 
 /// <summary>Grid container split between grid rows.
 /// <paramref name="RowIndex"/> identifies the next grid row to emit.

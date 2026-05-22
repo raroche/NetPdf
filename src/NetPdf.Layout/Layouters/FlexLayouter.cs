@@ -897,6 +897,30 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // edges.
         var swappedAxisCursor = lineStartOffset;
 
+        // Per Phase 3 Task 16 cycle 4e post-PR-#86 review P1 #1 —
+        // track the PHYSICAL cross-axis bottom of the deepest emitted
+        // line so the post-loop PageComplete return can report the
+        // ACTUAL occupied block extent (= NOT the naive
+        // sum(LineCrossSize), which ignores align-content's
+        // lineStartOffset + lineBetweenSpacing). For align-content:
+        // space-between with 2 lines of 30 in a 100 budget the lines
+        // occupy [0,30] + [70,100] — occupied extent = 100, while
+        // sum(LineCrossSize) = 60. Cycle 4f will consume the
+        // accurate value for wrapper resize + ConsumedBlockSize
+        // accounting; a wrong value would either clip children
+        // (under-counted) or leave dead space (over-counted) at the
+        // wrapper bottom.
+        //
+        // Coordinate system: the value is in content-cross-box
+        // 0-based coords (= relative to the wrapper's content-cross-
+        // start, NOT the absolute fragmentainer coord). For
+        // non-wrap-reverse (= the only paginatable case per
+        // <see cref="IsPaginatablePerStyle"/>),
+        // <c>swappedAxisCursor</c> already IS the 0-based content-
+        // cross offset of the current line's top; the line's bottom
+        // = <c>swappedAxisCursor + LineCrossSize</c>.
+        var maxEmittedCrossBottom = 0.0;
+
         // Per Phase 3 Task 15 L14 — encapsulate the cross-axis swap
         // state into one record so the line-emission formula has a
         // single named expression. Pre-L14 the swap math
@@ -1142,6 +1166,26 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             // between-spacing is 0 — the gap is absorbed by the
             // startOffset (positional) or by the line cross-extent
             // (stretch).
+            // Per Phase 3 Task 16 cycle 4e post-PR-#86 review P1 #1 —
+            // record the deepest line bottom seen so far so the
+            // post-loop PageComplete return reports the TRUE occupied
+            // extent (= accounts for align-content offsets +
+            // between-line spacing). For non-wrap-reverse,
+            // swappedAxisCursor IS the line's content-cross 0-based
+            // top, so bottom = swappedAxisCursor + LineCrossSize.
+            // For paginatable containers (= non-wrap-reverse per
+            // IsPaginatablePerStyle), lines emit in increasing
+            // cursor order, so the max-bottom is always the last
+            // line's bottom. Tracking max defensively makes this
+            // robust to future sub-cycle changes (e.g., should
+            // wrap-reverse ever join the paginatable set, the same
+            // accumulator works).
+            var lineBottom = swappedAxisCursor + line.LineCrossSize;
+            if (lineBottom > maxEmittedCrossBottom)
+            {
+                maxEmittedCrossBottom = lineBottom;
+            }
+
             // Per Phase 3 Task 15 L11 post-PR-#71 F#1 — the SWAPPED-
             // axis cursor advances toward the swapped cross-end (=
             // physical cross-start for wrap-reverse). The next line's
@@ -1178,29 +1222,26 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         // EmitBlockSubtreeRecursive's nested flex branch.
         if (outgoingContinuationLineIndex >= 0)
         {
-            // Per Phase 3 Task 16 cycle 4e (P2 #5 from PR-#79) —
-            // report the actual emitted block extent (= cumulative
-            // sum of <c>LineCrossSize</c> for emitted lines) on the
-            // PageComplete continuation. The dispatching BlockLayouter
-            // can use this to:
-            //   (a) account ConsumedBlockSize more accurately on the
-            //       PageComplete propagation path; and
-            //   (b) eventually shrink the wrapper's BoxFragment
-            //       block-size (cycle 4f scope per the z-order
-            //       constraint documented on FlexContinuation).
-            // `lines` at this point has been sliced to the fragment
-            // range (= just the lines emitted on this fragment); the
-            // sum is therefore the emit-time content extent.
-            var emittedBlockExtent = 0.0;
-            foreach (var line in lines)
-            {
-                emittedBlockExtent += line.LineCrossSize;
-            }
+            // Per Phase 3 Task 16 cycle 4e (P2 #5 from PR-#79)
+            // post-PR-#86 review P1 #1 — report the TRUE occupied
+            // block extent on the PageComplete continuation: the
+            // physical bottom (in content-cross-box 0-based coords)
+            // of the deepest emitted line, tracked in
+            // <c>maxEmittedCrossBottom</c> during the emission loop
+            // above. This INCLUDES align-content's lineStartOffset
+            // + lineBetweenSpacing contributions — pre-hardening the
+            // value was a naive sum(LineCrossSize) which
+            // under-counted for space-between / space-around /
+            // space-evenly / center / flex-end alignment families.
+            // Cycle 4f's wrapper-resize will consume this value
+            // directly; if it were the naive sum, the resized
+            // wrapper would clip its children for the
+            // alignment-distribution cases.
             return LayoutAttemptResult.PageComplete(
                 new FlexContinuation(
                     LineIndex: outgoingContinuationLineIndex,
                     BaselineState: null,
-                    EmittedBlockExtent: emittedBlockExtent),
+                    EmittedBlockExtent: maxEmittedCrossBottom),
                 cost: 0);
         }
         return LayoutAttemptResult.AllDone(cost: 0);

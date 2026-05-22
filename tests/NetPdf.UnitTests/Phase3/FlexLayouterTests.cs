@@ -8697,11 +8697,18 @@ public sealed class FlexLayouterTests
     {
         // Per Phase 3 Task 16 cycle 4e (P2 #5 from PR-#79) —
         // FlexLayouter populates FlexContinuation.EmittedBlockExtent
-        // with the cumulative sum of LineCrossSize for the lines
-        // actually emitted on this fragment. The dispatching
-        // BlockLayouter consumes this for accurate cross-page
-        // ConsumedBlockSize accounting + future cycle 4f wrapper
-        // resize.
+        // with the TRUE occupied cross-axis extent (= the
+        // content-cross-box 0-based bottom of the deepest emitted
+        // line, INCLUDING align-content's lineStartOffset +
+        // lineBetweenSpacing). For the default align-content:
+        // stretch / flex-start case with no extra gap, the value
+        // equals sum(LineCrossSize) — see the alignment-variant
+        // tests below for the cases where these differ.
+        //
+        // BlockLayouter does NOT yet consume the field; cycle 4f
+        // will use it for wrapper resize + ConsumedBlockSize
+        // precision per the z-order constraint documented on
+        // FlexContinuation.
         //
         // Fixture: 4 items of 100×50 in a 250-wide / 50-block
         // container (= room for 1 line of 50 tall). 2 items per
@@ -8795,6 +8802,246 @@ public sealed class FlexLayouterTests
         var flexCont = Assert.IsType<FlexContinuation>(result.Continuation);
         Assert.Equal(2, flexCont.LineIndex);
         Assert.Equal(60.0, flexCont.EmittedBlockExtent, precision: 3);
+    }
+
+    [Fact]
+    public void Task16_cycle4e_emitted_extent_includes_align_content_space_between_gap()
+    {
+        // Per Phase 3 Task 16 cycle 4e post-PR-#86 review P1 #1 +
+        // P2 #3 — align-content: space-between distributes the
+        // free-cross-space as gaps BETWEEN lines. The TRUE occupied
+        // extent INCLUDES those gaps; a naive sum(LineCrossSize)
+        // would under-count, causing cycle 4f's wrapper resize to
+        // clip children.
+        //
+        // Fixture: 3 lines of 20 in a 100-block container. Page
+        // budget = 100, fits all 3 lines (60 of content + 40 of
+        // gap). But to exercise the paginated path we fit only 2
+        // lines per page → budget = 60 (= 20 + 20 + 20 fits with
+        // no remaining). Use 4 items at 30 wide / 20 tall in a
+        // 30-wide container so each item wraps to its own line:
+        // 4 items → 4 lines × 20 = 80. Budget = 60 (room for 3
+        // lines of content, no gap). Page 1 emits 3 lines; line 4
+        // defers. With align-content: space-between on 3 lines in
+        // budget 60: free = 0, gap = 0 → EmittedBlockExtent = 60.
+        //
+        // To get a non-trivial gap, use lines that don't fill the
+        // budget: 2 items, each on own line, 30×20 in a 30-wide
+        // / 100-block container with align-content: space-between.
+        // Items: 2 → 2 lines × 20 = 40. Free = 100 - 40 = 60.
+        // Gap = 60/(2-1) = 60. Lines at swappedAxisCursor 0 + 80.
+        // Bottoms at 20 + 100. maxBottom = 100. But this is
+        // single-page (no continuation).
+        //
+        // For the paginated case: 4 items × 20 each, line packing
+        // gives 4 lines. Budget = 70 → 3 lines fit (cumulative
+        // 60 < 70 < 80). Line 4 defers. align-content:
+        // space-between on 3 emitted lines in 70 budget: free = 10,
+        // gap = 5. Lines at cursors 0, 25, 50. Bottoms: 20, 45,
+        // 70. maxBottom = 70. Naive sum = 60. CORRECT value = 70.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1));
+        // Per L7's ReadAlignContent keyword mapping
+        // (ComputedStyleLayoutExtensions.cs line ~795):
+        // space-between = Keyword 1.
+        flex.Style.Set(PropertyId.AlignContent, ComputedSlot.FromKeyword(1));
+        // Explicit container height = 70 so ResolveContainerCrossSize
+        // returns 70 (not sum-of-line-extents); freeCrossSpace = 10
+        // after 3 lines × 20 fit → align-content distribution
+        // applies with non-zero start/gap offsets.
+        SetLengthPx(flex.Style, PropertyId.Height, 70);
+        for (var i = 0; i < 4; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 250);  // = wider than container → each wraps alone
+            SetLengthPx(style, PropertyId.Height, 20);
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            var item = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(item);
+        }
+
+        using var layouter = new NetPdf.Layout.Layouters.FlexLayouter(
+            rootBox: flex, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        layouter.ConfigureEmission(
+            contentInlineOffset: 0,
+            contentBlockOffset: 0,
+            contentInlineSize: 250,
+            contentBlockSize: 70,  // fits 3 lines × 20 = 60; gap of 10 available
+            allowPagination: true);
+
+        var ctx = new FragmentainerContext(contentInlineSize: 250, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var flexCont = Assert.IsType<FlexContinuation>(result.Continuation);
+        Assert.Equal(3, flexCont.LineIndex);
+
+        // align-content: space-between with 3 emitted lines in 70
+        // budget: free = 10, gap = 10/(3-1) = 5. Lines at cursors
+        // 0, 25, 50. Bottoms: 20, 45, 70. maxBottom = 70.
+        // Naive sum(LineCrossSize) = 60. Cycle-4e hardening
+        // pins the correct value (70).
+        Assert.Equal(70.0, flexCont.EmittedBlockExtent, precision: 3);
+    }
+
+    [Fact]
+    public void Task16_cycle4e_emitted_extent_includes_align_content_center_start_offset()
+    {
+        // Per Phase 3 Task 16 cycle 4e post-PR-#86 review P1 #1 —
+        // align-content: center adds a lineStartOffset = free/2
+        // BEFORE the first emitted line. The TRUE occupied extent
+        // INCLUDES that prefix space (= the wrapper resize target
+        // must contain the empty top-space too); a naive
+        // sum(LineCrossSize) under-counts.
+        //
+        // Fixture: 4 items × 250×20 in a 250×70 container. 3 lines
+        // fit on this page. align-content: center → free = 10,
+        // start = 5, gap = 0. Lines at cursors 5, 25, 45. Bottoms:
+        // 25, 45, 65. maxBottom = 65. Naive sum = 60.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1));
+        // L7 KeywordResolver (ComputedStyleLayoutExtensions.cs ~795):
+        // center = Keyword 8.
+        flex.Style.Set(PropertyId.AlignContent, ComputedSlot.FromKeyword(8));
+        SetLengthPx(flex.Style, PropertyId.Height, 70);
+        for (var i = 0; i < 4; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 250);
+            SetLengthPx(style, PropertyId.Height, 20);
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            var item = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(item);
+        }
+
+        using var layouter = new NetPdf.Layout.Layouters.FlexLayouter(
+            rootBox: flex, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        layouter.ConfigureEmission(
+            contentInlineOffset: 0,
+            contentBlockOffset: 0,
+            contentInlineSize: 250,
+            contentBlockSize: 70,
+            allowPagination: true);
+
+        var ctx = new FragmentainerContext(contentInlineSize: 250, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var flexCont = Assert.IsType<FlexContinuation>(result.Continuation);
+        // center: start = 5, lines at 5/25/45, bottoms at
+        // 25/45/65 → maxBottom = 65.
+        Assert.Equal(65.0, flexCont.EmittedBlockExtent, precision: 3);
+    }
+
+    [Fact]
+    public void Task16_cycle4e_emitted_extent_for_flex_end_positions_at_bottom()
+    {
+        // Per Phase 3 Task 16 cycle 4e post-PR-#86 review P1 #1 —
+        // align-content: flex-end pushes all lines to the
+        // cross-end. lineStartOffset = free (= entire free space
+        // before first line); gap = 0. The deepest line's bottom =
+        // budget = the WHOLE clamped wrapper size.
+        //
+        // Fixture: 4 items × 250×20 in 250×70 budget; 3 lines fit.
+        // free = 10, start = 10, gap = 0. Lines at 10, 30, 50.
+        // Bottoms: 30, 50, 70. maxBottom = 70.
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var flex = BuildFlexContainer();
+        flex.Style.Set(PropertyId.FlexWrap, ComputedSlot.FromKeyword(1));
+        // L7 KeywordResolver (ComputedStyleLayoutExtensions.cs ~795):
+        // flex-end = Keyword 12.
+        flex.Style.Set(PropertyId.AlignContent, ComputedSlot.FromKeyword(12));
+        SetLengthPx(flex.Style, PropertyId.Height, 70);
+        for (var i = 0; i < 4; i++)
+        {
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 250);
+            SetLengthPx(style, PropertyId.Height, 20);
+            style.Set(PropertyId.FlexShrink, ComputedSlot.FromNumber(0.0));
+            var item = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+            flex.AppendChild(item);
+        }
+
+        using var layouter = new NetPdf.Layout.Layouters.FlexLayouter(
+            rootBox: flex, sink: sink, incomingContinuation: null,
+            diagnostics: null, shaperResolver: shaper);
+        layouter.ConfigureEmission(
+            contentInlineOffset: 0,
+            contentBlockOffset: 0,
+            contentInlineSize: 250,
+            contentBlockSize: 70,
+            allowPagination: true);
+
+        var ctx = new FragmentainerContext(contentInlineSize: 250, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var flexCont = Assert.IsType<FlexContinuation>(result.Continuation);
+        // flex-end: start = 10, lines at 10/30/50, bottoms at
+        // 30/50/70 → maxBottom = 70 (= the whole budget).
+        Assert.Equal(70.0, flexCont.EmittedBlockExtent, precision: 3);
+    }
+
+    [Theory]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(double.NegativeInfinity)]
+    [InlineData(-0.1)]
+    [InlineData(-1.0)]
+    [InlineData(-100.0)]
+    public void Task16_cycle4e_FlexContinuation_rejects_invalid_EmittedBlockExtent(double bad)
+    {
+        // Per Phase 3 Task 16 cycle 4e post-PR-#86 review P2 #2 —
+        // defensive validation. NaN / ±Infinity / negative
+        // EmittedBlockExtent would corrupt cycle 4f's
+        // wrapper-resize + ConsumedBlockSize accounting. The
+        // FlexContinuation constructor surfaces the contract
+        // violation immediately.
+        var ex = Assert.Throws<System.ArgumentOutOfRangeException>(
+            () => new FlexContinuation(
+                LineIndex: 1, BaselineState: null, EmittedBlockExtent: bad));
+        Assert.Contains("EmittedBlockExtent", ex.Message);
+    }
+
+    [Fact]
+    public void Task16_cycle4e_FlexContinuation_accepts_zero_EmittedBlockExtent()
+    {
+        // Zero is valid (= the default when the field isn't
+        // populated — e.g., the no-continuation AllDone path
+        // doesn't emit a FlexContinuation at all; the cycle-1
+        // resume contract uses 0 for callers that don't know
+        // the value yet).
+        var c = new FlexContinuation(
+            LineIndex: 0, BaselineState: null, EmittedBlockExtent: 0.0);
+        Assert.Equal(0.0, c.EmittedBlockExtent, precision: 3);
+    }
+
+    [Fact]
+    public void Task16_cycle4e_FlexContinuation_accepts_positive_EmittedBlockExtent()
+    {
+        // Sanity: positive finite value passes the guard.
+        var c = new FlexContinuation(
+            LineIndex: 2, BaselineState: null, EmittedBlockExtent: 100.5);
+        Assert.Equal(100.5, c.EmittedBlockExtent, precision: 3);
     }
 
     [Fact]

@@ -1254,17 +1254,26 @@ grepping the ID).
       pins the contract: a preceding sibling with margin-bottom + a
       flex container with margin-top still rounds-trips through the
       paginated path with all items emitting exactly once.
-    - 🚧 **P2 #5 (PR-#79) contract shipped in cycle 4e** —
+    - 🚧 **P2 #5 (PR-#79) contract shipped in cycle 4e + hardened
+      post-PR-#86 review** —
       `FlexContinuation.EmittedBlockExtent` field added + populated
-      by FlexLayouter on PageComplete (= cumulative sum of
-      `LineCrossSize` for emitted lines). The BlockLayouter
-      consumer side is **cycle 4f scope** because of the z-order
-      constraint: the wrapper fragment must precede its children
-      in the sink's fragment list (= painter draw order), so the
-      wrapper emit can't simply move to post-dispatch. Cycle 4f
-      will add a sink-mutation or pre-emit-with-backfill API to
-      let the wrapper's BlockSize be retro-adjusted to the actual
-      emitted extent.
+      by FlexLayouter on PageComplete with the **TRUE occupied
+      block extent** (= the content-cross-box 0-based bottom of the
+      deepest emitted line, tracked as `maxEmittedCrossBottom` in
+      the emission loop). The value INCLUDES align-content's
+      `lineStartOffset` + `lineBetweenSpacing` contributions
+      (space-between / space-around / space-evenly / center /
+      flex-end alignment families) — NOT a naive
+      `sum(LineCrossSize)`. The field's value is also defensively
+      validated in the `FlexContinuation` constructor (rejects
+      NaN / ±Infinity / negative). The BlockLayouter consumer side
+      is **cycle 4f scope** because of the z-order constraint: the
+      wrapper fragment must precede its children in the sink's
+      fragment list (= painter draw order), so the wrapper emit
+      can't simply move to post-dispatch. Cycle 4f will add a
+      sink-mutation or pre-emit-with-backfill API to let the
+      wrapper's BlockSize be retro-adjusted to the actual emitted
+      extent.
     - ✅ **P3 #7 (PR-#79 + PR-#80) shipped in cycle 4a (PR #82)**:
       `DispatchFlexInner` helper now used by BOTH direct +
       recursive paths to eliminate drift between them. 135 + 107
@@ -1307,11 +1316,19 @@ grepping the ID).
       checkpoint sharing across nested layouters), reopen the
       deferral + add the parameters at that point.
 
-    **Cycle 4 execution order** — UPDATED post-cycle-4c. Most items
-    shipped through cycles 4a–4c; the remaining active follow-ons
-    (none blockers) are the multi-level inbound chain-walk case +
-    margin-collapse-aware page-remaining + emitted-fragment block
-    extent + the geometry/resolver helper polish.
+    **Cycle 4 execution order** — UPDATED post-cycle-4-closeout
+    (PR #87). All originally-planned items 1-8 are shipped or
+    closed-by-implementation/documentation. The remaining open
+    follow-ons (= NOT included in cycle 4 closeout) are tracked in
+    deferrals.md as future work:
+    * Multi-level inbound recursive FlexContinuation chain-walk for
+      deeper-than-shallow nesting — speculative without a forcing
+      test (cycle 4b's shallow case + cycle-4-closeout's margin
+      regression cover current production shapes).
+    * Cycle 4f BlockLayouter consumes `EmittedBlockExtent` for
+      wrapper resize / ConsumedBlockSize precision — blocked on
+      sink-mutation or pre-emit-with-backfill API (z-order
+      constraint documented on FlexContinuation).
     1. ✅ **Extract `DispatchFlexInner`** — shipped in cycle 4a
        (PR #82).
     2. ✅ **Add pre-break-check paginatable-flex dispatch** — shipped

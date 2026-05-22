@@ -2786,13 +2786,19 @@ public sealed class FlexLayouterProductionTests
             }
         }
         Assert.Equal(3, items.Count);
-        // Per L17: grow=0 wins. Items at basis 0 (from `flex: 1` →
-        // basis=0) + no growth → final size 0 each.
+        // Per L17 + post-PR-#77 Copilot comment — tighten assertion
+        // to match the documented expectation: grow=0 wins so items
+        // DO NOT grow to 200 (= the grow=1 outcome where items would
+        // share the container width equally). The exact final
+        // InlineSize depends on the shrink-clamp path with basis 0
+        // (= zero space taken, items collapse). Assert SIZE < 100
+        // (= the declared width) because no growth applied.
         foreach (var item in items)
         {
             Assert.True(item.InlineSize < 100,
-                $"Expected item size < 100 (= no growth from basis 0); got {item.InlineSize}. "
-                + "If this fails, the shorthand's grow=1 leaked through L17's source-order fix.");
+                $"Expected item size < 100 (= no growth from basis 0 — shorthand's grow=1 must NOT win); "
+                + $"got {item.InlineSize}. If this fails, the shorthand's grow=1 leaked through L17's "
+                + "source-order fix.");
         }
     }
 

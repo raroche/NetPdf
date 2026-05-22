@@ -1960,6 +1960,131 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         BlockOffset: forcedOverflowChildBlockOffset,
                         InlineSize: borderBoxInlineSize,
                         BlockSize: borderBoxBlockSize));
+
+                    // Per Phase 3 Task 16 cycle 4b post-PR-#83 review
+                    // P1 #2 — flex container forced-overflow re-route.
+                    // If <c>child</c> is itself a FlexContainer, the
+                    // <see cref="EmitBlockSubtreeRecursive"/> walk below
+                    // would walk INTO the flex items as if they were
+                    // block-flow children — stacking them vertically
+                    // instead of routing through FlexLayouter's
+                    // per-axis placement. Result: dropped/misplaced
+                    // items for column / wrap-reverse / nowrap +
+                    // any case where the cycle-4b paginatable-flex
+                    // extent clamp didn't fire (= ineligible OR
+                    // remaining space couldn't fit chrome).
+                    //
+                    // The fix: dispatch through
+                    // <see cref="DispatchFlexInner"/> with
+                    // <c>allowPagination: false</c> (= atomic emit; the
+                    // wrapper is already painted at its natural extent
+                    // above per the forced-overflow contract; flex
+                    // items emit correctly via FlexLayouter even when
+                    // they visually overflow the wrapper / page). The
+                    // outbound continuation propagation matches the
+                    // Continue path's pattern below + the table /
+                    // multicol forced-overflow pattern (= wrap any
+                    // returned FlexContinuation in a
+                    // BlockContinuation up to AttemptLayout).
+                    if (IsFlexContainer(child))
+                    {
+                        var forcedFlexBorderInlineStart =
+                            child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
+                        var forcedFlexPaddingInlineStart =
+                            child.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
+                        var forcedFlexBorderInlineEnd =
+                            child.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
+                        var forcedFlexPaddingInlineEnd =
+                            child.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
+                        var forcedFlexBorderBlockStart =
+                            child.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
+                        var forcedFlexPaddingBlockStart =
+                            child.Style.ReadLengthPxOrZero(PropertyId.PaddingTop);
+                        var forcedFlexBorderBlockEnd =
+                            child.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
+                        var forcedFlexPaddingBlockEnd =
+                            child.Style.ReadLengthPxOrZero(PropertyId.PaddingBottom);
+
+                        var forcedFlexContentInlineSize = Math.Max(1.0,
+                            borderBoxInlineSize
+                            - forcedFlexBorderInlineStart - forcedFlexPaddingInlineStart
+                            - forcedFlexBorderInlineEnd - forcedFlexPaddingInlineEnd);
+                        var forcedFlexContentBlockSize = Math.Max(1.0,
+                            borderBoxBlockSize
+                            - forcedFlexBorderBlockStart - forcedFlexPaddingBlockStart
+                            - forcedFlexBorderBlockEnd - forcedFlexPaddingBlockEnd);
+                        var forcedFlexContentInlineOffset =
+                            forcedOverflowInlineOffset
+                            + forcedFlexBorderInlineStart + forcedFlexPaddingInlineStart;
+                        var forcedFlexContentBlockOffset =
+                            forcedOverflowChildBlockOffset
+                            + forcedFlexBorderBlockStart + forcedFlexPaddingBlockStart;
+
+                        // Forward incoming FlexContinuation (mirrors
+                        // the Continue path's one-shot consume).
+                        FlexContinuation? forcedFlexIncoming = null;
+                        if (incomingBlock?.LayouterState is FlexContinuation incomingForcedFlex
+                            && childIdx == incomingBlock.ResumeAtChild
+                            && !_consumedIncomingFlexContinuation)
+                        {
+                            forcedFlexIncoming = incomingForcedFlex;
+                            _consumedIncomingFlexContinuation = true;
+                        }
+
+                        // allowPagination: false — the forced-overflow
+                        // path is the "we have to commit anyway"
+                        // branch; pagination would have intercepted
+                        // earlier via the cycle-4b clamp if eligible.
+                        // Ineligible containers (column / wrap-reverse
+                        // / nowrap) commit atomically at the cost of
+                        // visual overflow + the diagnostic above.
+                        var forcedFlexResult = DispatchFlexInner(
+                            flexBox: child,
+                            contentInlineOffset: forcedFlexContentInlineOffset,
+                            contentBlockOffset: forcedFlexContentBlockOffset,
+                            contentInlineSize: forcedFlexContentInlineSize,
+                            contentBlockSize: forcedFlexContentBlockSize,
+                            incomingContinuation: forcedFlexIncoming,
+                            allowPagination: false,
+                            fragmentainer: fragmentainer,
+                            layout: ref layout,
+                            cancellationToken: cancellationToken);
+
+                        // Advance + propagate. Cursor uses
+                        // marginBoxBlockSizeForCursor (= subtree-aware
+                        // span; here = own border box since the inner
+                        // is atomic + already inside the wrapper).
+                        fragmentainer.UsedBlockSize = Math.Max(0,
+                            fragmentainer.UsedBlockSize + marginBoxBlockSizeForCursor);
+                        emittedThisAttempt++;
+                        lastEmittedIdx = childIdx;
+
+                        pendingTableLayouter?.Dispose();
+
+                        if (forcedFlexResult.Outcome == LayoutAttemptOutcome.PageComplete
+                            && forcedFlexResult.Continuation is FlexContinuation forcedFlexCont)
+                        {
+                            return LayoutAttemptResult.PageComplete(
+                                new BlockContinuation(
+                                    ResumeAtChild: childIdx,
+                                    ConsumedBlockSize: priorPagesConsumed
+                                        + (fragmentainer.UsedBlockSize - _pageStartUsedBlockSize),
+                                    LayouterState: forcedFlexCont),
+                                cost: forcedFlexResult.Cost);
+                        }
+                        // AllDone: forced-overflow forward-progress.
+                        // The wrapper committed; no resume token; end
+                        // the page (= what the prior path did via the
+                        // fall-through to the PageComplete return at
+                        // the bottom of this branch).
+                        return LayoutAttemptResult.PageComplete(
+                            new BlockContinuation(
+                                ResumeAtChild: childIdx + 1,
+                                ConsumedBlockSize: priorPagesConsumed
+                                    + (fragmentainer.UsedBlockSize - _pageStartUsedBlockSize)),
+                            cost: CostModel.BreakInsideAvoidViolation);
+                    }
+
                     // Per Phase 3 Task 7 cycle 2b — recursively emit
                     // fragments for the child's block-level descendants.
                     // The painter sees the full subtree on the
@@ -1980,13 +2105,40 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     // the full chain (no flatten). See the matching
                     // comment at the regular recursive-walk site below
                     // for the rationale.
+                    //
+                    // Per Phase 3 Task 16 cycle 4b post-PR-#83 review
+                    // P1 #1 + P2 #3 — INBOUND chain forwarding. When
+                    // the outer AttemptLayout was given an incoming
+                    // BlockContinuation whose <c>ResumeAtChild</c>
+                    // matches THIS forced-overflow child AND its
+                    // <c>LayouterState</c> is a deeper
+                    // BlockContinuation, forward that deeper chain to
+                    // the recursion as <c>incomingContinuation</c>.
+                    // Without this, paginated flex containers driven
+                    // through forced-overflow (= when margin-bottom or
+                    // wrapper-extent-after-pagination tips the chunk
+                    // past the resolver fit-check) would restart from
+                    // line 0 on every page = infinite loop /
+                    // duplicate content. Mirrors the regular Continue
+                    // path's <c>recIncoming</c> peel below.
+                    LayoutContinuation? forcedRecIncoming = null;
+                    if (incomingBlock?.LayouterState is BlockContinuation forcedDeeperBlock
+                        && childIdx == incomingBlock.ResumeAtChild
+                        && !_consumedIncomingBlockContinuationRecursion)
+                    {
+                        forcedRecIncoming = forcedDeeperBlock;
+                        _consumedIncomingBlockContinuationRecursion = true;
+                    }
                     var forcedNestedRet = EmitBlockSubtreeRecursive(
                         child,
                         parentBlockOffset: forcedOverflowChildBlockOffset,
                         parentInlineOffset: forcedOverflowInlineOffset,
                         parentInlineSize: borderBoxInlineSize,
                         cancellationToken: cancellationToken,
-                        depth: 1);
+                        depth: 1,
+                        propagatingResolver: resolver,
+                        propagatingFragmentainer: fragmentainer,
+                        incomingContinuation: forcedRecIncoming);
                     if (forcedNestedRet is BlockContinuation forcedDeep)
                     {
                         return LayoutAttemptResult.PageComplete(
@@ -2247,26 +2399,25 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // below (FlexLayouter owns the inner emission).
             //
             // Geometry: the flex container's content-box is derived
-            // directly from the wrapper's border-box minus the
-            // wrapper's own borders + paddings — no fragmentainer-
-            // remaining-space derivation (= cycle 4+ scope to make
-            // that integrate with multi-page split).
+            // from the wrapper's border-box minus the wrapper's own
+            // borders + paddings. Cycle 4b's paginatable-flex extent
+            // clamp inside the pre-grow above may have already
+            // CLAMPED <c>borderBoxBlockSize</c> down to the
+            // page-remaining-block; in that case the dispatched
+            // content-block-size is the page-remaining-block minus
+            // chrome (= the fragment budget) + <c>allowPagination</c>
+            // flips ON via <c>paginateFlexForOuterChild</c>.
             //
-            // Task 16 cycle 2/3 status (post-PR-#80 review): this
-            // dispatch site has SCAFFOLDING for capturing the
-            // FlexLayouter's result + propagating
+            // Task 16 cycle 4b activation status: this dispatch site
+            // ACTIVELY propagates
             // PageComplete(BlockContinuation(LayouterState=FlexContinuation))
-            // up the recursion chain. The propagation code below is
-            // currently DORMANT because `allowPagination: false`
-            // makes FlexLayouter always return AllDone. The cycle-4
-            // work (= introducing a paginatable-flex pre-break-check
-            // dispatch that bypasses forced-overflow + flipping
-            // `allowPagination: true` here) will activate the
-            // scaffolding. Direct-construction unit tests verify the
-            // FlexLayouter side of the contract; the
-            // BlockLayouter-side propagation is unit-testable via
-            // the same construction path (= the data flow IS wired,
-            // just not triggered by production HTML yet).
+            // through to AttemptLayout when FlexLayouter returns a
+            // FlexContinuation. The "scaffolding" wording from
+            // cycle 2/3 docs no longer applies — production
+            // multi-page flex pagination round-trips end-to-end
+            // through this path (see
+            // <c>Task16_cycle2_production_html_flex_container_splits_across_two_pages</c>
+            // + the cycle-4b resume tests).
             if (IsFlexContainer(child))
             {
                 // Derive the flex container's content-box geometry
@@ -3424,22 +3575,27 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             }
 
             // Per Phase 3 Task 15 cycle 1 (Hello World) → Task 16
-            // cycle 3 — nested flex container dispatch. A nested
-            // block-flow descendant with BoxKind.FlexContainer /
-            // InlineFlexContainer (= display: flex / inline-flex)
-            // dispatches to FlexLayouter for per-item emission
-            // INSIDE its border box. Skip the
-            // EmitBlockSubtreeRecursive call below for this child
-            // (the flex layouter owns the inner content emission).
+            // cycle 3 → cycle 4b — nested flex container dispatch. A
+            // nested block-flow descendant with
+            // BoxKind.FlexContainer / InlineFlexContainer
+            // (= display: flex / inline-flex) dispatches to
+            // FlexLayouter for per-item emission INSIDE its border
+            // box. Skip the EmitBlockSubtreeRecursive call below
+            // for this child (the flex layouter owns the inner
+            // content emission).
             //
-            // Cycle 3 post-PR-#79 P1 #2: the recursive path now
-            // mirrors the direct dispatch at line ~2182 — captures
-            // the LayoutAttemptResult + propagates PageComplete +
-            // FlexContinuation up the recursion chain (= matches the
-            // multicol recursive propagation at line ~3270). The
-            // `allowPagination` gate stays OFF at this site (= same
-            // as the direct dispatch) until cycle 4 introduces the
-            // pre-break-check routing per P1 #1.
+            // Cycle 4b activation status: the outbound propagation
+            // path (= capture LayoutAttemptResult + return
+            // BlockContinuation(LayouterState=FlexContinuation)) is
+            // ACTIVE because the cycle-4b paginatable-flex extent
+            // clamp inside the pre-grow above can flip
+            // <c>allowPagination</c> ON at this site. The inbound
+            // recursive chain-walk is wired below (post-PR-#83
+            // review P1 #1) so resume-page recursion forwards the
+            // incoming FlexContinuation leaf to FlexLayouter +
+            // multi-page flex containers actually round-trip
+            // (page 1 → continuation → page 2 emits remaining
+            // lines → AllDone).
             if (IsFlexContainer(child))
             {
                 var nestedFlexBorderInlineStart =
@@ -3472,21 +3628,32 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 var nestedFlexContentBlockOffset =
                     childBlockOffset + nestedFlexBorderBlockStart + nestedFlexPaddingBlockStart;
 
-                // Per Task 16 cycle 3 P1 #2 — forward incoming
-                // FlexContinuation when this nested child is the
-                // resume-at target. The chain-protocol is:
-                // BlockContinuation(LayouterState=BlockContinuation(...))
-                // up to depth-1; the LayouterState payload at the
-                // leaf is the FlexContinuation. Cycle 4 will
-                // formalize the multi-level walk; cycle 3 ships the
-                // single-level case mirroring multicol at line ~3270.
+                // Per Phase 3 Task 16 cycle 4b post-PR-#83 review
+                // P1 #1 — inbound recursive FlexContinuation
+                // chain-walk. Mirrors the multicol pattern at line
+                // ~3357 + the table pattern at line ~2983: when the
+                // incoming chain has reached its FlexContinuation
+                // leaf AND the current child is the deferred-at
+                // target, extract the FlexContinuation + null out
+                // <c>incomingBlockChain</c> (one-shot consume).
+                // Without this, the resume page restarts at line
+                // index 0 = duplicate emission of page-1 lines.
+                //
+                // Chain shape recap: the outer AttemptLayout entry
+                // unwraps the top BlockContinuation; the recursive
+                // walk passes the inner chain down via
+                // <c>incomingContinuation</c>. At each level the
+                // BlockContinuation peel at line ~3579 forwards
+                // deeper layers; the leaf level (this branch) sees
+                // the FlexContinuation directly.
                 FlexContinuation? nestedFlexContinuationForChild = null;
-                // Note: the recursive path doesn't have direct access
-                // to the BlockContinuation that initiated this
-                // recursion; the chain unwrap happens at the outer
-                // BlockLayouter.AttemptLayout entry guard. Cycle 4
-                // will hoist the unwrap state into a field readable
-                // here.
+                if (incomingBlockChain is not null
+                    && childIdx == incomingBlockChain.ResumeAtChild
+                    && incomingBlockChain.LayouterState is FlexContinuation incomingFlexLeaf)
+                {
+                    nestedFlexContinuationForChild = incomingFlexLeaf;
+                    incomingBlockChain = null;
+                }
 
                 // Per Phase 3 Task 16 cycle 4a (PR #82, following
                 // the PR #81 execution order) — route through the
@@ -4177,55 +4344,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// flex containers eligible for multi-page line splitting via the
     /// pre-break-check / forced-overflow re-route paths.
     ///
-    /// <para><b>Eligibility</b> mirrors
-    /// <see cref="FlexLayouter"/>'s <c>isRowNormalWrapPaginationSupported</c>
-    /// predicate: the container must be (a) a flex container per
-    /// <see cref="IsFlexContainer"/>, (b) row-direction (so the
-    /// cross-axis IS the block axis where pagination boundaries live —
-    /// column direction would put line breaks on the inline axis which
-    /// is not a fragment boundary), AND (c) wrapping (single-line
-    /// containers have no line boundary to split on; lines are atomic),
-    /// AND (d) NOT wrap-reverse (the cross-axis SWAP places lines at
-    /// physical offsets derived from the unfragmented container size;
-    /// splitting + re-deriving cross-axis flow per fragment is
-    /// deferred to a later cycle — see
-    /// <see cref="FlexLayouter"/>'s pagination-eligibility comment).</para>
-    ///
-    /// <para><b>Why this matches the layouter's predicate.</b> If the
-    /// BlockLayouter dispatches with <c>allowPagination: true</c> for
-    /// an INELIGIBLE container, the FlexLayouter would silently treat
-    /// it as <c>allowPagination: false</c> (= no continuation emitted)
-    /// + we'd lose content. Keeping the predicates in lockstep ensures
-    /// the dispatch + layouter agree on which containers can split.
-    /// Cycle 4b is the first site that consults this predicate; future
-    /// cycles will hoist it (or its callees) into a shared
-    /// flex-pagination policy module if/when grid layout grows a
-    /// similar predicate.</para></summary>
+    /// <para>Post-PR-#83 review P3 #6 (DRY/SOLID): now delegates to
+    /// <see cref="FlexLayouter.IsPaginatablePerStyle"/> so the
+    /// dispatch-side gate + the layouter-side emission gate share ONE
+    /// source of truth. Without delegation a drift in either predicate
+    /// silently dropped flex content (= dispatch flips
+    /// <c>allowPagination: true</c> but the layouter falls into the
+    /// atomic branch + no FlexContinuation is emitted; or vice
+    /// versa).</para></summary>
     private static bool IsPaginatableFlex(Box box)
-    {
-        if (!IsFlexContainer(box))
-        {
-            return false;
-        }
-        var direction = box.Style.ReadFlexDirection();
-        if (direction.IsFlexColumnDirection())
-        {
-            return false;
-        }
-        var wrap = box.Style.ReadFlexWrap();
-        if (!wrap.IsFlexWrapping())
-        {
-            return false;
-        }
-        // wrap-reverse: cross-axis flow derives from the unfragmented
-        // container size; multi-fragment cross-flow re-derivation is
-        // deferred. See FlexLayouter's matching exclusion.
-        if (wrap == FlexWrapValue.WrapReverse)
-        {
-            return false;
-        }
-        return true;
-    }
+        => FlexLayouter.IsPaginatablePerStyle(box);
 
     /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 — predicate
     /// distinguishing block containers whose children are entirely

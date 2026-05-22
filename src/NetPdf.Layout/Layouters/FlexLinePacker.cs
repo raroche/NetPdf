@@ -114,9 +114,11 @@ internal static class FlexLinePacker
         CancellationToken cancellationToken)
     {
         var lines = new List<FlexLine>();
-        var (mainProp, crossProp) = direction.IsFlexColumnDirection()
-            ? (PropertyId.Height, PropertyId.Width)
-            : (PropertyId.Width, PropertyId.Height);
+        // Per PR-#84 review P3 #5 — axis mapping comes from the
+        // shared extension on FlexDirectionValue so the packer +
+        // FlexLayouter cannot drift on which CSS property is main vs.
+        // cross.
+        var (mainProp, crossProp) = direction.GetAxisProperties();
 
         if (sortedChildIndices.Count == 0)
         {
@@ -191,6 +193,110 @@ internal static class FlexLinePacker
         }
 
         return lines;
+    }
+
+    /// <summary>Per Phase 3 Task 16 cycle 4c post-PR-#84 review P2 #1 —
+    /// streaming variant of <see cref="Pack"/> that returns ONLY the
+    /// sum of line cross-extents (= the pre-grow pre-measure's only
+    /// consumed result) without materializing the
+    /// <see cref="List{FlexLine}"/>.
+    ///
+    /// <para><b>Why.</b> <see cref="BlockLayouter.PreMeasureFlexMultiLineCrossExtent"/>
+    /// runs ONCE PER FLEX CONTAINER ON THE PAGE during the outer
+    /// pagination's pre-grow pass + ONCE MORE per nested flex
+    /// container during the recursive walk's pre-grow. For documents
+    /// with many wrapped flex containers (think product grids,
+    /// dashboard tile layouts), the pre-cycle-4b code streamed the
+    /// algorithm + kept only the cross-extent sum; cycle 4c's
+    /// initial <see cref="Pack"/>-then-sum approach unnecessarily
+    /// allocates one <see cref="List{FlexLine}"/> + N
+    /// <see cref="FlexLine"/> entries per container. The post-PR-#84
+    /// review P2 #1 hardening adds this streaming entry point so the
+    /// pre-measure pays zero allocation for the line list it would
+    /// throw away anyway.</para>
+    ///
+    /// <para><b>Algorithm parity.</b> The exact same packing rules as
+    /// <see cref="Pack"/>: same hypothetical main-size derivation
+    /// (flex-basis-aware via
+    /// <see cref="ComputedStyleLayoutExtensions.ResolveFlexItemHypotheticalMainSize"/>),
+    /// same first-item-always-lands semantics, same direction-aware
+    /// property selection via the shared
+    /// <see cref="FlexDirectionValueExtensions.GetAxisProperties"/>
+    /// extension. The only difference is what gets returned (= just
+    /// the sum, not the line list). Behavior parity is verified by
+    /// dedicated parity tests in <c>FlexLinePackerTests</c>.</para>
+    ///
+    /// <para><b>FlexLayouter still calls
+    /// <see cref="Pack"/></b> — emission needs the FlexLine list
+    /// (FirstItemIndex / ItemCount / LineMainSize) for the §9.7
+    /// flexibility algorithm + per-line emission. Only the
+    /// pre-measure path needs the streaming variant.</para></summary>
+    public static double SumCrossExtent(
+        Box flexContainer,
+        List<int> sortedChildIndices,
+        FlexDirectionValue direction,
+        double containerMainSize,
+        bool isWrapping,
+        CancellationToken cancellationToken)
+    {
+        var (mainProp, crossProp) = direction.GetAxisProperties();
+
+        if (sortedChildIndices.Count == 0)
+        {
+            return 0.0;
+        }
+
+        if (!isWrapping)
+        {
+            // Single-line — sum is just max(item cross-size). No
+            // line list to allocate; iterate items once.
+            var maxCross = 0.0;
+            foreach (var idx in sortedChildIndices)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var item = flexContainer.Children[idx];
+                var c = item.Style.ReadLengthPxOrZero(crossProp);
+                if (c > maxCross) maxCross = c;
+            }
+            return maxCross;
+        }
+
+        // Wrap — same greedy algorithm as Pack, but accumulate
+        // sumLineCross in place of building a FlexLine list. When
+        // a new line starts (current line's items would overflow),
+        // commit the current line's cross-extent to the sum + reset.
+        var sumLineCross = 0.0;
+        var currentCount = 0;
+        var currentMain = 0.0;
+        var currentCross = 0.0;
+
+        foreach (var domIdx in sortedChildIndices)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            var item = flexContainer.Children[domIdx];
+            var itemMain = item.ResolveFlexItemHypotheticalMainSize(
+                mainProp, containerMainSize);
+            var itemCross = item.Style.ReadLengthPxOrZero(crossProp);
+
+            if (currentCount > 0 && currentMain + itemMain > containerMainSize)
+            {
+                sumLineCross += currentCross;
+                currentCount = 0;
+                currentMain = 0;
+                currentCross = 0;
+            }
+
+            currentMain += itemMain;
+            if (itemCross > currentCross) currentCross = itemCross;
+            currentCount++;
+        }
+
+        if (currentCount > 0)
+        {
+            sumLineCross += currentCross;
+        }
+
+        return sumLineCross;
     }
 }
 

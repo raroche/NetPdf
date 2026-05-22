@@ -2152,29 +2152,17 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         return slot.Tag is ComputedSlotTag.Unset or ComputedSlotTag.Keyword;
     }
 
-    /// <summary>Per Phase 3 Task 15 L4 — return the property IDs to
-    /// read for an item's main-axis + cross-axis sizes given the
-    /// resolved <c>flex-direction</c>.
-    /// <list type="bullet">
-    ///   <item><c>row</c> (L1-L3 default): main = inline (<c>width</c>);
-    ///   cross = block (<c>height</c>).</item>
-    ///   <item><c>column</c> (L4 new): main = block (<c>height</c>);
-    ///   cross = inline (<c>width</c>).</item>
-    /// </list>
-    /// The reversed variants (<c>row-reverse</c> / <c>column-reverse</c>)
-    /// share the same axis assignment as their non-reversed counterparts
-    /// per CSS Flexbox L1 §5.1 — reversal only swaps main-start and
-    /// main-end edges, not the row/column axis itself. The L5
-    /// reversal logic flips the main-axis offset at the emission site
-    /// (see <c>mainOffsetForEmission</c> in <see cref="AttemptLayout"/>);
-    /// the property reads here stay direction-agnostic.</summary>
+    /// <summary>Per Phase 3 Task 15 L4 → cycle 4c post-PR-#84 review
+    /// P3 #5 — return the property IDs to read for an item's
+    /// main-axis + cross-axis sizes given the resolved
+    /// <c>flex-direction</c>. Delegates to the shared
+    /// <see cref="FlexDirectionValueExtensions.GetAxisProperties"/>
+    /// extension so the layouter + <see cref="FlexLinePacker"/> share
+    /// ONE axis-mapping source of truth (= no drift on writing-mode
+    /// or axis updates).</summary>
     private static (PropertyId mainSize, PropertyId crossSize) GetAxisProperties(
         FlexDirectionValue direction)
-    {
-        return direction.IsFlexColumnDirection()
-            ? (PropertyId.Height, PropertyId.Width)
-            : (PropertyId.Width, PropertyId.Height);
-    }
+        => direction.GetAxisProperties();
 
     /// <summary>Per Phase 3 Task 15 L12 — direction-resolved min/max
     /// main-size property ids for the §9.7 step-4 clamping iteration.

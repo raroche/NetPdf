@@ -1521,6 +1521,38 @@ internal static class FlexDirectionValueExtensions
     public static bool IsFlexReverseDirection(this FlexDirectionValue value)
         => value == FlexDirectionValue.RowReverse
             || value == FlexDirectionValue.ColumnReverse;
+
+    /// <summary>Per Phase 3 Task 16 cycle 4c post-PR-#84 review P3 #5
+    /// — return the property IDs to read for an item's main-axis +
+    /// cross-axis sizes given the resolved <c>flex-direction</c>.
+    /// <list type="bullet">
+    ///   <item><c>row</c> / <c>row-reverse</c>: main = inline
+    ///   (<c>width</c>); cross = block (<c>height</c>).</item>
+    ///   <item><c>column</c> / <c>column-reverse</c>: main = block
+    ///   (<c>height</c>); cross = inline (<c>width</c>).</item>
+    /// </list>
+    /// The reversed variants share the same axis assignment as their
+    /// non-reversed counterparts per CSS Flexbox L1 §5.1 — reversal
+    /// only swaps main-start and main-end edges, not the row/column
+    /// axis itself. The reversal logic flips the main-axis offset at
+    /// the emission site in <see cref="FlexLayouter"/>; the property
+    /// reads here stay direction-agnostic.
+    ///
+    /// <para><b>Pre-cycle-4c (PR-#84 review P3 #5):</b> this mapping
+    /// lived as duplicate methods in <see cref="FlexLayouter"/>
+    /// (<c>GetAxisProperties</c>) + <see cref="FlexLinePacker.Pack"/>
+    /// (an inline ternary). The duplication created drift risk —
+    /// e.g., a writing-mode-aware axis-mapping update would need
+    /// edits in both places. The shared extension lives here next to
+    /// the other <see cref="FlexDirectionValue"/> helpers
+    /// (<see cref="IsFlexColumnDirection"/>,
+    /// <see cref="IsFlexReverseDirection"/>) so future axis updates
+    /// touch ONE site.</para></summary>
+    public static (PropertyId mainSize, PropertyId crossSize) GetAxisProperties(
+        this FlexDirectionValue value)
+        => value.IsFlexColumnDirection()
+            ? (PropertyId.Height, PropertyId.Width)
+            : (PropertyId.Width, PropertyId.Height);
 }
 
 /// <summary>Per Phase 3 Task 15 L6 — helper extensions on

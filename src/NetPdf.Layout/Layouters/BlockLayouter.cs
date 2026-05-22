@@ -1526,16 +1526,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     // to the budget separately from the block-axis
                     // contribution we add to flexBorderPaddingBlock.
                     //
-                    // Per Phase 3 Task 15 L6 post-PR-#66 review F#5
-                    // TODO: this multi-line line-packing routine
-                    // duplicates the algorithm in
-                    // <see cref="FlexLayouter"/>'s <c>PackLines</c> —
-                    // both walk the items + compute line breaks via
-                    // greedy packing against the same
-                    // containerMainSize budget. L7+ scope: extract a
-                    // shared <c>FlexLinePacker</c> helper consumed by
-                    // both sites. Not done now (= medium-scope
-                    // refactor; risk of regression).
+                    // Per Phase 3 Task 16 cycle 4c (P3 #8 from PR-#79)
+                    // — the line-packing algorithm has been extracted
+                    // to <see cref="FlexLinePacker"/>.
+                    // <see cref="PreMeasureFlexMultiLineCrossExtent"/>
+                    // below delegates to
+                    // <see cref="FlexLinePacker.SumCrossExtent"/> (=
+                    // streaming variant per PR-#84 P2 #1) +
+                    // <see cref="FlexLayouter.PackLines"/> calls
+                    // <see cref="FlexLinePacker.Pack"/>. The pre-L7
+                    // duplication is gone.
                     var inlineBorderStart =
                         child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
                     var inlineBorderEnd =
@@ -3345,13 +3345,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     // Row + wrap — same line-budget derivation as the
                     // outer dispatch site.
                     //
-                    // Per Phase 3 Task 15 L6 post-PR-#66 review F#5
-                    // TODO: see the outer dispatch site's matching TODO
-                    // — this multi-line line-packing routine duplicates
-                    // <see cref="FlexLayouter.PackLines"/>; L7+ scope
-                    // is to extract a shared <c>FlexLinePacker</c>
-                    // helper consumed by both sites. Not done now (=
-                    // medium-scope refactor; risk of regression).
+                    // Per Phase 3 Task 16 cycle 4c (P3 #8 from
+                    // PR-#79) — the line-packing algorithm has been
+                    // extracted to <see cref="FlexLinePacker"/>.
+                    // <see cref="PreMeasureFlexMultiLineCrossExtent"/>
+                    // (called immediately below) delegates to
+                    // <see cref="FlexLinePacker.SumCrossExtent"/> (=
+                    // streaming variant per PR-#84 P2 #1) + shares
+                    // line boundaries with
+                    // <see cref="FlexLayouter.PackLines"/> by
+                    // construction.
                     var inlineBorderStart =
                         child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
                     var inlineBorderEnd =
@@ -5996,21 +5999,17 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         CancellationToken cancellationToken)
     {
         // Per Phase 3 Task 16 cycle 4c — delegate to the shared
-        // packer + sum the cross-extents. Same sort + same packing
-        // algorithm as FlexLayouter; cross-extent sum is the pre-grow
-        // pass's only consumed result.
+        // packer. Per post-PR-#84 review P2 #1, the pre-measure uses
+        // the streaming <see cref="FlexLinePacker.SumCrossExtent"/>
+        // entry point so we don't allocate a
+        // <see cref="List{FlexLine}"/> just to sum + discard. Same
+        // packing algorithm as <see cref="FlexLayouter"/>'s
+        // emission-time call; only the return value differs.
         var sortedChildIndices =
             flexContainer.GetFlexChildrenInOrderSequence(cancellationToken);
-        var lines = FlexLinePacker.Pack(
+        return FlexLinePacker.SumCrossExtent(
             flexContainer, sortedChildIndices, direction,
             containerMainSize, isWrapping: true, cancellationToken);
-
-        var sumLineCross = 0.0;
-        foreach (var line in lines)
-        {
-            sumLineCross += line.LineCrossSize;
-        }
-        return sumLineCross;
     }
 
     /// <summary>Per Phase 3 Task 14 cycle 1 hardening (Finding 1) —

@@ -1294,34 +1294,64 @@ grepping the ID).
       Pick this up when a caller wants to share resolver state
       or use a different optimizer.
 
-    **Cycle 4 execution order** — UPDATED post-cycle-4b. The active
-    follow-ons (none blockers) are the remaining unchecked items
-    above (recursive chain-walk for multi-level FlexContinuation
-    routing, margin-collapse-aware page-remaining, emitted-fragment
-    block extent, shared `FlexLinePacker`, geometry helper, resolver
-    parameterization).
+    **Cycle 4 execution order** — UPDATED post-cycle-4c. Most items
+    shipped through cycles 4a–4c; the remaining active follow-ons
+    (none blockers) are the multi-level inbound chain-walk case +
+    margin-collapse-aware page-remaining + emitted-fragment block
+    extent + the geometry/resolver helper polish.
     1. ✅ **Extract `DispatchFlexInner`** — shipped in cycle 4a
        (PR #82).
     2. ✅ **Add pre-break-check paginatable-flex dispatch** — shipped
-       in cycle 4b (this PR). The clamp lives at the END of the
-       flex pre-grow block (NOT before the resolver consult) — the
+       in cycle 4b (PR #83). The clamp lives at the END of the flex
+       pre-grow block (NOT before the resolver consult) — the
        end-of-pre-grow site has all the variables in scope + makes
        the chunk-for-break-check naturally pass through the
        Continue path with `allowPagination: true`. Mathematically
        equivalent to a pre-break-check intercept; structurally
        simpler.
-    3. **Wire inbound recursive FlexContinuation chain-walk**
-       (P1 #2) — DEFERRED to cycle 4c.
+    3. ✅ **Wire inbound recursive FlexContinuation chain-walk for
+       the shallow case** (PR-#83 review P1 #1) — shipped in cycle 4b
+       hardening. The recursive flex dispatch in
+       `EmitBlockSubtreeRecursive` peels `incomingBlockChain` to
+       extract a `FlexContinuation` leaf at the resume-at child.
+       The deeper multi-level case (= a FlexContinuation reached
+       through a chain that includes a flex container's parent flex
+       container) is still deferred — current production tests
+       don't exercise that nesting depth.
     4. **Compute margin-collapse-aware `pageRemainingBlock`**
-       (P2 #4) — DEFERRED.
+       (P2 #4) — DEFERRED. Current derivation
+       (`fragmentainer.BlockSize - childBlockOffset`) is correct for
+       the production test shape; mathematically a margin-collapse
+       boundary could still undercount. Pick up when a regression
+       surfaces.
     5. **Return emitted-fragment block extent from FlexLayouter**
-       (P2 #5) — DEFERRED.
+       (P2 #5) — DEFERRED. Cycle 4b consumes the
+       page-remaining-block as the wrapper's painted size + cursor
+       advance, which is overconservative when FlexLayouter emits
+       fewer lines than the clamped budget allows. Functional but
+       not pixel-perfect for the AllDone-after-clamp case.
     6. ✅ **Unskip the production-pipeline test** (P1 #3) — shipped
        in cycle 4b.
+    7. ✅ **Forced-overflow flex re-route via `DispatchFlexInner`**
+       (PR-#83 review P1 #2) — shipped in cycle 4b hardening.
+       Forced-overflow flex containers (ineligible for the clamp,
+       e.g., column / wrap-reverse / nowrap) now dispatch atomically
+       through the helper instead of dropping items via
+       `EmitBlockSubtreeRecursive` (which doesn't own flex inner
+       layout).
+    8. ✅ **Shared `FlexLinePacker`** (P3 #8) — shipped in cycle 4c
+       (PR #84). One static `Pack` / `SumCrossExtent` (streaming
+       per PR-#84 review P2 #1) shared between BlockLayouter
+       pre-measure + FlexLayouter emission. `FlexLine` promoted to
+       internal at the namespace level. Axis mapping consolidated
+       to `FlexDirectionValueExtensions.GetAxisProperties` (PR-#84
+       review P3 #5).
 
     `FlexContinuation` exists in
     `src/NetPdf.Paginate/LayoutContinuation.cs`; the data flow is
-    fully active post-cycle-4b.)
+    fully active for the production-shallow case post-cycle-4b,
+    with deeper-nesting + pixel-perfect cursor advancement tracked
+    as the active follow-ons #4, #5 above.)
 - **Owner files** —
   - `src/NetPdf.Layout/Layouters/FlexLayouter.cs` — the layouter
     itself.
@@ -1376,16 +1406,21 @@ grepping the ID).
   `FlexFlowShorthandExpander`; L17 picked up proper cascade
   source-order tracking for shorthand-vs-explicit-longhand
   conflicts (§5 importance + §7.4 ordering). Task 16 cycles
-  1-3 shipped the FlexLayouter resume contract +
+  1-4 shipped end-to-end multi-page flex pagination:
+  cycles 1-3 wired the FlexLayouter resume contract +
   `FlexContinuation` data flow + BlockLayouter dispatch
-  scaffolding (DORMANT — `allowPagination: false` at both
-  dispatch sites pending cycle 4). The remaining L18+ /
-  Task 16 cycle 4+ work picks up proper `<baseline-position>`
-  alignment for both `align-items` and `align-content`,
-  `min-width: auto` intrinsic resolution per CSS Sizing L3 §5.5,
-  `flex-basis: content` proper intrinsic-sizing integration,
-  and Task 16 cycle 4's pre-break-check paginatable-flex
-  dispatch (= the actual production multi-page flex split).
+  scaffolding; cycle 4a extracted `DispatchFlexInner`;
+  cycle 4b shipped the paginatable-flex extent clamp +
+  flipped `allowPagination: true` (= production multi-page
+  split is ACTIVE; the cycle-2 production test is unskipped
+  + passing); cycle 4c extracted the shared `FlexLinePacker`
+  (DRY refactor). The remaining L18+ work picks up proper
+  `<baseline-position>` alignment for both `align-items` and
+  `align-content`, `min-width: auto` intrinsic resolution per
+  CSS Sizing L3 §5.5, and `flex-basis: content` proper
+  intrinsic-sizing integration — all blocked on per-item
+  content-size measurement, which is the underlying L19+
+  intrinsic-sizing deferral.
 - **Added** — Phase 3 Task 15 cycle 1 (Hello World).
 - **Removal condition** — Sub-cycle L11+ ships the remaining
   deferred features (wrap-reverse / proper baseline alignment /

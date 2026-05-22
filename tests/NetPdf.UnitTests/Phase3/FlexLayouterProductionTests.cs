@@ -2951,33 +2951,22 @@ public sealed class FlexLayouterProductionTests
         Assert.Equal(FlexWrapValue.NoWrap, flex!.Style.ReadFlexWrap());
     }
 
-    [Fact(Skip = "Task 16 cycle 4+ scope (post-PR-#80 honest revision): both BlockLayouter "
-        + "dispatch sites (direct + recursive) pass allowPagination: false so FlexLayouter "
-        + "never returns PageComplete from production HTML. The dispatch-site scaffolding "
-        + "(capture LayoutAttemptResult + propagate PageComplete(BlockContinuation(LayouterState"
-        + "=FlexContinuation))) is wired but currently DORMANT. Cycle 4 will: (1) introduce a "
-        + "paginatable-flex specialized dispatch BEFORE the generic break check fires forced-"
-        + "overflow (P1 #1 from PR-#79); (2) plumb the incoming-FlexContinuation chain unwrap "
-        + "into EmitBlockSubtreeRecursive's nested flex branch (P1 #2 from PR-#80); (3) flip "
-        + "allowPagination: true at both dispatch sites; (4) add active production-pipeline "
-        + "tests through the full HTML->cascade->BoxBuilder->BlockLayouter->FlexLayouter chain. "
-        + "Unit-level resume contract is covered by the Task16_* tests in FlexLayouterTests "
-        + "via direct FlexLayouter construction with allowPagination: true.")]
+    [Fact]
     public async Task Task16_cycle2_production_html_flex_container_splits_across_two_pages()
     {
-        // Per Phase 3 Task 16 cycle 2 — end-to-end production-pipeline
-        // proof that the multi-page flex split works through the full
-        // HTML → CSS → cascade → BoxBuilder → BlockLayouter →
-        // FlexLayouter chain. Skipped pending Task 16 cycle 4+ (=
-        // the architectural rework documented in
-        // `docs/deferrals.md` under flex-layouter-features:
-        // pre-break-check paginatable-flex dispatch, recursive-path
-        // chain-walk for inbound FlexContinuation, margin-collapse-
-        // aware page-remaining, emitted-fragment block extent, +
-        // flipping `allowPagination: true` at both dispatch sites).
-        // The cycle-3 dispatch scaffolding handles propagation but
-        // is dormant; unit-level resume contract is covered by the
-        // `Task16_*` tests via direct FlexLayouter construction.
+        // Per Phase 3 Task 16 cycle 2 → cycle 4b — end-to-end
+        // production-pipeline proof that the multi-page flex split
+        // works through the full HTML → CSS → cascade → BoxBuilder
+        // → BlockLayouter → FlexLayouter chain. ACTIVE as of
+        // cycle 4b (`[Fact]` not `Skip`): the cycle-4b
+        // paginatable-flex extent clamp flips `allowPagination: true`
+        // at the recursive dispatch + the cycle-3 propagation chain
+        // carries the FlexContinuation up via
+        // PageComplete(BlockContinuation(LayouterState=FlexContinuation)).
+        // The page-2 resume verification (= feed the continuation
+        // back + observe AllDone with remaining items) lives in
+        // `Task16_cycle4b_two_page_flex_round_trips_to_completion`
+        // below.
         const string html = """
             <!DOCTYPE html><html><head><style>
                 .flex {
@@ -3031,19 +3020,735 @@ public sealed class FlexLayouterProductionTests
         var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
             LayoutAttemptStrategy.LastResort);
 
-        // First page: PageComplete with BlockContinuation carrying a
-        // FlexContinuation. Pre-Task-16-cycle-2 this returned AllDone
-        // (= silent content loss).
+        // First page: PageComplete with a chained continuation
+        // ending in a FlexContinuation. Pre-Task-16-cycle-4b this
+        // returned AllDone (= silent content loss); cycle 4b's
+        // paginatable-flex extent clamp + allowPagination: true
+        // flip wires the production pipeline through to the
+        // FlexLayouter's multi-page split.
+        //
+        // Chain shape mirrors the html → body → div.flex depth
+        // (matching MulticolLayouterProductionTests' chain-walk
+        // pattern at the same site): every nested BlockLayouter
+        // level wraps the inner chain in a BlockContinuation
+        // carrying its own ResumeAtChild idx. The leaf is a
+        // FlexContinuation; the wrapping depth equals the DOM
+        // levels between the outer AttemptLayout root + the
+        // paginated flex container.
         Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
         Assert.NotNull(result.Continuation);
-        var blockCont = Assert.IsType<BlockContinuation>(result.Continuation);
-        var flexCont = Assert.IsType<FlexContinuation>(blockCont.LayouterState);
+        var topBc = Assert.IsType<BlockContinuation>(result.Continuation);
+
+        // Walk the chain to the FlexContinuation leaf. The exact
+        // depth depends on the BoxBuilder's wrapping; walk through
+        // any nested BlockContinuations until the leaf appears.
+        object? walker = topBc.LayouterState;
+        var chainDepth = 0;
+        while (walker is BlockContinuation deeper)
+        {
+            chainDepth++;
+            walker = deeper.LayouterState;
+            Assert.True(chainDepth < 32,
+                "Continuation chain unexpectedly deep — chain runaway?");
+        }
+        var flexCont = Assert.IsType<FlexContinuation>(walker);
+        Assert.True(chainDepth >= 1,
+            "Expected chain depth >= 1 — the HTML > BODY > flex "
+            + "nesting should produce at least one nested BlockContinuation "
+            + "wrapping the FlexContinuation leaf. Actual chainDepth = "
+            + chainDepth);
+
         // First fragmentainer fit some lines (≥ 1 per Fragmentation
         // L3 §4.4 progress rule); continuation points to a later line.
         Assert.True(flexCont.LineIndex > 0,
             $"Expected continuation at line > 0; got {flexCont.LineIndex}");
         Assert.True(flexCont.LineIndex < 4,
             $"Expected continuation before line 4 (= all done); got {flexCont.LineIndex}");
+    }
+
+    [Fact]
+    public async Task Task16_cycle4b_two_page_flex_round_trips_to_completion()
+    {
+        // Per Phase 3 Task 16 cycle 4b post-PR-#83 review P1 #1 +
+        // P2 #4 — end-to-end multi-page resume verification. Page 1
+        // returns PageComplete + a chained continuation; we feed
+        // that continuation back as the next BlockLayouter's
+        // <c>incomingContinuation</c>; page 2 emits the remaining
+        // lines + returns either AllDone or a continuation for
+        // page 3. We loop until AllDone (with a safety guard) and
+        // assert that EVERY item appears exactly ONCE across all
+        // pages. Without the cycle-4b inbound chain-walk in
+        // <c>EmitBlockSubtreeRecursive</c>'s nested flex branch,
+        // page 2 would restart from line 0 → duplicate emission of
+        // page-1 items → this test would fail.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    flex-wrap: wrap;
+                    width: 200px;
+                    height: 80px;
+                }
+                .item {
+                    width: 200px;
+                    height: 50px;
+                    flex-shrink: 0;
+                }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+              <div class="item c"></div>
+              <div class="item d"></div>
+            </div>
+            </body></html>
+            """;
+
+        var host = new HtmlParsingHost();
+        var document = await host.ParseAsync(html, new HtmlPdfOptions());
+        var sheets = AdaptAllSheetsViaPreprocessor(document);
+        var cascade = CascadeResolver.Resolve(document, sheets, CssMediaContext.DefaultPrint);
+        var resolved = VarResolver.Resolve(cascade, document);
+        var box = BoxBuilder.Build(document, resolved);
+
+        var allItemFragments = new List<BoxFragment>();
+        LayoutContinuation? incoming = null;
+        var pageCount = 0;
+        const int maxPages = 10;  // safety guard against runaway pagination
+
+        while (pageCount < maxPages)
+        {
+            var sink = new RecordingFragmentSink();
+            var diagSink = new RecordingDiagnosticsSink();
+            using var shaper = new SyntheticShaperResolver();
+
+            using var layouter = new BlockLayouter(
+                rootBox: box,
+                sink: sink,
+                incomingContinuation: incoming,
+                diagnostics: diagSink,
+                shaperResolver: shaper);
+
+            var ctx = new FragmentainerContext(contentInlineSize: 200, blockSize: 80);
+            var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+            using var resolver = new BreakResolver();
+            var result = layouter.AttemptLayout(
+                ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+            // Collect item fragments emitted on this page.
+            foreach (var f in sink.Fragments)
+            {
+                var srcEl = f.Box.SourceElement;
+                if (srcEl is null) continue;
+                var classAttr = srcEl.GetAttribute("class");
+                if (classAttr != null && classAttr.StartsWith("item"))
+                {
+                    allItemFragments.Add(f);
+                }
+            }
+
+            pageCount++;
+            if (result.Outcome == LayoutAttemptOutcome.AllDone)
+            {
+                break;
+            }
+            Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+            incoming = result.Continuation;
+            Assert.NotNull(incoming);
+        }
+
+        Assert.True(pageCount < maxPages,
+            $"Pagination loop exceeded {maxPages} pages — runaway "
+            + "continuation? (suggests inbound chain-walk missing or "
+            + "FlexContinuation index not advancing.)");
+
+        // Every flex item must appear EXACTLY ONCE — no duplicates
+        // (= page 2+ would restart from line 0 without the inbound
+        // chain-walk), no drops (= clamp eligibility too strict).
+        Assert.Equal(4, allItemFragments.Count);
+
+        // The items must appear in DOM order (a, b, c, d). Page-2
+        // resume should pick up where page 1 left off.
+        var classOrder = new List<string>();
+        foreach (var f in allItemFragments)
+        {
+            var classAttr = f.Box.SourceElement!.GetAttribute("class");
+            Assert.NotNull(classAttr);
+            classOrder.Add(classAttr!);
+        }
+        Assert.Collection(classOrder,
+            c => Assert.Equal("item a", c),
+            c => Assert.Equal("item b", c),
+            c => Assert.Equal("item c", c),
+            c => Assert.Equal("item d", c));
+
+        // Multi-page proof: pagination required ≥ 2 pages (else
+        // the clamp gate didn't fire + nothing was tested).
+        Assert.True(pageCount >= 2,
+            $"Expected ≥ 2 pages to actually exercise pagination; got {pageCount}");
+    }
+
+    [Fact]
+    public async Task Task16_cycle4b_paginated_flex_emits_first_page_items_in_dom_order()
+    {
+        // Per Phase 3 Task 16 cycle 4b post-PR-#83 review P2 #4 —
+        // fragment-level proof that page 1 emits actual item
+        // fragments (not just a PageComplete handshake). Asserts:
+        // (a) at least one item fragment lands on page 1, (b) the
+        // items present are a DOM-ordered prefix of [a,b,c,d], (c)
+        // each emitted item has the expected geometry (200×50).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    flex-wrap: wrap;
+                    width: 200px;
+                    height: 80px;
+                }
+                .item {
+                    width: 200px;
+                    height: 50px;
+                    flex-shrink: 0;
+                }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+              <div class="item c"></div>
+              <div class="item d"></div>
+            </div>
+            </body></html>
+            """;
+
+        var host = new HtmlParsingHost();
+        var document = await host.ParseAsync(html, new HtmlPdfOptions());
+        var sheets = AdaptAllSheetsViaPreprocessor(document);
+        var cascade = CascadeResolver.Resolve(document, sheets, CssMediaContext.DefaultPrint);
+        var resolved = VarResolver.Resolve(cascade, document);
+        var box = BoxBuilder.Build(document, resolved);
+
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        using var layouter = new BlockLayouter(
+            rootBox: box,
+            sink: sink,
+            incomingContinuation: null,
+            diagnostics: diagSink,
+            shaperResolver: shaper);
+
+        var ctx = new FragmentainerContext(contentInlineSize: 200, blockSize: 80);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+
+        // Collect item fragments + assert the prefix invariant.
+        var itemFragments = new List<BoxFragment>();
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class");
+            if (classAttr != null && classAttr.StartsWith("item"))
+            {
+                itemFragments.Add(f);
+            }
+        }
+
+        Assert.True(itemFragments.Count >= 1,
+            "Expected ≥ 1 item fragment on page 1 (CSS Fragmentation L3 §4.4 progress rule)");
+        Assert.True(itemFragments.Count < 4,
+            $"Expected < 4 items on page 1 (else pagination didn't happen); got {itemFragments.Count}");
+
+        // Items present must form a DOM-ordered prefix [a, b, ...]
+        var expectedClassPrefix = new[] { "item a", "item b", "item c", "item d" };
+        for (var i = 0; i < itemFragments.Count; i++)
+        {
+            var classAttr = itemFragments[i].Box.SourceElement!.GetAttribute("class");
+            Assert.Equal(expectedClassPrefix[i], classAttr);
+            // Each item: 200 wide × 50 tall (declared geometry).
+            Assert.Equal(200.0, itemFragments[i].InlineSize, precision: 3);
+            Assert.Equal(50.0, itemFragments[i].BlockSize, precision: 3);
+        }
+    }
+
+    [Fact]
+    public async Task Task16_cycle4b_paginated_flex_with_margin_bottom_still_round_trips()
+    {
+        // Per Phase 3 Task 16 cycle 4b post-PR-#83 review P2 #3 —
+        // regression test for the margin-bottom-around-paginated-flex
+        // scenario. The cycle-4b clamp sizes <c>borderBoxBlockSize</c>
+        // to page-remaining minus <c>topShift</c>, but the
+        // <c>chunkForBreakCheck</c> + cursor advance still include
+        // <c>marginEnd</c>. A flex container with margin-bottom large
+        // enough to push the chunk past the page boundary could
+        // still trip BreakHere AFTER the clamp + fall into
+        // forced-overflow path — re-routing through the cycle-4b
+        // P1 #2 fix (which atomically emits items via
+        // DispatchFlexInner with allowPagination: false).
+        //
+        // The test exercises this with margin-bottom: 20 on a
+        // 200×80 fragmentainer where the (clamped) flex content
+        // would JUST fit. We assert the test still rounds-trips to
+        // completion — no dropped items, no infinite loop. The
+        // exact pagination path (clamp+pagination vs.
+        // forced-overflow+atomic) is implementation detail; the
+        // contract is that ALL items appear.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    flex-wrap: wrap;
+                    width: 200px;
+                    height: 80px;
+                    margin-bottom: 20px;
+                }
+                .item {
+                    width: 200px;
+                    height: 50px;
+                    flex-shrink: 0;
+                }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+              <div class="item c"></div>
+              <div class="item d"></div>
+            </div>
+            </body></html>
+            """;
+
+        var host = new HtmlParsingHost();
+        var document = await host.ParseAsync(html, new HtmlPdfOptions());
+        var sheets = AdaptAllSheetsViaPreprocessor(document);
+        var cascade = CascadeResolver.Resolve(document, sheets, CssMediaContext.DefaultPrint);
+        var resolved = VarResolver.Resolve(cascade, document);
+        var box = BoxBuilder.Build(document, resolved);
+
+        var allItemFragments = new List<BoxFragment>();
+        var perPageLineIndices = new List<int>();
+        LayoutContinuation? incoming = null;
+        var pageCount = 0;
+        const int maxPages = 10;
+
+        while (pageCount < maxPages)
+        {
+            var sink = new RecordingFragmentSink();
+            var diagSink = new RecordingDiagnosticsSink();
+            using var shaper = new SyntheticShaperResolver();
+
+            using var layouter = new BlockLayouter(
+                rootBox: box,
+                sink: sink,
+                incomingContinuation: incoming,
+                diagnostics: diagSink,
+                shaperResolver: shaper);
+
+            var ctx = new FragmentainerContext(contentInlineSize: 200, blockSize: 80);
+            var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+            using var resolver = new BreakResolver();
+            var result = layouter.AttemptLayout(
+                ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+            foreach (var f in sink.Fragments)
+            {
+                var srcEl = f.Box.SourceElement;
+                if (srcEl is null) continue;
+                var classAttr = srcEl.GetAttribute("class");
+                if (classAttr != null && classAttr.StartsWith("item"))
+                {
+                    allItemFragments.Add(f);
+                }
+            }
+
+            pageCount++;
+            if (result.Outcome == LayoutAttemptOutcome.AllDone)
+            {
+                break;
+            }
+            Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+
+            // Walk the continuation chain to the FlexContinuation
+            // leaf + record LineIndex per page. While the chain still
+            // has a FlexContinuation leaf the LineIndex MUST strictly
+            // increase across pages (= the resume actually advanced).
+            // Stagnant LineIndex = chain peel failed = infinite loop.
+            // Once the flex container completes its lines, later
+            // pages may carry a chain WITHOUT a FlexContinuation
+            // leaf (= outer block-level pagination continuing past
+            // the now-complete flex); we just stop checking
+            // strict-increase at that point.
+            object? walker = (result.Continuation as BlockContinuation)?.LayouterState;
+            while (walker is BlockContinuation deeper)
+            {
+                walker = deeper.LayouterState;
+            }
+            if (walker is FlexContinuation fc)
+            {
+                perPageLineIndices.Add(fc.LineIndex);
+            }
+
+            incoming = result.Continuation;
+            Assert.NotNull(incoming);
+        }
+
+        // While the FlexContinuation leaf is present, its LineIndex
+        // must strictly increase per page (= resume actually
+        // advanced). Empty list = flex completed on page 1 (= the
+        // case where margin-bottom didn't force pagination); the
+        // strict-increase check trivially passes.
+        for (var i = 1; i < perPageLineIndices.Count; i++)
+        {
+            Assert.True(perPageLineIndices[i] > perPageLineIndices[i - 1],
+                $"FlexContinuation LineIndex must strictly increase while "
+                + $"present in the chain; got [{string.Join(",", perPageLineIndices)}]. "
+                + "Stagnant LineIndex = chain-walk failed = duplicate emission.");
+        }
+
+        Assert.True(pageCount < maxPages,
+            $"Pagination loop exceeded {maxPages} pages — runaway with margin-bottom? "
+            + $"LineIndices: [{string.Join(",", perPageLineIndices)}]");
+        // Every item must appear exactly once regardless of which
+        // path (clamp+paginate vs. forced-overflow+atomic) the
+        // margin-bottom drove the dispatch through.
+        Assert.Equal(4, allItemFragments.Count);
+    }
+
+    [Fact]
+    public async Task Task16_cycle4b_column_direction_does_not_paginate_stays_atomic()
+    {
+        // Per Phase 3 Task 16 cycle 4b — negative test for the
+        // <c>IsPaginatableFlex</c> predicate's column-direction gate.
+        // A flex container with <c>flex-direction: column</c> +
+        // <c>flex-wrap: wrap</c> places line breaks on the INLINE
+        // axis (not a fragment boundary); per CSS Flexbox L1 §10
+        // pagination requires the cross axis to BE the block axis.
+        // The cycle 4b pre-grow clamp + allowPagination flip must
+        // both stay OFF for column direction even when the wrapper
+        // would otherwise overflow the page.
+        //
+        // Expected: result.Outcome == AllDone (= the cycle-pre-4b
+        // atomic behavior); no FlexContinuation emitted.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    flex-direction: column;
+                    flex-wrap: wrap;
+                    width: 200px;
+                    height: 80px;
+                }
+                .item {
+                    width: 200px;
+                    height: 50px;
+                    flex-shrink: 0;
+                }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+              <div class="item c"></div>
+              <div class="item d"></div>
+            </div>
+            </body></html>
+            """;
+
+        var host = new HtmlParsingHost();
+        var document = await host.ParseAsync(html, new HtmlPdfOptions());
+        var sheets = AdaptAllSheetsViaPreprocessor(document);
+        var cascade = CascadeResolver.Resolve(document, sheets, CssMediaContext.DefaultPrint);
+        var resolved = VarResolver.Resolve(cascade, document);
+        var box = BoxBuilder.Build(document, resolved);
+
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        using var layouter = new BlockLayouter(
+            rootBox: box,
+            sink: sink,
+            incomingContinuation: null,
+            diagnostics: diagSink,
+            shaperResolver: shaper);
+
+        var ctx = new FragmentainerContext(contentInlineSize: 200, blockSize: 80);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        // Column direction is INELIGIBLE for cycle 4b's pagination
+        // re-route; the result must be AllDone (atomic) — NOT
+        // PageComplete with a FlexContinuation.
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+
+        // Per PR-#83 review P2 #4 — fragment-level proof that the
+        // atomic emit ACTUALLY produced item fragments (vs. silently
+        // dropping them via the forced-overflow + EmitBlockSubtreeRecursive
+        // gap that cycle-4b P1 #2 closed).
+        var emittedItems = 0;
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class");
+            if (classAttr != null && classAttr.StartsWith("item"))
+            {
+                emittedItems++;
+            }
+        }
+        Assert.Equal(4, emittedItems);
+    }
+
+    [Fact]
+    public async Task Task16_cycle4b_wrap_reverse_does_not_paginate_stays_atomic()
+    {
+        // Per Phase 3 Task 16 cycle 4b — negative test for the
+        // <c>IsPaginatableFlex</c> predicate's wrap-reverse gate.
+        // <c>flex-wrap: wrap-reverse</c> derives the cross-axis
+        // origin SWAP from the UNFRAGMENTED container size; the
+        // first-page emission would place lines at the wrong
+        // physical offset if we split. Multi-fragment cross-flow
+        // re-derivation is deferred; cycle 4b must skip the
+        // pagination re-route for wrap-reverse + fall through to
+        // the atomic emit (= existing L11 wrap-reverse behavior).
+        //
+        // Expected: result.Outcome == AllDone (= atomic emit, lines
+        // overflow the wrapper's CSS height as they did pre-cycle-4b).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    flex-wrap: wrap-reverse;
+                    width: 200px;
+                    height: 80px;
+                }
+                .item {
+                    width: 200px;
+                    height: 50px;
+                    flex-shrink: 0;
+                }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+              <div class="item c"></div>
+              <div class="item d"></div>
+            </div>
+            </body></html>
+            """;
+
+        var host = new HtmlParsingHost();
+        var document = await host.ParseAsync(html, new HtmlPdfOptions());
+        var sheets = AdaptAllSheetsViaPreprocessor(document);
+        var cascade = CascadeResolver.Resolve(document, sheets, CssMediaContext.DefaultPrint);
+        var resolved = VarResolver.Resolve(cascade, document);
+        var box = BoxBuilder.Build(document, resolved);
+
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        using var layouter = new BlockLayouter(
+            rootBox: box,
+            sink: sink,
+            incomingContinuation: null,
+            diagnostics: diagSink,
+            shaperResolver: shaper);
+
+        var ctx = new FragmentainerContext(contentInlineSize: 200, blockSize: 80);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        // wrap-reverse is INELIGIBLE for cycle 4b's pagination
+        // re-route; result must be AllDone (atomic).
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+
+        // Per PR-#83 review P2 #4 — fragment-level proof that
+        // wrap-reverse items are still emitted (= the cycle-4b
+        // P1 #2 forced-overflow-flex re-route is what catches the
+        // wrap-reverse atomic-overflow case).
+        var emittedItems = 0;
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class");
+            if (classAttr != null && classAttr.StartsWith("item"))
+            {
+                emittedItems++;
+            }
+        }
+        Assert.Equal(4, emittedItems);
+    }
+
+    [Fact]
+    public async Task Task16_cycle4b_nowrap_single_line_does_not_paginate_stays_atomic()
+    {
+        // Per Phase 3 Task 16 cycle 4b — negative test for the
+        // <c>IsPaginatableFlex</c> predicate's wrap gate.
+        // Single-line containers (<c>flex-wrap: nowrap</c>) have no
+        // line boundary to split on; lines are atomic. The cycle 4b
+        // re-route must skip nowrap + fall through to the existing
+        // atomic emission (= L1-L17 behavior).
+        //
+        // Expected: result.Outcome == AllDone (atomic). The
+        // container has one wide line that overflows the wrapper.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    width: 200px;
+                    height: 80px;
+                }
+                .item {
+                    width: 60px;
+                    height: 50px;
+                    flex-shrink: 0;
+                }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+              <div class="item c"></div>
+              <div class="item d"></div>
+            </div>
+            </body></html>
+            """;
+
+        var host = new HtmlParsingHost();
+        var document = await host.ParseAsync(html, new HtmlPdfOptions());
+        var sheets = AdaptAllSheetsViaPreprocessor(document);
+        var cascade = CascadeResolver.Resolve(document, sheets, CssMediaContext.DefaultPrint);
+        var resolved = VarResolver.Resolve(cascade, document);
+        var box = BoxBuilder.Build(document, resolved);
+
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        using var layouter = new BlockLayouter(
+            rootBox: box,
+            sink: sink,
+            incomingContinuation: null,
+            diagnostics: diagSink,
+            shaperResolver: shaper);
+
+        var ctx = new FragmentainerContext(contentInlineSize: 200, blockSize: 80);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        // nowrap is INELIGIBLE for cycle 4b's pagination re-route;
+        // result must be AllDone (atomic).
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+
+        // Per PR-#83 review P2 #4 — fragment-level proof that
+        // nowrap items emit (= single-line atomic dispatch through
+        // the forced-overflow + cycle-4b P1 #2 re-route).
+        var emittedItems = 0;
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class");
+            if (classAttr != null && classAttr.StartsWith("item"))
+            {
+                emittedItems++;
+            }
+        }
+        Assert.Equal(4, emittedItems);
+    }
+
+    [Fact]
+    public async Task Task16_cycle4b_fully_contained_flex_does_not_paginate()
+    {
+        // Per Phase 3 Task 16 cycle 4b — negative test for the
+        // pre-grow clamp's "wrapper fits in remaining" gate. When
+        // the flex container's natural extent fits within the
+        // remaining fragmentainer space, the clamp leaves
+        // <c>borderBoxBlockSize</c> alone + <c>paginateFlex*</c>
+        // stays false. The dispatch passes
+        // <c>allowPagination: false</c> + FlexLayouter emits
+        // everything atomically — same as the cycle-pre-4b path.
+        //
+        // Expected: result.Outcome == AllDone.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    flex-wrap: wrap;
+                    width: 200px;
+                    height: 800px;
+                }
+                .item {
+                    width: 200px;
+                    height: 50px;
+                    flex-shrink: 0;
+                }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+              <div class="item c"></div>
+              <div class="item d"></div>
+            </div>
+            </body></html>
+            """;
+
+        var host = new HtmlParsingHost();
+        var document = await host.ParseAsync(html, new HtmlPdfOptions());
+        var sheets = AdaptAllSheetsViaPreprocessor(document);
+        var cascade = CascadeResolver.Resolve(document, sheets, CssMediaContext.DefaultPrint);
+        var resolved = VarResolver.Resolve(cascade, document);
+        var box = BoxBuilder.Build(document, resolved);
+
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        using var layouter = new BlockLayouter(
+            rootBox: box,
+            sink: sink,
+            incomingContinuation: null,
+            diagnostics: diagSink,
+            shaperResolver: shaper);
+
+        // Large fragmentainer (800) so the 4×50 = 200 natural
+        // extent fits with room to spare. The cycle-4b clamp
+        // should NOT fire.
+        var ctx = new FragmentainerContext(contentInlineSize: 200, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+            LayoutAttemptStrategy.LastResort);
+
+        // Container fits entirely; no pagination needed.
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+
+        // Per PR-#83 review P2 #4 — fragment-level proof that all
+        // 4 items emit when the clamp gate stays off (= production
+        // path with the cycle-pre-4b atomic emission, sanity check
+        // that cycle 4b didn't regress the fitting-fully case).
+        var emittedItems = 0;
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class");
+            if (classAttr != null && classAttr.StartsWith("item"))
+            {
+                emittedItems++;
+            }
+        }
+        Assert.Equal(4, emittedItems);
     }
 
     [Fact]

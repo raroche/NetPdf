@@ -191,11 +191,17 @@ namespace NetPdf.Layout.Layouters;
 ///   stable sort by (<c>order</c>, DOM index)). The cascade default
 ///   <c>order: 0</c> preserves source order, so the L1-L9
 ///   behavior is identical when no item declares a non-zero order.</item>
-///   <item>No multi-page flex container splitting. The flex container
-///   is atomic to the outer pagination — the entire container's
-///   items emit on the page the wrapper landed on, same as
-///   <see cref="MulticolLayouter"/> cycle 1. Cycle 2 will introduce
-///   <see cref="FlexContinuation"/> resume.</item>
+///   <item>Multi-page flex container splitting ACTIVE as of Task 16
+///   cycle 4b. When eligible per <see cref="IsPaginatablePerStyle"/>
+///   (row + wrap + non-wrap-reverse) AND the dispatching BlockLayouter
+///   passes <c>allowPagination: true</c> (= the grown natural extent
+///   overflows the remaining fragmentainer space), this layouter emits
+///   only the lines that fit + returns
+///   <see cref="LayoutAttemptOutcome.PageComplete"/> carrying a
+///   <see cref="FlexContinuation"/> for the rest (CSS Flexbox L1 §10
+///   + CSS Fragmentation L3 §4.4 progress rule). Ineligible
+///   containers (column / wrap-reverse / nowrap) + eligible
+///   containers that fit on a single page remain atomic.</item>
 /// </list>
 ///
 /// <para><b>Dispatch contract.</b> The dispatching
@@ -398,7 +404,7 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         _emissionConfigured = true;
     }
 
-    /// <summary>Per Phase 3 Task 16 cycle 1 — when
+    /// <summary>Per Phase 3 Task 16 cycle 1 → cycle 4b — when
     /// <see langword="true"/>, the layouter splits a multi-line flex
     /// container at line boundaries when lines exceed the container's
     /// cross extent + emits a <see cref="FlexContinuation"/> for the
@@ -406,10 +412,63 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
     /// lines overflow the container freely (= the existing L1-L17
     /// behavior); this preserves the L7 + L8 hardening overflow tests
     /// that deliberately exercise the "lines exceed container cross
-    /// extent" path. BlockLayouter dispatch will pass
-    /// <see langword="true"/> in sub-cycle 2 when wiring the resume
-    /// chain.</summary>
+    /// extent" path. Cycle 4b's paginatable-flex extent clamp in
+    /// BlockLayouter flips this flag ON via
+    /// <see cref="ConfigureEmission"/> when the container is eligible
+    /// per <see cref="IsPaginatablePerStyle"/> AND its grown natural
+    /// extent overflows the remaining fragmentainer space.</summary>
     private bool _allowPagination;
+
+    /// <summary>Per Phase 3 Task 16 cycle 4b post-PR-#83 review P3 #6
+    /// — SHARED predicate identifying flex containers eligible for
+    /// multi-page line splitting per their box / style. Both
+    /// <see cref="FlexLayouter"/>'s internal
+    /// <c>isRowNormalWrapPaginationSupported</c> gate (line ~560) and
+    /// <c>BlockLayouter.IsPaginatableFlex</c> delegate here to keep
+    /// the two predicates in lockstep. If they drift the dispatch
+    /// could flip <c>allowPagination: true</c> for an ineligible
+    /// container + the FlexLayouter would treat it as
+    /// <c>false</c> = silently dropped continuation = lost content.
+    ///
+    /// <para><b>Eligibility</b> per CSS Flexbox L1 §10 (Fragmenting
+    /// Flex Layout) + Task-16 cycle-1 sub-cycle 2+ deferrals:</para>
+    /// <list type="bullet">
+    ///   <item><b>Row direction (= cross-axis is the block axis):</b>
+    ///   line breaks happen along the block axis where fragment
+    ///   boundaries live. Column direction puts line breaks on the
+    ///   inline axis which isn't a fragment boundary.</item>
+    ///   <item><b>Wrap (NOT nowrap):</b> single-line containers have
+    ///   no line boundary to split on; per-item mid-line splitting is
+    ///   a later sub-cycle.</item>
+    ///   <item><b>NOT wrap-reverse:</b> the cross-axis SWAP origin
+    ///   derives from the UNFRAGMENTED container size; emitting
+    ///   partial content on a resumed page would place lines at the
+    ///   wrong physical offset. Multi-fragment cross-flow
+    ///   re-derivation is sub-cycle 2+ scope.</item>
+    /// </list>
+    /// </summary>
+    public static bool IsPaginatablePerStyle(Box box)
+    {
+        if (box.Kind is not (BoxKind.FlexContainer or BoxKind.InlineFlexContainer))
+        {
+            return false;
+        }
+        var direction = box.Style.ReadFlexDirection();
+        if (direction.IsFlexColumnDirection())
+        {
+            return false;
+        }
+        var wrap = box.Style.ReadFlexWrap();
+        if (!wrap.IsFlexWrapping())
+        {
+            return false;
+        }
+        if (wrap == FlexWrapValue.WrapReverse)
+        {
+            return false;
+        }
+        return true;
+    }
 
     /// <inheritdoc />
     public LayoutAttemptResult AttemptLayout(
@@ -557,8 +616,18 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
         //     content on a resumed page would place lines at the
         //     wrong physical offset. Sub-cycle 2 will recompute
         //     CrossAxisFlow against the per-fragment cross extent.
+        // Per Phase 3 Task 16 cycle 4b post-PR-#83 review P3 #6 —
+        // delegate the style-side gate to <see cref="IsPaginatablePerStyle"/>
+        // so BlockLayouter's dispatch-side predicate +
+        // FlexLayouter's emission-side gate stay in lockstep. The
+        // call-site decision (= <c>_allowPagination</c>) remains
+        // distinct because BlockLayouter only flips it ON when the
+        // container's grown extent actually overflows the remaining
+        // page space; eligible containers that fit get
+        // <c>_allowPagination: false</c> (= atomic emission, same as
+        // cycle-pre-4b behavior).
         var isRowNormalWrapPaginationSupported =
-            _allowPagination && !isColumn && isWrapping && !isWrapReverse;
+            _allowPagination && IsPaginatablePerStyle(_rootBox);
 
         // Per Phase 3 Task 16 post-PR-#78 P1 #3 — validate the
         // resume index against the packed line count. Out-of-range
@@ -1082,24 +1151,31 @@ internal sealed class FlexLayouter : ILayouter, IDisposable
             swappedAxisCursor += line.LineCrossSize + lineBetweenSpacing;
         }
 
-        // Per Phase 3 Task 16 cycle 1 — multi-page flex split outcome.
-        // When `outgoingContinuationLineIndex` is set (≥ 0), at least
-        // one line did NOT fit on this page and we emit a
-        // <see cref="LayoutAttemptResult.PageComplete"/> carrying a
-        // <see cref="FlexContinuation"/> so the outer pagination can
-        // call back with the continuation on the next page. When -1
-        // (= every remaining line fit), the container is fully
-        // emitted + we return <see cref="LayoutAttemptResult.AllDone"/>.
-        // BlockLayouter dispatch integration: cycle 2 wired the
-        // direct + recursive path code to capture this result +
-        // propagate PageComplete + FlexContinuation up the
-        // recursion chain. Pagination is gated off at the
-        // BlockLayouter dispatch sites (allowPagination: false)
-        // pending cycle 4 — the pre-break-check routing needed to
-        // prevent forced-overflow from preempting the dispatch
-        // before paginatable flex containers reach this code path.
-        // Direct-construction tests bypass this gate + verify the
-        // resume contract in isolation.
+        // Per Phase 3 Task 16 cycle 1 → cycle 4b — multi-page flex
+        // split outcome. When `outgoingContinuationLineIndex` is set
+        // (≥ 0), at least one line did NOT fit on this page and we
+        // emit a <see cref="LayoutAttemptResult.PageComplete"/>
+        // carrying a <see cref="FlexContinuation"/> so the outer
+        // pagination can call back with the continuation on the
+        // next page. When -1 (= every remaining line fit), the
+        // container is fully emitted + we return
+        // <see cref="LayoutAttemptResult.AllDone"/>.
+        //
+        // BlockLayouter dispatch integration (cycle 4b ACTIVE):
+        // both the outer + recursive dispatch sites apply the
+        // paginatable-flex extent clamp BEFORE dispatch — eligible
+        // containers (per <see cref="IsPaginatablePerStyle"/>) whose
+        // grown natural extent overflows the remaining fragmentainer
+        // space get <c>allowPagination: true</c> + a clamped
+        // content-block-size. The forced-overflow path also routes
+        // through the dispatch helper (cycle-4b P1 #2 fix) so flex
+        // items emit correctly even when the cycle-4b clamp
+        // didn't fire (e.g. column / wrap-reverse atomic
+        // overflow). The PageComplete branch below propagates up via
+        // <c>BlockContinuation(LayouterState=FlexContinuation)</c>;
+        // the resume page's BlockLayouter forwards the leaf back to
+        // this layouter via the cycle-4b inbound chain-walk in
+        // EmitBlockSubtreeRecursive's nested flex branch.
         if (outgoingContinuationLineIndex >= 0)
         {
             return LayoutAttemptResult.PageComplete(

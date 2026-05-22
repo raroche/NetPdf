@@ -910,14 +910,19 @@ grepping the ID).
   ConfigureEmission) — `width: auto` on a block-level flex container
   means "fill containing block" per CSS Sizing §3.4, NOT shrink-to-fit
   (inline-flex shrink-to-fit is L7+ scope; L6 shipped `flex-wrap:
-  wrap` without expanding the inline-flex sizing scope). The flex
-  container production dispatch remains atomic (the entire
-  container's items emit on the page the wrapper landed on)
-  because both BlockLayouter dispatch sites pass
-  `allowPagination: false`; the FlexLayouter resume contract +
-  `FlexContinuation` scaffolding exist as of Task 16 cycles 1-3
-  but remain DORMANT until cycle 4 introduces the
-  paginatable-flex pre-break-check dispatch.
+  wrap` without expanding the inline-flex sizing scope).
+  Production multi-page flex is **ACTIVE as of Task 16 cycle 4b**:
+  paginatable row+wrap containers whose grown natural extent
+  exceeds the remaining fragmentainer space are clamped (wrapper
+  border-box → page-remaining-block) + dispatched with
+  `allowPagination: true`. FlexLayouter packs lines up to the
+  clamped budget + emits a `FlexContinuation` for the rest (CSS
+  Flexbox L1 §10 fragmentation + CSS Fragmentation L3 §4.4
+  progress rule). The `IsPaginatableFlex` predicate gates the
+  clamp (row direction + wrap + non-wrap-reverse, mirroring
+  FlexLayouter's `isRowNormalWrapPaginationSupported` predicate);
+  column / wrap-reverse / nowrap fall through to the cycle-pre-4b
+  atomic emit (with content overflowing the wrapper if too tall).
   **Per Phase 3 Task 15 L6** — `flex-wrap: wrap` ships in full per
   CSS Flexbox L1 §6.3 + §9.3 + §9.4: greedy line packing along the
   main axis (the first item on each line always lands even if it
@@ -1199,30 +1204,65 @@ grepping the ID).
     below for the historical fix.
   - **Multi-page flex container splitting** (Task 16, in progress;
     cycles 1-3 shipped the FlexLayouter resume contract + scaffolded
-    BlockLayouter dispatch propagation; **cycle 4 remains** = the
-    architectural rework that the PR-#79 + PR-#80 reviews documented:
-    - **P1 #1 (PR-#79)**: introduce a paginatable-flex specialized
-      dispatch BEFORE the generic break check fires forced-overflow.
-      Currently the row+wrap pre-grow makes wrapper huge → break
-      check triggers forced-overflow → bypasses flex dispatch.
-      Needs routing paginatable flex through a pre-break-check path.
-    - **P1 #2 (PR-#80) proper close**: wire
-      `EmitBlockSubtreeRecursive`'s nested flex branch to walk the
-      incoming BlockContinuation chain + extract the inner
-      FlexContinuation when targeting the deferred-at child.
-      Cycle 3's scaffolding has the propagation outbound but the
-      inbound chain-walk is still null.
-    - **P1 #3 (PR-#79 + PR-#80)**: active production-pipeline test
-      through full HTML→cascade→BoxBuilder→BlockLayouter→FlexLayouter
-      chain. The
+    BlockLayouter dispatch propagation; cycle 4a extracted the
+    `DispatchFlexInner` helper; **cycle 4b shipped the
+    pre-break-check paginatable-flex extent clamp + flipped
+    `allowPagination: true` at both dispatch sites**. The remaining
+    cycle-4 follow-on items below are tightening, not blockers for
+    production multi-page flex:
+    - ✅ **P1 #1 (PR-#79) shipped in cycle 4b**: paginatable-flex
+      extent clamp at BOTH dispatch sites. New
+      `IsPaginatableFlex(box)` predicate (row + wrap +
+      non-wrap-reverse, mirroring `FlexLayouter`'s
+      `isRowNormalWrapPaginationSupported`) gates the clamp;
+      eligible containers whose grown natural extent overflows the
+      remaining fragmentainer space have `borderBoxBlockSize` /
+      `childBorderBoxBlockSize` clamped to the page-remaining-block
+      + the `paginateFlex*ForChild` flag flips
+      `allowPagination: true` in `DispatchFlexInner`. FlexLayouter
+      packs lines up to the clamped budget + emits a
+      `FlexContinuation` for the rest; the chain-walk-propagation
+      already wired in cycles 2-3 carries the continuation up via
+      `PageComplete(BlockContinuation(LayouterState=FlexContinuation))`.
+    - **P1 #2 (PR-#80) — partial close in cycle 4b**: the recursive
+      site's outbound propagation IS now active (the cycle-3
+      scaffolding fires when the cycle-4b clamp turns
+      `allowPagination` ON). The INBOUND chain-walk (= read
+      `incomingBlockChain.LayouterState` for a `FlexContinuation`
+      leaf when the chain reaches a nested flex container) is still
+      null at `EmitBlockSubtreeRecursive`'s nested flex branch
+      (line ~3360). For deeply-nested flex inside multi-page splits
+      where the resume page needs to forward an INNER
+      FlexContinuation into a deeper level, the chain-walk is
+      required; the cycle-4b production test is shallow enough that
+      the cycle-2 direct-dispatch chain-walk handles it. Cycle 4c
+      will add the recursive-site chain-walk for the multi-level
+      case.
+    - ✅ **P1 #3 (PR-#79 + PR-#80) shipped in cycle 4b**:
       `Task16_cycle2_production_html_flex_container_splits_across_two_pages`
-      test is `[Fact(Skip = ...)]` pending this work.
+      is now `[Fact]` (not `Skip`) and passing through the full
+      HTML → cascade → BoxBuilder → BlockLayouter → FlexLayouter
+      pipeline. The chain-walk pattern matches
+      `MulticolLayouterProductionTests`' walker.
     - **P2 #4 (PR-#79)**: derive `pageRemainingBlock` from actual
       content block offset (= post margin-collapse) rather than
       `effectiveTopGap` (= avoid double-counting collapsed margins).
+      Cycle 4b uses `fragmentainer.BlockSize - childBlockOffset`
+      directly at the recursive site + `fragmentainer.BlockSize
+      - fragmentainer.UsedBlockSize - topShift` at the outer site,
+      which are correct for the production test shape but
+      mathematically a margin-collapse boundary could still
+      undercount; defer for a P2 follow-on once a regression
+      surfaces.
     - **P2 #5 (PR-#79)**: FlexLayouter returns emitted-fragment
       block extent so cursor advancement on PageComplete reflects
-      only the current fragment's contribution.
+      only the current fragment's contribution. Cycle 4b consumes
+      the page-remaining-block as the wrapper's painted size +
+      the cursor advance, which is overconservative when
+      FlexLayouter emits fewer lines than the clamped budget would
+      allow (= AllDone case after clamping). Functional but not
+      pixel-perfect for the AllDone-after-clamp case; tracked as
+      cycle 4c.
     - ✅ **P3 #7 (PR-#79 + PR-#80) shipped in cycle 4a (PR #82)**:
       `DispatchFlexInner` helper now used by BOTH direct +
       recursive paths to eliminate drift between them. 135 + 107
@@ -1230,56 +1270,55 @@ grepping the ID).
       BreakResolver lifetime via `using var`.
     - **P3 #8 (PR-#79)**: shared `FlexLinePacker` between
       `BlockLayouter` pre-measure + `FlexLayouter` packing.
+      Pre-measure (`PreMeasureFlexMultiLineCrossExtent`) still
+      duplicates the packing algorithm in `FlexLayouter.PackLines`.
+      Cycle 4b's clamp + the existing pre-grow consume the
+      pre-measure result; refactoring to a shared packer is a pure
+      DRY win.
     - **P2 from PR-#82 review #2**: extend `DispatchFlexInner`
       (or add a `FlexGeometryHelper`) to also encapsulate
       border/padding reads + content-box geometry math.
-      Currently each call site still duplicates that
-      ~10-line geometry derivation. Cycle 4b's page-relative
-      sizing is geometry-sensitive, so consolidating before
-      that change reduces drift risk.
+      Each call site still duplicates that ~10-line geometry
+      derivation (now THREE sites with the cycle-4b outer +
+      recursive sites consulting the clamp ahead of the
+      dispatch). Consolidating becomes more valuable as the
+      paths converge.
     - **P2 from PR-#82 review #3**: parameterize the helper's
       `IBreakResolver` + `LayoutAttemptStrategy`. The current
       hardcoded fresh `BreakResolver` + `LastResort` preserves
-      pre-extraction behavior, but once production flex
-      pagination is enabled the caller may want to pass its
-      own resolver policy / checkpoint ownership / optimizer
-      choice. Either parameterize, or document why flex inner
-      dispatch must always use a fresh greedy resolver +
-      `LastResort`.
+      pre-extraction behavior; cycle 4b leaves it alone because
+      production multi-page flex now works without parameterization.
+      Pick this up when a caller wants to share resolver state
+      or use a different optimizer.
 
-    **Cycle 4 execution order** (per PR-#81 review P3 #6 — the
-    suggested sequence that minimizes drift + builds the
-    foundation incrementally):
+    **Cycle 4 execution order** — UPDATED post-cycle-4b. The active
+    follow-ons (none blockers) are the remaining unchecked items
+    above (recursive chain-walk for multi-level FlexContinuation
+    routing, margin-collapse-aware page-remaining, emitted-fragment
+    block extent, shared `FlexLinePacker`, geometry helper, resolver
+    parameterization).
     1. ✅ **Extract `DispatchFlexInner`** — shipped in cycle 4a
-       (PR #82). Eliminates drift between direct + recursive
-       dispatch paths. Geometry-helper extension (PR-#82 review
-       #2) + resolver/strategy parameterization (PR-#82 review
-       #3) tracked as follow-on tightening above; shared
-       `FlexLinePacker` (P3 #8) remains for cycle 4a-bis or
-       can roll into the cycle 4b work below.
-    2. **Add pre-break-check paginatable-flex dispatch** (P1 #1).
-       Intercept row+wrap+pagination-eligible flex children
-       BEFORE the generic break check fires forced-overflow.
-       Route through `DispatchFlexInner` with `allowPagination:
-       true` + page-remaining-block budget.
+       (PR #82).
+    2. ✅ **Add pre-break-check paginatable-flex dispatch** — shipped
+       in cycle 4b (this PR). The clamp lives at the END of the
+       flex pre-grow block (NOT before the resolver consult) — the
+       end-of-pre-grow site has all the variables in scope + makes
+       the chunk-for-break-check naturally pass through the
+       Continue path with `allowPagination: true`. Mathematically
+       equivalent to a pre-break-check intercept; structurally
+       simpler.
     3. **Wire inbound recursive FlexContinuation chain-walk**
-       (P1 #2). The chain extract in
-       `EmitBlockSubtreeRecursive`'s nested flex branch now reads
-       the incoming `BlockContinuation.LayouterState` chain +
-       forwards the inner `FlexContinuation` to the helper.
+       (P1 #2) — DEFERRED to cycle 4c.
     4. **Compute margin-collapse-aware `pageRemainingBlock`**
-       (P2 #4). Derive from actual content block offset
-       post-collapse rather than `effectiveTopGap`.
+       (P2 #4) — DEFERRED.
     5. **Return emitted-fragment block extent from FlexLayouter**
-       (P2 #5). Cursor advancement on PageComplete uses the
-       fragment's extent, not the wrapper's natural extent.
-    6. **Unskip the production-pipeline test** (P1 #3) — at this
-       point the full chain works end-to-end through real HTML.
+       (P2 #5) — DEFERRED.
+    6. ✅ **Unskip the production-pipeline test** (P1 #3) — shipped
+       in cycle 4b.
 
     `FlexContinuation` exists in
     `src/NetPdf.Paginate/LayoutContinuation.cs`; the data flow is
-    wired but `allowPagination: false` at both dispatch sites
-    keeps the propagation dormant pending cycle 4b.)
+    fully active post-cycle-4b.)
 - **Owner files** —
   - `src/NetPdf.Layout/Layouters/FlexLayouter.cs` — the layouter
     itself.

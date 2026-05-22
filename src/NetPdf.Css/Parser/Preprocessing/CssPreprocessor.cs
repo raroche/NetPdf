@@ -167,6 +167,13 @@ internal static class CssPreprocessor
         // shape would extend to `font` / `border` / `background` /
         // etc. when they land.
         "flex",
+        // Per Phase 3 Task 15 L16 — `flex-flow` shorthand. Mirrors the
+        // L13 pattern for the `<flex-direction> || <flex-wrap>`
+        // shorthand per CSS Flexbox L1 §6.1.
+        // <see cref="FlexFlowShorthandExpander.TryExpand"/> emits TWO
+        // longhand recovery records (`flex-direction` / `flex-wrap`)
+        // in place of the single dropped `flex-flow` declaration.
+        "flex-flow",
     }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
@@ -613,12 +620,43 @@ internal static class CssPreprocessor
                         out var fShrink,
                         out var fBasis))
                 {
+                    // Per Phase 3 Task 15 L13 + post-PR-#76 review #1 —
+                    // shorthand-expansion recoveries carry the
+                    // `IsFromShorthandExpansion: true` flag so the
+                    // downstream merge uses APPEND-ONLY semantics: any
+                    // explicit longhand that AngleSharp emitted (e.g.,
+                    // `flex: 1; flex-grow: 0` → AngleSharp's
+                    // last-wins `flex-grow: 0` plus our expansion's
+                    // `flex-grow: 1`) survives the merge. Pre-fix the
+                    // expansion's `flex-grow: 1` would silently
+                    // override the author's later `flex-grow: 0`.
                     output.Add(new CssDeclarationRecovery(
-                        "flex-grow", fGrow, isImportant));
+                        "flex-grow", fGrow, isImportant,
+                        IsFromShorthandExpansion: true));
                     output.Add(new CssDeclarationRecovery(
-                        "flex-shrink", fShrink, isImportant));
+                        "flex-shrink", fShrink, isImportant,
+                        IsFromShorthandExpansion: true));
                     output.Add(new CssDeclarationRecovery(
-                        "flex-basis", fBasis, isImportant));
+                        "flex-basis", fBasis, isImportant,
+                        IsFromShorthandExpansion: true));
+                }
+                else if (normalizedName == "flex-flow"
+                    && FlexFlowShorthandExpander.TryExpand(
+                        cleanValue,
+                        out var ffDir,
+                        out var ffWrap))
+                {
+                    // Per Phase 3 Task 15 L16 — multi-emit recovery
+                    // for the `flex-flow` shorthand per CSS Flexbox
+                    // L1 §6.1. Two longhand records replace the
+                    // single dropped shorthand; see L13 above for the
+                    // append-only semantics rationale.
+                    output.Add(new CssDeclarationRecovery(
+                        "flex-direction", ffDir, isImportant,
+                        IsFromShorthandExpansion: true));
+                    output.Add(new CssDeclarationRecovery(
+                        "flex-wrap", ffWrap, isImportant,
+                        IsFromShorthandExpansion: true));
                 }
                 else
                 {

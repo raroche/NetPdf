@@ -2485,6 +2485,229 @@ public sealed class FlexLayouterProductionTests
         Assert.Equal(0, wrapper.Style.ReadOrder());
     }
 
+    // ====================================================================
+    //  Phase 3 Task 15 L16 — `flex-flow` shorthand (CSS Flexbox L1 §6.1).
+    // ====================================================================
+
+    [Fact]
+    public async Task L16_production_html_flex_flow_row_wrap_expands_to_both_longhands()
+    {
+        // Per Phase 3 Task 15 L16 — `flex-flow: row wrap` per CSS
+        // Flexbox L1 §6.1 expands to `flex-direction: row;
+        // flex-wrap: wrap`. AngleSharp.Css doesn't reliably handle
+        // the shorthand; the preprocessor's recovery pass emits the
+        // two longhand declarations so the cascade + FlexLayouter
+        // see them.
+        //
+        // Fixture: 3 items × width: 200 in a 300-wide flex container
+        // with `flex-flow: row wrap`. Pre-fix: `flex-wrap` stays at
+        // its cascade default (nowrap), 3 items pack into one row +
+        // overflow. Post-fix: wrap=wrap, items wrap to fit the 300px
+        // container width (each item is 200px, so 1 item per line →
+        // 3 lines).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    flex-flow: row wrap;
+                    width: 300px;
+                    height: 300px;
+                }
+                .item {
+                    width: 200px;
+                    height: 50px;
+                    flex-shrink: 0;
+                }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+              <div class="item c"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, root) = await RenderViaFullPipelineAsync(html, contentInlineSize: 300);
+        var flex = FindFlexContainer(root);
+        Assert.NotNull(flex);
+
+        // Per post-PR-#76 review P3 + Copilot review — assert BOTH
+        // longhands at the cascade via the typed readers (NOT
+        // raw keyword indices, which couple the test to the
+        // source-gen'd table order). `ReadFlexDirection` /
+        // `ReadFlexWrap` translate the keyword IDs to the typed
+        // enums so the test stays robust if properties.json is
+        // reordered.
+        Assert.Equal(FlexDirectionValue.Row, flex!.Style.ReadFlexDirection());
+        Assert.Equal(FlexWrapValue.Wrap, flex.Style.ReadFlexWrap());
+
+        // Per post-PR-#76 review P3 — assert EXACT BlockOffsets.
+        // 3 items × 200px in a 300-wide container → 1 item per line
+        // → 3 lines. With container height: 300 + multi-line wrap,
+        // align-content: stretch (= the default) stretches each line
+        // to 100px (= 300/3), so items land at flex-top + (0, 100, 200).
+        // Per post-PR-#76 review (Copilot inline) — match class
+        // attribute via token-equality (split on whitespace) rather
+        // than `Contains('a')` which would also match unrelated
+        // classes that happen to contain those letters.
+        BoxFragment? a = null, b = null, c = null;
+        foreach (var f in sink.Fragments)
+        {
+            var srcEl = f.Box.SourceElement;
+            if (srcEl is null) continue;
+            var classAttr = srcEl.GetAttribute("class") ?? string.Empty;
+            var classes = classAttr.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            foreach (var cls in classes)
+            {
+                if (cls == "a") a = f;
+                else if (cls == "b") b = f;
+                else if (cls == "c") c = f;
+            }
+        }
+        Assert.NotNull(a);
+        Assert.NotNull(b);
+        Assert.NotNull(c);
+
+        // Find the flex container fragment to anchor offsets.
+        BoxFragment? flexFragment = null;
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box == flex) { flexFragment = f; break; }
+        }
+        Assert.NotNull(flexFragment);
+        var flexTop = flexFragment!.Value.BlockOffset;
+        // Items land at flexTop + (0, 100, 200) per align-content:
+        // stretch (= default for explicit-height multi-line containers).
+        Assert.Equal(flexTop + 0, a!.Value.BlockOffset, precision: 3);
+        Assert.Equal(flexTop + 100, b!.Value.BlockOffset, precision: 3);
+        Assert.Equal(flexTop + 200, c!.Value.BlockOffset, precision: 3);
+        // Each item lands at the container's left edge (inline
+        // offset = flex container's inline offset).
+        var flexLeft = flexFragment.Value.InlineOffset;
+        Assert.Equal(flexLeft, a.Value.InlineOffset, precision: 3);
+        Assert.Equal(flexLeft, b.Value.InlineOffset, precision: 3);
+        Assert.Equal(flexLeft, c.Value.InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public async Task L16_production_html_flex_flow_column_reverse_only_sets_direction()
+    {
+        // Per Phase 3 Task 15 L16 — `flex-flow: column-reverse` expands
+        // to `flex-direction: column-reverse; flex-wrap: nowrap` per
+        // §6.1 (omitted wrap defaults to nowrap).
+        //
+        // Fixture: 3 items in a column-reverse flex container.
+        // flex-direction: column-reverse + nowrap → items stack on
+        // the block axis in REVERSE DOM order (item a at the bottom,
+        // item c at the top).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    flex-flow: column-reverse;
+                    width: 200px;
+                    height: 600px;
+                }
+                .item {
+                    width: 100px;
+                    height: 100px;
+                    flex-shrink: 0;
+                }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+              <div class="item c"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, root) = await RenderViaFullPipelineAsync(html, contentInlineSize: 200);
+        var flex = FindFlexContainer(root);
+        Assert.NotNull(flex);
+
+        // Per post-PR-#76 review (Copilot inline) — assert via the
+        // typed readers + the typed enums so the test stays robust
+        // if properties.json keyword indices are reordered.
+        Assert.Equal(FlexDirectionValue.ColumnReverse, flex!.Style.ReadFlexDirection());
+        Assert.Equal(FlexWrapValue.NoWrap, flex.Style.ReadFlexWrap());
+    }
+
+    [Fact]
+    public async Task L16_production_html_flex_flow_wrap_only_sets_wrap()
+    {
+        // Per Phase 3 Task 15 L16 — `flex-flow: wrap` expands to
+        // `flex-direction: row; flex-wrap: wrap` per §6.1 (omitted
+        // direction defaults to row).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    flex-flow: wrap;
+                    width: 300px;
+                    height: 300px;
+                }
+                .item {
+                    width: 200px;
+                    height: 50px;
+                    flex-shrink: 0;
+                }
+            </style></head><body>
+            <div class="flex">
+              <div class="item a"></div>
+              <div class="item b"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (_, _, root) = await RenderViaFullPipelineAsync(html, contentInlineSize: 300);
+        var flex = FindFlexContainer(root);
+        Assert.NotNull(flex);
+
+        Assert.Equal(FlexDirectionValue.Row, flex!.Style.ReadFlexDirection());
+        Assert.Equal(FlexWrapValue.Wrap, flex.Style.ReadFlexWrap());
+    }
+
+    [Fact]
+    public async Task L16_production_html_flex_flow_resets_omitted_wrap_after_explicit_longhand()
+    {
+        // Per post-PR-#76 review (Copilot inline) + CSS Cascade §7.4
+        // — `.flex { flex-wrap: wrap; flex-flow: column-reverse; }`
+        // should reset flex-wrap back to its initial value (nowrap)
+        // because `flex-flow: column-reverse` is equivalent to
+        // `flex-direction: column-reverse; flex-wrap: nowrap`
+        // applied AFTER the earlier `flex-wrap: wrap`. The shorthand
+        // expansion + last-decl-wins means the final flex-wrap is
+        // nowrap (the shorthand's initial), NOT the earlier `wrap`.
+        //
+        // This case works correctly under the current override
+        // path: the shorthand-expansion `flex-wrap: nowrap`
+        // overrides AngleSharp's emit AND happens to be the
+        // spec-correct outcome (= the shorthand DID come last in
+        // source order).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex {
+                    display: flex;
+                    flex-wrap: wrap;
+                    flex-flow: column-reverse;
+                    width: 200px;
+                    height: 600px;
+                }
+            </style></head><body>
+            <div class="flex"></div>
+            </body></html>
+            """;
+
+        var (_, _, root) = await RenderViaFullPipelineAsync(html, contentInlineSize: 200);
+        var flex = FindFlexContainer(root);
+        Assert.NotNull(flex);
+
+        // Shorthand-as-last-decl: flex-wrap resets to nowrap.
+        Assert.Equal(FlexDirectionValue.ColumnReverse, flex!.Style.ReadFlexDirection());
+        Assert.Equal(FlexWrapValue.NoWrap, flex.Style.ReadFlexWrap());
+    }
+
     /// <summary>Per Phase 3 Task 15 L15 — depth-first walk to locate
     /// the first <see cref="BoxKind.FlexContainer"/> in the box tree.
     /// Shared between the L15 production tests; returns

@@ -2266,15 +2266,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     _consumedIncomingFlexContinuation = true;
                 }
 
-                // Per Phase 3 Task 16 cycle 4a (PR-#81 execution-order
-                // step 1) — both dispatch sites now route through the
-                // shared `DispatchFlexInner` helper to eliminate the
-                // 135 + 107 LOC of duplicated FlexLayouter
-                // construction code. The `allowPagination: false`
-                // gate stays in place at the call sites until cycle
-                // 4b adds the pre-break-check routing — see
-                // `docs/deferrals.md` flex-layouter-features for the
-                // documented execution order.
+                // Per Phase 3 Task 16 cycle 4a (PR #82, following
+                // the PR #81 execution order) — both dispatch sites
+                // now route through the shared `DispatchFlexInner`
+                // helper to eliminate the 135 + 107 LOC of
+                // duplicated FlexLayouter construction code. The
+                // `allowPagination: false` gate stays in place at
+                // the call sites until cycle 4b adds the
+                // pre-break-check routing — see
+                // `docs/deferrals.md` flex-layouter-features for
+                // the documented execution order.
                 var flexResult = DispatchFlexInner(
                     flexBox: child,
                     contentInlineOffset: flexContentInlineOffset,
@@ -3350,13 +3351,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // will hoist the unwrap state into a field readable
                 // here.
 
-                // Per Phase 3 Task 16 cycle 4a (PR-#81 execution-order
-                // step 1) — route through the shared
-                // `DispatchFlexInner` helper. The recursive path
-                // needs its own LayoutContext (= the outer
-                // AttemptLayout's `ref layout` isn't in scope here);
-                // built from `_capturedFragmentainer` per the
-                // pre-extraction logic.
+                // Per Phase 3 Task 16 cycle 4a (PR #82, following
+                // the PR #81 execution order) — route through the
+                // shared `DispatchFlexInner` helper. The recursive
+                // path needs its own LayoutContext (= the outer
+                // AttemptLayout's `ref layout` isn't in scope
+                // here); built from `_capturedFragmentainer` per
+                // the pre-extraction logic.
                 LayoutAttemptResult? nestedFlexResult = null;
                 if (_capturedFragmentainer is not null)
                 {
@@ -5819,17 +5820,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         return slot.Tag is ComputedSlotTag.Unset or ComputedSlotTag.Keyword;
     }
 
-    /// <summary>Per Phase 3 Task 16 cycle 4a (post-PR-#80 P3 #7 +
-    /// PR-#81 execution-order step 1) — shared helper consolidating
-    /// the FlexLayouter construction + ConfigureEmission + AttemptLayout
-    /// pattern used by BOTH the direct dispatch (in the top-level
-    /// block-children loop at line ~2160) AND the recursive dispatch
-    /// (in <see cref="EmitBlockSubtreeRecursive"/> at line ~3300).
+    /// <summary>Per Phase 3 Task 16 cycle 4a (PR #82, following the
+    /// PR #81 execution order; closes P3 #7 from PR-#79) — shared
+    /// helper consolidating the FlexLayouter construction +
+    /// ConfigureEmission + AttemptLayout pattern used by BOTH the
+    /// direct dispatch (in the top-level block-children loop at
+    /// line ~2160) AND the recursive dispatch (in
+    /// <see cref="EmitBlockSubtreeRecursive"/> at line ~3300).
     /// Pre-extraction the two sites had ~135 LOC + ~107 LOC of
-    /// near-identical code that drifted between cycles 1 and 3 (= the
-    /// recursive path stayed atomic after the direct path gained
-    /// continuation handling, which is exactly the regression the
-    /// PR-#79 + PR-#80 reviews caught).
+    /// near-identical code that drifted between cycles 1 and 3 (=
+    /// the recursive path stayed atomic after the direct path
+    /// gained continuation handling, which is exactly the regression
+    /// the PR-#79 + PR-#80 reviews caught).
     ///
     /// <para>Returns the layouter's <see cref="LayoutAttemptResult"/>
     /// verbatim so the caller can implement its own propagation
@@ -5837,11 +5839,40 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// from BlockLayouter; recursive path packages the result as a
     /// nested <see cref="BlockContinuation"/>).</para>
     ///
+    /// <para><b>Resolver + strategy contract (per PR-#82 review P2
+    /// #3).</b> The helper always constructs a fresh
+    /// <see cref="BreakResolver"/> + always passes
+    /// <see cref="LayoutAttemptStrategy.LastResort"/>. This
+    /// preserves the pre-extraction behavior identically at both
+    /// call sites. Rationale:
+    /// <list type="bullet">
+    ///   <item><b>Fresh resolver</b> — the inner flex emission must
+    ///   not consult the outer BlockLayouter's checkpoint state.
+    ///   Sharing the outer resolver would let an inner
+    ///   <c>Rewind</c> decision unwind work the outer layouter
+    ///   already committed. This mirrors the TableLayouter
+    ///   per-cell resolver isolation + the MulticolLayouter
+    ///   per-column resolver isolation (= the established
+    ///   pattern for nested layouter dispatch).</item>
+    ///   <item><b><c>LastResort</c></b> — the inner flex emission
+    ///   is the LAST attempt for this flex container; the outer
+    ///   <c>LayoutRetryCoordinator</c> has already escalated through
+    ///   <c>Strict</c> / <c>DropAvoidInside</c> by the time we
+    ///   reach this dispatch. Passing through the caller's strategy
+    ///   would re-introduce the avoid-inside retry decision at the
+    ///   inner level which is meaningless (the flex container is
+    ///   an atomic-to-outer-pagination unit until cycle 4b's
+    ///   pre-break-check routing lands).</item>
+    /// </list>
+    /// When cycle 4b enables production pagination + we discover
+    /// the inner level legitimately wants its own strategy /
+    /// resolver, parameterize this helper at that point.</para>
+    ///
     /// <para><b>Disposal contract.</b> The helper owns the
     /// FlexLayouter + BreakResolver lifetime via <c>using var</c>
-    /// declarations; callers don't need to dispose anything from the
-    /// returned <see cref="LayoutAttemptResult"/> (it carries only
-    /// value-type fields + a LayoutContinuation record).</para></summary>
+    /// declarations; callers don't need to dispose anything from
+    /// the returned <see cref="LayoutAttemptResult"/> (it carries
+    /// only value-type fields + a LayoutContinuation record).</para></summary>
     private LayoutAttemptResult DispatchFlexInner(
         Box flexBox,
         double contentInlineOffset,

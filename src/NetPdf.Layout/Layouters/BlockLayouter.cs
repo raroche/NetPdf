@@ -1988,37 +1988,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     // BlockContinuation up to AttemptLayout).
                     if (IsFlexContainer(child))
                     {
-                        var forcedFlexBorderInlineStart =
-                            child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
-                        var forcedFlexPaddingInlineStart =
-                            child.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
-                        var forcedFlexBorderInlineEnd =
-                            child.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
-                        var forcedFlexPaddingInlineEnd =
-                            child.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
-                        var forcedFlexBorderBlockStart =
-                            child.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
-                        var forcedFlexPaddingBlockStart =
-                            child.Style.ReadLengthPxOrZero(PropertyId.PaddingTop);
-                        var forcedFlexBorderBlockEnd =
-                            child.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
-                        var forcedFlexPaddingBlockEnd =
-                            child.Style.ReadLengthPxOrZero(PropertyId.PaddingBottom);
-
-                        var forcedFlexContentInlineSize = Math.Max(1.0,
-                            borderBoxInlineSize
-                            - forcedFlexBorderInlineStart - forcedFlexPaddingInlineStart
-                            - forcedFlexBorderInlineEnd - forcedFlexPaddingInlineEnd);
-                        var forcedFlexContentBlockSize = Math.Max(1.0,
-                            borderBoxBlockSize
-                            - forcedFlexBorderBlockStart - forcedFlexPaddingBlockStart
-                            - forcedFlexBorderBlockEnd - forcedFlexPaddingBlockEnd);
-                        var forcedFlexContentInlineOffset =
-                            forcedOverflowInlineOffset
-                            + forcedFlexBorderInlineStart + forcedFlexPaddingInlineStart;
-                        var forcedFlexContentBlockOffset =
-                            forcedOverflowChildBlockOffset
-                            + forcedFlexBorderBlockStart + forcedFlexPaddingBlockStart;
+                        // Per Phase 3 Task 16 cycle 4d (PR-#82 review #2)
+                        // — content-box geometry from the shared helper.
+                        var forcedFlexGeom = FlexGeometryHelper.ComputeContentGeometry(
+                            flexBox: child,
+                            borderBoxInlineSize: borderBoxInlineSize,
+                            borderBoxBlockSize: borderBoxBlockSize,
+                            borderBoxInlineOffset: forcedOverflowInlineOffset,
+                            borderBoxBlockOffset: forcedOverflowChildBlockOffset);
+                        var forcedFlexContentInlineSize = forcedFlexGeom.ContentInlineSize;
+                        var forcedFlexContentBlockSize = forcedFlexGeom.ContentBlockSize;
+                        var forcedFlexContentInlineOffset = forcedFlexGeom.ContentInlineOffset;
+                        var forcedFlexContentBlockOffset = forcedFlexGeom.ContentBlockOffset;
 
                         // Forward incoming FlexContinuation (mirrors
                         // the Continue path's one-shot consume).
@@ -2426,35 +2407,23 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // MulticolGeometryHelper.ComputeContentGeometry's
                 // explicit-height branch (no fragmentainer-remaining
                 // derivation for cycle 1).
-                var flexBorderInlineStart =
-                    child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
-                var flexPaddingInlineStart =
-                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
-                var flexBorderInlineEnd =
-                    child.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
-                var flexPaddingInlineEnd =
-                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
-                var flexBorderBlockStart =
-                    child.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
-                var flexPaddingBlockStart =
-                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingTop);
-                var flexBorderBlockEnd =
-                    child.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
-                var flexPaddingBlockEnd =
-                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingBottom);
-
-                var flexContentInlineSize = Math.Max(1.0,
-                    borderBoxInlineSize
-                    - flexBorderInlineStart - flexPaddingInlineStart
-                    - flexBorderInlineEnd - flexPaddingInlineEnd);
-                var flexContentBlockSize = Math.Max(1.0,
-                    borderBoxBlockSize
-                    - flexBorderBlockStart - flexPaddingBlockStart
-                    - flexBorderBlockEnd - flexPaddingBlockEnd);
-                var flexContentInlineOffset =
-                    inFlowInlineOffset + flexBorderInlineStart + flexPaddingInlineStart;
-                var flexContentBlockOffset =
-                    blockOffset + flexBorderBlockStart + flexPaddingBlockStart;
+                // Per Phase 3 Task 16 cycle 4d (PR-#82 review #2) —
+                // delegate content-box geometry derivation to the
+                // shared <see cref="FlexGeometryHelper"/>. The math
+                // is identical at all 3 dispatch sites (outer here,
+                // recursive at line ~3460, forced-overflow re-route
+                // at line ~1991); consolidation removes the drift
+                // risk + ~25 LOC per site.
+                var flexGeom = FlexGeometryHelper.ComputeContentGeometry(
+                    flexBox: child,
+                    borderBoxInlineSize: borderBoxInlineSize,
+                    borderBoxBlockSize: borderBoxBlockSize,
+                    borderBoxInlineOffset: inFlowInlineOffset,
+                    borderBoxBlockOffset: blockOffset);
+                var flexContentInlineSize = flexGeom.ContentInlineSize;
+                var flexContentBlockSize = flexGeom.ContentBlockSize;
+                var flexContentInlineOffset = flexGeom.ContentInlineOffset;
+                var flexContentBlockOffset = flexGeom.ContentBlockOffset;
 
                 // Per Phase 3 Task 16 cycle 2 — multi-page flex
                 // resume. Mirrors the multicol dispatch above: when
@@ -3601,35 +3570,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // lines → AllDone).
             if (IsFlexContainer(child))
             {
-                var nestedFlexBorderInlineStart =
-                    child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
-                var nestedFlexPaddingInlineStart =
-                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
-                var nestedFlexBorderInlineEnd =
-                    child.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
-                var nestedFlexPaddingInlineEnd =
-                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
-                var nestedFlexBorderBlockStart =
-                    child.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
-                var nestedFlexPaddingBlockStart =
-                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingTop);
-                var nestedFlexBorderBlockEnd =
-                    child.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
-                var nestedFlexPaddingBlockEnd =
-                    child.Style.ReadLengthPxOrZero(PropertyId.PaddingBottom);
-
-                var nestedFlexContentInlineSize = Math.Max(1.0,
-                    childBorderBoxInlineSize
-                    - nestedFlexBorderInlineStart - nestedFlexPaddingInlineStart
-                    - nestedFlexBorderInlineEnd - nestedFlexPaddingInlineEnd);
-                var nestedFlexContentBlockSize = Math.Max(1.0,
-                    childBorderBoxBlockSize
-                    - nestedFlexBorderBlockStart - nestedFlexPaddingBlockStart
-                    - nestedFlexBorderBlockEnd - nestedFlexPaddingBlockEnd);
-                var nestedFlexContentInlineOffset =
-                    childInlineOffset + nestedFlexBorderInlineStart + nestedFlexPaddingInlineStart;
-                var nestedFlexContentBlockOffset =
-                    childBlockOffset + nestedFlexBorderBlockStart + nestedFlexPaddingBlockStart;
+                // Per Phase 3 Task 16 cycle 4d (PR-#82 review #2) —
+                // content-box geometry from the shared helper.
+                var nestedFlexGeom = FlexGeometryHelper.ComputeContentGeometry(
+                    flexBox: child,
+                    borderBoxInlineSize: childBorderBoxInlineSize,
+                    borderBoxBlockSize: childBorderBoxBlockSize,
+                    borderBoxInlineOffset: childInlineOffset,
+                    borderBoxBlockOffset: childBlockOffset);
+                var nestedFlexContentInlineSize = nestedFlexGeom.ContentInlineSize;
+                var nestedFlexContentBlockSize = nestedFlexGeom.ContentBlockSize;
+                var nestedFlexContentInlineOffset = nestedFlexGeom.ContentInlineOffset;
+                var nestedFlexContentBlockOffset = nestedFlexGeom.ContentBlockOffset;
 
                 // Per Phase 3 Task 16 cycle 4b post-PR-#83 review
                 // P1 #1 — inbound recursive FlexContinuation

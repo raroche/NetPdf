@@ -61,6 +61,24 @@ internal enum PropertyType : byte
     /// <summary>A max-* dimension per CSS Sizing 3 §5.2: <c>none | &lt;length-percentage&gt; |
     /// &lt;intrinsic-sizing&gt;</c>. Used by <c>max-width</c> and <c>max-height</c>.</summary>
     MaxSize = 23,
+    /// <summary>A CSS Grid L1 §7.2 track list (= the value of
+    /// <c>grid-template-rows</c> / <c>grid-template-columns</c>). Stores
+    /// the parsed AST including <c>&lt;length&gt;</c> tracks, <c>fr</c>
+    /// tracks, <c>auto</c> / <c>min-content</c> / <c>max-content</c>
+    /// keywords, <c>minmax()</c> + <c>fit-content()</c> functions,
+    /// <c>repeat(&lt;int&gt;, …)</c> integer-count expansions, named
+    /// lines, and <c>repeat(auto-fill, …)</c> / <c>repeat(auto-fit, …)</c>
+    /// markers. <c>auto-fill</c> / <c>auto-fit</c> expansion defers to
+    /// layout time when container size is known. ComputedSlot stores the
+    /// AST via the side-table pattern.</summary>
+    GridTemplateList = 24,
+    /// <summary>A CSS Grid L1 §8.3 grid-line value (= the value of
+    /// <c>grid-row-start</c> / <c>grid-row-end</c> / <c>grid-column-start</c>
+    /// / <c>grid-column-end</c>). Encodes <c>auto</c>, <c>&lt;integer&gt;</c>
+    /// line numbers, <c>span &lt;integer&gt;</c>, and <c>&lt;custom-ident&gt;</c>
+    /// named lines. The 4-arg <c>grid-area</c> shorthand expands into four
+    /// of these (= one per longhand).</summary>
+    GridLine = 25,
     /// <summary>A custom property type — value is opaque to the parser dispatch table.</summary>
     Custom = 255,
 }

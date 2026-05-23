@@ -71,6 +71,12 @@ public sealed class CssPropertyGenerator : IIncrementalGenerator
         "Time", "Angle", "Resolution", "FontFamilyList", "FontWeight",
         "LineWidth", "FontSize", "LineHeight", "Content", "VerticalAlign", "FlexBasis",
         "TextSpacing", "MaxSize",
+        // Per Phase 3 Task 17 cycle 0 — CSS Grid L1 §7.2 + §8.3 typed
+        // values. GridTemplateList stores the parsed track-list AST
+        // (= grid-template-rows / grid-template-columns); GridLine
+        // encodes grid-row-start / -end / grid-column-start / -end
+        // (= auto / <integer> / span <integer> / <ident>).
+        "GridTemplateList", "GridLine",
         "Custom",
     };
 

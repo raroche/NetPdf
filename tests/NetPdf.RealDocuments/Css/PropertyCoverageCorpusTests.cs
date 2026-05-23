@@ -103,11 +103,17 @@ public sealed class PropertyCoverageCorpusTests
         "src", "font-display", "font-feature-settings", "font-variation-settings",
         "font-variant", "font-variant-caps", "font-variant-ligatures", "font-variant-numeric",
         "all", "initial-letter",
-        // CSS Grid (Level 1) — large surface, deferred to Phase 3.
+        // CSS Grid (Level 1) — Phase 3 Task 17 cycle 0a registered
+        // 6 longhands in properties.json: grid-template-rows,
+        // grid-template-columns, grid-row-start, grid-row-end,
+        // grid-column-start, grid-column-end. They no longer need
+        // allowlist entries. The remaining grid properties (=
+        // shorthands + named-area + gap variants) ship in later
+        // cycles + stay deferred for now.
         "grid-area", "grid-auto-columns", "grid-auto-flow", "grid-auto-rows",
-        "grid-column", "grid-column-end", "grid-column-gap", "grid-column-start",
-        "grid-row", "grid-row-end", "grid-row-gap", "grid-row-start",
-        "grid-template", "grid-template-areas", "grid-template-columns", "grid-template-rows",
+        "grid-column", "grid-column-gap",
+        "grid-row", "grid-row-gap",
+        "grid-template", "grid-template-areas",
         "gap", "row-gap",
         // column-gap promoted out of the allowlist by Phase 3 Task 14
         // cycle 1 — the property is now registered + resolves via the

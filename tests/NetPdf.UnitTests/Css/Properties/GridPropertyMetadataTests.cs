@@ -1,6 +1,8 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System;
+using System.Collections.Immutable;
 using NetPdf.Css.ComputedValues;
 using NetPdf.Css.Properties;
 using Xunit;
@@ -8,22 +10,21 @@ using Xunit;
 namespace NetPdf.UnitTests.Css.Properties;
 
 /// <summary>
-/// Phase 3 Task 17 cycle 0 — tests for the grid property registration
-/// (= the 6 new properties added to <c>properties.json</c>:
-/// <c>grid-template-rows</c>, <c>grid-template-columns</c>,
-/// <c>grid-row-start</c>, <c>-end</c>, <c>grid-column-start</c>,
-/// <c>-end</c>) + the AST types in <c>Grid.cs</c>.
+/// Phase 3 Task 17 cycle 0a (+ post-PR-#89 review hardening) —
+/// tests for the grid property registration + AST type contract.
 ///
-/// <para>Cycle 0a scope: <b>foundation only</b>. The CSS parser
-/// integration (= cascade resolves a CSS string into a
-/// <see cref="TrackList"/> AST) is cycle 0b; shorthand expansion
-/// for <c>grid-row</c> + <c>grid-column</c> + <c>grid-area</c> is
-/// cycle 0c. These tests pin the property registration + AST type
-/// shape so the parser work in 0b/0c has a solid foundation to
-/// extend.</para>
+/// <para><b>Cycle 0a scope (foundation only)</b>. The CSS parser
+/// integration is cycle 0b; shorthand expansion is cycle 0c. These
+/// tests pin the property registration + AST type shape +
+/// validating-factory invariants so the parser work in 0b/0c has a
+/// solid foundation to extend.</para>
 /// </summary>
 public sealed class GridPropertyMetadataTests
 {
+    // =====================================================================
+    //  Property registration
+    // =====================================================================
+
     [Fact]
     public void GridTemplateRows_is_registered()
     {
@@ -53,8 +54,7 @@ public sealed class GridPropertyMetadataTests
     [InlineData("grid-column-end")]
     public void GridLine_longhands_are_registered(string name)
     {
-        Assert.True(PropertyMetadata.NameToId.ContainsKey(name),
-            $"Property '{name}' must be registered (cycle 0 foundation).");
+        Assert.True(PropertyMetadata.NameToId.ContainsKey(name));
         var id = PropertyMetadata.NameToId[name];
         var meta = PropertyMetadata.Table[(int)id];
         Assert.Equal(PropertyType.GridLine, meta.Type);
@@ -62,155 +62,331 @@ public sealed class GridPropertyMetadataTests
         Assert.False(meta.Inherits);
     }
 
+    // =====================================================================
+    //  AST defaults
+    // =====================================================================
+
     [Fact]
     public void TrackList_None_is_empty()
     {
-        // The CSS default (= grid-template-rows: none) is an empty
-        // track list. Layout-time expansion of an empty list yields
-        // zero explicit tracks; implicit-only grid semantics apply.
-        Assert.NotNull(TrackList.None);
         Assert.Empty(TrackList.None.Items);
     }
 
     [Fact]
-    public void GridLineValue_Auto_default_carries_auto_kind_and_zero_line()
+    public void GridLineValue_Auto_default_is_auto_kind()
     {
-        var auto = GridLineValue.Auto;
-        Assert.Equal(GridLineKind.Auto, auto.Kind);
-        Assert.Equal(0, auto.LineNumber);
-        Assert.Null(auto.NamedLine);
+        Assert.Equal(GridLineKind.Auto, GridLineValue.Auto.Kind);
+        Assert.Equal(0, GridLineValue.Auto.LineNumber);
+        Assert.Null(GridLineValue.Auto.NamedLine);
     }
 
-    [Fact]
-    public void GridLineValue_can_encode_explicit_line_number()
-    {
-        // Cycle 0 supports integer line numbers. Negative numbers
-        // count from the explicit grid's end per CSS Grid §8.3.
-        var positive = new GridLineValue(GridLineKind.LineNumber, 2, null);
-        Assert.Equal(GridLineKind.LineNumber, positive.Kind);
-        Assert.Equal(2, positive.LineNumber);
-
-        var negative = new GridLineValue(GridLineKind.LineNumber, -1, null);
-        Assert.Equal(-1, negative.LineNumber);
-    }
+    // =====================================================================
+    //  TrackEntry kinds (per PR-#89 review P2 #5: Auto / MinContent /
+    //  MaxContent are DISTINCT kinds)
+    // =====================================================================
 
     [Fact]
-    public void GridLineValue_can_encode_span()
+    public void TrackEntry_ForLength_carries_pixel_value()
     {
-        // span N: the line value's LineNumber stores the span count
-        // (always positive per §8.3).
-        var span = new GridLineValue(GridLineKind.Span, 3, null);
-        Assert.Equal(GridLineKind.Span, span.Kind);
-        Assert.Equal(3, span.LineNumber);
-    }
-
-    [Fact]
-    public void GridLineValue_can_encode_named_line()
-    {
-        // Cycle 7 ships named-line resolution; cycle 0 just verifies
-        // the AST shape can carry the name.
-        var named = new GridLineValue(GridLineKind.NamedLine, 0, "header");
-        Assert.Equal(GridLineKind.NamedLine, named.Kind);
-        Assert.Equal("header", named.NamedLine);
-    }
-
-    [Fact]
-    public void TrackEntry_LengthPx_kind_carries_pixel_value()
-    {
-        // Cycle 1 will produce these for <length> tracks.
-        var entry = new TrackEntry(
-            Kind: GridTrackKind.LengthPx,
-            LengthPx: 100.0,
-            FrValue: 0,
-            MinSubKind: default,
-            MinSubLengthPx: 0,
-            MaxSubKind: default,
-            MaxSubLengthPx: 0,
-            MaxSubFrValue: 0);
-        Assert.Equal(GridTrackKind.LengthPx, entry.Kind);
+        var entry = TrackEntry.ForLength(100.0);
+        Assert.Equal(GridTrackKind.Length, entry.Kind);
         Assert.Equal(100.0, entry.LengthPx);
+        Assert.False(entry.IsPercentage);
     }
 
     [Fact]
-    public void TrackEntry_Fr_kind_carries_flex_value()
+    public void TrackEntry_ForPercentage_marks_IsPercentage_true()
     {
-        // Cycle 2 will produce these for <flex> tracks.
-        var entry = new TrackEntry(
-            Kind: GridTrackKind.Fr,
-            LengthPx: 0,
-            FrValue: 1.5,
-            MinSubKind: default,
-            MinSubLengthPx: 0,
-            MaxSubKind: default,
-            MaxSubLengthPx: 0,
-            MaxSubFrValue: 0);
+        // Per PR-#89 review P2 #6 — TrackEntry carries percentages
+        // separately from pixels so the AST doesn't lose the unit.
+        var entry = TrackEntry.ForPercentage(25.0);
+        Assert.Equal(GridTrackKind.Length, entry.Kind);
+        Assert.Equal(25.0, entry.LengthPx);
+        Assert.True(entry.IsPercentage);
+    }
+
+    [Fact]
+    public void TrackEntry_ForFr_carries_flex_value()
+    {
+        var entry = TrackEntry.ForFr(1.5);
         Assert.Equal(GridTrackKind.Fr, entry.Kind);
         Assert.Equal(1.5, entry.FrValue);
     }
 
     [Fact]
-    public void TrackEntry_MinMax_kind_carries_both_sub_args_inline()
+    public void TrackEntry_intrinsic_kinds_are_distinct()
     {
-        // Per PR-#88 review P2 #4 — the MinMax case stores sub-args
-        // inline (= no struct recursion). Cycle 4 will produce these.
-        var entry = new TrackEntry(
-            Kind: GridTrackKind.MinMax,
-            LengthPx: 0,
-            FrValue: 0,
-            MinSubKind: GridTrackKind.LengthPx,
-            MinSubLengthPx: 100.0,
-            MaxSubKind: GridTrackKind.Fr,
-            MaxSubLengthPx: 0,
-            MaxSubFrValue: 1.0);
+        // Per PR-#89 review P2 #5 — Auto / MinContent / MaxContent
+        // are three DISTINCT kinds. The cycle-3 layouter may map
+        // all three to the same approximate contribution under the
+        // L19 deferral, but the AST preserves the authored keyword.
+        Assert.Equal(GridTrackKind.Auto, TrackEntry.ForAuto().Kind);
+        Assert.Equal(GridTrackKind.MinContent, TrackEntry.ForMinContent().Kind);
+        Assert.Equal(GridTrackKind.MaxContent, TrackEntry.ForMaxContent().Kind);
+        Assert.NotEqual(GridTrackKind.Auto, GridTrackKind.MinContent);
+        Assert.NotEqual(GridTrackKind.MinContent, GridTrackKind.MaxContent);
+    }
+
+    [Fact]
+    public void TrackEntry_ForMinMax_stores_sub_args_inline()
+    {
+        var entry = TrackEntry.ForMinMax(
+            min: TrackEntry.ForLength(100.0),
+            max: TrackEntry.ForFr(1.0));
         Assert.Equal(GridTrackKind.MinMax, entry.Kind);
-        Assert.Equal(GridTrackKind.LengthPx, entry.MinSubKind);
+        Assert.Equal(GridTrackKind.Length, entry.MinSubKind);
         Assert.Equal(100.0, entry.MinSubLengthPx);
         Assert.Equal(GridTrackKind.Fr, entry.MaxSubKind);
         Assert.Equal(1.0, entry.MaxSubFrValue);
     }
 
     [Fact]
+    public void TrackEntry_ForFitContent_carries_limit()
+    {
+        var pxLimit = TrackEntry.ForFitContent(200.0);
+        Assert.Equal(GridTrackKind.FitContent, pxLimit.Kind);
+        Assert.Equal(200.0, pxLimit.LengthPx);
+        Assert.False(pxLimit.IsPercentage);
+
+        var pctLimit = TrackEntry.ForFitContent(50.0, isPercentage: true);
+        Assert.True(pctLimit.IsPercentage);
+        Assert.Equal(50.0, pctLimit.LengthPx);
+    }
+
+    // =====================================================================
+    //  TrackEntry invariant validation (per PR-#89 review P3 #8)
+    // =====================================================================
+
+    [Theory]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(double.NegativeInfinity)]
+    [InlineData(-0.1)]
+    [InlineData(-100.0)]
+    public void TrackEntry_ForLength_rejects_invalid(double bad)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => TrackEntry.ForLength(bad));
+    }
+
+    [Theory]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(-1.0)]
+    public void TrackEntry_ForPercentage_rejects_invalid(double bad)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => TrackEntry.ForPercentage(bad));
+    }
+
+    [Theory]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(-1.0)]
+    public void TrackEntry_ForFr_rejects_invalid(double bad)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => TrackEntry.ForFr(bad));
+    }
+
+    [Fact]
+    public void TrackEntry_ForFr_accepts_zero_fr()
+    {
+        // 0fr is valid per CSS Grid §7.2.3 — receives 0 of leftover
+        // space + behaves as a fixed 0-width track.
+        var entry = TrackEntry.ForFr(0.0);
+        Assert.Equal(0.0, entry.FrValue);
+    }
+
+    [Fact]
+    public void TrackEntry_ForMinMax_rejects_fr_in_min()
+    {
+        // Per CSS Grid §7.2.4 — minmax() min arg cannot be <flex>.
+        Assert.Throws<ArgumentException>(() => TrackEntry.ForMinMax(
+            min: TrackEntry.ForFr(1.0),
+            max: TrackEntry.ForLength(100.0)));
+    }
+
+    [Fact]
+    public void TrackEntry_ForMinMax_rejects_nested_minmax_or_fit_content()
+    {
+        var outer = TrackEntry.ForMinMax(
+            TrackEntry.ForLength(50),
+            TrackEntry.ForLength(100));
+        Assert.Throws<ArgumentException>(() => TrackEntry.ForMinMax(outer, TrackEntry.ForFr(1)));
+        Assert.Throws<ArgumentException>(() => TrackEntry.ForMinMax(
+            TrackEntry.ForLength(0),
+            TrackEntry.ForFitContent(200)));
+    }
+
+    // =====================================================================
+    //  GridLineValue grammar (per PR-#89 review P2 #4 — combined
+    //  named-line + occurrence forms)
+    // =====================================================================
+
+    [Fact]
+    public void GridLineValue_ForLineNumber_accepts_positive_and_negative()
+    {
+        Assert.Equal(2, GridLineValue.ForLineNumber(2).LineNumber);
+        Assert.Equal(-1, GridLineValue.ForLineNumber(-1).LineNumber);
+    }
+
+    [Fact]
+    public void GridLineValue_ForLineNumber_rejects_zero()
+    {
+        // Per CSS Grid §8.3 — line number 0 is invalid.
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => GridLineValue.ForLineNumber(0));
+    }
+
+    [Fact]
+    public void GridLineValue_ForNamedLineNumber_combines_name_and_occurrence()
+    {
+        // Per PR-#89 review P2 #4 — CSS Grid §8.3 allows `foo 2`
+        // = 2nd occurrence of named line "foo".
+        var v = GridLineValue.ForNamedLineNumber("foo", 2);
+        Assert.Equal(GridLineKind.LineNumber, v.Kind);
+        Assert.Equal(2, v.LineNumber);
+        Assert.Equal("foo", v.NamedLine);
+    }
+
+    [Fact]
+    public void GridLineValue_ForSpan_count_must_be_positive()
+    {
+        Assert.Equal(2, GridLineValue.ForSpan(2).LineNumber);
+        Assert.Throws<ArgumentOutOfRangeException>(() => GridLineValue.ForSpan(0));
+        Assert.Throws<ArgumentOutOfRangeException>(() => GridLineValue.ForSpan(-1));
+    }
+
+    [Fact]
+    public void GridLineValue_ForSpanName_carries_name_with_zero_count()
+    {
+        // `span foo` = span to next occurrence of "foo".
+        var v = GridLineValue.ForSpanName("foo");
+        Assert.Equal(GridLineKind.Span, v.Kind);
+        Assert.Equal(0, v.LineNumber);  // 0 = no explicit count
+        Assert.Equal("foo", v.NamedLine);
+    }
+
+    [Fact]
+    public void GridLineValue_ForSpanNameOccurrence_combines_count_and_name()
+    {
+        // `span foo 2` = span 2 occurrences of "foo".
+        var v = GridLineValue.ForSpanNameOccurrence("foo", 2);
+        Assert.Equal(GridLineKind.Span, v.Kind);
+        Assert.Equal(2, v.LineNumber);
+        Assert.Equal("foo", v.NamedLine);
+    }
+
+    [Fact]
+    public void GridLineValue_ForNamedLine_carries_bare_name()
+    {
+        // Bare `foo` = first occurrence of named line.
+        var v = GridLineValue.ForNamedLine("foo");
+        Assert.Equal(GridLineKind.NamedLine, v.Kind);
+        Assert.Equal(0, v.LineNumber);
+        Assert.Equal("foo", v.NamedLine);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public void GridLineValue_named_forms_reject_null_or_empty(string? bad)
+    {
+        Assert.Throws<ArgumentException>(() => GridLineValue.ForNamedLine(bad!));
+        Assert.Throws<ArgumentException>(() => GridLineValue.ForSpanName(bad!));
+        Assert.Throws<ArgumentException>(() => GridLineValue.ForNamedLineNumber(bad!, 1));
+        Assert.Throws<ArgumentException>(() => GridLineValue.ForSpanNameOccurrence(bad!, 1));
+    }
+
+    // =====================================================================
+    //  TrackRepeat — per PR-#89 review P1 #2 + P2 #7
+    // =====================================================================
+
+    [Fact]
+    public void TrackRepeat_supports_named_lines_inside_pattern()
+    {
+        // Per PR-#89 review P1 #2 — CSS Grid §7.2.3 allows
+        // repeat(N, [name] <track> [name]). Named lines INSIDE the
+        // repeat group preserve their position + repeat with each
+        // iteration.
+        var pattern = ImmutableArray.Create<TrackRepeatItem>(
+            TrackRepeatNamedLine.Create("col-start"),
+            new TrackRepeatEntry(TrackEntry.ForFr(1.0)),
+            TrackRepeatNamedLine.Create("col-end"));
+        var repeat = TrackRepeat.Create(2, pattern);
+        Assert.Equal(2, repeat.Count);
+        Assert.Equal(3, repeat.Pattern.Length);
+        Assert.IsType<TrackRepeatNamedLine>(repeat.Pattern[0]);
+        Assert.IsType<TrackRepeatEntry>(repeat.Pattern[1]);
+        Assert.IsType<TrackRepeatNamedLine>(repeat.Pattern[2]);
+    }
+
+    [Fact]
+    public void TrackRepeat_Create_rejects_count_above_MaxRepeatCount()
+    {
+        // Per PR-#89 review P2 #7 — DoS guard.
+        // repeat(1000000000, 1px) must NOT be accepted.
+        var pattern = ImmutableArray.Create<TrackRepeatItem>(
+            new TrackRepeatEntry(TrackEntry.ForLength(1)));
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => TrackRepeat.Create(TrackRepeat.MaxRepeatCount + 1, pattern));
+        Assert.Throws<ArgumentOutOfRangeException>(
+            () => TrackRepeat.Create(1_000_000_000, pattern));
+    }
+
+    [Fact]
+    public void TrackRepeat_Create_accepts_special_count_values()
+    {
+        var pattern = ImmutableArray.Create<TrackRepeatItem>(
+            new TrackRepeatEntry(TrackEntry.ForLength(1)));
+        // 0 = auto-fill, -1 = auto-fit, positive = explicit
+        Assert.Equal(0, TrackRepeat.Create(0, pattern).Count);
+        Assert.Equal(-1, TrackRepeat.Create(-1, pattern).Count);
+        Assert.Equal(TrackRepeat.MaxRepeatCount, TrackRepeat.Create(TrackRepeat.MaxRepeatCount, pattern).Count);
+    }
+
+    [Fact]
+    public void TrackRepeat_Create_rejects_invalid_count_below_minus_one()
+    {
+        var pattern = ImmutableArray.Create<TrackRepeatItem>(
+            new TrackRepeatEntry(TrackEntry.ForLength(1)));
+        Assert.Throws<ArgumentOutOfRangeException>(() => TrackRepeat.Create(-2, pattern));
+        Assert.Throws<ArgumentOutOfRangeException>(() => TrackRepeat.Create(int.MinValue, pattern));
+    }
+
+    [Fact]
+    public void TrackRepeat_Create_rejects_empty_pattern()
+    {
+        Assert.Throws<ArgumentException>(
+            () => TrackRepeat.Create(2, ImmutableArray<TrackRepeatItem>.Empty));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public void TrackRepeatNamedLine_Create_rejects_null_or_empty(string? bad)
+    {
+        Assert.Throws<ArgumentException>(() => TrackRepeatNamedLine.Create(bad!));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    public void TrackListNamedLine_Create_rejects_null_or_empty(string? bad)
+    {
+        Assert.Throws<ArgumentException>(() => TrackListNamedLine.Create(bad!));
+    }
+
+    [Fact]
     public void TrackListItem_hierarchy_can_be_discriminated()
     {
-        // The sealed-hierarchy abstract record allows exhaustive
-        // switching at layout time. Cycle 1 ships the inline-entry
-        // case; cycles 4 + 7 ship the repeat + named-line cases.
-        TrackListItem entry = new TrackListEntry(
-            new TrackEntry(GridTrackKind.LengthPx, 100, 0, default, 0, default, 0, 0));
+        TrackListItem entry = new TrackListEntry(TrackEntry.ForLength(100));
         TrackListItem repeat = new TrackListRepeat(
-            new TrackRepeat(3, ImmutableArrayOf(
-                new TrackEntry(GridTrackKind.LengthPx, 50, 0, default, 0, default, 0, 0))));
-        TrackListItem named = new TrackListNamedLine("header");
+            TrackRepeat.Create(3, ImmutableArray.Create<TrackRepeatItem>(
+                new TrackRepeatEntry(TrackEntry.ForLength(50)))));
+        TrackListItem named = TrackListNamedLine.Create("header");
 
         Assert.IsType<TrackListEntry>(entry);
         Assert.IsType<TrackListRepeat>(repeat);
         Assert.IsType<TrackListNamedLine>(named);
         Assert.Equal("header", ((TrackListNamedLine)named).Name);
     }
-
-    [Fact]
-    public void TrackRepeat_Count_encoding_matches_design()
-    {
-        // Per the v2 design doc §4: Count > 0 = explicit; Count == 0
-        // = auto-fill; Count == -1 = auto-fit. Cycle 4 implements
-        // the integer case; cycle 7 implements auto-fill/auto-fit.
-        var explicit3 = new TrackRepeat(
-            3,
-            ImmutableArrayOf(new TrackEntry(GridTrackKind.LengthPx, 50, 0, default, 0, default, 0, 0)));
-        Assert.Equal(3, explicit3.Count);
-
-        var autoFill = new TrackRepeat(
-            0,
-            ImmutableArrayOf(new TrackEntry(GridTrackKind.LengthPx, 50, 0, default, 0, default, 0, 0)));
-        Assert.Equal(0, autoFill.Count);
-
-        var autoFit = new TrackRepeat(
-            -1,
-            ImmutableArrayOf(new TrackEntry(GridTrackKind.LengthPx, 50, 0, default, 0, default, 0, 0)));
-        Assert.Equal(-1, autoFit.Count);
-    }
-
-    // Helper because xUnit + ImmutableArray construction is verbose.
-    private static System.Collections.Immutable.ImmutableArray<T> ImmutableArrayOf<T>(params T[] items) =>
-        System.Collections.Immutable.ImmutableArray.Create(items);
 }

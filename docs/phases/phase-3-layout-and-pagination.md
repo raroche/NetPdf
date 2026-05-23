@@ -168,6 +168,8 @@ All layouters share these properties:
 | 16 | `FlexLayouter` multi-line wrap + cross-fragment baseline | 4 d | 15 |
 | 17 | `GridLayouter` track-sizing algorithm | 8 d | 7 |
 | 18 | `GridLayouter` placement + dense packing + areas | 5 d | 17 |
+
+**Tasks 17 + 18 cycle design** lives in [`task-17-grid-design.md`](task-17-grid-design.md) — 8-cycle plan (cycle 0 = CSS infrastructure groundwork; cycles 1-7 = layouter feature progression). Open as PR #88 at the time of writing; cycle 0 implementation waits on design approval.
 | 19 | `AbsoluteLayouter` for `position: absolute` | 3 d | 7 |
 | 20 | `position: fixed` repetition per page | 2 d | 19 |
 | 21 | `@page` rule + 16 page-margin boxes | 5 d | 7 |

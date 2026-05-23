@@ -1517,3 +1517,31 @@ Active state for whichever sub-cycle is in flight lives in
 [`PROGRESS.md`](../PROGRESS.md). This file deliberately does **not**
 duplicate either — they own the live status; this file owns the
 approximation/throw contracts.
+
+## GridLayouter (Tasks 17 + 18) — design pointer
+
+**Active design**:
+[`docs/phases/task-17-grid-design.md`](phases/task-17-grid-design.md)
+(v2 post-PR-#88 review). 8-cycle plan: cycle 0 = CSS infrastructure
+groundwork; cycles 1-7 = layouter feature progression (Hello World
+→ fr → intrinsic → minmax/repeat → multi-page → spans → named
+areas/dense).
+
+**Known cycle-internal approximations + deferrals** (= will be
+documented here in detail as each cycle ships; this entry just
+flags the categories):
+
+- **Intrinsic sizing for `auto` / `min-content` / `max-content` tracks**
+  (cycle 3) — approximated as item's declared dimension; zero for
+  items without explicit width/height. Closes when L19 content
+  measurement ships (same blocker as flex `min-width: auto`).
+- **Row-spanning items at page breaks** (cycle 5) — atomic-to-row-span
+  (= entire item defers if any spanned row would land on a later
+  page). Intra-row item splitting is post-v1.
+- **Subgrid** (CSS Grid L2 only) — out-of-scope for v1.
+- **Masonry** (CSS Grid L3 draft) — out-of-scope for v1.
+- **Cell-internal alignment** (`justify-self` / `align-self` on
+  grid items) — separate Task that shares the
+  `<self-position>` decoder with FlexLayouter.
+- **Baseline alignment** in grid cells — blocked on L18.
+- **`grid` shorthand parser** — Task 19/20 housekeeping post-cycle-7.

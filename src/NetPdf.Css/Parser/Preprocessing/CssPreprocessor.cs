@@ -174,6 +174,23 @@ internal static class CssPreprocessor
         // longhand recovery records (`flex-direction` / `flex-wrap`)
         // in place of the single dropped `flex-flow` declaration.
         "flex-flow",
+        // Per Phase 3 Task 17 cycle 0c — grid-line shorthands per CSS
+        // Grid L1 §8.4. AngleSharp.Css 1.0.0-beta.144 doesn't reliably
+        // round-trip these into their two-longhand expansions; the
+        // recovery path calls
+        // <see cref="GridLineShorthandExpander.TryExpand"/> at emission
+        // time + emits TWO longhand recovery records (the start +
+        // end longhand for the row or column).
+        "grid-row",
+        "grid-column",
+        // Per Phase 3 Task 17 cycle 0c — grid-area shorthand per §8.4.
+        // <see cref="GridAreaShorthandExpander.TryExpand"/> emits FOUR
+        // longhand recovery records (the four grid-line longhands).
+        // Named-area references (= grid-area: my-area-name resolving
+        // to a grid-template-areas name) are cycle 7's scope; cycle 0c
+        // treats every identifier as a <custom-ident> per the §8.4
+        // fallback rule.
+        "grid-area",
     }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
@@ -609,11 +626,13 @@ internal static class CssPreprocessor
         //     source ordinals + importance flags. Allocated lazily on
         //     first need; the typical rule (no shorthands or only
         //     shorthands) doesn't allocate this list.
-        //   - sawShorthand: tracks whether any shorthand expansion
-        //     emitted yet. While false we don't bother recording
-        //     explicit longhands.
+        // Per PR-#91 review F3 — explicit longhands are recorded
+        // UNCONDITIONALLY (= the prior `sawShorthand` gate had a
+        // correctness gap for `longhand !important; shorthand`
+        // ordering). The list is still lazily allocated so
+        // shorthand-and-longhand-free rules don't pay; rules with at
+        // least one declaration of either family pay one small list.
         List<ExplicitLonghandRef>? explicitLonghands = null;
-        var sawShorthand = false;
         var ordinal = 0;
 
         var tok = new CssTokenizer(body.AsSpan(), null);
@@ -701,7 +720,6 @@ internal static class CssPreprocessor
                         "flex-basis", fBasis, isImportant,
                         IsFromShorthandExpansion: true,
                         SourceOrdinal: ordinal));
-                    sawShorthand = true;
                 }
                 else if (normalizedName == "flex-flow"
                     && FlexFlowShorthandExpander.TryExpand(
@@ -720,7 +738,111 @@ internal static class CssPreprocessor
                         "flex-wrap", ffWrap, isImportant,
                         IsFromShorthandExpansion: true,
                         SourceOrdinal: ordinal));
-                    sawShorthand = true;
+                }
+                // Per Phase 3 Task 17 cycle 0c — grid-row / grid-column
+                // shorthands per CSS Grid L1 §8.4. Each expands into a
+                // (start, end) pair of longhand recovery records sharing
+                // the source ordinal.
+                else if (normalizedName == "grid-row")
+                {
+                    if (GridLineShorthandExpander.TryExpand(
+                        cleanValue, out var grStart, out var grEnd))
+                    {
+                        output.Add(new CssDeclarationRecovery(
+                            "grid-row-start", grStart, isImportant,
+                            IsFromShorthandExpansion: true,
+                            SourceOrdinal: ordinal));
+                        output.Add(new CssDeclarationRecovery(
+                            "grid-row-end", grEnd, isImportant,
+                            IsFromShorthandExpansion: true,
+                            SourceOrdinal: ordinal));
+                    }
+                    else
+                    {
+                        // Per PR-#91 review F1 — atomic invalidation.
+                        // AngleSharp.Css may emit per-longhand declarations
+                        // natively for grid-row (= per-longhand validation
+                        // means valid components survive while invalid ones
+                        // drop, partially applying the shorthand). Per CSS
+                        // Cascade L4 §4.2, an invalid shorthand contributes
+                        // none of its longhands. Override AngleSharp's emits
+                        // with longhand recovery records carrying the RAW
+                        // shorthand value (= contains '/'); the
+                        // GridLineResolver rejects them as Invalid + the
+                        // cascade falls back to the property initial value
+                        // (auto). NB: IsFromShorthandExpansion=false makes
+                        // the override unconditional vs the per-source-ordinal
+                        // arbitration (= we WANT to override AngleSharp's
+                        // emit unconditionally; that's the whole point).
+                        EmitInvalidGridShorthandRecovery(output,
+                            "grid-row-start", cleanValue, isImportant, ordinal);
+                        EmitInvalidGridShorthandRecovery(output,
+                            "grid-row-end", cleanValue, isImportant, ordinal);
+                    }
+                }
+                else if (normalizedName == "grid-column")
+                {
+                    if (GridLineShorthandExpander.TryExpand(
+                        cleanValue, out var gcStart, out var gcEnd))
+                    {
+                        output.Add(new CssDeclarationRecovery(
+                            "grid-column-start", gcStart, isImportant,
+                            IsFromShorthandExpansion: true,
+                            SourceOrdinal: ordinal));
+                        output.Add(new CssDeclarationRecovery(
+                            "grid-column-end", gcEnd, isImportant,
+                            IsFromShorthandExpansion: true,
+                            SourceOrdinal: ordinal));
+                    }
+                    else
+                    {
+                        EmitInvalidGridShorthandRecovery(output,
+                            "grid-column-start", cleanValue, isImportant, ordinal);
+                        EmitInvalidGridShorthandRecovery(output,
+                            "grid-column-end", cleanValue, isImportant, ordinal);
+                    }
+                }
+                // Per Phase 3 Task 17 cycle 0c — grid-area shorthand
+                // per §8.4. Expands into all FOUR grid-line longhands.
+                else if (normalizedName == "grid-area")
+                {
+                    if (GridAreaShorthandExpander.TryExpand(
+                        cleanValue,
+                        out var gaRowStart,
+                        out var gaColumnStart,
+                        out var gaRowEnd,
+                        out var gaColumnEnd))
+                    {
+                        output.Add(new CssDeclarationRecovery(
+                            "grid-row-start", gaRowStart, isImportant,
+                            IsFromShorthandExpansion: true,
+                            SourceOrdinal: ordinal));
+                        output.Add(new CssDeclarationRecovery(
+                            "grid-column-start", gaColumnStart, isImportant,
+                            IsFromShorthandExpansion: true,
+                            SourceOrdinal: ordinal));
+                        output.Add(new CssDeclarationRecovery(
+                            "grid-row-end", gaRowEnd, isImportant,
+                            IsFromShorthandExpansion: true,
+                            SourceOrdinal: ordinal));
+                        output.Add(new CssDeclarationRecovery(
+                            "grid-column-end", gaColumnEnd, isImportant,
+                            IsFromShorthandExpansion: true,
+                            SourceOrdinal: ordinal));
+                    }
+                    else
+                    {
+                        // Per PR-#91 review F1 — atomic invalidation for
+                        // grid-area (see grid-row branch for rationale).
+                        EmitInvalidGridShorthandRecovery(output,
+                            "grid-row-start", cleanValue, isImportant, ordinal);
+                        EmitInvalidGridShorthandRecovery(output,
+                            "grid-column-start", cleanValue, isImportant, ordinal);
+                        EmitInvalidGridShorthandRecovery(output,
+                            "grid-row-end", cleanValue, isImportant, ordinal);
+                        EmitInvalidGridShorthandRecovery(output,
+                            "grid-column-end", cleanValue, isImportant, ordinal);
+                    }
                 }
                 else
                 {
@@ -734,37 +856,42 @@ internal static class CssPreprocessor
                         cleanValue,
                         isImportant,
                         SourceOrdinal: ordinal));
-                    // Per Phase 3 Task 15 L17 post-PR-#77 — even a
-                    // recovered EXPLICIT-longhand declaration (= not
-                    // a shorthand expansion) counts as an explicit
-                    // longhand for cascade comparison purposes. Only
-                    // start tracking once we've seen a shorthand
-                    // (= avoid allocation for shorthand-free rules).
-                    if (sawShorthand)
-                    {
-                        explicitLonghands ??= new List<ExplicitLonghandRef>();
-                        explicitLonghands.Add(new ExplicitLonghandRef(
-                            normalizedName, ordinal, isImportant));
-                    }
+                    // Per PR-#91 review F3 — track explicit longhands
+                    // UNCONDITIONALLY (not gated on a prior shorthand).
+                    // The L17-original `if (sawShorthand)` gate was a
+                    // micro-optimization that broke importance precedence
+                    // for the `longhand !important; shorthand` ordering
+                    // (= the earlier important longhand was unrecorded so
+                    // the later normal shorthand could replace it). The
+                    // merge logic in CssParserAdapter already gates the
+                    // override decision on importance + source ordinal;
+                    // the preprocessor's job is to record ALL explicit
+                    // longhands so the merge can compare. The minor
+                    // allocation cost for shorthand-free rules is a fair
+                    // trade for correctness.
+                    explicitLonghands ??= new List<ExplicitLonghandRef>();
+                    explicitLonghands.Add(new ExplicitLonghandRef(
+                        normalizedName, ordinal, isImportant));
                 }
             }
             else
             {
-                // Per Phase 3 Task 15 L17 post-PR-#77 — even when the
-                // declaration is excluded from recovery (= the typical
-                // case for explicit longhands AngleSharp handles
-                // natively), it still counts as an explicit longhand
-                // for source-order comparison against any preceding
-                // shorthand expansion. Track when sawShorthand is true.
-                if (sawShorthand)
-                {
-                    var (excludedClean, excludedImportant) = ImportantParser.Strip(rawValue);
-                    _ = excludedClean; // value text not needed; merge reads from AngleSharp
-                    var unconditionalNormalizedName = NormalizePropertyName(lowerName);
-                    explicitLonghands ??= new List<ExplicitLonghandRef>();
-                    explicitLonghands.Add(new ExplicitLonghandRef(
-                        unconditionalNormalizedName, ordinal, excludedImportant));
-                }
+                // Per PR-#91 review F3 — even when the declaration is
+                // excluded from recovery (= the typical case for explicit
+                // longhands AngleSharp handles natively), it still counts
+                // as an explicit longhand for source-order comparison
+                // against any subsequent OR prior shorthand expansion.
+                // Tracking unconditionally (= removing the prior
+                // sawShorthand gate) catches the
+                // `longhand !important; shorthand` ordering case where
+                // the earlier important longhand must beat the later
+                // normal shorthand.
+                var (excludedClean, excludedImportant) = ImportantParser.Strip(rawValue);
+                _ = excludedClean; // value text not needed; merge reads from AngleSharp
+                var unconditionalNormalizedName = NormalizePropertyName(lowerName);
+                explicitLonghands ??= new List<ExplicitLonghandRef>();
+                explicitLonghands.Add(new ExplicitLonghandRef(
+                    unconditionalNormalizedName, ordinal, excludedImportant));
             }
 
             ordinal++;
@@ -779,6 +906,45 @@ internal static class CssPreprocessor
             explicitLonghands is null
                 ? ImmutableArray<ExplicitLonghandRef>.Empty
                 : explicitLonghands.ToImmutableArray());
+    }
+
+    /// <summary>Per Phase 3 Task 17 cycle 0c post-PR-#91 review F1 —
+    /// emit a longhand recovery record for the named property carrying
+    /// the RAW (invalid) shorthand value. The GridLineResolver rejects
+    /// this value as Invalid (= the raw shorthand contains <c>/</c> which
+    /// is not valid in <c>&lt;grid-line&gt;</c> grammar); the cascade
+    /// then falls back to the property initial value (auto), which is
+    /// the spec-correct behavior for an invalid shorthand per CSS Cascade
+    /// L4 §4.2.
+    ///
+    /// <para><b>Why this overrides AngleSharp:</b>
+    /// <c>IsFromShorthandExpansion=false</c> makes the override
+    /// unconditional in <c>CssParserAdapter.AdaptDeclarationsWithRecovery</c>
+    /// (= we deliberately want to override AngleSharp's per-longhand
+    /// emit; that's the whole point — AngleSharp would otherwise apply
+    /// the valid components of the shorthand piecewise, violating the
+    /// §4.2 atomicity rule).</para>
+    ///
+    /// <para><b>Known limitation</b>: a prior valid same-rule longhand
+    /// declaration (e.g., <c>grid-row-start: 3; grid-row: 2 / 0;</c>)
+    /// cannot be preserved because AngleSharp's per-rule property
+    /// dedup discards the earlier value before our recovery merges.
+    /// Spec says the invalid shorthand should drop + the earlier 3 win;
+    /// our cycle-0c implementation drops both to initial value (auto).
+    /// Documented in deferrals.md.</para></summary>
+    private static void EmitInvalidGridShorthandRecovery(
+        ImmutableArray<CssDeclarationRecovery>.Builder output,
+        string longhandName,
+        string rawShorthandValue,
+        bool isImportant,
+        int sourceOrdinal)
+    {
+        output.Add(new CssDeclarationRecovery(
+            longhandName,
+            rawShorthandValue,
+            isImportant,
+            IsFromShorthandExpansion: false,
+            SourceOrdinal: sourceOrdinal));
     }
 
     /// <summary>

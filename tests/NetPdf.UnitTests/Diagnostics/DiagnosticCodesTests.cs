@@ -796,6 +796,8 @@ public sealed class DiagnosticCodesTests
     [InlineData("LAYOUT-GRID-PLACEMENT-APPROXIMATED-001")]
     [InlineData("LAYOUT-GRID-IMPLICIT-TRACK-UNSUPPORTED-001")]
     [InlineData("LAYOUT-GRID-NON-FINITE-GEOMETRY-001")]
+    [InlineData("LAYOUT-GRID-ZERO-SIZED-CELL-CONTENT-SKIPPED-001")]
+    [InlineData("LAYOUT-GRID-FR-UNDER-INDEFINITE-APPROXIMATED-001")]
     public void Layout_grid_codes_appear_in_registry_doc_as_Warning(string code)
     {
         var registry = LoadRegistry();
@@ -841,6 +843,24 @@ public sealed class DiagnosticCodesTests
             DiagnosticCodes.LayoutGridNonFiniteGeometry001);
         Assert.Equal(DiagnosticCodes.LayoutGridNonFiniteGeometry001,
             NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutGridNonFiniteGeometry001);
+    }
+
+    [Fact]
+    public void Layout_grid_zero_sized_cell_content_skipped_001_constants_are_stable()
+    {
+        Assert.Equal("LAYOUT-GRID-ZERO-SIZED-CELL-CONTENT-SKIPPED-001",
+            DiagnosticCodes.LayoutGridZeroSizedCellContentSkipped001);
+        Assert.Equal(DiagnosticCodes.LayoutGridZeroSizedCellContentSkipped001,
+            NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutGridZeroSizedCellContentSkipped001);
+    }
+
+    [Fact]
+    public void Layout_grid_fr_under_indefinite_approximated_001_constants_are_stable()
+    {
+        Assert.Equal("LAYOUT-GRID-FR-UNDER-INDEFINITE-APPROXIMATED-001",
+            DiagnosticCodes.LayoutGridFrUnderIndefiniteApproximated001);
+        Assert.Equal(DiagnosticCodes.LayoutGridFrUnderIndefiniteApproximated001,
+            NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutGridFrUnderIndefiniteApproximated001);
     }
 
     private static string LoadRegistry()

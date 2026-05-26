@@ -352,4 +352,37 @@ internal static class PaginateDiagnosticCodes
     /// dispatch. Severity: Warning.</summary>
     public const string LayoutGridNonFiniteGeometry001 =
         "LAYOUT-GRID-NON-FINITE-GEOMETRY-001";
+
+    /// <summary>Per Phase 3 Task 17 cycle 2 post-PR-#93 review F2 —
+    /// emitted when a grid item's cell resolves to a zero-sized area
+    /// (inline-size = 0 OR block-size = 0) AND the item has child
+    /// content. The item's outer fragment still emits at the cell's
+    /// (zero-sized) geometry, but cycle 2's sub-BlockLayouter dispatch
+    /// can't run with a non-positive content extent (=
+    /// FragmentainerContext's positive-size validation). The inner
+    /// content is therefore skipped + this diagnostic surfaces the
+    /// silent drop. A zero-area grid cell is NOT equivalent to
+    /// <c>display: none</c> per CSS — content should overflow or be
+    /// clipped per the painter's overflow rules; cycle 3 will ship
+    /// the zero-area inner-layout strategy. Fires per item. Severity:
+    /// Warning.</summary>
+    public const string LayoutGridZeroSizedCellContentSkipped001 =
+        "LAYOUT-GRID-ZERO-SIZED-CELL-CONTENT-SKIPPED-001";
+
+    /// <summary>Per Phase 3 Task 17 cycle 2 post-PR-#93 review F3 —
+    /// emitted when a grid container with auto block-size (or auto
+    /// inline-size for column-flow grids) contains <c>fr</c> tracks
+    /// on the same axis. Per CSS Grid §11.7, flexible tracks under
+    /// indefinite available space resolve via the intrinsic /
+    /// max-content branch (= cycle 3 scope; needs content-derived
+    /// base sizes). Cycle 2's pre-measure can't fold fr contributions
+    /// into the wrapper's natural extent without that intrinsic
+    /// branch, so fr tracks on the indefinite axis collapse to 0 +
+    /// this diagnostic surfaces the approximation. The author's
+    /// intent (= "fr fills remaining space") doesn't apply when the
+    /// space is itself indefinite; either declare an explicit
+    /// height/width OR wait for cycle 3 to ship intrinsic resolution.
+    /// Fires once per AttemptLayout. Severity: Warning.</summary>
+    public const string LayoutGridFrUnderIndefiniteApproximated001 =
+        "LAYOUT-GRID-FR-UNDER-INDEFINITE-APPROXIMATED-001";
 }

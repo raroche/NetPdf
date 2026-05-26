@@ -382,14 +382,21 @@ public sealed class GridLayouterTests
     // =====================================================================
 
     [Fact]
-    public void Fr_track_kind_emits_diagnostic_and_contributes_zero()
+    public void Cycle2_fr_track_distributes_leftover_space_no_diagnostic()
     {
-        // cycle 1: only Length tracks are sized. fr → 0 px.
+        // Per cycle 2 — fr tracks distribute leftover space per
+        // §11.7 with the SPEC-CORRECT divisor
+        // `max(SUM(factors), 1.0)` (= sum applied ONCE to the total,
+        // not per-track).
+        //
+        // grid-template-columns: 100px 1fr in 400px container.
+        //   nonFlexBase = 100, leftover = 300
+        //   rawFlexFactorSum = 1, flexFactorSum = max(1, 1) = 1
+        //   hypoFr = 300 / 1 = 300, col 2 = 300 * 1 = 300.
         var sink = new RecordingFragmentSink();
         var diag = new RecordingDiagnosticsSink();
         using var shaper = new SyntheticShaperResolver();
 
-        // grid-template-columns: 100px 1fr
         var trackList = new TrackList(ImmutableArray.Create<TrackListItem>(
             new TrackListEntry(TrackEntry.ForLength(100)),
             new TrackListEntry(TrackEntry.ForFr(1))));
@@ -397,17 +404,403 @@ public sealed class GridLayouterTests
             rows: new TrackList(ImmutableArray.Create<TrackListItem>(
                 new TrackListEntry(TrackEntry.ForLength(100)))),
             cols: trackList);
+        // Explicit width + height → both axes are definite, no fr-
+        // under-indefinite diagnostic fires.
+        SetExplicitWidth(grid, 400);
+        SetExplicitHeight(grid, 100);
         var item = BuildItemWithExplicitPlacement(row: 1, col: 2);
         grid.AppendChild(item);
 
         RunGridLayouter(grid, sink, diag, shaper);
 
         Assert.Single(sink.Fragments);
-        // Col 2 (fr) starts at 100 px (= cumulative sum after the 100px
-        // track). Cycle 1 sizes fr as 0 → item is 0 wide.
-        AssertFragmentEquals(sink, item, inlineOffset: 100, blockOffset: 0, inlineSize: 0, blockSize: 100);
-        Assert.Contains(diag.Diagnostics, d =>
+        AssertFragmentEquals(sink, item, inlineOffset: 100, blockOffset: 0, inlineSize: 300, blockSize: 100);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
             d.Code == PaginateDiagnosticCodes.LayoutGridTrackKindUnsupported001);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridFrUnderIndefiniteApproximated001);
+    }
+
+    // =====================================================================
+    //  Cycle 2 — §11.7 fr distribution algorithm
+    // =====================================================================
+
+    [Fact]
+    public void Cycle2_two_equal_fr_tracks_split_container_equally()
+    {
+        // grid-template-columns: 1fr 1fr in 400px container.
+        //   rawFlexFactorSum = 2, flexFactorSum = max(2, 1) = 2
+        //   hypoFr = 200, each track = 200 * 1 = 200.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForFr(1)),
+            new TrackListEntry(TrackEntry.ForFr(1))));
+        var grid = BuildGridContainerWithTemplates(
+            rows: new TrackList(ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(50)))),
+            cols: cols);
+        SetExplicitWidth(grid, 400);
+        SetExplicitHeight(grid, 50);
+        var itemA = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var itemB = BuildItemWithExplicitPlacement(row: 1, col: 2);
+        grid.AppendChild(itemA);
+        grid.AppendChild(itemB);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Equal(2, sink.Fragments.Count);
+        AssertFragmentEquals(sink, itemA, inlineOffset: 0, blockOffset: 0, inlineSize: 200, blockSize: 50);
+        AssertFragmentEquals(sink, itemB, inlineOffset: 200, blockOffset: 0, inlineSize: 200, blockSize: 50);
+    }
+
+    [Fact]
+    public void Cycle2_fixed_plus_two_unequal_fr_distributes_per_flex_factor()
+    {
+        // grid-template-columns: 100px 1fr 2fr in 400px:
+        //   nonFlexBase = 100, leftover = 300
+        //   rawFlexFactorSum = 1 + 2 = 3, flexFactorSum = max(3, 1) = 3
+        //   hypoFr = 100, col2 = 100*1 = 100, col3 = 100*2 = 200.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForLength(100)),
+            new TrackListEntry(TrackEntry.ForFr(1)),
+            new TrackListEntry(TrackEntry.ForFr(2))));
+        var grid = BuildGridContainerWithTemplates(
+            rows: new TrackList(ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(50)))),
+            cols: cols);
+        SetExplicitWidth(grid, 400);
+        SetExplicitHeight(grid, 50);
+        var itemA = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var itemB = BuildItemWithExplicitPlacement(row: 1, col: 2);
+        var itemC = BuildItemWithExplicitPlacement(row: 1, col: 3);
+        grid.AppendChild(itemA);
+        grid.AppendChild(itemB);
+        grid.AppendChild(itemC);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Equal(3, sink.Fragments.Count);
+        AssertFragmentEquals(sink, itemA, inlineOffset: 0, blockOffset: 0, inlineSize: 100, blockSize: 50);
+        AssertFragmentEquals(sink, itemB, inlineOffset: 100, blockOffset: 0, inlineSize: 100, blockSize: 50);
+        AssertFragmentEquals(sink, itemC, inlineOffset: 200, blockOffset: 0, inlineSize: 200, blockSize: 50);
+    }
+
+    [Fact]
+    public void Cycle2_fractional_fr_below_one_uses_floored_total_sum_per_spec()
+    {
+        // Per CSS Grid §11.7.1 + PR-#93 review F1 — the flex-factor
+        // floor applies to the TOTAL sum ONCE, NOT per-track. Spec
+        // text: "Let flex factor sum be the sum of the flex factors
+        // of all the flexible tracks. If flex factor sum is less than
+        // 1, set it to 1."
+        //
+        // grid-template-columns: 0.25fr 0.25fr in 400px:
+        //   rawFlexFactorSum = 0.25 + 0.25 = 0.5
+        //   flexFactorSum = max(0.5, 1) = 1
+        //   hypoFr = 400 / 1 = 400
+        //   each track = 400 * 0.25 = 100
+        //   total used = 200; container has 200 unused (fractional
+        //   factors deliberately under-use leftover).
+        //
+        // Pre-F1 the per-track floor produced 50/50 (= flexFactorSum
+        // was 2, hypoFr was 200, each = 200 * 0.25 = 50).
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForFr(0.25)),
+            new TrackListEntry(TrackEntry.ForFr(0.25))));
+        var grid = BuildGridContainerWithTemplates(
+            rows: new TrackList(ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(50)))),
+            cols: cols);
+        SetExplicitWidth(grid, 400);
+        var itemA = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var itemB = BuildItemWithExplicitPlacement(row: 1, col: 2);
+        grid.AppendChild(itemA);
+        grid.AppendChild(itemB);
+
+        RunGridLayouter(grid, sink, diag, shaper, contentInlineSize: 400);
+
+        Assert.Equal(2, sink.Fragments.Count);
+        AssertFragmentEquals(sink, itemA, inlineOffset: 0, blockOffset: 0, inlineSize: 100, blockSize: 50);
+        AssertFragmentEquals(sink, itemB, inlineOffset: 100, blockOffset: 0, inlineSize: 100, blockSize: 50);
+    }
+
+    [Fact]
+    public void Cycle2_half_fr_plus_one_fr_distributes_per_spec_unfloored_sum()
+    {
+        // Per PR-#93 review F1 — `0.5fr 1fr` in 400px:
+        //   rawFlexFactorSum = 0.5 + 1 = 1.5
+        //   flexFactorSum = max(1.5, 1) = 1.5 (no floor; sum >= 1)
+        //   hypoFr = 400 / 1.5 ≈ 266.67
+        //   track 1 = 266.67 * 0.5 ≈ 133.33
+        //   track 2 = 266.67 * 1 ≈ 266.67
+        // Pre-F1 per-track floor produced 100/200 (= flexFactorSum
+        // was 2, hypoFr was 200, t1 = 200 * 0.5 = 100, t2 = 200 * 1 = 200).
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForFr(0.5)),
+            new TrackListEntry(TrackEntry.ForFr(1))));
+        var grid = BuildGridContainerWithTemplates(
+            rows: new TrackList(ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(50)))),
+            cols: cols);
+        SetExplicitWidth(grid, 400);
+        var itemA = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var itemB = BuildItemWithExplicitPlacement(row: 1, col: 2);
+        grid.AppendChild(itemA);
+        grid.AppendChild(itemB);
+
+        RunGridLayouter(grid, sink, diag, shaper, contentInlineSize: 400);
+
+        Assert.Equal(2, sink.Fragments.Count);
+        AssertFragmentEquals(sink, itemA, inlineOffset: 0, blockOffset: 0, inlineSize: 400.0 / 3, blockSize: 50);
+        AssertFragmentEquals(sink, itemB, inlineOffset: 400.0 / 3, blockOffset: 0, inlineSize: 800.0 / 3, blockSize: 50);
+    }
+
+    [Fact]
+    public void Cycle2_negative_leftover_pins_fr_tracks_at_zero()
+    {
+        // Per §11.7 — when nonFlexBase >= containerExtent, leftover <= 0
+        // → fr tracks all get 0. Container visually overflows.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForLength(500)),
+            new TrackListEntry(TrackEntry.ForFr(1))));
+        var grid = BuildGridContainerWithTemplates(
+            rows: new TrackList(ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(50)))),
+            cols: cols);
+        SetExplicitWidth(grid, 400);
+        SetExplicitHeight(grid, 50);
+        var itemA = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var itemB = BuildItemWithExplicitPlacement(row: 1, col: 2);
+        grid.AppendChild(itemA);
+        grid.AppendChild(itemB);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Equal(2, sink.Fragments.Count);
+        AssertFragmentEquals(sink, itemA, inlineOffset: 0, blockOffset: 0, inlineSize: 500, blockSize: 50);
+        AssertFragmentEquals(sink, itemB, inlineOffset: 500, blockOffset: 0, inlineSize: 0, blockSize: 50);
+    }
+
+    [Fact]
+    public void Cycle2_zero_fr_factor_per_spec_total_sum_floor()
+    {
+        // Per CSS Grid §11.7 + PR-#93 review F1 — `0fr 1fr` in 400px:
+        //   rawFlexFactorSum = 0 + 1 = 1
+        //   flexFactorSum = max(1, 1) = 1
+        //   hypoFr = 400 / 1 = 400
+        //   col1 = 400 * 0 = 0
+        //   col2 = 400 * 1 = 400
+        // Pre-F1 per-track floor produced 0/200 (= flexFactorSum was
+        // max(0,1) + max(1,1) = 2, hypoFr was 200).
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForFr(0)),
+            new TrackListEntry(TrackEntry.ForFr(1))));
+        var grid = BuildGridContainerWithTemplates(
+            rows: new TrackList(ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(50)))),
+            cols: cols);
+        SetExplicitWidth(grid, 400);
+        var itemA = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var itemB = BuildItemWithExplicitPlacement(row: 1, col: 2);
+        grid.AppendChild(itemA);
+        grid.AppendChild(itemB);
+
+        RunGridLayouter(grid, sink, diag, shaper, contentInlineSize: 400);
+
+        // 0fr emits LayoutGridZeroSizedCellContentSkipped001 if item
+        // has children; here itemA is empty so no diagnostic.
+        AssertFragmentEquals(sink, itemA, inlineOffset: 0, blockOffset: 0, inlineSize: 0, blockSize: 50);
+        AssertFragmentEquals(sink, itemB, inlineOffset: 0, blockOffset: 0, inlineSize: 400, blockSize: 50);
+    }
+
+    [Fact]
+    public void Cycle2_fr_in_rows_with_explicit_height_distributes_block_extent()
+    {
+        // fr can apply to rows when the block axis is DEFINITE
+        // (= explicit height). nonFlexBase = 100, leftover = 300, row 2 = 300.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rows = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForLength(100)),
+            new TrackListEntry(TrackEntry.ForFr(1))));
+        var grid = BuildGridContainerWithTemplates(
+            rows: rows,
+            cols: new TrackList(ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(50)))));
+        SetExplicitWidth(grid, 50);
+        SetExplicitHeight(grid, 400);
+        var item = BuildItemWithExplicitPlacement(row: 2, col: 1);
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Single(sink.Fragments);
+        AssertFragmentEquals(sink, item, inlineOffset: 0, blockOffset: 100, inlineSize: 50, blockSize: 300);
+        // Definite height → no fr-under-indefinite diagnostic.
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridFrUnderIndefiniteApproximated001);
+    }
+
+    // =====================================================================
+    //  PR-#93 review F2 — zero-sized cell content diagnostic
+    // =====================================================================
+
+    [Fact]
+    public void Cycle2_zero_sized_cell_with_inner_content_emits_diagnostic()
+    {
+        // Per F2 — a `0fr` column produces a 0-width cell. The item's
+        // outer fragment still emits at zero geometry, but inner
+        // content can't be dispatched (sub-BlockLayouter needs
+        // positive extent). Surface as diagnostic so the silent drop
+        // is visible.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForFr(0))));
+        var grid = BuildGridContainerWithTemplates(
+            rows: new TrackList(ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(50)))),
+            cols: cols);
+        SetExplicitWidth(grid, 400);
+        SetExplicitHeight(grid, 50);
+
+        // Item with a child block — diagnostic should fire.
+        var item = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var innerChild = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        item.AppendChild(innerChild);
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        // Outer item fragment still emits at zero size.
+        AssertFragmentEquals(sink, item, inlineOffset: 0, blockOffset: 0, inlineSize: 0, blockSize: 50);
+        // Inner content is skipped; diagnostic fires.
+        Assert.Contains(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridZeroSizedCellContentSkipped001);
+    }
+
+    [Fact]
+    public void Cycle2_zero_sized_cell_without_inner_content_emits_no_diagnostic()
+    {
+        // Empty item in zero-sized cell — no inner content to drop;
+        // diagnostic should NOT fire.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForFr(0))));
+        var grid = BuildGridContainerWithTemplates(
+            rows: new TrackList(ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(50)))),
+            cols: cols);
+        SetExplicitWidth(grid, 400);
+        SetExplicitHeight(grid, 50);
+        var item = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        AssertFragmentEquals(sink, item, inlineOffset: 0, blockOffset: 0, inlineSize: 0, blockSize: 50);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridZeroSizedCellContentSkipped001);
+    }
+
+    // =====================================================================
+    //  PR-#93 review F3 — fr under indefinite axis
+    // =====================================================================
+
+    [Fact]
+    public void Cycle2_fr_in_rows_with_auto_height_emits_indefinite_diagnostic()
+    {
+        // Per F3 — auto-height grid with fr rows → fr collapses to 0
+        // (cycle 3 ships intrinsic resolution); diagnostic fires.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rows = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForLength(100)),
+            new TrackListEntry(TrackEntry.ForFr(1))));
+        var grid = BuildGridContainerWithTemplates(
+            rows: rows,
+            cols: new TrackList(ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(50)))));
+        SetExplicitWidth(grid, 50);
+        // Height intentionally NOT set → row axis is indefinite.
+
+        var item1 = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var item2 = BuildItemWithExplicitPlacement(row: 2, col: 1);
+        grid.AppendChild(item1);
+        grid.AppendChild(item2);
+
+        // Pass an indefinite-style content extent (= chrome + length-track sum).
+        RunGridLayouter(grid, sink, diag, shaper, contentBlockSize: 100);
+
+        Assert.Contains(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridFrUnderIndefiniteApproximated001);
+    }
+
+    // =====================================================================
+    //  PR-#93 review F4 — non-finite flexFactorSum guard
+    // =====================================================================
+
+    [Fact]
+    public void Cycle2_overflowing_fr_factor_sum_emits_diagnostic_and_skips_distribution()
+    {
+        // Per F4 — `1e308fr 1e308fr` → rawFlexFactorSum overflows to
+        // ∞. Pre-F4 hypoFr = leftover/∞ = 0 silently collapsed both
+        // tracks to 0. Post-F4 the guard emits
+        // LayoutGridNonFiniteGeometry001 + skips distribution.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForFr(1e308)),
+            new TrackListEntry(TrackEntry.ForFr(1e308))));
+        var grid = BuildGridContainerWithTemplates(
+            rows: new TrackList(ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(50)))),
+            cols: cols);
+        SetExplicitWidth(grid, 400);
+        SetExplicitHeight(grid, 50);
+        var itemA = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var itemB = BuildItemWithExplicitPlacement(row: 1, col: 2);
+        grid.AppendChild(itemA);
+        grid.AppendChild(itemB);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Contains(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridNonFiniteGeometry001);
     }
 
     [Fact]
@@ -674,19 +1067,38 @@ public sealed class GridLayouterTests
 
     private static void RunGridLayouter(
         Box grid, RecordingFragmentSink sink,
-        RecordingDiagnosticsSink diag, SyntheticShaperResolver shaper)
+        RecordingDiagnosticsSink diag, SyntheticShaperResolver shaper,
+        double contentInlineSize = 400, double contentBlockSize = 400)
     {
         using var layouter = new GridLayouter(
             rootBox: grid, sink: sink, incomingContinuation: null,
             diagnostics: diag, shaperResolver: shaper);
         layouter.ConfigureEmission(
             contentInlineOffset: 0, contentBlockOffset: 0,
-            contentInlineSize: 400, contentBlockSize: 400,
+            contentInlineSize: contentInlineSize,
+            contentBlockSize: contentBlockSize,
             allowPagination: false);
-        var ctx = new FragmentainerContext(contentInlineSize: 400, blockSize: 400);
+        var ctx = new FragmentainerContext(
+            contentInlineSize: contentInlineSize, blockSize: contentBlockSize);
         var layoutCtx = new LayoutContext(ctx);
         using var resolver = new BreakResolver();
         layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+    }
+
+    /// <summary>Per PR-#93 review F3 — sets a pixel <c>width</c> on the
+    /// box's style so the GridLayouter's indefinite-axis detection
+    /// treats the inline axis as DEFINITE (= no fr-under-indefinite
+    /// diagnostic for column fr tracks).</summary>
+    private static void SetExplicitWidth(Box box, double px)
+    {
+        box.Style.Set(PropertyId.Width, ComputedSlot.FromLengthPx(px));
+    }
+
+    /// <summary>Per PR-#93 review F3 — sets a pixel <c>height</c> so the
+    /// indefinite-block check treats the row axis as DEFINITE.</summary>
+    private static void SetExplicitHeight(Box box, double px)
+    {
+        box.Style.Set(PropertyId.Height, ComputedSlot.FromLengthPx(px));
     }
 
     private static void AssertFragmentEquals(

@@ -19,14 +19,24 @@ namespace NetPdf.Layout.Layouters;
 /// <see cref="BoxKind.InlineGridContainer"/> as grid items per CSS
 /// Grid Layout L1.
 ///
-/// <para><b>Cycle 1 scope</b>:</para>
+/// <para><b>Cycle 1 + 2 scope</b>:</para>
 /// <list type="bullet">
-///   <item>Explicit <c>&lt;length&gt;</c> tracks only via
-///   <c>grid-template-rows</c> + <c>grid-template-columns</c>.
-///   Track entries with any other kind (fr, auto, min-content,
-///   max-content, minmax, fit-content, repeat) emit
+///   <item><b>Track kinds supported</b>: <c>&lt;length&gt;</c> (cycle 1)
+///   + <c>&lt;flex&gt;</c> (= fr; cycle 2 via CSS Grid §11.7
+///   "Find the Size of an fr" algorithm with the spec-correct
+///   <c>max(SUM(factors), 1.0)</c> divisor floor — NOT the naive
+///   per-track floor or the proportional <c>flex / sumFlex</c>
+///   split). Track entries with any other kind (auto, min-content,
+///   max-content, minmax, fit-content, repeat) still emit
 ///   <see cref="PaginateDiagnosticCodes.LayoutGridTrackKindUnsupported001"/>
-///   + contribute 0 px to the track sum.</item>
+///   + contribute 0 px to the track sum — cycle 3-7 expand
+///   coverage.</item>
+///   <item><b>fr under indefinite axis</b> (= auto height for rows /
+///   auto width for cols) emits
+///   <see cref="PaginateDiagnosticCodes.LayoutGridFrUnderIndefiniteApproximated001"/>
+///   + collapses fr tracks to 0. Per §11.7 the spec resolves these
+///   via intrinsic sizing, which cycle 2 doesn't have yet (cycle 3
+///   scope).</item>
 ///   <item>Integer line-number placement only via
 ///   <c>grid-{row,column}-{start,end}</c>. Span / named-line forms
 ///   degrade to auto-placement + emit
@@ -278,10 +288,41 @@ internal sealed class GridLayouter : ILayouter, IDisposable
         cancellationToken.ThrowIfCancellationRequested();
 
         // Step 1 — resolve track sizes from grid-template-rows /
-        // grid-template-columns. Cycle 1 supports only Length tracks;
-        // other kinds contribute 0 + emit a one-shot diagnostic.
-        var rowSizes = ResolveTrackSizes(_rootBox.Style.ReadGridTemplateRows());
-        var colSizes = ResolveTrackSizes(_rootBox.Style.ReadGridTemplateColumns());
+        // grid-template-columns. Cycle 1 supported only Length tracks;
+        // cycle 2 adds fr distribution via CSS Grid §11.7 "Find the
+        // Size of an fr" algorithm. Other non-Length non-fr kinds
+        // (auto / intrinsic / minmax / fit-content / repeat) still
+        // contribute 0 + emit a one-shot diagnostic — cycle 3+ widens
+        // coverage.
+        //
+        // The container's content extent on each axis feeds the fr
+        // distribution (= leftover = containerSize - sumOfNonFlexBases).
+        //
+        // Per PR-#93 review F3 — detect indefinite axes (= auto height
+        // for rows / auto width for cols) so fr tracks on an
+        // indefinite axis emit
+        // <see cref="PaginateDiagnosticCodes.LayoutGridFrUnderIndefiniteApproximated001"/>
+        // rather than silently collapsing to 0. Per §11.7, fr under
+        // indefinite space resolves via intrinsic (= max-content)
+        // sizing; cycle 2 doesn't have intrinsic resolution yet
+        // (cycle 3), so we surface the approximation. NB: column
+        // axis is rarely indefinite in practice since the available
+        // inline space is always definite under BlockLayouter dispatch;
+        // the diagnostic is primarily a row-axis safety net.
+        var heightSlot = _rootBox.Style.Get(PropertyId.Height);
+        var widthSlot = _rootBox.Style.Get(PropertyId.Width);
+        var isBlockIndefinite =
+            heightSlot.Tag is ComputedSlotTag.Unset or ComputedSlotTag.Keyword;
+        var isInlineIndefinite =
+            widthSlot.Tag is ComputedSlotTag.Unset or ComputedSlotTag.Keyword;
+        var rowSizes = ResolveTrackSizes(
+            _rootBox.Style.ReadGridTemplateRows(),
+            _contentBlockSize,
+            isAxisIndefinite: isBlockIndefinite);
+        var colSizes = ResolveTrackSizes(
+            _rootBox.Style.ReadGridTemplateColumns(),
+            _contentInlineSize,
+            isAxisIndefinite: isInlineIndefinite);
 
         // No explicit tracks → no cells to place into. Cycle 1 doesn't
         // generate implicit tracks (§7.5). Per PR-#92 review F6 — emit
@@ -540,21 +581,45 @@ internal sealed class GridLayouter : ILayouter, IDisposable
                 BlockSize: blockSize));
 
             // F1 — only dispatch inner content when the item has
-            // children (text-runs / nested boxes). Empty items skip the
-            // sub-layouter (= cycle-1 pre-fix behavior + no overhead
-            // for the empty-item case the tests originally covered).
-            if (item.Box.Children.Count > 0
-                && inlineSize > 0 && blockSize > 0)
+            // children (text-runs / nested boxes).
+            if (item.Box.Children.Count > 0)
             {
-                DispatchGridItemContents(
-                    itemBox: item.Box,
-                    cellInlineOffset: inlineOffset,
-                    cellBlockOffset: blockOffset,
-                    cellInlineSize: inlineSize,
-                    cellBlockSize: blockSize,
-                    outerFragmentainer: fragmentainer,
-                    outerLayout: ref layout,
-                    cancellationToken: cancellationToken);
+                if (inlineSize > 0 && blockSize > 0)
+                {
+                    DispatchGridItemContents(
+                        itemBox: item.Box,
+                        cellInlineOffset: inlineOffset,
+                        cellBlockOffset: blockOffset,
+                        cellInlineSize: inlineSize,
+                        cellBlockSize: blockSize,
+                        outerFragmentainer: fragmentainer,
+                        outerLayout: ref layout,
+                        cancellationToken: cancellationToken);
+                }
+                else
+                {
+                    // Per PR-#93 review F2 — zero-sized cell.
+                    // Sub-BlockLayouter dispatch requires a positive
+                    // content extent (= ConfigureEmission validation);
+                    // a 0fr column / 0px row would otherwise throw.
+                    // Cycle 2 emits the outer item fragment at the
+                    // zero-sized geometry + surfaces the inner
+                    // content drop via this diagnostic. Cycle 3 will
+                    // ship the zero-area inner-layout strategy.
+                    SafeEmit(new PaginateDiagnostic(
+                        Code: PaginateDiagnosticCodes.LayoutGridZeroSizedCellContentSkipped001,
+                        Message: $"Grid item (kind={item.Box.Kind}) at cell "
+                            + $"({item.Row + 1}, {item.Col + 1}) resolved to "
+                            + $"a zero-sized area ({inlineSize}px × "
+                            + $"{blockSize}px). Inner content (= "
+                            + $"{item.Box.Children.Count} child boxes) is "
+                            + "skipped. A zero-area grid cell is not "
+                            + "equivalent to `display: none` per CSS; "
+                            + "cycle 3 ships the zero-area inner-layout "
+                            + "strategy (= content emits at natural extent "
+                            + "+ visually overflows the cell).",
+                        Severity: PaginateDiagnosticSeverity.Warning));
+                }
             }
         }
 
@@ -676,38 +741,83 @@ internal sealed class GridLayouter : ILayouter, IDisposable
     }
 
     // =====================================================================
-    //  Track sizing (cycle 1: Length tracks only)
+    //  Track sizing (cycle 1: Length; cycle 2: + Fr via §11.7)
     // =====================================================================
 
-    /// <summary>Per cycle 1 — flatten the parsed <see cref="TrackList"/>
-    /// AST into a list of px track sizes. Each
-    /// <see cref="TrackListEntry"/> with a
-    /// <see cref="GridTrackKind.Length"/> entry contributes its pixel
-    /// value; non-length kinds contribute 0 + emit
-    /// <see cref="PaginateDiagnosticCodes.LayoutGridTrackKindUnsupported001"/>
-    /// (once per AttemptLayout). <see cref="TrackListNamedLine"/> +
-    /// <see cref="TrackListRepeat"/> entries are SKIPPED in cycle 1
-    /// (no track contributed); future cycles will handle repeat() +
-    /// named-line position resolution.</summary>
-    private List<double> ResolveTrackSizes(TrackList trackList)
+    /// <summary>Flatten the parsed <see cref="TrackList"/> AST into a
+    /// list of px track sizes per CSS Grid §11.
+    ///
+    /// <para><b>Cycle 1 (Hello World)</b>: only Length tracks sized;
+    /// non-Length contributed 0 + emitted a diagnostic.</para>
+    ///
+    /// <para><b>Cycle 2 (post-PR-#92 review hardening continuation)</b>:
+    /// adds <c>&lt;flex&gt;</c> (fr) tracks via CSS Grid §11.7 "Find
+    /// the Size of an fr" algorithm. The remaining non-Length non-fr
+    /// kinds (auto / min-content / max-content / minmax / fit-content
+    /// / repeat) still contribute 0 + emit
+    /// <see cref="PaginateDiagnosticCodes.LayoutGridTrackKindUnsupported001"/>.
+    /// Cycle 3 ships intrinsic; cycle 4 ships minmax / fit-content /
+    /// repeat(int); cycle 7 ships auto-fill / auto-fit.</para>
+    ///
+    /// <para><b>§11.7 fr distribution</b> (= the spec-correct
+    /// algorithm — NOT the naive <c>flex / sumFlex</c> proportional
+    /// split which is wrong for sub-1 factors + negative leftover):
+    /// <list type="number">
+    ///   <item><c>leftover = containerExtent - sumOfNonFlexBases</c>;
+    ///   if <c>leftover &lt;= 0</c>, every fr track gets 0.</item>
+    ///   <item><c>flexFactorSum = Σ max(flex, 1)</c> over fr tracks.
+    ///   Per §11.7.1 the sum is floored so fractional factors below 1
+    ///   don't blow up the divisor.</item>
+    ///   <item><c>hypoFr = leftover / flexFactorSum</c>.</item>
+    ///   <item>Each fr track's size = <c>hypoFr * flex</c> (RAW flex,
+    ///   not floored — only the divisor floors). Cycle 2 has no
+    ///   content-derived base sizes (= L19 deferral; cycle 3 ships
+    ///   intrinsic), so the iterative "remove fr track whose base &gt;
+    ///   hypoFr * flex" step from the spec is a no-op + skipped.
+    ///   Future cycle 3 will add the iteration.</item>
+    /// </list></para></summary>
+    private List<double> ResolveTrackSizes(
+        TrackList trackList, double containerExtent, bool isAxisIndefinite)
     {
         var sizes = new List<double>(trackList.Items.Length);
+        // Per cycle 2 — gather (kind, value) per track in a single pass.
+        // Length tracks get their px value immediately; fr tracks get
+        // 0 placeholder + are resolved in the §11.7 pass below; other
+        // kinds get 0 + a diagnostic.
+        // Parallel arrays: <c>isFr</c> distinguishes fr tracks
+        // (including 0fr, which is a valid fr factor per §7.2.3) from
+        // non-fr tracks (= relying on frFactor != 0 was the cycle-2
+        // initial-draft bug since 0fr is ALSO 0). <c>frFactors</c>
+        // holds the raw fr factor for fr tracks; the value is unused
+        // for non-fr.
+        var isFr = new List<bool>(trackList.Items.Length);
+        var frFactors = new List<double>(trackList.Items.Length);
         foreach (var item in trackList.Items)
         {
             if (item is TrackListEntry entry)
             {
-                if (entry.Entry.Kind == GridTrackKind.Length
-                    && !entry.Entry.IsPercentage)
+                switch (entry.Entry.Kind)
                 {
-                    sizes.Add(entry.Entry.LengthPx);
-                }
-                else
-                {
-                    EmitTrackKindDiagnostic(entry.Entry.Kind);
-                    // Contribute 0 — keeps the track count but with no
-                    // pixels. Cycle 2+ will replace this branch with
-                    // real fr / intrinsic / etc. sizing.
-                    sizes.Add(0.0);
+                    case GridTrackKind.Length when !entry.Entry.IsPercentage:
+                        sizes.Add(entry.Entry.LengthPx);
+                        isFr.Add(false);
+                        frFactors.Add(0);
+                        break;
+                    case GridTrackKind.Fr:
+                        // Placeholder; resolved in the §11.7 pass below.
+                        sizes.Add(0);
+                        isFr.Add(true);
+                        frFactors.Add(entry.Entry.FrValue);
+                        break;
+                    default:
+                        // Length-with-percentage / Auto / MinContent /
+                        // MaxContent / MinMax / FitContent — cycle 3+
+                        // scope. Contribute 0.
+                        EmitTrackKindDiagnostic(entry.Entry.Kind);
+                        sizes.Add(0);
+                        isFr.Add(false);
+                        frFactors.Add(0);
+                        break;
                 }
             }
             else if (item is TrackListRepeat)
@@ -719,7 +829,170 @@ internal sealed class GridLayouter : ILayouter, IDisposable
             // TrackListNamedLine: no track contribution; named-line
             // position resolution is cycle 7's scope.
         }
+
+        // Per PR-#93 review F3 — when the axis is indefinite, fr
+        // tracks should resolve via intrinsic / max-content sizing per
+        // §11.7. Cycle 2 doesn't have intrinsic resolution yet
+        // (= cycle 3 scope), so we emit a diagnostic + leave fr tracks
+        // at 0 (= the same outcome as the §11.7 "no leftover" branch
+        // produces for an auto-height grid pre-grown to chrome+length-
+        // only extent). The diagnostic is the loud signal that the
+        // author's intent is being approximated.
+        if (isAxisIndefinite)
+        {
+            for (var i = 0; i < isFr.Count; i++)
+            {
+                if (isFr[i])
+                {
+                    EmitFrUnderIndefiniteDiagnostic();
+                    break;
+                }
+            }
+        }
+
+        // §11.7 fr distribution pass. For indefinite axes the pass
+        // still runs but `leftover` is typically 0 (= the wrapper was
+        // pre-grown to chrome + non-fr extent), so fr tracks naturally
+        // resolve to 0. The diagnostic above is the loud-signal layer;
+        // the distribution math is the silent-fallback layer.
+        ResolveFrTracks(sizes, isFr, frFactors, containerExtent);
         return sizes;
+    }
+
+    /// <summary>Per PR-#93 review F3 — one-shot diagnostic for fr
+    /// tracks on an indefinite axis. Cycle 2 doesn't have intrinsic
+    /// sizing yet (= cycle 3 scope); the diagnostic surfaces the
+    /// approximation so authors aren't silently misled.</summary>
+    private bool _emittedFrIndefiniteDiagnostic;
+    private void EmitFrUnderIndefiniteDiagnostic()
+    {
+        if (_emittedFrIndefiniteDiagnostic) return;
+        _emittedFrIndefiniteDiagnostic = true;
+        SafeEmit(new PaginateDiagnostic(
+            Code: PaginateDiagnosticCodes.LayoutGridFrUnderIndefiniteApproximated001,
+            Message: "Grid container has fr tracks on an axis with "
+                + "indefinite extent (= auto height for rows / auto "
+                + "width for columns). Per CSS Grid §11.7 fr under "
+                + "indefinite space resolves via intrinsic / max-content "
+                + "sizing, which cycle 2 doesn't yet support (= cycle 3 "
+                + "scope). fr tracks collapse to 0 in cycle 2. Author "
+                + "intent: declare an explicit height/width on the grid "
+                + "container, OR wait for cycle 3.",
+            Severity: PaginateDiagnosticSeverity.Warning));
+    }
+
+    /// <summary>Per CSS Grid §11.7 "Find the Size of an fr" — distribute
+    /// <paramref name="containerExtent"/> minus the non-fr base extent
+    /// among the fr tracks in <paramref name="sizes"/>. Cycle 2 scope:
+    /// pure fr distribution with no content-derived base sizes (= L19
+    /// deferral); the spec's iterative "remove fr track whose base &gt;
+    /// hypoFr * flex" step is a no-op for cycle 2 since every fr track
+    /// has base 0.
+    ///
+    /// <para><b>Pre-conditions</b>: <paramref name="sizes"/> and
+    /// <paramref name="frFactors"/> are parallel arrays of the same
+    /// length; the fr-track slots in <paramref name="sizes"/> are 0
+    /// placeholders (= the value this method fills in); the non-fr
+    /// slots already hold their final px sizes; <paramref name="frFactors"/>
+    /// holds the raw fr factor for each fr track + 0 for non-fr.</para>
+    ///
+    /// <para><b>Negative-leftover case</b>: when non-fr tracks already
+    /// fill or exceed the container, leftover &lt;= 0 → fr tracks all
+    /// get 0 (= container visually overflows; matches the spec's
+    /// behavior since fr distributes ONLY the positive leftover).</para></summary>
+    private void ResolveFrTracks(
+        List<double> sizes, List<bool> isFr, List<double> frFactors,
+        double containerExtent)
+    {
+        // Sum non-fr base extents.
+        double nonFlexBase = 0;
+        var hasFr = false;
+        for (var i = 0; i < sizes.Count; i++)
+        {
+            if (isFr[i])
+            {
+                hasFr = true;
+            }
+            else
+            {
+                nonFlexBase += sizes[i];
+            }
+        }
+        if (!hasFr) return;
+
+        var leftover = containerExtent - nonFlexBase;
+        if (leftover <= 0 || !double.IsFinite(leftover))
+        {
+            // No positive leftover — fr tracks pin at 0 (already
+            // initialized). Spec: container may visually overflow.
+            return;
+        }
+
+        // §11.7.1 step 3 per PR-#93 review F1 — the flex-factor floor
+        // applies to the TOTAL sum ONCE, NOT per-track. Spec text:
+        // "Let flex factor sum be the sum of the flex factors of all
+        // the flexible tracks. If flex factor sum is less than 1, set
+        // it to 1." So flexFactorSum = max(Σ factors, 1.0). Pre-F1
+        // we floored per-track (Σ max(factor, 1)) which is materially
+        // different + made fractional factors deliver less than the
+        // container's leftover (e.g., `0.25fr 0.25fr` in 400px yielded
+        // 50/50 instead of the spec's 100/100; `0fr 1fr` yielded
+        // 0/200 instead of 0/400; `0.5fr 1fr` yielded 100/200 instead
+        // of 133.33/266.67).
+        //
+        // 0fr CONTRIBUTES 0 to the raw sum (= it's a valid track with
+        // a zero multiplier; the post-floor sum still includes the
+        // other tracks' factors).
+        double rawFlexFactorSum = 0;
+        for (var i = 0; i < frFactors.Count; i++)
+        {
+            if (isFr[i])
+            {
+                rawFlexFactorSum += frFactors[i];
+            }
+        }
+        // Per PR-#93 review F4 — flexFactorSum can overflow to
+        // ±Infinity even though each individual factor is finite
+        // (e.g., `1e308fr 1e308fr` → 2e308 overflows). Without this
+        // guard `hypoFr = leftover / ∞ = 0` and tracks silently
+        // resolve to 0. Surface as a non-finite geometry diagnostic
+        // + skip distribution (= same outcome as
+        // <see cref="IsTrackGeometryFinite"/>'s pre-existing path for
+        // cumulative position overflow).
+        if (!double.IsFinite(rawFlexFactorSum))
+        {
+            SafeEmit(new PaginateDiagnostic(
+                Code: PaginateDiagnosticCodes.LayoutGridNonFiniteGeometry001,
+                Message: "Grid container's flex-factor sum overflowed to "
+                    + "a non-finite value (= individual fr factors finite, "
+                    + "but their sum exceeded double.MaxValue). fr "
+                    + "distribution is skipped to prevent silent collapse "
+                    + "to 0-sized tracks. Hostile CSS like "
+                    + "`grid-template-columns: 1e308fr 1e308fr` triggers "
+                    + "this guard.",
+                Severity: PaginateDiagnosticSeverity.Warning));
+            return;
+        }
+        var flexFactorSum = System.Math.Max(rawFlexFactorSum, 1.0);
+        if (flexFactorSum <= 0) return; // defensive (unreachable since max(.,1) >= 1)
+
+        // hypoFr = leftover / flexFactorSum.
+        var hypoFr = leftover / flexFactorSum;
+        if (!double.IsFinite(hypoFr)) return; // defensive
+
+        // Cycle 2: no content-derived base sizes → no iterative
+        // removal step needed. Each fr track's size = hypoFr * flex
+        // (= 0 * hypoFr = 0 for 0fr tracks — they contribute 0 to
+        // the sum AND receive 0 leftover, naturally collapsing).
+        // Cycle 3 ships intrinsic sizing → the iteration step will
+        // land then to handle "base > hypoFr * flex" force-fixed cases.
+        for (var i = 0; i < sizes.Count; i++)
+        {
+            if (isFr[i])
+            {
+                sizes[i] = hypoFr * frFactors[i];
+            }
+        }
     }
 
     /// <summary>Compute cumulative track positions from track sizes.
@@ -768,10 +1041,11 @@ internal sealed class GridLayouter : ILayouter, IDisposable
         _emittedTrackKindDiagnostic = true;
         SafeEmit(new PaginateDiagnostic(
             Code: PaginateDiagnosticCodes.LayoutGridTrackKindUnsupported001,
-            Message: $"Grid track kind {kind} is not supported in cycle 1 "
-                + "(Hello World); only <length> tracks contribute. The "
-                + "track contributes 0 px to the track sum. Cycle 2+ will "
-                + "ship fr / intrinsic / minmax / fit-content / repeat.",
+            Message: $"Grid track kind {kind} is not yet supported "
+                + "(cycle 2 ships <length> + <flex>/fr via §11.7; "
+                + "intrinsic / minmax / fit-content / repeat are cycle "
+                + "3-7 scope). The track contributes 0 px to the track "
+                + "sum.",
             Severity: PaginateDiagnosticSeverity.Warning));
     }
 

@@ -526,5 +526,40 @@ internal static class DiagnosticCodes
     public const string LayoutGridNonFiniteGeometry001 =
         "LAYOUT-GRID-NON-FINITE-GEOMETRY-001";
 
+    /// <summary>
+    /// Per Phase 3 Task 17 cycle 2 post-PR-#93 review F2 — emitted
+    /// when a grid item's cell resolves to a zero-sized area AND the
+    /// item has child content. The outer item fragment still emits at
+    /// the zero-sized geometry, but cycle 2's sub-BlockLayouter
+    /// dispatch can't run with a non-positive content extent
+    /// (= FragmentainerContext's positive-size validation), so the
+    /// inner content is skipped + this diagnostic surfaces the silent
+    /// drop. A zero-area grid cell is NOT equivalent to
+    /// <c>display: none</c> per CSS — content should overflow or be
+    /// clipped per the painter's overflow rules; cycle 3 ships the
+    /// zero-area inner-layout strategy. Mirrors
+    /// <c>NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutGridZeroSizedCellContentSkipped001</c>.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string LayoutGridZeroSizedCellContentSkipped001 =
+        "LAYOUT-GRID-ZERO-SIZED-CELL-CONTENT-SKIPPED-001";
+
+    /// <summary>
+    /// Per Phase 3 Task 17 cycle 2 post-PR-#93 review F3 — emitted
+    /// when a grid container with auto block-size (or auto inline-size
+    /// for column-flow grids) contains <c>fr</c> tracks on the same
+    /// axis. Per CSS Grid §11.7 flexible tracks under indefinite
+    /// available space resolve via intrinsic / max-content sizing
+    /// (= cycle 3 scope). Cycle 2's pre-measure can't fold fr
+    /// contributions into the wrapper's natural extent without that
+    /// intrinsic branch, so fr tracks on the indefinite axis collapse
+    /// to 0 + this diagnostic surfaces the approximation. Fires once
+    /// per AttemptLayout. Mirrors
+    /// <c>NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutGridFrUnderIndefiniteApproximated001</c>.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string LayoutGridFrUnderIndefiniteApproximated001 =
+        "LAYOUT-GRID-FR-UNDER-INDEFINITE-APPROXIMATED-001";
+
     // endregion LAYOUT-*
 }

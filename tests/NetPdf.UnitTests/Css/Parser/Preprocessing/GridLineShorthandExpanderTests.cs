@@ -165,4 +165,83 @@ public sealed class GridLineShorthandExpanderTests
         Assert.Equal("2", s);
         Assert.Equal("4", e);
     }
+
+    // =====================================================================
+    //  PR-#91 review F1 — atomic validation (CSS Cascade L4 §4.2)
+    // =====================================================================
+
+    [Fact]
+    public void Invalid_end_component_drops_the_whole_shorthand()
+    {
+        // Per F1 — `grid-row: 2 / 0` has an invalid end component (= 0
+        // is rejected per §8.3 line-number 0 rule). The whole shorthand
+        // must drop atomically; the start MUST NOT survive at 2.
+        Assert.False(GridLineShorthandExpander.TryExpand("2 / 0", out _, out _));
+    }
+
+    [Fact]
+    public void Invalid_start_component_drops_the_whole_shorthand()
+    {
+        Assert.False(GridLineShorthandExpander.TryExpand("0 / 2", out _, out _));
+    }
+
+    [Fact]
+    public void Span_alone_drops_the_whole_shorthand()
+    {
+        // `span` alone is invalid per §8.3 — must have integer or ident.
+        Assert.False(GridLineShorthandExpander.TryExpand("span / 3", out _, out _));
+    }
+
+    [Fact]
+    public void Malformed_first_component_drops_the_whole_shorthand()
+    {
+        // `@` is unparseable.
+        Assert.False(GridLineShorthandExpander.TryExpand("@ / 2", out _, out _));
+    }
+
+    [Fact]
+    public void CSS_wide_keyword_in_compound_drops_the_whole_shorthand()
+    {
+        // `initial` as a per-component value isn't a valid <grid-line>
+        // (= CSS-wide keywords are only valid as the SOLE declaration
+        // value; the GridLineResolver's F3 defense rejects them).
+        Assert.False(GridLineShorthandExpander.TryExpand("2 / initial", out _, out _));
+    }
+
+    // =====================================================================
+    //  PR-#91 review F2 — var() interaction
+    // =====================================================================
+
+    [Fact]
+    public void Value_containing_var_function_is_not_expanded()
+    {
+        // Per F2 — the preprocessor can't know the post-substitution
+        // structure of `2 / var(--end)`, so the expander returns false
+        // (= shorthand silently drops at the cascade). Post-substitution
+        // re-expansion is a separate cycle's scope.
+        Assert.False(GridLineShorthandExpander.TryExpand(
+            "2 / var(--end)", out _, out _));
+    }
+
+    [Fact]
+    public void Value_that_is_entirely_var_function_is_not_expanded()
+    {
+        Assert.False(GridLineShorthandExpander.TryExpand(
+            "var(--placement)", out _, out _));
+    }
+
+    // =====================================================================
+    //  PR-#91 review F5 — `none` is a valid named line
+    // =====================================================================
+
+    [Fact]
+    public void Single_none_duplicates_to_end_as_named_line()
+    {
+        // Per F5 — CSS Grid §8.3 excludes ONLY `auto` and `span` from
+        // <custom-ident>. `none` IS a valid named line; the omitted-pair
+        // rule duplicates it.
+        Assert.True(GridLineShorthandExpander.TryExpand("none", out var s, out var e));
+        Assert.Equal("none", s);
+        Assert.Equal("none", e);
+    }
 }

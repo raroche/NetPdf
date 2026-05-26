@@ -149,6 +149,58 @@ internal static class GridLineResolver
             || trimmed.Equals("revert-layer", StringComparison.OrdinalIgnoreCase);
     }
 
+    /// <summary>Per PR-#91 review F1 — side-effect-free validation of a
+    /// single <c>&lt;grid-line&gt;</c> value. Used by the grid shorthand
+    /// expanders (<c>GridLineShorthandExpander</c> /
+    /// <c>GridAreaShorthandExpander</c> in
+    /// <c>NetPdf.Css.Parser.Preprocessing</c>) to pre-validate every
+    /// shorthand component BEFORE emitting any longhand recovery record.
+    /// This implements the CSS Cascade L4 §4.2 "invalid shorthand
+    /// declaration contributes none of its longhands" rule — if ANY
+    /// component is invalid, the whole shorthand drops atomically.
+    ///
+    /// <para>Returns <see langword="true"/> for any input that would
+    /// produce a <see cref="ResolverResult.Resolved"/> from <see cref="Resolve"/>;
+    /// returns <see langword="false"/> for any input that would produce
+    /// <see cref="ResolverResult.Invalid"/>. Does NOT emit a diagnostic
+    /// (= the expander's caller is the source of truth for diagnostics
+    /// when the whole shorthand drops).</para></summary>
+    internal static bool TryValidate(string value)
+    {
+        if (value is null) return false;
+        // Mirrors the early-rejection guards in Resolve() — must stay in
+        // sync (= changes to those guards should change here too).
+        if (ContainsCaseInsensitive(value, "calc(")) return false;
+        if (IsCssWideKeyword(value)) return false;
+
+        var tokens = Tokenize(value);
+        if (tokens.Count == 0) return false;
+
+        for (var i = 0; i < tokens.Count; i++)
+        {
+            if (tokens[i].Kind == GridLineTokenKind.Error) return false;
+        }
+
+        // Bare "auto" fast path — would land Resolved at Resolve().
+        if (tokens.Count == 1
+            && tokens[0].Kind == GridLineTokenKind.Ident
+            && string.Equals(tokens[0].Text, "auto", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        try
+        {
+            return TryParseGridLine(tokens, out _, out _);
+        }
+        catch (ArgumentException)
+        {
+            // Defense-in-depth — a validating-factory throw from a parser
+            // path we didn't anticipate. Mirrors Resolve's catch.
+            return false;
+        }
+    }
+
     /// <summary>Parse a sequence of grid-line tokens into a <see cref="GridLineValue"/>
     /// per §8.3. Returns <see langword="false"/> with a human-readable
     /// <paramref name="reason"/> on grammar / invariant failures.</summary>

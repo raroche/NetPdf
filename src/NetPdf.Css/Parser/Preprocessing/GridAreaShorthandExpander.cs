@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
 using System;
+using NetPdf.Css.ComputedValues.PropertyResolvers;
 
 namespace NetPdf.Css.Parser.Preprocessing;
 
@@ -88,6 +89,15 @@ internal static class GridAreaShorthandExpander
             return true;
         }
 
+        // Per PR-#91 review F2 — skip expansion when var() is present
+        // (= same rationale as GridLineShorthandExpander). The shorthand
+        // silently drops at the cascade. Post-substitution re-expansion
+        // is a separate cycle's scope.
+        if (ContainsCaseInsensitive(trimmed, "var("))
+        {
+            return false;
+        }
+
         var parts = GridLineShorthandExpander.SplitOnSlash(trimmed, max: 4);
         if (parts is null) return false;
         if (parts.Length == 0 || parts.Length > 4) return false;
@@ -112,38 +122,53 @@ internal static class GridAreaShorthandExpander
             if (d.Length == 0) return false;
         }
 
+        string outRowStart, outColumnStart, outRowEnd, outColumnEnd;
         switch (parts.Length)
         {
             case 1:
                 // A → row-start: A; column-start: <A>; row-end: <A>; column-end: <A>
-                rowStart = a;
-                columnStart = OmittedPair(a);
-                rowEnd = OmittedPair(a);
-                columnEnd = OmittedPair(a);
-                return true;
+                outRowStart = a;
+                outColumnStart = OmittedPair(a);
+                outRowEnd = OmittedPair(a);
+                outColumnEnd = OmittedPair(a);
+                break;
             case 2:
                 // A / B → row-start: A; column-start: B; row-end: <A>; column-end: <B>
-                rowStart = a;
-                columnStart = b;
-                rowEnd = OmittedPair(a);
-                columnEnd = OmittedPair(b);
-                return true;
+                outRowStart = a;
+                outColumnStart = b;
+                outRowEnd = OmittedPair(a);
+                outColumnEnd = OmittedPair(b);
+                break;
             case 3:
                 // A / B / C → row-start: A; column-start: B; row-end: C; column-end: <B>
-                rowStart = a;
-                columnStart = b;
-                rowEnd = c;
-                columnEnd = OmittedPair(b);
-                return true;
+                outRowStart = a;
+                outColumnStart = b;
+                outRowEnd = c;
+                outColumnEnd = OmittedPair(b);
+                break;
             case 4:
-                rowStart = a;
-                columnStart = b;
-                rowEnd = c;
-                columnEnd = d;
-                return true;
+                outRowStart = a;
+                outColumnStart = b;
+                outRowEnd = c;
+                outColumnEnd = d;
+                break;
             default:
                 return false;
         }
+
+        // Per PR-#91 review F1 — atomic validation. Per CSS Cascade L4
+        // §4.2, an invalid shorthand contributes none of its longhands.
+        // Any per-longhand validation failure drops the whole shorthand.
+        if (!GridLineResolver.TryValidate(outRowStart)) return false;
+        if (!GridLineResolver.TryValidate(outColumnStart)) return false;
+        if (!GridLineResolver.TryValidate(outRowEnd)) return false;
+        if (!GridLineResolver.TryValidate(outColumnEnd)) return false;
+
+        rowStart = outRowStart;
+        columnStart = outColumnStart;
+        rowEnd = outRowEnd;
+        columnEnd = outColumnEnd;
+        return true;
     }
 
     /// <summary>Per §8.4 — if <paramref name="value"/> is a bare
@@ -151,4 +176,7 @@ internal static class GridAreaShorthandExpander
     /// to the same ident; otherwise it's set to <c>auto</c>.</summary>
     private static string OmittedPair(string value)
         => GridShorthandHelpers.IsBareCustomIdent(value) ? value : "auto";
+
+    private static bool ContainsCaseInsensitive(string haystack, string needle)
+        => haystack.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0;
 }

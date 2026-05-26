@@ -47,11 +47,14 @@ internal static class GridShorthandHelpers
             if (span[i] is ' ' or '\t' or '\n' or '\r' or '\f') return false;
         }
 
-        // Reject reserved CSS keywords that can appear in <grid-line>
-        // grammar but aren't <custom-ident>s per §8.3.
+        // Per PR-#91 review F5 — CSS Grid §8.3 excludes ONLY `auto` and
+        // `span` from <custom-ident> in the grid-line production. `none`
+        // is NOT excluded here (= it IS a valid named line, even though
+        // `none` is the property default for grid-template-rows). The
+        // downstream GridLineResolver accepts `none` as a bare named
+        // line; the omitted-pair rule must duplicate it too.
         if (span.Equals("auto", StringComparison.OrdinalIgnoreCase)) return false;
         if (span.Equals("span", StringComparison.OrdinalIgnoreCase)) return false;
-        if (span.Equals("none", StringComparison.OrdinalIgnoreCase)) return false;
         if (IsCssWideKeywordSpan(span)) return false;
 
         // First char must be an ident-start (letter or underscore — for

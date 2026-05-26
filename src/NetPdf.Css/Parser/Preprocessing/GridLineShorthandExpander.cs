@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
 using System;
+using NetPdf.Css.ComputedValues.PropertyResolvers;
 
 namespace NetPdf.Css.Parser.Preprocessing;
 
@@ -27,13 +28,34 @@ namespace NetPdf.Css.Parser.Preprocessing;
 /// recovery pass calls this expander to emit the two synthesized
 /// longhand declarations the cascade then sees.</para>
 ///
-/// <para><b>Validation:</b> the expander does NOT fully validate the
-/// individual <c>&lt;grid-line&gt;</c> values (= that's the
-/// <c>GridLineResolver</c>'s job at the cascade stage). It only
-/// validates the OUTER shape (= one or two values separated by
-/// <c>/</c>) and the omitted-pair rule. Invalid inner values land at
-/// the resolver which rejects them as Invalid declarations + falls
-/// back to <c>auto</c>.</para>
+/// <para><b>Atomic validation per PR-#91 review F1:</b> the expander
+/// pre-validates every <c>&lt;grid-line&gt;</c> component via
+/// <c>GridLineResolver.TryValidate</c> BEFORE emitting any longhand
+/// recovery record. Per CSS Cascade L4 §4.2, an invalid shorthand
+/// declaration must contribute none of its longhands. The prior
+/// "validate at the resolver" approach allowed partial application
+/// (= <c>grid-row: 2 / 0</c> applied start=2 while end=0 dropped to
+/// auto, silently placing items incorrectly).</para>
+///
+/// <para><b>CSS-wide keyword passthrough per PR-#90 review F3 +
+/// PR-#91 review F4:</b> the expander passes <c>initial</c> /
+/// <c>inherit</c> / <c>unset</c> / <c>revert</c> /
+/// <c>revert-layer</c> verbatim to both longhands so the cascade
+/// applies §7 semantics uniformly. <b>However</b>, the downstream
+/// <c>GridLineResolver</c> currently REJECTS these keywords at the
+/// per-property resolver layer (per the PR-#90 F3 defense-in-depth
+/// path), so <c>grid-row: inherit</c> currently resolves to <c>auto</c>
+/// in the box's ComputedStyle rather than inheriting the parent's
+/// placement. The proper fix is central cascade interception of
+/// CSS-wide keywords BEFORE per-property resolvers run; this remains
+/// a cross-cutting concern tracked as a separate cycle's deferral.</para>
+///
+/// <para><b>var() per PR-#91 review F2:</b> when the shorthand value
+/// contains a <c>var()</c> reference, expansion is SKIPPED (= the
+/// declaration silently drops at the cascade since the preprocessor
+/// can't know the post-substitution value structure). The flex
+/// shorthand has the same pre-existing limitation. Post-substitution
+/// re-expansion is a separate cycle's scope.</para>
 /// </summary>
 internal static class GridLineShorthandExpander
 {
@@ -70,6 +92,18 @@ internal static class GridLineShorthandExpander
             return true;
         }
 
+        // Per PR-#91 review F2 — var() substitution runs AFTER the
+        // preprocessor, so the expander can't know the final value
+        // structure. Pragmatic cycle-0c stance: skip expansion when
+        // var() is present; the shorthand silently drops at the cascade
+        // (= same outcome as flex shorthand with var() — tracked as a
+        // shared deferral). Post-substitution re-expansion is a
+        // separate cycle's scope.
+        if (ContainsCaseInsensitive(trimmed, "var("))
+        {
+            return false;
+        }
+
         // Split by '/' into 1 or 2 parts.
         var parts = SplitOnSlash(trimmed, max: 2);
         if (parts is null) return false;
@@ -78,27 +112,52 @@ internal static class GridLineShorthandExpander
         var startPart = parts[0].Trim();
         if (startPart.Length == 0) return false;
 
+        string endPart;
         if (parts.Length == 1)
         {
             // Single value — apply the §8.4 omitted-pair rule.
-            start = startPart;
-            end = GridShorthandHelpers.IsBareCustomIdent(startPart) ? startPart : "auto";
-            return true;
+            endPart = GridShorthandHelpers.IsBareCustomIdent(startPart) ? startPart : "auto";
+        }
+        else
+        {
+            endPart = parts[1].Trim();
+            if (endPart.Length == 0) return false;
         }
 
-        var endPart = parts[1].Trim();
-        if (endPart.Length == 0) return false;
+        // Per PR-#91 review F1 — atomically validate every shorthand
+        // component BEFORE emitting any longhand. Per CSS Cascade L4 §4.2,
+        // an invalid shorthand contributes none of its longhands; a
+        // partially-applied shorthand (= start=2 from "2 / 0" surviving
+        // while end=0 drops) would silently mis-place grid items.
+        if (!GridLineResolver.TryValidate(startPart)) return false;
+        if (!GridLineResolver.TryValidate(endPart)) return false;
+
         start = startPart;
         end = endPart;
         return true;
     }
 
-    /// <summary>Split <paramref name="value"/> on the top-level slash
-    /// separator. Returns null if the slash count exceeds
-    /// <paramref name="max"/> - 1. The expander doesn't need to handle
-    /// nested function-call parens (= grid-line values don't contain
-    /// <c>/</c> inside parens), but the helper is forward-safe by only
-    /// splitting on whitespace-or-edge-adjacent slashes.</summary>
+    private static bool ContainsCaseInsensitive(string haystack, string needle)
+        => haystack.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0;
+
+    /// <summary>Split <paramref name="value"/> on every <c>/</c> character.
+    /// Returns null if the slash count would yield more than
+    /// <paramref name="max"/> parts (= more separators than the grammar
+    /// admits).
+    ///
+    /// <para><b>Scope per PR-#91 review F6:</b> this is a FLAT slash split
+    /// — no paren-depth tracking, no string-literal awareness, no
+    /// awareness of CSS-function syntax. The current grid-line grammar
+    /// per §8.3 doesn't admit <c>/</c> inside any function (= no
+    /// <c>minmax</c> / <c>fit-content</c> / <c>repeat</c> at this layer;
+    /// those are track-list grammar only). If future grid syntax adds
+    /// a function that may contain <c>/</c>, callers must invoke a
+    /// nesting-aware splitter instead.</para>
+    ///
+    /// <para><b>Empty-slot safety:</b> the splitter does NOT validate
+    /// empty-after-split parts (= <c>"2 / / 4"</c> produces three parts
+    /// where the middle is whitespace-only). The caller's per-part
+    /// trim-and-check logic catches that case.</para></summary>
     internal static string[]? SplitOnSlash(string value, int max)
     {
         // Count slashes first; reject early if too many.

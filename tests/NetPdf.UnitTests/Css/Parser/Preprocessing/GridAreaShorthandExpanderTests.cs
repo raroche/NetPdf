@@ -215,4 +215,64 @@ public sealed class GridAreaShorthandExpanderTests
         Assert.False(GridAreaShorthandExpander.TryExpand(
             "/ 1", out _, out _, out _, out _));
     }
+
+    // =====================================================================
+    //  PR-#91 review F1 — atomic validation
+    // =====================================================================
+
+    [Fact]
+    public void Invalid_third_component_drops_the_whole_shorthand()
+    {
+        // grid-area: 2 / 3 / 0 / 5 — the row-end value 0 is invalid per
+        // §8.3. Per CSS Cascade §4.2 the whole shorthand drops, NOT
+        // partially applies row-start=2 + column-start=3 + column-end=5
+        // and only drops row-end.
+        Assert.False(GridAreaShorthandExpander.TryExpand(
+            "2 / 3 / 0 / 5", out _, out _, out _, out _));
+    }
+
+    [Fact]
+    public void Invalid_first_component_drops_the_whole_shorthand()
+    {
+        Assert.False(GridAreaShorthandExpander.TryExpand(
+            "0 / 2 / 3 / 4", out _, out _, out _, out _));
+    }
+
+    [Fact]
+    public void Span_alone_anywhere_drops_the_whole_shorthand()
+    {
+        Assert.False(GridAreaShorthandExpander.TryExpand(
+            "span / 2 / 3 / 4", out _, out _, out _, out _));
+    }
+
+    // =====================================================================
+    //  PR-#91 review F2 — var() interaction
+    // =====================================================================
+
+    [Fact]
+    public void Value_containing_var_function_is_not_expanded()
+    {
+        // Per F2 — the expander can't know the post-substitution shape.
+        Assert.False(GridAreaShorthandExpander.TryExpand(
+            "var(--area)", out _, out _, out _, out _));
+        Assert.False(GridAreaShorthandExpander.TryExpand(
+            "2 / var(--cs) / 4 / 5", out _, out _, out _, out _));
+    }
+
+    // =====================================================================
+    //  PR-#91 review F5 — `none` is a valid named line
+    // =====================================================================
+
+    [Fact]
+    public void Single_none_duplicates_to_all_four_per_omitted_pair_rule()
+    {
+        // Per F5 — `none` is a valid <custom-ident>, so the omitted-pair
+        // rule duplicates it to all four longhands.
+        Assert.True(GridAreaShorthandExpander.TryExpand(
+            "none", out var rs, out var cs, out var re, out var ce));
+        Assert.Equal("none", rs);
+        Assert.Equal("none", cs);
+        Assert.Equal("none", re);
+        Assert.Equal("none", ce);
+    }
 }

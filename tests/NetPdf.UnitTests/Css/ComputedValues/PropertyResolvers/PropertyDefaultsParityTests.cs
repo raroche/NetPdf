@@ -133,6 +133,17 @@ public sealed class PropertyDefaultsParityTests
             // `none` now resolves to Keyword(0); pre-L12 the dispatch
             // returned UnsupportedUnvalidated.
             PropertyType.MaxSize,
+            // Per Phase 3 Task 17 cycle 0b — GridTemplateList +
+            // GridLine joined the resolved family. Route through
+            // GridTemplateListResolver / GridLineResolver respectively;
+            // the defaults `none` / `auto` resolve to Keyword(0) (= no
+            // side-table entry), and any non-default value lands a
+            // typed AST in ComputedStyle's side-table dictionary per
+            // PR-#89 P1 #3 (uniform-storage decision). Pre-cycle-0b
+            // both types returned UnsupportedUnvalidated; the dispatch
+            // wiring in cycle 0b promotes them to Resolved.
+            PropertyType.GridTemplateList,
+            PropertyType.GridLine,
         };
 
         var failures = new List<string>();
@@ -183,6 +194,17 @@ public sealed class PropertyDefaultsParityTests
             // `none` now resolves to Keyword(0); pre-L12 the dispatch
             // returned UnsupportedUnvalidated.
             PropertyType.MaxSize,
+            // Per Phase 3 Task 17 cycle 0b — GridTemplateList +
+            // GridLine joined the resolved family. Route through
+            // GridTemplateListResolver / GridLineResolver respectively;
+            // the defaults `none` / `auto` resolve to Keyword(0) (= no
+            // side-table entry), and any non-default value lands a
+            // typed AST in ComputedStyle's side-table dictionary per
+            // PR-#89 P1 #3 (uniform-storage decision). Pre-cycle-0b
+            // both types returned UnsupportedUnvalidated; the dispatch
+            // wiring in cycle 0b promotes them to Resolved.
+            PropertyType.GridTemplateList,
+            PropertyType.GridLine,
         };
 
         var failures = new List<string>();

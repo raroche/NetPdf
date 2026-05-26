@@ -72,15 +72,47 @@ internal enum ResolutionState : byte
 /// (no resolver wired yet, raw text passed through unchecked) — both of which carry
 /// raw text downstream must preserve. Use <see cref="HasRawText"/> for the consolidated
 /// check. Null for <see cref="ResolutionState.Resolved"/> + <see cref="ResolutionState.Invalid"/>.</param>
+/// <param name="SideTablePayload">Per Phase 3 Task 17 cycle 0b — optional out-of-band
+/// payload for <see cref="ResolutionState.Resolved"/> results whose typed value is
+/// larger than an 8-byte <see cref="ComputedSlot"/> can hold. The grid resolvers
+/// (<c>GridTemplateListResolver</c> / <c>GridLineResolver</c>) return their parsed
+/// AST (<c>TrackList</c> / <c>GridLineValue</c>) here; <see cref="MaterializeInto"/>
+/// stashes it in <see cref="ComputedStyle"/>'s side-table dictionary alongside writing
+/// the slot tag (which marks the property as "see side-table"). Null for the simple-
+/// value resolvers (length / color / number / keyword) which encode everything in
+/// the slot.</param>
 internal readonly record struct ResolverResult(
     ComputedSlot Slot,
     ResolutionState State,
-    string? RawText)
+    string? RawText,
+    object? SideTablePayload = null)
 {
     /// <summary>Build a <see cref="ResolutionState.Resolved"/> result wrapping
     /// <paramref name="slot"/>.</summary>
     public static ResolverResult Resolved(ComputedSlot slot) =>
         new(slot, ResolutionState.Resolved, null);
+
+    /// <summary>Per Phase 3 Task 17 cycle 0b — build a
+    /// <see cref="ResolutionState.Resolved"/> result whose payload lives in
+    /// <see cref="ComputedStyle"/>'s side-table dictionary rather than packed into
+    /// the 8-byte <see cref="ComputedSlot"/>. The slot is set to
+    /// <see cref="ComputedSlot.FromSideTableIndex(int)"/> with index <c>0</c> as a
+    /// "see side-table" marker (the actual lookup is by <see cref="NetPdf.Css.Properties.PropertyId"/>,
+    /// not by the index — each property has at most one side-table entry).
+    /// <see cref="MaterializeInto"/> writes both the slot and the payload.</summary>
+    /// <param name="payload">The typed AST (e.g., <c>TrackList</c>, <c>GridLineValue</c>).
+    /// Must be non-null — callers wanting "no side-table value" should use the
+    /// <see cref="Resolved(ComputedSlot)"/> factory with a default-keyword slot
+    /// instead.</param>
+    public static ResolverResult ResolvedSideTable(object payload)
+    {
+        if (payload is null)
+        {
+            throw new System.ArgumentNullException(nameof(payload),
+                "ResolvedSideTable payload must be non-null — use Resolved(slot) for default values.");
+        }
+        return new(ComputedSlot.FromSideTableIndex(0), ResolutionState.Resolved, null, payload);
+    }
 
     /// <summary>Build a <see cref="ResolutionState.Deferred"/> result carrying
     /// <paramref name="rawText"/> for downstream re-resolution.</summary>
@@ -136,6 +168,21 @@ internal readonly record struct ResolverResult(
         switch (State)
         {
             case ResolutionState.Resolved:
+                // Per Phase 3 Task 17 cycle 0b — write the side-table payload
+                // BEFORE the slot so a reader that races on the slot tag still
+                // sees a consistent (tag, payload) pair. The side-table is also
+                // cleared when SideTablePayload is null to handle the case where
+                // a subsequent cascade winner replaces a side-table value with a
+                // simple-slot value (= e.g., grid-template-rows: 100px first,
+                // then grid-template-rows: none winning).
+                if (SideTablePayload is not null)
+                {
+                    style.SetSideTablePayload(propertyId, SideTablePayload);
+                }
+                else
+                {
+                    style.ClearSideTablePayload(propertyId);
+                }
                 style.Set(propertyId, Slot);
                 return true;
             case ResolutionState.Deferred:

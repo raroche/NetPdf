@@ -210,6 +210,7 @@ internal sealed class ComputedStyle : IDisposable
         }
         _customProperties?.Clear();
         _deferredText?.Clear();
+        _sideTablePayloads?.Clear();
         _isBoxOwned = false;
         _disposed = false;
     }
@@ -236,6 +237,16 @@ internal sealed class ComputedStyle : IDisposable
     /// values) rely on to distinguish "explicitly set" from "no value yet". Without the
     /// redirect, a caller could create a slot that's both set in the bitmap and
     /// holding the unset sentinel value.
+    ///
+    /// <para><b>Side-table invariant per PR-#90 review F6:</b> when the new
+    /// <paramref name="value"/>'s tag is anything OTHER than
+    /// <see cref="ComputedSlotTag.SideTableIndex"/>, any prior side-table payload
+    /// for <paramref name="id"/> is dropped automatically. This makes
+    /// <see cref="ComputedStyle"/> the owner of the (slot, side-table) consistency
+    /// rule — callers no longer need to clear side-table entries explicitly when
+    /// transitioning from a parsed AST to a simple-slot value. Cascade resolvers
+    /// + <see cref="PropertyResolvers.ResolverResult.MaterializeInto"/> rely on
+    /// this invariant.</para>
     /// </summary>
     public void Set(PropertyId id, ComputedSlot value)
     {
@@ -250,12 +261,27 @@ internal sealed class ComputedStyle : IDisposable
             _slots[index] = ComputedSlot.Unset;
             ClearBit(index);
             _deferredText?.Remove(id);
+            // Per Phase 3 Task 17 cycle 0b — drop the side-table payload too
+            // so a Set(id, Unset) call wipes ALL state for the property, not
+            // just the slot + deferred text. Otherwise a stale AST would
+            // outlive the slot it was paired with.
+            _sideTablePayloads?.Remove(id);
             return;
         }
         _slots[index] = value;
         SetBit(index);
         // A typed value overrides any prior deferred text — keep them in sync.
         _deferredText?.Remove(id);
+        // Per PR-#90 review F6 — make ComputedStyle own the invariant that the
+        // slot tag + side-table presence stay in sync. A new SideTableIndex
+        // slot is paired with its payload via SetSideTablePayload BEFORE this
+        // call (the cascade dispatch's convention); any other tag means the
+        // property's value is fully encoded in the 8-byte slot, so any prior
+        // side-table payload is stale and must drop.
+        if (value.Tag != ComputedSlotTag.SideTableIndex)
+        {
+            _sideTablePayloads?.Remove(id);
+        }
     }
 
     /// <summary>
@@ -281,6 +307,7 @@ internal sealed class ComputedStyle : IDisposable
         _slots[index] = ComputedSlot.Unset;
         ClearBit(index);
         _deferredText?.Remove(id);
+        _sideTablePayloads?.Remove(id);
     }
 
     // ------------------------------------------------------------
@@ -319,6 +346,11 @@ internal sealed class ComputedStyle : IDisposable
         _deferredText ??= new Dictionary<PropertyId, string>();
         _deferredText[id] = rawText;
         SetBit(index);
+        // Per PR-#90 review F6 — a deferred-text write supersedes any prior
+        // typed AST in the side-table. Drop it so the next ReadGridXxx() sees
+        // the deferred state cleanly (= falls back to property default until
+        // layout-time re-resolution fills the AST back in).
+        _sideTablePayloads?.Remove(id);
     }
 
     /// <summary><see langword="true"/> when <see cref="SetDeferred"/> has been called
@@ -342,6 +374,98 @@ internal sealed class ComputedStyle : IDisposable
             return false;
         }
         return _deferredText.TryGetValue(id, out rawText);
+    }
+
+    // ------------------------------------------------------------
+    // Side-table payloads (Phase 3 Task 17 cycle 0b — PR-#89 P1 #3)
+    //
+    // Properties whose computed value is larger than an 8-byte ComputedSlot
+    // (e.g., the grid-template-{rows,columns} TrackList AST or the grid-line
+    // GridLineValue carrying an optional named-line string ref) stash their
+    // payload here. The slot itself holds the SideTableIndex tag as a
+    // "look in the side-table" marker; the dictionary keys by PropertyId
+    // since each property has at most one side-table entry.
+    //
+    // Storage: a sparse Dictionary<PropertyId, object> — most elements have
+    // no side-table values, so we don't pay per-property cost. Allocated
+    // lazily on first SetSideTablePayload call. Reset() drops it back to
+    // null so pool re-rental doesn't leak prior payloads.
+    //
+    // Type-safety: callers read via TryGetSideTablePayload<T> which checks
+    // the runtime type — a misuse (asking for TrackList on a GridLineValue
+    // slot) returns false rather than throwing, matching the reader-fallback
+    // pattern used by the dimension family (e.g., ReadFlexBasis returns Auto
+    // for non-matching slot tags).
+    // ------------------------------------------------------------
+
+    private Dictionary<PropertyId, object>? _sideTablePayloads;
+
+    /// <summary>Per Phase 3 Task 17 cycle 0b — stash <paramref name="payload"/>
+    /// in the side-table for <paramref name="id"/>. Caller is responsible for
+    /// setting the matching <see cref="ComputedSlot"/> via <see cref="Set"/>
+    /// (typically <see cref="ComputedSlot.FromSideTableIndex"/>) so readers
+    /// can find the entry through the slot tag.</summary>
+    /// <exception cref="ArgumentNullException">When <paramref name="payload"/> is null.</exception>
+    public void SetSideTablePayload(PropertyId id, object payload)
+    {
+        ThrowIfDisposed();
+        ArgumentNullException.ThrowIfNull(payload);
+        var index = (int)id;
+        if ((uint)index >= (uint)PropertyMetadata.Count)
+            throw new ArgumentOutOfRangeException(nameof(id),
+                $"PropertyId {id} (index {index}) is outside the registry (Count = {PropertyMetadata.Count}).");
+        _sideTablePayloads ??= new Dictionary<PropertyId, object>();
+        _sideTablePayloads[id] = payload;
+    }
+
+    /// <summary>Per Phase 3 Task 17 cycle 0b — clear any side-table payload
+    /// for <paramref name="id"/>. Used when a subsequent cascade winner replaces
+    /// a side-table value with a simple-slot value (= e.g., grid-template-rows:
+    /// 100px 200px first, then grid-template-rows: none winning — the second
+    /// declaration must wipe the prior AST so the reader doesn't return stale data).
+    /// Idempotent: a clear on a property with no payload is a no-op.</summary>
+    public void ClearSideTablePayload(PropertyId id)
+    {
+        ThrowIfDisposed();
+        _sideTablePayloads?.Remove(id);
+    }
+
+    /// <summary>Per Phase 3 Task 17 cycle 0b — read the side-table payload for
+    /// <paramref name="id"/> as type <typeparamref name="T"/>. Returns
+    /// <see langword="false"/> when no entry exists or the entry's runtime type
+    /// doesn't match <typeparamref name="T"/> (= type-mismatch falls through to
+    /// the reader's default-value path, matching the dimension family's slot-tag-
+    /// mismatch fallback pattern).</summary>
+    public bool TryGetSideTablePayload<T>(PropertyId id, out T payload) where T : class
+    {
+        ThrowIfDisposed();
+        if (_sideTablePayloads is not null
+            && _sideTablePayloads.TryGetValue(id, out var raw)
+            && raw is T typed)
+        {
+            payload = typed;
+            return true;
+        }
+        payload = null!;
+        return false;
+    }
+
+    /// <summary>Per Phase 3 Task 17 cycle 0b — read the side-table payload as a
+    /// value-type via the boxed-object stash. Mirrors the class-typed overload
+    /// but unboxes the value type; <c>GridLineValue</c> is the cycle-0b consumer
+    /// (= a record struct that can't satisfy the <c>class</c> constraint).</summary>
+    public bool TryGetSideTablePayloadStruct<T>(PropertyId id, out T payload) where T : struct
+    {
+        ThrowIfDisposed();
+        if (_sideTablePayloads is not null
+            && _sideTablePayloads.TryGetValue(id, out var raw)
+            && raw is T boxed)
+        {
+            payload = boxed;
+            return true;
+        }
+        payload = default;
+        return false;
     }
 
     // ------------------------------------------------------------

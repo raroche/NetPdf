@@ -107,6 +107,21 @@ internal static class PropertyResolverDispatch
             PropertyType.Keyword => KeywordResolver.Resolve(
                 trimmed, propertyId, meta.Name, diagnostics, location),
 
+            // Per Phase 3 Task 17 cycle 0b — the grid family. Parsed ASTs
+            // (TrackList / GridLineValue) don't fit in an 8-byte
+            // ComputedSlot, so the resolvers return ResolvedSideTable(payload);
+            // ResolverResult.MaterializeInto stashes the payload in
+            // ComputedStyle's side-table dictionary alongside the slot.
+            // Defaults (none / auto) land as Keyword(0) slots WITHOUT a
+            // side-table entry — the readers
+            // (GridReaders.ReadGridTemplate{Rows,Columns} /
+            //  ReadGridRow{Start,End} / ReadGridColumn{Start,End}) fall back
+            // to TrackList.None / GridLineValue.Auto for that path.
+            PropertyType.GridTemplateList => GridTemplateListResolver.Resolve(
+                trimmed, propertyId, meta.Name, diagnostics, location),
+            PropertyType.GridLine => GridLineResolver.Resolve(
+                trimmed, propertyId, meta.Name, diagnostics, location),
+
             // Cycle-2 PropertyTypes — return UnsupportedUnvalidated (NOT Deferred)
             // because the dispatch hasn't validated the value text against the
             // property's grammar; a typo would silently pass through. Distinguishing

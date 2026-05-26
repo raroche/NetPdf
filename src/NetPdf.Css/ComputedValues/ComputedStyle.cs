@@ -237,6 +237,16 @@ internal sealed class ComputedStyle : IDisposable
     /// values) rely on to distinguish "explicitly set" from "no value yet". Without the
     /// redirect, a caller could create a slot that's both set in the bitmap and
     /// holding the unset sentinel value.
+    ///
+    /// <para><b>Side-table invariant per PR-#90 review F6:</b> when the new
+    /// <paramref name="value"/>'s tag is anything OTHER than
+    /// <see cref="ComputedSlotTag.SideTableIndex"/>, any prior side-table payload
+    /// for <paramref name="id"/> is dropped automatically. This makes
+    /// <see cref="ComputedStyle"/> the owner of the (slot, side-table) consistency
+    /// rule — callers no longer need to clear side-table entries explicitly when
+    /// transitioning from a parsed AST to a simple-slot value. Cascade resolvers
+    /// + <see cref="PropertyResolvers.ResolverResult.MaterializeInto"/> rely on
+    /// this invariant.</para>
     /// </summary>
     public void Set(PropertyId id, ComputedSlot value)
     {
@@ -262,6 +272,16 @@ internal sealed class ComputedStyle : IDisposable
         SetBit(index);
         // A typed value overrides any prior deferred text — keep them in sync.
         _deferredText?.Remove(id);
+        // Per PR-#90 review F6 — make ComputedStyle own the invariant that the
+        // slot tag + side-table presence stay in sync. A new SideTableIndex
+        // slot is paired with its payload via SetSideTablePayload BEFORE this
+        // call (the cascade dispatch's convention); any other tag means the
+        // property's value is fully encoded in the 8-byte slot, so any prior
+        // side-table payload is stale and must drop.
+        if (value.Tag != ComputedSlotTag.SideTableIndex)
+        {
+            _sideTablePayloads?.Remove(id);
+        }
     }
 
     /// <summary>
@@ -326,6 +346,11 @@ internal sealed class ComputedStyle : IDisposable
         _deferredText ??= new Dictionary<PropertyId, string>();
         _deferredText[id] = rawText;
         SetBit(index);
+        // Per PR-#90 review F6 — a deferred-text write supersedes any prior
+        // typed AST in the side-table. Drop it so the next ReadGridXxx() sees
+        // the deferred state cleanly (= falls back to property default until
+        // layout-time re-resolution fills the AST back in).
+        _sideTablePayloads?.Remove(id);
     }
 
     /// <summary><see langword="true"/> when <see cref="SetDeferred"/> has been called

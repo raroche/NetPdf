@@ -77,6 +77,33 @@ internal static class GridTemplateListResolver
             return ResolverResult.Invalid();
         }
 
+        // Per PR-#90 review F3 — defense in depth against CSS-wide keywords
+        // reaching this resolver. See GridLineResolver.IsCssWideKeyword for the
+        // policy rationale. Rejecting at the resolver lets the cascade fall back
+        // to the property initial value (= none); central interception in the
+        // cascade is the proper fix tracked separately.
+        if (GridLineResolver.IsCssWideKeyword(value))
+        {
+            EmitInvalid(diagnostics, propertyName, value,
+                "CSS-wide keyword reached the grid-template-list resolver — cascade should have intercepted (cycle-0b defense-in-depth path)",
+                location);
+            return ResolverResult.Invalid();
+        }
+
+        // Per PR-#90 review F5 — relative units (em / rem / vw / cqw / etc.)
+        // are well-formed CSS that need layout-time font / viewport context to
+        // resolve. Defer the whole declaration via the existing
+        // ResolverResult.Deferred contract (= raw text preserved in
+        // ComputedStyle._deferredText) rather than diagnosing it as invalid.
+        // Matches LengthResolver's pattern for the same situation. Cycle 1+ can
+        // re-resolve at layout time. NB: calc() stays Invalid per the L19+
+        // design-doc rejection above (calc() needs a separate calc-resolution
+        // stage that runs before dispatch).
+        if (ContainsRelativeUnit(value))
+        {
+            return ResolverResult.Deferred(value);
+        }
+
         var tokens = Tokenize(value, out var tokenizeError);
         if (tokenizeError is not null)
         {
@@ -113,6 +140,17 @@ internal static class GridTemplateListResolver
                     "track list must contain at least one track", location);
                 return ResolverResult.Invalid();
             }
+            // Per PR-#90 review F8 — final AST-size check. Even with the
+            // tokenizer + per-pattern bounds, a long sequence of single-token
+            // tracks could still grow Items past the configured budget.
+            // Reject at parse time rather than letting layout-time gates catch it.
+            if (items.Length > MaxParserTopLevelItems)
+            {
+                EmitInvalid(diagnostics, propertyName, value,
+                    $"track list contains {items.Length} top-level items (max {MaxParserTopLevelItems} per parse-time DoS guard)",
+                    location);
+                return ResolverResult.Invalid();
+            }
             var list = new TrackList(items);
             return ResolverResult.ResolvedSideTable(list);
         }
@@ -129,6 +167,79 @@ internal static class GridTemplateListResolver
         }
     }
 
+    /// <summary>Per PR-#90 review F8 — upper bound on token count for one
+    /// declaration. Each grid track contributes ~1-3 tokens; the worst-case
+    /// legal track is something like <c>minmax(100px, 1fr)</c> (= 6 tokens
+    /// including parens + comma). Combined with
+    /// <see cref="MaxParserTopLevelItems"/>, this bounds total tokenizer
+    /// allocation to ~30 KB even for hostile input.</summary>
+    private const int MaxTokens = 50_000;
+
+    /// <summary>Per PR-#90 review F8 — upper bound on top-level AST items.
+    /// <see cref="TrackList.MaxExpandedTrackCount"/> caps layout-time
+    /// expansion; this caps parse-time. Authors writing 1000+ explicit
+    /// tracks is already pathological — this limit is generous.</summary>
+    private const int MaxParserTopLevelItems = 1024;
+
+    /// <summary>Per PR-#90 review F8 — upper bound on AST items INSIDE one
+    /// repeat() pattern. The pattern repeats, so each entry has multiplied
+    /// impact. 64 entries × 10000 repeats = 640000 expanded tracks (still
+    /// within the layout-time MaxExpandedTrackCount cap), but we reject at
+    /// parse time first.</summary>
+    private const int MaxRepeatPatternItems = 64;
+
+    /// <summary>Per PR-#90 review F5 — quick scan for relative-unit suffixes
+    /// in the raw declaration text. Avoids the cost of a full pre-tokenize
+    /// when the declaration is plain pixels. The check is conservative
+    /// (some idents like <c>em-something</c> would incorrectly defer); the
+    /// post-tokenizer parser is the authoritative validation. Defer-on-
+    /// false-positive is harmless (cycle-1 layout-time resolution will see
+    /// no relative unit + immediately re-resolve to the same AST).</summary>
+    private static bool ContainsRelativeUnit(string value)
+    {
+        // Use whole-word scanning so the bare keyword "em" doesn't match
+        // "minmax" or "min-content". Each candidate unit appears as a
+        // dimension suffix (= digit before it).
+        string[] units =
+        {
+            "em", "rem", "ch", "ex", "lh", "rlh", "cap", "ic",
+            "vw", "vh", "vmin", "vmax", "vi", "vb",
+            "svw", "svh", "svmin", "svmax", "svi", "svb",
+            "lvw", "lvh", "lvmin", "lvmax", "lvi", "lvb",
+            "dvw", "dvh", "dvmin", "dvmax", "dvi", "dvb",
+            "cqw", "cqh", "cqi", "cqb", "cqmin", "cqmax",
+        };
+        var span = value.AsSpan();
+        for (var u = 0; u < units.Length; u++)
+        {
+            var unit = units[u];
+            var idx = 0;
+            while ((idx = IndexOfIgnoreCase(span, unit, idx)) >= 0)
+            {
+                // Preceding char must be a digit or '.' (= part of a number).
+                if (idx > 0 && (IsAsciiDigit(span[idx - 1]) || span[idx - 1] == '.'))
+                {
+                    // Following char must not extend the ident (= unit ends here).
+                    var after = idx + unit.Length;
+                    if (after >= span.Length || !IsIdentContinue(span[after]))
+                    {
+                        return true;
+                    }
+                }
+                idx += unit.Length;
+            }
+        }
+        return false;
+    }
+
+    private static int IndexOfIgnoreCase(ReadOnlySpan<char> haystack, string needle, int start)
+    {
+        if (start >= haystack.Length) return -1;
+        var sub = haystack.Slice(start);
+        var rel = sub.IndexOf(needle, StringComparison.OrdinalIgnoreCase);
+        return rel < 0 ? -1 : start + rel;
+    }
+
     // =================================================================
     //  Parser
     // =================================================================
@@ -137,6 +248,17 @@ internal static class GridTemplateListResolver
     {
         private readonly List<Token> _tokens;
         private int _pos;
+        /// <summary>Per PR-#90 review F2 — CSS Grid L1 §7.2.3 allows at most
+        /// ONE auto-repeat group (= <c>repeat(auto-fill, …)</c> or
+        /// <c>repeat(auto-fit, …)</c>) per track list. Track this flag while
+        /// parsing top-level items so a second auto-repeat raises a parse
+        /// error.</summary>
+        private bool _autoRepeatSeen;
+        /// <summary>Per PR-#90 review F8 — running item count for the
+        /// parse-time DoS guard. Combined with
+        /// <see cref="MaxParserTopLevelItems"/>, this caps total AST size
+        /// for hostile input.</summary>
+        private int _topLevelItems;
 
         public Parser(List<Token> tokens)
         {
@@ -171,6 +293,14 @@ internal static class GridTemplateListResolver
             var items = ImmutableArray.CreateBuilder<TrackListItem>();
             while (!AtEnd)
             {
+                // Per PR-#90 review F8 — top-level item budget gate (= the
+                // worst case is a sequence of bare-keyword tracks like
+                // "auto auto auto ..." that allocate 1 item per token).
+                if (_topLevelItems >= MaxParserTopLevelItems)
+                {
+                    throw new GridParseException(
+                        $"track list exceeds parse-time DoS guard ({MaxParserTopLevelItems} items)");
+                }
                 if (Current.Kind == TokenKind.LBracket)
                 {
                     // Line names at the top level.
@@ -178,6 +308,7 @@ internal static class GridTemplateListResolver
                     foreach (var n in names)
                     {
                         items.Add(TrackListNamedLine.Create(n));
+                        _topLevelItems++;
                     }
                     continue;
                 }
@@ -188,6 +319,7 @@ internal static class GridTemplateListResolver
                 {
                     var repeat = ParseRepeat();
                     items.Add(new TrackListRepeat(repeat));
+                    _topLevelItems++;
                     continue;
                 }
 
@@ -195,6 +327,7 @@ internal static class GridTemplateListResolver
                 if (TryParseTrackSize(out var entry))
                 {
                     items.Add(new TrackListEntry(entry));
+                    _topLevelItems++;
                     continue;
                 }
 
@@ -247,16 +380,19 @@ internal static class GridTemplateListResolver
             }
 
             int count;
+            bool isAutoRepeat = false;
             if (Current.Kind == TokenKind.Ident
                 && string.Equals(Current.Text, "auto-fill", StringComparison.OrdinalIgnoreCase))
             {
                 count = 0;
+                isAutoRepeat = true;
                 Advance();
             }
             else if (Current.Kind == TokenKind.Ident
                 && string.Equals(Current.Text, "auto-fit", StringComparison.OrdinalIgnoreCase))
             {
                 count = -1;
+                isAutoRepeat = true;
                 Advance();
             }
             else if (Current.Kind == TokenKind.Number)
@@ -288,20 +424,41 @@ internal static class GridTemplateListResolver
                     "repeat() first argument must be a positive integer, 'auto-fill', or 'auto-fit'");
             }
 
+            // Per PR-#90 review F2 — CSS Grid §7.2.3 allows at most ONE
+            // auto-repeat per track list. A second auto-fill or auto-fit
+            // group is a parse error.
+            if (isAutoRepeat)
+            {
+                if (_autoRepeatSeen)
+                {
+                    throw new GridParseException(
+                        "only one auto-repeat (auto-fill / auto-fit) is allowed per track list per CSS Grid L1 §7.2.3");
+                }
+                _autoRepeatSeen = true;
+            }
+
             if (!TryConsume(TokenKind.Comma))
             {
                 throw new GridParseException("expected ',' after repeat() count");
             }
 
             var pattern = ImmutableArray.CreateBuilder<TrackRepeatItem>();
+            var patternItemCount = 0;
             while (!AtEnd && Current.Kind != TokenKind.RParen)
             {
+                // Per PR-#90 review F8 — pattern-item budget gate.
+                if (patternItemCount >= MaxRepeatPatternItems)
+                {
+                    throw new GridParseException(
+                        $"repeat() pattern exceeds parse-time DoS guard ({MaxRepeatPatternItems} items)");
+                }
                 if (Current.Kind == TokenKind.LBracket)
                 {
                     var names = ParseLineNames();
                     foreach (var n in names)
                     {
                         pattern.Add(TrackRepeatNamedLine.Create(n));
+                        patternItemCount++;
                     }
                     continue;
                 }
@@ -313,7 +470,18 @@ internal static class GridTemplateListResolver
                 }
                 if (TryParseTrackSize(out var entry))
                 {
+                    // Per PR-#90 review F2 — inside auto-fill / auto-fit
+                    // repeat groups, CSS Grid §7.2.3 restricts entries to
+                    // <fixed-size> tracks (= <fixed-breadth> | minmax(...) with
+                    // at least one fixed side; explicitly NOT fr / auto /
+                    // min-content / max-content / fit-content alone).
+                    if (isAutoRepeat && !IsFixedSize(entry))
+                    {
+                        throw new GridParseException(
+                            "auto-fill / auto-fit repeat groups accept only <fixed-size> tracks per CSS Grid L1 §7.2.3 (= <length-percentage> or minmax() with at least one fixed side; <flex> / auto / min-content / max-content / fit-content are not <fixed-size>)");
+                    }
                     pattern.Add(new TrackRepeatEntry(entry));
+                    patternItemCount++;
                     continue;
                 }
                 throw new GridParseException(
@@ -324,6 +492,26 @@ internal static class GridTemplateListResolver
                 throw new GridParseException("unterminated 'repeat('");
             }
             return TrackRepeat.Create(count, pattern.ToImmutable());
+        }
+
+        /// <summary>Per CSS Grid L1 §7.2.3 — a <c>&lt;fixed-size&gt;</c> is
+        /// either a <c>&lt;fixed-breadth&gt;</c> (= <c>&lt;length-percentage&gt;</c>)
+        /// or a <c>minmax()</c> with at least one fixed side. <c>auto-fill</c> /
+        /// <c>auto-fit</c> repeat groups accept only fixed-size tracks
+        /// (per PR-#90 review F2).</summary>
+        private static bool IsFixedSize(TrackEntry entry)
+        {
+            // <fixed-breadth> = <length-percentage>. The AST uses Length kind
+            // for both pixel + percentage values (IsPercentage discriminates).
+            if (entry.Kind == GridTrackKind.Length) return true;
+            // <flex> / Auto / MinContent / MaxContent / FitContent are NOT
+            // <fixed-size>.
+            if (entry.Kind != GridTrackKind.MinMax) return false;
+            // minmax() qualifies as <fixed-size> when at least one sub-arg is
+            // a <fixed-breadth> (= length-percentage). Fr / Auto / MinContent /
+            // MaxContent don't count.
+            return entry.MinSubKind == GridTrackKind.Length
+                || entry.MaxSubKind == GridTrackKind.Length;
         }
 
         private bool TryParseTrackSize(out TrackEntry entry)
@@ -367,17 +555,27 @@ internal static class GridTemplateListResolver
             {
                 Advance(); // consume 'fit-content'
                 Advance(); // consume '('
-                if (Current.Kind != TokenKind.Dimension)
+                TrackEntry limit;
+                // Per PR-#90 review F4 — CSS Values L4 §6.2 admits bare 0 as
+                // a <length-percentage>. Accept Number(0) as a zero-length
+                // fit-content limit.
+                if (Current.Kind == TokenKind.Number && Current.Number == 0.0)
+                {
+                    limit = TrackEntry.ForLength(0);
+                    Advance();
+                }
+                else if (Current.Kind == TokenKind.Dimension
+                    && TryDimensionToTrackEntry(Current, out limit, allowFr: false))
+                {
+                    Advance();
+                }
+                else
                 {
                     throw new GridParseException(
-                        "fit-content() requires a <length-percentage> argument");
+                        Current.Kind == TokenKind.Dimension
+                            ? $"fit-content() argument must be a length or percentage; got '{Current.Text}'"
+                            : "fit-content() requires a <length-percentage> argument");
                 }
-                if (!TryDimensionToTrackEntry(Current, out var limit, allowFr: false))
-                {
-                    throw new GridParseException(
-                        $"fit-content() argument must be a length or percentage; got '{Current.Text}'");
-                }
-                Advance();
                 if (!TryConsume(TokenKind.RParen))
                 {
                     throw new GridParseException("unterminated 'fit-content('");
@@ -437,6 +635,15 @@ internal static class GridTemplateListResolver
                 Advance();
                 return true;
             }
+            // Per PR-#90 review F4 — CSS Values L4 §6.2 admits bare 0 as a
+            // <length-percentage>. Bare non-zero numbers stay invalid (= no
+            // unit means no dimension).
+            if (t.Kind == TokenKind.Number && t.Number == 0.0)
+            {
+                Advance();
+                entry = TrackEntry.ForLength(0);
+                return true;
+            }
             return false;
         }
 
@@ -480,6 +687,14 @@ internal static class GridTemplateListResolver
                     return false;
                 }
                 Advance();
+                return true;
+            }
+            // Per PR-#90 review F4 — bare 0 is a valid <length-percentage>
+            // (which is a subset of <inflexible-breadth>).
+            if (t.Kind == TokenKind.Number && t.Number == 0.0)
+            {
+                Advance();
+                entry = TrackEntry.ForLength(0);
                 return true;
             }
             return false;
@@ -576,6 +791,12 @@ internal static class GridTemplateListResolver
         var i = 0;
         while (i < span.Length)
         {
+            // Per PR-#90 review F8 — bounded token allocation.
+            if (list.Count >= MaxTokens)
+            {
+                error = $"token count exceeds parse-time DoS guard ({MaxTokens})";
+                return list;
+            }
             var c = span[i];
             if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f')
             {

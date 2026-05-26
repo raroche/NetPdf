@@ -59,12 +59,45 @@ internal static class GridLineResolver
             return ResolverResult.Invalid();
         }
 
+        // Per PR-#90 review F3 — defense in depth against CSS-wide keywords
+        // (initial / inherit / unset / revert / revert-layer per CSS Cascade
+        // L4 §7.3 + L5 §7.4) reaching this resolver. The cascade SHOULD
+        // intercept these and substitute the property's initial / inherited /
+        // previous-stylesheet-layer value BEFORE dispatch (= the central fix
+        // is a separate cycle's scope per the review reply). For now, reject
+        // them so they can't be silently stored as a named-line "initial" /
+        // "inherit" GridLineValue. The cascade's invalid-fallback path then
+        // uses the property initial value (= auto), matching the spec
+        // intent for `initial`. The `inherit` case won't pull the parent's
+        // value — that's the known cycle-0b limitation tracked separately.
+        if (IsCssWideKeyword(value))
+        {
+            EmitInvalid(diagnostics, propertyName, value,
+                "CSS-wide keyword reached the grid-line resolver — cascade should have intercepted (cycle-0b defense-in-depth path)",
+                location);
+            return ResolverResult.Invalid();
+        }
+
         var tokens = Tokenize(value);
         if (tokens.Count == 0)
         {
             EmitInvalid(diagnostics, propertyName, value,
                 "empty grid-line value", location);
             return ResolverResult.Invalid();
+        }
+
+        // Per PR-#90 review F1 — bail BEFORE TryParseGridLine if any Error
+        // token surfaced from the tokenizer. This ensures malformed input
+        // like `@`, `#`, or overflowing integers cleanly become Invalid +
+        // diagnostic rather than reaching a validating-factory throw.
+        for (var i = 0; i < tokens.Count; i++)
+        {
+            if (tokens[i].Kind == GridLineTokenKind.Error)
+            {
+                EmitInvalid(diagnostics, propertyName, value,
+                    tokens[i].Text, location);
+                return ResolverResult.Invalid();
+            }
         }
 
         // Fast path: bare "auto" — the default + no side-table entry.
@@ -75,9 +108,24 @@ internal static class GridLineResolver
             return ResolverResult.Resolved(ComputedSlot.FromKeyword(KeywordIdAuto));
         }
 
-        if (!TryParseGridLine(tokens, out var parsed, out var reason))
+        GridLineValue parsed;
+        string reason;
+        try
         {
-            EmitInvalid(diagnostics, propertyName, value, reason, location);
+            if (!TryParseGridLine(tokens, out parsed, out reason))
+            {
+                EmitInvalid(diagnostics, propertyName, value, reason, location);
+                return ResolverResult.Invalid();
+            }
+        }
+        catch (ArgumentException ex)
+        {
+            // Per PR-#90 review F1 — defense in depth. If a validating-
+            // factory throw escapes (= a parser path I didn't anticipate
+            // fed it bad input), surface as Invalid + diagnostic. The
+            // Error-token guard above is the primary fix; this catch is
+            // belt-and-braces.
+            EmitInvalid(diagnostics, propertyName, value, ex.Message, location);
             return ResolverResult.Invalid();
         }
 
@@ -85,6 +133,20 @@ internal static class GridLineResolver
         // (Dictionary<PropertyId, object>). The reader unboxes via
         // TryGetSideTablePayloadStruct<GridLineValue>.
         return ResolverResult.ResolvedSideTable((object)parsed);
+    }
+
+    /// <summary>Per CSS Cascade L4 §7.3 + L5 §7.4 — the CSS-wide keywords
+    /// every property accepts. The cascade should intercept these BEFORE
+    /// per-property resolvers run; this method exists for defense-in-depth
+    /// rejection at the grid resolvers per PR-#90 review F3.</summary>
+    internal static bool IsCssWideKeyword(string value)
+    {
+        var trimmed = value.AsSpan().Trim();
+        return trimmed.Equals("initial", StringComparison.OrdinalIgnoreCase)
+            || trimmed.Equals("inherit", StringComparison.OrdinalIgnoreCase)
+            || trimmed.Equals("unset", StringComparison.OrdinalIgnoreCase)
+            || trimmed.Equals("revert", StringComparison.OrdinalIgnoreCase)
+            || trimmed.Equals("revert-layer", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>Parse a sequence of grid-line tokens into a <see cref="GridLineValue"/>
@@ -147,6 +209,15 @@ internal static class GridLineResolver
                 }
                 // 'span' is also reserved (handled above), but the loop already
                 // intercepts it — by this branch we know t.Text is not 'span'.
+                // Per PR-#90 review F3 — CSS-wide keywords cannot serve as
+                // custom-idents (defense in depth on the parser side too;
+                // Resolve's IsCssWideKeyword guard catches the bare-keyword
+                // case, this catches the compound `2 initial` case).
+                if (IsCssWideKeyword(t.Text))
+                {
+                    reason = $"CSS-wide keyword '{t.Text}' is not a valid custom-ident";
+                    return false;
+                }
                 identToken = t.Text;
                 continue;
             }
@@ -228,6 +299,14 @@ internal static class GridLineResolver
     {
         Ident = 1,
         Integer = 2,
+        /// <summary>Per PR-#90 review F1 — explicit error sentinel emitted
+        /// when the tokenizer can't classify input (unknown character,
+        /// overflowing integer, malformed mixed-token sequence). The
+        /// parser checks for Error tokens first and bails out with a
+        /// diagnostic; this avoids the prior "fake empty Ident" sentinel
+        /// pattern which fed empty strings into validating factories +
+        /// triggered uncaught ArgumentException.</summary>
+        Error = 255,
     }
 
     private readonly struct GridLineToken
@@ -243,6 +322,12 @@ internal static class GridLineResolver
         public int IntegerValue { get; }
     }
 
+    /// <summary>Per PR-#90 review F8 — cap the maximum tokens produced from
+    /// a single grid-line declaration. grid-line values have at most 3
+    /// tokens per §8.3 (= <c>span foo 2</c>); a sane upper bound of 16
+    /// catches hostile input without rejecting legal forms.</summary>
+    private const int MaxGridLineTokens = 16;
+
     /// <summary>Whitespace-separated CSS tokens. Each token is either an integer
     /// (matching <c>[-+]?[0-9]+</c>) or an identifier (CSS identifiers per Syntax §4.4 —
     /// here approximated as alphanumeric + dash + underscore, sufficient for the
@@ -254,6 +339,13 @@ internal static class GridLineResolver
         var i = 0;
         while (i < span.Length)
         {
+            if (list.Count >= MaxGridLineTokens)
+            {
+                // Per F8 — bail with a single Error token; parser rejects.
+                list.Add(new GridLineToken(GridLineTokenKind.Error,
+                    "token budget exceeded", 0));
+                return list;
+            }
             var c = span[i];
             if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f')
             {
@@ -268,9 +360,10 @@ internal static class GridLineResolver
                 var text = span.Slice(start, i - start).ToString();
                 if (!int.TryParse(text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var n))
                 {
-                    // Garbled — emit a "fake" out-of-range token (kind Ident with empty
-                    // text) so the parser can reject. Cleaner than throwing here.
-                    list.Add(new GridLineToken(GridLineTokenKind.Ident, string.Empty, 0));
+                    // Per F1 — overflowing / unparseable integer becomes an
+                    // explicit Error token; parser rejects with diagnostic.
+                    list.Add(new GridLineToken(GridLineTokenKind.Error,
+                        $"integer '{text}' is out of range", 0));
                     continue;
                 }
                 list.Add(new GridLineToken(GridLineTokenKind.Integer, text, n));
@@ -284,8 +377,12 @@ internal static class GridLineResolver
                 list.Add(new GridLineToken(GridLineTokenKind.Ident, text, 0));
                 continue;
             }
-            // Unknown character — emit a sentinel that the parser will reject.
-            list.Add(new GridLineToken(GridLineTokenKind.Ident, string.Empty, 0));
+            // Per F1 — unknown character becomes an explicit Error token
+            // (NOT a fake empty Ident — that pattern fed empty strings into
+            // validating factories which throw ArgumentException). Parser
+            // rejects with a diagnostic.
+            list.Add(new GridLineToken(GridLineTokenKind.Error,
+                $"unexpected character '{c}'", 0));
             i++;
         }
         return list;

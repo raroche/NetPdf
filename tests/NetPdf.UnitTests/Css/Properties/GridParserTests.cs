@@ -327,13 +327,40 @@ public sealed class GridParserTests
     }
 
     [Fact]
-    public void GridTemplateColumns_relative_units_are_rejected()
+    public void GridTemplateColumns_relative_units_are_deferred()
     {
-        // Cycle 0b doesn't have font/viewport context — em / vw are rejected.
+        // Per PR-#90 review F5 — relative units (em / rem / vw / cqw / etc.)
+        // are well-formed CSS that need layout-time font/viewport context.
+        // Returns ResolverResult.Deferred (raw text preserved in
+        // ComputedStyle._deferredText) for cycle-1+ to re-resolve. No
+        // diagnostic. Reader returns TrackList.None until re-resolution
+        // (= property is conceptually "deferred", not "invalid").
         using var style = Materialize(
             PropertyId.GridTemplateColumns, "10em", out var sink);
-        Assert.NotEmpty(sink.Diagnostics);
+        Assert.Empty(sink.Diagnostics);
+        // ReadGridTemplateColumns falls back to None (no AST yet); the raw
+        // text is preserved for layout-time re-resolution.
         Assert.Same(TrackList.None, style.ReadGridTemplateColumns());
+        Assert.True(style.IsDeferred(PropertyId.GridTemplateColumns));
+        Assert.True(style.TryGetDeferred(PropertyId.GridTemplateColumns, out var raw));
+        Assert.Equal("10em", raw);
+    }
+
+    [Theory]
+    [InlineData("10rem")]
+    [InlineData("50vw")]
+    [InlineData("minmax(12rem, 1fr)")]
+    [InlineData("repeat(auto-fill, minmax(25ch, 1fr))")]
+    public void GridTemplateColumns_relative_unit_in_function_is_deferred(string css)
+    {
+        // Per PR-#90 review F5 — relative units anywhere in the declaration
+        // defer the whole declaration (matches LengthResolver pattern). The
+        // spec example `repeat(auto-fill, minmax(25ch, 1fr))` should NOT be
+        // diagnosed as malformed.
+        using var style = Materialize(
+            PropertyId.GridTemplateColumns, css, out var sink);
+        Assert.Empty(sink.Diagnostics);
+        Assert.True(style.IsDeferred(PropertyId.GridTemplateColumns));
     }
 
     [Fact]
@@ -508,6 +535,262 @@ public sealed class GridParserTests
     }
 
     // =====================================================================
+    //  PR-#90 review F1 — tokenizer error path → diagnostic (no throw)
+    // =====================================================================
+
+    [Theory]
+    [InlineData("@")]              // unknown char
+    [InlineData("#")]              // unknown char
+    [InlineData("foo @ bar")]      // unknown char in middle
+    [InlineData("9999999999")]     // integer overflow
+    [InlineData("-9999999999")]    // negative integer overflow
+    public void GridLine_malformed_input_resolves_to_invalid_without_exception(string css)
+    {
+        // Pre-hardening — the tokenizer emitted empty-Ident sentinels that
+        // reached GridLineValue.ForNamedLine("") and threw ArgumentException.
+        // F1 fix: explicit Error token kind + parser bail-out path.
+        using var style = Materialize(PropertyId.GridRowStart, css, out var sink);
+        Assert.NotEmpty(sink.Diagnostics);
+        // Cascade falls back to property default (= auto).
+        Assert.Equal(GridLineKind.Auto, style.ReadGridRowStart().Kind);
+    }
+
+    [Fact]
+    public void GridLine_token_budget_caps_pathological_input()
+    {
+        // Per F8 — even legal-looking inputs can't grow the token list past
+        // the budget.
+        var hostile = new System.Text.StringBuilder();
+        for (var i = 0; i < 100; i++) hostile.Append("a ");
+        using var style = Materialize(PropertyId.GridRowStart, hostile.ToString(), out var sink);
+        Assert.NotEmpty(sink.Diagnostics);
+        Assert.Equal(GridLineKind.Auto, style.ReadGridRowStart().Kind);
+    }
+
+    // =====================================================================
+    //  PR-#90 review F3 — CSS-wide keywords rejected as defense in depth
+    // =====================================================================
+
+    [Theory]
+    [InlineData("initial")]
+    [InlineData("inherit")]
+    [InlineData("unset")]
+    [InlineData("revert")]
+    [InlineData("revert-layer")]
+    public void GridLine_CSS_wide_keywords_are_rejected_for_defense_in_depth(string css)
+    {
+        // Pre-hardening — these leaked through as GridLineValue.NamedLine
+        // ("initial"). The cascade SHOULD intercept these centrally (= the
+        // central fix is tracked separately); for now we reject at the
+        // resolver so cycle-0b doesn't produce garbage AST.
+        using var style = Materialize(PropertyId.GridRowStart, css, out var sink);
+        Assert.NotEmpty(sink.Diagnostics);
+        Assert.Equal(GridLineKind.Auto, style.ReadGridRowStart().Kind);
+    }
+
+    [Theory]
+    [InlineData("initial")]
+    [InlineData("inherit")]
+    [InlineData("unset")]
+    public void GridTemplateList_CSS_wide_keywords_are_rejected_for_defense_in_depth(string css)
+    {
+        using var style = Materialize(PropertyId.GridTemplateRows, css, out var sink);
+        Assert.NotEmpty(sink.Diagnostics);
+        Assert.Same(TrackList.None, style.ReadGridTemplateRows());
+    }
+
+    [Fact]
+    public void GridLine_CSS_wide_keyword_in_compound_is_rejected()
+    {
+        // Compound form like `2 initial` — the parser must NOT silently
+        // accept "initial" as a custom-ident even after passing the
+        // Resolve-level guard.
+        using var style = Materialize(PropertyId.GridRowStart, "2 initial", out var sink);
+        Assert.NotEmpty(sink.Diagnostics);
+        Assert.Equal(GridLineKind.Auto, style.ReadGridRowStart().Kind);
+    }
+
+    // =====================================================================
+    //  PR-#90 review F4 — unitless zero is a valid <length-percentage>
+    // =====================================================================
+
+    [Fact]
+    public void GridTemplateColumns_bare_zero_in_track_breadth_is_accepted()
+    {
+        // CSS Values L4 §6.2 — `0` alone is a valid length.
+        using var style = Materialize(
+            PropertyId.GridTemplateColumns, "0 1fr", out var sink);
+        Assert.Empty(sink.Diagnostics);
+        var items = style.ReadGridTemplateColumns().Items;
+        Assert.Equal(2, items.Length);
+        var e0 = ((TrackListEntry)items[0]).Entry;
+        Assert.Equal(GridTrackKind.Length, e0.Kind);
+        Assert.Equal(0.0, e0.LengthPx);
+        Assert.False(e0.IsPercentage);
+        var e1 = ((TrackListEntry)items[1]).Entry;
+        Assert.Equal(GridTrackKind.Fr, e1.Kind);
+    }
+
+    [Fact]
+    public void GridTemplateColumns_bare_zero_in_minmax_min_is_accepted()
+    {
+        // Common pattern: minmax(0, 1fr) — used to force fr distribution
+        // without honoring content-min-width.
+        using var style = Materialize(
+            PropertyId.GridTemplateColumns, "minmax(0, 1fr)", out var sink);
+        Assert.Empty(sink.Diagnostics);
+        var entry = ((TrackListEntry)Assert.Single(style.ReadGridTemplateColumns().Items)).Entry;
+        Assert.Equal(GridTrackKind.MinMax, entry.Kind);
+        Assert.Equal(GridTrackKind.Length, entry.MinSubKind);
+        Assert.Equal(0.0, entry.MinSubLengthPx);
+    }
+
+    [Fact]
+    public void GridTemplateColumns_bare_zero_in_fit_content_is_accepted()
+    {
+        using var style = Materialize(
+            PropertyId.GridTemplateColumns, "fit-content(0)", out var sink);
+        Assert.Empty(sink.Diagnostics);
+        var entry = ((TrackListEntry)Assert.Single(style.ReadGridTemplateColumns().Items)).Entry;
+        Assert.Equal(GridTrackKind.FitContent, entry.Kind);
+        Assert.Equal(0.0, entry.LengthPx);
+    }
+
+    [Fact]
+    public void GridTemplateColumns_bare_nonzero_number_is_still_rejected()
+    {
+        // F4 only relaxes the rule for 0; bare 100 is still invalid (= no unit).
+        using var style = Materialize(
+            PropertyId.GridTemplateColumns, "100 200", out var sink);
+        Assert.NotEmpty(sink.Diagnostics);
+    }
+
+    // =====================================================================
+    //  PR-#90 review F2 — auto-fill / auto-fit fixed-size + single-auto-repeat
+    // =====================================================================
+
+    [Fact]
+    public void GridTemplateColumns_auto_fill_with_fr_track_is_rejected()
+    {
+        // 1fr is not <fixed-size>.
+        using var style = Materialize(
+            PropertyId.GridTemplateColumns, "repeat(auto-fill, 1fr)", out var sink);
+        Assert.NotEmpty(sink.Diagnostics);
+        Assert.Same(TrackList.None, style.ReadGridTemplateColumns());
+    }
+
+    [Fact]
+    public void GridTemplateColumns_auto_fit_with_auto_track_is_rejected()
+    {
+        using var style = Materialize(
+            PropertyId.GridTemplateColumns, "repeat(auto-fit, auto)", out var sink);
+        Assert.NotEmpty(sink.Diagnostics);
+    }
+
+    [Fact]
+    public void GridTemplateColumns_auto_fit_with_min_content_is_rejected()
+    {
+        using var style = Materialize(
+            PropertyId.GridTemplateColumns, "repeat(auto-fit, min-content)", out var sink);
+        Assert.NotEmpty(sink.Diagnostics);
+    }
+
+    [Fact]
+    public void GridTemplateColumns_auto_fill_with_fit_content_is_rejected()
+    {
+        // fit-content() is NOT <fixed-size> per §7.2.3 — it's its own
+        // production.
+        using var style = Materialize(
+            PropertyId.GridTemplateColumns, "repeat(auto-fill, fit-content(100px))", out var sink);
+        Assert.NotEmpty(sink.Diagnostics);
+    }
+
+    [Fact]
+    public void GridTemplateColumns_auto_fill_with_fixed_minmax_is_accepted()
+    {
+        // The spec-canonical recipe: repeat(auto-fill, minmax(<fixed>, 1fr)).
+        // minmax with fixed min is <fixed-size>.
+        using var style = Materialize(
+            PropertyId.GridTemplateColumns, "repeat(auto-fill, minmax(100px, 1fr))", out var sink);
+        Assert.Empty(sink.Diagnostics);
+        var repeat = ((TrackListRepeat)Assert.Single(style.ReadGridTemplateColumns().Items)).Repeat;
+        Assert.Equal(0, repeat.Count);  // auto-fill marker
+    }
+
+    [Fact]
+    public void GridTemplateColumns_auto_fill_with_percentage_is_accepted()
+    {
+        // <percentage> is a <fixed-breadth>.
+        using var style = Materialize(
+            PropertyId.GridTemplateColumns, "repeat(auto-fill, 25%)", out var sink);
+        Assert.Empty(sink.Diagnostics);
+    }
+
+    [Fact]
+    public void GridTemplateColumns_double_auto_repeat_is_rejected()
+    {
+        // §7.2.3 — only one auto-repeat per track list.
+        using var style = Materialize(
+            PropertyId.GridTemplateColumns,
+            "repeat(auto-fill, 100px) repeat(auto-fit, 50px)", out var sink);
+        Assert.NotEmpty(sink.Diagnostics);
+        Assert.Same(TrackList.None, style.ReadGridTemplateColumns());
+    }
+
+    [Fact]
+    public void GridTemplateColumns_integer_repeat_with_auto_track_still_allowed()
+    {
+        // The fixed-size restriction is auto-repeat-specific. Integer repeat
+        // can still contain fr / auto / etc.
+        using var style = Materialize(
+            PropertyId.GridTemplateColumns, "repeat(2, 1fr)", out var sink);
+        Assert.Empty(sink.Diagnostics);
+    }
+
+    // =====================================================================
+    //  PR-#90 review F8 — parser resource bounds
+    // =====================================================================
+
+    [Fact]
+    public void GridTemplateColumns_excessive_token_count_is_rejected()
+    {
+        // Hostile input — a very long sequence of dimension tokens.
+        var hostile = new System.Text.StringBuilder();
+        for (var i = 0; i < 100_000; i++) hostile.Append("1px ");
+        using var style = Materialize(
+            PropertyId.GridTemplateColumns, hostile.ToString(), out var sink);
+        Assert.NotEmpty(sink.Diagnostics);
+        Assert.Same(TrackList.None, style.ReadGridTemplateColumns());
+    }
+
+    [Fact]
+    public void GridTemplateColumns_excessive_top_level_items_is_rejected()
+    {
+        // 2000 explicit auto-keyword tracks. Each consumes one token + emits
+        // one item. The parse-time MaxParserTopLevelItems gate must fire.
+        var hostile = new System.Text.StringBuilder();
+        for (var i = 0; i < 2000; i++) hostile.Append("auto ");
+        using var style = Materialize(
+            PropertyId.GridTemplateColumns, hostile.ToString(), out var sink);
+        Assert.NotEmpty(sink.Diagnostics);
+        Assert.Same(TrackList.None, style.ReadGridTemplateColumns());
+    }
+
+    [Fact]
+    public void GridTemplateColumns_excessive_repeat_pattern_items_is_rejected()
+    {
+        // 100 items inside a single repeat() pattern. The
+        // MaxRepeatPatternItems = 64 gate must fire.
+        var hostile = new System.Text.StringBuilder("repeat(2, ");
+        for (var i = 0; i < 100; i++) hostile.Append("auto ");
+        hostile.Append(')');
+        using var style = Materialize(
+            PropertyId.GridTemplateColumns, hostile.ToString(), out var sink);
+        Assert.NotEmpty(sink.Diagnostics);
+        Assert.Same(TrackList.None, style.ReadGridTemplateColumns());
+    }
+
+    // =====================================================================
     //  Cross-cutting — side-table cleanup invariants
     // =====================================================================
 
@@ -583,5 +866,75 @@ public sealed class GridParserTests
         // be cleared by Reset.
         using var second = ComputedStyle.Rent();
         Assert.Same(TrackList.None, second.ReadGridTemplateRows());
+    }
+
+    // =====================================================================
+    //  PR-#90 review F6 — side-table cleanup across state transitions
+    // =====================================================================
+
+    [Fact]
+    public void Side_table_payload_is_dropped_by_SetDeferred()
+    {
+        // Bug guard for F6 — when a style transitions from a parsed AST
+        // to a deferred value (e.g., later cascade winner uses em units),
+        // the prior payload must drop. Pre-F6 hardening, SetDeferred left
+        // the AST in the dictionary; the reader would see SideTableIndex
+        // tag (cleared via the slot Unset path) but the dict entry survived
+        // until pool reset.
+        using var style = ComputedStyle.Rent();
+        var r1 = PropertyResolverDispatch.Resolve(
+            PropertyId.GridTemplateRows, "100px");
+        r1.MaterializeInto(style, PropertyId.GridTemplateRows);
+        Assert.Single(style.ReadGridTemplateRows().Items);
+
+        style.SetDeferred(PropertyId.GridTemplateRows, "10em");
+        // Reader falls back to TrackList.None (= the deferred state has no
+        // typed value); the side-table entry must be gone too so a future
+        // direct read can't see stale data.
+        Assert.Same(TrackList.None, style.ReadGridTemplateRows());
+        Assert.False(style.TryGetSideTablePayload<TrackList>(
+            PropertyId.GridTemplateRows, out _));
+        Assert.True(style.IsDeferred(PropertyId.GridTemplateRows));
+    }
+
+    [Fact]
+    public void Side_table_payload_is_dropped_by_direct_Set_with_simple_slot()
+    {
+        // F6 — if a caller bypasses MaterializeInto and writes a simple
+        // slot via Set, any prior side-table payload must drop. ComputedStyle
+        // now owns this invariant (= Set inspects the new tag and clears).
+        using var style = ComputedStyle.Rent();
+        var r = PropertyResolverDispatch.Resolve(
+            PropertyId.GridTemplateRows, "100px");
+        r.MaterializeInto(style, PropertyId.GridTemplateRows);
+        Assert.True(style.TryGetSideTablePayload<TrackList>(
+            PropertyId.GridTemplateRows, out _));
+
+        // Caller writes a default Keyword slot directly.
+        style.Set(PropertyId.GridTemplateRows,
+            ComputedSlot.FromKeyword(GridTemplateListResolver.KeywordIdNone));
+        Assert.False(style.TryGetSideTablePayload<TrackList>(
+            PropertyId.GridTemplateRows, out _));
+    }
+
+    [Fact]
+    public void Side_table_payload_survives_Set_with_new_SideTableIndex()
+    {
+        // F6 inverse — when the new slot IS SideTableIndex, the payload
+        // stays. This is the cascade-replacement case (= the new payload
+        // was written via SetSideTablePayload BEFORE the Set call by
+        // MaterializeInto's convention).
+        using var style = ComputedStyle.Rent();
+        var r1 = PropertyResolverDispatch.Resolve(
+            PropertyId.GridTemplateRows, "100px");
+        r1.MaterializeInto(style, PropertyId.GridTemplateRows);
+        Assert.Single(style.ReadGridTemplateRows().Items);
+
+        // Materialize a new side-table value over the old one (= the
+        // standard cascade-winner replacement flow).
+        var r2 = PropertyResolverDispatch.Resolve(
+            PropertyId.GridTemplateRows, "50px 100px");
+        r2.MaterializeInto(style, PropertyId.GridTemplateRows);
+        Assert.Equal(2, style.ReadGridTemplateRows().Items.Length);
     }
 }

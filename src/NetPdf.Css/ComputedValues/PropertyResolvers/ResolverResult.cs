@@ -170,18 +170,14 @@ internal readonly record struct ResolverResult(
             case ResolutionState.Resolved:
                 // Per Phase 3 Task 17 cycle 0b — write the side-table payload
                 // BEFORE the slot so a reader that races on the slot tag still
-                // sees a consistent (tag, payload) pair. The side-table is also
-                // cleared when SideTablePayload is null to handle the case where
-                // a subsequent cascade winner replaces a side-table value with a
-                // simple-slot value (= e.g., grid-template-rows: 100px first,
-                // then grid-template-rows: none winning).
+                // sees a consistent (tag, payload) pair. Per PR-#90 review F6,
+                // ComputedStyle.Set now owns the inverse invariant (= a non-
+                // SideTableIndex slot auto-clears any prior payload), so we
+                // no longer need an explicit ClearSideTablePayload call on the
+                // null-payload branch.
                 if (SideTablePayload is not null)
                 {
                     style.SetSideTablePayload(propertyId, SideTablePayload);
-                }
-                else
-                {
-                    style.ClearSideTablePayload(propertyId);
                 }
                 style.Set(propertyId, Slot);
                 return true;

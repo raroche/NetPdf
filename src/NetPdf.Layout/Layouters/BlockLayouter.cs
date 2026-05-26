@@ -2066,6 +2066,45 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                             cost: CostModel.BreakInsideAvoidViolation);
                     }
 
+                    // Per Phase 3 Task 17 cycle 1 (Hello World) —
+                    // forced-overflow re-route for grid containers.
+                    // Mirrors the flex path above: GridLayouter dispatches
+                    // atomically (cycle 1 doesn't paginate) so grid items
+                    // emit correctly inside the wrapper even when the
+                    // wrapper visually overflows the page.
+                    if (IsGridContainer(child))
+                    {
+                        var forcedGridGeom = GridGeometryHelper.ComputeContentGeometry(
+                            gridBox: child,
+                            borderBoxInlineSize: borderBoxInlineSize,
+                            borderBoxBlockSize: borderBoxBlockSize,
+                            borderBoxInlineOffset: forcedOverflowInlineOffset,
+                            borderBoxBlockOffset: forcedOverflowChildBlockOffset);
+                        _ = DispatchGridInner(
+                            gridBox: child,
+                            contentInlineOffset: forcedGridGeom.ContentInlineOffset,
+                            contentBlockOffset: forcedGridGeom.ContentBlockOffset,
+                            contentInlineSize: forcedGridGeom.ContentInlineSize,
+                            contentBlockSize: forcedGridGeom.ContentBlockSize,
+                            fragmentainer: fragmentainer,
+                            layout: ref layout,
+                            cancellationToken: cancellationToken);
+
+                        fragmentainer.UsedBlockSize = Math.Max(0,
+                            fragmentainer.UsedBlockSize + marginBoxBlockSizeForCursor);
+                        emittedThisAttempt++;
+                        lastEmittedIdx = childIdx;
+
+                        pendingTableLayouter?.Dispose();
+
+                        return LayoutAttemptResult.PageComplete(
+                            new BlockContinuation(
+                                ResumeAtChild: childIdx + 1,
+                                ConsumedBlockSize: priorPagesConsumed
+                                    + (fragmentainer.UsedBlockSize - _pageStartUsedBlockSize)),
+                            cost: CostModel.BreakInsideAvoidViolation);
+                    }
+
                     // Per Phase 3 Task 7 cycle 2b — recursively emit
                     // fragments for the child's block-level descendants.
                     // The painter sees the full subtree on the
@@ -2509,6 +2548,44 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // AllDone case: skip the rest of the Continue path
                 // for this child; the flex container's inner
                 // content was committed in full on this page.
+                continue;
+            }
+
+            // Per Phase 3 Task 17 cycle 1 (Hello World) — grid
+            // container dispatch. A box with BoxKind.GridContainer /
+            // InlineGridContainer (= display: grid / inline-grid) lays
+            // out its direct children as grid items via GridLayouter.
+            // The wrapper fragment is already emitted above; GridLayouter
+            // emits per-item content INSIDE the wrapper's content area.
+            // Cycle 1 ships atomic emission only (no pagination); cycle
+            // 5 will add the GridContinuation resume contract.
+            if (IsGridContainer(child))
+            {
+                var gridGeom = GridGeometryHelper.ComputeContentGeometry(
+                    gridBox: child,
+                    borderBoxInlineSize: borderBoxInlineSize,
+                    borderBoxBlockSize: borderBoxBlockSize,
+                    borderBoxInlineOffset: inFlowInlineOffset,
+                    borderBoxBlockOffset: blockOffset);
+                _ = DispatchGridInner(
+                    gridBox: child,
+                    contentInlineOffset: gridGeom.ContentInlineOffset,
+                    contentBlockOffset: gridGeom.ContentBlockOffset,
+                    contentInlineSize: gridGeom.ContentInlineSize,
+                    contentBlockSize: gridGeom.ContentBlockSize,
+                    fragmentainer: fragmentainer,
+                    layout: ref layout,
+                    cancellationToken: cancellationToken);
+
+                // Cursor advance + bookkeeping mirror the flex/multicol
+                // path. Cycle 1 always returns AllDone so no PageComplete
+                // propagation is needed yet.
+                fragmentainer.UsedBlockSize = Math.Max(0,
+                    fragmentainer.UsedBlockSize + marginBoxBlockSizeForCursor);
+                prevBlockMarginEnd = marginEnd;
+                hasPriorAdjoiningBlock = true;
+                emittedThisAttempt++;
+                lastEmittedIdx = childIdx;
                 continue;
             }
 
@@ -3673,6 +3750,40 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 continue;
             }
 
+            // Per Phase 3 Task 17 cycle 1 (Hello World) — nested grid
+            // container dispatch. Same pattern as the outer-loop site:
+            // GridLayouter emits per-item content inside the wrapper.
+            // Cycle 1 is atomic (no PageComplete propagation needed).
+            if (IsGridContainer(child) && _capturedFragmentainer is not null)
+            {
+                var nestedGridGeom = GridGeometryHelper.ComputeContentGeometry(
+                    gridBox: child,
+                    borderBoxInlineSize: childBorderBoxInlineSize,
+                    borderBoxBlockSize: childBorderBoxBlockSize,
+                    borderBoxInlineOffset: childInlineOffset,
+                    borderBoxBlockOffset: childBlockOffset);
+                var nestedGridLayoutCtx = new LayoutContext(_capturedFragmentainer)
+                {
+                    Diagnostics = _diagnostics,
+                };
+                _ = DispatchGridInner(
+                    gridBox: child,
+                    contentInlineOffset: nestedGridGeom.ContentInlineOffset,
+                    contentBlockOffset: nestedGridGeom.ContentBlockOffset,
+                    contentInlineSize: nestedGridGeom.ContentInlineSize,
+                    contentBlockSize: nestedGridGeom.ContentBlockSize,
+                    fragmentainer: _capturedFragmentainer,
+                    layout: ref nestedGridLayoutCtx,
+                    cancellationToken: cancellationToken);
+
+                // Advance the cursor + bookkeeping; skip the
+                // EmitBlockSubtreeRecursive below.
+                childCursor = childCursor + topShift + childEffectiveBlockSize + marginEnd;
+                prevMarginEnd = marginEnd;
+                hasPrior = true;
+                continue;
+            }
+
             // Recurse — emit grandchildren relative to this child's
             // content area. The recursion's own predicate gate skips
             // walking INTO non-flow block kinds (Table/Flex/Grid/etc.).
@@ -4294,6 +4405,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// the kind.</para></summary>
     private static bool IsFlexContainer(Box box)
         => box.Kind is BoxKind.FlexContainer or BoxKind.InlineFlexContainer;
+
+    /// <summary>Per Phase 3 Task 17 cycle 1 (Hello World) — predicate
+    /// distinguishing grid containers from regular block-flow containers.
+    /// A box is a grid container when its <see cref="Box.Kind"/> is
+    /// <see cref="BoxKind.GridContainer"/> (block-outer + grid-inner =
+    /// <c>display: grid</c>) or <see cref="BoxKind.InlineGridContainer"/>
+    /// (inline-outer + grid-inner = <c>display: inline-grid</c>).
+    /// Mirrors <see cref="IsFlexContainer"/>; the BoxKind is set by
+    /// <see cref="DisplayMapper"/> at box-generation time so the
+    /// dispatch predicate just reads the kind.</summary>
+    private static bool IsGridContainer(Box box)
+        => box.Kind is BoxKind.GridContainer or BoxKind.InlineGridContainer;
 
     /// <summary>Per Phase 3 Task 16 cycle 4b — predicate identifying
     /// flex containers eligible for multi-page line splitting via the
@@ -6132,6 +6255,44 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             fragmentainer,
             ref layout,
             flexResolver,
+            LayoutAttemptStrategy.LastResort,
+            cancellationToken);
+    }
+
+    /// <summary>Per Phase 3 Task 17 cycle 1 (Hello World) — mirrors
+    /// <see cref="DispatchFlexInner"/> for grid containers. The single
+    /// helper used by all 3 dispatch sites (outer / recursive /
+    /// forced-overflow-reroute) so future cycles (= cycle 5 multi-page
+    /// grid) can extend in one place. Cycle 1 ships atomic emission
+    /// only (= no <c>allowPagination</c> parameter; cycle 5 will add it
+    /// when wiring multi-page grid pagination).</summary>
+    private LayoutAttemptResult DispatchGridInner(
+        Box gridBox,
+        double contentInlineOffset,
+        double contentBlockOffset,
+        double contentInlineSize,
+        double contentBlockSize,
+        FragmentainerContext fragmentainer,
+        ref LayoutContext layout,
+        CancellationToken cancellationToken)
+    {
+        using var gridLayouter = new GridLayouter(
+            rootBox: gridBox,
+            sink: _sink,
+            incomingContinuation: null,
+            diagnostics: _diagnostics,
+            shaperResolver: _shaperResolver);
+        gridLayouter.ConfigureEmission(
+            contentInlineOffset: contentInlineOffset,
+            contentBlockOffset: contentBlockOffset,
+            contentInlineSize: contentInlineSize,
+            contentBlockSize: contentBlockSize,
+            allowPagination: false);
+        using var gridResolver = new BreakResolver();
+        return gridLayouter.AttemptLayout(
+            fragmentainer,
+            ref layout,
+            gridResolver,
             LayoutAttemptStrategy.LastResort,
             cancellationToken);
     }

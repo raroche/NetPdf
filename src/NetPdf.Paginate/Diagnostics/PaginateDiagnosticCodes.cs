@@ -296,4 +296,44 @@ internal static class PaginateDiagnosticCodes
     /// Severity: <see cref="PaginateDiagnosticSeverity.Warning"/>.</summary>
     public const string LayoutFlexWrapReverseApproximated001 =
         "LAYOUT-FLEX-WRAP-REVERSE-APPROXIMATED-001";
+
+    /// <summary>Per Phase 3 Task 17 cycle 1 (Hello World) — emitted when
+    /// the <c>GridLayouter</c> encounters a track-list entry that cycle 1
+    /// doesn't yet support (= anything other than <c>&lt;length&gt;</c>
+    /// — fr / auto / min-content / max-content / minmax / fit-content /
+    /// repeat). The cycle-0a/0b AST contract parses these forms; cycle 1
+    /// only layouts pixel tracks. Future cycles add the missing track
+    /// types: cycle 2 ships <c>fr</c>, cycle 3 ships intrinsic
+    /// (<c>auto</c> / <c>min-content</c> / <c>max-content</c>), cycle 4
+    /// ships <c>minmax()</c> / <c>fit-content()</c> / <c>repeat(int)</c>,
+    /// cycle 7 ships <c>repeat(auto-fill)</c> / <c>repeat(auto-fit)</c>.
+    /// Until then, non-length tracks contribute 0 px to the track sum +
+    /// this diagnostic surfaces the silent drop. Fires once per
+    /// AttemptLayout. Severity: Warning.</summary>
+    public const string LayoutGridTrackKindUnsupported001 =
+        "LAYOUT-GRID-TRACK-KIND-UNSUPPORTED-001";
+
+    /// <summary>Per Phase 3 Task 17 cycle 1 — emitted when a grid item's
+    /// declared placement (<c>grid-row-start</c> / <c>grid-column-start</c>)
+    /// uses a value cycle 1 doesn't yet support: <c>span N</c> /
+    /// <c>&lt;custom-ident&gt;</c> (= named line) /
+    /// <c>&lt;custom-ident&gt; N</c>. The cycle-0b parser produces these
+    /// forms but the cycle-1 placement algorithm treats them as
+    /// <c>auto</c> (= sparse auto-placement per §8.5). Cycle 6 adds
+    /// span; cycle 7 adds named lines + areas. Fires once per item.
+    /// Severity: Warning.</summary>
+    public const string LayoutGridPlacementApproximated001 =
+        "LAYOUT-GRID-PLACEMENT-APPROXIMATED-001";
+
+    /// <summary>Per Phase 3 Task 17 cycle 1 — emitted when an item is
+    /// placed at a cell OUTSIDE the explicit grid (= row/column index
+    /// exceeds the declared track count, OR a 0-track grid has no cells
+    /// to place into). Per CSS Grid §7.5 the implicit grid should
+    /// auto-generate tracks via <c>grid-auto-rows</c> /
+    /// <c>grid-auto-columns</c>; cycle 1 doesn't yet support implicit
+    /// tracks, so the item silently drops (no fragment emitted). Cycle 6
+    /// adds implicit-track generation. Fires once per item. Severity:
+    /// Warning.</summary>
+    public const string LayoutGridImplicitTrackUnsupported001 =
+        "LAYOUT-GRID-IMPLICIT-TRACK-UNSUPPORTED-001";
 }

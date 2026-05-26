@@ -382,14 +382,19 @@ public sealed class GridLayouterTests
     // =====================================================================
 
     [Fact]
-    public void Fr_track_kind_emits_diagnostic_and_contributes_zero()
+    public void Cycle2_fr_track_distributes_leftover_space_no_diagnostic()
     {
-        // cycle 1: only Length tracks are sized. fr → 0 px.
+        // Per cycle 2 — fr tracks now distribute leftover space per
+        // CSS Grid §11.7. The old cycle-1 diagnostic for fr is no
+        // longer emitted (fr is now supported).
+        //
+        // grid-template-columns: 100px 1fr in 400px container.
+        // nonFlexBase = 100, leftover = 300, flexFactorSum = 1,
+        // hypoFr = 300, col 2 size = 300 * 1 = 300.
         var sink = new RecordingFragmentSink();
         var diag = new RecordingDiagnosticsSink();
         using var shaper = new SyntheticShaperResolver();
 
-        // grid-template-columns: 100px 1fr
         var trackList = new TrackList(ImmutableArray.Create<TrackListItem>(
             new TrackListEntry(TrackEntry.ForLength(100)),
             new TrackListEntry(TrackEntry.ForFr(1))));
@@ -403,11 +408,200 @@ public sealed class GridLayouterTests
         RunGridLayouter(grid, sink, diag, shaper);
 
         Assert.Single(sink.Fragments);
-        // Col 2 (fr) starts at 100 px (= cumulative sum after the 100px
-        // track). Cycle 1 sizes fr as 0 → item is 0 wide.
-        AssertFragmentEquals(sink, item, inlineOffset: 100, blockOffset: 0, inlineSize: 0, blockSize: 100);
-        Assert.Contains(diag.Diagnostics, d =>
+        AssertFragmentEquals(sink, item, inlineOffset: 100, blockOffset: 0, inlineSize: 300, blockSize: 100);
+        // No track-kind diagnostic for fr — it's a supported kind in cycle 2.
+        Assert.DoesNotContain(diag.Diagnostics, d =>
             d.Code == PaginateDiagnosticCodes.LayoutGridTrackKindUnsupported001);
+    }
+
+    // =====================================================================
+    //  Cycle 2 — §11.7 fr distribution algorithm
+    // =====================================================================
+
+    [Fact]
+    public void Cycle2_two_equal_fr_tracks_split_container_equally()
+    {
+        // grid-template-columns: 1fr 1fr in 400px container → 200/200.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForFr(1)),
+            new TrackListEntry(TrackEntry.ForFr(1))));
+        var grid = BuildGridContainerWithTemplates(
+            rows: new TrackList(ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(50)))),
+            cols: cols);
+        var itemA = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var itemB = BuildItemWithExplicitPlacement(row: 1, col: 2);
+        grid.AppendChild(itemA);
+        grid.AppendChild(itemB);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Equal(2, sink.Fragments.Count);
+        AssertFragmentEquals(sink, itemA, inlineOffset: 0, blockOffset: 0, inlineSize: 200, blockSize: 50);
+        AssertFragmentEquals(sink, itemB, inlineOffset: 200, blockOffset: 0, inlineSize: 200, blockSize: 50);
+    }
+
+    [Fact]
+    public void Cycle2_fixed_plus_two_unequal_fr_distributes_per_flex_factor()
+    {
+        // grid-template-columns: 100px 1fr 2fr in 400px:
+        // nonFlexBase = 100, leftover = 300, flexFactorSum = 1 + 2 = 3,
+        // hypoFr = 100, col2 = 100*1 = 100, col3 = 100*2 = 200.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForLength(100)),
+            new TrackListEntry(TrackEntry.ForFr(1)),
+            new TrackListEntry(TrackEntry.ForFr(2))));
+        var grid = BuildGridContainerWithTemplates(
+            rows: new TrackList(ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(50)))),
+            cols: cols);
+        var itemA = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var itemB = BuildItemWithExplicitPlacement(row: 1, col: 2);
+        var itemC = BuildItemWithExplicitPlacement(row: 1, col: 3);
+        grid.AppendChild(itemA);
+        grid.AppendChild(itemB);
+        grid.AppendChild(itemC);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Equal(3, sink.Fragments.Count);
+        AssertFragmentEquals(sink, itemA, inlineOffset: 0, blockOffset: 0, inlineSize: 100, blockSize: 50);
+        AssertFragmentEquals(sink, itemB, inlineOffset: 100, blockOffset: 0, inlineSize: 100, blockSize: 50);
+        AssertFragmentEquals(sink, itemC, inlineOffset: 200, blockOffset: 0, inlineSize: 200, blockSize: 50);
+    }
+
+    [Fact]
+    public void Cycle2_fractional_fr_below_one_uses_floored_sum_per_spec()
+    {
+        // Per §11.7.1 — fr factors < 1 floor at 1 in the divisor (= the
+        // flexFactorSum). The numerator (each track's flex) is NOT floored.
+        // grid-template-columns: 0.25fr 0.25fr in 400px:
+        // nonFlexBase = 0, leftover = 400,
+        // flexFactorSum = max(0.25, 1) + max(0.25, 1) = 1 + 1 = 2,
+        // hypoFr = 400 / 2 = 200,
+        // each track size = hypoFr * raw_flex = 200 * 0.25 = 50.
+        // Total used = 100; container has 300 px unused (per spec —
+        // fractional fr factors below 1 deliberately under-use the
+        // leftover so the container has unused space rather than
+        // overflowing).
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForFr(0.25)),
+            new TrackListEntry(TrackEntry.ForFr(0.25))));
+        var grid = BuildGridContainerWithTemplates(
+            rows: new TrackList(ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(50)))),
+            cols: cols);
+        var itemA = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var itemB = BuildItemWithExplicitPlacement(row: 1, col: 2);
+        grid.AppendChild(itemA);
+        grid.AppendChild(itemB);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Equal(2, sink.Fragments.Count);
+        AssertFragmentEquals(sink, itemA, inlineOffset: 0, blockOffset: 0, inlineSize: 50, blockSize: 50);
+        AssertFragmentEquals(sink, itemB, inlineOffset: 50, blockOffset: 0, inlineSize: 50, blockSize: 50);
+    }
+
+    [Fact]
+    public void Cycle2_negative_leftover_pins_fr_tracks_at_zero()
+    {
+        // Per §11.7 — when nonFlexBase >= containerExtent, leftover <= 0
+        // → fr tracks all get 0. Container visually overflows.
+        // grid-template-columns: 500px 1fr in 400px: leftover = -100,
+        // fr track gets 0 size.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForLength(500)),
+            new TrackListEntry(TrackEntry.ForFr(1))));
+        var grid = BuildGridContainerWithTemplates(
+            rows: new TrackList(ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(50)))),
+            cols: cols);
+        var itemA = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var itemB = BuildItemWithExplicitPlacement(row: 1, col: 2);
+        grid.AppendChild(itemA);
+        grid.AppendChild(itemB);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Equal(2, sink.Fragments.Count);
+        // Fixed track at full 500 px (overflows container).
+        AssertFragmentEquals(sink, itemA, inlineOffset: 0, blockOffset: 0, inlineSize: 500, blockSize: 50);
+        // fr track at 0 (= leftover was negative).
+        AssertFragmentEquals(sink, itemB, inlineOffset: 500, blockOffset: 0, inlineSize: 0, blockSize: 50);
+    }
+
+    [Fact]
+    public void Cycle2_zero_fr_factor_is_treated_as_zero_size()
+    {
+        // 0fr per §11.7 — receives 0 of leftover space (= contributes
+        // to flexFactorSum as max(0, 1) = 1 but its track size = 0 * fr = 0).
+        // grid-template-columns: 0fr 1fr in 400px:
+        // flexFactorSum = max(0, 1) + max(1, 1) = 1 + 1 = 2,
+        // hypoFr = 200, col1 = 200 * 0 = 0, col2 = 200 * 1 = 200.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForFr(0)),
+            new TrackListEntry(TrackEntry.ForFr(1))));
+        var grid = BuildGridContainerWithTemplates(
+            rows: new TrackList(ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(50)))),
+            cols: cols);
+        var itemA = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var itemB = BuildItemWithExplicitPlacement(row: 1, col: 2);
+        grid.AppendChild(itemA);
+        grid.AppendChild(itemB);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        AssertFragmentEquals(sink, itemA, inlineOffset: 0, blockOffset: 0, inlineSize: 0, blockSize: 50);
+        AssertFragmentEquals(sink, itemB, inlineOffset: 0, blockOffset: 0, inlineSize: 200, blockSize: 50);
+    }
+
+    [Fact]
+    public void Cycle2_fr_in_rows_distributes_block_extent()
+    {
+        // fr can apply to rows too (= grid-template-rows: 100px 1fr in
+        // a 400px-block container). nonFlexBase = 100, leftover = 300,
+        // row 2 size = 300.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rows = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForLength(100)),
+            new TrackListEntry(TrackEntry.ForFr(1))));
+        var grid = BuildGridContainerWithTemplates(
+            rows: rows,
+            cols: new TrackList(ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(50)))));
+        var item = BuildItemWithExplicitPlacement(row: 2, col: 1);
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Single(sink.Fragments);
+        // Row 2 starts at 100, is 300 tall.
+        AssertFragmentEquals(sink, item, inlineOffset: 0, blockOffset: 100, inlineSize: 50, blockSize: 300);
     }
 
     [Fact]

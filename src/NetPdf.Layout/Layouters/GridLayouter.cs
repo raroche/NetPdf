@@ -278,10 +278,19 @@ internal sealed class GridLayouter : ILayouter, IDisposable
         cancellationToken.ThrowIfCancellationRequested();
 
         // Step 1 — resolve track sizes from grid-template-rows /
-        // grid-template-columns. Cycle 1 supports only Length tracks;
-        // other kinds contribute 0 + emit a one-shot diagnostic.
-        var rowSizes = ResolveTrackSizes(_rootBox.Style.ReadGridTemplateRows());
-        var colSizes = ResolveTrackSizes(_rootBox.Style.ReadGridTemplateColumns());
+        // grid-template-columns. Cycle 1 supported only Length tracks;
+        // cycle 2 adds fr distribution via CSS Grid §11.7 "Find the
+        // Size of an fr" algorithm. Other non-Length non-fr kinds
+        // (auto / intrinsic / minmax / fit-content / repeat) still
+        // contribute 0 + emit a one-shot diagnostic — cycle 3+ widens
+        // coverage.
+        //
+        // The container's content extent on each axis feeds the fr
+        // distribution (= leftover = containerSize - sumOfNonFlexBases).
+        var rowSizes = ResolveTrackSizes(
+            _rootBox.Style.ReadGridTemplateRows(), _contentBlockSize);
+        var colSizes = ResolveTrackSizes(
+            _rootBox.Style.ReadGridTemplateColumns(), _contentInlineSize);
 
         // No explicit tracks → no cells to place into. Cycle 1 doesn't
         // generate implicit tracks (§7.5). Per PR-#92 review F6 — emit
@@ -679,35 +688,79 @@ internal sealed class GridLayouter : ILayouter, IDisposable
     //  Track sizing (cycle 1: Length tracks only)
     // =====================================================================
 
-    /// <summary>Per cycle 1 — flatten the parsed <see cref="TrackList"/>
-    /// AST into a list of px track sizes. Each
-    /// <see cref="TrackListEntry"/> with a
-    /// <see cref="GridTrackKind.Length"/> entry contributes its pixel
-    /// value; non-length kinds contribute 0 + emit
-    /// <see cref="PaginateDiagnosticCodes.LayoutGridTrackKindUnsupported001"/>
-    /// (once per AttemptLayout). <see cref="TrackListNamedLine"/> +
-    /// <see cref="TrackListRepeat"/> entries are SKIPPED in cycle 1
-    /// (no track contributed); future cycles will handle repeat() +
-    /// named-line position resolution.</summary>
-    private List<double> ResolveTrackSizes(TrackList trackList)
+    /// <summary>Flatten the parsed <see cref="TrackList"/> AST into a
+    /// list of px track sizes per CSS Grid §11.
+    ///
+    /// <para><b>Cycle 1 (Hello World)</b>: only Length tracks sized;
+    /// non-Length contributed 0 + emitted a diagnostic.</para>
+    ///
+    /// <para><b>Cycle 2 (post-PR-#92 review hardening continuation)</b>:
+    /// adds <c>&lt;flex&gt;</c> (fr) tracks via CSS Grid §11.7 "Find
+    /// the Size of an fr" algorithm. The remaining non-Length non-fr
+    /// kinds (auto / min-content / max-content / minmax / fit-content
+    /// / repeat) still contribute 0 + emit
+    /// <see cref="PaginateDiagnosticCodes.LayoutGridTrackKindUnsupported001"/>.
+    /// Cycle 3 ships intrinsic; cycle 4 ships minmax / fit-content /
+    /// repeat(int); cycle 7 ships auto-fill / auto-fit.</para>
+    ///
+    /// <para><b>§11.7 fr distribution</b> (= the spec-correct
+    /// algorithm — NOT the naive <c>flex / sumFlex</c> proportional
+    /// split which is wrong for sub-1 factors + negative leftover):
+    /// <list type="number">
+    ///   <item><c>leftover = containerExtent - sumOfNonFlexBases</c>;
+    ///   if <c>leftover &lt;= 0</c>, every fr track gets 0.</item>
+    ///   <item><c>flexFactorSum = Σ max(flex, 1)</c> over fr tracks.
+    ///   Per §11.7.1 the sum is floored so fractional factors below 1
+    ///   don't blow up the divisor.</item>
+    ///   <item><c>hypoFr = leftover / flexFactorSum</c>.</item>
+    ///   <item>Each fr track's size = <c>hypoFr * flex</c> (RAW flex,
+    ///   not floored — only the divisor floors). Cycle 2 has no
+    ///   content-derived base sizes (= L19 deferral; cycle 3 ships
+    ///   intrinsic), so the iterative "remove fr track whose base &gt;
+    ///   hypoFr * flex" step from the spec is a no-op + skipped.
+    ///   Future cycle 3 will add the iteration.</item>
+    /// </list></para></summary>
+    private List<double> ResolveTrackSizes(TrackList trackList, double containerExtent)
     {
         var sizes = new List<double>(trackList.Items.Length);
+        // Per cycle 2 — gather (kind, value) per track in a single pass.
+        // Length tracks get their px value immediately; fr tracks get
+        // 0 placeholder + are resolved in the §11.7 pass below; other
+        // kinds get 0 + a diagnostic.
+        // Parallel arrays: <c>isFr</c> distinguishes fr tracks
+        // (including 0fr, which is a valid fr factor per §7.2.3) from
+        // non-fr tracks (= relying on frFactor != 0 was the cycle-2
+        // initial-draft bug since 0fr is ALSO 0). <c>frFactors</c>
+        // holds the raw fr factor for fr tracks; the value is unused
+        // for non-fr.
+        var isFr = new List<bool>(trackList.Items.Length);
+        var frFactors = new List<double>(trackList.Items.Length);
         foreach (var item in trackList.Items)
         {
             if (item is TrackListEntry entry)
             {
-                if (entry.Entry.Kind == GridTrackKind.Length
-                    && !entry.Entry.IsPercentage)
+                switch (entry.Entry.Kind)
                 {
-                    sizes.Add(entry.Entry.LengthPx);
-                }
-                else
-                {
-                    EmitTrackKindDiagnostic(entry.Entry.Kind);
-                    // Contribute 0 — keeps the track count but with no
-                    // pixels. Cycle 2+ will replace this branch with
-                    // real fr / intrinsic / etc. sizing.
-                    sizes.Add(0.0);
+                    case GridTrackKind.Length when !entry.Entry.IsPercentage:
+                        sizes.Add(entry.Entry.LengthPx);
+                        isFr.Add(false);
+                        frFactors.Add(0);
+                        break;
+                    case GridTrackKind.Fr:
+                        // Placeholder; resolved in the §11.7 pass below.
+                        sizes.Add(0);
+                        isFr.Add(true);
+                        frFactors.Add(entry.Entry.FrValue);
+                        break;
+                    default:
+                        // Length-with-percentage / Auto / MinContent /
+                        // MaxContent / MinMax / FitContent — cycle 3+
+                        // scope. Contribute 0.
+                        EmitTrackKindDiagnostic(entry.Entry.Kind);
+                        sizes.Add(0);
+                        isFr.Add(false);
+                        frFactors.Add(0);
+                        break;
                 }
             }
             else if (item is TrackListRepeat)
@@ -719,7 +772,89 @@ internal sealed class GridLayouter : ILayouter, IDisposable
             // TrackListNamedLine: no track contribution; named-line
             // position resolution is cycle 7's scope.
         }
+
+        // §11.7 fr distribution pass.
+        ResolveFrTracks(sizes, isFr, frFactors, containerExtent);
         return sizes;
+    }
+
+    /// <summary>Per CSS Grid §11.7 "Find the Size of an fr" — distribute
+    /// <paramref name="containerExtent"/> minus the non-fr base extent
+    /// among the fr tracks in <paramref name="sizes"/>. Cycle 2 scope:
+    /// pure fr distribution with no content-derived base sizes (= L19
+    /// deferral); the spec's iterative "remove fr track whose base &gt;
+    /// hypoFr * flex" step is a no-op for cycle 2 since every fr track
+    /// has base 0.
+    ///
+    /// <para><b>Pre-conditions</b>: <paramref name="sizes"/> and
+    /// <paramref name="frFactors"/> are parallel arrays of the same
+    /// length; the fr-track slots in <paramref name="sizes"/> are 0
+    /// placeholders (= the value this method fills in); the non-fr
+    /// slots already hold their final px sizes; <paramref name="frFactors"/>
+    /// holds the raw fr factor for each fr track + 0 for non-fr.</para>
+    ///
+    /// <para><b>Negative-leftover case</b>: when non-fr tracks already
+    /// fill or exceed the container, leftover &lt;= 0 → fr tracks all
+    /// get 0 (= container visually overflows; matches the spec's
+    /// behavior since fr distributes ONLY the positive leftover).</para></summary>
+    private static void ResolveFrTracks(
+        List<double> sizes, List<bool> isFr, List<double> frFactors,
+        double containerExtent)
+    {
+        // Sum non-fr base extents.
+        double nonFlexBase = 0;
+        var hasFr = false;
+        for (var i = 0; i < sizes.Count; i++)
+        {
+            if (isFr[i])
+            {
+                hasFr = true;
+            }
+            else
+            {
+                nonFlexBase += sizes[i];
+            }
+        }
+        if (!hasFr) return;
+
+        var leftover = containerExtent - nonFlexBase;
+        if (leftover <= 0 || !double.IsFinite(leftover))
+        {
+            // No positive leftover — fr tracks pin at 0 (already
+            // initialized). Spec: container may visually overflow.
+            return;
+        }
+
+        // §11.7.1: flexFactorSum = Σ max(flex, 1) over fr tracks.
+        // 0fr CONTRIBUTES max(0, 1) = 1 to the sum (= it's still an
+        // fr track, just with a 0 multiplier for the final size).
+        double flexFactorSum = 0;
+        for (var i = 0; i < frFactors.Count; i++)
+        {
+            if (isFr[i])
+            {
+                flexFactorSum += System.Math.Max(frFactors[i], 1.0);
+            }
+        }
+        if (flexFactorSum <= 0) return; // defensive
+
+        // hypoFr = leftover / flexFactorSum.
+        var hypoFr = leftover / flexFactorSum;
+        if (!double.IsFinite(hypoFr)) return; // defensive
+
+        // Cycle 2: no content-derived base sizes → no iterative
+        // removal step needed. Each fr track's size = hypoFr * flex
+        // (= 0 * hypoFr = 0 for 0fr tracks — they contribute to the
+        // flexFactorSum but receive no leftover space).
+        // Cycle 3 ships intrinsic sizing → the iteration step will
+        // land then to handle "base > hypoFr * flex" force-fixed cases.
+        for (var i = 0; i < sizes.Count; i++)
+        {
+            if (isFr[i])
+            {
+                sizes[i] = hypoFr * frFactors[i];
+            }
+        }
     }
 
     /// <summary>Compute cumulative track positions from track sizes.

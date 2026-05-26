@@ -457,6 +457,100 @@ public sealed class GridLayouterProductionTests
         Assert.Equal(300.0, following!.Value.BlockOffset, precision: 3);
     }
 
+    // =====================================================================
+    //  Cycle 2 — fr tracks via §11.7
+    // =====================================================================
+
+    [Fact]
+    public async Task Production_html_fr_tracks_distribute_leftover_per_spec()
+    {
+        // grid-template-columns: 100px 1fr 2fr in 600px container:
+        // nonFlexBase = 100, leftover = 500, flexFactorSum = 3,
+        // hypoFr ≈ 166.67, col2 = 166.67, col3 = 333.33.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 50px;
+                    grid-template-columns: 100px 1fr 2fr;
+                    width: 600px;
+                }
+                .a { grid-row-start: 1; grid-column-start: 1; }
+                .b { grid-row-start: 1; grid-column-start: 2; }
+                .c { grid-row-start: 1; grid-column-start: 3; }
+            </style></head><body>
+            <div class="grid">
+              <div class="a"></div>
+              <div class="b"></div>
+              <div class="c"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var a = FindByClass(sink, "a");
+        var b = FindByClass(sink, "b");
+        var c = FindByClass(sink, "c");
+        Assert.NotNull(a);
+        Assert.NotNull(b);
+        Assert.NotNull(c);
+
+        // a (100px fixed) at (0, 0, 100, 50)
+        Assert.Equal(0.0, a!.Value.InlineOffset, precision: 3);
+        Assert.Equal(100.0, a.Value.InlineSize, precision: 2);
+        // b (1fr = 500/3 ≈ 166.67) starts at 100
+        Assert.Equal(100.0, b!.Value.InlineOffset, precision: 2);
+        Assert.Equal(500.0 / 3, b.Value.InlineSize, precision: 2);
+        // c (2fr = 1000/3 ≈ 333.33) starts at 100 + 500/3 = 800/3 ≈ 266.67
+        Assert.Equal(100.0 + 500.0 / 3, c!.Value.InlineOffset, precision: 2);
+        Assert.Equal(1000.0 / 3, c.Value.InlineSize, precision: 2);
+    }
+
+    [Fact]
+    public async Task Production_html_two_equal_fr_tracks_split_equally()
+    {
+        // grid-template-columns: 1fr 1fr in the fragmentainer's
+        // available inline space (= 600px default in
+        // RenderViaFullPipelineAsync) → 300/300.
+        //
+        // NB: cycle-1/2 BlockLayouter doesn't yet apply CSS `width` to
+        // size a block container's inline extent (= TODO cycle 3 per
+        // BlockLayouter.cs comments); the container takes the
+        // fragmentainer-available inline space minus margins. So
+        // testing fr distribution uses the fragmentainer width as the
+        // container extent.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 50px;
+                    grid-template-columns: 1fr 1fr;
+                }
+                .a { grid-row-start: 1; grid-column-start: 1; }
+                .b { grid-row-start: 1; grid-column-start: 2; }
+            </style></head><body>
+            <div class="grid">
+              <div class="a"></div>
+              <div class="b"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var a = FindByClass(sink, "a");
+        var b = FindByClass(sink, "b");
+        Assert.NotNull(a);
+        Assert.NotNull(b);
+
+        // 600 / 2 = 300 each.
+        Assert.Equal(0.0, a!.Value.InlineOffset, precision: 3);
+        Assert.Equal(300.0, a.Value.InlineSize, precision: 3);
+        Assert.Equal(300.0, b!.Value.InlineOffset, precision: 3);
+        Assert.Equal(300.0, b.Value.InlineSize, precision: 3);
+    }
+
     [Fact]
     public async Task Production_html_empty_grid_template_emits_no_item_fragments()
     {

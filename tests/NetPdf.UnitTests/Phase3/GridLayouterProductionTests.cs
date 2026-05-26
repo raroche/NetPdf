@@ -508,6 +508,33 @@ public sealed class GridLayouterProductionTests
     }
 
     [Fact]
+    public async Task Production_html_auto_height_fr_row_emits_indefinite_diagnostic()
+    {
+        // Per PR-#93 review F3 — auto-height grid with fr rows →
+        // diagnostic + fr rows collapse to 0 (= cycle 3 will ship
+        // intrinsic resolution).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 100px 1fr;
+                    grid-template-columns: 100px;
+                }
+            </style></head><body>
+            <div class="grid">
+              <div class="row1"></div>
+              <div class="row2"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, diag, _) = await RenderViaFullPipelineAsync(html);
+
+        Assert.Contains(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridFrUnderIndefiniteApproximated001);
+    }
+
+    [Fact]
     public async Task Production_html_two_equal_fr_tracks_split_equally()
     {
         // grid-template-columns: 1fr 1fr in the fragmentainer's

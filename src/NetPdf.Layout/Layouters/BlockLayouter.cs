@@ -1614,6 +1614,42 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 }
             }
 
+            // Per Phase 3 Task 17 cycle 1 post-PR-#92 review F2 — grid
+            // container pre-measure for auto-height wrappers. Without
+            // this the wrapper's borderBoxBlockSize stays at the
+            // chrome-only initialization (= 0 + borders + padding) when
+            // the author didn't declare height; following block-flow
+            // siblings then visually overlap the grid rows because the
+            // outer cursor advances by 0 + chrome instead of by the
+            // grid's natural row-track sum.
+            //
+            // Cycle 1 contract: sum the explicit row tracks (= Length
+            // entries only; cycle 2-7 will widen to fr / intrinsic /
+            // repeat). The sum is the natural block extent of the
+            // grid's content area; add the wrapper's own block-axis
+            // chrome to get the natural border-box block extent. If
+            // larger than the current borderBoxBlockSize, grow.
+            //
+            // Mirrors the flex / multicol / table pre-measure pattern
+            // earlier in this outer dispatch path. Cycle 5 will add a
+            // paginatable-grid clamp here too (= matching the
+            // paginatable-flex clamp above when grid pagination ships).
+            if (IsGridContainer(child) && IsHeightAuto(child))
+            {
+                var gridRowExtent = PreMeasureGridRowExtent(child);
+                if (gridRowExtent > 0)
+                {
+                    var gridBorderPaddingBlock =
+                        borderStart + paddingStart + paddingEnd + borderEnd;
+                    var gridDrivenBorderBox =
+                        gridRowExtent + gridBorderPaddingBlock;
+                    if (gridDrivenBorderBox > borderBoxBlockSize)
+                    {
+                        borderBoxBlockSize = gridDrivenBorderBox;
+                    }
+                }
+            }
+
             // Per cycle 2c post-PR-29 review #7 — `marginBoxBlockSize`
             // (= `topShift + borderBoxBlockSize + marginEnd`) was
             // removed. Cycle 2c introduced the subtree-aware
@@ -2066,6 +2102,45 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                             cost: CostModel.BreakInsideAvoidViolation);
                     }
 
+                    // Per Phase 3 Task 17 cycle 1 (Hello World) —
+                    // forced-overflow re-route for grid containers.
+                    // Mirrors the flex path above: GridLayouter dispatches
+                    // atomically (cycle 1 doesn't paginate) so grid items
+                    // emit correctly inside the wrapper even when the
+                    // wrapper visually overflows the page.
+                    if (IsGridContainer(child))
+                    {
+                        var forcedGridGeom = GridGeometryHelper.ComputeContentGeometry(
+                            gridBox: child,
+                            borderBoxInlineSize: borderBoxInlineSize,
+                            borderBoxBlockSize: borderBoxBlockSize,
+                            borderBoxInlineOffset: forcedOverflowInlineOffset,
+                            borderBoxBlockOffset: forcedOverflowChildBlockOffset);
+                        _ = DispatchGridInner(
+                            gridBox: child,
+                            contentInlineOffset: forcedGridGeom.ContentInlineOffset,
+                            contentBlockOffset: forcedGridGeom.ContentBlockOffset,
+                            contentInlineSize: forcedGridGeom.ContentInlineSize,
+                            contentBlockSize: forcedGridGeom.ContentBlockSize,
+                            fragmentainer: fragmentainer,
+                            layout: ref layout,
+                            cancellationToken: cancellationToken);
+
+                        fragmentainer.UsedBlockSize = Math.Max(0,
+                            fragmentainer.UsedBlockSize + marginBoxBlockSizeForCursor);
+                        emittedThisAttempt++;
+                        lastEmittedIdx = childIdx;
+
+                        pendingTableLayouter?.Dispose();
+
+                        return LayoutAttemptResult.PageComplete(
+                            new BlockContinuation(
+                                ResumeAtChild: childIdx + 1,
+                                ConsumedBlockSize: priorPagesConsumed
+                                    + (fragmentainer.UsedBlockSize - _pageStartUsedBlockSize)),
+                            cost: CostModel.BreakInsideAvoidViolation);
+                    }
+
                     // Per Phase 3 Task 7 cycle 2b — recursively emit
                     // fragments for the child's block-level descendants.
                     // The painter sees the full subtree on the
@@ -2509,6 +2584,44 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // AllDone case: skip the rest of the Continue path
                 // for this child; the flex container's inner
                 // content was committed in full on this page.
+                continue;
+            }
+
+            // Per Phase 3 Task 17 cycle 1 (Hello World) — grid
+            // container dispatch. A box with BoxKind.GridContainer /
+            // InlineGridContainer (= display: grid / inline-grid) lays
+            // out its direct children as grid items via GridLayouter.
+            // The wrapper fragment is already emitted above; GridLayouter
+            // emits per-item content INSIDE the wrapper's content area.
+            // Cycle 1 ships atomic emission only (no pagination); cycle
+            // 5 will add the GridContinuation resume contract.
+            if (IsGridContainer(child))
+            {
+                var gridGeom = GridGeometryHelper.ComputeContentGeometry(
+                    gridBox: child,
+                    borderBoxInlineSize: borderBoxInlineSize,
+                    borderBoxBlockSize: borderBoxBlockSize,
+                    borderBoxInlineOffset: inFlowInlineOffset,
+                    borderBoxBlockOffset: blockOffset);
+                _ = DispatchGridInner(
+                    gridBox: child,
+                    contentInlineOffset: gridGeom.ContentInlineOffset,
+                    contentBlockOffset: gridGeom.ContentBlockOffset,
+                    contentInlineSize: gridGeom.ContentInlineSize,
+                    contentBlockSize: gridGeom.ContentBlockSize,
+                    fragmentainer: fragmentainer,
+                    layout: ref layout,
+                    cancellationToken: cancellationToken);
+
+                // Cursor advance + bookkeeping mirror the flex/multicol
+                // path. Cycle 1 always returns AllDone so no PageComplete
+                // propagation is needed yet.
+                fragmentainer.UsedBlockSize = Math.Max(0,
+                    fragmentainer.UsedBlockSize + marginBoxBlockSizeForCursor);
+                prevBlockMarginEnd = marginEnd;
+                hasPriorAdjoiningBlock = true;
+                emittedThisAttempt++;
+                lastEmittedIdx = childIdx;
                 continue;
             }
 
@@ -3427,6 +3540,34 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 }
             }
 
+            // Per Phase 3 Task 17 cycle 1 post-PR-#92 review F2 —
+            // nested grid container wrapper pre-measure. Mirrors the
+            // outer-dispatch grid pre-measure + the
+            // <see cref="IsMulticolContainer"/> / <see cref="IsFlexContainer"/>
+            // recursive pre-measures above. Without this, an
+            // auto-height grid reached via the recursive walk paints
+            // at its chrome-only natural extent; following block-flow
+            // siblings then visually overlap the grid rows.
+            if (IsGridContainer(child) && IsHeightAuto(child))
+            {
+                var nGridRowExtent = PreMeasureGridRowExtent(child);
+                if (nGridRowExtent > 0)
+                {
+                    var nGridBorderPaddingBlock =
+                        borderStart + paddingStart + paddingEnd + borderEnd;
+                    var nGridDriven =
+                        nGridRowExtent + nGridBorderPaddingBlock;
+                    if (nGridDriven > childBorderBoxBlockSize)
+                    {
+                        childBorderBoxBlockSize = nGridDriven;
+                    }
+                    if (nGridDriven > childEffectiveBlockSize)
+                    {
+                        childEffectiveBlockSize = nGridDriven;
+                    }
+                }
+            }
+
             // Fragment records the BORDER box (not subtree extent) —
             // the subtree extent is for cursor advance only. Per
             // cycle 2b, the painter sees the border box; descendants
@@ -3664,6 +3805,40 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         ConsumedBlockSize: 0,
                         LayouterState: nestedFlexCont);
                 }
+
+                // Advance the cursor + bookkeeping; skip the
+                // EmitBlockSubtreeRecursive below.
+                childCursor = childCursor + topShift + childEffectiveBlockSize + marginEnd;
+                prevMarginEnd = marginEnd;
+                hasPrior = true;
+                continue;
+            }
+
+            // Per Phase 3 Task 17 cycle 1 (Hello World) — nested grid
+            // container dispatch. Same pattern as the outer-loop site:
+            // GridLayouter emits per-item content inside the wrapper.
+            // Cycle 1 is atomic (no PageComplete propagation needed).
+            if (IsGridContainer(child) && _capturedFragmentainer is not null)
+            {
+                var nestedGridGeom = GridGeometryHelper.ComputeContentGeometry(
+                    gridBox: child,
+                    borderBoxInlineSize: childBorderBoxInlineSize,
+                    borderBoxBlockSize: childBorderBoxBlockSize,
+                    borderBoxInlineOffset: childInlineOffset,
+                    borderBoxBlockOffset: childBlockOffset);
+                var nestedGridLayoutCtx = new LayoutContext(_capturedFragmentainer)
+                {
+                    Diagnostics = _diagnostics,
+                };
+                _ = DispatchGridInner(
+                    gridBox: child,
+                    contentInlineOffset: nestedGridGeom.ContentInlineOffset,
+                    contentBlockOffset: nestedGridGeom.ContentBlockOffset,
+                    contentInlineSize: nestedGridGeom.ContentInlineSize,
+                    contentBlockSize: nestedGridGeom.ContentBlockSize,
+                    fragmentainer: _capturedFragmentainer,
+                    layout: ref nestedGridLayoutCtx,
+                    cancellationToken: cancellationToken);
 
                 // Advance the cursor + bookkeeping; skip the
                 // EmitBlockSubtreeRecursive below.
@@ -4294,6 +4469,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// the kind.</para></summary>
     private static bool IsFlexContainer(Box box)
         => box.Kind is BoxKind.FlexContainer or BoxKind.InlineFlexContainer;
+
+    /// <summary>Per Phase 3 Task 17 cycle 1 (Hello World) — predicate
+    /// distinguishing grid containers from regular block-flow containers.
+    /// A box is a grid container when its <see cref="Box.Kind"/> is
+    /// <see cref="BoxKind.GridContainer"/> (block-outer + grid-inner =
+    /// <c>display: grid</c>) or <see cref="BoxKind.InlineGridContainer"/>
+    /// (inline-outer + grid-inner = <c>display: inline-grid</c>).
+    /// Mirrors <see cref="IsFlexContainer"/>; the BoxKind is set by
+    /// <see cref="DisplayMapper"/> at box-generation time so the
+    /// dispatch predicate just reads the kind.</summary>
+    private static bool IsGridContainer(Box box)
+        => box.Kind is BoxKind.GridContainer or BoxKind.InlineGridContainer;
 
     /// <summary>Per Phase 3 Task 16 cycle 4b — predicate identifying
     /// flex containers eligible for multi-page line splitting via the
@@ -6132,6 +6319,83 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             fragmentainer,
             ref layout,
             flexResolver,
+            LayoutAttemptStrategy.LastResort,
+            cancellationToken);
+    }
+
+    /// <summary>Per Phase 3 Task 17 cycle 1 post-PR-#92 review F2 —
+    /// pre-measure helper for auto-height grid containers. Sums the
+    /// explicit row track sizes (= Length entries only; cycle 1 scope)
+    /// to produce the natural block-axis extent the wrapper needs to
+    /// reserve so following block-flow siblings don't overlap the grid.
+    ///
+    /// <para>Non-Length tracks contribute 0 (matching GridLayouter's
+    /// cycle-1 sizing). Returns 0 when the grid has no
+    /// <c>grid-template-rows</c> declaration (= no tracks to sum); the
+    /// caller's pre-grow then doesn't fire + the wrapper stays at the
+    /// chrome-only natural extent.</para>
+    ///
+    /// <para>Cycle 2+ will extend this helper as track sizing gains
+    /// fr / intrinsic / minmax / fit-content / repeat. The math will
+    /// remain at the BlockLayouter pre-measure layer (= the helper
+    /// signature stays stable); only the per-track-kind extent
+    /// derivation grows.</para></summary>
+    private static double PreMeasureGridRowExtent(Box gridBox)
+    {
+        var rows = gridBox.Style.ReadGridTemplateRows();
+        if (rows.Items.IsDefaultOrEmpty) return 0;
+        double sum = 0;
+        foreach (var item in rows.Items)
+        {
+            if (item is NetPdf.Css.ComputedValues.TrackListEntry entry
+                && entry.Entry.Kind == NetPdf.Css.ComputedValues.GridTrackKind.Length
+                && !entry.Entry.IsPercentage)
+            {
+                sum += entry.Entry.LengthPx;
+            }
+            // Cycle 1 ignores non-Length tracks (= 0 contribution).
+            // Cycle 2-4 + 7 will widen this to fr / intrinsic / minmax /
+            // fit-content / repeat in lockstep with the layouter-side
+            // changes; the BlockLayouter consumer doesn't need to
+            // change as long as the helper signature stays stable.
+        }
+        return sum;
+    }
+
+    /// <summary>Per Phase 3 Task 17 cycle 1 (Hello World) — mirrors
+    /// <see cref="DispatchFlexInner"/> for grid containers. The single
+    /// helper used by all 3 dispatch sites (outer / recursive /
+    /// forced-overflow-reroute) so future cycles (= cycle 5 multi-page
+    /// grid) can extend in one place. Cycle 1 ships atomic emission
+    /// only (= no <c>allowPagination</c> parameter; cycle 5 will add it
+    /// when wiring multi-page grid pagination).</summary>
+    private LayoutAttemptResult DispatchGridInner(
+        Box gridBox,
+        double contentInlineOffset,
+        double contentBlockOffset,
+        double contentInlineSize,
+        double contentBlockSize,
+        FragmentainerContext fragmentainer,
+        ref LayoutContext layout,
+        CancellationToken cancellationToken)
+    {
+        using var gridLayouter = new GridLayouter(
+            rootBox: gridBox,
+            sink: _sink,
+            incomingContinuation: null,
+            diagnostics: _diagnostics,
+            shaperResolver: _shaperResolver);
+        gridLayouter.ConfigureEmission(
+            contentInlineOffset: contentInlineOffset,
+            contentBlockOffset: contentBlockOffset,
+            contentInlineSize: contentInlineSize,
+            contentBlockSize: contentBlockSize,
+            allowPagination: false);
+        using var gridResolver = new BreakResolver();
+        return gridLayouter.AttemptLayout(
+            fragmentainer,
+            ref layout,
+            gridResolver,
             LayoutAttemptStrategy.LastResort,
             cancellationToken);
     }

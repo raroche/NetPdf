@@ -786,6 +786,63 @@ public sealed class DiagnosticCodesTests
             NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutFlexWrapReverseApproximated001);
     }
 
+    // ============================================================
+    // Phase 3 Task 17 cycle 1 (Hello World) + post-PR-#92 review F7 —
+    // LAYOUT-GRID-* parity across facade + Paginate constants + docs.
+    // ============================================================
+
+    [Theory]
+    [InlineData("LAYOUT-GRID-TRACK-KIND-UNSUPPORTED-001")]
+    [InlineData("LAYOUT-GRID-PLACEMENT-APPROXIMATED-001")]
+    [InlineData("LAYOUT-GRID-IMPLICIT-TRACK-UNSUPPORTED-001")]
+    [InlineData("LAYOUT-GRID-NON-FINITE-GEOMETRY-001")]
+    public void Layout_grid_codes_appear_in_registry_doc_as_Warning(string code)
+    {
+        var registry = LoadRegistry();
+        var pattern = $@"\|\s*`?({Regex.Escape(code)})`?\s*\|\s*(\w+)\s*\|";
+        var match = Regex.Match(registry, pattern);
+        Assert.True(match.Success,
+            $"{code} row not found in docs/diagnostics-codes.md");
+        Assert.Equal(code, match.Groups[1].Value);
+        Assert.Equal("Warning", match.Groups[2].Value);
+    }
+
+    [Fact]
+    public void Layout_grid_track_kind_unsupported_001_constants_are_stable()
+    {
+        Assert.Equal("LAYOUT-GRID-TRACK-KIND-UNSUPPORTED-001",
+            DiagnosticCodes.LayoutGridTrackKindUnsupported001);
+        Assert.Equal(DiagnosticCodes.LayoutGridTrackKindUnsupported001,
+            NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutGridTrackKindUnsupported001);
+    }
+
+    [Fact]
+    public void Layout_grid_placement_approximated_001_constants_are_stable()
+    {
+        Assert.Equal("LAYOUT-GRID-PLACEMENT-APPROXIMATED-001",
+            DiagnosticCodes.LayoutGridPlacementApproximated001);
+        Assert.Equal(DiagnosticCodes.LayoutGridPlacementApproximated001,
+            NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+    }
+
+    [Fact]
+    public void Layout_grid_implicit_track_unsupported_001_constants_are_stable()
+    {
+        Assert.Equal("LAYOUT-GRID-IMPLICIT-TRACK-UNSUPPORTED-001",
+            DiagnosticCodes.LayoutGridImplicitTrackUnsupported001);
+        Assert.Equal(DiagnosticCodes.LayoutGridImplicitTrackUnsupported001,
+            NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutGridImplicitTrackUnsupported001);
+    }
+
+    [Fact]
+    public void Layout_grid_non_finite_geometry_001_constants_are_stable()
+    {
+        Assert.Equal("LAYOUT-GRID-NON-FINITE-GEOMETRY-001",
+            DiagnosticCodes.LayoutGridNonFiniteGeometry001);
+        Assert.Equal(DiagnosticCodes.LayoutGridNonFiniteGeometry001,
+            NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutGridNonFiniteGeometry001);
+    }
+
     private static string LoadRegistry()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

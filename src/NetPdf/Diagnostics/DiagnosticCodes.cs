@@ -460,5 +460,71 @@ internal static class DiagnosticCodes
     public const string LayoutFlexWrapReverseApproximated001 =
         "LAYOUT-FLEX-WRAP-REVERSE-APPROXIMATED-001";
 
+    /// <summary>
+    /// Per Phase 3 Task 17 cycle 1 (Hello World) — emitted by the grid
+    /// layouter when a <c>grid-template-rows</c> / <c>-columns</c>
+    /// track entry uses a kind that cycle 1 doesn't yet support
+    /// (= anything other than <c>&lt;length&gt;</c>: fr / auto /
+    /// min-content / max-content / minmax / fit-content / repeat).
+    /// Cycle 0a/0b's AST contract parses these forms; cycle 1 only
+    /// layouts pixel tracks. Until cycles 2+ expand coverage,
+    /// non-length tracks contribute 0 px to the track sum. Fires once
+    /// per <c>AttemptLayout</c>. Mirrors
+    /// <c>NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutGridTrackKindUnsupported001</c>.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string LayoutGridTrackKindUnsupported001 =
+        "LAYOUT-GRID-TRACK-KIND-UNSUPPORTED-001";
+
+    /// <summary>
+    /// Per Phase 3 Task 17 cycle 1 (Hello World) + post-PR-#92 review
+    /// F5 — emitted by the grid layouter when an item's declared
+    /// placement uses a value cycle 1 doesn't yet support: <c>span N</c>
+    /// / <c>&lt;custom-ident&gt;</c> (= named line) /
+    /// <c>&lt;custom-ident&gt; N</c>, OR when an item declares a
+    /// non-default <c>grid-{row,column}-end</c> (= author requested a
+    /// multi-cell span). Cycle 1's placement algorithm treats these
+    /// as auto-placement + emits this diagnostic. Cycle 6 ships span;
+    /// cycle 7 ships named lines + areas. Fires per item per axis.
+    /// Mirrors
+    /// <c>NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutGridPlacementApproximated001</c>.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string LayoutGridPlacementApproximated001 =
+        "LAYOUT-GRID-PLACEMENT-APPROXIMATED-001";
+
+    /// <summary>
+    /// Per Phase 3 Task 17 cycle 1 (Hello World) — emitted by the grid
+    /// layouter when a grid item is placed at a cell OUTSIDE the
+    /// explicit grid bounds (= row/column index exceeds the declared
+    /// track count, OR a 0-track grid has no cells to place into).
+    /// Per CSS Grid §7.5 the implicit grid should auto-generate tracks
+    /// via <c>grid-auto-rows</c> / <c>grid-auto-columns</c>; cycle 1
+    /// doesn't yet support implicit tracks, so the item silently drops
+    /// (no fragment emitted). Cycle 6 ships implicit-track generation.
+    /// Fires once per dropped item. Mirrors
+    /// <c>NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutGridImplicitTrackUnsupported001</c>.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string LayoutGridImplicitTrackUnsupported001 =
+        "LAYOUT-GRID-IMPLICIT-TRACK-UNSUPPORTED-001";
+
+    /// <summary>
+    /// Per Phase 3 Task 17 cycle 1 post-PR-#92 review F9 — emitted by
+    /// the grid layouter when cumulative track positions or fragment
+    /// geometry produce a non-finite value (NaN / ±Infinity). Individual
+    /// track sizes are validated finite at AST-construction time, but
+    /// cumulative sums can still overflow when summing very large finite
+    /// tracks (hostile CSS). The layouter detects the non-finite
+    /// cumulative position + skips item emission so paint / PDF cannot
+    /// be corrupted by garbage geometry. Mirrors
+    /// <c>NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutGridNonFiniteGeometry001</c>
+    /// + the LayoutMulticolNonFiniteGeometry001 pattern. Fires once per
+    /// dispatch.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string LayoutGridNonFiniteGeometry001 =
+        "LAYOUT-GRID-NON-FINITE-GEOMETRY-001";
+
     // endregion LAYOUT-*
 }

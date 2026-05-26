@@ -95,11 +95,37 @@ public sealed class GridLayouterTests
     }
 
     [Fact]
-    public void Negative_line_number_counts_from_end_per_spec()
+    public void Negative_minus_two_selects_last_explicit_track_per_spec()
     {
-        // Per §8.3 — negative line numbers count from the end.
-        // -1 → last line → last track (0-based trackCount-1).
-        // grid-row-start: -1 in a 2-row grid → row 1 (= track index 1).
+        // Per §8.3 + PR-#92 review F3 — negative line numbers count
+        // from the END OF THE EXPLICIT GRID. For 2 explicit tracks
+        // there are 3 explicit lines (1, 2, 3). -1 names line 3 (= the
+        // line AFTER the last track; would require implicit). -2 names
+        // line 2 (= start of last explicit track). So `grid-row-start: -2`
+        // in a 2-row grid → places at the LAST EXPLICIT TRACK (row 2).
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(rowsPx: new[] { 100.0, 200.0 }, colsPx: new[] { 50.0, 150.0 });
+        var item = BuildItemWithExplicitPlacement(row: -2, col: -2);
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Single(sink.Fragments);
+        // -2 row → line 2 → track index 1 → blockOffset = 100 (row 2 start).
+        // -2 col → line 2 → track index 1 → inlineOffset = 50 (col 2 start).
+        AssertFragmentEquals(sink, item, inlineOffset: 50, blockOffset: 100, inlineSize: 150, blockSize: 200);
+    }
+
+    [Fact]
+    public void Negative_minus_one_is_implicit_track_drops_with_diagnostic()
+    {
+        // Per PR-#92 review F3 — `-1` = the line AFTER the last track
+        // (= line N+1 in a grid with N tracks). Single-cell placement
+        // at line N+1 requires an implicit row per §7.5 + cycle 1
+        // doesn't support implicit tracks → item drops.
         var sink = new RecordingFragmentSink();
         var diag = new RecordingDiagnosticsSink();
         using var shaper = new SyntheticShaperResolver();
@@ -110,10 +136,27 @@ public sealed class GridLayouterTests
 
         RunGridLayouter(grid, sink, diag, shaper);
 
+        Assert.Empty(sink.Fragments);
+        Assert.Contains(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridImplicitTrackUnsupported001);
+    }
+
+    [Fact]
+    public void Negative_far_from_end_selects_first_explicit_track()
+    {
+        // -3 in a 2-track grid → line 1 (= first explicit line) → track 0.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(rowsPx: new[] { 100.0, 200.0 }, colsPx: new[] { 50.0, 150.0 });
+        var item = BuildItemWithExplicitPlacement(row: -3, col: -3);
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
         Assert.Single(sink.Fragments);
-        // -1 row → track index 1 → blockOffset = 100 (start of row 2).
-        // -1 col → track index 1 → inlineOffset = 50 (start of col 2).
-        AssertFragmentEquals(sink, item, inlineOffset: 50, blockOffset: 100, inlineSize: 150, blockSize: 200);
+        AssertFragmentEquals(sink, item, inlineOffset: 0, blockOffset: 0, inlineSize: 50, blockSize: 100);
     }
 
     // =====================================================================
@@ -200,6 +243,35 @@ public sealed class GridLayouterTests
         // B walks row 1 from col 1 (occupied) → col 2 (free) → places.
         // colPositions: [0, 50, 110]. col 2 (= index 1) starts at 50.
         AssertFragmentEquals(sink, rowLockedB, inlineOffset: 50, blockOffset: 0, inlineSize: 60, blockSize: 100);
+    }
+
+    [Fact]
+    public void Sparse_placement_preserves_source_order_for_auto_and_col_locked()
+    {
+        // Per CSS Grid §8.5 + PR-#92 review F4 — column-locked +
+        // both-auto items share the auto-placement cursor + run in
+        // source order. Children [auto, col-locked-to-col-1] in a
+        // 2-col grid: per spec the auto item places first at (1, 1);
+        // then the col-locked item walks down col 1 from cursor=(1,2)
+        // → finds (2, 1) free → places there. (Pre-F4 the col-locked
+        // ran in a separate pass that placed it at (1, 1), reordering.)
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(rowsPx: new[] { 100.0, 100.0 }, colsPx: new[] { 50.0, 60.0 });
+        var autoFirst = BuildAutoPlacedItem();
+        var colLockedSecond = BuildItemWithColOnlyPlacement(col: 1);
+        grid.AppendChild(autoFirst);
+        grid.AppendChild(colLockedSecond);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Equal(2, sink.Fragments.Count);
+        // autoFirst → (1, 1) = (0, 0)
+        AssertFragmentEquals(sink, autoFirst, inlineOffset: 0, blockOffset: 0, inlineSize: 50, blockSize: 100);
+        // colLockedSecond walks col 1 from cursor.row=1 (= 0-based) → (2, 1) = (0, 100)
+        AssertFragmentEquals(sink, colLockedSecond, inlineOffset: 0, blockOffset: 100, inlineSize: 50, blockSize: 100);
     }
 
     [Fact]
@@ -429,6 +501,146 @@ public sealed class GridLayouterTests
         Assert.Contains("ConfigureEmission", thrown!.Message);
     }
 
+    // =====================================================================
+    //  PR-#92 review F5 — non-default end line emits diagnostic
+    // =====================================================================
+
+    [Fact]
+    public void Non_auto_grid_row_end_emits_placement_approximated_diagnostic()
+    {
+        // Per F5 — `grid-row: 1 / 3` (= span 2 rows) gets shrunk to a
+        // single cell at the start line in cycle 1. The diagnostic
+        // surfaces the silent area shrink.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(rowsPx: new[] { 100.0, 200.0 }, colsPx: new[] { 50.0, 150.0 });
+        var item = BuildItemWithExplicitStartAndEnd(rowStart: 1, rowEnd: 3, colStart: 1, colEnd: 1);
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Single(sink.Fragments);
+        // Item lands at single cell (1, 1) per start lines only.
+        AssertFragmentEquals(sink, item, inlineOffset: 0, blockOffset: 0, inlineSize: 50, blockSize: 100);
+        Assert.Contains(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+    }
+
+    [Fact]
+    public void Non_auto_grid_column_end_emits_placement_approximated_diagnostic()
+    {
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(rowsPx: new[] { 100.0 }, colsPx: new[] { 50.0, 150.0 });
+        var item = BuildItemWithExplicitStartAndEnd(rowStart: 1, rowEnd: 1, colStart: 1, colEnd: 3);
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Single(sink.Fragments);
+        Assert.Contains(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+    }
+
+    // =====================================================================
+    //  PR-#92 review F6 — empty grid emits per-item drop diagnostic
+    // =====================================================================
+
+    [Fact]
+    public void Empty_grid_template_with_children_emits_implicit_track_diagnostic_per_item()
+    {
+        // Per F6 — pre-fix the 0-track early-return silently dropped
+        // children; post-fix each grid-item child gets a diagnostic.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildEmptyGridContainer();
+        grid.AppendChild(BuildAutoPlacedItem());
+        grid.AppendChild(BuildAutoPlacedItem());
+        grid.AppendChild(BuildAutoPlacedItem());
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Empty(sink.Fragments);
+        var implicitDiagnostics = diag.Diagnostics.FindAll(d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridImplicitTrackUnsupported001);
+        Assert.Equal(3, implicitDiagnostics.Count);
+    }
+
+    // =====================================================================
+    //  PR-#92 review F8 — throwing diagnostic sink doesn't abort layout
+    // =====================================================================
+
+    [Fact]
+    public void Throwing_diagnostic_sink_does_not_abort_layout()
+    {
+        // Per F8 — diagnostic emission is nonfatal. A malformed sink
+        // that throws must not abort layout.
+        var sink = new RecordingFragmentSink();
+        var throwingDiag = new ThrowingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(rowsPx: new[] { 100.0 }, colsPx: new[] { 100.0 });
+        // Build with grid-row-start: span 2 — triggers
+        // LayoutGridPlacementApproximated001 → throwing sink → must
+        // NOT abort the layouter.
+        var item = BuildItemWithSpanRowStart(spanCount: 2);
+        grid.AppendChild(item);
+
+        using var layouter = new GridLayouter(
+            rootBox: grid, sink: sink, incomingContinuation: null,
+            diagnostics: throwingDiag, shaperResolver: shaper);
+        layouter.ConfigureEmission(
+            contentInlineOffset: 0, contentBlockOffset: 0,
+            contentInlineSize: 200, contentBlockSize: 200,
+            allowPagination: false);
+        var ctx = new FragmentainerContext(contentInlineSize: 200, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        // Must NOT throw — F8 catches sink exceptions internally.
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // Layout completed; item was placed despite throwing sink.
+        Assert.Single(sink.Fragments);
+    }
+
+    // =====================================================================
+    //  PR-#92 review F9 — non-finite cumulative geometry skips items
+    // =====================================================================
+
+    [Fact]
+    public void Non_finite_cumulative_track_position_skips_items_with_diagnostic()
+    {
+        // Per F9 — hostile CSS with very large finite tracks can
+        // overflow cumulative sums to ±Infinity. The layouter detects
+        // this + skips item emission to protect downstream paint.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        // Each track is finite (= passes ForLength's IsFinite check)
+        // but their sum overflows double.MaxValue (~1.8e308) to ∞.
+        var hugeFinite = 1e308;
+        var rows = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForLength(hugeFinite)),
+            new TrackListEntry(TrackEntry.ForLength(hugeFinite))));
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForLength(100))));
+        var grid = BuildGridContainerWithTemplates(rows, cols);
+        grid.AppendChild(BuildAutoPlacedItem());
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Empty(sink.Fragments);
+        Assert.Contains(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridNonFiniteGeometry001);
+    }
+
     [Fact]
     public void ConfigureEmission_with_allowPagination_true_throws_at_AttemptLayout()
     {
@@ -569,6 +781,27 @@ public sealed class GridLayouterTests
         return Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
     }
 
+    /// <summary>Per PR-#92 review F5 — build an item with explicit
+    /// start AND end lines on both axes (= the cycle-1 span case the
+    /// diagnostic surfaces).</summary>
+    private static Box BuildItemWithExplicitStartAndEnd(int rowStart, int rowEnd, int colStart, int colEnd)
+    {
+        var style = MakeStyle();
+        var rowStartValue = GridLineValue.ForLineNumber(rowStart);
+        style.SetSideTablePayload(PropertyId.GridRowStart, (object)rowStartValue);
+        style.Set(PropertyId.GridRowStart, ComputedSlot.FromSideTableIndex(0));
+        var rowEndValue = GridLineValue.ForLineNumber(rowEnd);
+        style.SetSideTablePayload(PropertyId.GridRowEnd, (object)rowEndValue);
+        style.Set(PropertyId.GridRowEnd, ComputedSlot.FromSideTableIndex(0));
+        var colStartValue = GridLineValue.ForLineNumber(colStart);
+        style.SetSideTablePayload(PropertyId.GridColumnStart, (object)colStartValue);
+        style.Set(PropertyId.GridColumnStart, ComputedSlot.FromSideTableIndex(0));
+        var colEndValue = GridLineValue.ForLineNumber(colEnd);
+        style.SetSideTablePayload(PropertyId.GridColumnEnd, (object)colEndValue);
+        style.Set(PropertyId.GridColumnEnd, ComputedSlot.FromSideTableIndex(0));
+        return Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+    }
+
     private static Box BuildAutoPlacedItem()
     {
         // No grid-row-start / grid-column-start set → readers return
@@ -605,6 +838,18 @@ public sealed class GridLayouterTests
     {
         public List<PaginateDiagnostic> Diagnostics { get; } = new();
         public void Emit(PaginateDiagnostic diagnostic) => Diagnostics.Add(diagnostic);
+    }
+
+    /// <summary>Per PR-#92 review F8 — a diagnostic sink that ALWAYS
+    /// throws on Emit. Used to verify the GridLayouter's safe-emit
+    /// pattern catches the throw + layout completes anyway.</summary>
+    private sealed class ThrowingDiagnosticsSink : IPaginateDiagnosticsSink
+    {
+        public void Emit(PaginateDiagnostic diagnostic)
+        {
+            throw new System.InvalidOperationException(
+                "F8 test: diagnostic sink throws to verify safe-emit pattern.");
+        }
     }
 
     private sealed class SyntheticShaperResolver : IShaperResolver, System.IDisposable

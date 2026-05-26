@@ -284,18 +284,45 @@ internal sealed class GridLayouter : ILayouter, IDisposable
         var colSizes = ResolveTrackSizes(_rootBox.Style.ReadGridTemplateColumns());
 
         // No explicit tracks → no cells to place into. Cycle 1 doesn't
-        // generate implicit tracks (§7.5); emit a diagnostic + return
-        // AllDone with no per-item fragments. The wrapper fragment is
-        // already on the sink from the dispatcher.
+        // generate implicit tracks (§7.5). Per PR-#92 review F6 — emit
+        // an implicit-track diagnostic for EACH grid-item child that
+        // gets silently dropped (= matches the per-item diagnostic
+        // contract documented in LayoutGridImplicitTrackUnsupported001).
+        // Pre-F6 the early return silently swallowed all children.
         if (rowSizes.Count == 0 || colSizes.Count == 0)
         {
+            foreach (var child in _rootBox.Children)
+            {
+                if (!IsGridItem(child)) continue;
+                EmitImplicitTrackDiagnostic(child);
+            }
             return LayoutAttemptResult.AllDone(cost: 0.0);
         }
 
         // Step 2 — compute track positions (cumulative sums starting
-        // at the content-area origin).
+        // at the content-area origin). Per PR-#92 review F9 — validate
+        // that cumulative sums stay finite. Hostile CSS like
+        // `grid-template-rows: 1e300px 1e300px` can overflow during
+        // accumulation even though each individual track passed the
+        // AST-time finite-value check.
         var rowPositions = ComputeTrackPositions(rowSizes, _contentBlockOffset);
         var colPositions = ComputeTrackPositions(colSizes, _contentInlineOffset);
+        if (!IsTrackGeometryFinite(rowPositions, rowSizes)
+            || !IsTrackGeometryFinite(colPositions, colSizes))
+        {
+            SafeEmit(new PaginateDiagnostic(
+                Code: PaginateDiagnosticCodes.LayoutGridNonFiniteGeometry001,
+                Message: "Grid container's resolved track positions or "
+                    + "per-track (position + size) overflowed to a "
+                    + "non-finite value (NaN / ±Infinity). Individual "
+                    + "tracks were finite at AST-construction time but "
+                    + "their cumulative sums overflowed (= probably hostile "
+                    + "CSS with very large track lengths). Item emission "
+                    + "is skipped to prevent corrupting downstream paint / "
+                    + "PDF geometry.",
+                Severity: PaginateDiagnosticSeverity.Warning));
+            return LayoutAttemptResult.AllDone(cost: 0.0);
+        }
 
         // Step 3 — initialize the 2-D occupancy grid (rowCount × colCount).
         var rowCount = rowSizes.Count;
@@ -313,6 +340,14 @@ internal sealed class GridLayouter : ILayouter, IDisposable
         foreach (var child in _rootBox.Children)
         {
             if (!IsGridItem(child)) continue;
+            // Per PR-#92 review F5 — read both start AND end line
+            // values so a non-default end (= author requested a span)
+            // can emit LayoutGridPlacementApproximated001. Cycle 1
+            // doesn't support span; the item still falls back to
+            // single-cell placement at the start line, but the
+            // diagnostic surfaces the silent area shrink.
+            CheckEndLineForSpanDiagnostic(child.Style, isRow: true);
+            CheckEndLineForSpanDiagnostic(child.Style, isRow: false);
             placedItems.Add(new PlacedItem
             {
                 Box = child,
@@ -379,82 +414,116 @@ internal sealed class GridLayouter : ILayouter, IDisposable
             placedItems[i] = item;
         }
 
-        // Pass 3 — column-locked (auto row, definite column).
-        for (var i = 0; i < placedItems.Count; i++)
-        {
-            cancellationToken.ThrowIfCancellationRequested();
-            var item = placedItems[i];
-            if (item.RowSpec.Kind != PlacementKind.Auto
-                || item.ColSpec.Kind != PlacementKind.Definite)
-            {
-                continue;
-            }
-            if (item.Row >= 0) continue;
-            var colZero = ResolveDefiniteToZeroBased(item.ColSpec.Line, colCount);
-            if (colZero < 0 || colZero >= colCount)
-            {
-                EmitImplicitTrackDiagnostic(item.Box);
-                continue;
-            }
-            var rowZero = FindFirstFreeRowInColumn(occupancy, colZero, rowCount);
-            if (rowZero < 0)
-            {
-                EmitImplicitTrackDiagnostic(item.Box);
-                continue;
-            }
-            item.Row = rowZero;
-            item.Col = colZero;
-            occupancy[rowZero, colZero] = true;
-            placedItems[i] = item;
-        }
-
-        // Pass 4 — both auto (sparse auto-placement per §8.5). Cursor
-        // starts at (0, 0) and walks row-major; after placing an item
-        // at (r, c), the cursor moves to (r, c+1) (wrapping to (r+1, 0)
-        // when c+1 == colCount).
+        // Pass 3 — Per CSS Grid §8.5 + PR-#92 review F4 — column-locked
+        // and both-auto items are processed TOGETHER in source order
+        // with a SHARED auto-placement cursor. Pre-F4 these were split
+        // into two passes (col-locked first, both-auto second), which
+        // reordered items contrary to spec: e.g., children
+        // [auto, col-locked-to-col-1] in a 2-col grid would place the
+        // col-locked first (at (1,1)) then the auto at (1,2), instead
+        // of the spec-correct auto at (1,1) then col-locked at (2,1).
+        //
+        // Algorithm (sparse mode — the cycle-1 default; dense is cycle 7+):
+        //   cursor = (0, 0)
+        //   for each remaining unplaced item in DOM/source order:
+        //     if column-locked (auto row, definite col):
+        //       walk DOWN the declared column starting at cursor.row
+        //       until finding a free cell; place there.
+        //       (Per §8.5 the cursor doesn't advance for column-locked
+        //        items — the cursor's purpose is sparse auto-placement
+        //        order, which col-locked items don't participate in.)
+        //     if both-auto:
+        //       walk row-major from cursor until finding a free cell;
+        //       place there. Advance cursor past the placement.
         var cursorRow = 0;
         var cursorCol = 0;
         for (var i = 0; i < placedItems.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
             var item = placedItems[i];
-            if (item.Row >= 0) continue; // already placed by earlier pass
-            // Only process items where BOTH specs are Auto. Items that
-            // had a Definite spec but failed placement (= out-of-range
-            // line numbers per §7.5 implicit-track gap) were diagnosed
-            // by their respective pass + must NOT fall back to sparse
-            // auto-placement; that would silently place them in cells
-            // the author never asked for.
-            if (item.RowSpec.Kind != PlacementKind.Auto
-                || item.ColSpec.Kind != PlacementKind.Auto)
+            if (item.Row >= 0) continue; // already placed by pass 1 or 2
+
+            // Items with definite row + auto col are pass-2 work; if we
+            // see one here it means pass 2 dropped it (= out-of-range
+            // declared row). Don't fall through to auto-placement;
+            // those drops were already diagnosed.
+            if (item.RowSpec.Kind == PlacementKind.Definite
+                && item.ColSpec.Kind == PlacementKind.Auto)
             {
                 continue;
             }
-            if (!TryFindNextSparseCell(
-                    occupancy, cursorRow, cursorCol, rowCount, colCount,
-                    out var foundRow, out var foundCol))
+
+            // Column-locked: definite column, auto row.
+            if (item.RowSpec.Kind == PlacementKind.Auto
+                && item.ColSpec.Kind == PlacementKind.Definite)
             {
-                EmitImplicitTrackDiagnostic(item.Box);
+                var colZero = ResolveDefiniteToZeroBased(item.ColSpec.Line, colCount);
+                if (colZero < 0 || colZero >= colCount)
+                {
+                    EmitImplicitTrackDiagnostic(item.Box);
+                    continue;
+                }
+                // Walk down the column from cursor.row to find a free cell.
+                // Per §8.5 the column-locked item searches from the
+                // cursor's CURRENT row (not necessarily row 0).
+                var rowZero = FindFirstFreeRowInColumnFrom(
+                    occupancy, colZero, rowCount, startRow: cursorRow);
+                if (rowZero < 0)
+                {
+                    EmitImplicitTrackDiagnostic(item.Box);
+                    continue;
+                }
+                item.Row = rowZero;
+                item.Col = colZero;
+                occupancy[rowZero, colZero] = true;
+                placedItems[i] = item;
+                // Per §8.5 the cursor doesn't advance for column-locked
+                // items.
                 continue;
             }
-            item.Row = foundRow;
-            item.Col = foundCol;
-            occupancy[foundRow, foundCol] = true;
-            placedItems[i] = item;
-            // Advance cursor past the placed cell.
-            cursorRow = foundRow;
-            cursorCol = foundCol + 1;
-            if (cursorCol >= colCount)
+
+            // Both auto: sparse cursor walk.
+            if (item.RowSpec.Kind == PlacementKind.Auto
+                && item.ColSpec.Kind == PlacementKind.Auto)
             {
-                cursorRow++;
-                cursorCol = 0;
+                if (!TryFindNextSparseCell(
+                        occupancy, cursorRow, cursorCol, rowCount, colCount,
+                        out var foundRow, out var foundCol))
+                {
+                    EmitImplicitTrackDiagnostic(item.Box);
+                    continue;
+                }
+                item.Row = foundRow;
+                item.Col = foundCol;
+                occupancy[foundRow, foundCol] = true;
+                placedItems[i] = item;
+                // Advance cursor past the placed cell.
+                cursorRow = foundRow;
+                cursorCol = foundCol + 1;
+                if (cursorCol >= colCount)
+                {
+                    cursorRow++;
+                    cursorCol = 0;
+                }
+                continue;
             }
+
+            // Both definite: handled by pass 1. If we reach here, pass 1
+            // dropped the item (out-of-range placement). Already diagnosed.
         }
 
         // Step 5 — emit each placed item as a BoxFragment at its cell's
-        // top-left + sized to the cell's extents. Items the placement
-        // algorithm couldn't place (= dropped to implicit-track
-        // diagnostic) skip emission.
+        // top-left + sized to the cell's extents, THEN per PR-#92
+        // review F1 dispatch the item's INNER content via a sub-
+        // BlockLayouter so text + nested blocks + replaced content
+        // actually render. Pre-F1 only the empty item rectangle
+        // survived; real markup like
+        //   <div style="display:grid">Invoice total</div>
+        // emitted a cell but lost the text. Mirrors the TableLayouter
+        // cell-content dispatch pattern (= MeasuringFragmentSink with
+        // coordinate translation from inner-cell origin to outer
+        // fragmentainer coordinates; sub-BlockLayouter with the item
+        // as rootBox).
         foreach (var item in placedItems)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -469,9 +538,134 @@ internal sealed class GridLayouter : ILayouter, IDisposable
                 BlockOffset: blockOffset,
                 InlineSize: inlineSize,
                 BlockSize: blockSize));
+
+            // F1 — only dispatch inner content when the item has
+            // children (text-runs / nested boxes). Empty items skip the
+            // sub-layouter (= cycle-1 pre-fix behavior + no overhead
+            // for the empty-item case the tests originally covered).
+            if (item.Box.Children.Count > 0
+                && inlineSize > 0 && blockSize > 0)
+            {
+                DispatchGridItemContents(
+                    itemBox: item.Box,
+                    cellInlineOffset: inlineOffset,
+                    cellBlockOffset: blockOffset,
+                    cellInlineSize: inlineSize,
+                    cellBlockSize: blockSize,
+                    outerFragmentainer: fragmentainer,
+                    outerLayout: ref layout,
+                    cancellationToken: cancellationToken);
+            }
         }
 
         return LayoutAttemptResult.AllDone(cost: 0.0);
+    }
+
+    /// <summary>Per PR-#92 review F1 — lay out one grid item's INNER
+    /// content (text-runs, nested blocks, etc.) via a sub-BlockLayouter
+    /// rooted at <paramref name="itemBox"/>. The inner layouter emits
+    /// fragments in cell-relative coordinates; the
+    /// <see cref="TranslatingFragmentSink"/> translates them into outer
+    /// fragmentainer coordinates so the painter sees absolute positions.
+    /// Mirrors the TableLayouter cell-content dispatch pattern
+    /// (= MeasuringFragmentSink + sub-BlockLayouter with the cell as
+    /// rootBox).
+    ///
+    /// <para>Cycle 1 contract: items emit at the cell's geometry
+    /// (= cellInlineSize × cellBlockSize). Item content that overflows
+    /// the cell is emitted at its natural extent (= visual overflow);
+    /// cell-internal alignment (justify-self / align-self) is a
+    /// separate Task. Inner pagination uses LastResort strategy so the
+    /// item content commits in one pass (= cycle 5+ adds proper
+    /// multi-page grid pagination).</para></summary>
+    private void DispatchGridItemContents(
+        Box itemBox,
+        double cellInlineOffset,
+        double cellBlockOffset,
+        double cellInlineSize,
+        double cellBlockSize,
+        FragmentainerContext outerFragmentainer,
+        ref LayoutContext outerLayout,
+        CancellationToken cancellationToken)
+    {
+        // Translating sink: converts inner cell-relative offsets into
+        // outer fragmentainer-coordinate fragments before forwarding to
+        // the outer sink.
+        var translatingSink = new TranslatingFragmentSink(
+            outerSink: _sink,
+            inlineTranslation: cellInlineOffset,
+            blockTranslation: cellBlockOffset);
+
+        // Inner fragmentainer sized to the cell. Per cycle 1 this is
+        // atomic — the sub-BlockLayouter commits the item's content in
+        // one pass via LastResort; overflow is the spec'd cycle-1
+        // behavior (item content exceeding the cell renders at natural
+        // extent + visually overflows).
+        var innerFragmentainer = new FragmentainerContext(
+            contentInlineSize: cellInlineSize,
+            blockSize: cellBlockSize);
+        var innerLayout = new LayoutContext(innerFragmentainer)
+        {
+            Diagnostics = outerLayout.Diagnostics,
+            WritingMode = outerLayout.WritingMode,
+            IsRtl = outerLayout.IsRtl,
+        };
+
+        using var itemLayouter = new BlockLayouter(
+            rootBox: itemBox,
+            sink: translatingSink,
+            incomingContinuation: null,
+            diagnostics: _diagnostics,
+            shaperResolver: _shaperResolver);
+        using var itemResolver = new BreakResolver();
+        _ = itemLayouter.AttemptLayout(
+            innerFragmentainer,
+            ref innerLayout,
+            itemResolver,
+            LayoutAttemptStrategy.LastResort,
+            cancellationToken);
+    }
+
+    /// <summary>Per PR-#92 review F1 — a fragment-sink wrapper that
+    /// translates inner (cell-relative) offsets to outer fragmentainer
+    /// coordinates before forwarding to the real sink. Mirrors
+    /// <c>TableLayouter.MeasuringFragmentSink</c>'s translation but
+    /// without the buffering/measurement layer (= cycle-1 grid doesn't
+    /// pre-measure rows yet; cycle 5+ adds that).</summary>
+    private sealed class TranslatingFragmentSink : IBlockFragmentSink
+    {
+        private readonly IBlockFragmentSink _outer;
+        private readonly double _inlineTranslation;
+        private readonly double _blockTranslation;
+        private readonly int _baseline;
+
+        public TranslatingFragmentSink(
+            IBlockFragmentSink outerSink,
+            double inlineTranslation,
+            double blockTranslation)
+        {
+            _outer = outerSink;
+            _inlineTranslation = inlineTranslation;
+            _blockTranslation = blockTranslation;
+            _baseline = outerSink.Cursor;
+        }
+
+        public int Cursor => _outer.Cursor - _baseline;
+
+        public void Emit(BoxFragment fragment)
+        {
+            _outer.Emit(fragment with
+            {
+                InlineOffset = fragment.InlineOffset + _inlineTranslation,
+                BlockOffset = fragment.BlockOffset + _blockTranslation,
+            });
+        }
+
+        public void RollbackTo(int cursor)
+        {
+            // Map inner cursor to outer cursor + delegate.
+            _outer.RollbackTo(_baseline + cursor);
+        }
     }
 
     public void Dispose()
@@ -545,11 +739,34 @@ internal sealed class GridLayouter : ILayouter, IDisposable
         return positions;
     }
 
+    /// <summary>Per PR-#92 review F9 — true when every position in
+    /// <paramref name="positions"/> AND every (position + size) per
+    /// track is finite (= no NaN, no ±Infinity). The position list
+    /// alone doesn't catch the overflow at the LAST track
+    /// (= position[N-1] is finite but position[N-1] + size[N-1] would
+    /// be the position of the next-track-that-doesn't-exist; this
+    /// overflowing right-edge IS used as the item's
+    /// <c>InlineOffset + InlineSize</c> in the BoxFragment, so we must
+    /// validate it). Caller emits a diagnostic + skips item emission
+    /// when this returns false.</summary>
+    private static bool IsTrackGeometryFinite(
+        List<double> positions, List<double> sizes)
+    {
+        for (var i = 0; i < positions.Count; i++)
+        {
+            if (!double.IsFinite(positions[i])) return false;
+            // (position + size) must also be finite — that's the
+            // track's right/bottom edge as emitted in a BoxFragment.
+            if (!double.IsFinite(positions[i] + sizes[i])) return false;
+        }
+        return true;
+    }
+
     private void EmitTrackKindDiagnostic(GridTrackKind kind)
     {
         if (_emittedTrackKindDiagnostic) return;
         _emittedTrackKindDiagnostic = true;
-        _diagnostics?.Emit(new PaginateDiagnostic(
+        SafeEmit(new PaginateDiagnostic(
             Code: PaginateDiagnosticCodes.LayoutGridTrackKindUnsupported001,
             Message: $"Grid track kind {kind} is not supported in cycle 1 "
                 + "(Hello World); only <length> tracks contribute. The "
@@ -560,13 +777,39 @@ internal sealed class GridLayouter : ILayouter, IDisposable
 
     private void EmitImplicitTrackDiagnostic(Box itemBox)
     {
-        _diagnostics?.Emit(new PaginateDiagnostic(
+        SafeEmit(new PaginateDiagnostic(
             Code: PaginateDiagnosticCodes.LayoutGridImplicitTrackUnsupported001,
             Message: $"Grid item (kind={itemBox.Kind}) was placed outside "
                 + "the explicit grid bounds; cycle 1 doesn't yet generate "
                 + "implicit tracks per §7.5. Item dropped (no fragment "
                 + "emitted). Cycle 6 will ship implicit-track generation.",
             Severity: PaginateDiagnosticSeverity.Warning));
+    }
+
+    /// <summary>Per PR-#92 review F8 — defensive diagnostic emission.
+    /// The pagination contract treats diagnostic emission as nonfatal
+    /// (= a malformed or throwing client sink must not abort layout).
+    /// Catching <see cref="Exception"/> at this layer matches the
+    /// safe-emit pattern used elsewhere in the layouter family +
+    /// satisfies the F8 throwing-sink regression test. The caught
+    /// exception is silently swallowed (no inner sink to forward to);
+    /// if/when the project gains a fallback diagnostic channel for
+    /// throwing sinks, this is the single hook to wire it through.</summary>
+    private void SafeEmit(PaginateDiagnostic diagnostic)
+    {
+        if (_diagnostics is null) return;
+        try
+        {
+            _diagnostics.Emit(diagnostic);
+        }
+        catch
+        {
+            // Diagnostic emission must not abort layout. Swallow the
+            // exception per the F8 nonfatal-contract; client sinks are
+            // responsible for not throwing in production but we defend
+            // here so a malformed sink can't take the whole document
+            // down.
+        }
     }
 
     // =====================================================================
@@ -603,7 +846,7 @@ internal sealed class GridLayouter : ILayouter, IDisposable
 
     private PlacementSpec EmitPlacementApproximatedAndFallToAuto(GridLineKind kind)
     {
-        _diagnostics?.Emit(new PaginateDiagnostic(
+        SafeEmit(new PaginateDiagnostic(
             Code: PaginateDiagnosticCodes.LayoutGridPlacementApproximated001,
             Message: $"Grid item placement kind {kind} is not supported in "
                 + "cycle 1; falling back to auto-placement. Cycle 6 will "
@@ -612,9 +855,65 @@ internal sealed class GridLayouter : ILayouter, IDisposable
         return new PlacementSpec(PlacementKind.Auto, 0);
     }
 
+    /// <summary>Per PR-#92 review F5 — diagnose non-default
+    /// <c>grid-{row,column}-end</c> values (= author requested a span)
+    /// so the cycle-1 single-cell approximation is visible. The end-line
+    /// value isn't consumed for placement (cycle 6 will), but its
+    /// presence indicates the author intended a multi-cell area; the
+    /// diagnostic warns that the area is being shrunk.
+    ///
+    /// <para><b>What counts as "non-default":</b> any value other than
+    /// <see cref="GridLineKind.Auto"/>. CSS Grid's default end is
+    /// <c>auto</c> = span 1 = single cell. The literal
+    /// <c>grid-row-end: 2</c> when start is 1 is technically equivalent
+    /// to single-cell, but distinguishing that case requires resolving
+    /// both endpoints to compare; cycle 1 takes the conservative path
+    /// + emits the diagnostic for any non-auto end so the author sees
+    /// the cycle-1 limitation surfaced.</para></summary>
+    private void CheckEndLineForSpanDiagnostic(ComputedStyle style, bool isRow)
+    {
+        var endValue = isRow
+            ? style.ReadGridRowEnd()
+            : style.ReadGridColumnEnd();
+        if (endValue.Kind != GridLineKind.Auto)
+        {
+            SafeEmit(new PaginateDiagnostic(
+                Code: PaginateDiagnosticCodes.LayoutGridPlacementApproximated001,
+                Message: (isRow ? "grid-row-end" : "grid-column-end")
+                    + $" = {endValue.Kind} (non-default) — cycle 1 doesn't"
+                    + " support multi-cell spans, so the item is placed at"
+                    + " its start line as a single cell (= the authored"
+                    + " area is shrunk). Cycle 6 ships span semantics.",
+                Severity: PaginateDiagnosticSeverity.Warning));
+        }
+    }
+
     /// <summary>Resolve a CSS Grid line number (1-based, with negatives
-    /// counting from the end per §8.3) to a 0-based row/column index.
-    /// Returns -1 when the resolved index falls outside [0, trackCount).</summary>
+    /// counting from the end per §8.3) to a 0-based TRACK index for
+    /// single-cell placement (= the item occupies the track AFTER its
+    /// start line). Returns a value outside <c>[0, trackCount)</c> to
+    /// signal "implicit-track required" (= cycle 1 drops the item).
+    ///
+    /// <para><b>Line vs track per CSS Grid §8.</b> For N explicit tracks
+    /// there are N+1 explicit lines (= line K is the boundary between
+    /// track K-1 and track K, 1-based). Single-cell placement at
+    /// <c>grid-row-start: K</c> occupies the track AFTER line K (= track
+    /// index K-1, 0-based). When K = N+1 (= the last line), there's no
+    /// track after it; the implicit grid would auto-generate a new
+    /// track per §7.5. Cycle 1 doesn't support implicit tracks, so
+    /// out-of-range returns trigger the implicit-track diagnostic + the
+    /// item drops.</para>
+    ///
+    /// <para><b>Negative line numbers per §8.3 (post-PR-#92 review F3 fix).</b>
+    /// "Negative integers count back from the end of the explicit grid"
+    /// — so <c>-1</c> = the LAST explicit line = line N+1 (1-based) =
+    /// the line AFTER the last explicit track. Single-cell placement at
+    /// <c>grid-row-start: -1</c> in a 2-track grid means start at line 3
+    /// (= the line after the last track) → requires implicit row →
+    /// drops in cycle 1. <c>-2</c> = line N (1-based) = start of the
+    /// last explicit track → track index N-1. Pre-F3 the formula was
+    /// off by one (treated <c>-1</c> as the last explicit track instead
+    /// of the line after it).</para></summary>
     private static int ResolveDefiniteToZeroBased(int lineNumber, int trackCount)
     {
         if (lineNumber == 0)
@@ -623,24 +922,18 @@ internal sealed class GridLayouter : ILayouter, IDisposable
             // it but defense in depth.
             return -1;
         }
-        int zeroBased;
         if (lineNumber > 0)
         {
-            // Line numbers are 1-based, but they identify the LINE not
-            // the TRACK. Per CSS Grid §8 a line-N value means "the
-            // item's edge is at line N"; the track between lines N and
-            // N+1 is track N (1-based) = track index N-1 (0-based).
-            // grid-row-start: 2 → track index 1.
-            zeroBased = lineNumber - 1;
+            // Positive: 1-based line K → 0-based track index K-1.
+            return lineNumber - 1;
         }
-        else
-        {
-            // Negative — count from the end. -1 means the LAST line
-            // (= the line AFTER the last track), so -1 maps to track
-            // index trackCount-1 (the last track). -2 → trackCount-2.
-            zeroBased = trackCount + lineNumber;
-        }
-        return zeroBased;
+        // Negative per §8.3 — count from the end of the explicit grid.
+        // Lines are 1-indexed from the explicit grid's start (1..N+1);
+        // -1 = the LAST line = line N+1; -K = line N+2-K.
+        // Single-cell placement at start line L (1-based) occupies track
+        // index L-1, so track = (N+2-K) - 1 = N+1-K = trackCount + 1 + lineNumber
+        // (since lineNumber is -K).
+        return trackCount + 1 + lineNumber;
     }
 
     /// <summary>Pass 2 helper — find the first column in <paramref name="row"/>
@@ -659,6 +952,22 @@ internal sealed class GridLayouter : ILayouter, IDisposable
     private static int FindFirstFreeRowInColumn(bool[,] occupancy, int col, int rowCount)
     {
         for (var r = 0; r < rowCount; r++)
+        {
+            if (!occupancy[r, col]) return r;
+        }
+        return -1;
+    }
+
+    /// <summary>Per PR-#92 review F4 — column-locked variant that searches
+    /// from <paramref name="startRow"/> rather than from row 0. Per CSS
+    /// Grid §8.5 the merged-pass column-locked item searches from the
+    /// shared auto-placement cursor's current row (not necessarily 0).
+    /// Returns -1 when the column has no free row from
+    /// <paramref name="startRow"/> onwards (= would need an implicit row).</summary>
+    private static int FindFirstFreeRowInColumnFrom(
+        bool[,] occupancy, int col, int rowCount, int startRow)
+    {
+        for (var r = startRow; r < rowCount; r++)
         {
             if (!occupancy[r, col]) return r;
         }

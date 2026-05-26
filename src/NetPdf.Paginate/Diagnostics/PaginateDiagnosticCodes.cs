@@ -336,4 +336,20 @@ internal static class PaginateDiagnosticCodes
     /// Warning.</summary>
     public const string LayoutGridImplicitTrackUnsupported001 =
         "LAYOUT-GRID-IMPLICIT-TRACK-UNSUPPORTED-001";
+
+    /// <summary>Per Phase 3 Task 17 cycle 1 post-PR-#92 review F9 —
+    /// emitted when a grid container's resolved track positions or
+    /// item fragment geometry produces a non-finite value
+    /// (NaN / ±Infinity). Individual track sizes are validated finite
+    /// at AST construction time (cycle-0a P3 #8 factories), but
+    /// cumulative sums can still overflow when summing very large
+    /// finite tracks (= hostile CSS like
+    /// <c>grid-template-rows: 1e300px 1e300px</c>). The layouter
+    /// detects the non-finite cumulative position + emits a fragment
+    /// at clamped zero-size geometry so paint / PDF emission can't
+    /// corrupt downstream. Mirrors
+    /// <see cref="LayoutMulticolNonFiniteGeometry001"/>. Fires once per
+    /// dispatch. Severity: Warning.</summary>
+    public const string LayoutGridNonFiniteGeometry001 =
+        "LAYOUT-GRID-NON-FINITE-GEOMETRY-001";
 }

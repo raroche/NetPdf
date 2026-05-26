@@ -289,6 +289,174 @@ public sealed class GridLayouterProductionTests
         Assert.Equal(20.0, b.Value.BlockOffset, precision: 3);
     }
 
+    // =====================================================================
+    //  PR-#92 review F1 — grid item contents are laid out
+    // =====================================================================
+
+    [Fact]
+    public async Task Production_html_grid_item_with_nested_block_emits_inner_fragment()
+    {
+        // Per F1 — pre-fix grid items emitted only an empty rectangle;
+        // nested block content was silently dropped. Post-fix the
+        // sub-BlockLayouter walks each item + emits per-child fragments
+        // at cell-relative offsets translated to fragmentainer
+        // coordinates.
+        //
+        // Markup: 1x1 grid with one item containing a nested div.
+        // The nested div should produce its own fragment INSIDE the
+        // cell (= inline offset relative to cell start).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 200px;
+                    grid-template-columns: 200px;
+                }
+                .item {}
+                .inner { height: 50px; width: 100px; }
+            </style></head><body>
+            <div class="grid">
+              <div class="item"><div class="inner"></div></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var item = FindByClass(sink, "item");
+        var inner = FindByClass(sink, "inner");
+        Assert.NotNull(item);
+        Assert.NotNull(inner);
+
+        // Item cell at (0, 0, 200, 200).
+        Assert.Equal(0.0, item!.Value.InlineOffset, precision: 3);
+        Assert.Equal(0.0, item.Value.BlockOffset, precision: 3);
+        // Inner div lives INSIDE the cell at cell-relative (0, 0); the
+        // sub-BlockLayouter's TranslatingFragmentSink shifted it to the
+        // cell's absolute origin.
+        Assert.Equal(0.0, inner!.Value.InlineOffset, precision: 3);
+        Assert.Equal(0.0, inner.Value.BlockOffset, precision: 3);
+        Assert.Equal(50.0, inner.Value.BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public async Task Production_html_grid_item_with_multiple_children_emits_all_fragments()
+    {
+        // Stacked nested blocks inside an item — sub-BlockLayouter
+        // walks both + emits each at the right cell-relative offset.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 200px;
+                    grid-template-columns: 200px;
+                }
+                .first { height: 50px; width: 200px; }
+                .second { height: 60px; width: 150px; }
+            </style></head><body>
+            <div class="grid">
+              <div class="item">
+                <div class="first"></div>
+                <div class="second"></div>
+              </div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var first = FindByClass(sink, "first");
+        var second = FindByClass(sink, "second");
+        Assert.NotNull(first);
+        Assert.NotNull(second);
+
+        // First nested block: at cell origin.
+        Assert.Equal(0.0, first!.Value.InlineOffset, precision: 3);
+        Assert.Equal(0.0, first.Value.BlockOffset, precision: 3);
+        Assert.Equal(50.0, first.Value.BlockSize, precision: 3);
+        // Second stacks below first inside cell.
+        Assert.Equal(0.0, second!.Value.InlineOffset, precision: 3);
+        Assert.Equal(50.0, second.Value.BlockOffset, precision: 3);
+        Assert.Equal(60.0, second.Value.BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public async Task Production_html_two_cells_with_inner_content_each_translate_correctly()
+    {
+        // Two cells side-by-side, each with its own inner block. Tests
+        // the TranslatingFragmentSink correctly anchors each cell's
+        // inner content at its own cell's origin.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 100px;
+                    grid-template-columns: 100px 100px;
+                }
+                .leftInner { height: 40px; }
+                .rightInner { height: 60px; }
+            </style></head><body>
+            <div class="grid">
+              <div class="cell-a"><div class="leftInner"></div></div>
+              <div class="cell-b"><div class="rightInner"></div></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var leftInner = FindByClass(sink, "leftInner");
+        var rightInner = FindByClass(sink, "rightInner");
+        Assert.NotNull(leftInner);
+        Assert.NotNull(rightInner);
+
+        // leftInner lives inside cell-a at (0, 0).
+        Assert.Equal(0.0, leftInner!.Value.InlineOffset, precision: 3);
+        Assert.Equal(0.0, leftInner.Value.BlockOffset, precision: 3);
+        // rightInner lives inside cell-b at (100, 0).
+        Assert.Equal(100.0, rightInner!.Value.InlineOffset, precision: 3);
+        Assert.Equal(0.0, rightInner.Value.BlockOffset, precision: 3);
+    }
+
+    // =====================================================================
+    //  PR-#92 review F2 — auto-height grid wrapper grows; no overlap
+    // =====================================================================
+
+    [Fact]
+    public async Task Production_html_auto_height_grid_grows_and_does_not_overlap_following_sibling()
+    {
+        // Per F2 — pre-fix an auto-height grid (= no height declared)
+        // kept its wrapper at chrome-only extent; a following block-flow
+        // sibling overlapped the grid rows. Post-fix the pre-measure
+        // grows the wrapper to the row-track sum, so the sibling lands
+        // BELOW the grid's natural extent.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 100px 200px;
+                    grid-template-columns: 100px;
+                }
+                .item {}
+                .following { height: 30px; width: 200px; }
+            </style></head><body>
+            <div class="grid">
+              <div class="item"></div>
+            </div>
+            <div class="following"></div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var following = FindByClass(sink, "following");
+        Assert.NotNull(following);
+        // Grid's natural block extent = 100 + 200 = 300px (sum of row
+        // tracks). The following sibling should land at block-offset
+        // 300 (no overlap), NOT at 0.
+        Assert.Equal(300.0, following!.Value.BlockOffset, precision: 3);
+    }
+
     [Fact]
     public async Task Production_html_empty_grid_template_emits_no_item_fragments()
     {

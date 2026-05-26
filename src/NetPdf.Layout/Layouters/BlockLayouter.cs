@@ -1614,6 +1614,42 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 }
             }
 
+            // Per Phase 3 Task 17 cycle 1 post-PR-#92 review F2 — grid
+            // container pre-measure for auto-height wrappers. Without
+            // this the wrapper's borderBoxBlockSize stays at the
+            // chrome-only initialization (= 0 + borders + padding) when
+            // the author didn't declare height; following block-flow
+            // siblings then visually overlap the grid rows because the
+            // outer cursor advances by 0 + chrome instead of by the
+            // grid's natural row-track sum.
+            //
+            // Cycle 1 contract: sum the explicit row tracks (= Length
+            // entries only; cycle 2-7 will widen to fr / intrinsic /
+            // repeat). The sum is the natural block extent of the
+            // grid's content area; add the wrapper's own block-axis
+            // chrome to get the natural border-box block extent. If
+            // larger than the current borderBoxBlockSize, grow.
+            //
+            // Mirrors the flex / multicol / table pre-measure pattern
+            // earlier in this outer dispatch path. Cycle 5 will add a
+            // paginatable-grid clamp here too (= matching the
+            // paginatable-flex clamp above when grid pagination ships).
+            if (IsGridContainer(child) && IsHeightAuto(child))
+            {
+                var gridRowExtent = PreMeasureGridRowExtent(child);
+                if (gridRowExtent > 0)
+                {
+                    var gridBorderPaddingBlock =
+                        borderStart + paddingStart + paddingEnd + borderEnd;
+                    var gridDrivenBorderBox =
+                        gridRowExtent + gridBorderPaddingBlock;
+                    if (gridDrivenBorderBox > borderBoxBlockSize)
+                    {
+                        borderBoxBlockSize = gridDrivenBorderBox;
+                    }
+                }
+            }
+
             // Per cycle 2c post-PR-29 review #7 — `marginBoxBlockSize`
             // (= `topShift + borderBoxBlockSize + marginEnd`) was
             // removed. Cycle 2c introduced the subtree-aware
@@ -3500,6 +3536,34 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         childBorderBoxBlockSize = pageRemainingForFlex;
                         childEffectiveBlockSize = pageRemainingForFlex;
                         paginateFlexForChild = true;
+                    }
+                }
+            }
+
+            // Per Phase 3 Task 17 cycle 1 post-PR-#92 review F2 —
+            // nested grid container wrapper pre-measure. Mirrors the
+            // outer-dispatch grid pre-measure + the
+            // <see cref="IsMulticolContainer"/> / <see cref="IsFlexContainer"/>
+            // recursive pre-measures above. Without this, an
+            // auto-height grid reached via the recursive walk paints
+            // at its chrome-only natural extent; following block-flow
+            // siblings then visually overlap the grid rows.
+            if (IsGridContainer(child) && IsHeightAuto(child))
+            {
+                var nGridRowExtent = PreMeasureGridRowExtent(child);
+                if (nGridRowExtent > 0)
+                {
+                    var nGridBorderPaddingBlock =
+                        borderStart + paddingStart + paddingEnd + borderEnd;
+                    var nGridDriven =
+                        nGridRowExtent + nGridBorderPaddingBlock;
+                    if (nGridDriven > childBorderBoxBlockSize)
+                    {
+                        childBorderBoxBlockSize = nGridDriven;
+                    }
+                    if (nGridDriven > childEffectiveBlockSize)
+                    {
+                        childEffectiveBlockSize = nGridDriven;
                     }
                 }
             }
@@ -6257,6 +6321,45 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             flexResolver,
             LayoutAttemptStrategy.LastResort,
             cancellationToken);
+    }
+
+    /// <summary>Per Phase 3 Task 17 cycle 1 post-PR-#92 review F2 —
+    /// pre-measure helper for auto-height grid containers. Sums the
+    /// explicit row track sizes (= Length entries only; cycle 1 scope)
+    /// to produce the natural block-axis extent the wrapper needs to
+    /// reserve so following block-flow siblings don't overlap the grid.
+    ///
+    /// <para>Non-Length tracks contribute 0 (matching GridLayouter's
+    /// cycle-1 sizing). Returns 0 when the grid has no
+    /// <c>grid-template-rows</c> declaration (= no tracks to sum); the
+    /// caller's pre-grow then doesn't fire + the wrapper stays at the
+    /// chrome-only natural extent.</para>
+    ///
+    /// <para>Cycle 2+ will extend this helper as track sizing gains
+    /// fr / intrinsic / minmax / fit-content / repeat. The math will
+    /// remain at the BlockLayouter pre-measure layer (= the helper
+    /// signature stays stable); only the per-track-kind extent
+    /// derivation grows.</para></summary>
+    private static double PreMeasureGridRowExtent(Box gridBox)
+    {
+        var rows = gridBox.Style.ReadGridTemplateRows();
+        if (rows.Items.IsDefaultOrEmpty) return 0;
+        double sum = 0;
+        foreach (var item in rows.Items)
+        {
+            if (item is NetPdf.Css.ComputedValues.TrackListEntry entry
+                && entry.Entry.Kind == NetPdf.Css.ComputedValues.GridTrackKind.Length
+                && !entry.Entry.IsPercentage)
+            {
+                sum += entry.Entry.LengthPx;
+            }
+            // Cycle 1 ignores non-Length tracks (= 0 contribution).
+            // Cycle 2-4 + 7 will widen this to fr / intrinsic / minmax /
+            // fit-content / repeat in lockstep with the layouter-side
+            // changes; the BlockLayouter consumer doesn't need to
+            // change as long as the helper signature stays stable.
+        }
+        return sum;
     }
 
     /// <summary>Per Phase 3 Task 17 cycle 1 (Hello World) — mirrors

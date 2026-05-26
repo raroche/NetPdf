@@ -315,14 +315,24 @@ internal sealed class GridLayouter : ILayouter, IDisposable
             heightSlot.Tag is ComputedSlotTag.Unset or ComputedSlotTag.Keyword;
         var isInlineIndefinite =
             widthSlot.Tag is ComputedSlotTag.Unset or ComputedSlotTag.Keyword;
+        // Per Phase 3 Task 17 cycle 3 — capture the per-track kinds so
+        // the post-placement intrinsic-resolution pass knows which
+        // tracks need item-derived sizing. Length tracks resolve here;
+        // intrinsic (auto / min-content / max-content) tracks start at
+        // 0 + get filled from placed items below; fr tracks resolve
+        // via the post-intrinsic §11.7 pass.
+        var rowKinds = new List<GridTrackKind>();
+        var colKinds = new List<GridTrackKind>();
         var rowSizes = ResolveTrackSizes(
             _rootBox.Style.ReadGridTemplateRows(),
             _contentBlockSize,
-            isAxisIndefinite: isBlockIndefinite);
+            isAxisIndefinite: isBlockIndefinite,
+            kindsOut: rowKinds);
         var colSizes = ResolveTrackSizes(
             _rootBox.Style.ReadGridTemplateColumns(),
             _contentInlineSize,
-            isAxisIndefinite: isInlineIndefinite);
+            isAxisIndefinite: isInlineIndefinite,
+            kindsOut: colKinds);
 
         // No explicit tracks → no cells to place into. Cycle 1 doesn't
         // generate implicit tracks (§7.5). Per PR-#92 review F6 — emit
@@ -340,32 +350,12 @@ internal sealed class GridLayouter : ILayouter, IDisposable
             return LayoutAttemptResult.AllDone(cost: 0.0);
         }
 
-        // Step 2 — compute track positions (cumulative sums starting
-        // at the content-area origin). Per PR-#92 review F9 — validate
-        // that cumulative sums stay finite. Hostile CSS like
-        // `grid-template-rows: 1e300px 1e300px` can overflow during
-        // accumulation even though each individual track passed the
-        // AST-time finite-value check.
-        var rowPositions = ComputeTrackPositions(rowSizes, _contentBlockOffset);
-        var colPositions = ComputeTrackPositions(colSizes, _contentInlineOffset);
-        if (!IsTrackGeometryFinite(rowPositions, rowSizes)
-            || !IsTrackGeometryFinite(colPositions, colSizes))
-        {
-            SafeEmit(new PaginateDiagnostic(
-                Code: PaginateDiagnosticCodes.LayoutGridNonFiniteGeometry001,
-                Message: "Grid container's resolved track positions or "
-                    + "per-track (position + size) overflowed to a "
-                    + "non-finite value (NaN / ±Infinity). Individual "
-                    + "tracks were finite at AST-construction time but "
-                    + "their cumulative sums overflowed (= probably hostile "
-                    + "CSS with very large track lengths). Item emission "
-                    + "is skipped to prevent corrupting downstream paint / "
-                    + "PDF geometry.",
-                Severity: PaginateDiagnosticSeverity.Warning));
-            return LayoutAttemptResult.AllDone(cost: 0.0);
-        }
-
         // Step 3 — initialize the 2-D occupancy grid (rowCount × colCount).
+        // Per cycle 3 the position computation moves AFTER intrinsic
+        // resolution (= sizes may change once placed items contribute
+        // to intrinsic tracks). The track COUNT is stable here though
+        // (= determined by TrackList.Items.Length), so placement runs
+        // first against counts; positions + finite-check after sizing.
         var rowCount = rowSizes.Count;
         var colCount = colSizes.Count;
         var occupancy = new bool[rowCount, colCount];
@@ -551,6 +541,66 @@ internal sealed class GridLayouter : ILayouter, IDisposable
 
             // Both definite: handled by pass 1. If we reach here, pass 1
             // dropped the item (out-of-range placement). Already diagnosed.
+        }
+
+        // Per Phase 3 Task 17 cycle 3 — intrinsic-track resolution from
+        // placed items. CSS Grid §11.5 says auto / min-content /
+        // max-content tracks get their size from the max content
+        // contribution of items spanning them; cycle 3 ships with the
+        // L19 approximation per the design doc (= contribution = the
+        // item's explicit declared width/height on the matching axis;
+        // 0 for items with no explicit dimension). All three intrinsic
+        // kinds resolve identically under the cycle-3 approximation.
+        // Full intrinsic content measurement lands with the project's
+        // L19 work (= matches the flex `min-width: auto` deferral).
+        //
+        // After intrinsic sizes change the non-fr base sum, re-run the
+        // §11.7 fr distribution so fr tracks redistribute the corrected
+        // leftover. NB: ResolveFrTracks was already called once inside
+        // ResolveTrackSizes with intrinsic = 0; the second call updates
+        // fr with the new bases. The double-call is acceptable cycle-3
+        // cost (= cycle 4+ may extract a shared sizing pipeline that
+        // computes intrinsic + fr in one pass).
+        var rowIntrinsicChanged = ResolveIntrinsicTracks(
+            rowSizes, rowKinds, placedItems, isRowAxis: true);
+        var colIntrinsicChanged = ResolveIntrinsicTracks(
+            colSizes, colKinds, placedItems, isRowAxis: false);
+        if (rowIntrinsicChanged)
+        {
+            ReResolveFrAfterIntrinsic(
+                rowSizes, rowKinds,
+                _rootBox.Style.ReadGridTemplateRows(),
+                _contentBlockSize);
+        }
+        if (colIntrinsicChanged)
+        {
+            ReResolveFrAfterIntrinsic(
+                colSizes, colKinds,
+                _rootBox.Style.ReadGridTemplateColumns(),
+                _contentInlineSize);
+        }
+
+        // Per Phase 3 Task 17 cycle 3 — compute track positions AFTER
+        // intrinsic / fr resolution so the cumulative sums reflect
+        // the final track sizes. Per PR-#92 review F9 — validate that
+        // cumulative sums stay finite.
+        var rowPositions = ComputeTrackPositions(rowSizes, _contentBlockOffset);
+        var colPositions = ComputeTrackPositions(colSizes, _contentInlineOffset);
+        if (!IsTrackGeometryFinite(rowPositions, rowSizes)
+            || !IsTrackGeometryFinite(colPositions, colSizes))
+        {
+            SafeEmit(new PaginateDiagnostic(
+                Code: PaginateDiagnosticCodes.LayoutGridNonFiniteGeometry001,
+                Message: "Grid container's resolved track positions or "
+                    + "per-track (position + size) overflowed to a "
+                    + "non-finite value (NaN / ±Infinity). Individual "
+                    + "tracks were finite at AST-construction time but "
+                    + "their cumulative sums overflowed (= probably hostile "
+                    + "CSS with very large track lengths). Item emission "
+                    + "is skipped to prevent corrupting downstream paint / "
+                    + "PDF geometry.",
+                Severity: PaginateDiagnosticSeverity.Warning));
+            return LayoutAttemptResult.AllDone(cost: 0.0);
         }
 
         // Step 5 — emit each placed item as a BoxFragment at its cell's
@@ -779,6 +829,15 @@ internal sealed class GridLayouter : ILayouter, IDisposable
     private List<double> ResolveTrackSizes(
         TrackList trackList, double containerExtent, bool isAxisIndefinite)
     {
+        return ResolveTrackSizes(
+            trackList, containerExtent, isAxisIndefinite,
+            kindsOut: null);
+    }
+
+    private List<double> ResolveTrackSizes(
+        TrackList trackList, double containerExtent, bool isAxisIndefinite,
+        List<GridTrackKind>? kindsOut)
+    {
         var sizes = new List<double>(trackList.Items.Length);
         // Per cycle 2 — gather (kind, value) per track in a single pass.
         // Length tracks get their px value immediately; fr tracks get
@@ -792,6 +851,13 @@ internal sealed class GridLayouter : ILayouter, IDisposable
         // for non-fr.
         var isFr = new List<bool>(trackList.Items.Length);
         var frFactors = new List<double>(trackList.Items.Length);
+        // Per Phase 3 Task 17 cycle 3 — also export the per-track
+        // GridTrackKind so the caller's post-placement intrinsic-
+        // resolution pass knows which tracks need item-derived sizing.
+        // Cycle 3 supports Auto / MinContent / MaxContent (= all three
+        // resolve identically under the L19 approximation: max of
+        // explicit declared width/height of items spanning the track,
+        // or 0 if no item has an explicit dimension on this axis).
         foreach (var item in trackList.Items)
         {
             if (item is TrackListEntry entry)
@@ -802,21 +868,44 @@ internal sealed class GridLayouter : ILayouter, IDisposable
                         sizes.Add(entry.Entry.LengthPx);
                         isFr.Add(false);
                         frFactors.Add(0);
+                        kindsOut?.Add(GridTrackKind.Length);
                         break;
                     case GridTrackKind.Fr:
                         // Placeholder; resolved in the §11.7 pass below.
                         sizes.Add(0);
                         isFr.Add(true);
                         frFactors.Add(entry.Entry.FrValue);
+                        kindsOut?.Add(GridTrackKind.Fr);
+                        break;
+                    case GridTrackKind.Auto:
+                    case GridTrackKind.MinContent:
+                    case GridTrackKind.MaxContent:
+                        // Per Phase 3 Task 17 cycle 3 — intrinsic tracks.
+                        // Placeholder 0 here; the caller's post-placement
+                        // pass walks placed items + sets size = max of
+                        // explicit declared width/height (per L19
+                        // approximation; cycle ?? L19 ships true
+                        // intrinsic content measurement). All three
+                        // kinds resolve identically under the cycle-3
+                        // approximation (= max-content behavior, since
+                        // items contribute their declared dimensions
+                        // regardless of min/max-content semantics).
+                        // The AST preserves which keyword was authored
+                        // (per cycle-0a P2 #5) so future cycles can
+                        // diverge their resolution; cycle 3 collapses.
+                        sizes.Add(0);
+                        isFr.Add(false);
+                        frFactors.Add(0);
+                        kindsOut?.Add(entry.Entry.Kind);
                         break;
                     default:
-                        // Length-with-percentage / Auto / MinContent /
-                        // MaxContent / MinMax / FitContent — cycle 3+
-                        // scope. Contribute 0.
+                        // Length-with-percentage / MinMax / FitContent
+                        // — cycle 4+ scope. Contribute 0.
                         EmitTrackKindDiagnostic(entry.Entry.Kind);
                         sizes.Add(0);
                         isFr.Add(false);
                         frFactors.Add(0);
+                        kindsOut?.Add(entry.Entry.Kind);
                         break;
                 }
             }
@@ -879,6 +968,104 @@ internal sealed class GridLayouter : ILayouter, IDisposable
                 + "intent: declare an explicit height/width on the grid "
                 + "container, OR wait for cycle 3.",
             Severity: PaginateDiagnosticSeverity.Warning));
+    }
+
+    /// <summary>Per Phase 3 Task 17 cycle 3 — resolve intrinsic
+    /// (auto / min-content / max-content) tracks from placed items.
+    /// Cycle 3 ships the L19 approximation: each intrinsic track's
+    /// size = max declared width/height of items placed at that track
+    /// (= "specified size suggestion" per CSS Sizing §5.5). All three
+    /// intrinsic kinds resolve identically under the approximation;
+    /// the AST preserves which keyword was authored (cycle-0a P2 #5)
+    /// so future cycles can diverge.
+    ///
+    /// <para>Returns true if any intrinsic track changed size — the
+    /// caller then re-runs the §11.7 fr distribution since the non-fr
+    /// base sum changed (= fr tracks need to redistribute the
+    /// corrected leftover).</para>
+    ///
+    /// <para><b>Cycle 3 simplifications</b>:
+    /// <list type="bullet">
+    ///   <item>Single-cell items only (cycle 6 ships span); each item
+    ///   contributes to its row track and its column track based on
+    ///   its declared height/width respectively.</item>
+    ///   <item>Items with no explicit dimension on the axis contribute
+    ///   0 (= matches the flex `min-width: auto` deferral pattern;
+    ///   L19 ships true intrinsic content measurement).</item>
+    /// </list></para></summary>
+    private bool ResolveIntrinsicTracks(
+        List<double> sizes, List<GridTrackKind> kinds,
+        List<PlacedItem> placedItems, bool isRowAxis)
+    {
+        var anyChanged = false;
+        for (var i = 0; i < sizes.Count; i++)
+        {
+            var kind = kinds[i];
+            if (kind is not (GridTrackKind.Auto
+                or GridTrackKind.MinContent
+                or GridTrackKind.MaxContent))
+            {
+                continue;
+            }
+            double maxContribution = 0;
+            foreach (var item in placedItems)
+            {
+                if (item.Row < 0 || item.Col < 0) continue;
+                var matchesTrack = isRowAxis ? (item.Row == i) : (item.Col == i);
+                if (!matchesTrack) continue;
+                var declared = isRowAxis
+                    ? item.Box.Style.ReadLengthPxOrZero(PropertyId.Height)
+                    : item.Box.Style.ReadLengthPxOrZero(PropertyId.Width);
+                if (declared > maxContribution) maxContribution = declared;
+            }
+            if (maxContribution > 0 && maxContribution != sizes[i])
+            {
+                sizes[i] = maxContribution;
+                anyChanged = true;
+            }
+        }
+        return anyChanged;
+    }
+
+    /// <summary>Per Phase 3 Task 17 cycle 3 — re-run the §11.7 fr
+    /// distribution after intrinsic tracks gained content-derived
+    /// bases. The intrinsic fill changed the non-fr base sum, so fr
+    /// tracks need to redistribute the corrected leftover. Mirrors
+    /// the initial track-classification flow but with the intrinsic
+    /// kinds now counted in the non-fr base.</summary>
+    private void ReResolveFrAfterIntrinsic(
+        List<double> sizes, List<GridTrackKind> kinds,
+        TrackList trackList, double containerExtent)
+    {
+        // Re-classify isFr + frFactors from the AST + use current sizes
+        // (= intrinsic now has its content-derived value; length kept
+        // its declared value; fr will be re-distributed).
+        var isFr = new List<bool>(sizes.Count);
+        var frFactors = new List<double>(sizes.Count);
+        var idx = 0;
+        foreach (var item in trackList.Items)
+        {
+            if (item is TrackListEntry entry)
+            {
+                if (idx >= sizes.Count) break;
+                if (entry.Entry.Kind == GridTrackKind.Fr)
+                {
+                    isFr.Add(true);
+                    frFactors.Add(entry.Entry.FrValue);
+                    sizes[idx] = 0; // reset fr to 0 so leftover calc uses new bases
+                }
+                else
+                {
+                    isFr.Add(false);
+                    frFactors.Add(0);
+                }
+                idx++;
+            }
+            // TrackListRepeat + TrackListNamedLine were skipped during
+            // initial classification too.
+        }
+        // Re-run the fr distribution with the corrected base sum.
+        ResolveFrTracks(sizes, isFr, frFactors, containerExtent);
     }
 
     /// <summary>Per CSS Grid §11.7 "Find the Size of an fr" — distribute
@@ -1042,10 +1229,11 @@ internal sealed class GridLayouter : ILayouter, IDisposable
         SafeEmit(new PaginateDiagnostic(
             Code: PaginateDiagnosticCodes.LayoutGridTrackKindUnsupported001,
             Message: $"Grid track kind {kind} is not yet supported "
-                + "(cycle 2 ships <length> + <flex>/fr via §11.7; "
-                + "intrinsic / minmax / fit-content / repeat are cycle "
-                + "3-7 scope). The track contributes 0 px to the track "
-                + "sum.",
+                + "(cycle 3 ships <length> + <flex>/fr via §11.7 + "
+                + "intrinsic auto / min-content / max-content via the "
+                + "L19 approximation; minmax / fit-content / repeat are "
+                + "cycle 4-7 scope). The track contributes 0 px to the "
+                + "track sum.",
             Severity: PaginateDiagnosticSeverity.Warning));
     }
 

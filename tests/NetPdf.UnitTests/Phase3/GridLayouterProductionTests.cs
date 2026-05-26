@@ -507,6 +507,75 @@ public sealed class GridLayouterProductionTests
         Assert.Equal(1000.0 / 3, c.Value.InlineSize, precision: 2);
     }
 
+    // =====================================================================
+    //  Cycle 3 — intrinsic sizing (auto / min-content / max-content)
+    // =====================================================================
+
+    [Fact]
+    public async Task Production_html_auto_row_sizes_from_item_height()
+    {
+        // Per cycle 3 — auto row track size = max declared height of
+        // items placed at that row.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: auto;
+                    grid-template-columns: 200px;
+                    height: 200px;
+                    width: 200px;
+                }
+                .item { height: 75px; }
+            </style></head><body>
+            <div class="grid">
+              <div class="item"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var item = FindByClass(sink, "item");
+        Assert.NotNull(item);
+        // Auto row sized to item's 75px height.
+        Assert.Equal(75.0, item!.Value.BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public async Task Production_html_auto_plus_fr_redistributes_after_intrinsic()
+    {
+        // grid-template-rows: auto 1fr with explicit height 400.
+        // Row 1 (auto) gets item1's height=100; row 2 (fr) gets 300.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: auto 1fr;
+                    grid-template-columns: 200px;
+                    width: 200px;
+                    height: 400px;
+                }
+                .row1 { grid-row-start: 1; height: 100px; }
+                .row2 { grid-row-start: 2; }
+            </style></head><body>
+            <div class="grid">
+              <div class="row1"></div>
+              <div class="row2"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var r1 = FindByClass(sink, "row1");
+        var r2 = FindByClass(sink, "row2");
+        Assert.NotNull(r1);
+        Assert.NotNull(r2);
+        Assert.Equal(100.0, r1!.Value.BlockSize, precision: 3);
+        Assert.Equal(300.0, r2!.Value.BlockSize, precision: 3);
+        Assert.Equal(100.0, r2.Value.BlockOffset, precision: 3);
+    }
+
     [Fact]
     public async Task Production_html_auto_height_fr_row_emits_indefinite_diagnostic()
     {

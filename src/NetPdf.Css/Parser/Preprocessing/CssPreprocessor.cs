@@ -174,6 +174,23 @@ internal static class CssPreprocessor
         // longhand recovery records (`flex-direction` / `flex-wrap`)
         // in place of the single dropped `flex-flow` declaration.
         "flex-flow",
+        // Per Phase 3 Task 17 cycle 0c — grid-line shorthands per CSS
+        // Grid L1 §8.4. AngleSharp.Css 1.0.0-beta.144 doesn't reliably
+        // round-trip these into their two-longhand expansions; the
+        // recovery path calls
+        // <see cref="GridLineShorthandExpander.TryExpand"/> at emission
+        // time + emits TWO longhand recovery records (the start +
+        // end longhand for the row or column).
+        "grid-row",
+        "grid-column",
+        // Per Phase 3 Task 17 cycle 0c — grid-area shorthand per §8.4.
+        // <see cref="GridAreaShorthandExpander.TryExpand"/> emits FOUR
+        // longhand recovery records (the four grid-line longhands).
+        // Named-area references (= grid-area: my-area-name resolving
+        // to a grid-template-areas name) are cycle 7's scope; cycle 0c
+        // treats every identifier as a <custom-ident> per the §8.4
+        // fallback rule.
+        "grid-area",
     }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
@@ -718,6 +735,70 @@ internal static class CssPreprocessor
                         SourceOrdinal: ordinal));
                     output.Add(new CssDeclarationRecovery(
                         "flex-wrap", ffWrap, isImportant,
+                        IsFromShorthandExpansion: true,
+                        SourceOrdinal: ordinal));
+                    sawShorthand = true;
+                }
+                // Per Phase 3 Task 17 cycle 0c — grid-row / grid-column
+                // shorthands per CSS Grid L1 §8.4. Each expands into a
+                // (start, end) pair of longhand recovery records sharing
+                // the source ordinal.
+                else if (normalizedName == "grid-row"
+                    && GridLineShorthandExpander.TryExpand(
+                        cleanValue,
+                        out var grStart,
+                        out var grEnd))
+                {
+                    output.Add(new CssDeclarationRecovery(
+                        "grid-row-start", grStart, isImportant,
+                        IsFromShorthandExpansion: true,
+                        SourceOrdinal: ordinal));
+                    output.Add(new CssDeclarationRecovery(
+                        "grid-row-end", grEnd, isImportant,
+                        IsFromShorthandExpansion: true,
+                        SourceOrdinal: ordinal));
+                    sawShorthand = true;
+                }
+                else if (normalizedName == "grid-column"
+                    && GridLineShorthandExpander.TryExpand(
+                        cleanValue,
+                        out var gcStart,
+                        out var gcEnd))
+                {
+                    output.Add(new CssDeclarationRecovery(
+                        "grid-column-start", gcStart, isImportant,
+                        IsFromShorthandExpansion: true,
+                        SourceOrdinal: ordinal));
+                    output.Add(new CssDeclarationRecovery(
+                        "grid-column-end", gcEnd, isImportant,
+                        IsFromShorthandExpansion: true,
+                        SourceOrdinal: ordinal));
+                    sawShorthand = true;
+                }
+                // Per Phase 3 Task 17 cycle 0c — grid-area shorthand
+                // per §8.4. Expands into all FOUR grid-line longhands.
+                else if (normalizedName == "grid-area"
+                    && GridAreaShorthandExpander.TryExpand(
+                        cleanValue,
+                        out var gaRowStart,
+                        out var gaColumnStart,
+                        out var gaRowEnd,
+                        out var gaColumnEnd))
+                {
+                    output.Add(new CssDeclarationRecovery(
+                        "grid-row-start", gaRowStart, isImportant,
+                        IsFromShorthandExpansion: true,
+                        SourceOrdinal: ordinal));
+                    output.Add(new CssDeclarationRecovery(
+                        "grid-column-start", gaColumnStart, isImportant,
+                        IsFromShorthandExpansion: true,
+                        SourceOrdinal: ordinal));
+                    output.Add(new CssDeclarationRecovery(
+                        "grid-row-end", gaRowEnd, isImportant,
+                        IsFromShorthandExpansion: true,
+                        SourceOrdinal: ordinal));
+                    output.Add(new CssDeclarationRecovery(
+                        "grid-column-end", gaColumnEnd, isImportant,
                         IsFromShorthandExpansion: true,
                         SourceOrdinal: ordinal));
                     sawShorthand = true;

@@ -57,6 +57,9 @@ public sealed class DeferralsParityTests
         "grid-sizing-perf-optimizations-deferred",
         "grid-sizing-architecture-followups-deferred",
         "grid-break-resolver-integration-deferred",
+        "grid-wrapper-rollback-for-pre-dispatch-deferral",
+        "grid-fragment-extent-emitted-rows-only-deferral",
+        "grid-explicit-height-paginate-deferral",
     };
 
     [Fact]

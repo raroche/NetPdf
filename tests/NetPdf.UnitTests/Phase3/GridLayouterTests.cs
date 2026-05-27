@@ -2584,6 +2584,111 @@ public sealed class GridLayouterTests
     }
 
     [Fact]
+    public void Cycle5b_F5_block_layouter_rejects_misrouted_grid_continuation()
+    {
+        // Per PR-#97 review F5 — BlockLayouter.AttemptLayout entry
+        // guard validates that a BlockContinuation carrying a
+        // GridContinuation in LayouterState targets a GridContainer /
+        // InlineGridContainer / block-flow container that could
+        // contain one. Misrouted (= pointing at a leaf non-grid
+        // non-block-flow kind like TableCell) surfaces loudly with
+        // InvalidOperationException rather than silently ignoring
+        // the resume state. Mirrors the cycle-4b
+        // Task16_block_layouter_rejects_misrouted_flex_continuation
+        // test in FlexLayouterTests.cs.
+        var rootStyle = MakeStyle();
+        var root = Box.CreateRoot(rootStyle);
+        var tableCellStyle = MakeStyle();
+        var tableCell = Box.ForElement(BoxKind.TableCell, tableCellStyle, MakeElement());
+        root.AppendChild(tableCell);
+
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+        var misrouted = new BlockContinuation(
+            ResumeAtChild: 0,
+            ConsumedBlockSize: 0.0,
+            LayouterState: new GridContinuation(RowIndex: 0));
+
+        using var layouter = new BlockLayouter(
+            rootBox: root, sink: sink,
+            incomingContinuation: misrouted,
+            diagnostics: null, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 200, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        System.InvalidOperationException? thrown = null;
+        try
+        {
+            layouter.AttemptLayout(ctx, ref layoutCtx, resolver,
+                LayoutAttemptStrategy.LastResort);
+        }
+        catch (System.InvalidOperationException ex) { thrown = ex; }
+        Assert.NotNull(thrown);
+        Assert.Contains("GridContinuation", thrown!.Message);
+    }
+
+    [Fact]
+    public void Cycle5b_F4_resume_with_different_inline_size_preserves_RowIndex_no_duplication()
+    {
+        // Per PR-#97 review F4 — pre-fix: when cache rejected for
+        // inline-size mismatch on the SAME grid, startRow was reset
+        // to 0 → page 2 re-emitted page 1's items. Post-fix: when
+        // identity matches but inline size differs, preserve RowIndex
+        // + recompute geometry. The remaining item emits exactly once.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 100.0 },
+            colsPx: new[] { 100.0 });
+        SetExplicitWidth(grid, 100);
+        SetExplicitHeight(grid, 200);
+        var item1 = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var item2 = BuildItemWithExplicitPlacement(row: 2, col: 1);
+        grid.AppendChild(item1);
+        grid.AppendChild(item2);
+
+        // Page 1: emit row 1, defer row 2. Cache built at width 100.
+        var sinkPage1 = new RecordingFragmentSink();
+        using var page1 = new GridLayouter(
+            rootBox: grid, sink: sinkPage1,
+            incomingContinuation: null,
+            diagnostics: diag, shaperResolver: shaper);
+        page1.ConfigureEmission(0, 0, 100, 100, allowPagination: true);
+        var ctx1 = new FragmentainerContext(contentInlineSize: 100, blockSize: 100);
+        var layoutCtx1 = new LayoutContext(ctx1);
+        using var resolver1 = new BreakResolver();
+        var result1 = page1.AttemptLayout(
+            ctx1, ref layoutCtx1, resolver1, LayoutAttemptStrategy.LastResort);
+        var continuation = (GridContinuation)result1.Continuation!;
+        Assert.Equal(1, continuation.RowIndex);
+        Assert.Single(sinkPage1.Fragments);
+
+        // Page 2: resume with DIFFERENT inline size (200 instead of 100).
+        // Cache invalidated, but startRow preserved at RowIndex=1.
+        using var page2 = new GridLayouter(
+            rootBox: grid, sink: sink,
+            incomingContinuation: continuation,
+            diagnostics: diag, shaperResolver: shaper);
+        page2.ConfigureEmission(0, 0, 200, 100, allowPagination: true);
+        var ctx2 = new FragmentainerContext(contentInlineSize: 200, blockSize: 100);
+        var layoutCtx2 = new LayoutContext(ctx2);
+        using var resolver2 = new BreakResolver();
+        var result2 = page2.AttemptLayout(
+            ctx2, ref layoutCtx2, resolver2, LayoutAttemptStrategy.LastResort);
+
+        // Per F4 — page 2 emits ONLY item2 (the row-2 item).
+        // Pre-fix it would emit item1 + item2 (= duplication).
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result2.Outcome);
+        Assert.Single(sink.Fragments);
+        Assert.Equal(item2, sink.Fragments[0].Box);
+        Assert.Contains(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridResumeInlineSizeMismatch001);
+    }
+
+    [Fact]
     public void Cycle5_hardening_F3_resume_with_same_inline_size_uses_cache_no_diagnostic()
     {
         // Per PR-#96 review F3 — sanity test: resume with the SAME

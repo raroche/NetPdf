@@ -896,35 +896,20 @@ public sealed class GridLayouterProductionTests
     //  → BlockLayouter → GridLayouter chain.
     // ====================================================================
 
-    // Per Phase 3 Task 17 cycle 5b — production-pipeline multi-page
-    // grid tests require recursive-site dispatch wiring (= grid nested
-    // inside body / wrapper). Cycle 5b ships ONLY the outer-site
-    // dispatch (= grid as the BlockLayouter root's direct child).
-    // Production-pipeline grids are always nested under <body> → they
-    // hit the recursive EmitBlockSubtreeRecursive dispatch which is
-    // cycle 5c scope.
+    // Per PR-#97 review F6+F7 — the Skip-pinned production tests that
+    // existed in cycle 5b initial draft were REMOVED. They documented
+    // a target state ("cycle 5c will activate this") but lived under
+    // a Production_html_ prefix suggesting working coverage. Cycle 5c
+    // will add real production-pipeline tests when the architectural
+    // fixes (F1+F2+F3 deferrals — wrapper rollback / emitted-extent
+    // contract / explicit-height handling) land.
     //
-    // Tests for the production-pipeline multi-page path are pinned as
-    // `Skip` until cycle 5c wires the recursive site; the cycle 5b
-    // unit tests at the GridLayouter level pass + the outer-site
-    // BlockLayouter dispatch wiring is in place ready for cycle 5c
-    // to flip the recursive gate.
-    [Fact(Skip = "Production-pipeline multi-page grid pagination requires recursive-site dispatch wiring; pending cycle 5c.")]
-    public Task Production_html_paginated_grid_returns_PageComplete_with_grid_continuation_KNOWN_GAP_PENDING_5C()
-    {
-        // 3-row grid 100/100/100 with a tight fragmentainer (blockSize=250)
-        // means only rows 1+2 fit on page 1; row 3 should defer.
-        // BLOCKED: grid nested under body hits recursive dispatch which
-        // cycle 5b hasn't wired (= cycle 5c).
-        return Task.CompletedTask;
-    }
-
-    [Fact(Skip = "Production-pipeline multi-page grid pagination requires recursive-site dispatch wiring; pending cycle 5c.")]
-    public Task Production_html_paginated_grid_round_trip_emits_each_item_exactly_once_KNOWN_GAP_PENDING_5C()
-    {
-        // BLOCKED: same as above.
-        return Task.CompletedTask;
-    }
+    // The cycle-5b ship is contract-additive only: DispatchGridInner
+    // gains allowPagination + incomingContinuation params (safe
+    // defaults); IsPaginatableGrid predicate exists; the F5
+    // BlockLayouter symmetric validation for misrouted GridContinuation
+    // ships. Direct GridLayouter resume tests (= the Cycle5_* series)
+    // continue to verify the inner contract end-to-end.
 
     [Fact]
     public async Task Production_html_grid_fitting_on_one_page_stays_AllDone_no_continuation()

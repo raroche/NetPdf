@@ -587,6 +587,31 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 + "consistent. Per Phase 3 Task 16 cycle 2 resume contract.");
         }
 
+        // Per PR-#97 review F5 — symmetric grid continuation validation
+        // mirroring the flex / multicol / table guards. The child at
+        // ResumeAtChild MUST be a grid container OR a block-flow
+        // container that recursively contains the grid (= same single-
+        // level-nested propagation contract). Pre-fix a misrouted
+        // GridContinuation would silently lose resume intent.
+        if (incomingBlock?.LayouterState is GridContinuation
+            && startChildIdx >= 0
+            && startChildIdx < _rootBox.Children.Count
+            && _rootBox.Children[startChildIdx].Kind is not
+                (BoxKind.GridContainer or BoxKind.InlineGridContainer)
+            && !IsBlockFlowContainerOwnedByBlockLayouter(_rootBox.Children[startChildIdx]))
+        {
+            throw new InvalidOperationException(
+                "BlockLayouter.AttemptLayout: incoming BlockContinuation carries "
+                + "a GridContinuation in LayouterState but the child at "
+                + $"ResumeAtChild={startChildIdx} has BoxKind."
+                + $"{_rootBox.Children[startChildIdx].Kind}, which is neither "
+                + "a GridContainer / InlineGridContainer nor a block-flow "
+                + "container that could contain one. The dispatching "
+                + "layouter must produce continuations where the "
+                + "ResumeAtChild + LayouterState pair are mutually "
+                + "consistent. Per Phase 3 Task 17 cycle 5b resume contract.");
+        }
+
         // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) — when
         // the incoming BlockContinuation carries a nested
         // BlockContinuation (the recursion-chain protocol introduced
@@ -1664,34 +1689,36 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 }
             }
 
-            // Per Phase 3 Task 17 cycle 5b — paginatable-grid extent
-            // clamp. MUST run AFTER the grid pre-measure above so it
-            // operates on the GROWN borderBoxBlockSize (not the chrome-
-            // only init). Mirrors the flex cycle-4b pattern.
+            // Per Phase 3 Task 17 cycle 5b post-PR-#97 review F1+F2+F3
+            // — the paginatable-grid extent clamp at this site was
+            // REVERTED. Three architectural issues blocked activation:
             //
-            // When the grid wrapper's natural extent would overflow
-            // the remaining fragmentainer space AND the container is
-            // eligible per IsPaginatableGrid, clamp borderBoxBlockSize
-            // to what fits + flip paginateGridForOuterChild ON so the
-            // dispatch block below passes allowPagination=true to
-            // GridLayouter. GridLayouter then emits rows up to the
-            // clamped budget + returns PageComplete(GridContinuation)
-            // for the rest.
-            if (IsPaginatableGrid(child))
-            {
-                var gridBorderPaddingBlockForClamp =
-                    borderStart + paddingStart + paddingEnd + borderEnd;
-                var pageRemainingForOuterGrid =
-                    fragmentainer.BlockSize
-                    - fragmentainer.UsedBlockSize - topShift;
-                if (pageRemainingForOuterGrid > 0
-                    && pageRemainingForOuterGrid < borderBoxBlockSize
-                    && pageRemainingForOuterGrid > gridBorderPaddingBlockForClamp)
-                {
-                    borderBoxBlockSize = pageRemainingForOuterGrid;
-                    paginateGridForOuterChild = true;
-                }
-            }
+            // F1 — strategy-aware row-fit decision must run BEFORE the
+            // wrapper is emitted at line ~2352, not after. The current
+            // code emits the wrapper first; a subsequent
+            // PageComplete(GridContinuation(0, null)) under Strict
+            // strategy would leave an empty committed wrapper on the
+            // prior page. Needs pre-dispatch row-fit OR wrapper
+            // rollback/backfill semantics.
+            //
+            // F2 — wrapper would paint at the full clamped extent
+            // (= 250px) even when GridLayouter emits only 2 of 3 rows
+            // (= 200px). The wrapper must size to emitted-rows-extent
+            // + chrome, not the budget. Needs an emitted-extent
+            // contract returned from GridLayouter (mirror flex
+            // cycle-4e EmittedBlockExtent).
+            //
+            // F3 — explicit-height grids (height:300px) have
+            // MeasureSubtreeVisualBlockExtent restore the 300px after
+            // the clamp, so the wrapper falls into forced-overflow
+            // with allowPagination:false. Needs grid-specific extent
+            // handling in the resolver path.
+            //
+            // Each gets a dedicated deferrals.md entry; cycle 5c picks
+            // up the architectural work. For now the
+            // paginateGridForOuterChild flag stays at its initial
+            // value (false) — API surface preserved for cycle 5c to
+            // activate.
 
             // Per cycle 2c post-PR-29 review #7 — `marginBoxBlockSize`
             // (= `topShift + borderBoxBlockSize + marginEnd`) was

@@ -341,11 +341,26 @@ internal sealed class GridLayouter : ILayouter, IDisposable
         IReadOnlyList<double> rowPositionsRelative; // 0-based positions
         IReadOnlyList<double> colPositionsRelative; // 0-based positions
         IReadOnlyList<PlacedItem> placedItems;
-        var useExistingCache =
-            _incomingContinuation?.Cache is { } incomingCache
-            && ValidateCachePerF5(incomingCache, _rootBox)
-            && Math.Abs(incomingCache.OriginalContentInlineSize - _contentInlineSize)
-                <= GridSizing.SizeEpsilonPublic;
+        // Per PR-#97 review F4 — distinguish three cases when an
+        // incoming continuation is present:
+        //  (a) Identity mismatch (= cache routed to wrong grid) →
+        //      reject cache + reset startRow to 0 (= fresh layout on
+        //      this grid; the rejected RowIndex was for the wrong
+        //      grid + carrying it forward would silently skip rows).
+        //  (b) Same grid, inline-size matches → reuse cache verbatim.
+        //  (c) Same grid, inline-size DIFFERS → reject cache for
+        //      geometry recompute, BUT preserve RowIndex from the
+        //      incoming continuation (= same grid, partial emission
+        //      progress is real progress; resetting to 0 duplicates
+        //      page-1 items).
+        var identityMatches =
+            _incomingContinuation?.Cache is { } incomingCacheForIdentity
+            && ValidateCachePerF5(incomingCacheForIdentity, _rootBox);
+        var inlineSizeMatches =
+            _incomingContinuation?.Cache is { } incomingCacheForSize
+            && Math.Abs(incomingCacheForSize.OriginalContentInlineSize
+                - _contentInlineSize) <= GridSizing.SizeEpsilonPublic;
+        var useExistingCache = identityMatches && inlineSizeMatches;
 
         if (useExistingCache)
         {
@@ -416,16 +431,34 @@ internal sealed class GridLayouter : ILayouter, IDisposable
         // computes the maximum row K that fits the contentBlockSize
         // budget + emits [startRow, K] inclusive.
         //
-        // Per PR-#96 review F5 — when the incoming continuation's
-        // cache was rejected by ValidateCachePerF5 (e.g., routed to
-        // wrong grid), useExistingCache is false + the RowIndex from
-        // the rejected continuation should ALSO be ignored (= treat
-        // the dispatch as a fresh layout on this grid). Otherwise a
-        // rejected misroute would silently skip rows of the receiving
-        // grid that happened to share the wrong-grid's RowIndex.
-        var startRow = useExistingCache
-            ? (_incomingContinuation?.RowIndex ?? 0)
-            : 0;
+        // Per PR-#96 review F5 + PR-#97 review F4 — three cases:
+        //  (a) Cache reused (= identity + inline-size both match) →
+        //      use the RowIndex from the continuation.
+        //  (b) Cache rejected for IDENTITY mismatch (= wrong grid) →
+        //      reset startRow to 0. The rejected continuation's
+        //      RowIndex was for the wrong grid; carrying it forward
+        //      would silently skip rows of the receiving grid.
+        //  (c) Cache rejected for inline-size mismatch on the SAME
+        //      grid → preserve RowIndex (= partial-emission progress
+        //      is real progress + same grid; resetting to 0 would
+        //      duplicate page-1 items on page 2). Geometry recomputes
+        //      from scratch via the fresh sizing pass above.
+        int startRow;
+        if (useExistingCache)
+        {
+            startRow = _incomingContinuation!.RowIndex;
+        }
+        else if (identityMatches)
+        {
+            // Same grid, different page geometry → preserve RowIndex
+            // so partial-emission progress isn't lost.
+            startRow = _incomingContinuation!.RowIndex;
+        }
+        else
+        {
+            // Different grid OR no continuation → fresh start.
+            startRow = 0;
+        }
         var rowCount = rowSizesRelative.Count;
         if (startRow >= rowCount)
         {

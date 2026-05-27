@@ -2390,6 +2390,130 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // Per Phase 3 Task 8 cycle 2 — flow around floats: anchor
             // the in-flow block at the post-left-floats edge.
             var inFlowInlineOffset = availInlineStart + marginInlineStart;
+
+            // Per Phase 3 Task 17 cycle 5c.2a F1 — pre-dispatch row-fit
+            // decision for paginatable grids. Without this, once cycle
+            // 5c.2b reactivates the outer-site extent-clamp + gate-flip
+            // (= the cycle-5b PR-#97 revert), a paginatable grid whose
+            // first remaining row exceeds the page-remaining content
+            // area would emit its wrapper here AND THEN receive
+            // <c>PageComplete(GridContinuation(startRow, _, 0))</c>
+            // from <c>GridLayouter</c> under Strict strategy — leaving
+            // an empty wrapper box visible on the prior page. F1
+            // resolves that by routing PageComplete from BlockLayouter
+            // directly when the first remaining row won't fit, BEFORE
+            // the wrapper is emitted.
+            //
+            // <para>Gating:
+            //   * <c>IsPaginatableGrid</c> identifies grid containers.
+            //     Every grid is paginatable per cycle-5b's predicate
+            //     (= a grid with one row degenerates to atomic
+            //     behavior naturally; multi-row grids paginate at row
+            //     boundaries).
+            //   * <c>strategy != LastResort</c> preserves the CSS
+            //     Fragmentation L3 §4.4 progress rule under LastResort
+            //     — the retry coordinator escalates to LastResort when
+            //     Strict can't make progress, and at that point the
+            //     wrapper-emit + force-overflow path MUST run so
+            //     pagination commits at least the oversized first row.
+            //     Under LastResort F1 skips its defer + falls through.
+            //   * Progress guard:
+            //     <c>pageRemainingForGridContent
+            //       &lt; fullPageRemainingForGridContent</c> ensures
+            //     the deferral is productive — on a fresh page (= no
+            //     prior content + no top-shift), pageRemaining equals
+            //     fullPageRemaining + deferral would loop infinitely.
+            //   * Row-fit predicate:
+            //     <c>firstRowExtent &gt; pageRemainingForGridContent</c>
+            //     (= the first remaining row exceeds what's left on
+            //     this page) AND
+            //     <c>firstRowExtent &lt;= fullPageRemainingForGridContent</c>
+            //     (= the row would fit on a fresh page). Together
+            //     these mean "defer to next page will let it render";
+            //     when the row exceeds a fresh page too, deferral
+            //     can't help → fall through to atomic / forced-overflow
+            //     and let the painter clip per the existing contract.
+            // </para>
+            //
+            // <para>The deferral text
+            // (<c>grid-wrapper-rollback-for-pre-dispatch-deferral</c>)
+            // allows EITHER pre-dispatch row-fit query (this design)
+            // OR a wrapper rollback/backfill API. Pre-dispatch query
+            // is chosen for cleaner semantics — no speculative
+            // emission + no sink-rollback contract complexity + the
+            // probe reuses the existing <c>GridSizing.Resolve</c>
+            // pattern from <see cref="PreMeasureGridRowExtent"/>.</para>
+            //
+            // <para>Until cycle 5c.2b activates the clamp + flips
+            // <c>paginateGridForOuterChild</c>, the upstream
+            // break-check intercepts oversized grid wrappers BEFORE
+            // this site (= chunk doesn't fit → PageComplete without
+            // emit) so the F1 check is reached but never matches its
+            // defer condition in production (= the wrapper always
+            // fits when we reach here). The mechanism is dormant
+            // observable-behavior-wise; tests exercise the path via
+            // synthetic paginatable scenarios.</para>
+            if (IsPaginatableGrid(child)
+                && strategy != LayoutAttemptStrategy.LastResort)
+            {
+                int probeStartRow = 0;
+                GridContinuation? incomingGridForProbe = null;
+                if (incomingBlock is
+                    {
+                        ResumeAtChild: var probeResumeAt,
+                        LayouterState: GridContinuation probeGridCont,
+                    }
+                    && probeResumeAt == childIdx)
+                {
+                    probeStartRow = probeGridCont.RowIndex;
+                    incomingGridForProbe = probeGridCont;
+                }
+
+                var gridBorderPaddingBlock =
+                    borderStart + paddingStart + paddingEnd + borderEnd;
+                var pageRemainingForGridContent =
+                    fragmentainer.BlockSize
+                    - fragmentainer.UsedBlockSize
+                    - topShift
+                    - gridBorderPaddingBlock;
+                var fullPageRemainingForGridContent =
+                    fragmentainer.BlockSize - gridBorderPaddingBlock;
+
+                if (pageRemainingForGridContent > 0
+                    && pageRemainingForGridContent
+                        < fullPageRemainingForGridContent - GridSizing.SizeEpsilonPublic)
+                {
+                    var firstRowExtent = PreMeasureGridRowExtentAt(
+                        child, probeStartRow, cancellationToken);
+                    if (firstRowExtent
+                            > pageRemainingForGridContent + GridSizing.SizeEpsilonPublic
+                        && firstRowExtent
+                            <= fullPageRemainingForGridContent + GridSizing.SizeEpsilonPublic)
+                    {
+                        // The first remaining row would not fit this
+                        // page's remaining content area but would fit
+                        // a fresh page → defer without emitting the
+                        // wrapper. The outgoing BlockContinuation
+                        // carries a GridContinuation pointing at the
+                        // probed startRow + preserves any incoming
+                        // cache (= identity stays bound to this grid
+                        // across the deferral so the resume page's
+                        // GridLayouter sees the same sizing + sparse-
+                        // placement decisions).
+                        return LayoutAttemptResult.PageComplete(
+                            new BlockContinuation(
+                                ResumeAtChild: childIdx,
+                                ConsumedBlockSize: priorPagesConsumed
+                                    + (fragmentainer.UsedBlockSize - _pageStartUsedBlockSize),
+                                LayouterState: new GridContinuation(
+                                    RowIndex: probeStartRow,
+                                    Cache: incomingGridForProbe?.Cache,
+                                    EmittedBlockExtent: 0)),
+                            cost: 0);
+                    }
+                }
+            }
+
             _sink.Emit(new BoxFragment(
                 Box: child,
                 InlineOffset: inFlowInlineOffset,
@@ -6505,6 +6629,53 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             emit: null,
             cancellationToken: default);
         return sizing.RowExtentSum;
+    }
+
+    /// <summary>Per Phase 3 Task 17 cycle 5c.2a F1 — pre-dispatch row-fit
+    /// probe for paginatable grids. Returns the natural extent of the row
+    /// at <paramref name="rowIndex"/> in <paramref name="gridBox"/>'s
+    /// resolved track sizing (= the next row about to emit on this page
+    /// given the resume contract). Used by the outer-site
+    /// <see cref="AttemptLayout"/> dispatch loop to predict the
+    /// <c>GridLayouter</c> Strict-defer outcome BEFORE the wrapper
+    /// fragment is emitted — without this prediction, a paginatable-grid
+    /// scenario whose first remaining row exceeds the page-remaining
+    /// content area would emit the wrapper speculatively + then receive
+    /// <c>PageComplete(GridContinuation(startRow, _, 0))</c> from
+    /// <c>GridLayouter</c>, leaving an empty wrapper box visible on the
+    /// prior page (= F1 in cycle-5b PR-#97 review).
+    ///
+    /// <para>The probe mirrors <see cref="PreMeasureGridRowExtent"/>'s
+    /// dry-run pattern (null diagnostic emitter; positions discarded;
+    /// indefinite-extent signal on both axes). Returns 0 for any
+    /// degenerate case — empty <c>grid-template-rows</c>, no resolved
+    /// tracks, or an out-of-range <paramref name="rowIndex"/> — so the
+    /// caller's row-fit comparison naturally falls through to the
+    /// normal dispatch path. Cancellation propagates so a long
+    /// item-walking sizing pass honors caller cancellation.</para>
+    ///
+    /// <para>Cycle 5c.2b will reactivate the cycle-5b outer-site
+    /// extent-clamp + gate-flip that PR-#97 reverted; this helper is
+    /// the F1 precondition for that reactivation. Until then the
+    /// helper is reached only via the paginatable-grid path's
+    /// <c>strategy != LastResort</c> branch + the gate stays dormant
+    /// in production — observable behavior is unchanged.</para></summary>
+    private static double PreMeasureGridRowExtentAt(
+        Box gridBox, int rowIndex, CancellationToken cancellationToken)
+    {
+        if (rowIndex < 0) return 0;
+        var rows = gridBox.Style.ReadGridTemplateRows();
+        if (rows.Items.IsDefaultOrEmpty) return 0;
+        var sizing = GridSizing.Resolve(
+            gridBox: gridBox,
+            contentInlineOffset: 0,
+            contentBlockOffset: 0,
+            contentInlineSize: 1,
+            contentBlockSize: 1,
+            emit: null,
+            cancellationToken: cancellationToken);
+        if (rowIndex >= sizing.RowSizes.Count) return 0;
+        return sizing.RowSizes[rowIndex];
     }
 
     /// <summary>Per Phase 3 Task 17 cycle 1 (Hello World) + cycle 5

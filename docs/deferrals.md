@@ -1844,8 +1844,11 @@ flags the categories):
 ## grid-wrapper-rollback-for-pre-dispatch-deferral
 
 - **ID** — `grid-wrapper-rollback-for-pre-dispatch-deferral`
-- **Status** — `not-started`. Phase 3 Task 17 cycle 5b post-PR-#97
-  review F1.
+- **Status** — `approximated` (mechanism shipped + verified by 7
+  `Cycle5c2a_F1_*` unit tests; production activation pending cycle
+  5c.2b clamp reactivation). Phase 3 Task 17 cycle 5c.2a ships the
+  deferral's option (a) — pre-dispatch row-fit decision owned by
+  `BlockLayouter`.
 - **Behavior** — `BlockLayouter` emits the grid wrapper fragment
   BEFORE invoking `DispatchGridInner` (= the wrapper paint order
   contract). If `GridLayouter` were to return
@@ -1853,40 +1856,68 @@ flags the categories):
   `LayoutAttemptStrategy.Strict` signaling "defer the entire grid",
   the wrapper would already be committed on the prior page —
   visually painting an empty grid box.
-- **Missing** —
-  - A pre-dispatch row-fit decision OWNED by BlockLayouter (= ask
-    GridLayouter "would your first row fit in this budget?" BEFORE
-    emitting the wrapper, route Strict-defer at that point).
-  - OR a wrapper rollback/backfill API (= emit wrapper at a placeholder
-    extent, run inner dispatch, then revise the wrapper's geometry
-    before the painter consumes the fragment list).
-  - OR pre-emit-with-revise sink semantics (= sink accepts a Box
-    pointer + revises geometry post-dispatch).
-- **Practical impact** — cycle 5b's outer-site clamp + gate-flip is
-  REVERTED for this reason. Activating outer-site grid pagination
-  without the rollback contract would either (a) leave empty
-  wrappers on prior pages under Strict, or (b) force LastResort-
-  hardcoded dispatch, defeating the cycle 5 hardening's strategy
-  gating that's exactly designed to prevent premature forced
-  overflow.
-- **Trigger** — cycle 5c. The choice between pre-dispatch row-fit
-  vs. wrapper rollback is an architectural call that should be
-  made with the recursive-site wiring + the F2/F3 fixes since
-  all three issues share the same wrapper-vs-content extent
-  contract.
+- **Resolution (cycle 5c.2a)** — chose the deferral's option (a) =
+  pre-dispatch row-fit decision OWNED by `BlockLayouter`. New
+  private helper
+  `PreMeasureGridRowExtentAt(box, rowIndex, ct)` returns the
+  resolved height of the next-to-emit row via
+  `GridSizing.Resolve`'s dry-run pattern (mirrors
+  `PreMeasureGridRowExtent`). At the outer-site Continue path
+  BEFORE the wrapper emit, when:
+    1. `IsPaginatableGrid(child)` (= every grid container today;
+       cycle-5b predicate), AND
+    2. `strategy != LayoutAttemptStrategy.LastResort` (= preserve
+       the §4.4 progress rule on the final retry), AND
+    3. <code>pageRemainingForGridContent
+       &lt; fullPageRemainingForGridContent</code> (= progress
+       guard; on a fresh page, deferral can't help so don't
+       defer), AND
+    4. <code>firstRowExtent &gt; pageRemainingForGridContent</code>
+       AND <code>firstRowExtent
+       &lt;= fullPageRemainingForGridContent</code> (= row
+       would fit on a fresh page but not on remaining),
+  …`BlockLayouter` routes
+  `PageComplete(BlockContinuation(ResumeAtChild=childIdx,
+  LayouterState=GridContinuation(RowIndex=startRow,
+  Cache=incomingGridForProbe?.Cache, EmittedBlockExtent=0)))`
+  without emitting the wrapper. The
+  <c>strategy != LastResort</c> gate ensures the §4.4 force-emit
+  contract still applies under LastResort (= last attempt; commit
+  anyway). The progress guard ensures the deferral is productive
+  — a fresh page would fit the row.
+- **Sink rollback NOT chosen** — the deferral's alternate option
+  (= emit wrapper speculatively + roll back via
+  <c>IFragmentSink.RollbackTo</c>) was rejected as having less
+  clean semantics. Pre-dispatch query introduces NO speculative
+  emission, requires no new sink mutation contract, and reuses
+  the existing `GridSizing.Resolve` dry-run pattern. Trade-off:
+  the probe duplicates the §11 sizing pass (also done in
+  `PreMeasureGridRowExtent` + the actual dispatch); the
+  duplicate work is acceptable given §11 sizing is cheap
+  relative to item placement + emission.
+- **Practical impact** — cycle 5b's outer-site clamp + gate-flip
+  remains REVERTED in 5c.2a (= no production observable change).
+  The 5c.2a ship provides the F1 mechanism as a PRECONDITION
+  for cycle 5c.2b's clamp reactivation; once 5c.2b activates the
+  gate + adds F2 wrapper-resize, the F1 logic catches Strict-
+  defer scenarios BEFORE wrapper emit. Until then the F1 check
+  is reached in production but its
+  <c>pageRemainingForGridContent &lt; fullPage</c> guard never
+  matches the row-fit predicate for paginatable scenarios (=
+  break-check upstream catches oversized wrappers first).
+  Verified: 5099 unit + 97 RealDocs + AOT/JIT byte-parity all
+  green; byte-output is unchanged.
 - **Owner files** —
-  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — wrapper emit
-    site + DispatchGridInner.
-  - `src/NetPdf.Layout/Layouters/GridLayouter.cs` — would expose
-    a `TryFitFirstRow(budget)` query OR a per-fragment emitted-
-    extent API.
-  - `src/NetPdf.Layout/Fragments/BoxFragment.cs` — may need a
-    revise-extent API.
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — F1 helper +
+    pre-dispatch row-fit check ✓ (cycle 5c.2a).
 - **Added** — Phase 3 Task 17 cycle 5b + post-PR-#97 review F1.
-- **Removal condition** — cycle 5c ships either pre-dispatch row-fit
-  query or wrapper rollback semantics, BlockLayouter routes Strict-
-  defer cleanly, AND the cycle-5 hardening's LastResort gating is
-  preserved end-to-end.
+- **Updated** — Phase 3 Task 17 cycle 5c.2a (mechanism ships).
+- **Removal condition** — cycle 5c.2b's clamp + gate-flip
+  reactivation lands AND production-pipeline tests exercise the
+  Strict-defer pre-empt path end-to-end. Until then the F1
+  mechanism is shipped + unit-tested but dormant in production
+  fixtures (= the break-check upstream catches oversized
+  paginatable-grid wrappers BEFORE this site fires).
 
 ---
 

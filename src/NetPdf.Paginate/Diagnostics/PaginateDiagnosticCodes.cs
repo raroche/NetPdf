@@ -385,4 +385,26 @@ internal static class PaginateDiagnosticCodes
     /// Fires once per AttemptLayout. Severity: Warning.</summary>
     public const string LayoutGridFrUnderIndefiniteApproximated001 =
         "LAYOUT-GRID-FR-UNDER-INDEFINITE-APPROXIMATED-001";
+
+    /// <summary>Phase 3 Task 17 cycle 4 + post-PR-#95 review hardening
+    /// (C3 + H3) — a grid track uses a percentage value (top-level
+    /// <c>&lt;percentage&gt;</c> OR inside a <c>minmax()</c> /
+    /// <c>fit-content()</c> sub-arg) that the cycle-4 sizing path
+    /// doesn't yet resolve. Percentages are silently treated as 0
+    /// to prevent silent pixel-vs-percent mismatch. Cycle 5+ ships
+    /// percentage resolution against the container's definite
+    /// extent. Fires once per AttemptLayout. Severity: Warning.</summary>
+    public const string LayoutGridPercentageTrackApproximated001 =
+        "LAYOUT-GRID-PERCENTAGE-TRACK-APPROXIMATED-001";
+
+    /// <summary>Phase 3 Task 17 cycle 4 + post-PR-#95 review hardening
+    /// (R2 + T4) — a grid track list's <c>repeat(N, ...)</c> expansion
+    /// would exceed <c>TrackList.MaxExpandedTrackCount</c> (50,000).
+    /// Expansion truncates at the cap to prevent unbounded memory
+    /// allocation from hostile CSS like
+    /// <c>repeat(10000, 1px 1fr 1px 1fr 1fr 1px)</c>. Items in the
+    /// truncated tail aren't visible. Fires once per AttemptLayout.
+    /// Severity: Warning.</summary>
+    public const string LayoutGridMaxExpandedTracksTruncated001 =
+        "LAYOUT-GRID-MAX-EXPANDED-TRACKS-TRUNCATED-001";
 }

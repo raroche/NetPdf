@@ -674,6 +674,223 @@ public sealed class GridLayouterProductionTests
     }
 
     // ====================================================================
+    //  Cycle 4 — minmax() / fit-content() / repeat(integer) via real CSS
+    // ====================================================================
+
+    [Fact]
+    public async Task Production_html_minmax_with_length_growth_limit_clamps()
+    {
+        // grid-template-columns: minmax(100px, 200px) — Maximize fills
+        // up to growth limit (200) but not beyond. Container is 600px
+        // (fragmentainer default; cycle-3 BlockLayouter doesn't apply
+        // CSS width yet to grid containers). Free space 600-100=500,
+        // headroom 100, ratio=1.0 → track grows to 200; remaining
+        // 400px goes unallocated (no fr / auto stretch in cycle 4).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 50px;
+                    grid-template-columns: minmax(100px, 200px);
+                }
+                .a { grid-row-start: 1; grid-column-start: 1; }
+            </style></head><body>
+            <div class="grid">
+              <div class="a"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, diag, _) = await RenderViaFullPipelineAsync(html);
+
+        var a = FindByClass(sink, "a");
+        Assert.NotNull(a);
+        Assert.Equal(200.0, a!.Value.InlineSize, precision: 3);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridTrackKindUnsupported001);
+    }
+
+    [Fact]
+    public async Task Production_html_minmax_with_fr_max_distributes_via_fr()
+    {
+        // grid-template-columns: minmax(100px, 1fr) 1fr — fragmentainer
+        // 600px. Both fr; track 1 has min=100 floor.
+        //   §11.7 pass 1: nonFlexBase=0, leftover=600, sum=2, hypoFr=300.
+        //     Track 1: base 100 > 300×1=300? NO. Track 2: 0 > 300? NO.
+        //     Distribute: track 1 = max(100, 300) = 300. Track 2 = 300.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 50px;
+                    grid-template-columns: minmax(100px, 1fr) 1fr;
+                }
+                .a { grid-row-start: 1; grid-column-start: 1; }
+                .b { grid-row-start: 1; grid-column-start: 2; }
+            </style></head><body>
+            <div class="grid">
+              <div class="a"></div>
+              <div class="b"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var a = FindByClass(sink, "a");
+        var b = FindByClass(sink, "b");
+        Assert.NotNull(a);
+        Assert.NotNull(b);
+        Assert.Equal(300.0, a!.Value.InlineSize, precision: 3);
+        Assert.Equal(300.0, b!.Value.InlineSize, precision: 3);
+    }
+
+    [Fact]
+    public async Task Production_html_fit_content_clamps_to_limit()
+    {
+        // grid-template-columns: fit-content(150px) 1fr — fragmentainer 600px.
+        //   Item A has declared width 250 → max-content contribution = 250.
+        //   §7.2.2: min(limit=150, max-content=250) = 150. Track 1 = 150.
+        //   Track 2 fr: leftover = 600 - 150 = 450 → track 2 = 450.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 50px;
+                    grid-template-columns: fit-content(150px) 1fr;
+                }
+                .a { grid-row-start: 1; grid-column-start: 1; width: 250px; }
+                .b { grid-row-start: 1; grid-column-start: 2; }
+            </style></head><body>
+            <div class="grid">
+              <div class="a"></div>
+              <div class="b"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var a = FindByClass(sink, "a");
+        var b = FindByClass(sink, "b");
+        Assert.NotNull(a);
+        Assert.NotNull(b);
+        Assert.Equal(150.0, a!.Value.InlineSize, precision: 3);
+        Assert.Equal(450.0, b!.Value.InlineSize, precision: 3);
+    }
+
+    [Fact]
+    public async Task Production_html_repeat_integer_expands_inline()
+    {
+        // grid-template-columns: repeat(3, 100px) — expands to
+        //   100px 100px 100px → 3 tracks of 100, total 300, container
+        //   has 600-300=300px of unused space.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 50px;
+                    grid-template-columns: repeat(3, 100px);
+                }
+                .a { grid-row-start: 1; grid-column-start: 1; }
+                .b { grid-row-start: 1; grid-column-start: 2; }
+                .c { grid-row-start: 1; grid-column-start: 3; }
+            </style></head><body>
+            <div class="grid">
+              <div class="a"></div>
+              <div class="b"></div>
+              <div class="c"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, diag, _) = await RenderViaFullPipelineAsync(html);
+
+        var a = FindByClass(sink, "a");
+        var b = FindByClass(sink, "b");
+        var c = FindByClass(sink, "c");
+        Assert.NotNull(a);
+        Assert.NotNull(b);
+        Assert.NotNull(c);
+        Assert.Equal(0.0, a!.Value.InlineOffset, precision: 3);
+        Assert.Equal(100.0, a.Value.InlineSize, precision: 3);
+        Assert.Equal(100.0, b!.Value.InlineOffset, precision: 3);
+        Assert.Equal(100.0, b.Value.InlineSize, precision: 3);
+        Assert.Equal(200.0, c!.Value.InlineOffset, precision: 3);
+        Assert.Equal(100.0, c.Value.InlineSize, precision: 3);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridTrackKindUnsupported001);
+    }
+
+    // ====================================================================
+    //  Cycle 4 post-PR-#95 hardening — production pipeline tests for the
+    //  fr-removal + invalid-CSS + percentage-diag scenarios.
+    // ====================================================================
+
+    [Fact]
+    public async Task Production_html_minmax_fr_removal_step_freezes_when_min_too_large()
+    {
+        // grid-template-columns: minmax(300px, 1fr) 1fr in 600px fragmentainer.
+        //   Track 1: base=300 (min), IsFr=true factor=1.
+        //   Track 2: base=0, IsFr=true factor=1.
+        //   Pass 1: nonFlex=0, leftover=600, sum=2, hypoFr=300.
+        //     Track 1: base 300 > 300×1=300? NO (boundary). Distributed=300, no growth.
+        //   No freeze → converged. Track 1 stays at max(300, 300)=300. Track 2 = 300.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 50px;
+                    grid-template-columns: minmax(300px, 1fr) 1fr;
+                }
+                .a { grid-row-start: 1; grid-column-start: 1; }
+                .b { grid-row-start: 1; grid-column-start: 2; }
+            </style></head><body>
+            <div class="grid">
+              <div class="a"></div>
+              <div class="b"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var a = FindByClass(sink, "a");
+        var b = FindByClass(sink, "b");
+        Assert.NotNull(a);
+        Assert.NotNull(b);
+        Assert.Equal(300.0, a!.Value.InlineSize, precision: 3);
+        Assert.Equal(300.0, b!.Value.InlineSize, precision: 3);
+    }
+
+    [Fact]
+    public async Task Production_html_minmax_invalid_min_exceeds_max_treats_max_as_min()
+    {
+        // grid-template-columns: minmax(200px, 100px) — invalid per §11.5.
+        //   max=min → track sits at 200.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 50px;
+                    grid-template-columns: minmax(200px, 100px);
+                }
+                .a { grid-row-start: 1; grid-column-start: 1; }
+            </style></head><body>
+            <div class="grid">
+              <div class="a"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var a = FindByClass(sink, "a");
+        Assert.NotNull(a);
+        Assert.Equal(200.0, a!.Value.InlineSize, precision: 3);
+    }
+
+    // ====================================================================
     //  Pipeline driver — mirrors FlexLayouterProductionTests.
     // ====================================================================
 

@@ -1551,8 +1551,8 @@ flags the categories):
 ## grid-track-sizing-cycle3-narrowed-scope
 
 - **ID** — `grid-track-sizing-cycle3-narrowed-scope`
-- **Status** — `partial`. Phase 3 Task 17 cycle 3 + post-PR-#94 review
-  hardening F4.
+- **Status** — `approximated`. Phase 3 Task 17 cycle 3 + post-PR-#94
+  review hardening F4.
 - **Behavior** — CSS Grid track sizing (CSS Grid Layout L1 §11) ships
   three track kinds via the shared `GridSizing` service:
   - **Length tracks** — fully spec-correct (resolved in §11.4
@@ -1624,3 +1624,166 @@ flags the categories):
   resolution are all in place; at that point the GridSizing
   service is the spec-complete §11 implementation and this
   enumeration becomes legacy documentation.
+
+---
+
+## grid-maximize-extra-space-receiver-deferred
+
+- **ID** — `grid-maximize-extra-space-receiver-deferred`
+- **Status** — `approximated`. Phase 3 Task 17 cycle 4 + post-PR-#95
+  review H4.
+- **Behavior** — CSS Grid §11.5.1 "Distribute Extra Space" step 3
+  says: after finite-growth-limit tracks freeze with leftover space
+  remaining, distribute the remainder to "extra-space-receiver"
+  tracks (intrinsic max-content tracks first, then fr tracks).
+  Cycle 4's `MaximizeTracks` skips tracks with infinite GrowthLimit
+  entirely + leaves any post-freeze leftover unallocated.
+- **Missing** — the §11.5.1 step 3 second-pass distribution. When
+  finite-limit tracks freeze with free space remaining + at least
+  one infinite-growth-limit non-fr track exists, that leftover
+  should grow the infinite-growth tracks beyond their nominal
+  base.
+- **Trigger** — a future cycle that ships full §11.5.1 + §11.6
+  spec compliance (probably alongside the auto-track stretch
+  feature, since both require the same "distribute leftover"
+  infrastructure).
+- **Owner files** —
+  - `src/NetPdf.Layout/Layouters/GridSizing.cs` —
+    `MaximizeTracks` second-pass distribution.
+- **Practical impact** — small because intrinsic tracks WITH
+  placed items get their GrowthLimit set to the contribution
+  (= finite) by `ResolveIntrinsicTracks`, so they participate in
+  the normal Maximize pass. The gap only manifests for degenerate
+  empty-track-with-no-items cases (= the leftover just stays
+  unused).
+- **Added** — Phase 3 Task 17 cycle 4 + post-PR-#95 review H4.
+- **Removal condition** — second-pass distribution implemented +
+  validated against a multi-track test where infinite-growth
+  tracks correctly absorb post-freeze leftover.
+
+---
+
+## grid-box-sizing-border-box-deferred
+
+- **ID** — `grid-box-sizing-border-box-deferred`
+- **Status** — `approximated`. Phase 3 Task 17 cycle 3 + cycle 4
+  + post-PR-#95 review H6.
+- **Behavior** — `GridSizing.ItemOuterContribution` always adds
+  the item's border + padding + margin to its declared
+  width/height when contributing to intrinsic track sizing. This
+  is correct for the CSS default `box-sizing: content-box` but
+  WRONG for `box-sizing: border-box` where the declared
+  width/height already includes border + padding (= we
+  double-count by adding chrome again).
+- **Missing** — read `PropertyId.BoxSizing` in
+  `ItemOuterContribution` + short-circuit the chrome adds for
+  `border-box` items. The fix is local to GridSizing but the
+  broader `box-sizing: border-box` support is cross-cutting —
+  BlockLayouter + FlexLayouter + TableLayouter all have similar
+  declared-vs-rendered-size issues that should be addressed
+  symmetrically. Tracked as a single cross-cutting task rather
+  than per-layouter patches.
+- **Trigger** — a dedicated `box-sizing` pass that audits every
+  declared-dimension reader across all layouters + introduces a
+  shared `Box.UsedWidth(boxSizing)` / `Box.UsedHeight(boxSizing)`
+  helper.
+- **Owner files** —
+  - `src/NetPdf.Layout/Layouters/GridSizing.cs` —
+    `ItemOuterContribution`.
+  - (Eventually) `src/NetPdf.Layout/Boxes/Box.cs` or a new
+    `BoxSizingHelper.cs` for the shared used-size logic.
+- **Practical impact** — items using `box-sizing: border-box`
+  (the modern norm for reset stylesheets like Bootstrap) over-
+  count chrome in intrinsic tracks, causing auto/min-content/
+  max-content tracks to size larger than the spec dictates.
+  Visible only when an author mixes intrinsic-tracked grids
+  with declared-width/height items that have non-zero borders
+  or padding.
+- **Added** — Phase 3 Task 17 cycle 3 (initial known-gap noted
+  in `ItemOuterContribution` xmldoc); post-PR-#95 review H6
+  formalized as a deferral entry.
+- **Removal condition** — cross-cutting box-sizing audit ships +
+  GridSizing reads BoxSizing.
+
+---
+
+## grid-sizing-perf-optimizations-deferred
+
+- **ID** — `grid-sizing-perf-optimizations-deferred`
+- **Status** — `approximated`. Phase 3 Task 17 cycle 4 + post-PR-#95
+  review P2 + P4 + P5.
+- **Behavior** — `GridSizing` has known hot-path allocation +
+  computation patterns that are functionally correct but leave
+  perf on the table:
+  - **P2 — Per-Resolve allocations**: `new List<TrackListItem>` in
+    ExpandTrackList; `new List<TrackSizingInfo>` ×2; `new
+    SizingContext`; `new TrackListNamedLine` per repeat iteration.
+    Cycle 4 hardening landed `stackalloc`-based frozen arrays +
+    dropped dead `kindsOut` lists; remaining allocations are
+    candidates for `ArrayPool<T>` rental.
+  - **P4 — `ItemOuterContribution` repeats 7 ComputedStyle reads
+    per item per intrinsic-track-resolution**. For a 50×50 grid
+    with 100 items + every track intrinsic, that's 35,000+
+    dictionary lookups per axis. Per-item caching of
+    `(width, height, chromeWidth, chromeHeight, marginH, marginV)`
+    on `PlacedItem` would eliminate the redundant reads.
+  - **P5 — O(N×M) inner loop in `ResolveIntrinsicTracks`**: for
+    each track, scan all items. Acceptable for typical grids
+    (small N, small M); worst-case
+    `repeat(10000, auto)` with 10000 items → 1e8 operations.
+    An inverted index `(axisIndex → IList<PlacedItem>)` built
+    once before the loop drops this to O(N+M).
+- **Missing** — ArrayPool wiring; per-PlacedItem style cache;
+  per-axis inverted-index for placed items.
+- **Trigger** — the dedicated grid perf-tuning task that's part
+  of Phase 3's general performance gate (3-page invoice ≤ 200ms
+  p50 / 20-page report ≤ 1.5s p50). If those gates start
+  regressing on grid-heavy fixtures, prioritize then.
+- **Owner files** —
+  - `src/NetPdf.Layout/Layouters/GridSizing.cs` — all three
+    optimization sites.
+- **Added** — Phase 3 Task 17 cycle 4 + post-PR-#95 review P2 +
+  P4 + P5.
+- **Removal condition** — perf gates remain green when grid-heavy
+  fixtures are added to the bench suite.
+
+---
+
+## grid-sizing-architecture-followups-deferred
+
+- **ID** — `grid-sizing-architecture-followups-deferred`
+- **Status** — `not-started`. Phase 3 Task 17 cycle 4 + post-PR-#95
+  review Q2 + Q4 + Q5.
+- **Behavior** — `GridSizing.cs` is 1300+ lines mixing repeat
+  expansion, track classification, fr distribution, intrinsic
+  resolution, Maximize, item placement, and diagnostic emission
+  in one static class. Functionally correct + AOT-clean but
+  could be split for clarity:
+  - **Q2** — `ClassifyEntry` is a closed-switch on track kind.
+    A `ITrackSizingStrategy` polymorphic dispatch was considered
+    but rejected because the closed-set discriminated-union +
+    switch is faster (no v-table) + more AOT-friendly. Trade-off
+    is documented in the file's xmldoc; entry exists so a future
+    reviewer doesn't re-litigate the decision.
+  - **Q4** — Split GridSizing.cs into:
+    `GridTrackExpander.cs` (ExpandTrackList + truncation),
+    `GridTrackClassifier.cs` (ClassifyEntry + ClassifyMinMax),
+    `GridTrackSizingPipeline.cs` (fr + intrinsic + Maximize),
+    `GridItemPlacer.cs` (RunPlacement + helpers). `GridSizing`
+    becomes the orchestration entry-point only.
+  - **Q5** — `ItemOuterContribution` has duplicated row/col
+    branches that could fold into a shared
+    `AxisProperties record struct(PropertyId Size, PropertyId
+    Border1, PropertyId Pad1, ...)`. Drops ~25 lines.
+- **Missing** — each refactor listed above.
+- **Trigger** — when adding cycles 5-7 (multi-page split, spans,
+  named areas) becomes painful due to the file's size + mixed
+  responsibilities. OR when a new contributor's onboarding pain
+  surfaces the issue.
+- **Owner files** —
+  - `src/NetPdf.Layout/Layouters/GridSizing.cs`.
+- **Added** — Phase 3 Task 17 cycle 4 + post-PR-#95 review Q2 +
+  Q4 + Q5.
+- **Removal condition** — when the refactors land, the file
+  splits exist, and the tests still pass with no behavioral
+  change.

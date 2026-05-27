@@ -561,5 +561,36 @@ internal static class DiagnosticCodes
     public const string LayoutGridFrUnderIndefiniteApproximated001 =
         "LAYOUT-GRID-FR-UNDER-INDEFINITE-APPROXIMATED-001";
 
+    /// <summary>
+    /// Per Phase 3 Task 17 cycle 4 post-PR-#95 review hardening
+    /// (C3 + H3) — emitted when a grid track uses a percentage value
+    /// at the top level OR inside a <c>minmax()</c> / <c>fit-content()</c>
+    /// sub-arg that the cycle-4 sizing path doesn't yet resolve.
+    /// Percentages are silently treated as 0 to prevent silent
+    /// pixel-vs-percent mismatch (= preferable to interpreting
+    /// <c>50%</c> as <c>50px</c>). Cycle 5+ ships percentage
+    /// resolution against the container's definite extent. Fires
+    /// once per AttemptLayout. Mirrors
+    /// <c>NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutGridPercentageTrackApproximated001</c>.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string LayoutGridPercentageTrackApproximated001 =
+        "LAYOUT-GRID-PERCENTAGE-TRACK-APPROXIMATED-001";
+
+    /// <summary>
+    /// Per Phase 3 Task 17 cycle 4 post-PR-#95 review hardening
+    /// (R2 + T4) — emitted when a grid track list's <c>repeat(N, ...)</c>
+    /// expansion would exceed <c>TrackList.MaxExpandedTrackCount</c>
+    /// (50,000). Expansion truncates at the cap to prevent unbounded
+    /// memory allocation from hostile CSS like
+    /// <c>repeat(10000, 1px 1fr 1px 1fr 1fr 1px)</c> (= 60,000 expanded
+    /// entries). Items in the truncated tail are silently dropped.
+    /// Fires once per AttemptLayout. Mirrors
+    /// <c>NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutGridMaxExpandedTracksTruncated001</c>.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string LayoutGridMaxExpandedTracksTruncated001 =
+        "LAYOUT-GRID-MAX-EXPANDED-TRACKS-TRUNCATED-001";
+
     // endregion LAYOUT-*
 }

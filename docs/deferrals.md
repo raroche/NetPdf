@@ -1893,8 +1893,8 @@ flags the categories):
 ## grid-fragment-extent-emitted-rows-only-deferral
 
 - **ID** — `grid-fragment-extent-emitted-rows-only-deferral`
-- **Status** — `not-started`. Phase 3 Task 17 cycle 5b post-PR-#97
-  review F2.
+- **Status** — `approximated` (partial). Phase 3 Task 17 cycle 5c.1
+  ships the producer side; cycle 5c.2 wires the consumer.
 - **Behavior** — when grid pagination IS active, the wrapper
   fragment paints at the clamped extent (= page budget) and the
   cursor advances by the full clamped extent. But `GridLayouter`
@@ -1902,26 +1902,45 @@ flags the categories):
   space + the cursor over-advances + cumulative `ConsumedBlockSize`
   inflates. Following block-flow siblings are pushed down by
   invisible space.
-- **Missing** — an emitted-extent contract returned from
-  `GridLayouter` (mirror flex cycle-4e
-  <c>EmittedBlockExtent</c>). `BlockLayouter` would size the
-  wrapper to <c>emitted-rows-extent + chrome</c> and advance the
-  cursor by that, not the budget.
-- **Practical impact** — cycle 5b's outer-site activation is
-  REVERTED for this reason. Without emitted-extent, every
-  pagination split produces visual gaps + sibling displacement.
-- **Trigger** — cycle 5c. Coordinates with F1 + F3 since all
-  three touch the wrapper-vs-content extent contract.
+- **Cycle 5c.1 SHIPPED (producer side, PR-#98)** — `GridLayouter`
+  now exposes <c>LastEmittedBlockExtent</c> as a public property
+  populated on EVERY outcome (PageComplete + AllDone + Strict-
+  defer), per the PR-#98 review F1 recommendation that the
+  current-fragment extent live on a result-level channel
+  available to both outcomes (not solely on
+  <c>GridContinuation</c>). Value is derived from row-position
+  GEOMETRY (= <c>lastEmittedRow.bottom -
+  firstEmittedRow.top</c>) per PR-#98 review F3, NOT
+  <c>sum(rowSizes)</c> — the former remains correct once
+  <c>row-gap</c> / block-axis alignment land. The
+  <c>GridContinuation.EmittedBlockExtent</c> field is kept as a
+  redundant carrier when a continuation exists; the layouter
+  property is the primary source for cycle 5c.2.
+- **Cycle 5c.2 MISSING (consumer side)** — `BlockLayouter` must
+  read <c>gridLayouter.LastEmittedBlockExtent</c> after
+  `DispatchGridInner` returns + size the wrapper BoxFragment to
+  <c>LastEmittedBlockExtent + chrome</c> + advance the cursor by
+  that, NOT the clamped budget. Coordinates with F1 (pre-dispatch
+  row-fit / rollback) + F3 (explicit-height grid handling).
+- **Practical impact** — cycle 5b's outer-site activation remains
+  REVERTED until cycle 5c.2 wires the consumer + the F1/F3
+  architectural fixes land. Without the consumer wiring,
+  `LastEmittedBlockExtent` is populated but unused (= byte-parity
+  preserved; zero runtime impact).
+- **Trigger** — cycle 5c.2. Coordinates with F1 (pre-dispatch
+  row-fit or wrapper rollback) + F3 (explicit-height handling).
 - **Owner files** —
-  - `src/NetPdf.Layout/Layouters/GridLayouter.cs` — return emitted
-    extent on PageComplete.
-  - `src/NetPdf.Paginate/LayoutContinuation.cs` — possibly add
-    `GridContinuation.EmittedBlockExtent` mirroring
-    `FlexContinuation.EmittedBlockExtent`.
+  - `src/NetPdf.Layout/Layouters/GridLayouter.cs` — exposes
+    `LastEmittedBlockExtent` ✓ (cycle 5c.1).
+  - `src/NetPdf.Paginate/LayoutContinuation.cs` — adds
+    `GridContinuation.EmittedBlockExtent` field ✓ (cycle 5c.1).
   - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — wrapper
-    BoxFragment emit + cursor advance both use the emitted extent.
+    BoxFragment emit + cursor advance both use the emitted extent
+    (cycle 5c.2).
 - **Added** — Phase 3 Task 17 cycle 5b + post-PR-#97 review F2.
-- **Removal condition** — cycle 5c implements the contract +
+- **Updated** — Phase 3 Task 17 cycle 5c.1 + post-PR-#98 review
+  F1 + F3 (producer side ships).
+- **Removal condition** — cycle 5c.2 wires the consumer +
   end-to-end production tests verify wrapper sizing + cumulative
   consumed + sibling placement on both pages of a split grid.
 

@@ -147,15 +147,15 @@ internal sealed record FlexContinuation : LayoutContinuation
 }
 
 /// <summary>Per Phase 3 Task 17 cycle 5 — grid container split between
-/// grid rows. Resume at row <paramref name="RowIndex"/> on the next
-/// page, reusing <paramref name="Cache"/> so the resume page doesn't
+/// grid rows. Resume at row <see cref="RowIndex"/> on the next
+/// page, reusing <see cref="Cache"/> so the resume page doesn't
 /// re-resolve track sizes (= expensive multi-pass §11 algorithm) and
 /// doesn't re-place items via sparse auto-placement (= would yield a
 /// different placement if items had been partially emitted on the
 /// prior page).
 ///
 /// <para><b>Per Phase 3 plan + review fix #7</b> — the
-/// <paramref name="Cache"/> field was originally typed <c>object?</c>;
+/// <see cref="Cache"/> field was originally typed <c>object?</c>;
 /// cycle 5 promoted it to <see cref="GridResumeCache"/>, a concrete
 /// internal record carrying the row/column sizes + positions +
 /// per-item placement. The cache itself is strongly typed at the
@@ -181,9 +181,50 @@ internal sealed record FlexContinuation : LayoutContinuation
 /// continues with row K+1; the overflowing row's content "leaks" into
 /// the fragmentainer-block-end region (per the progress rule —
 /// authoring such CSS is unusual).</para></summary>
-internal sealed record GridContinuation(
-    int RowIndex,
-    GridResumeCache? Cache = null) : LayoutContinuation;
+/// <summary>Per Phase 3 Task 17 cycle 5c.1 + PR-#97 review F2 — grid
+/// continuation carries the TRUE emitted-rows extent (= sum of row
+/// sizes from <c>startRow</c> through the last emitted row inclusive)
+/// for the fragment that produced this continuation. Mirrors
+/// <see cref="FlexContinuation.EmittedBlockExtent"/>.
+///
+/// <para><b>Why</b>: cycle-5b's outer-site wiring sized the wrapper
+/// + advanced the cursor by the CLAMPED budget extent, not the
+/// emitted-rows extent. For 3 rows × 100px on a 250px budget where
+/// only 2 rows emit (= 200px), the wrapper painted at 250px →
+/// 50px of empty space + cumulative <c>ConsumedBlockSize</c>
+/// inflation + sibling displacement. Cycle 5c's wrapper-resize
+/// path will read this field to size the wrapper to emitted-rows
+/// + chrome (only).</para>
+///
+/// <para><b>Construction validation</b> mirrors
+/// <see cref="FlexContinuation"/>: finite + non-negative or
+/// throw. NaN / ±Infinity / negative would corrupt cycle-5c.2's
+/// wrapper-resize accounting.</para></summary>
+internal sealed record GridContinuation : LayoutContinuation
+{
+    public int RowIndex { get; }
+    public GridResumeCache? Cache { get; }
+    public double EmittedBlockExtent { get; }
+
+    public GridContinuation(
+        int RowIndex,
+        GridResumeCache? Cache = null,
+        double EmittedBlockExtent = 0.0)
+    {
+        if (!double.IsFinite(EmittedBlockExtent) || EmittedBlockExtent < 0)
+        {
+            throw new System.ArgumentOutOfRangeException(
+                nameof(EmittedBlockExtent),
+                $"GridContinuation.EmittedBlockExtent must be finite + "
+                + $"non-negative; got {EmittedBlockExtent}. NaN / ±Infinity / "
+                + "negative values would corrupt cycle-5c.2 wrapper-resize "
+                + "+ ConsumedBlockSize accounting.");
+        }
+        this.RowIndex = RowIndex;
+        this.Cache = Cache;
+        this.EmittedBlockExtent = EmittedBlockExtent;
+    }
+}
 
 /// <summary>Per Phase 3 Task 17 cycle 5 — opaque snapshot of the
 /// first-page Resolve pass that the resume page reuses verbatim.

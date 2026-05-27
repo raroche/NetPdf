@@ -151,6 +151,48 @@ internal sealed class GridLayouter : ILayouter, IDisposable
     /// cached snapshot in <see cref="GridContinuation.Cache"/>) and
     /// emits only items at rows ≥ <see cref="GridContinuation.RowIndex"/>.
     /// </summary>
+
+    /// <summary>Per Phase 3 Task 17 cycle 5c.1 + post-PR-#98 review
+    /// F1 — the TRUE occupied block-axis span of the rows emitted on
+    /// the most recent <see cref="AttemptLayout"/> call. Populated on
+    /// EVERY outcome (PageComplete + AllDone + Strict-defer), so
+    /// consumers (= cycle 5c.2's wrapper-resize) get the value
+    /// regardless of whether a continuation was produced.
+    ///
+    /// <para><b>Why a layouter property + not just on the
+    /// continuation</b>: cycle-5c.1's initial design carried this
+    /// solely on <see cref="GridContinuation.EmittedBlockExtent"/>,
+    /// which only exists when <c>PageComplete</c> fires. The final
+    /// fragment of a split grid returns <c>AllDone</c> with no
+    /// continuation but still needs its wrapper resized to only the
+    /// rows emitted on that final page. Per the PR-#98 review F1
+    /// recommendation, the field moved to a result-level channel
+    /// (= this property) that's available for all outcomes.</para>
+    ///
+    /// <para><b>Why <see cref="GridContinuation.EmittedBlockExtent"/>
+    /// still exists</b>: kept as a redundant convenience for cycle
+    /// 5c.2 consumers that already capture the continuation; both
+    /// channels carry the same value when a continuation is
+    /// produced. Cycle 5c.2 reads this property as the primary
+    /// source.</para>
+    ///
+    /// <para><b>Per-outcome semantics</b>:</para>
+    /// <list type="bullet">
+    ///   <item><b>PageComplete (split)</b>: span of rows
+    ///   <c>[startRow, endRowExclusive)</c> committed on this
+    ///   fragment.</item>
+    ///   <item><b>AllDone with incoming continuation</b>: span of
+    ///   the REMAINING rows emitted on this (final) page.</item>
+    ///   <item><b>AllDone without incoming continuation</b>: span
+    ///   of the full grid (= natural extent). Cycle 5c.2 doesn't
+    ///   need to resize this case but the value is accurate.</item>
+    ///   <item><b>Strict-defer (PageComplete, RowIndex==startRow,
+    ///   no rows emitted)</b>: 0 (= nothing committed on this
+    ///   fragment).</item>
+    ///   <item><b>Early-return (no explicit tracks / non-finite
+    ///   geometry / startRow ≥ rowCount)</b>: 0.</item>
+    /// </list></summary>
+    public double LastEmittedBlockExtent { get; private set; }
     private readonly GridContinuation? _incomingContinuation;
 
     /// <summary>Construct a layouter for the grid container
@@ -410,10 +452,12 @@ internal sealed class GridLayouter : ILayouter, IDisposable
 
             if (!sizing.HasExplicitTracks)
             {
+                LastEmittedBlockExtent = 0;
                 return LayoutAttemptResult.AllDone(cost: 0.0);
             }
             if (!sizing.IsGeometryFinite)
             {
+                LastEmittedBlockExtent = 0;
                 return LayoutAttemptResult.AllDone(cost: 0.0);
             }
 
@@ -465,6 +509,7 @@ internal sealed class GridLayouter : ILayouter, IDisposable
             // Degenerate "all rows already emitted" — happens when a
             // prior page emitted the last row + the resume page got
             // dispatched anyway (= benign; nothing to emit).
+            LastEmittedBlockExtent = 0;
             return LayoutAttemptResult.AllDone(cost: 0.0);
         }
 
@@ -497,20 +542,22 @@ internal sealed class GridLayouter : ILayouter, IDisposable
 
             if (deferEntireGrid)
             {
-                // Strict + first row doesn't fit + nothing committed.
-                // Return PageComplete(GridContinuation(startRow, null))
-                // so the dispatching BlockLayouter can rewind the grid
-                // dispatch + retry on a fresh page (where LastResort
-                // will eventually force-emit if needed).
-                //
-                // No cache emitted — the resume page must re-resolve
-                // sizing (= a fresh page likely has a different
-                // contentBlockSize budget anyway).
+                // Strict + first remaining row doesn't fit. No rows
+                // committed on this fragment → emitted-extent = 0.
+                LastEmittedBlockExtent = 0;
+
+                // Per PR-#98 review F2 — PRESERVE the incoming cache
+                // (when present) so the next attempt's identity check
+                // still matches. Pre-F2 we passed Cache: null which
+                // made identityMatches=false → startRow reset to 0 →
+                // re-emission of prior-page rows. Now: identity stays
+                // bound to this rootBox + RowIndex preserves progress.
                 return LayoutAttemptResult.PageComplete(
                     cost: 0.0,
                     continuation: new GridContinuation(
                         RowIndex: startRow,
-                        Cache: null));
+                        Cache: _incomingContinuation?.Cache,
+                        EmittedBlockExtent: 0));
             }
         }
 
@@ -624,6 +671,26 @@ internal sealed class GridLayouter : ILayouter, IDisposable
             }
         }
 
+        // Per Phase 3 Task 17 cycle 5c.1 + post-PR-#98 review F3 —
+        // compute the TRUE occupied content-box span via GEOMETRY,
+        // not sum-of-row-sizes. Pre-F3 we summed rowSizesRelative
+        // which is equal today only because gutters/alignment
+        // spacing aren't implemented. Once CSS Grid row-gap /
+        // block-axis alignment lands, sum-of-sizes will under-report
+        // the fragment's occupied span. Geometry derivation =
+        // (lastEmittedRow.bottom - firstEmittedRow.top), correct
+        // regardless of gutters/spacing.
+        double emittedExtent = 0;
+        if (endRowExclusive > startRow)
+        {
+            var lastRowIdx = endRowExclusive - 1;
+            var startTop = startRow > 0 ? rowPositionsRelative[startRow] : 0.0;
+            var lastRowBottom =
+                rowPositionsRelative[lastRowIdx] + rowSizesRelative[lastRowIdx];
+            emittedExtent = lastRowBottom - startTop;
+        }
+        LastEmittedBlockExtent = emittedExtent;
+
         // Per Phase 3 Task 17 cycle 5 + post-PR-#96 review F4 — build
         // the resume cache LAZILY: only when a split actually produces
         // PageComplete. Atomic mode + paginated-but-fits-on-one-page
@@ -637,11 +704,17 @@ internal sealed class GridLayouter : ILayouter, IDisposable
                     originalContentInlineSize: _contentInlineSize,
                     rowSizesRelative, colSizesRelative,
                     rowPositionsRelative, colPositionsRelative,
-                    placedItems));
+                    placedItems),
+                EmittedBlockExtent: emittedExtent);
             return LayoutAttemptResult.PageComplete(
                 cost: 0.0,
                 continuation: outgoing);
         }
+        // AllDone — emittedExtent already populated on the layouter
+        // property above so cycle 5c.2's wrapper-resize consumer
+        // gets the value regardless of whether the final fragment
+        // was a resume (= emits remaining rows + needs resize) or
+        // a single-page no-resume (= natural extent).
         return LayoutAttemptResult.AllDone(cost: 0.0);
     }
 

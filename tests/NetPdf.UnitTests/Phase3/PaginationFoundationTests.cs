@@ -564,6 +564,7 @@ public sealed class PaginationFoundationTests
         // Per Phase 3 Task 17 cycle 5 — Cache field promoted from
         // `object?` to typed `GridResumeCache?`. Cycle 5 post-PR-#96
         // F3+F5 hardening added GridIdentity + OriginalContentInlineSize.
+        // Cycle 5c.1 added EmittedBlockExtent.
         var emptyDoubles = System.Collections.Immutable.ImmutableArray<double>.Empty;
         var emptyPlacements = System.Collections.Immutable.ImmutableArray<GridItemPlacement>.Empty;
         var gridIdentity = new object();
@@ -575,11 +576,35 @@ public sealed class PaginationFoundationTests
             RowPositions: emptyDoubles,
             ColumnPositions: emptyDoubles,
             ItemPlacements: emptyPlacements);
-        var c = new GridContinuation(RowIndex: 8, Cache: cache);
+        var c = new GridContinuation(RowIndex: 8, Cache: cache, EmittedBlockExtent: 200.0);
         Assert.Equal(8, c.RowIndex);
         Assert.Same(cache, c.Cache);
         Assert.Same(gridIdentity, c.Cache!.GridIdentity);
         Assert.Equal(600.0, c.Cache.OriginalContentInlineSize);
+        Assert.Equal(200.0, c.EmittedBlockExtent);
+    }
+
+    [Fact]
+    public void GridContinuation_validates_emitted_block_extent_per_cycle_5c1_F2()
+    {
+        // Per Phase 3 Task 17 cycle 5c.1 + PR-#97 review F2 — defensive
+        // validation. NaN / ±Infinity / negative values would corrupt
+        // cycle-5c.2's wrapper-resize accounting; surface a contract
+        // violation at the source instead of silently corrupting
+        // downstream layout. Mirrors FlexContinuation's constructor
+        // validation.
+        Assert.Throws<System.ArgumentOutOfRangeException>(() =>
+            new GridContinuation(RowIndex: 0, EmittedBlockExtent: double.NaN));
+        Assert.Throws<System.ArgumentOutOfRangeException>(() =>
+            new GridContinuation(RowIndex: 0, EmittedBlockExtent: double.PositiveInfinity));
+        Assert.Throws<System.ArgumentOutOfRangeException>(() =>
+            new GridContinuation(RowIndex: 0, EmittedBlockExtent: -1.0));
+        // Default (= 0.0) accepted.
+        var zero = new GridContinuation(RowIndex: 0);
+        Assert.Equal(0.0, zero.EmittedBlockExtent);
+        // Positive accepted.
+        var positive = new GridContinuation(RowIndex: 0, EmittedBlockExtent: 250.0);
+        Assert.Equal(250.0, positive.EmittedBlockExtent);
     }
 
     [Fact]

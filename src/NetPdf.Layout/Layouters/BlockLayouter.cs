@@ -1768,25 +1768,34 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // PageComplete(GridContinuation) up + the parent's
             // discard would silently drop remaining grid rows.
             //
-            // <para>Per Phase 3 Task 17 cycle 5c.2c — F3 explicit-
-            // height grid handling ships. The
-            // <c>IsHeightAuto(child)</c> gate added in cycle 5c.2b
-            // post-PR-#100 review P1#3 is REMOVED; explicit-height
-            // grids now paginate cleanly because the matching
-            // <see cref="MeasureSubtreeVisualBlockExtent"/>
-            // subtree-extent clamp (below at the break-check site)
-            // honors the post-clamp <c>borderBoxBlockSize</c>
-            // instead of restoring the authored
-            // <c>height</c> value. Without the subtree-extent
-            // clamp, the post-clamp wrapper (e.g., 250 after
-            // shrinking from 300) would have its extent restored to
-            // 300 by the recursive measure walk → break-check
-            // forced-overflow at the corrupted wrapper geometry
-            // (= the P1#3 failure mode). Mirrors the flex L3 +
-            // table cycle-1 subtree-extent clamps for the same
-            // reason.</para>
+            // <para>Per Phase 3 Task 17 cycle 5c.2c post-PR-#101
+            // review P1#1 — <c>IsHeightAuto(child)</c> gate
+            // RESTORED. The cycle-5c.2c F3 subtree-extent clamp
+            // approach was reverted because the clamp also fed the
+            // shrunk <c>borderBoxBlockSize</c> into
+            // <see cref="GridLayouter.ConfigureEmission"/> /
+            // <see cref="GridSizing.Resolve"/> as the
+            // <c>contentBlockSize</c>, causing fr / definite-height
+            // row sizing to redistribute against the SMALLER
+            // budget — e.g., <c>height: 400px; grid-template-rows:
+            // 100px 1fr</c> on a 250px page would resolve rows as
+            // (100, 150) instead of the authored (100, 300),
+            // silently losing 150px of grid geometry. Explicit-
+            // height pagination needs a shared
+            // <c>GridFragmentPlan</c> that SEPARATES resolved
+            // geometry (= computed against authored container
+            // size) from fragment budget (= per-page emission
+            // capacity); tracked in
+            // <c>grid-fragment-plan-shared-sizing-deferral</c>
+            // (cycle 5c.2b post-PR-#100 review P2) +
+            // <c>grid-explicit-height-paginate-deferral</c>
+            // remains <c>not-started</c> until that plan ships.
+            // Auto-height grids stay clamped — they have no
+            // authored container extent to confuse with the
+            // fragment budget.</para>
             if (IsPaginatableGrid(child)
-                && !_disableGridPagination)
+                && !_disableGridPagination
+                && IsHeightAuto(child))
             {
                 var pageRemainingForOuterGrid =
                     fragmentainer.BlockSize
@@ -1957,41 +1966,22 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             {
                 subtreeBlockExtent = borderBoxBlockSize;
             }
-            // Per Phase 3 Task 17 cycle 5c.2c — F3 explicit-height
-            // grid handling. When the outer-site clamp fired
-            // (= <c>paginateGridForOuterChild</c>),
-            // <c>borderBoxBlockSize</c> was shrunk from the
-            // authored height to the page-remaining budget. But
-            // <see cref="MeasureSubtreeVisualBlockExtent"/>'s
-            // recursive walk reads
-            // <c>parent.Style.ReadLengthPxOrZero(Height)</c>
-            // (line ~5893) — restoring the authored value for
-            // explicit-height grids. Without the clamp here, the
-            // <c>effectiveBlockSize</c> below would equal the
-            // pre-clamp natural extent → the break-check sees the
-            // grid as oversized + fires forced-overflow at the
-            // CLAMPED wrapper geometry (= diagnostic mismatch +
-            // worse visual artifact than just leaving the grid
-            // atomic). Mirrors the table / flex clamps above:
-            // dominant-layouter-owned containers clamp their
-            // subtree extent back to the wrapper's already-
-            // shrunken <c>borderBoxBlockSize</c>.
+            // Per Phase 3 Task 17 cycle 5c.2c post-PR-#101 review
+            // P1#1 — the F3 subtree-extent clamp that ORIGINALLY
+            // lived here was REVERTED. The mechanism + the clamp's
+            // sibling effect (= passing the shrunk
+            // <c>borderBoxBlockSize</c> into
+            // <c>GridSizing.Resolve</c>) caused explicit-height
+            // grids with fr / flexible rows to redistribute track
+            // sizes against the shrunk container, silently losing
+            // authored row geometry. <c>IsHeightAuto(child)</c>
+            // gates the outer-site clamp instead (above), keeping
+            // explicit-height grids on the atomic-dispatch path
+            // until a shared <c>GridFragmentPlan</c> lands that
+            // separates resolved geometry from fragment budget.
+            // The <c>grid-explicit-height-paginate-deferral</c>
+            // remains <c>not-started</c>.
             //
-            // <para>Closes the
-            // <c>grid-explicit-height-paginate-deferral</c> from
-            // cycle 5b PR-#97 review F3 + the
-            // <c>IsHeightAuto(child)</c> gate removal from cycle
-            // 5c.2b post-PR-#100 review P1#3. Paginatable
-            // explicit-height grids now flow through F1 + F2 like
-            // auto-height grids: clamp fires + dispatch returns
-            // PageComplete(GridContinuation) + F2 resizes the
-            // wrapper to the emitted-rows extent + the cursor
-            // advances by the emitted extent.</para>
-            if (paginateGridForOuterChild
-                && subtreeBlockExtent > borderBoxBlockSize)
-            {
-                subtreeBlockExtent = borderBoxBlockSize;
-            }
             // The "effective" border-box block size for pagination +
             // cursor purposes: max of own border-box + subtree extent.
             // Equals borderBoxBlockSize for leaves; dominates for
@@ -2618,8 +2608,26 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // item / table caption) the F1 defer would route
             // PageComplete(BlockContinuation) up to a parent that
             // discards the result, silently dropping the grid.
+            //
+            // <para>Per Phase 3 Task 17 cycle 5c.2c post-PR-#101
+            // review P1#3 — F1 ALSO gated by
+            // <c>paginateGridForOuterChild</c>. The outer-site
+            // clamp (above, in the pre-grow section) decides
+            // whether the dispatch will actually paginate the
+            // grid: only when the wrapper would otherwise overflow
+            // page-remaining AND the chrome fits AND the grid is
+            // auto-height. F1 must mirror that decision — if the
+            // clamp didn't fire, dispatch passes
+            // <c>allowPagination: false</c>, and a fabricated
+            // GridContinuation here would route a continuation
+            // that the resume page's F2 (= keyed off
+            // <c>incomingGridContinuation != null</c>) would
+            // mistakenly resize the wrapper against. The gate
+            // ensures F1's pre-empt is structurally equivalent to
+            // the dispatch's pagination decision.</para>
             if (IsPaginatableGrid(child)
                 && !_disableGridPagination
+                && paginateGridForOuterChild
                 && strategy != LayoutAttemptStrategy.LastResort
                 && emittedThisAttempt > 0)
             {

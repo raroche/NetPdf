@@ -2071,46 +2071,72 @@ flags the categories):
 ## grid-explicit-height-paginate-deferral
 
 - **ID** — `grid-explicit-height-paginate-deferral`
-- **Status** — `approximated` (paginatable path shipped + verified
-  by 3 `Cycle5c2c_F3_*` unit tests; recursive-site activation +
-  production tests in cycle 5c.2d). Phase 3 Task 17 cycle 5c.2c
-  ships the consumer-side fix.
+- **Status** — `not-started`. Phase 3 Task 17 cycle 5b post-
+  PR-#97 review F3 + cycle 5c.2c post-PR-#101 review P1#1
+  (= initial 5c.2c F3 mechanism REVERTED).
 - **Behavior** — grids with explicit `height: 300px` style get
   their natural extent restored by
   `MeasureSubtreeVisualBlockExtent` AFTER the paginatable-grid
-  clamp would have shrunk `borderBoxBlockSize`. The resolver path
-  then sees a 300px chunk on a 250px page → forced-overflow
+  clamp would have shrunk `borderBoxBlockSize`. The resolver
+  path then sees a 300px chunk on a 250px page → forced-overflow
   branch, which dispatches grid atomically (`allowPagination:
   false`). So even with cycle 5b's outer-site wiring active,
   explicit-height grids would never paginate.
-- **Cycle 5c.2c SHIPPED** — new subtree-extent clamp in the
-  outer-site dispatch path (right next to the existing flex /
-  table clamps): when `paginateGridForOuterChild` is true AND
-  the recursive measure returned a value greater than the
-  post-clamp `borderBoxBlockSize`, the subtree extent is
-  CLAMPED back to the post-clamp wrapper extent. This prevents
-  `effectiveBlockSize = max(borderBox, subtree)` from restoring
-  the authored height + firing forced-overflow at the corrupted
-  geometry. The cycle-5c.2b-post-PR-#100-P1#3
-  <c>IsHeightAuto(child)</c> gate on the outer-site clamp is
-  REMOVED in this cycle since explicit-height grids now flow
-  through F1 + F2 cleanly.
+- **Missing** —
+  - A shared per-attempt grid plan (see
+    `grid-fragment-plan-shared-sizing-deferral`) that
+    SEPARATES resolved grid geometry (= rows / fr / placement
+    computed against authored `height`) from per-fragment
+    budget (= page-remaining capacity). The cycle 5c.2c
+    initial implementation conflated these — clamping
+    `borderBoxBlockSize` to fragment budget fed the shrunk
+    size into `GridSizing.Resolve` as `contentBlockSize`,
+    causing fr / definite-height row sizing to redistribute
+    against the smaller budget (e.g.,
+    <c>height: 400px; grid-template-rows: 100px 1fr</c> on a
+    250px page resolved rows as (100, 150) instead of the
+    authored (100, 300), silently losing 150px of authored
+    geometry).
+  - With a shared plan, the paginatable-grid clamp can carry
+    the post-clamp page budget without re-resolving the grid
+    against it; the resolved row geometry stays authoritative.
+- **Cycle 5c.2c INITIAL → REVERTED** — added a subtree-extent
+  clamp in `MeasureSubtreeVisualBlockExtent`'s outer
+  consumer (= when `paginateGridForOuterChild`, cap subtree
+  extent back to post-clamp `borderBoxBlockSize`); also
+  removed the cycle-5c.2b post-PR-#100 review P1#3
+  `IsHeightAuto(child)` gate. PR-#101 review correctly
+  identified that this changed row sizing inputs to
+  GridSizing.Resolve — the subtree clamp without
+  geometry/budget separation silently corrupted fr / definite-
+  height row resolution. Reverted to the cycle-5c.2b-post-
+  PR-#100 state: `IsHeightAuto(child)` gates the outer-site
+  clamp; explicit-height grids stay atomic.
 - **Practical impact** — explicit-height grids in invoices /
-  reports now paginate cleanly at row boundaries when their
-  authored height exceeds the page-remaining + the first row
-  fits. Pre-cycle-5c.2c the grid would render past the page
-  edge via forced-overflow; post-cycle-5c.2c the grid splits
-  with correct wrapper sizing.
-- **Trigger** — cycle 5c.2c. Coordinates with F1 (cycle 5c.2a)
-  + F2 (cycle 5c.2b) for the full outer-site pagination
-  pipeline.
+  reports still render past page edges via forced-overflow,
+  same as cycle 5b. The F1 + F2 + clamp pipeline applies only
+  to auto-height grids. Authored row geometry is preserved
+  (= no silent loss).
+- **Trigger** — wait for `grid-fragment-plan-shared-sizing-
+  deferral` to land; then F3 can ship cleanly using
+  authored-size resolution for geometry + page-budget for
+  fragmentation.
 - **Owner files** —
+  - `src/NetPdf.Layout/Layouters/GridSizing.cs` — `Result`
+    type expanded to immutable `GridFragmentPlan`.
   - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` —
-    `MeasureSubtreeVisualBlockExtent` consumer path: subtree-
-    extent clamp added at the break-check site ✓ (cycle 5c.2c).
+    `MeasureSubtreeVisualBlockExtent` + outer-site clamp
+    consume the plan; `IsHeightAuto(child)` gate removed
+    when plan-based separation lands.
+  - `src/NetPdf.Layout/Layouters/GridLayouter.cs` —
+    `ConfigureEmission` accepts a pre-computed plan in lieu
+    of running its own `Resolve`.
 - **Added** — Phase 3 Task 17 cycle 5b + post-PR-#97 review F3.
-- **Updated** — Phase 3 Task 17 cycle 5c.2c (F3 ships).
-- **Removal condition** — cycle 5c.2d wires the recursive site +
-  production-pipeline tests on real HTML fixtures verify
-  explicit-height grids paginate end-to-end through the full
-  HTML → cascade → BoxBuilder → BlockLayouter chain.
+- **Updated** — Phase 3 Task 17 cycle 5c.2c initial (mechanism
+  attempted) + post-PR-#101 review P1#1 (mechanism reverted).
+- **Removal condition** — `grid-fragment-plan-shared-sizing-
+  deferral` ships AND explicit-height grids on tight pages
+  paginate correctly + don't fall into forced-overflow with
+  pagination disabled AND production HTML fixtures with
+  explicit-height multipage grids verify end-to-end through
+  the full HTML → cascade → BoxBuilder → BlockLayouter chain.

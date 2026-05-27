@@ -592,5 +592,19 @@ internal static class DiagnosticCodes
     public const string LayoutGridMaxExpandedTracksTruncated001 =
         "LAYOUT-GRID-MAX-EXPANDED-TRACKS-TRUNCATED-001";
 
+    /// <summary>
+    /// Per Phase 3 Task 17 cycle 5 — emitted when a single grid row's
+    /// height exceeds the fragmentainer's block-axis budget on its
+    /// first attempt. Per CSS Fragmentation L3 §4.4 progress rule the
+    /// row is force-emitted (= "you must commit at least one element
+    /// per page" or pagination would deadlock); content overflows the
+    /// fragmentainer-block-end region. Cycle 5 ships row-atomic
+    /// pagination only; intra-row item splitting is post-v1. Mirrors
+    /// <c>NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutGridForcedOverflow001</c>.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string LayoutGridForcedOverflow001 =
+        "LAYOUT-GRID-FORCED-OVERFLOW-001";
+
     // endregion LAYOUT-*
 }

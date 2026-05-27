@@ -146,15 +146,89 @@ internal sealed record FlexContinuation : LayoutContinuation
     }
 }
 
-/// <summary>Grid container split between grid rows.
-/// <paramref name="RowIndex"/> identifies the next grid row to emit.
-/// <paramref name="TrackSizingCache"/> per Phase 3 plan + review fix #7
-/// — opaque snapshot of the resolved track-sizing pass so the next-
-/// page resume skips the (expensive) two-pass intrinsic + flex-track
-/// distribution.</summary>
+/// <summary>Per Phase 3 Task 17 cycle 5 — grid container split between
+/// grid rows. Resume at row <paramref name="RowIndex"/> on the next
+/// page, reusing <paramref name="Cache"/> so the resume page doesn't
+/// re-resolve track sizes (= expensive multi-pass §11 algorithm) and
+/// doesn't re-place items via sparse auto-placement (= would yield a
+/// different placement if items had been partially emitted on the
+/// prior page).
+///
+/// <para><b>Per Phase 3 plan + review fix #7</b> — the
+/// <paramref name="Cache"/> field was originally typed <c>object?</c>;
+/// cycle 5 promoted it to <see cref="GridResumeCache"/>, a concrete
+/// internal record carrying the row/column sizes + positions +
+/// per-item placement. Per CLAUDE.md "AOT-clean" rules the cache is
+/// strongly typed (no runtime cast); the layout pipeline reads it
+/// without reflection.</para>
+///
+/// <para><b>Row-spanning items (cycle 6 scope)</b>: cycle 5 ships
+/// pagination assuming each item occupies exactly one row (= cycle 1
+/// contract still holds). Cycle 6 introduces <c>span N</c> placement;
+/// at that point the row-K computation in
+/// <c>GridLayouter.AttemptLayout</c> must account for spanning items
+/// (= no item straddles the page break per design doc § cycle 5
+/// "spanning items are ATOMIC to their row span").</para>
+///
+/// <para><b>Force-overflow per CSS Fragmentation L3 §4.4</b>: if a
+/// single row + its contained items is taller than the entire
+/// fragmentainer, the layouter emits the row anyway + emits a
+/// diagnostic. The continuation is still valid + the resume page
+/// continues with row K+1; the overflowing row's content "leaks" into
+/// the fragmentainer-block-end region (per the progress rule —
+/// authoring such CSS is unusual).</para></summary>
 internal sealed record GridContinuation(
     int RowIndex,
-    object? TrackSizingCache = null) : LayoutContinuation;
+    GridResumeCache? Cache = null) : LayoutContinuation;
+
+/// <summary>Per Phase 3 Task 17 cycle 5 — opaque snapshot of the
+/// first-page Resolve pass that the resume page reuses verbatim.
+/// Skipping the resolution + placement passes is a real perf win
+/// (= the §11 algorithm is N+M passes over the track count for fr +
+/// intrinsic + Maximize, plus the 4-pass §8.5 placement). It is ALSO
+/// a correctness requirement: sparse auto-placement is order-
+/// sensitive + would yield a DIFFERENT placement on resume if items
+/// were partially emitted on the prior page.
+///
+/// <para><see cref="RowBaseSizes"/> / <see cref="ColumnBaseSizes"/>
+/// carry the post-Maximize final track sizes (= the
+/// <c>RowSizes</c>/<c>ColSizes</c> the layouter's emit loop reads).
+/// <see cref="RowPositions"/> / <see cref="ColumnPositions"/> carry
+/// the cumulative offsets in the wrapper's content-box coordinates
+/// (= what emit sums to get per-fragment offsets).</para>
+///
+/// <para><see cref="ItemPlacements"/> per design doc § cycle 5 — the
+/// per-item (Row, Col) tuples from the sparse auto-placement pass,
+/// in DOM order. The resume layouter iterates this list verbatim +
+/// emits only items whose Row ≥ continuation.RowIndex.</para></summary>
+internal sealed record GridResumeCache(
+    System.Collections.Immutable.ImmutableArray<double> RowBaseSizes,
+    System.Collections.Immutable.ImmutableArray<double> ColumnBaseSizes,
+    System.Collections.Immutable.ImmutableArray<double> RowPositions,
+    System.Collections.Immutable.ImmutableArray<double> ColumnPositions,
+    System.Collections.Immutable.ImmutableArray<GridItemPlacement> ItemPlacements);
+
+/// <summary>Per Phase 3 Task 17 cycle 5 — one grid item's placement
+/// + a reference to the source box so the resume layouter can
+/// re-emit fragments without re-walking the placement algorithm.
+///
+/// <para><b>Why <see cref="Box"/> is typed <see cref="object"/></b>:
+/// <c>NetPdf.Paginate</c> cannot reference <c>NetPdf.Layout</c>
+/// without a circular dependency (Layout references Paginate for
+/// continuation types). The Layout-side <c>GridLayouter</c> casts
+/// back to its <c>Box</c> type. The cast is a single layouter-
+/// internal seam + matches the same opaque-payload pattern used by
+/// <see cref="BlockContinuation.LayouterState"/> /
+/// <see cref="MulticolContinuation.PerChildLayouterState"/> /
+/// <see cref="FlexContinuation.BaselineState"/>.</para>
+///
+/// <para><see cref="Row"/> and <see cref="Col"/> are 0-based final
+/// indices; negative values indicate unplaced (= dropped per the
+/// implicit-tracks-unsupported diagnostic).</para></summary>
+internal sealed record GridItemPlacement(
+    object Box,
+    int Row,
+    int Col);
 
 /// <summary>Per Phase 3 Task 14 cycles 1-2 — multicol container split
 /// across pages. CSS Multi-column L1 §2 defines the multicol container

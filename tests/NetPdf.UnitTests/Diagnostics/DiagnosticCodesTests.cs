@@ -881,6 +881,15 @@ public sealed class DiagnosticCodesTests
             NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutGridMaxExpandedTracksTruncated001);
     }
 
+    [Fact]
+    public void Layout_grid_forced_overflow_001_constants_are_stable()
+    {
+        Assert.Equal("LAYOUT-GRID-FORCED-OVERFLOW-001",
+            DiagnosticCodes.LayoutGridForcedOverflow001);
+        Assert.Equal(DiagnosticCodes.LayoutGridForcedOverflow001,
+            NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutGridForcedOverflow001);
+    }
+
     private static string LoadRegistry()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

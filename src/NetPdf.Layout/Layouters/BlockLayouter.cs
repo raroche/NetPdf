@@ -4482,6 +4482,23 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     private static bool IsGridContainer(Box box)
         => box.Kind is BoxKind.GridContainer or BoxKind.InlineGridContainer;
 
+    /// <summary>Per Phase 3 Task 17 cycle 5 — predicate identifying
+    /// grid containers eligible for multi-page row-by-row splitting.
+    ///
+    /// <para>Cycle 5 ships row-atomic pagination for ALL grid
+    /// containers (= unlike flex which gates on row + wrap + non-
+    /// wrap-reverse, every grid can paginate row-by-row regardless
+    /// of CSS styling — the row is the only natural break point + a
+    /// grid with one row degenerates to atomic behavior naturally).</para>
+    ///
+    /// <para>The predicate exists as a separate method so future
+    /// cycles can add gating conditions (e.g., spans straddling
+    /// pages once cycle 6 ships span placement, or auto-track-
+    /// induced indefinite-row scenarios) without ripping out the
+    /// dispatch sites.</para></summary>
+    private static bool IsPaginatableGrid(Box box)
+        => IsGridContainer(box);
+
     /// <summary>Per Phase 3 Task 16 cycle 4b — predicate identifying
     /// flex containers eligible for multi-page line splitting via the
     /// pre-break-check / forced-overflow re-route paths.
@@ -6391,12 +6408,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         double contentBlockSize,
         FragmentainerContext fragmentainer,
         ref LayoutContext layout,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool allowPagination = false,
+        GridContinuation? incomingContinuation = null)
     {
         using var gridLayouter = new GridLayouter(
             rootBox: gridBox,
             sink: _sink,
-            incomingContinuation: null,
+            incomingContinuation: incomingContinuation,
             diagnostics: _diagnostics,
             shaperResolver: _shaperResolver);
         gridLayouter.ConfigureEmission(
@@ -6404,7 +6423,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             contentBlockOffset: contentBlockOffset,
             contentInlineSize: contentInlineSize,
             contentBlockSize: contentBlockSize,
-            allowPagination: false);
+            allowPagination: allowPagination);
         using var gridResolver = new BreakResolver();
         return gridLayouter.AttemptLayout(
             fragmentainer,

@@ -407,4 +407,15 @@ internal static class PaginateDiagnosticCodes
     /// Severity: Warning.</summary>
     public const string LayoutGridMaxExpandedTracksTruncated001 =
         "LAYOUT-GRID-MAX-EXPANDED-TRACKS-TRUNCATED-001";
+
+    /// <summary>Phase 3 Task 17 cycle 5 — a single grid row exceeds
+    /// the fragmentainer's block-axis budget on its first attempt.
+    /// Per CSS Fragmentation L3 §4.4 progress rule the row is
+    /// force-emitted (= "you must commit at least one element per
+    /// page" or pagination would deadlock); content overflows the
+    /// fragmentainer-block-end region. Cycle 5 ships row-atomic
+    /// pagination only; intra-row item splitting is post-v1.
+    /// Severity: Warning.</summary>
+    public const string LayoutGridForcedOverflow001 =
+        "LAYOUT-GRID-FORCED-OVERFLOW-001";
 }

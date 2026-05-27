@@ -1247,6 +1247,417 @@ public sealed class GridLayouterTests
     }
 
     // =====================================================================
+    //  Cycle 4 — minmax() / fit-content() / repeat(integer) + §11.6 Maximize
+    // =====================================================================
+
+    [Fact]
+    public void Cycle4_minmax_length_length_clamps_to_max_when_container_exceeds()
+    {
+        // grid-template-columns: minmax(100px, 200px) in 400px container.
+        //   Base = 100 (from min), growth = 200 (from max).
+        //   No fr → Maximize fills (400-100=300 of free space, but
+        //   headroom is only 200-100=100 → track grows to 200, NOT to 400).
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForMinMax(
+                TrackEntry.ForLength(100), TrackEntry.ForLength(200)))));
+        var grid = BuildGridContainerWithTemplates(
+            rows: new TrackList(ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(50)))),
+            cols: cols);
+        SetExplicitWidth(grid, 400);
+        SetExplicitHeight(grid, 50);
+        var item = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Single(sink.Fragments);
+        AssertFragmentEquals(sink, item, inlineOffset: 0, blockOffset: 0, inlineSize: 200, blockSize: 50);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridTrackKindUnsupported001);
+    }
+
+    [Fact]
+    public void Cycle4_minmax_length_fr_distributes_via_fr_with_min_floor()
+    {
+        // grid-template-columns: minmax(100px, 1fr) 1fr in 400px container.
+        //   Track 1: base=100, growth=∞, IsFr=true, factor=1, MinBase=100.
+        //   Track 2: base=0, growth=∞, IsFr=true, factor=1, MinBase=0.
+        //   §11.7 pass 1: nonFlexBase = 100+0 = 100 (track 1 base
+        //     counted since IsFr+frozen? No — initially frozen[]=false,
+        //     so track 1 unfrozen excluded). Actually nonFlexBase
+        //     counts only NON-fr tracks; both are fr → nonFlexBase=0.
+        //     leftover = 400. flexFactorSum = max(1+1, 1) = 2.
+        //     hypoFr = 200. Check track 1: base 100 > 200×1=200? NO.
+        //     Check track 2: base 0 > 200? NO. Distribute:
+        //     track 1 = max(100, 200) = 200. track 2 = max(0, 200) = 200.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForMinMax(
+                TrackEntry.ForLength(100), TrackEntry.ForFr(1))),
+            new TrackListEntry(TrackEntry.ForFr(1))));
+        var grid = BuildGridContainerWithTemplates(
+            rows: new TrackList(ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(50)))),
+            cols: cols);
+        SetExplicitWidth(grid, 400);
+        SetExplicitHeight(grid, 50);
+        var itemA = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var itemB = BuildItemWithExplicitPlacement(row: 1, col: 2);
+        grid.AppendChild(itemA);
+        grid.AppendChild(itemB);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Equal(2, sink.Fragments.Count);
+        AssertFragmentEquals(sink, itemA, inlineOffset: 0, blockOffset: 0, inlineSize: 200, blockSize: 50);
+        AssertFragmentEquals(sink, itemB, inlineOffset: 200, blockOffset: 0, inlineSize: 200, blockSize: 50);
+    }
+
+    [Fact]
+    public void Cycle4_minmax_fr_removal_step_freezes_when_min_exceeds_proportional_share()
+    {
+        // grid-template-columns: minmax(300px, 1fr) 1fr in 400px.
+        //   Pass 1: nonFlexBase=0, leftover=400, flexFactorSum=2,
+        //     hypoFr=200. Track 1: base 300 > 200×1=200 → FREEZE.
+        //   Pass 2: nonFlexBase=300 (track 1 frozen at base), leftover=100,
+        //     flexFactorSum=1 (only track 2), hypoFr=100. Track 2: base 0
+        //     > 100? NO → unfrozen. Distribute: track 2 = max(0, 100) = 100.
+        //   Final: track 1 = 300 (min floor), track 2 = 100.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForMinMax(
+                TrackEntry.ForLength(300), TrackEntry.ForFr(1))),
+            new TrackListEntry(TrackEntry.ForFr(1))));
+        var grid = BuildGridContainerWithTemplates(
+            rows: new TrackList(ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(50)))),
+            cols: cols);
+        SetExplicitWidth(grid, 400);
+        SetExplicitHeight(grid, 50);
+        var itemA = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var itemB = BuildItemWithExplicitPlacement(row: 1, col: 2);
+        grid.AppendChild(itemA);
+        grid.AppendChild(itemB);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        AssertFragmentEquals(sink, itemA, inlineOffset: 0, blockOffset: 0, inlineSize: 300, blockSize: 50);
+        AssertFragmentEquals(sink, itemB, inlineOffset: 300, blockOffset: 0, inlineSize: 100, blockSize: 50);
+    }
+
+    [Fact]
+    public void Cycle4_minmax_invalid_min_exceeds_max_treats_max_as_min_per_spec()
+    {
+        // grid-template-columns: minmax(200px, 100px) in 400px.
+        //   Per §11.5: when min > max, max = min. Track sits at 200.
+        //   No fr to consume rest → Maximize finds 0 headroom (base=growth)
+        //   → track stays 200, container has 200px of empty space.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForMinMax(
+                TrackEntry.ForLength(200), TrackEntry.ForLength(100)))));
+        var grid = BuildGridContainerWithTemplates(
+            rows: new TrackList(ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(50)))),
+            cols: cols);
+        SetExplicitWidth(grid, 400);
+        SetExplicitHeight(grid, 50);
+        var item = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        AssertFragmentEquals(sink, item, inlineOffset: 0, blockOffset: 0, inlineSize: 200, blockSize: 50);
+    }
+
+    [Fact]
+    public void Cycle4_fit_content_clamps_to_limit_when_content_exceeds()
+    {
+        // grid-template-columns: fit-content(100px) 1fr in 400px.
+        //   Item 1 declared width=150 → max-content contribution = 150.
+        //   §7.2.2: min(limit=100, max-content=150) = 100. Track 1 = 100.
+        //   Track 2 fr: leftover = 400-100 = 300 → track 2 = 300.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForFitContent(100)),
+            new TrackListEntry(TrackEntry.ForFr(1))));
+        var grid = BuildGridContainerWithTemplates(
+            rows: new TrackList(ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(50)))),
+            cols: cols);
+        SetExplicitWidth(grid, 400);
+        SetExplicitHeight(grid, 50);
+        var itemA = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        itemA.Style.Set(PropertyId.Width, ComputedSlot.FromLengthPx(150));
+        var itemB = BuildItemWithExplicitPlacement(row: 1, col: 2);
+        grid.AppendChild(itemA);
+        grid.AppendChild(itemB);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        AssertFragmentEquals(sink, itemA, inlineOffset: 0, blockOffset: 0, inlineSize: 100, blockSize: 50);
+        AssertFragmentEquals(sink, itemB, inlineOffset: 100, blockOffset: 0, inlineSize: 300, blockSize: 50);
+    }
+
+    [Fact]
+    public void Cycle4_fit_content_uses_content_when_below_limit()
+    {
+        // grid-template-columns: fit-content(200px) 1fr in 400px.
+        //   Item 1 declared width=80 → max-content = 80.
+        //   min(limit=200, max-content=80) = 80. Track 1 = 80.
+        //   Track 2 fr: leftover = 320 → track 2 = 320.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForFitContent(200)),
+            new TrackListEntry(TrackEntry.ForFr(1))));
+        var grid = BuildGridContainerWithTemplates(
+            rows: new TrackList(ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(50)))),
+            cols: cols);
+        SetExplicitWidth(grid, 400);
+        SetExplicitHeight(grid, 50);
+        var itemA = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        itemA.Style.Set(PropertyId.Width, ComputedSlot.FromLengthPx(80));
+        var itemB = BuildItemWithExplicitPlacement(row: 1, col: 2);
+        grid.AppendChild(itemA);
+        grid.AppendChild(itemB);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        AssertFragmentEquals(sink, itemA, inlineOffset: 0, blockOffset: 0, inlineSize: 80, blockSize: 50);
+        AssertFragmentEquals(sink, itemB, inlineOffset: 80, blockOffset: 0, inlineSize: 320, blockSize: 50);
+    }
+
+    [Fact]
+    public void Cycle4_repeat_integer_expands_inline()
+    {
+        // grid-template-columns: repeat(3, 100px) in 400px.
+        //   Expands to 100px 100px 100px → tracks 100/100/100 = 300.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListRepeat(TrackRepeat.Create(
+                3,
+                ImmutableArray.Create<TrackRepeatItem>(
+                    new TrackRepeatEntry(TrackEntry.ForLength(100)))))));
+        var grid = BuildGridContainerWithTemplates(
+            rows: new TrackList(ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(50)))),
+            cols: cols);
+        SetExplicitWidth(grid, 400);
+        SetExplicitHeight(grid, 50);
+        var itemA = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var itemB = BuildItemWithExplicitPlacement(row: 1, col: 2);
+        var itemC = BuildItemWithExplicitPlacement(row: 1, col: 3);
+        grid.AppendChild(itemA);
+        grid.AppendChild(itemB);
+        grid.AppendChild(itemC);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        AssertFragmentEquals(sink, itemA, inlineOffset: 0, blockOffset: 0, inlineSize: 100, blockSize: 50);
+        AssertFragmentEquals(sink, itemB, inlineOffset: 100, blockOffset: 0, inlineSize: 100, blockSize: 50);
+        AssertFragmentEquals(sink, itemC, inlineOffset: 200, blockOffset: 0, inlineSize: 100, blockSize: 50);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridTrackKindUnsupported001);
+    }
+
+    [Fact]
+    public void Cycle4_repeat_integer_with_mixed_pattern_alternates()
+    {
+        // grid-template-columns: repeat(2, 100px 1fr) in 400px.
+        //   Expands to 100px 1fr 100px 1fr.
+        //   nonFlexBase = 200, leftover = 200, flexFactorSum = max(2, 1) = 2,
+        //   hypoFr = 100 → fr tracks each = 100. Final: 100/100/100/100.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListRepeat(TrackRepeat.Create(
+                2,
+                ImmutableArray.Create<TrackRepeatItem>(
+                    new TrackRepeatEntry(TrackEntry.ForLength(100)),
+                    new TrackRepeatEntry(TrackEntry.ForFr(1)))))));
+        var grid = BuildGridContainerWithTemplates(
+            rows: new TrackList(ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(50)))),
+            cols: cols);
+        SetExplicitWidth(grid, 400);
+        SetExplicitHeight(grid, 50);
+        var items = new Box[4];
+        for (var i = 0; i < 4; i++)
+        {
+            items[i] = BuildItemWithExplicitPlacement(row: 1, col: i + 1);
+            grid.AppendChild(items[i]);
+        }
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        AssertFragmentEquals(sink, items[0], inlineOffset: 0, blockOffset: 0, inlineSize: 100, blockSize: 50);
+        AssertFragmentEquals(sink, items[1], inlineOffset: 100, blockOffset: 0, inlineSize: 100, blockSize: 50);
+        AssertFragmentEquals(sink, items[2], inlineOffset: 200, blockOffset: 0, inlineSize: 100, blockSize: 50);
+        AssertFragmentEquals(sink, items[3], inlineOffset: 300, blockOffset: 0, inlineSize: 100, blockSize: 50);
+    }
+
+    [Fact]
+    public void Cycle4_maximize_distributes_free_space_to_growth_limits()
+    {
+        // grid-template-columns: minmax(50px, 150px) minmax(50px, 150px) in 400px.
+        //   Both tracks: base=50, growth=150 → headroom 100 each, total 200.
+        //   Free space = 400 - 100 = 300. ratio = min(1.0, 300/200) = 1.0.
+        //   Each track grows by full headroom 100 → 150. Final: 150/150.
+        //   (= 100 remaining; with no fr tracks the container has empty
+        //   space, which is the correct §11.6 spec behavior — no auto-stretch.)
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForMinMax(
+                TrackEntry.ForLength(50), TrackEntry.ForLength(150))),
+            new TrackListEntry(TrackEntry.ForMinMax(
+                TrackEntry.ForLength(50), TrackEntry.ForLength(150)))));
+        var grid = BuildGridContainerWithTemplates(
+            rows: new TrackList(ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(50)))),
+            cols: cols);
+        SetExplicitWidth(grid, 400);
+        SetExplicitHeight(grid, 50);
+        var itemA = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var itemB = BuildItemWithExplicitPlacement(row: 1, col: 2);
+        grid.AppendChild(itemA);
+        grid.AppendChild(itemB);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        AssertFragmentEquals(sink, itemA, inlineOffset: 0, blockOffset: 0, inlineSize: 150, blockSize: 50);
+        AssertFragmentEquals(sink, itemB, inlineOffset: 150, blockOffset: 0, inlineSize: 150, blockSize: 50);
+    }
+
+    [Fact]
+    public void Cycle4_maximize_proportional_when_free_space_below_total_headroom()
+    {
+        // grid-template-columns: minmax(50px, 250px) minmax(50px, 100px) in 200px container.
+        //   Track A: base=50, growth=250 → headroom 200.
+        //   Track B: base=50, growth=100 → headroom 50.
+        //   Total headroom = 250. Free space = 200 - 100 = 100.
+        //   ratio = 100/250 = 0.4. Track A grows by 200×0.4 = 80 → 130.
+        //   Track B grows by 50×0.4 = 20 → 70. Sum 130+70 = 200 ✓.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForMinMax(
+                TrackEntry.ForLength(50), TrackEntry.ForLength(250))),
+            new TrackListEntry(TrackEntry.ForMinMax(
+                TrackEntry.ForLength(50), TrackEntry.ForLength(100)))));
+        var grid = BuildGridContainerWithTemplates(
+            rows: new TrackList(ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(50)))),
+            cols: cols);
+        SetExplicitWidth(grid, 200);
+        SetExplicitHeight(grid, 50);
+        var itemA = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var itemB = BuildItemWithExplicitPlacement(row: 1, col: 2);
+        grid.AppendChild(itemA);
+        grid.AppendChild(itemB);
+
+        // contentInlineSize=200 (vs runner default 400) so Maximize
+        // genuinely runs the proportional path (= free space below
+        // total headroom).
+        RunGridLayouter(grid, sink, diag, shaper, contentInlineSize: 200);
+
+        AssertFragmentEquals(sink, itemA, inlineOffset: 0, blockOffset: 0, inlineSize: 130, blockSize: 50);
+        AssertFragmentEquals(sink, itemB, inlineOffset: 130, blockOffset: 0, inlineSize: 70, blockSize: 50);
+    }
+
+    [Fact]
+    public void Cycle4_minmax_with_intrinsic_min_grows_from_placed_item_then_maximize()
+    {
+        // grid-template-rows: minmax(auto, 200px) in 400px container + item with
+        //   declared height 80.
+        //   Classify: base=0 (intrinsic min), growth=200 (length max).
+        //   Intrinsic resolution: item contributes 80 → base = 80, MinBase = 80.
+        //   Maximize: free space = 400 - 80 = 320 ≥ headroom 200-80=120
+        //     → ratio = 1.0, track grows by 120 → 200 (capped at growth limit).
+        //   Final row = 200.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rows = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForMinMax(
+                TrackEntry.ForAuto(), TrackEntry.ForLength(200)))));
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForLength(100))));
+        var grid = BuildGridContainerWithTemplates(rows, cols);
+        SetExplicitWidth(grid, 100);
+        SetExplicitHeight(grid, 400);
+        var item = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        item.Style.Set(PropertyId.Height, ComputedSlot.FromLengthPx(80));
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        AssertFragmentEquals(sink, item, inlineOffset: 0, blockOffset: 0, inlineSize: 100, blockSize: 200);
+    }
+
+    [Fact]
+    public void Cycle4_minmax_with_intrinsic_min_pinned_when_container_smaller_than_contribution()
+    {
+        // grid-template-rows: minmax(auto, 200px) in 50px container + item h=80.
+        //   Intrinsic forces base = 80 (item contribution).
+        //   Maximize: free space = 50 - 80 = -30 ≤ 0 → no growth.
+        //   Track overflows the container (correct per spec; CSS Grid
+        //   doesn't shrink intrinsic mins below their content).
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rows = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForMinMax(
+                TrackEntry.ForAuto(), TrackEntry.ForLength(200)))));
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForLength(100))));
+        var grid = BuildGridContainerWithTemplates(rows, cols);
+        SetExplicitWidth(grid, 100);
+        SetExplicitHeight(grid, 50);
+        var item = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        item.Style.Set(PropertyId.Height, ComputedSlot.FromLengthPx(80));
+        grid.AppendChild(item);
+
+        // contentBlockSize=50 — track overflows container correctly per
+        // §11.5 (intrinsic min is a floor, not subject to clamping).
+        RunGridLayouter(grid, sink, diag, shaper, contentBlockSize: 50);
+
+        AssertFragmentEquals(sink, item, inlineOffset: 0, blockOffset: 0, inlineSize: 100, blockSize: 80);
+    }
+
+    // =====================================================================
     //  Helpers
     // =====================================================================
 

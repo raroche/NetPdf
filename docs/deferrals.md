@@ -1551,8 +1551,8 @@ flags the categories):
 ## grid-track-sizing-cycle3-narrowed-scope
 
 - **ID** — `grid-track-sizing-cycle3-narrowed-scope`
-- **Status** — `partial`. Phase 3 Task 17 cycle 3 + post-PR-#94 review
-  hardening F4.
+- **Status** — `approximated`. Phase 3 Task 17 cycle 3 + post-PR-#94
+  review hardening F4.
 - **Behavior** — CSS Grid track sizing (CSS Grid Layout L1 §11) ships
   three track kinds via the shared `GridSizing` service:
   - **Length tracks** — fully spec-correct (resolved in §11.4

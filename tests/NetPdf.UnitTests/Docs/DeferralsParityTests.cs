@@ -51,6 +51,7 @@ public sealed class DeferralsParityTests
         "multicol-balancing-pagination",
         "float-continuation-propagation",
         "flex-layouter-features",
+        "grid-track-sizing-cycle3-narrowed-scope",
     };
 
     [Fact]

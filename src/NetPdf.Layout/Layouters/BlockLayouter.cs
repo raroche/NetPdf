@@ -4076,6 +4076,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 }
             }
 
+            // Per Phase 3 Task 17 cycle 5c.2d — recursive-site
+            // paginatable-grid flag. Mirrors
+            // <c>paginateGridForOuterChild</c> at the outer-site
+            // AttemptLayout. Flipped ON by the paginatable-grid
+            // clamp below; consumed by the grid-dispatch branch
+            // that passes
+            // <c>allowPagination: paginateGridForChild</c> +
+            // <c>incomingContinuation</c>.
+            bool paginateGridForChild = false;
+
             // Per Phase 3 Task 17 cycle 1 post-PR-#92 review F2 —
             // nested grid container wrapper pre-measure. Mirrors the
             // outer-dispatch grid pre-measure + the
@@ -4103,6 +4113,48 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     }
                 }
             }
+
+            // Per Phase 3 Task 17 cycle 5c.2d — recursive-site
+            // paginatable-grid extent clamp + gate-flip. Mirrors
+            // the outer-site clamp at line ~1796 + the recursive
+            // paginatable-flex clamp at line ~4054. When the grid
+            // is paginatable, auto-height (per cycle-5c.2c post-
+            // PR-#101 review P1#1 — explicit-height pagination
+            // waits for <c>grid-fragment-plan-shared-sizing-
+            // deferral</c>), + the grown natural extent would
+            // overflow the page-remaining (= captured
+            // fragmentainer's BlockSize minus the child's block
+            // offset), clamp <c>childBorderBoxBlockSize</c> to
+            // page-remaining + flip the gate so the dispatch
+            // below passes <c>allowPagination: true</c>.
+            if (IsPaginatableGrid(child)
+                && !_disableGridPagination
+                && _capturedFragmentainer is not null
+                && IsHeightAuto(child))
+            {
+                var pageRemainingForGrid =
+                    _capturedFragmentainer.BlockSize - childBlockOffset;
+                var nGridBorderPaddingBlock =
+                    borderStart + paddingStart + paddingEnd + borderEnd;
+                if (pageRemainingForGrid > 0
+                    && pageRemainingForGrid < childBorderBoxBlockSize
+                    && pageRemainingForGrid > nGridBorderPaddingBlock)
+                {
+                    childBorderBoxBlockSize = pageRemainingForGrid;
+                    childEffectiveBlockSize = pageRemainingForGrid;
+                    paginateGridForChild = true;
+                }
+            }
+
+            // Per Phase 3 Task 17 cycle 5c.2d — capture sink cursor
+            // BEFORE wrapper emit. Mirrors the outer-site pattern
+            // at line ~2596: the F2 wrapper-resize consumer (below
+            // at the grid dispatch branch) uses this index to
+            // mutate the wrapper's BlockSize in place via
+            // <see cref="IBlockFragmentSink.UpdateFragmentBlockSize"/>
+            // after the inner GridLayouter reports its
+            // <c>LastEmittedBlockExtent</c>. Z-order preserved.
+            var recursiveWrapperCursor = _sink.Cursor;
 
             // Fragment records the BORDER box (not subtree extent) —
             // the subtree extent is for cursor advance only. Per
@@ -4353,7 +4405,40 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // Per Phase 3 Task 17 cycle 1 (Hello World) — nested grid
             // container dispatch. Same pattern as the outer-loop site:
             // GridLayouter emits per-item content inside the wrapper.
-            // Cycle 1 is atomic (no PageComplete propagation needed).
+            //
+            // <para>Per Phase 3 Task 17 cycle 5c.2d — paginatable-
+            // grid wiring at the recursive site. The recursive
+            // walk is where production HTML fixtures
+            // (<c>&lt;body&gt;&lt;div class="grid"&gt;...&lt;/div&gt;&lt;/body&gt;</c>)
+            // route into grid containers; cycles 5c.2a–5c.2c
+            // wired the outer site only. Mirrors the outer-site
+            // contract:
+            //   * <c>paginateGridForChild</c> (= flipped by the
+            //     paginatable-grid clamp above) gates
+            //     <c>allowPagination</c>.
+            //   * Resume contract: extract any incoming
+            //     <c>GridContinuation</c> from
+            //     <c>incomingBlockChain</c> via the same chain-
+            //     consumption pattern as the multicol / flex
+            //     branches above.
+            //   * F2 wrapper-resize: when paginatable OR
+            //     incoming-continuation, mutate the wrapper's
+            //     <c>BlockSize</c> via
+            //     <see cref="IBlockFragmentSink.UpdateFragmentBlockSize"/>
+            //     + recompute the cursor advance using
+            //     <c>topShift + resizedWrapper + marginEnd</c>.
+            //   * Propagation: on
+            //     <c>PageComplete(GridContinuation)</c>, wrap into
+            //     <c>BlockContinuation(ResumeAtChild=childIdx,
+            //     LayouterState=GridContinuation)</c> + return up
+            //     the recursion chain (= mirrors the flex
+            //     propagation at line ~4336).
+            // F1 (pre-dispatch row-fit defer) is NOT wired here —
+            // the recursive site doesn't receive the attempt's
+            // strategy parameter, so the F1 strategy-aware gate
+            // can't apply cleanly. Cycle 5c.3+ may thread
+            // strategy through the recursion if F1's pre-empt
+            // optimization is needed inside nested grids.</para>
             if (IsGridContainer(child) && _capturedFragmentainer is not null)
             {
                 var nestedGridGeom = GridGeometryHelper.ComputeContentGeometry(
@@ -4366,7 +4451,25 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 {
                     Diagnostics = _diagnostics,
                 };
-                _ = DispatchGridInner(
+
+                // Per cycle 5c.2d — resume contract: extract any
+                // incoming GridContinuation from the chain. The
+                // outer AttemptLayout unpacks
+                // <c>BlockContinuation(LayouterState=
+                // BlockContinuation(LayouterState=...))</c>
+                // chains; when the chain's leaf is a
+                // GridContinuation at this child, route it
+                // through.
+                GridContinuation? incomingGridForChild = null;
+                if (incomingBlockChain is not null
+                    && childIdx == incomingBlockChain.ResumeAtChild
+                    && incomingBlockChain.LayouterState is GridContinuation incomingGridLeaf)
+                {
+                    incomingGridForChild = incomingGridLeaf;
+                    incomingBlockChain = null;
+                }
+
+                var nestedGridResult = DispatchGridInner(
                     gridBox: child,
                     contentInlineOffset: nestedGridGeom.ContentInlineOffset,
                     contentBlockOffset: nestedGridGeom.ContentBlockOffset,
@@ -4375,11 +4478,49 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     fragmentainer: _capturedFragmentainer,
                     layout: ref nestedGridLayoutCtx,
                     cancellationToken: cancellationToken,
-                    lastEmittedBlockExtent: out _);
+                    lastEmittedBlockExtent: out var nestedGridLastEmittedBlockExtent,
+                    allowPagination: paginateGridForChild,
+                    incomingContinuation: incomingGridForChild);
+
+                // F2 wrapper-resize + cursor-advance recomputation.
+                // Same trigger semantics as the outer site: fire
+                // when EITHER the clamp activated (=
+                // paginateGridForChild) OR resume continuation
+                // present (= incomingGridForChild).
+                double cursorAdvanceForNestedGrid =
+                    topShift + childEffectiveBlockSize + marginEnd;
+                var f2FiresAtRecursiveSite =
+                    paginateGridForChild
+                    || incomingGridForChild is not null;
+                if (f2FiresAtRecursiveSite)
+                {
+                    var nGridChromeBlock =
+                        borderStart + paddingStart + paddingEnd + borderEnd;
+                    var resizedRecursiveWrapper =
+                        nGridChromeBlock + nestedGridLastEmittedBlockExtent;
+                    _sink.UpdateFragmentBlockSize(
+                        recursiveWrapperCursor, resizedRecursiveWrapper);
+                    cursorAdvanceForNestedGrid =
+                        topShift + resizedRecursiveWrapper + marginEnd;
+                }
+
+                // Propagation: on PageComplete(GridContinuation),
+                // wrap into BlockContinuation + return up. The
+                // outer AttemptLayout then sees the chained
+                // BlockContinuation + dispatches it back through
+                // the resume contract on the next page.
+                if (nestedGridResult.Outcome == LayoutAttemptOutcome.PageComplete
+                    && nestedGridResult.Continuation is GridContinuation nestedGridCont)
+                {
+                    return new BlockContinuation(
+                        ResumeAtChild: childIdx,
+                        ConsumedBlockSize: 0,
+                        LayouterState: nestedGridCont);
+                }
 
                 // Advance the cursor + bookkeeping; skip the
                 // EmitBlockSubtreeRecursive below.
-                childCursor = childCursor + topShift + childEffectiveBlockSize + marginEnd;
+                childCursor = childCursor + cursorAdvanceForNestedGrid;
                 prevMarginEnd = marginEnd;
                 hasPrior = true;
                 continue;

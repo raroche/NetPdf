@@ -940,6 +940,152 @@ public sealed class GridLayouterProductionTests
     }
 
     // ====================================================================
+    //  Cycle 5c.2d — recursive-site grid pagination via production
+    //  pipeline. HTML → cascade → BoxBuilder → BlockLayouter
+    //  exercises the EmitBlockSubtreeRecursive grid dispatch (=
+    //  the `<body><div class="grid">...</div></body>` shape hits
+    //  the recursive site, not the outer site). Cycle 5c.2d wires
+    //  the recursive site with the same clamp + F2 + continuation
+    //  propagation pattern as the outer site (cycles 5c.2a–c).
+    // ====================================================================
+
+    [Fact]
+    public async Task Cycle5c2d_recursive_auto_height_grid_paginates_at_row_boundary()
+    {
+        // Production-pipeline test: an auto-height grid inside
+        // <body> with 4 rows of 100px each on a 350px page. The
+        // grid is reached via EmitBlockSubtreeRecursive's grid
+        // dispatch branch (= the recursive site wired in cycle
+        // 5c.2d). The clamp shrinks the wrapper, F2 resizes it
+        // to the emitted-rows extent, and the page-complete
+        // BlockContinuation carries the GridContinuation up so
+        // the pipeline driver can resume on the next page.
+        //
+        // Auto-height grid (= no `height` declared) with 4 rows
+        // of 100 → natural extent 400. Page 350. Recursive-site
+        // clamp shrinks borderBoxBlockSize to 350; GridLayouter
+        // with allowPagination=true emits rows 0+1+2 (= 300 ≤ 350)
+        // + returns PageComplete with GridContinuation(RowIndex=3,
+        // EmittedBlockExtent=300). F2 resizes wrapper to 300.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 100px 100px 100px 100px;
+                    grid-template-columns: 100px;
+                }
+                .r1 { grid-row-start: 1; grid-column-start: 1; }
+                .r2 { grid-row-start: 2; grid-column-start: 1; }
+                .r3 { grid-row-start: 3; grid-column-start: 1; }
+                .r4 { grid-row-start: 4; grid-column-start: 1; }
+            </style></head><body>
+            <div class="grid">
+              <div class="r1"></div>
+              <div class="r2"></div>
+              <div class="r3"></div>
+              <div class="r4"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, result, _) = await RenderViaFullPipelineWithResultAsync(
+            html, contentInlineSize: 100, blockSize: 350);
+
+        // Page 1 returns PageComplete with a BlockContinuation
+        // chain that contains a GridContinuation somewhere (=
+        // wrapped by the recursive-site propagation up through
+        // the recursion chain to the outer AttemptLayout).
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        Assert.NotNull(result.Continuation);
+
+        // Walk the chain to find the GridContinuation leaf.
+        GridContinuation? gridLeaf = FindGridContinuationLeaf(result.Continuation);
+        Assert.NotNull(gridLeaf);
+        Assert.Equal(3, gridLeaf!.RowIndex);
+
+        // Page 1 emits rows 1-3 (= r1, r2, r3); r4 deferred to
+        // the next page via the GridContinuation.
+        Assert.NotNull(FindByClass(sink, "r1"));
+        Assert.NotNull(FindByClass(sink, "r2"));
+        Assert.NotNull(FindByClass(sink, "r3"));
+        Assert.Null(FindByClass(sink, "r4"));
+    }
+
+    [Fact]
+    public async Task Cycle5c2d_recursive_explicit_height_grid_stays_atomic_pending_F3()
+    {
+        // Per PR-#101 review P1#1 — explicit-height grids stay
+        // atomic at the recursive site too (= same
+        // IsHeightAuto(child) gate as the outer site). Production
+        // pipeline regression: an explicit-height grid inside
+        // <body> on a tight page should NOT have its row geometry
+        // re-resolved against a shrunk container; it should
+        // either fit or fall through to forced-overflow at
+        // authored size.
+        //
+        // Fixture: height: 200px grid with 2 rows of 100px on a
+        // 150px page → wrapper at authored 200 > page 150 →
+        // forced-overflow path or normal break (depending on
+        // siblings + position). Test only asserts: grid wrapper
+        // present + no fabricated GridContinuation (= F3
+        // pagination not active for explicit-height).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 100px 100px;
+                    grid-template-columns: 100px;
+                    height: 200px;
+                }
+                .r1 { grid-row-start: 1; grid-column-start: 1; }
+                .r2 { grid-row-start: 2; grid-column-start: 1; }
+            </style></head><body>
+            <div class="grid">
+              <div class="r1"></div>
+              <div class="r2"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, result, _) = await RenderViaFullPipelineWithResultAsync(
+            html, contentInlineSize: 100, blockSize: 150);
+
+        // No GridContinuation in the result chain — F3 isn't
+        // active for explicit-height; the grid renders atomic
+        // (forced-overflow under LastResort).
+        var gridLeaf = result.Continuation is null
+            ? null
+            : FindGridContinuationLeaf(result.Continuation);
+        Assert.Null(gridLeaf);
+        // Both grid items emitted atomically (= no row drop).
+        Assert.NotNull(FindByClass(sink, "r1"));
+        Assert.NotNull(FindByClass(sink, "r2"));
+    }
+
+    /// <summary>Per Phase 3 Task 17 cycle 5c.2d — walk a
+    /// BlockContinuation chain looking for a
+    /// <see cref="GridContinuation"/> leaf. Mirrors the
+    /// continuation-chain walks the production pipeline performs
+    /// when resuming a paginated grid. Returns the first
+    /// GridContinuation found in the chain or
+    /// <see langword="null"/> when none exists.</summary>
+    private static GridContinuation? FindGridContinuationLeaf(LayoutContinuation continuation)
+    {
+        var current = continuation;
+        while (current is not null)
+        {
+            if (current is GridContinuation grid) return grid;
+            if (current is BlockContinuation block)
+            {
+                current = block.LayouterState as LayoutContinuation;
+                continue;
+            }
+            return null;
+        }
+        return null;
+    }
+
+    // ====================================================================
     //  Pipeline driver — mirrors FlexLayouterProductionTests.
     // ====================================================================
 

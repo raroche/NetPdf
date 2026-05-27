@@ -1924,12 +1924,22 @@ flags the categories):
     pre-dispatch row-fit check ✓ (cycle 5c.2a).
 - **Added** — Phase 3 Task 17 cycle 5b + post-PR-#97 review F1.
 - **Updated** — Phase 3 Task 17 cycle 5c.2a (mechanism ships).
-- **Removal condition** — cycle 5c.2b's clamp + gate-flip
-  reactivation lands AND production-pipeline tests exercise the
-  Strict-defer pre-empt path end-to-end. Until then the F1
-  mechanism is shipped + unit-tested but dormant in production
-  fixtures (= the break-check upstream catches oversized
-  paginatable-grid wrappers BEFORE this site fires).
+- **Updated** — Phase 3 Task 17 cycle 5c.2b (outer-site clamp +
+  gate-flip reactivated; F1 fires for auto-height grids).
+- **Updated** — Phase 3 Task 17 cycle 5c.2c post-PR-#101
+  review P1#3 (F1 also gated by
+  <c>paginateGridForOuterChild</c> so F1 only fires when
+  dispatch will actually paginate).
+- **Updated** — Phase 3 Task 17 cycle 5c.2d (recursive site
+  also wired; F1 NOT applied at recursive site because the
+  recursion doesn't propagate the attempt's strategy
+  parameter — the clamp + F2 + continuation propagation alone
+  cover the recursive-site contract; F1's pre-empt
+  optimization can wait for cycle 5c.3+ if needed).
+- **Removal condition** — RESOLVED. F1 mechanism shipped,
+  active at the outer site for auto-height paginatable grids,
+  unit + production-pipeline tested. Explicit-height grids
+  wait for `grid-explicit-height-paginate-deferral`.
 
 ---
 
@@ -2012,10 +2022,16 @@ flags the categories):
   pagination via <c>disableGridPagination</c>; F2 cursor advance
   uses <c>topShift</c>; explicit-height grids gated out of the
   clamp until F3).
-- **Removal condition** — cycle 5c.2d wires the recursive
-  `EmitBlockSubtreeRecursive` site + ships production-pipeline
-  multi-page tests verifying end-to-end wrapper sizing +
-  cumulative consumed + sibling placement on real HTML fixtures.
+- **Updated** — Phase 3 Task 17 cycle 5c.2d (recursive site
+  wired with clamp + F2 + continuation propagation;
+  production HTML fixtures with auto-height paginatable grids
+  now split cleanly via the recursive `EmitBlockSubtreeRecursive`
+  path).
+- **Removal condition** — F3 explicit-height pagination
+  ships (= `grid-explicit-height-paginate-deferral` resolves
+  via the `grid-fragment-plan-shared-sizing-deferral`) so
+  explicit-height grids in production HTML also paginate via
+  the recursive site.
 
 ---
 

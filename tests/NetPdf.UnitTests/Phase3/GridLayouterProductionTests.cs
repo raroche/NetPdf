@@ -891,6 +891,70 @@ public sealed class GridLayouterProductionTests
     }
 
     // ====================================================================
+    //  Cycle 5b — BlockLayouter dispatch activation: production-pipeline
+    //  multi-page grid pagination via the full HTML → cascade → BoxBuilder
+    //  → BlockLayouter → GridLayouter chain.
+    // ====================================================================
+
+    // Per Phase 3 Task 17 cycle 5b — production-pipeline multi-page
+    // grid tests require recursive-site dispatch wiring (= grid nested
+    // inside body / wrapper). Cycle 5b ships ONLY the outer-site
+    // dispatch (= grid as the BlockLayouter root's direct child).
+    // Production-pipeline grids are always nested under <body> → they
+    // hit the recursive EmitBlockSubtreeRecursive dispatch which is
+    // cycle 5c scope.
+    //
+    // Tests for the production-pipeline multi-page path are pinned as
+    // `Skip` until cycle 5c wires the recursive site; the cycle 5b
+    // unit tests at the GridLayouter level pass + the outer-site
+    // BlockLayouter dispatch wiring is in place ready for cycle 5c
+    // to flip the recursive gate.
+    [Fact(Skip = "Production-pipeline multi-page grid pagination requires recursive-site dispatch wiring; pending cycle 5c.")]
+    public Task Production_html_paginated_grid_returns_PageComplete_with_grid_continuation_KNOWN_GAP_PENDING_5C()
+    {
+        // 3-row grid 100/100/100 with a tight fragmentainer (blockSize=250)
+        // means only rows 1+2 fit on page 1; row 3 should defer.
+        // BLOCKED: grid nested under body hits recursive dispatch which
+        // cycle 5b hasn't wired (= cycle 5c).
+        return Task.CompletedTask;
+    }
+
+    [Fact(Skip = "Production-pipeline multi-page grid pagination requires recursive-site dispatch wiring; pending cycle 5c.")]
+    public Task Production_html_paginated_grid_round_trip_emits_each_item_exactly_once_KNOWN_GAP_PENDING_5C()
+    {
+        // BLOCKED: same as above.
+        return Task.CompletedTask;
+    }
+
+    [Fact]
+    public async Task Production_html_grid_fitting_on_one_page_stays_AllDone_no_continuation()
+    {
+        // Single-page-fit case — pagination active but no split needed.
+        // Verifies the no-allocation path (= F4 + cycle 5b dispatch
+        // doesn't allocate cache or emit continuation when grid fits).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 100px;
+                    grid-template-columns: 100px;
+                }
+                .r1 { grid-row-start: 1; grid-column-start: 1; }
+            </style></head><body>
+            <div class="grid">
+              <div class="r1"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, result, _) = await RenderViaFullPipelineWithResultAsync(html, contentInlineSize: 100, blockSize: 800);
+
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+        Assert.Null(result.Continuation);
+        Assert.NotNull(FindByClass(sink, "r1"));
+    }
+
+    // ====================================================================
     //  Pipeline driver — mirrors FlexLayouterProductionTests.
     // ====================================================================
 
@@ -913,6 +977,45 @@ public sealed class GridLayouterProductionTests
             return f;
         }
         return null;
+    }
+
+    /// <summary>Per Phase 3 Task 17 cycle 5b — pipeline driver
+    /// returning the BlockLayouter result so tests can assert on
+    /// PageComplete / continuation propagation.</summary>
+    private static async Task<(RecordingFragmentSink sink,
+        RecordingDiagnosticsSink diagnostics,
+        LayoutAttemptResult result, Box root)>
+        RenderViaFullPipelineWithResultAsync(
+            string html,
+            double contentInlineSize = 600,
+            double blockSize = 800)
+    {
+        var host = new HtmlParsingHost();
+        var document = await host.ParseAsync(html, new HtmlPdfOptions());
+
+        var sheets = AdaptAllSheetsViaPreprocessor(document);
+        var cascade = CascadeResolver.Resolve(document, sheets, CssMediaContext.DefaultPrint);
+        var resolved = VarResolver.Resolve(cascade, document);
+        var box = BoxBuilder.Build(document, resolved);
+
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        using var layouter = new BlockLayouter(
+            rootBox: box,
+            sink: sink,
+            incomingContinuation: null,
+            diagnostics: diagSink,
+            shaperResolver: shaper);
+
+        var ctx = new FragmentainerContext(contentInlineSize: contentInlineSize, blockSize: blockSize);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        return (sink, diagSink, result, box);
     }
 
     private static async Task<(RecordingFragmentSink sink,

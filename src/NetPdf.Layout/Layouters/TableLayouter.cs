@@ -5167,6 +5167,30 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             _buffered.Add(translated);
         }
 
+        public void UpdateFragmentBlockSize(int cursor, double newBlockSize)
+        {
+            // Per Phase 3 Task 17 cycle 5c.2b — table cells receive
+            // sub-BlockLayouter emissions through this sink. A nested
+            // paginatable grid inside a cell could trigger F2 wrapper-
+            // resize against the cell's inner buffer; mutate the
+            // buffered fragment so the eventual FlushTo emits the
+            // correctly-sized wrapper into the outer sink. The cell
+            // height ALSO derives from buffered-fragment extents, so
+            // updating block-size here keeps row-sizing consistent
+            // with the wrapper resize. Out-of-range guard matches
+            // RollbackTo's bounds check.
+            if (cursor < 0 || cursor >= _buffered.Count) return;
+            var existing = _buffered[cursor];
+            _buffered[cursor] = existing with { BlockSize = newBlockSize };
+            // The MaxBlockExtentFromCellOrigin tracker may be stale
+            // (= it captured the original BlockSize). Sub-cycle 1
+            // documented the equivalent staleness for RollbackTo;
+            // future cycles would re-derive on demand if a paginatable-
+            // grid-in-cell scenario requires exact cell-height
+            // re-derivation. Not reached by cycle 5c.2b's outer-site-
+            // only grid pagination scope.
+        }
+
         public void RollbackTo(int cursor)
         {
             // Sub-cycle 1 — the inner LastResort strategy suppresses

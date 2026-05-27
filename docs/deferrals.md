@@ -1936,8 +1936,14 @@ flags the categories):
 ## grid-fragment-extent-emitted-rows-only-deferral
 
 - **ID** — `grid-fragment-extent-emitted-rows-only-deferral`
-- **Status** — `approximated` (partial). Phase 3 Task 17 cycle 5c.1
-  ships the producer side; cycle 5c.2 wires the consumer.
+- **Status** — `approximated` (consumer shipped + verified by 7
+  `Cycle5c2b_F2_*` unit tests; explicit-height grids still pending
+  F3 in cycle 5c.2c; recursive site + production tests in 5c.2d).
+  Phase 3 Task 17 cycle 5c.1 ships the producer side; cycle 5c.2b
+  ships the consumer (= F2 wrapper-resize via
+  `IBlockFragmentSink.UpdateFragmentBlockSize` + cursor-advance
+  using emitted extent + cycle-5b outer-site clamp reactivated
+  for auto-height grids).
 - **Behavior** — when grid pagination IS active, the wrapper
   fragment paints at the clamped extent (= page budget) and the
   cursor advances by the full clamped extent. But `GridLayouter`
@@ -1959,33 +1965,52 @@ flags the categories):
   <c>GridContinuation.EmittedBlockExtent</c> field is kept as a
   redundant carrier when a continuation exists; the layouter
   property is the primary source for cycle 5c.2.
-- **Cycle 5c.2 MISSING (consumer side)** — `BlockLayouter` must
-  read <c>gridLayouter.LastEmittedBlockExtent</c> after
-  `DispatchGridInner` returns + size the wrapper BoxFragment to
-  <c>LastEmittedBlockExtent + chrome</c> + advance the cursor by
-  that, NOT the clamped budget. Coordinates with F1 (pre-dispatch
-  row-fit / rollback) + F3 (explicit-height grid handling).
-- **Practical impact** — cycle 5b's outer-site activation remains
-  REVERTED until cycle 5c.2 wires the consumer + the F1/F3
-  architectural fixes land. Without the consumer wiring,
-  `LastEmittedBlockExtent` is populated but unused (= byte-parity
-  preserved; zero runtime impact).
+- **Cycle 5c.2b SHIPPED (consumer side)** — `BlockLayouter` now
+  reads <c>gridLayouter.LastEmittedBlockExtent</c> via
+  <c>DispatchGridInner</c>'s new
+  <c>out double lastEmittedBlockExtent</c> parameter + sizes the
+  wrapper <c>BoxFragment</c> to
+  <c>LastEmittedBlockExtent + chrome</c> via the new
+  <see cref="IBlockFragmentSink.UpdateFragmentBlockSize"/> sink
+  mutation API + advances the cursor by
+  <c>marginStart + chrome + LastEmittedBlockExtent + marginEnd</c>.
+  The F2 consumer fires when EITHER
+  <c>paginateGridForOuterChild</c> is on (= the outer-site clamp
+  fired this page) OR <c>incomingGridContinuation</c> is non-null
+  (= resuming a previously-deferred grid; the AllDone-on-resume
+  case from cycle 5c.1 PR-#98 review F1 needs the wrapper to size
+  to the remaining-rows extent, NOT the full grid's natural
+  extent). The cycle-5b outer-site clamp + gate-flip
+  (<c>paginateGridForOuterChild</c>) is REACTIVATED for auto-height
+  grids on this cycle.
+- **Practical impact** — paginatable-grid scenarios at the outer
+  site now produce visually-correct wrapper sizing + cumulative
+  consumed accounting + correct sibling placement on both pages of
+  a split grid. AOT/JIT byte-parity of existing fixtures is
+  preserved (= production HTML fixtures route through the
+  recursive `EmitBlockSubtreeRecursive` path which is unchanged
+  until cycle 5c.2d).
 - **Trigger** — cycle 5c.2. Coordinates with F1 (pre-dispatch
-  row-fit or wrapper rollback) + F3 (explicit-height handling).
+  row-fit, shipped 5c.2a) + F3 (explicit-height handling, cycle
+  5c.2c).
 - **Owner files** —
   - `src/NetPdf.Layout/Layouters/GridLayouter.cs` — exposes
     `LastEmittedBlockExtent` ✓ (cycle 5c.1).
   - `src/NetPdf.Paginate/LayoutContinuation.cs` — adds
     `GridContinuation.EmittedBlockExtent` field ✓ (cycle 5c.1).
+  - `src/NetPdf.Layout/Layouters/IBlockFragmentSink.cs` — new
+    `UpdateFragmentBlockSize(cursor, newBlockSize)` ✓ (cycle 5c.2b).
   - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — wrapper
-    BoxFragment emit + cursor advance both use the emitted extent
-    (cycle 5c.2).
+    BoxFragment resize + cursor advance both use the emitted
+    extent ✓ (cycle 5c.2b).
 - **Added** — Phase 3 Task 17 cycle 5b + post-PR-#97 review F2.
 - **Updated** — Phase 3 Task 17 cycle 5c.1 + post-PR-#98 review
   F1 + F3 (producer side ships).
-- **Removal condition** — cycle 5c.2 wires the consumer +
-  end-to-end production tests verify wrapper sizing + cumulative
-  consumed + sibling placement on both pages of a split grid.
+- **Updated** — Phase 3 Task 17 cycle 5c.2b (consumer side ships).
+- **Removal condition** — cycle 5c.2d wires the recursive
+  `EmitBlockSubtreeRecursive` site + ships production-pipeline
+  multi-page tests verifying end-to-end wrapper sizing +
+  cumulative consumed + sibling placement on real HTML fixtures.
 
 ---
 

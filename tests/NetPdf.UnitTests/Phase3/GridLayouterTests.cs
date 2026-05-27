@@ -3193,6 +3193,20 @@ public sealed class GridLayouterTests
                 Fragments.RemoveRange(cursor, Fragments.Count - cursor);
             }
         }
+
+        public void UpdateFragmentBlockSize(int cursor, double newBlockSize)
+        {
+            // Per Phase 3 Task 17 cycle 5c.2b — F2 wrapper-resize.
+            // Mutate the BoxFragment at <c>cursor</c> in place so the
+            // BlockLayouter's post-dispatch wrapper-resize consumer
+            // can shrink a paginatable-grid / paginatable-flex
+            // wrapper from the clamped budget to the actual emitted
+            // extent without breaking z-order (= the wrapper stays
+            // ahead of its children in the fragment list).
+            if (cursor < 0 || cursor >= Fragments.Count) return;
+            Fragments[cursor] = Fragments[cursor] with { BlockSize = newBlockSize };
+        }
+
     }
 
     private sealed class RecordingDiagnosticsSink : IPaginateDiagnosticsSink

@@ -1094,6 +1094,14 @@ internal sealed class GridLayouter : ILayouter, IDisposable
             // Map inner cursor to outer cursor + delegate.
             _outer.RollbackTo(_baseline + cursor);
         }
+
+        public void UpdateFragmentBlockSize(int cursor, double newBlockSize)
+        {
+            // Per Phase 3 Task 17 cycle 5c.2b — translate inner
+            // cursor index to the outer sink's absolute index then
+            // delegate. Mirrors RollbackTo's translation pattern.
+            _outer.UpdateFragmentBlockSize(_baseline + cursor, newBlockSize);
+        }
     }
 
     public void Dispose()

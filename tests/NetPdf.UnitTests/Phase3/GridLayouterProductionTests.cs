@@ -940,6 +940,362 @@ public sealed class GridLayouterProductionTests
     }
 
     // ====================================================================
+    //  Cycle 5c.2d — recursive-site grid pagination via production
+    //  pipeline. HTML → cascade → BoxBuilder → BlockLayouter
+    //  exercises the EmitBlockSubtreeRecursive grid dispatch (=
+    //  the `<body><div class="grid">...</div></body>` shape hits
+    //  the recursive site, not the outer site). Cycle 5c.2d wires
+    //  the recursive site with the same clamp + F2 + continuation
+    //  propagation pattern as the outer site (cycles 5c.2a–c).
+    // ====================================================================
+
+    [Fact]
+    public async Task Cycle5c2d_recursive_auto_height_grid_paginates_at_row_boundary()
+    {
+        // Production-pipeline test: an auto-height grid inside
+        // <body> with 4 rows of 100px each on a 350px page. The
+        // grid is reached via EmitBlockSubtreeRecursive's grid
+        // dispatch branch (= the recursive site wired in cycle
+        // 5c.2d). The clamp shrinks the wrapper, F2 resizes it
+        // to the emitted-rows extent, and the page-complete
+        // BlockContinuation carries the GridContinuation up so
+        // the pipeline driver can resume on the next page.
+        //
+        // Auto-height grid (= no `height` declared) with 4 rows
+        // of 100 → natural extent 400. Page 350. Recursive-site
+        // clamp shrinks borderBoxBlockSize to 350; GridLayouter
+        // with allowPagination=true emits rows 0+1+2 (= 300 ≤ 350)
+        // + returns PageComplete with GridContinuation(RowIndex=3,
+        // EmittedBlockExtent=300). F2 resizes wrapper to 300.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 100px 100px 100px 100px;
+                    grid-template-columns: 100px;
+                }
+                .r1 { grid-row-start: 1; grid-column-start: 1; }
+                .r2 { grid-row-start: 2; grid-column-start: 1; }
+                .r3 { grid-row-start: 3; grid-column-start: 1; }
+                .r4 { grid-row-start: 4; grid-column-start: 1; }
+            </style></head><body>
+            <div class="grid">
+              <div class="r1"></div>
+              <div class="r2"></div>
+              <div class="r3"></div>
+              <div class="r4"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, result, _) = await RenderViaFullPipelineWithResultAsync(
+            html, contentInlineSize: 100, blockSize: 350);
+
+        // Page 1 returns PageComplete with a BlockContinuation
+        // chain that contains a GridContinuation somewhere (=
+        // wrapped by the recursive-site propagation up through
+        // the recursion chain to the outer AttemptLayout).
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        Assert.NotNull(result.Continuation);
+
+        // Walk the chain to find the GridContinuation leaf.
+        GridContinuation? gridLeaf = FindGridContinuationLeaf(result.Continuation);
+        Assert.NotNull(gridLeaf);
+        Assert.Equal(3, gridLeaf!.RowIndex);
+
+        // Page 1 emits rows 1-3 (= r1, r2, r3); r4 deferred to
+        // the next page via the GridContinuation.
+        Assert.NotNull(FindByClass(sink, "r1"));
+        Assert.NotNull(FindByClass(sink, "r2"));
+        Assert.NotNull(FindByClass(sink, "r3"));
+        Assert.Null(FindByClass(sink, "r4"));
+    }
+
+    [Fact]
+    public async Task Cycle5c2d_recursive_explicit_height_grid_stays_atomic_pending_F3()
+    {
+        // Per PR-#101 review P1#1 — explicit-height grids stay
+        // atomic at the recursive site too (= same
+        // IsHeightAuto(child) gate as the outer site).
+        // Strengthened post-PR-#102 review P2#2 to also assert
+        // authored wrapper geometry preserved + diagnostic on
+        // unavoidable forced-overflow.
+        //
+        // Fixture: height: 200px grid with 2 rows of 100px on a
+        // 150px page → wrapper at authored 200 > page 150 →
+        // forced-overflow path (= grid is body's only direct
+        // child + body is at top of fresh page so no break-
+        // before is productive).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 100px 100px;
+                    grid-template-columns: 100px;
+                    height: 200px;
+                }
+                .r1 { grid-row-start: 1; grid-column-start: 1; }
+                .r2 { grid-row-start: 2; grid-column-start: 1; }
+            </style></head><body>
+            <div class="grid">
+              <div class="r1"></div>
+              <div class="r2"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, diag, result, _) = await RenderViaFullPipelineWithResultAsync(
+            html, contentInlineSize: 100, blockSize: 150);
+
+        // No GridContinuation in the result chain — F3 isn't
+        // active for explicit-height; the grid renders atomic.
+        var gridLeaf = result.Continuation is null
+            ? null
+            : FindGridContinuationLeaf(result.Continuation);
+        Assert.Null(gridLeaf);
+        // Both grid items emitted atomically (= no row drop).
+        Assert.NotNull(FindByClass(sink, "r1"));
+        Assert.NotNull(FindByClass(sink, "r2"));
+        // Per P2#2 — authored wrapper geometry preserved (= 200,
+        // not clamped to 150). Look up by class since the grid
+        // div doesn't have a class; find by SourceElement tag
+        // name. Easier: just assert at least one fragment has
+        // BlockSize == 200 (= the grid wrapper).
+        Assert.Contains(sink.Fragments, f => Math.Abs(f.BlockSize - 200.0) < 0.001);
+        // Per P2#2 — unavoidable forced-overflow on a fresh
+        // 150px page produces PaginationForcedOverflow001 (the
+        // outer BlockLayouter's forced-overflow diagnostic; the
+        // grid is dispatched atomically per IsHeightAuto gate).
+        Assert.Contains(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.PaginationForcedOverflow001);
+    }
+
+    [Fact]
+    public async Task Cycle5c2d_post_PR_102_P1_recursive_grid_breaks_before_after_sibling()
+    {
+        // Per PR-#102 review P1#1 — when a paginatable grid
+        // follows a normal block sibling and the first grid row
+        // can't fit the remaining space but COULD fit a fresh
+        // page, the recursive site must defer the grid cleanly
+        // (= no wrapper emit + no LayoutGridForcedOverflow001).
+        // Pre-fix the recursive site had no F1 mechanism; the
+        // forced-overflow path force-emitted the first row past
+        // the page boundary.
+        //
+        // Fixture (Roland's exact repro):
+        //   <body>
+        //     <div class="before"></div>  (height: 200px)
+        //     <div class="grid">          (rows: 100px 100px)
+        //       <div class="r1"></div>
+        //       <div class="r2"></div>
+        //     </div>
+        //   </body>
+        //   Page 250.
+        //
+        // Expected post-F1-at-recursive-site:
+        //   - Page 1 emits .before (the 200px sibling) but NOT
+        //     the grid wrapper.
+        //   - Result.Outcome == PageComplete with chained
+        //     BlockContinuation → GridContinuation(RowIndex=0).
+        //   - No LayoutGridForcedOverflow001 diagnostic emitted.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .before { height: 200px; }
+                .grid {
+                    display: grid;
+                    grid-template-rows: 100px 100px;
+                    grid-template-columns: 100px;
+                }
+                .r1 { grid-row-start: 1; grid-column-start: 1; }
+                .r2 { grid-row-start: 2; grid-column-start: 1; }
+            </style></head><body>
+            <div class="before"></div>
+            <div class="grid">
+              <div class="r1"></div>
+              <div class="r2"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, diag, result, _) = await RenderViaFullPipelineWithResultAsync(
+            html, contentInlineSize: 100, blockSize: 250);
+
+        // Page 1 emits the .before sibling.
+        Assert.NotNull(FindByClass(sink, "before"));
+        // But NOT the grid items (= clean break-before via F1).
+        Assert.Null(FindByClass(sink, "r1"));
+        Assert.Null(FindByClass(sink, "r2"));
+        // Result is PageComplete with a chained
+        // BlockContinuation → GridContinuation(RowIndex=0).
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        Assert.NotNull(result.Continuation);
+        var gridLeaf = FindGridContinuationLeaf(result.Continuation!);
+        Assert.NotNull(gridLeaf);
+        Assert.Equal(0, gridLeaf!.RowIndex);
+        // No forced-overflow diagnostic (= clean defer, NOT
+        // force-emit past page edge).
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridForcedOverflow001);
+    }
+
+    [Fact]
+    public async Task Cycle5c2d_post_PR_102_P2_multi_page_resume_emits_all_rows_exactly_once()
+    {
+        // Per PR-#102 review P2#1 — the prior cycle-5c.2d test
+        // only exercised page 1. This test feeds the
+        // PageComplete continuation into a second AttemptLayout
+        // (= page 2) + asserts the full multi-page output:
+        //   - Page 1 emits rows r1, r2, r3 (= 300px of 350px).
+        //   - Page 2 emits row r4 exactly once.
+        //   - Page 2 returns AllDone (= no further continuation).
+        //   - No grid item appears on both pages (= no duplicate).
+        //   - Wrapper on page 1 sized to 300 (emitted extent), on
+        //     page 2 sized to 100 (single remaining row).
+        //
+        // 4-row auto-height grid inside <body> on 350px pages.
+        // Drives page-loop manually until AllDone or maxPages.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 100px 100px 100px 100px;
+                    grid-template-columns: 100px;
+                }
+                .r1 { grid-row-start: 1; grid-column-start: 1; }
+                .r2 { grid-row-start: 2; grid-column-start: 1; }
+                .r3 { grid-row-start: 3; grid-column-start: 1; }
+                .r4 { grid-row-start: 4; grid-column-start: 1; }
+            </style></head><body>
+            <div class="grid">
+              <div class="r1"></div>
+              <div class="r2"></div>
+              <div class="r3"></div>
+              <div class="r4"></div>
+            </div>
+            </body></html>
+            """;
+
+        var pages = await RenderMultiPageAsync(
+            html, contentInlineSize: 100, blockSize: 350, maxPages: 4);
+
+        // Two pages exactly.
+        Assert.Equal(2, pages.Count);
+
+        // Page 1: rows 1, 2, 3 emit; row 4 deferred.
+        var page1 = pages[0];
+        Assert.NotNull(FindByClass(page1.Sink, "r1"));
+        Assert.NotNull(FindByClass(page1.Sink, "r2"));
+        Assert.NotNull(FindByClass(page1.Sink, "r3"));
+        Assert.Null(FindByClass(page1.Sink, "r4"));
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, page1.Result.Outcome);
+
+        // Page 2: only row 4 emits; AllDone.
+        var page2 = pages[1];
+        Assert.Null(FindByClass(page2.Sink, "r1"));
+        Assert.Null(FindByClass(page2.Sink, "r2"));
+        Assert.Null(FindByClass(page2.Sink, "r3"));
+        Assert.NotNull(FindByClass(page2.Sink, "r4"));
+        Assert.Equal(LayoutAttemptOutcome.AllDone, page2.Result.Outcome);
+
+        // F2 wrapper sizing per page: page 1 wrapper at 300 (=
+        // rows 1+2+3 = 300), page 2 wrapper at 100 (= row 4 only).
+        // The grid wrapper is the BoxFragment with the GridContainer
+        // box kind. Find by kind across each page's sink.
+        var page1Wrapper = FindGridWrapper(page1.Sink);
+        var page2Wrapper = FindGridWrapper(page2.Sink);
+        Assert.NotNull(page1Wrapper);
+        Assert.NotNull(page2Wrapper);
+        Assert.Equal(300.0, page1Wrapper!.Value.BlockSize, precision: 3);
+        Assert.Equal(100.0, page2Wrapper!.Value.BlockSize, precision: 3);
+    }
+
+    /// <summary>Per Phase 3 Task 17 cycle 5c.2d post-PR-#102
+    /// review P2#1 — page-loop driver. Calls
+    /// <c>BlockLayouter.AttemptLayout</c> repeatedly, feeding
+    /// each PageComplete's BlockContinuation back as the next
+    /// page's <c>incomingContinuation</c>, until AllDone or
+    /// <paramref name="maxPages"/>. Mirrors what the production
+    /// document driver would do.</summary>
+    private static async Task<List<(RecordingFragmentSink Sink, LayoutAttemptResult Result)>>
+        RenderMultiPageAsync(
+            string html,
+            double contentInlineSize,
+            double blockSize,
+            int maxPages)
+    {
+        var host = new HtmlParsingHost();
+        var document = await host.ParseAsync(html, new HtmlPdfOptions());
+        var sheets = AdaptAllSheetsViaPreprocessor(document);
+        var cascade = CascadeResolver.Resolve(document, sheets, CssMediaContext.DefaultPrint);
+        var resolved = VarResolver.Resolve(cascade, document);
+        var box = BoxBuilder.Build(document, resolved);
+
+        var pages = new List<(RecordingFragmentSink, LayoutAttemptResult)>();
+        LayoutContinuation? incoming = null;
+        for (var pageIdx = 0; pageIdx < maxPages; pageIdx++)
+        {
+            var sink = new RecordingFragmentSink();
+            var diagSink = new RecordingDiagnosticsSink();
+            using var shaper = new SyntheticShaperResolver();
+            using var layouter = new BlockLayouter(
+                rootBox: box,
+                sink: sink,
+                incomingContinuation: incoming,
+                diagnostics: diagSink,
+                shaperResolver: shaper);
+            var ctx = new FragmentainerContext(
+                contentInlineSize: contentInlineSize, blockSize: blockSize);
+            var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+            using var resolver = new BreakResolver();
+            var result = layouter.AttemptLayout(
+                ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+            pages.Add((sink, result));
+
+            if (result.Outcome == LayoutAttemptOutcome.AllDone) break;
+            if (result.Continuation is null) break;
+            incoming = result.Continuation;
+        }
+        return pages;
+    }
+
+    /// <summary>Per Phase 3 Task 17 cycle 5c.2d post-PR-#102
+    /// review P2#1 — locate the grid wrapper fragment in a
+    /// sink. The wrapper is the unique BoxFragment whose
+    /// <c>Box.Kind</c> is <c>GridContainer</c>.</summary>
+    private static BoxFragment? FindGridWrapper(RecordingFragmentSink sink)
+    {
+        foreach (var f in sink.Fragments)
+        {
+            if (f.Box.Kind == BoxKind.GridContainer) return f;
+        }
+        return null;
+    }
+
+    /// <summary>Per Phase 3 Task 17 cycle 5c.2d — walk a
+    /// BlockContinuation chain looking for a
+    /// <see cref="GridContinuation"/> leaf. Mirrors the
+    /// continuation-chain walks the production pipeline performs
+    /// when resuming a paginated grid. Returns the first
+    /// GridContinuation found in the chain or
+    /// <see langword="null"/> when none exists.</summary>
+    private static GridContinuation? FindGridContinuationLeaf(LayoutContinuation continuation)
+    {
+        var current = continuation;
+        while (current is not null)
+        {
+            if (current is GridContinuation grid) return grid;
+            if (current is BlockContinuation block)
+            {
+                current = block.LayouterState as LayoutContinuation;
+                continue;
+            }
+            return null;
+        }
+        return null;
+    }
+
+    // ====================================================================
     //  Pipeline driver — mirrors FlexLayouterProductionTests.
     // ====================================================================
 

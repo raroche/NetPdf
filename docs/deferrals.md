@@ -1924,12 +1924,40 @@ flags the categories):
     pre-dispatch row-fit check ✓ (cycle 5c.2a).
 - **Added** — Phase 3 Task 17 cycle 5b + post-PR-#97 review F1.
 - **Updated** — Phase 3 Task 17 cycle 5c.2a (mechanism ships).
-- **Removal condition** — cycle 5c.2b's clamp + gate-flip
-  reactivation lands AND production-pipeline tests exercise the
-  Strict-defer pre-empt path end-to-end. Until then the F1
-  mechanism is shipped + unit-tested but dormant in production
-  fixtures (= the break-check upstream catches oversized
-  paginatable-grid wrappers BEFORE this site fires).
+- **Updated** — Phase 3 Task 17 cycle 5c.2b (outer-site clamp +
+  gate-flip reactivated; F1 fires for auto-height grids).
+- **Updated** — Phase 3 Task 17 cycle 5c.2c post-PR-#101
+  review P1#3 (F1 also gated by
+  <c>paginateGridForOuterChild</c> so F1 only fires when
+  dispatch will actually paginate).
+- **Updated** — Phase 3 Task 17 cycle 5c.2d (recursive site
+  clamp + F2 + propagation wired; F1 initially NOT applied at
+  recursive site).
+- **Updated** — Phase 3 Task 17 cycle 5c.2d post-PR-#102
+  review P1#1 (F1 NOW applied at recursive site too — uses
+  <c>childBlockOffset &gt; 0</c> as productivity guard since
+  the recursion doesn't have <c>emittedThisAttempt</c>; mirrors
+  the outer-site F1 pattern via the existing
+  <c>PreMeasureGridRowExtentAt</c> probe). When F1 fires at the
+  recursive site, the recursion returns
+  <c>BlockContinuation(ResumeAtChild=childIdx,
+  LayouterState=GridContinuation(RowIndex=startRow,
+  EmittedBlockExtent=0))</c> WITHOUT emitting the wrapper. The
+  outer <c>AttemptLayout</c> wraps the chain into PageComplete
+  via the existing chain-propagation pattern. Production
+  pipeline regression test
+  `Cycle5c2d_post_PR_102_P1_recursive_grid_breaks_before_after_sibling`
+  pins the behavior: sibling 200 + grid after on 250px page →
+  page 1 emits only the sibling + GridContinuation(RowIndex=0)
+  in chain + no <c>LayoutGridForcedOverflow001</c>.
+- **Removal condition** — RESOLVED end-to-end. F1 mechanism
+  shipped at BOTH outer + recursive sites; production-pipeline
+  multi-page tests (`Cycle5c2d_post_PR_102_P2_multi_page_resume_
+  emits_all_rows_exactly_once` + the break-before regression)
+  verify the contract holds across full HTML → cascade →
+  BoxBuilder → BlockLayouter flow. Explicit-height grids still
+  wait for `grid-explicit-height-paginate-deferral` +
+  `grid-fragment-plan-shared-sizing-deferral`.
 
 ---
 
@@ -2012,10 +2040,16 @@ flags the categories):
   pagination via <c>disableGridPagination</c>; F2 cursor advance
   uses <c>topShift</c>; explicit-height grids gated out of the
   clamp until F3).
-- **Removal condition** — cycle 5c.2d wires the recursive
-  `EmitBlockSubtreeRecursive` site + ships production-pipeline
-  multi-page tests verifying end-to-end wrapper sizing +
-  cumulative consumed + sibling placement on real HTML fixtures.
+- **Updated** — Phase 3 Task 17 cycle 5c.2d (recursive site
+  wired with clamp + F2 + continuation propagation;
+  production HTML fixtures with auto-height paginatable grids
+  now split cleanly via the recursive `EmitBlockSubtreeRecursive`
+  path).
+- **Removal condition** — F3 explicit-height pagination
+  ships (= `grid-explicit-height-paginate-deferral` resolves
+  via the `grid-fragment-plan-shared-sizing-deferral`) so
+  explicit-height grids in production HTML also paginate via
+  the recursive site.
 
 ---
 
@@ -2065,6 +2099,74 @@ flags the categories):
 - **Removal condition** — shared plan lands AND benchmark
   shows ≤ 1× CPU vs cycle 5b atomic dispatch for paginatable-
   grid fixtures.
+
+---
+
+## recursive-block-continuation-consumed-extent-accounting-deferral
+
+- **ID** — `recursive-block-continuation-consumed-extent-accounting-deferral`
+- **Status** — `not-started`. Phase 3 Task 17 cycle 5c.2d
+  post-PR-#102 review P1/P2#2.
+- **Behavior** — when a recursive grid (or flex / multicol /
+  table) inside <see cref="EmitBlockSubtreeRecursive"/> emits
+  some rows + returns `PageComplete(NestedContinuation)`, the
+  recursion wraps the result into
+  `BlockContinuation(ResumeAtChild=childIdx,
+  ConsumedBlockSize=0, LayouterState=NestedContinuation)`
+  before returning up the chain. The outer
+  <see cref="AttemptLayout"/> then wraps the chain into
+  PageComplete using the OUTER's UsedBlockSize delta — but
+  the recursive grid's F2-resized emission only updated
+  `childCursor` (a local), NOT
+  `fragmentainer.UsedBlockSize`. Result: continuation
+  accounting reports a lower ConsumedBlockSize than actually
+  committed for fragments where pagination happened deep in
+  the recursion tree.
+- **Practical impact** — `BlockContinuation.ConsumedBlockSize`
+  is documented as cumulative-across-pages, but for
+  recursive-paginated grids it under-reports the page's
+  committed extent. Consumers that rely on this value for
+  cost/extent metrics, ancestor continuation semantics, or
+  following-sibling placement on resumed pages could see
+  geometry inconsistency. The visible fragment emission is
+  correct (= rows render at the right offsets + F2 resizes
+  the wrapper); only the continuation-chain's reported
+  consumed extent diverges from the actual committed extent.
+- **Pre-existing scope** — this pattern exists today for flex
+  + multicol recursive PageComplete propagation too; not
+  unique to grid. The cycle-5c.2d wiring surfaced the issue
+  via the grid path but the fix needs to be uniform across
+  all nested-container layouters.
+- **Missing** — recursion's return type extended from
+  `LayoutContinuation?` to a typed result carrying
+  `(Continuation, CommittedBlockExtent)`. Outer
+  `AttemptLayout` reads CommittedBlockExtent to advance
+  `fragmentainer.UsedBlockSize` exactly once before
+  wrapping the PageComplete. Mirrors the
+  <c>GridLayouter.LastEmittedBlockExtent</c> producer +
+  consumer contract from cycle 5c.1 but at the recursion
+  boundary.
+- **Trigger** — when downstream consumers of
+  `BlockContinuation.ConsumedBlockSize` (= cost model
+  refinements, multi-document concatenation, or any future
+  feature reading cumulative consumed extent) need accurate
+  recursive accounting. Production renders are visually
+  correct today.
+- **Owner files** —
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` —
+    `EmitBlockSubtreeRecursive` return type + the 3 recursive
+    grid / flex / multicol PageComplete propagation sites.
+  - `src/NetPdf.Paginate/LayoutContinuation.cs` —
+    BlockContinuation.ConsumedBlockSize semantics doc update.
+- **Added** — Phase 3 Task 17 cycle 5c.2d post-PR-#102 review
+  P1/P2#2.
+- **Removal condition** — recursion return type carries
+  committed-extent; outer AttemptLayout advances
+  fragmentainer.UsedBlockSize from the recursion's committed
+  extent (NOT from MeasureSubtreeVisualBlockExtent's natural
+  extent) when a recursive paginated emit happened;
+  end-to-end tests assert ConsumedBlockSize matches emitted
+  extent for `<body><sibling><grid>...</grid></body>` shapes.
 
 ---
 

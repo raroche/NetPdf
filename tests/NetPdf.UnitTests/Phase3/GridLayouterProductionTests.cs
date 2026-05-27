@@ -891,6 +891,55 @@ public sealed class GridLayouterProductionTests
     }
 
     // ====================================================================
+    //  Cycle 5b — BlockLayouter dispatch activation: production-pipeline
+    //  multi-page grid pagination via the full HTML → cascade → BoxBuilder
+    //  → BlockLayouter → GridLayouter chain.
+    // ====================================================================
+
+    // Per PR-#97 review F6+F7 — the Skip-pinned production tests that
+    // existed in cycle 5b initial draft were REMOVED. They documented
+    // a target state ("cycle 5c will activate this") but lived under
+    // a Production_html_ prefix suggesting working coverage. Cycle 5c
+    // will add real production-pipeline tests when the architectural
+    // fixes (F1+F2+F3 deferrals — wrapper rollback / emitted-extent
+    // contract / explicit-height handling) land.
+    //
+    // The cycle-5b ship is contract-additive only: DispatchGridInner
+    // gains allowPagination + incomingContinuation params (safe
+    // defaults); IsPaginatableGrid predicate exists; the F5
+    // BlockLayouter symmetric validation for misrouted GridContinuation
+    // ships. Direct GridLayouter resume tests (= the Cycle5_* series)
+    // continue to verify the inner contract end-to-end.
+
+    [Fact]
+    public async Task Production_html_grid_fitting_on_one_page_stays_AllDone_no_continuation()
+    {
+        // Single-page-fit case — pagination active but no split needed.
+        // Verifies the no-allocation path (= F4 + cycle 5b dispatch
+        // doesn't allocate cache or emit continuation when grid fits).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 100px;
+                    grid-template-columns: 100px;
+                }
+                .r1 { grid-row-start: 1; grid-column-start: 1; }
+            </style></head><body>
+            <div class="grid">
+              <div class="r1"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, result, _) = await RenderViaFullPipelineWithResultAsync(html, contentInlineSize: 100, blockSize: 800);
+
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+        Assert.Null(result.Continuation);
+        Assert.NotNull(FindByClass(sink, "r1"));
+    }
+
+    // ====================================================================
     //  Pipeline driver — mirrors FlexLayouterProductionTests.
     // ====================================================================
 
@@ -913,6 +962,45 @@ public sealed class GridLayouterProductionTests
             return f;
         }
         return null;
+    }
+
+    /// <summary>Per Phase 3 Task 17 cycle 5b — pipeline driver
+    /// returning the BlockLayouter result so tests can assert on
+    /// PageComplete / continuation propagation.</summary>
+    private static async Task<(RecordingFragmentSink sink,
+        RecordingDiagnosticsSink diagnostics,
+        LayoutAttemptResult result, Box root)>
+        RenderViaFullPipelineWithResultAsync(
+            string html,
+            double contentInlineSize = 600,
+            double blockSize = 800)
+    {
+        var host = new HtmlParsingHost();
+        var document = await host.ParseAsync(html, new HtmlPdfOptions());
+
+        var sheets = AdaptAllSheetsViaPreprocessor(document);
+        var cascade = CascadeResolver.Resolve(document, sheets, CssMediaContext.DefaultPrint);
+        var resolved = VarResolver.Resolve(cascade, document);
+        var box = BoxBuilder.Build(document, resolved);
+
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        using var layouter = new BlockLayouter(
+            rootBox: box,
+            sink: sink,
+            incomingContinuation: null,
+            diagnostics: diagSink,
+            shaperResolver: shaper);
+
+        var ctx = new FragmentainerContext(contentInlineSize: contentInlineSize, blockSize: blockSize);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        return (sink, diagSink, result, box);
     }
 
     private static async Task<(RecordingFragmentSink sink,

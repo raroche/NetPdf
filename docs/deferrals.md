@@ -1838,3 +1838,126 @@ flags the categories):
 - **Removal condition** — `BreakOpportunity` integration ships
   + the resolver controls grid row breaks + CSS break-*
   properties are honored on grid rows / items.
+
+---
+
+## grid-wrapper-rollback-for-pre-dispatch-deferral
+
+- **ID** — `grid-wrapper-rollback-for-pre-dispatch-deferral`
+- **Status** — `not-started`. Phase 3 Task 17 cycle 5b post-PR-#97
+  review F1.
+- **Behavior** — `BlockLayouter` emits the grid wrapper fragment
+  BEFORE invoking `DispatchGridInner` (= the wrapper paint order
+  contract). If `GridLayouter` were to return
+  `PageComplete(GridContinuation(0, null))` under
+  `LayoutAttemptStrategy.Strict` signaling "defer the entire grid",
+  the wrapper would already be committed on the prior page —
+  visually painting an empty grid box.
+- **Missing** —
+  - A pre-dispatch row-fit decision OWNED by BlockLayouter (= ask
+    GridLayouter "would your first row fit in this budget?" BEFORE
+    emitting the wrapper, route Strict-defer at that point).
+  - OR a wrapper rollback/backfill API (= emit wrapper at a placeholder
+    extent, run inner dispatch, then revise the wrapper's geometry
+    before the painter consumes the fragment list).
+  - OR pre-emit-with-revise sink semantics (= sink accepts a Box
+    pointer + revises geometry post-dispatch).
+- **Practical impact** — cycle 5b's outer-site clamp + gate-flip is
+  REVERTED for this reason. Activating outer-site grid pagination
+  without the rollback contract would either (a) leave empty
+  wrappers on prior pages under Strict, or (b) force LastResort-
+  hardcoded dispatch, defeating the cycle 5 hardening's strategy
+  gating that's exactly designed to prevent premature forced
+  overflow.
+- **Trigger** — cycle 5c. The choice between pre-dispatch row-fit
+  vs. wrapper rollback is an architectural call that should be
+  made with the recursive-site wiring + the F2/F3 fixes since
+  all three issues share the same wrapper-vs-content extent
+  contract.
+- **Owner files** —
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — wrapper emit
+    site + DispatchGridInner.
+  - `src/NetPdf.Layout/Layouters/GridLayouter.cs` — would expose
+    a `TryFitFirstRow(budget)` query OR a per-fragment emitted-
+    extent API.
+  - `src/NetPdf.Layout/Fragments/BoxFragment.cs` — may need a
+    revise-extent API.
+- **Added** — Phase 3 Task 17 cycle 5b + post-PR-#97 review F1.
+- **Removal condition** — cycle 5c ships either pre-dispatch row-fit
+  query or wrapper rollback semantics, BlockLayouter routes Strict-
+  defer cleanly, AND the cycle-5 hardening's LastResort gating is
+  preserved end-to-end.
+
+---
+
+## grid-fragment-extent-emitted-rows-only-deferral
+
+- **ID** — `grid-fragment-extent-emitted-rows-only-deferral`
+- **Status** — `not-started`. Phase 3 Task 17 cycle 5b post-PR-#97
+  review F2.
+- **Behavior** — when grid pagination IS active, the wrapper
+  fragment paints at the clamped extent (= page budget) and the
+  cursor advances by the full clamped extent. But `GridLayouter`
+  may emit only K of N rows; the wrapper visually contains empty
+  space + the cursor over-advances + cumulative `ConsumedBlockSize`
+  inflates. Following block-flow siblings are pushed down by
+  invisible space.
+- **Missing** — an emitted-extent contract returned from
+  `GridLayouter` (mirror flex cycle-4e
+  <c>EmittedBlockExtent</c>). `BlockLayouter` would size the
+  wrapper to <c>emitted-rows-extent + chrome</c> and advance the
+  cursor by that, not the budget.
+- **Practical impact** — cycle 5b's outer-site activation is
+  REVERTED for this reason. Without emitted-extent, every
+  pagination split produces visual gaps + sibling displacement.
+- **Trigger** — cycle 5c. Coordinates with F1 + F3 since all
+  three touch the wrapper-vs-content extent contract.
+- **Owner files** —
+  - `src/NetPdf.Layout/Layouters/GridLayouter.cs` — return emitted
+    extent on PageComplete.
+  - `src/NetPdf.Paginate/LayoutContinuation.cs` — possibly add
+    `GridContinuation.EmittedBlockExtent` mirroring
+    `FlexContinuation.EmittedBlockExtent`.
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — wrapper
+    BoxFragment emit + cursor advance both use the emitted extent.
+- **Added** — Phase 3 Task 17 cycle 5b + post-PR-#97 review F2.
+- **Removal condition** — cycle 5c implements the contract +
+  end-to-end production tests verify wrapper sizing + cumulative
+  consumed + sibling placement on both pages of a split grid.
+
+---
+
+## grid-explicit-height-paginate-deferral
+
+- **ID** — `grid-explicit-height-paginate-deferral`
+- **Status** — `not-started`. Phase 3 Task 17 cycle 5b post-PR-#97
+  review F3.
+- **Behavior** — grids with explicit `height: 300px` style get
+  their natural extent restored by
+  `MeasureSubtreeVisualBlockExtent` AFTER the paginatable-grid
+  clamp would have shrunk `borderBoxBlockSize`. The resolver path
+  then sees a 300px chunk on a 250px page → forced-overflow
+  branch, which dispatches grid atomically (`allowPagination:
+  false`). So even with cycle 5b's outer-site wiring active,
+  explicit-height grids would never paginate.
+- **Missing** — grid-specific extent handling in the
+  `MeasureSubtreeVisualBlockExtent` path (= when the grid is
+  paginatable + already clamped, don't restore the style height).
+  OR a "planned grid fragment extent" channel that the resolver
+  reads instead of the style height.
+- **Practical impact** — cycle 5b's "all grids paginatable" claim
+  via `IsPaginatableGrid` was false for explicit-height grids.
+  Activating outer-site without this fix breaks the most common
+  styled-invoice case.
+- **Trigger** — cycle 5c. Coordinates with F1 + F2 since all
+  three involve the wrapper-vs-content extent flow.
+- **Owner files** —
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` —
+    `MeasureSubtreeVisualBlockExtent` + the explicit-height read
+    path.
+  - `src/NetPdf.Layout/Layouters/GridLayouter.cs` — may expose a
+    "planned fragment extent" query.
+- **Added** — Phase 3 Task 17 cycle 5b + post-PR-#97 review F3.
+- **Removal condition** — explicit-height grids on tight pages
+  paginate correctly + don't fall into forced-overflow with
+  pagination disabled.

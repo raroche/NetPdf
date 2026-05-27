@@ -587,6 +587,31 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 + "consistent. Per Phase 3 Task 16 cycle 2 resume contract.");
         }
 
+        // Per PR-#97 review F5 — symmetric grid continuation validation
+        // mirroring the flex / multicol / table guards. The child at
+        // ResumeAtChild MUST be a grid container OR a block-flow
+        // container that recursively contains the grid (= same single-
+        // level-nested propagation contract). Pre-fix a misrouted
+        // GridContinuation would silently lose resume intent.
+        if (incomingBlock?.LayouterState is GridContinuation
+            && startChildIdx >= 0
+            && startChildIdx < _rootBox.Children.Count
+            && _rootBox.Children[startChildIdx].Kind is not
+                (BoxKind.GridContainer or BoxKind.InlineGridContainer)
+            && !IsBlockFlowContainerOwnedByBlockLayouter(_rootBox.Children[startChildIdx]))
+        {
+            throw new InvalidOperationException(
+                "BlockLayouter.AttemptLayout: incoming BlockContinuation carries "
+                + "a GridContinuation in LayouterState but the child at "
+                + $"ResumeAtChild={startChildIdx} has BoxKind."
+                + $"{_rootBox.Children[startChildIdx].Kind}, which is neither "
+                + "a GridContainer / InlineGridContainer nor a block-flow "
+                + "container that could contain one. The dispatching "
+                + "layouter must produce continuations where the "
+                + "ResumeAtChild + LayouterState pair are mutually "
+                + "consistent. Per Phase 3 Task 17 cycle 5b resume contract.");
+        }
+
         // Per Phase 3 Task 14 cycle 2 hardening (Finding #1) — when
         // the incoming BlockContinuation carries a nested
         // BlockContinuation (the recursion-chain protocol introduced
@@ -1406,6 +1431,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // <c>if (IsFlexContainer(child))</c> sibling at the same
             // loop-iteration scope.
             bool paginateFlexForOuterChild = false;
+            // Per Phase 3 Task 17 cycle 5b — outer-site paginatable-grid
+            // gate. Flipped ON by the IsPaginatableGrid clamp below
+            // (mirrors paginateFlexForOuterChild). When true, the
+            // DispatchGridInner call below passes allowPagination=true
+            // so GridLayouter splits rows + returns PageComplete.
+            bool paginateGridForOuterChild = false;
 
             // Per Phase 3 Task 15 L3 post-PR-#63 hardening F#1 — flex
             // container wrapper pre-measure. Mirrors the multicol
@@ -1612,6 +1643,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         paginateFlexForOuterChild = true;
                     }
                 }
+
+                // NB: paginatable-grid clamp moved to AFTER the grid
+                // pre-measure (= line ~1695) so it operates on the
+                // GROWN borderBoxBlockSize, not the chrome-only init.
+                // The flex clamp above works on grown extent because
+                // the flex pre-measure runs INSIDE the flex branch
+                // above; grid's pre-measure is a separate gate at
+                // line ~1681 that we must wait for.
             }
 
             // Per Phase 3 Task 17 cycle 1 post-PR-#92 review F2 — grid
@@ -1649,6 +1688,37 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     }
                 }
             }
+
+            // Per Phase 3 Task 17 cycle 5b post-PR-#97 review F1+F2+F3
+            // — the paginatable-grid extent clamp at this site was
+            // REVERTED. Three architectural issues blocked activation:
+            //
+            // F1 — strategy-aware row-fit decision must run BEFORE the
+            // wrapper is emitted at line ~2352, not after. The current
+            // code emits the wrapper first; a subsequent
+            // PageComplete(GridContinuation(0, null)) under Strict
+            // strategy would leave an empty committed wrapper on the
+            // prior page. Needs pre-dispatch row-fit OR wrapper
+            // rollback/backfill semantics.
+            //
+            // F2 — wrapper would paint at the full clamped extent
+            // (= 250px) even when GridLayouter emits only 2 of 3 rows
+            // (= 200px). The wrapper must size to emitted-rows-extent
+            // + chrome, not the budget. Needs an emitted-extent
+            // contract returned from GridLayouter (mirror flex
+            // cycle-4e EmittedBlockExtent).
+            //
+            // F3 — explicit-height grids (height:300px) have
+            // MeasureSubtreeVisualBlockExtent restore the 300px after
+            // the clamp, so the wrapper falls into forced-overflow
+            // with allowPagination:false. Needs grid-specific extent
+            // handling in the resolver path.
+            //
+            // Each gets a dedicated deferrals.md entry; cycle 5c picks
+            // up the architectural work. For now the
+            // paginateGridForOuterChild flag stays at its initial
+            // value (false) — API surface preserved for cycle 5c to
+            // activate.
 
             // Per cycle 2c post-PR-29 review #7 — `marginBoxBlockSize`
             // (= `topShift + borderBoxBlockSize + marginEnd`) was
@@ -2587,14 +2657,25 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 continue;
             }
 
-            // Per Phase 3 Task 17 cycle 1 (Hello World) — grid
-            // container dispatch. A box with BoxKind.GridContainer /
-            // InlineGridContainer (= display: grid / inline-grid) lays
-            // out its direct children as grid items via GridLayouter.
-            // The wrapper fragment is already emitted above; GridLayouter
-            // emits per-item content INSIDE the wrapper's content area.
-            // Cycle 1 ships atomic emission only (no pagination); cycle
-            // 5 will add the GridContinuation resume contract.
+            // Per Phase 3 Task 17 cycle 1 (Hello World) + cycle 5b
+            // (paginatable-grid wiring) — grid container dispatch. A
+            // box with BoxKind.GridContainer / InlineGridContainer
+            // (= display: grid / inline-grid) lays out its direct
+            // children as grid items via GridLayouter. The wrapper
+            // fragment is already emitted above; GridLayouter emits
+            // per-item content INSIDE the wrapper's content area.
+            //
+            // Cycle 5b: when paginateGridForOuterChild flipped ON,
+            // dispatch with allowPagination=true + propagate
+            // PageComplete(GridContinuation) up as
+            // BlockContinuation(LayouterState=GridContinuation).
+            //
+            // Resume contract: when this BlockLayouter is invoked with
+            // an incoming BlockContinuation matching `childIdx` whose
+            // LayouterState is a GridContinuation, route it back to
+            // GridLayouter via DispatchGridInner's incomingContinuation
+            // parameter. (Cycle 5b initial ship — the recursive site
+            // gets the same wiring in cycle 5c.)
             if (IsGridContainer(child))
             {
                 var gridGeom = GridGeometryHelper.ComputeContentGeometry(
@@ -2603,7 +2684,22 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     borderBoxBlockSize: borderBoxBlockSize,
                     borderBoxInlineOffset: inFlowInlineOffset,
                     borderBoxBlockOffset: blockOffset);
-                _ = DispatchGridInner(
+
+                // Resume contract: extract the incoming GridContinuation
+                // if the BlockLayouter was invoked with a chained
+                // BlockContinuation pointing at this child.
+                GridContinuation? incomingGridContinuation = null;
+                if (_incomingContinuation is BlockContinuation
+                    {
+                        ResumeAtChild: var resumeAt,
+                        LayouterState: GridContinuation gridIncoming
+                    }
+                    && resumeAt == childIdx)
+                {
+                    incomingGridContinuation = gridIncoming;
+                }
+
+                var gridResult = DispatchGridInner(
                     gridBox: child,
                     contentInlineOffset: gridGeom.ContentInlineOffset,
                     contentBlockOffset: gridGeom.ContentBlockOffset,
@@ -2611,17 +2707,35 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     contentBlockSize: gridGeom.ContentBlockSize,
                     fragmentainer: fragmentainer,
                     layout: ref layout,
-                    cancellationToken: cancellationToken);
+                    cancellationToken: cancellationToken,
+                    allowPagination: paginateGridForOuterChild,
+                    incomingContinuation: incomingGridContinuation);
 
                 // Cursor advance + bookkeeping mirror the flex/multicol
-                // path. Cycle 1 always returns AllDone so no PageComplete
-                // propagation is needed yet.
+                // path.
                 fragmentainer.UsedBlockSize = Math.Max(0,
                     fragmentainer.UsedBlockSize + marginBoxBlockSizeForCursor);
                 prevBlockMarginEnd = marginEnd;
                 hasPriorAdjoiningBlock = true;
                 emittedThisAttempt++;
                 lastEmittedIdx = childIdx;
+
+                // Per cycle 5b — propagate PageComplete(GridContinuation)
+                // up as BlockContinuation(LayouterState=GridContinuation).
+                // Mirrors the flex cycle-2 propagation pattern at
+                // line ~2572.
+                if (gridResult.Outcome == LayoutAttemptOutcome.PageComplete
+                    && gridResult.Continuation is GridContinuation gridCont)
+                {
+                    return LayoutAttemptResult.PageComplete(
+                        new BlockContinuation(
+                            ResumeAtChild: childIdx,
+                            ConsumedBlockSize: priorPagesConsumed
+                                + (fragmentainer.UsedBlockSize - _pageStartUsedBlockSize),
+                            LayouterState: gridCont),
+                        cost: gridResult.Cost);
+                }
+
                 continue;
             }
 

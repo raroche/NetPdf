@@ -860,14 +860,31 @@ public sealed class GridLayouterTests
     }
 
     [Fact]
-    public void Constructor_rejects_non_null_incoming_continuation()
+    public void Constructor_accepts_grid_continuation_in_cycle_5_but_rejects_wrong_type()
     {
-        // Cycle 1 ships atomic emission only — any non-null continuation throws.
+        // Per Phase 3 Task 17 cycle 5 — GridContinuation is NOW
+        // accepted (replaces the cycle-1 "throws on any non-null"
+        // contract). A non-GridContinuation continuation still
+        // throws since it indicates a misrouted dispatch.
         var sink = new RecordingFragmentSink();
         var grid = BuildGridContainer(rowsPx: new[] { 100.0 }, colsPx: new[] { 100.0 });
-        Assert.Throws<System.ArgumentException>(() => new GridLayouter(
+
+        // GridContinuation now works.
+        using var ok = new GridLayouter(
             rootBox: grid, sink: sink,
             incomingContinuation: new GridContinuation(RowIndex: 1),
+            diagnostics: null, shaperResolver: null);
+
+        // Wrong continuation type still throws.
+        Assert.Throws<System.ArgumentException>(() => new GridLayouter(
+            rootBox: grid, sink: sink,
+            incomingContinuation: new FlexContinuation(LineIndex: 0),
+            diagnostics: null, shaperResolver: null));
+
+        // Negative RowIndex throws.
+        Assert.Throws<System.ArgumentOutOfRangeException>(() => new GridLayouter(
+            rootBox: grid, sink: sink,
+            incomingContinuation: new GridContinuation(RowIndex: -1),
             diagnostics: null, shaperResolver: null));
     }
 
@@ -1035,10 +1052,14 @@ public sealed class GridLayouterTests
     }
 
     [Fact]
-    public void ConfigureEmission_with_allowPagination_true_throws_at_AttemptLayout()
+    public void ConfigureEmission_with_allowPagination_true_now_paginates_in_cycle_5()
     {
-        // Cycle 1 doesn't paginate — allowPagination=true is reserved
-        // for cycle 5.
+        // Per Phase 3 Task 17 cycle 5 — allowPagination=true is now
+        // active (replaces the cycle-1 "throws" contract). With a
+        // budget large enough to fit the single 100px row, the
+        // layouter returns AllDone (= the row fits, no split needed).
+        // Multi-row split is exercised by the dedicated cycle 5 tests
+        // below; this test just verifies the gate doesn't throw.
         var sink = new RecordingFragmentSink();
         var grid = BuildGridContainer(rowsPx: new[] { 100.0 }, colsPx: new[] { 100.0 });
         using var layouter = new GridLayouter(
@@ -1051,14 +1072,9 @@ public sealed class GridLayouterTests
         var ctx = new FragmentainerContext(contentInlineSize: 200, blockSize: 200);
         var layoutCtx = new LayoutContext(ctx);
         using var resolver = new BreakResolver();
-        System.InvalidOperationException? thrown = null;
-        try
-        {
-            layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
-        }
-        catch (System.InvalidOperationException ex) { thrown = ex; }
-        Assert.NotNull(thrown);
-        Assert.Contains("allowPagination", thrown!.Message);
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
     }
 
     // =====================================================================
@@ -2025,6 +2041,595 @@ public sealed class GridLayouterTests
         RunGridLayouter(grid, sink, diag, shaper, contentBlockSize: 50);
 
         AssertFragmentEquals(sink, item, inlineOffset: 0, blockOffset: 0, inlineSize: 100, blockSize: 80);
+    }
+
+    // =====================================================================
+    //  Cycle 5 — multi-page pagination (row-by-row split + GridContinuation)
+    // =====================================================================
+
+    [Fact]
+    public void Cycle5_three_row_grid_splits_at_row_2_when_budget_fits_only_two_rows()
+    {
+        // grid-template-rows: 100px 100px 100px in 250px budget.
+        //   Row 0: bottom = 100 ≤ 250 → fit.
+        //   Row 1: bottom = 200 ≤ 250 → fit.
+        //   Row 2: bottom = 300 > 250 → defer.
+        //   Expect PageComplete with GridContinuation(RowIndex=2, Cache).
+        //   Sink has 2 fragments (rows 0+1).
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 100.0, 100.0 },
+            colsPx: new[] { 100.0 });
+        SetExplicitWidth(grid, 100);
+        SetExplicitHeight(grid, 250);
+        var item1 = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var item2 = BuildItemWithExplicitPlacement(row: 2, col: 1);
+        var item3 = BuildItemWithExplicitPlacement(row: 3, col: 1);
+        grid.AppendChild(item1);
+        grid.AppendChild(item2);
+        grid.AppendChild(item3);
+
+        using var layouter = new GridLayouter(
+            rootBox: grid, sink: sink,
+            incomingContinuation: null,
+            diagnostics: diag, shaperResolver: shaper);
+        layouter.ConfigureEmission(
+            contentInlineOffset: 0, contentBlockOffset: 0,
+            contentInlineSize: 100, contentBlockSize: 250,
+            allowPagination: true);
+        var ctx = new FragmentainerContext(contentInlineSize: 100, blockSize: 250);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var continuation = result.Continuation as GridContinuation;
+        Assert.NotNull(continuation);
+        Assert.Equal(2, continuation!.RowIndex);
+        Assert.NotNull(continuation.Cache);
+        Assert.Equal(2, sink.Fragments.Count);
+        AssertFragmentEquals(sink, item1, inlineOffset: 0, blockOffset: 0, inlineSize: 100, blockSize: 100);
+        AssertFragmentEquals(sink, item2, inlineOffset: 0, blockOffset: 100, inlineSize: 100, blockSize: 100);
+    }
+
+    [Fact]
+    public void Cycle5_resume_continuation_emits_remaining_rows_on_next_page()
+    {
+        // Same grid as above, but feed in a GridContinuation(RowIndex=2)
+        // simulating resume from page 1. The resume page emits ONLY
+        // row 2 (= the third item), at this-page block-offset 0 (=
+        // not at 200 like it was on page 1).
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 100.0, 100.0 },
+            colsPx: new[] { 100.0 });
+        SetExplicitWidth(grid, 100);
+        SetExplicitHeight(grid, 250);
+        var item1 = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var item2 = BuildItemWithExplicitPlacement(row: 2, col: 1);
+        var item3 = BuildItemWithExplicitPlacement(row: 3, col: 1);
+        grid.AppendChild(item1);
+        grid.AppendChild(item2);
+        grid.AppendChild(item3);
+
+        // First page: capture the cache by running pagination.
+        using var page1 = new GridLayouter(
+            rootBox: grid, sink: new RecordingFragmentSink(),
+            incomingContinuation: null,
+            diagnostics: diag, shaperResolver: shaper);
+        page1.ConfigureEmission(
+            contentInlineOffset: 0, contentBlockOffset: 0,
+            contentInlineSize: 100, contentBlockSize: 250,
+            allowPagination: true);
+        var ctx1 = new FragmentainerContext(contentInlineSize: 100, blockSize: 250);
+        var layoutCtx1 = new LayoutContext(ctx1);
+        using var resolver1 = new BreakResolver();
+        var result1 = page1.AttemptLayout(
+            ctx1, ref layoutCtx1, resolver1, LayoutAttemptStrategy.LastResort);
+        var continuation = (GridContinuation)result1.Continuation!;
+
+        // Second page: feed continuation back. Sink is the cycle-5
+        // sink (= we're checking the SECOND page's output).
+        using var page2 = new GridLayouter(
+            rootBox: grid, sink: sink,
+            incomingContinuation: continuation,
+            diagnostics: diag, shaperResolver: shaper);
+        page2.ConfigureEmission(
+            contentInlineOffset: 0, contentBlockOffset: 0,
+            contentInlineSize: 100, contentBlockSize: 250,
+            allowPagination: true);
+        var ctx2 = new FragmentainerContext(contentInlineSize: 100, blockSize: 250);
+        var layoutCtx2 = new LayoutContext(ctx2);
+        using var resolver2 = new BreakResolver();
+        var result2 = page2.AttemptLayout(
+            ctx2, ref layoutCtx2, resolver2, LayoutAttemptStrategy.LastResort);
+
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result2.Outcome);
+        Assert.Single(sink.Fragments);
+        // Resume page: item3 (row 2 = third row) emits at this-page
+        // block-offset 0 (= the cumulative row offset SHIFTED so the
+        // resume row anchors at the wrapper's content-box top).
+        AssertFragmentEquals(sink, item3, inlineOffset: 0, blockOffset: 0, inlineSize: 100, blockSize: 100);
+    }
+
+    [Fact]
+    public void Cycle5_round_trip_emits_each_item_exactly_once_across_pages()
+    {
+        // 3-row grid, budget for 2 rows. Verify that across page 1 +
+        // page 2 every item appears EXACTLY ONCE. Pinning the
+        // contract that resume doesn't re-emit + page-1 doesn't skip.
+        var sink1 = new RecordingFragmentSink();
+        var sink2 = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 100.0, 100.0 },
+            colsPx: new[] { 100.0 });
+        SetExplicitWidth(grid, 100);
+        SetExplicitHeight(grid, 250);
+        var item1 = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var item2 = BuildItemWithExplicitPlacement(row: 2, col: 1);
+        var item3 = BuildItemWithExplicitPlacement(row: 3, col: 1);
+        grid.AppendChild(item1);
+        grid.AppendChild(item2);
+        grid.AppendChild(item3);
+
+        using var page1 = new GridLayouter(
+            rootBox: grid, sink: sink1,
+            incomingContinuation: null,
+            diagnostics: diag, shaperResolver: shaper);
+        page1.ConfigureEmission(
+            contentInlineOffset: 0, contentBlockOffset: 0,
+            contentInlineSize: 100, contentBlockSize: 250,
+            allowPagination: true);
+        var ctx1 = new FragmentainerContext(contentInlineSize: 100, blockSize: 250);
+        var layoutCtx1 = new LayoutContext(ctx1);
+        using var resolver1 = new BreakResolver();
+        var result1 = page1.AttemptLayout(
+            ctx1, ref layoutCtx1, resolver1, LayoutAttemptStrategy.LastResort);
+
+        using var page2 = new GridLayouter(
+            rootBox: grid, sink: sink2,
+            incomingContinuation: (GridContinuation)result1.Continuation!,
+            diagnostics: diag, shaperResolver: shaper);
+        page2.ConfigureEmission(
+            contentInlineOffset: 0, contentBlockOffset: 0,
+            contentInlineSize: 100, contentBlockSize: 250,
+            allowPagination: true);
+        var ctx2 = new FragmentainerContext(contentInlineSize: 100, blockSize: 250);
+        var layoutCtx2 = new LayoutContext(ctx2);
+        using var resolver2 = new BreakResolver();
+        var result2 = page2.AttemptLayout(
+            ctx2, ref layoutCtx2, resolver2, LayoutAttemptStrategy.LastResort);
+
+        // Sum across both pages: each item exactly once.
+        var allFragments = sink1.Fragments.Concat(sink2.Fragments).ToList();
+        Assert.Equal(3, allFragments.Count);
+        Assert.Single(allFragments, f => f.Box == item1);
+        Assert.Single(allFragments, f => f.Box == item2);
+        Assert.Single(allFragments, f => f.Box == item3);
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result2.Outcome);
+    }
+
+    [Fact]
+    public void Cycle5_oversized_first_row_force_overflows_with_diagnostic()
+    {
+        // Single row of 300px in a 200px budget. Per §4.4 progress
+        // rule the row force-emits + the diagnostic fires.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 300.0 },
+            colsPx: new[] { 100.0 });
+        SetExplicitWidth(grid, 100);
+        SetExplicitHeight(grid, 200);
+        var item = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        grid.AppendChild(item);
+
+        using var layouter = new GridLayouter(
+            rootBox: grid, sink: sink,
+            incomingContinuation: null,
+            diagnostics: diag, shaperResolver: shaper);
+        layouter.ConfigureEmission(
+            contentInlineOffset: 0, contentBlockOffset: 0,
+            contentInlineSize: 100, contentBlockSize: 200,
+            allowPagination: true);
+        var ctx = new FragmentainerContext(contentInlineSize: 100, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // Row force-committed → AllDone (no continuation since this
+        // was the only row).
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+        Assert.Single(sink.Fragments);
+        Assert.Contains(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridForcedOverflow001);
+    }
+
+    [Fact]
+    public void Cycle5_atomic_mode_emits_all_rows_even_when_overflowing()
+    {
+        // allowPagination=false (= cycle 1 default contract) — even
+        // when rows overflow the budget, atomic mode emits all of
+        // them + returns AllDone (= the caller is responsible for
+        // visual overflow). Pins the backwards-compat contract.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 100.0, 100.0 },
+            colsPx: new[] { 100.0 });
+        SetExplicitWidth(grid, 100);
+        SetExplicitHeight(grid, 200);
+        var item1 = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var item2 = BuildItemWithExplicitPlacement(row: 2, col: 1);
+        var item3 = BuildItemWithExplicitPlacement(row: 3, col: 1);
+        grid.AppendChild(item1);
+        grid.AppendChild(item2);
+        grid.AppendChild(item3);
+
+        using var layouter = new GridLayouter(
+            rootBox: grid, sink: sink,
+            incomingContinuation: null,
+            diagnostics: diag, shaperResolver: shaper);
+        layouter.ConfigureEmission(
+            contentInlineOffset: 0, contentBlockOffset: 0,
+            contentInlineSize: 100, contentBlockSize: 200,
+            allowPagination: false);
+        var ctx = new FragmentainerContext(contentInlineSize: 100, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+        Assert.Equal(3, sink.Fragments.Count);
+        // No forced-overflow diagnostic in atomic mode (= the budget
+        // is irrelevant when pagination is off).
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridForcedOverflow001);
+    }
+
+    // =====================================================================
+    //  Cycle 5 post-PR-#96 hardening — F1 (LastResort gating), F3
+    //  (inline-size mismatch invalidates cache), F4 (lazy cache build),
+    //  F5 (cache identity + structural validation)
+    // =====================================================================
+
+    [Fact]
+    public void Cycle5_hardening_F1_strict_strategy_defers_oversized_first_row_instead_of_forcing()
+    {
+        // Per PR-#96 review F1+F2 — under Strict strategy + first row
+        // doesn't fit, the layouter returns PageComplete(GridContinuation
+        // (startRow, null)) signaling "defer the entire grid" instead
+        // of force-emitting. Pre-F1 this scenario (= grid starts below
+        // earlier content, 80px remain on page 1, first row is 100px)
+        // would force-emit + fire LayoutGridForcedOverflow001 incorrectly.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0 },
+            colsPx: new[] { 100.0 });
+        SetExplicitWidth(grid, 100);
+        SetExplicitHeight(grid, 80);
+        var item = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        grid.AppendChild(item);
+
+        using var layouter = new GridLayouter(
+            rootBox: grid, sink: sink,
+            incomingContinuation: null,
+            diagnostics: diag, shaperResolver: shaper);
+        layouter.ConfigureEmission(
+            contentInlineOffset: 0, contentBlockOffset: 0,
+            contentInlineSize: 100, contentBlockSize: 80,
+            allowPagination: true);
+        var ctx = new FragmentainerContext(contentInlineSize: 100, blockSize: 80);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        // Strict strategy → defer instead of force-emit.
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var continuation = result.Continuation as GridContinuation;
+        Assert.NotNull(continuation);
+        Assert.Equal(0, continuation!.RowIndex);
+        Assert.Null(continuation.Cache);
+        Assert.Empty(sink.Fragments);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridForcedOverflow001);
+    }
+
+    [Fact]
+    public void Cycle5_hardening_F1_lastresort_still_force_emits_oversized_first_row()
+    {
+        // Per PR-#96 review F1+F2 — LastResort is the ONLY strategy
+        // that triggers force-overflow. Pin the contract.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0 },
+            colsPx: new[] { 100.0 });
+        SetExplicitWidth(grid, 100);
+        SetExplicitHeight(grid, 80);
+        var item = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        grid.AppendChild(item);
+
+        using var layouter = new GridLayouter(
+            rootBox: grid, sink: sink,
+            incomingContinuation: null,
+            diagnostics: diag, shaperResolver: shaper);
+        layouter.ConfigureEmission(
+            contentInlineOffset: 0, contentBlockOffset: 0,
+            contentInlineSize: 100, contentBlockSize: 80,
+            allowPagination: true);
+        var ctx = new FragmentainerContext(contentInlineSize: 100, blockSize: 80);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+        Assert.Single(sink.Fragments);
+        Assert.Contains(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridForcedOverflow001);
+    }
+
+    [Fact]
+    public void Cycle5_hardening_F3_resume_with_different_inline_size_invalidates_cache()
+    {
+        // Per PR-#96 review F3 — when the resume page has a different
+        // contentInlineSize than the cache was built for, the cache is
+        // invalidated + a fresh resolve runs + a diagnostic fires.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 100.0 },
+            colsPx: new[] { 100.0 });
+        SetExplicitWidth(grid, 100);
+        SetExplicitHeight(grid, 200);
+        var item1 = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var item2 = BuildItemWithExplicitPlacement(row: 2, col: 1);
+        grid.AppendChild(item1);
+        grid.AppendChild(item2);
+
+        // Page 1: capture continuation at contentInlineSize=100.
+        var sinkPage1 = new RecordingFragmentSink();
+        using var page1 = new GridLayouter(
+            rootBox: grid, sink: sinkPage1,
+            incomingContinuation: null,
+            diagnostics: diag, shaperResolver: shaper);
+        page1.ConfigureEmission(0, 0, 100, 100, allowPagination: true);
+        var ctx1 = new FragmentainerContext(contentInlineSize: 100, blockSize: 100);
+        var layoutCtx1 = new LayoutContext(ctx1);
+        using var resolver1 = new BreakResolver();
+        var result1 = page1.AttemptLayout(
+            ctx1, ref layoutCtx1, resolver1, LayoutAttemptStrategy.LastResort);
+        var continuation = (GridContinuation)result1.Continuation!;
+        Assert.NotNull(continuation.Cache);
+        Assert.Equal(100.0, continuation.Cache!.OriginalContentInlineSize);
+
+        // Page 2: resume at contentInlineSize=200 (= different).
+        // Cache should invalidate + diagnostic fires.
+        using var page2 = new GridLayouter(
+            rootBox: grid, sink: sink,
+            incomingContinuation: continuation,
+            diagnostics: diag, shaperResolver: shaper);
+        page2.ConfigureEmission(0, 0, 200, 100, allowPagination: true);
+        var ctx2 = new FragmentainerContext(contentInlineSize: 200, blockSize: 100);
+        var layoutCtx2 = new LayoutContext(ctx2);
+        using var resolver2 = new BreakResolver();
+        var result2 = page2.AttemptLayout(
+            ctx2, ref layoutCtx2, resolver2, LayoutAttemptStrategy.LastResort);
+
+        Assert.Contains(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridResumeInlineSizeMismatch001);
+        // The resume still produces an emit (= fresh resolve at 200
+        // wide; the single row 2 emits at width 100 since cols were
+        // declared as 100px length).
+        Assert.Single(sink.Fragments);
+    }
+
+    [Fact]
+    public void Cycle5_hardening_F4_atomic_grid_returns_AllDone_without_emitting_cache()
+    {
+        // Per PR-#96 review F4 — atomic mode (allowPagination=false)
+        // must not allocate / emit a resume cache. The contract: no
+        // continuation in the result + no PageComplete outcome.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 100.0 },
+            colsPx: new[] { 100.0 });
+        SetExplicitWidth(grid, 100);
+        SetExplicitHeight(grid, 200);
+        var item1 = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var item2 = BuildItemWithExplicitPlacement(row: 2, col: 1);
+        grid.AppendChild(item1);
+        grid.AppendChild(item2);
+
+        using var layouter = new GridLayouter(
+            rootBox: grid, sink: sink,
+            incomingContinuation: null,
+            diagnostics: diag, shaperResolver: shaper);
+        layouter.ConfigureEmission(0, 0, 100, 200, allowPagination: false);
+        var ctx = new FragmentainerContext(contentInlineSize: 100, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+        Assert.Null(result.Continuation);
+        Assert.Equal(2, sink.Fragments.Count);
+    }
+
+    [Fact]
+    public void Cycle5_hardening_F4_paginated_grid_fitting_on_one_page_returns_AllDone_no_cache()
+    {
+        // Per PR-#96 review F4 — paginated mode + grid fits in one
+        // page → AllDone (no continuation, no cache allocation).
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 100.0 },
+            colsPx: new[] { 100.0 });
+        SetExplicitWidth(grid, 100);
+        SetExplicitHeight(grid, 300);
+        var item1 = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var item2 = BuildItemWithExplicitPlacement(row: 2, col: 1);
+        grid.AppendChild(item1);
+        grid.AppendChild(item2);
+
+        using var layouter = new GridLayouter(
+            rootBox: grid, sink: sink,
+            incomingContinuation: null,
+            diagnostics: diag, shaperResolver: shaper);
+        layouter.ConfigureEmission(0, 0, 100, 300, allowPagination: true);
+        var ctx = new FragmentainerContext(contentInlineSize: 100, blockSize: 300);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+        Assert.Null(result.Continuation);
+        Assert.Equal(2, sink.Fragments.Count);
+    }
+
+    [Fact]
+    public void Cycle5_hardening_F5_continuation_routed_to_wrong_grid_rejects_cache()
+    {
+        // Per PR-#96 review F5 — a continuation built for grid A
+        // routed to grid B must reject the cache + emit the
+        // CacheRejected diagnostic + fall back to fresh resolve.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        // Build grid A + paginate to capture its cache.
+        var gridA = BuildGridContainer(
+            rowsPx: new[] { 100.0, 100.0 },
+            colsPx: new[] { 100.0 });
+        SetExplicitWidth(gridA, 100);
+        SetExplicitHeight(gridA, 200);
+        var aItem1 = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var aItem2 = BuildItemWithExplicitPlacement(row: 2, col: 1);
+        gridA.AppendChild(aItem1);
+        gridA.AppendChild(aItem2);
+        var sinkA = new RecordingFragmentSink();
+        using var pageA = new GridLayouter(
+            rootBox: gridA, sink: sinkA,
+            incomingContinuation: null,
+            diagnostics: diag, shaperResolver: shaper);
+        pageA.ConfigureEmission(0, 0, 100, 100, allowPagination: true);
+        var ctxA = new FragmentainerContext(contentInlineSize: 100, blockSize: 100);
+        var layoutCtxA = new LayoutContext(ctxA);
+        using var resolverA = new BreakResolver();
+        var resultA = pageA.AttemptLayout(
+            ctxA, ref layoutCtxA, resolverA, LayoutAttemptStrategy.LastResort);
+        var aContinuation = (GridContinuation)resultA.Continuation!;
+        Assert.NotNull(aContinuation.Cache);
+
+        // Build grid B (different rootBox).
+        var gridB = BuildGridContainer(
+            rowsPx: new[] { 100.0 },
+            colsPx: new[] { 100.0 });
+        SetExplicitWidth(gridB, 100);
+        SetExplicitHeight(gridB, 100);
+        var bItem = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        gridB.AppendChild(bItem);
+
+        // Route grid A's continuation to grid B (= the misrouted case).
+        using var pageB = new GridLayouter(
+            rootBox: gridB, sink: sink,
+            incomingContinuation: aContinuation,
+            diagnostics: diag, shaperResolver: shaper);
+        pageB.ConfigureEmission(0, 0, 100, 100, allowPagination: true);
+        var ctxB = new FragmentainerContext(contentInlineSize: 100, blockSize: 100);
+        var layoutCtxB = new LayoutContext(ctxB);
+        using var resolverB = new BreakResolver();
+        var resultB = pageB.AttemptLayout(
+            ctxB, ref layoutCtxB, resolverB, LayoutAttemptStrategy.LastResort);
+
+        // Cache rejected + fresh resolve runs → grid B's single item
+        // emits (= bItem, not aItem2).
+        Assert.Contains(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridResumeCacheRejected001);
+        Assert.Single(sink.Fragments);
+        Assert.Equal(bItem, sink.Fragments[0].Box);
+    }
+
+    [Fact]
+    public void Cycle5_hardening_F3_resume_with_same_inline_size_uses_cache_no_diagnostic()
+    {
+        // Per PR-#96 review F3 — sanity test: resume with the SAME
+        // contentInlineSize uses the cache (no invalidation diagnostic).
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 100.0 },
+            colsPx: new[] { 100.0 });
+        SetExplicitWidth(grid, 100);
+        SetExplicitHeight(grid, 200);
+        var item1 = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var item2 = BuildItemWithExplicitPlacement(row: 2, col: 1);
+        grid.AppendChild(item1);
+        grid.AppendChild(item2);
+
+        var sinkPage1 = new RecordingFragmentSink();
+        using var page1 = new GridLayouter(
+            rootBox: grid, sink: sinkPage1,
+            incomingContinuation: null,
+            diagnostics: diag, shaperResolver: shaper);
+        page1.ConfigureEmission(0, 0, 100, 100, allowPagination: true);
+        var ctx1 = new FragmentainerContext(contentInlineSize: 100, blockSize: 100);
+        var layoutCtx1 = new LayoutContext(ctx1);
+        using var resolver1 = new BreakResolver();
+        var result1 = page1.AttemptLayout(
+            ctx1, ref layoutCtx1, resolver1, LayoutAttemptStrategy.LastResort);
+        var continuation = (GridContinuation)result1.Continuation!;
+
+        // Resume with SAME contentInlineSize=100.
+        using var page2 = new GridLayouter(
+            rootBox: grid, sink: sink,
+            incomingContinuation: continuation,
+            diagnostics: diag, shaperResolver: shaper);
+        page2.ConfigureEmission(0, 0, 100, 100, allowPagination: true);
+        var ctx2 = new FragmentainerContext(contentInlineSize: 100, blockSize: 100);
+        var layoutCtx2 = new LayoutContext(ctx2);
+        using var resolver2 = new BreakResolver();
+        var result2 = page2.AttemptLayout(
+            ctx2, ref layoutCtx2, resolver2, LayoutAttemptStrategy.LastResort);
+
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridResumeInlineSizeMismatch001);
+        Assert.Single(sink.Fragments);
     }
 
     // =====================================================================

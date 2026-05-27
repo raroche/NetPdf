@@ -881,6 +881,33 @@ public sealed class DiagnosticCodesTests
             NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutGridMaxExpandedTracksTruncated001);
     }
 
+    [Fact]
+    public void Layout_grid_forced_overflow_001_constants_are_stable()
+    {
+        Assert.Equal("LAYOUT-GRID-FORCED-OVERFLOW-001",
+            DiagnosticCodes.LayoutGridForcedOverflow001);
+        Assert.Equal(DiagnosticCodes.LayoutGridForcedOverflow001,
+            NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutGridForcedOverflow001);
+    }
+
+    [Fact]
+    public void Layout_grid_resume_inline_size_mismatch_001_constants_are_stable()
+    {
+        Assert.Equal("LAYOUT-GRID-RESUME-INLINE-SIZE-MISMATCH-001",
+            DiagnosticCodes.LayoutGridResumeInlineSizeMismatch001);
+        Assert.Equal(DiagnosticCodes.LayoutGridResumeInlineSizeMismatch001,
+            NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutGridResumeInlineSizeMismatch001);
+    }
+
+    [Fact]
+    public void Layout_grid_resume_cache_rejected_001_constants_are_stable()
+    {
+        Assert.Equal("LAYOUT-GRID-RESUME-CACHE-REJECTED-001",
+            DiagnosticCodes.LayoutGridResumeCacheRejected001);
+        Assert.Equal(DiagnosticCodes.LayoutGridResumeCacheRejected001,
+            NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutGridResumeCacheRejected001);
+    }
+
     private static string LoadRegistry()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

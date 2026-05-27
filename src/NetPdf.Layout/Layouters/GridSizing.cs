@@ -291,6 +291,12 @@ internal static class GridSizing
     /// for layout sizes up to ~1e6 px.</summary>
     private const double SizeEpsilon = 1e-9;
 
+    /// <summary>Per Phase 3 Task 17 cycle 5 — public accessor for
+    /// <see cref="GridLayouter"/>'s row-budget check (= same epsilon
+    /// across the sizing service + the layouter so float drift
+    /// doesn't cause off-by-one row decisions at the page boundary).</summary>
+    internal const double SizeEpsilonPublic = SizeEpsilon;
+
     private static bool SizesDiffer(double a, double b)
     {
         if (double.IsNaN(a) || double.IsNaN(b)) return true;

@@ -56,6 +56,7 @@ public sealed class DeferralsParityTests
         "grid-box-sizing-border-box-deferred",
         "grid-sizing-perf-optimizations-deferred",
         "grid-sizing-architecture-followups-deferred",
+        "grid-break-resolver-integration-deferred",
     };
 
     [Fact]

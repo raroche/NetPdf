@@ -137,21 +137,21 @@ internal sealed class GridLayouter : ILayouter, IDisposable
     private bool _emissionConfigured;
 
     /// <summary>Per Phase 3 Task 17 cycle 1 — when
-    /// <see langword="true"/>, <see cref="AttemptLayout"/> would split
-    /// rows across pages + emit a <see cref="GridContinuation"/>.
-    /// Cycle 1 (Hello World) only ships atomic emission (false);
-    /// multi-page pagination is cycle-5 scope. The parameter exists
-    /// on <see cref="ConfigureEmission"/> for forward-compat with the
-    /// FlexLayouter shape; a true value currently throws.</summary>
+    /// <see langword="true"/>, <see cref="AttemptLayout"/> splits
+    /// rows across pages + emits a <see cref="GridContinuation"/>.
+    /// Per cycle 5 the gate is active: a true value triggers row-by-
+    /// row pagination + continuation emission; a false value forces
+    /// atomic emission (= the cycle-1 contract — all rows fit or the
+    /// container overflows).</summary>
     private bool _allowPagination;
 
-    // Per cycle 3 post-PR-#94 hardening — the
-    // _emittedTrackKindDiagnostic + _emittedFrIndefiniteDiagnostic
-    // one-shot-guard fields moved to GridSizing.SizingContext (= the
-    // sizing service now owns per-resolve diagnostic-emission state).
-    // Cycle 5 will add a _incomingGridContinuation field for the
-    // multi-page resume contract; for now the constructor rejects any
-    // non-null incoming continuation.
+    /// <summary>Per Phase 3 Task 17 cycle 5 — the resume-from-prior-
+    /// page state, captured by the constructor. When non-null the
+    /// layouter skips the resolution + placement passes (using the
+    /// cached snapshot in <see cref="GridContinuation.Cache"/>) and
+    /// emits only items at rows ≥ <see cref="GridContinuation.RowIndex"/>.
+    /// </summary>
+    private readonly GridContinuation? _incomingContinuation;
 
     /// <summary>Construct a layouter for the grid container
     /// <paramref name="rootBox"/>. The box's <see cref="Box.Kind"/>
@@ -162,11 +162,13 @@ internal sealed class GridLayouter : ILayouter, IDisposable
     /// <param name="sink">The same sink the caller uses; per-item
     /// fragments append after the grid wrapper fragment (which the
     /// caller has already emitted).</param>
-    /// <param name="incomingContinuation">Per cycle 1 — MUST be
-    /// <see langword="null"/>. Multi-page grid splitting via
-    /// <see cref="GridContinuation"/> is cycle-5 scope. A non-null
-    /// value throws so misrouted continuations surface loudly rather
-    /// than silently restarting from row 0.</param>
+    /// <param name="incomingContinuation">Per Phase 3 Task 17 cycle 5
+    /// — accepts <see langword="null"/> (= fresh layout) OR a
+    /// <see cref="GridContinuation"/> (= resume from a prior page).
+    /// Any other continuation type throws as a misrouted-dispatch
+    /// guard. The cycle-5 contract activates via the BlockLayouter
+    /// dispatch wiring in cycle 5b; cycle 5 ships the layouter-side
+    /// contract dormant at the dispatch sites.</param>
     /// <param name="diagnostics">Optional diagnostic sink for the
     /// cycle-1 unsupported-feature diagnostics.</param>
     /// <param name="shaperResolver">Optional inline shaper for future
@@ -194,25 +196,16 @@ internal sealed class GridLayouter : ILayouter, IDisposable
                 nameof(rootBox));
         }
 
-        if (incomingContinuation is not null)
+        // Per Phase 3 Task 17 cycle 5 — non-null continuation now
+        // ACTIVATED. Only GridContinuation is accepted; any other
+        // type signals a layouter-dispatch bug.
+        if (incomingContinuation is not null
+            && incomingContinuation is not GridContinuation)
         {
-            // Per cycle 1 — only GridContinuation is accepted in
-            // principle; cycle 1 ships atomic emission, so even
-            // GridContinuation is rejected with a clear error message
-            // (cycle 5 ships the resume contract).
-            if (incomingContinuation is not GridContinuation)
-            {
-                throw new ArgumentException(
-                    "GridLayouter accepts only GridContinuation; "
-                    + $"got {incomingContinuation.GetType().Name}. "
-                    + "Misrouted continuation is a layouter-dispatch bug.",
-                    nameof(incomingContinuation));
-            }
             throw new ArgumentException(
-                "GridLayouter cycle 1 ships atomic emission only; multi-page "
-                + "grid pagination via GridContinuation is cycle-5 scope. "
-                + "A non-null GridContinuation indicates the dispatching "
-                + "BlockLayouter prematurely flipped on grid pagination.",
+                "GridLayouter accepts only GridContinuation; "
+                + $"got {incomingContinuation.GetType().Name}. "
+                + "Misrouted continuation is a layouter-dispatch bug.",
                 nameof(incomingContinuation));
         }
 
@@ -220,6 +213,21 @@ internal sealed class GridLayouter : ILayouter, IDisposable
         _sink = sink;
         _diagnostics = diagnostics;
         _shaperResolver = shaperResolver;
+        _incomingContinuation = incomingContinuation as GridContinuation;
+
+        // Per cycle 5 — validate the incoming continuation. Negative
+        // RowIndex indicates a misformed continuation (should be ≥ 0;
+        // value == sizing.RowSizes.Count means "all rows emitted"
+        // which is a degenerate AllDone case the resume page handles
+        // by returning early).
+        if (_incomingContinuation is { RowIndex: < 0 })
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(incomingContinuation),
+                $"GridContinuation.RowIndex must be ≥ 0; got "
+                + $"{_incomingContinuation.RowIndex}. Negative values "
+                + "indicate a continuation-construction bug.");
+        }
     }
 
     /// <summary>Per cycle 1 — set the grid container's content-box
@@ -240,10 +248,16 @@ internal sealed class GridLayouter : ILayouter, IDisposable
     /// extent.</param>
     /// <param name="contentBlockSize">Container's content-box block
     /// extent.</param>
-    /// <param name="allowPagination">Per Phase 3 Task 17 cycle 1 —
-    /// cycle 1 ships atomic emission only; a true value here is
-    /// reserved for cycle 5's multi-page grid pagination. Currently
-    /// passing true throws at <see cref="AttemptLayout"/> time.</param>
+    /// <param name="allowPagination">Per Phase 3 Task 17 cycle 5 —
+    /// when <see langword="true"/>, <see cref="AttemptLayout"/>
+    /// computes which rows fit the page budget + may return
+    /// <c>PageComplete(GridContinuation)</c>. When <see langword="false"/>
+    /// (cycle 1 default contract), all rows emit atomically regardless
+    /// of fit (overflow is the caller's problem). Per PR-#96 F1+F2
+    /// the force-overflow behavior is gated on
+    /// <see cref="LayoutAttemptStrategy.LastResort"/>: a Strict
+    /// strategy + first row doesn't fit defers the entire grid via
+    /// <c>PageComplete(GridContinuation(startRow, null))</c>.</param>
     public void ConfigureEmission(
         double contentInlineOffset,
         double contentBlockOffset,
@@ -305,49 +319,167 @@ internal sealed class GridLayouter : ILayouter, IDisposable
                 + "must set the content-box geometry before invoking "
                 + "the inner layouter.");
         }
-        if (_allowPagination)
-        {
-            throw new InvalidOperationException(
-                "GridLayouter cycle 1 ships atomic emission only; "
-                + "allowPagination=true is cycle-5 scope. The dispatching "
-                + "BlockLayouter must not flip the gate on yet.");
-        }
 
         cancellationToken.ThrowIfCancellationRequested();
 
-        // Per Phase 3 Task 17 cycle 3 post-PR-#94 review F1 + F6 — the
-        // sizing + placement pipeline was extracted to GridSizing.Resolve.
-        // BlockLayouter.PreMeasureGridRowExtent now calls the same
-        // service so wrapper measurement + emission agree (= no more
-        // auto-height-grid-overlaps-sibling defect from PR-#94 F1).
-        var sizing = GridSizing.Resolve(
-            gridBox: _rootBox,
-            contentInlineOffset: _contentInlineOffset,
-            contentBlockOffset: _contentBlockOffset,
-            contentInlineSize: _contentInlineSize,
-            contentBlockSize: _contentBlockSize,
-            emit: SafeEmit,
-            cancellationToken: cancellationToken);
+        // Per Phase 3 Task 17 cycle 5 + post-PR-#96 review F3 + F5 —
+        // resolve OR reuse the cached snapshot from the prior page.
+        // The cache path skips the entire §11 sizing + §8.5 placement
+        // algorithm (perf win on resume) AND is required for
+        // correctness (sparse auto-placement is order-sensitive +
+        // would yield a different placement if items were partially
+        // emitted on the prior page).
+        //
+        // Per F3 — cache contains RELATIVE-FROM-CONTENT-ORIGIN
+        // positions; emit adds the current page's contentInlineOffset/
+        // contentBlockOffset back in. Per F5 — cache identity validated
+        // against the rootBox to reject routed-to-wrong-grid bugs.
+        // Per F3 — inline-size mismatch (different page widths) forces
+        // a fresh sizing pass so fr / Maximize'd column widths recompute.
+        IReadOnlyList<double> rowSizesRelative;     // 0-based; row sizes
+        IReadOnlyList<double> colSizesRelative;     // 0-based; col sizes
+        IReadOnlyList<double> rowPositionsRelative; // 0-based positions
+        IReadOnlyList<double> colPositionsRelative; // 0-based positions
+        IReadOnlyList<PlacedItem> placedItems;
+        var useExistingCache =
+            _incomingContinuation?.Cache is { } incomingCache
+            && ValidateCachePerF5(incomingCache, _rootBox)
+            && Math.Abs(incomingCache.OriginalContentInlineSize - _contentInlineSize)
+                <= GridSizing.SizeEpsilonPublic;
 
-        if (!sizing.HasExplicitTracks)
+        if (useExistingCache)
         {
-            // Per PR-#92 review F6 — implicit-track diagnostics were
-            // already emitted by GridSizing.Resolve.
+            var cache = _incomingContinuation!.Cache!;
+            rowSizesRelative = cache.RowBaseSizes;
+            colSizesRelative = cache.ColumnBaseSizes;
+            rowPositionsRelative = cache.RowPositions;
+            colPositionsRelative = cache.ColumnPositions;
+            placedItems = ProjectCachedPlacements(cache.ItemPlacements);
+        }
+        else
+        {
+            // Per F3 — when the incoming inline-size differs from
+            // cache's, emit a debug-level diagnostic so the cycle-5b
+            // dispatch + future contributors see the invalidation.
+            if (_incomingContinuation?.Cache is { } staleCache
+                && Math.Abs(staleCache.OriginalContentInlineSize - _contentInlineSize)
+                    > GridSizing.SizeEpsilonPublic)
+            {
+                SafeEmit(new PaginateDiagnostic(
+                    Code: PaginateDiagnosticCodes.LayoutGridResumeInlineSizeMismatch001,
+                    Message: $"Grid resume cache was built at "
+                        + $"contentInlineSize={staleCache.OriginalContentInlineSize:F1}; "
+                        + $"resume page presents {_contentInlineSize:F1}. Cache is "
+                        + "invalidated + a fresh §11 sizing + §8.5 placement pass "
+                        + "runs. Note: sparse auto-placement is order-sensitive — "
+                        + "a different placement may emerge from the fresh resolve "
+                        + "if items were partially emitted on the prior page. "
+                        + "Caller should avoid resuming a grid into a page with a "
+                        + "different inline content size.",
+                    Severity: PaginateDiagnosticSeverity.Warning));
+            }
+
+            // Per Phase 3 Task 17 cycle 3 post-PR-#94 review F1 + F6 —
+            // the sizing + placement pipeline was extracted to
+            // GridSizing.Resolve. Per F3 — call with content offsets
+            // set to 0 so the returned positions are relative-from-
+            // content-origin (= cache shape).
+            var sizing = GridSizing.Resolve(
+                gridBox: _rootBox,
+                contentInlineOffset: 0,
+                contentBlockOffset: 0,
+                contentInlineSize: _contentInlineSize,
+                contentBlockSize: _contentBlockSize,
+                emit: SafeEmit,
+                cancellationToken: cancellationToken);
+
+            if (!sizing.HasExplicitTracks)
+            {
+                return LayoutAttemptResult.AllDone(cost: 0.0);
+            }
+            if (!sizing.IsGeometryFinite)
+            {
+                return LayoutAttemptResult.AllDone(cost: 0.0);
+            }
+
+            rowSizesRelative = sizing.RowSizes;
+            colSizesRelative = sizing.ColSizes;
+            rowPositionsRelative = sizing.RowPositions;
+            colPositionsRelative = sizing.ColPositions;
+            placedItems = sizing.PlacedItems;
+        }
+
+        // Per Phase 3 Task 17 cycle 5 — determine which rows fit on
+        // this page when pagination is active. Atomic mode (= cycle 1
+        // contract, allowPagination=false) emits all rows from
+        // startRow → end regardless of fit; pagination mode (= cycle 5)
+        // computes the maximum row K that fits the contentBlockSize
+        // budget + emits [startRow, K] inclusive.
+        //
+        // Per PR-#96 review F5 — when the incoming continuation's
+        // cache was rejected by ValidateCachePerF5 (e.g., routed to
+        // wrong grid), useExistingCache is false + the RowIndex from
+        // the rejected continuation should ALSO be ignored (= treat
+        // the dispatch as a fresh layout on this grid). Otherwise a
+        // rejected misroute would silently skip rows of the receiving
+        // grid that happened to share the wrong-grid's RowIndex.
+        var startRow = useExistingCache
+            ? (_incomingContinuation?.RowIndex ?? 0)
+            : 0;
+        var rowCount = rowSizesRelative.Count;
+        if (startRow >= rowCount)
+        {
+            // Degenerate "all rows already emitted" — happens when a
+            // prior page emitted the last row + the resume page got
+            // dispatched anyway (= benign; nothing to emit).
             return LayoutAttemptResult.AllDone(cost: 0.0);
         }
-        if (!sizing.IsGeometryFinite)
-        {
-            return LayoutAttemptResult.AllDone(cost: 0.0);
-        }
-        // Begin pre-#94-extraction emission section — orphan code below
-        // is gated by an `if (false)` block I'm about to delete via a
-        // separate edit. Keep this minimal.
 
-        var rowSizes = sizing.RowSizes;
-        var colSizes = sizing.ColSizes;
-        var rowPositions = sizing.RowPositions;
-        var colPositions = sizing.ColPositions;
-        var placedItems = sizing.PlacedItems;
+        int endRowExclusive;  // emit rows [startRow, endRowExclusive)
+        bool needsContinuation;  // true → wrap rows [endRowExclusive, rowCount) in outgoing continuation
+        if (!_allowPagination)
+        {
+            // Atomic emission (cycle 1 / cycle 5 atomic-path): emit
+            // every remaining row. Overflow is the caller's problem.
+            endRowExclusive = rowCount;
+            needsContinuation = false;
+        }
+        else
+        {
+            // Per Phase 3 Task 17 cycle 5 + post-PR-#96 review F1+F2:
+            // strategy controls force-overflow behavior.
+            // - Strict: defer the whole grid if first row doesn't fit
+            //   (= return PageComplete(GridContinuation(startRow, null))
+            //   signaling the BlockLayouter to rewind + retry the entire
+            //   grid on a fresh page).
+            // - LastResort: force-emit the oversized first row per
+            //   §4.4 progress rule + emit diagnostic.
+            (endRowExclusive, needsContinuation, var deferEntireGrid) =
+                ComputePaginatedRowRange(
+                    startRow: startRow,
+                    rowSizesView: rowSizesRelative,
+                    rowPositionsView: rowPositionsRelative,
+                    budget: _contentBlockSize,
+                    strategy: strategy);
+
+            if (deferEntireGrid)
+            {
+                // Strict + first row doesn't fit + nothing committed.
+                // Return PageComplete(GridContinuation(startRow, null))
+                // so the dispatching BlockLayouter can rewind the grid
+                // dispatch + retry on a fresh page (where LastResort
+                // will eventually force-emit if needed).
+                //
+                // No cache emitted — the resume page must re-resolve
+                // sizing (= a fresh page likely has a different
+                // contentBlockSize budget anyway).
+                return LayoutAttemptResult.PageComplete(
+                    cost: 0.0,
+                    continuation: new GridContinuation(
+                        RowIndex: startRow,
+                        Cache: null));
+            }
+        }
 
 
         // Step 5 — emit each placed item as a BoxFragment at its cell's
@@ -362,14 +494,28 @@ internal sealed class GridLayouter : ILayouter, IDisposable
         // coordinate translation from inner-cell origin to outer
         // fragmentainer coordinates; sub-BlockLayouter with the item
         // as rootBox).
+        // Per Phase 3 Task 17 cycle 5 + post-PR-#96 review F3 —
+        // positions in the cache + the fresh resolve are RELATIVE
+        // (= 0-based from content origin). Add the current page's
+        // contentInlineOffset / contentBlockOffset at emit time.
+        // On resume, the row at `startRow` anchors at this page's
+        // contentBlockOffset (= shift by -rowPositionsRelative[startRow]).
+        var rowOffsetShift = startRow > 0 ? rowPositionsRelative[startRow] : 0.0;
         foreach (var item in placedItems)
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (item.Row < 0 || item.Col < 0) continue;
-            var inlineOffset = colPositions[item.Col];
-            var blockOffset = rowPositions[item.Row];
-            var inlineSize = colSizes[item.Col];
-            var blockSize = rowSizes[item.Row];
+            // Per Phase 3 Task 17 cycle 5 — only emit items in the
+            // [startRow, endRowExclusive) range. Items in rows before
+            // startRow were emitted on a prior page (continuation
+            // resume); items at or after endRowExclusive will be
+            // emitted on the next page (outgoing continuation).
+            if (item.Row < startRow || item.Row >= endRowExclusive) continue;
+            var inlineOffset = _contentInlineOffset + colPositionsRelative[item.Col];
+            var blockOffset = _contentBlockOffset
+                + (rowPositionsRelative[item.Row] - rowOffsetShift);
+            var inlineSize = colSizesRelative[item.Col];
+            var blockSize = rowSizesRelative[item.Row];
             _sink.Emit(new BoxFragment(
                 Box: item.Box,
                 InlineOffset: inlineOffset,
@@ -445,7 +591,296 @@ internal sealed class GridLayouter : ILayouter, IDisposable
             }
         }
 
+        // Per Phase 3 Task 17 cycle 5 + post-PR-#96 review F4 — build
+        // the resume cache LAZILY: only when a split actually produces
+        // PageComplete. Atomic mode + paginated-but-fits-on-one-page
+        // skip the allocation entirely.
+        if (needsContinuation)
+        {
+            var outgoing = new GridContinuation(
+                RowIndex: endRowExclusive,
+                Cache: BuildResumeCache(
+                    gridIdentity: _rootBox,
+                    originalContentInlineSize: _contentInlineSize,
+                    rowSizesRelative, colSizesRelative,
+                    rowPositionsRelative, colPositionsRelative,
+                    placedItems));
+            return LayoutAttemptResult.PageComplete(
+                cost: 0.0,
+                continuation: outgoing);
+        }
         return LayoutAttemptResult.AllDone(cost: 0.0);
+    }
+
+    /// <summary>Per Phase 3 Task 17 cycle 5 + post-PR-#96 review F5 —
+    /// structural validation of an incoming resume cache. Returns
+    /// <see langword="true"/> only when the cache is bound to
+    /// <paramref name="rootBox"/> + array lengths are consistent +
+    /// no item placement is out-of-bounds + all geometry is finite.
+    /// Returns <see langword="false"/> (= forces a fresh resolve) for
+    /// any structural anomaly so a misrouted / malformed cache can't
+    /// crash the emit loop or emit boxes from the wrong grid.</summary>
+    private bool ValidateCachePerF5(GridResumeCache cache, Box rootBox)
+    {
+        if (!ReferenceEquals(cache.GridIdentity, rootBox))
+        {
+            SafeEmit(new PaginateDiagnostic(
+                Code: PaginateDiagnosticCodes.LayoutGridResumeCacheRejected001,
+                Message: "Grid resume cache GridIdentity does not match "
+                    + "the receiving GridLayouter's rootBox (= cache was "
+                    + "built for a different grid container). The cache "
+                    + "is rejected + a fresh §11 sizing + §8.5 placement "
+                    + "pass runs against the current grid. This is a "
+                    + "BlockLayouter-dispatch bug — continuations should "
+                    + "round-trip back to the originating grid.",
+                Severity: PaginateDiagnosticSeverity.Warning));
+            return false;
+        }
+        var rowCount = cache.RowBaseSizes.Length;
+        var colCount = cache.ColumnBaseSizes.Length;
+        if (cache.RowPositions.Length != rowCount
+            || cache.ColumnPositions.Length != colCount)
+        {
+            SafeEmit(new PaginateDiagnostic(
+                Code: PaginateDiagnosticCodes.LayoutGridResumeCacheRejected001,
+                Message: "Grid resume cache has inconsistent array lengths "
+                    + $"(RowBaseSizes={rowCount}, RowPositions={cache.RowPositions.Length}, "
+                    + $"ColumnBaseSizes={colCount}, ColumnPositions={cache.ColumnPositions.Length}). "
+                    + "Cache is rejected + a fresh resolve runs.",
+                Severity: PaginateDiagnosticSeverity.Warning));
+            return false;
+        }
+        for (var i = 0; i < rowCount; i++)
+        {
+            if (!double.IsFinite(cache.RowBaseSizes[i])
+                || !double.IsFinite(cache.RowPositions[i]))
+            {
+                SafeEmit(new PaginateDiagnostic(
+                    Code: PaginateDiagnosticCodes.LayoutGridResumeCacheRejected001,
+                    Message: $"Grid resume cache row {i} has non-finite "
+                        + "size or position. Cache is rejected.",
+                    Severity: PaginateDiagnosticSeverity.Warning));
+                return false;
+            }
+        }
+        for (var i = 0; i < colCount; i++)
+        {
+            if (!double.IsFinite(cache.ColumnBaseSizes[i])
+                || !double.IsFinite(cache.ColumnPositions[i]))
+            {
+                SafeEmit(new PaginateDiagnostic(
+                    Code: PaginateDiagnosticCodes.LayoutGridResumeCacheRejected001,
+                    Message: $"Grid resume cache column {i} has non-finite "
+                        + "size or position. Cache is rejected.",
+                    Severity: PaginateDiagnosticSeverity.Warning));
+                return false;
+            }
+        }
+        foreach (var p in cache.ItemPlacements)
+        {
+            if (p.Box is not Box)
+            {
+                SafeEmit(new PaginateDiagnostic(
+                    Code: PaginateDiagnosticCodes.LayoutGridResumeCacheRejected001,
+                    Message: "Grid resume cache contains a non-Box "
+                        + $"item payload (type={p.Box?.GetType().Name ?? "null"}). "
+                        + "Cache is rejected.",
+                    Severity: PaginateDiagnosticSeverity.Warning));
+                return false;
+            }
+            if (p.Row >= rowCount || p.Col >= colCount)
+            {
+                SafeEmit(new PaginateDiagnostic(
+                    Code: PaginateDiagnosticCodes.LayoutGridResumeCacheRejected001,
+                    Message: $"Grid resume cache placement ({p.Row}, {p.Col}) "
+                        + $"is out of bounds for {rowCount}×{colCount} grid. "
+                        + "Cache is rejected.",
+                    Severity: PaginateDiagnosticSeverity.Warning));
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// <summary>Per Phase 3 Task 17 cycle 5 + post-PR-#96 review F1
+    /// + F2 partial — compute which rows fit the page budget.
+    ///
+    /// <para><b>Algorithm</b>: iterate rows from <paramref name="startRow"/>;
+    /// each row's bottom edge (in this-page coordinates) is
+    /// <c>rowPositionsRelative[r] + rowSizesRelative[r] -
+    /// rowPositionsRelative[startRow]</c>. The last row that fits
+    /// the budget sets <c>endRowExclusive</c>.</para>
+    ///
+    /// <para><b>Per PR-#96 review F1+F2 — strategy gates force-
+    /// overflow</b>: when the FIRST row attempted doesn't fit:
+    /// <list type="bullet">
+    ///   <item><b>LastResort</b> — force-emit the row + emit
+    ///   <c>LayoutGridForcedOverflow001</c> diagnostic. This is the
+    ///   §4.4 progress rule: "you must commit at least one element
+    ///   per page" or pagination deadlocks. Only the dispatching
+    ///   layouter (= a fresh-page retry chain) should reach this.</item>
+    ///   <item><b>any other strategy (Strict / default)</b> — set
+    ///   <c>deferEntireGrid = true</c> so the caller returns
+    ///   <c>PageComplete(GridContinuation(startRow, null))</c>. The
+    ///   BlockLayouter dispatch then rewinds the grid + retries it on
+    ///   a fresh page. Pre-F1 the layouter ALWAYS force-emitted,
+    ///   which mispaginated common "grid starts below earlier
+    ///   content" layouts (= 80px remaining on page 1, first row is
+    ///   100px → row should defer to page 2, not force-emit).</item>
+    /// </list>
+    /// </para>
+    ///
+    /// <para><b>Span-aware computation (cycle 6 scope)</b>: cycle 5
+    /// assumes each item occupies exactly one row (= cycle 1
+    /// contract). Cycle 6's <c>span N</c> placement extends this so
+    /// the break point K must satisfy "no item placed at rows ≤ K
+    /// has any span past K". The current implementation is forward-
+    /// compatible: cycle 6 will add a per-row "max span end" lookup
+    /// + extend the loop condition.</para>
+    ///
+    /// <para><b>F2 deferred (full IBreakResolver wiring)</b>: cycle 5
+    /// hardening only respects strategy. Full integration (model rows
+    /// as BreakOpportunity values, route through resolver, define
+    /// rewind behavior) is tracked in
+    /// <c>docs/deferrals.md#grid-break-resolver-integration-deferred</c>
+    /// — picks up alongside CSS <c>break-before</c> /
+    /// <c>break-after</c> / <c>break-inside</c> support for grid
+    /// rows.</para></summary>
+    private (int EndRowExclusive, bool NeedsContinuation, bool DeferEntireGrid)
+        ComputePaginatedRowRange(
+            int startRow,
+            IReadOnlyList<double> rowSizesView,
+            IReadOnlyList<double> rowPositionsView,
+            double budget,
+            LayoutAttemptStrategy strategy)
+    {
+        var rowCount = rowSizesView.Count;
+        var baselineRelative = startRow > 0 ? rowPositionsView[startRow] : 0.0;
+        var endRowExclusive = startRow;
+        for (var r = startRow; r < rowCount; r++)
+        {
+            // Row r's bottom edge in this-page coordinates (= 0-based
+            // from the start of this page's emitted region).
+            var rowBottomThisPage =
+                (rowPositionsView[r] + rowSizesView[r]) - baselineRelative;
+
+            if (rowBottomThisPage <= budget + GridSizing.SizeEpsilonPublic)
+            {
+                // Row r fits — commit it.
+                endRowExclusive = r + 1;
+                continue;
+            }
+
+            // Row r doesn't fit.
+            if (r == startRow)
+            {
+                // First row on this page can't fit. Per F1+F2: only
+                // force-emit under LastResort; otherwise defer the
+                // whole grid to the next page (= rewind signal).
+                if (strategy == LayoutAttemptStrategy.LastResort)
+                {
+                    SafeEmit(new PaginateDiagnostic(
+                        Code: PaginateDiagnosticCodes.LayoutGridForcedOverflow001,
+                        Message: $"Grid row {r + 1} (height "
+                            + $"{rowSizesView[r]:F1}px) exceeds the "
+                            + $"fragmentainer block budget "
+                            + $"({budget:F1}px) on its first attempt "
+                            + "under LastResort strategy. Per CSS "
+                            + "Fragmentation L3 §4.4 progress rule the "
+                            + "row is force-emitted to prevent pagination "
+                            + "deadlock; content overflows the "
+                            + "fragmentainer-block-end region.",
+                        Severity: PaginateDiagnosticSeverity.Warning));
+                    endRowExclusive = r + 1;
+                    continue;
+                }
+                else
+                {
+                    // Strict / default — defer the whole grid. Caller
+                    // returns PageComplete(GridContinuation(startRow,
+                    // null)); the BlockLayouter dispatch rewinds + the
+                    // resume page eventually reaches LastResort.
+                    return (startRow, NeedsContinuation: false, DeferEntireGrid: true);
+                }
+            }
+
+            // Row r doesn't fit + we already committed at least one
+            // row → break + caller emits continuation for rows
+            // [endRowExclusive, rowCount).
+            return (endRowExclusive, NeedsContinuation: true, DeferEntireGrid: false);
+        }
+
+        // All remaining rows fit on this page → no continuation.
+        return (endRowExclusive, NeedsContinuation: false, DeferEntireGrid: false);
+    }
+
+    /// <summary>Per Phase 3 Task 17 cycle 5 + post-PR-#96 review F3 +
+    /// F4 + F5 — build the resume cache from the first-page Resolve
+    /// result. Called LAZILY (only when a split actually produces
+    /// PageComplete; atomic mode + paginated-but-fits-on-one-page
+    /// skip the allocation).
+    ///
+    /// <para>Positions are RELATIVE to the grid's content origin
+    /// (per F3) so resume on a page with different
+    /// <c>contentInlineOffset</c> / <c>contentBlockOffset</c>
+    /// correctly anchors per current page. Cache identity is bound
+    /// to <paramref name="gridIdentity"/> (per F5) so a misrouted
+    /// cache rejects loudly.</para></summary>
+    private static GridResumeCache BuildResumeCache(
+        Box gridIdentity,
+        double originalContentInlineSize,
+        IReadOnlyList<double> rowSizes,
+        IReadOnlyList<double> colSizes,
+        IReadOnlyList<double> rowPositions,
+        IReadOnlyList<double> colPositions,
+        IReadOnlyList<PlacedItem> placedItems)
+    {
+        var rowSizesArr = System.Collections.Immutable.ImmutableArray.CreateRange(rowSizes);
+        var colSizesArr = System.Collections.Immutable.ImmutableArray.CreateRange(colSizes);
+        var rowPosArr = System.Collections.Immutable.ImmutableArray.CreateRange(rowPositions);
+        var colPosArr = System.Collections.Immutable.ImmutableArray.CreateRange(colPositions);
+        var placementsBuilder = System.Collections.Immutable.ImmutableArray
+            .CreateBuilder<GridItemPlacement>(placedItems.Count);
+        foreach (var p in placedItems)
+        {
+            placementsBuilder.Add(new GridItemPlacement(p.Box, p.Row, p.Col));
+        }
+        return new GridResumeCache(
+            GridIdentity: gridIdentity,
+            OriginalContentInlineSize: originalContentInlineSize,
+            RowBaseSizes: rowSizesArr,
+            ColumnBaseSizes: colSizesArr,
+            RowPositions: rowPosArr,
+            ColumnPositions: colPosArr,
+            ItemPlacements: placementsBuilder.ToImmutable());
+    }
+
+    /// <summary>Per Phase 3 Task 17 cycle 5 — project the cache's
+    /// <see cref="GridItemPlacement"/> records back to the layouter-
+    /// internal <see cref="PlacedItem"/> shape (= unwraps the Box-
+    /// typed-as-object payload).</summary>
+    private static List<PlacedItem> ProjectCachedPlacements(
+        System.Collections.Immutable.ImmutableArray<GridItemPlacement> cached)
+    {
+        var list = new List<PlacedItem>(cached.Length);
+        foreach (var p in cached)
+        {
+            list.Add(new PlacedItem
+            {
+                // Cache stores Box as object (= Paginate package can't
+                // reference Layout's Box type without circular dep).
+                // The cast is layouter-internal + always succeeds for
+                // caches we built ourselves.
+                Box = (Box)p.Box,
+                Row = p.Row,
+                Col = p.Col,
+                // RowSpec/ColSpec aren't used post-placement so default
+                // (Auto) is fine.
+                RowSpec = default,
+                ColSpec = default,
+            });
+        }
+        return list;
     }
 
     /// <summary>Per PR-#92 review F1 — lay out one grid item's INNER

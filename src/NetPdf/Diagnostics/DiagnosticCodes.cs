@@ -592,5 +592,51 @@ internal static class DiagnosticCodes
     public const string LayoutGridMaxExpandedTracksTruncated001 =
         "LAYOUT-GRID-MAX-EXPANDED-TRACKS-TRUNCATED-001";
 
+    /// <summary>
+    /// Per Phase 3 Task 17 cycle 5 — emitted when a single grid row's
+    /// height exceeds the fragmentainer's block-axis budget on its
+    /// first attempt. Per CSS Fragmentation L3 §4.4 progress rule the
+    /// row is force-emitted (= "you must commit at least one element
+    /// per page" or pagination would deadlock); content overflows the
+    /// fragmentainer-block-end region. Cycle 5 ships row-atomic
+    /// pagination only; intra-row item splitting is post-v1. Mirrors
+    /// <c>NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutGridForcedOverflow001</c>.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string LayoutGridForcedOverflow001 =
+        "LAYOUT-GRID-FORCED-OVERFLOW-001";
+
+    /// <summary>
+    /// Per Phase 3 Task 17 cycle 5 + post-PR-#96 review F3 — emitted
+    /// when a grid resume continuation arrives at a page with a
+    /// different <c>contentInlineSize</c> than the cache was built for
+    /// (e.g., left/right pages with different margins, or nested
+    /// fragmentainers). The cached fr / Maximize'd column widths are
+    /// stale at the new inline size; the cache is invalidated + a
+    /// fresh §11 sizing + §8.5 placement pass runs. Note that sparse
+    /// auto-placement is order-sensitive — a different placement may
+    /// emerge from the fresh resolve if items were partially emitted
+    /// on the prior page. Mirrors
+    /// <c>NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutGridResumeInlineSizeMismatch001</c>.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string LayoutGridResumeInlineSizeMismatch001 =
+        "LAYOUT-GRID-RESUME-INLINE-SIZE-MISMATCH-001";
+
+    /// <summary>
+    /// Per Phase 3 Task 17 cycle 5 + post-PR-#96 review F5 — emitted
+    /// when a grid resume cache is rejected for a structural anomaly:
+    /// the cache's GridIdentity doesn't match the receiving rootBox
+    /// (= cache routed to the wrong grid), array lengths are
+    /// inconsistent, an item placement is out of bounds, geometry is
+    /// non-finite, or an item payload is not a <c>Box</c>. The cache
+    /// is rejected + a fresh resolve runs. Indicates a layouter-
+    /// dispatch bug in the BlockLayouter continuation routing. Mirrors
+    /// <c>NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutGridResumeCacheRejected001</c>.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string LayoutGridResumeCacheRejected001 =
+        "LAYOUT-GRID-RESUME-CACHE-REJECTED-001";
+
     // endregion LAYOUT-*
 }

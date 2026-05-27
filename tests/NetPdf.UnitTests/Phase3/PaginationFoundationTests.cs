@@ -559,12 +559,27 @@ public sealed class PaginationFoundationTests
     }
 
     [Fact]
-    public void GridContinuation_carries_track_sizing_cache()
+    public void GridContinuation_carries_resume_cache()
     {
-        var cache = new object();
-        var c = new GridContinuation(RowIndex: 8, TrackSizingCache: cache);
+        // Per Phase 3 Task 17 cycle 5 — Cache field promoted from
+        // `object?` to typed `GridResumeCache?`. Cycle 5 post-PR-#96
+        // F3+F5 hardening added GridIdentity + OriginalContentInlineSize.
+        var emptyDoubles = System.Collections.Immutable.ImmutableArray<double>.Empty;
+        var emptyPlacements = System.Collections.Immutable.ImmutableArray<GridItemPlacement>.Empty;
+        var gridIdentity = new object();
+        var cache = new GridResumeCache(
+            GridIdentity: gridIdentity,
+            OriginalContentInlineSize: 600.0,
+            RowBaseSizes: emptyDoubles,
+            ColumnBaseSizes: emptyDoubles,
+            RowPositions: emptyDoubles,
+            ColumnPositions: emptyDoubles,
+            ItemPlacements: emptyPlacements);
+        var c = new GridContinuation(RowIndex: 8, Cache: cache);
         Assert.Equal(8, c.RowIndex);
-        Assert.Same(cache, c.TrackSizingCache);
+        Assert.Same(cache, c.Cache);
+        Assert.Same(gridIdentity, c.Cache!.GridIdentity);
+        Assert.Equal(600.0, c.Cache.OriginalContentInlineSize);
     }
 
     [Fact]

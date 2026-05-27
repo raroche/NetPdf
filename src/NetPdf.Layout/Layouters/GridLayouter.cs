@@ -630,6 +630,20 @@ internal sealed class GridLayouter : ILayouter, IDisposable
         // skip the allocation entirely.
         if (needsContinuation)
         {
+            // Per Phase 3 Task 17 cycle 5c.1 + PR-#97 review F2 —
+            // compute the TRUE emitted-rows extent so cycle-5c.2's
+            // wrapper-resize path can size the wrapper to the
+            // emitted-rows + chrome (= avoid the empty-space +
+            // ConsumedBlockSize-inflation issues that blocked
+            // cycle-5b activation). Sum the row sizes for the rows
+            // ACTUALLY emitted on this fragment: [startRow,
+            // endRowExclusive).
+            double emittedExtent = 0;
+            for (var r = startRow; r < endRowExclusive; r++)
+            {
+                emittedExtent += rowSizesRelative[r];
+            }
+
             var outgoing = new GridContinuation(
                 RowIndex: endRowExclusive,
                 Cache: BuildResumeCache(
@@ -637,7 +651,8 @@ internal sealed class GridLayouter : ILayouter, IDisposable
                     originalContentInlineSize: _contentInlineSize,
                     rowSizesRelative, colSizesRelative,
                     rowPositionsRelative, colPositionsRelative,
-                    placedItems));
+                    placedItems),
+                EmittedBlockExtent: emittedExtent);
             return LayoutAttemptResult.PageComplete(
                 cost: 0.0,
                 continuation: outgoing);

@@ -2048,6 +2048,84 @@ public sealed class GridLayouterTests
     // =====================================================================
 
     [Fact]
+    public void Cycle5c1_F2_PageComplete_continuation_carries_emitted_block_extent_for_emitted_rows()
+    {
+        // Per Phase 3 Task 17 cycle 5c.1 + PR-#97 review F2 —
+        // GridContinuation.EmittedBlockExtent should equal the SUM of
+        // emitted-row sizes (= startRow through endRowExclusive-1).
+        // 3-row grid 100/100/100 with budget 250 emits rows 0+1 = 200px.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 100.0, 100.0 },
+            colsPx: new[] { 100.0 });
+        SetExplicitWidth(grid, 100);
+        SetExplicitHeight(grid, 250);
+        var item1 = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var item2 = BuildItemWithExplicitPlacement(row: 2, col: 1);
+        var item3 = BuildItemWithExplicitPlacement(row: 3, col: 1);
+        grid.AppendChild(item1);
+        grid.AppendChild(item2);
+        grid.AppendChild(item3);
+
+        using var layouter = new GridLayouter(
+            rootBox: grid, sink: sink,
+            incomingContinuation: null,
+            diagnostics: diag, shaperResolver: shaper);
+        layouter.ConfigureEmission(0, 0, 100, 250, allowPagination: true);
+        var ctx = new FragmentainerContext(contentInlineSize: 100, blockSize: 250);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var continuation = (GridContinuation)result.Continuation!;
+        // Rows 0+1 emit (= 100+100=200); row 2 defers.
+        Assert.Equal(200.0, continuation.EmittedBlockExtent);
+        Assert.Equal(2, continuation.RowIndex);
+    }
+
+    [Fact]
+    public void Cycle5c1_F2_AllDone_no_continuation_means_no_emitted_extent_record()
+    {
+        // Per Phase 3 Task 17 cycle 5c.1 + PR-#97 review F2 — when the
+        // grid fits in one page (= AllDone, no continuation), there's
+        // no GridContinuation to carry EmittedBlockExtent. Cycle 5c.2's
+        // wrapper-resize path uses the AllDone signal directly (=
+        // "fits", advance by natural extent + chrome).
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 100.0 },
+            colsPx: new[] { 100.0 });
+        SetExplicitWidth(grid, 100);
+        SetExplicitHeight(grid, 300);
+        var item1 = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var item2 = BuildItemWithExplicitPlacement(row: 2, col: 1);
+        grid.AppendChild(item1);
+        grid.AppendChild(item2);
+
+        using var layouter = new GridLayouter(
+            rootBox: grid, sink: sink,
+            incomingContinuation: null,
+            diagnostics: diag, shaperResolver: shaper);
+        layouter.ConfigureEmission(0, 0, 100, 300, allowPagination: true);
+        var ctx = new FragmentainerContext(contentInlineSize: 100, blockSize: 300);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        Assert.Equal(LayoutAttemptOutcome.AllDone, result.Outcome);
+        Assert.Null(result.Continuation);
+    }
+
+    [Fact]
     public void Cycle5_three_row_grid_splits_at_row_2_when_budget_fits_only_two_rows()
     {
         // grid-template-rows: 100px 100px 100px in 250px budget.

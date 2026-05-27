@@ -60,6 +60,7 @@ public sealed class DeferralsParityTests
         "grid-wrapper-rollback-for-pre-dispatch-deferral",
         "grid-fragment-extent-emitted-rows-only-deferral",
         "grid-explicit-height-paginate-deferral",
+        "grid-fragment-plan-shared-sizing-deferral",
     };
 
     [Fact]

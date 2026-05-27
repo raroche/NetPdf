@@ -3609,7 +3609,18 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             sink: measuringSink,
             incomingContinuation: null,
             diagnostics: captionDiagnosticSink,
-            shaperResolver: _shaperResolver);
+            shaperResolver: _shaperResolver,
+            // Per Phase 3 Task 17 cycle 5c.2b post-PR-#100 review
+            // P1#1 — table captions are an indivisible block-level
+            // box (CSS Tables L3 §11.5) + the caption sub-layouter
+            // uses NoBreakBreakResolver so PageComplete is never
+            // returned. A paginatable grid inside a caption would
+            // either be force-emitted by the no-break resolver
+            // (= correct under cycle-1 atomic dispatch) or, post-
+            // cycle-5c.2b, would route F1/F2 inside the caption's
+            // measuring context — the captured continuation gets
+            // discarded by the caption flush. Suppress.
+            disableGridPagination: true);
 
         // Per sub-cycle 3 hardening (Finding 2) — caption-content
         // layout uses a NoBreakBreakResolver so the inner
@@ -4988,7 +4999,17 @@ internal sealed class TableLayouter : ILayouter, IDisposable
             sink: measuringSink,
             incomingContinuation: null,
             diagnostics: cellDiagnosticSink,
-            shaperResolver: _shaperResolver);
+            shaperResolver: _shaperResolver,
+            // Per Phase 3 Task 17 cycle 5c.2b post-PR-#100 review
+            // P1#1 — table cells are a CSS Fragmentation L3
+            // "parallel flow" + cell measurement / emission
+            // intentionally discards the inner BlockLayouter's
+            // PageComplete continuation. A paginatable direct-child
+            // grid inside a cell would silently lose rows past the
+            // split. Cycle 5c.2d will wire cell-aware continuation
+            // propagation (= the row's break point coordinates with
+            // the nested grid's split); until then, suppress.
+            disableGridPagination: true);
 
         // Per Phase 3 Task 12 sub-cycle 5 hardening Finding 5 —
         // propagate the intrinsic-sizing-mode flag into the nested

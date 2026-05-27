@@ -2007,10 +2007,64 @@ flags the categories):
 - **Updated** — Phase 3 Task 17 cycle 5c.1 + post-PR-#98 review
   F1 + F3 (producer side ships).
 - **Updated** — Phase 3 Task 17 cycle 5c.2b (consumer side ships).
+- **Updated** — Phase 3 Task 17 cycle 5c.2b + post-PR-#100 review
+  P1#1 + P1#2 + P1#3 (= nested-context callers opt out of
+  pagination via <c>disableGridPagination</c>; F2 cursor advance
+  uses <c>topShift</c>; explicit-height grids gated out of the
+  clamp until F3).
 - **Removal condition** — cycle 5c.2d wires the recursive
   `EmitBlockSubtreeRecursive` site + ships production-pipeline
   multi-page tests verifying end-to-end wrapper sizing +
   cumulative consumed + sibling placement on real HTML fixtures.
+
+---
+
+## grid-fragment-plan-shared-sizing-deferral
+
+- **ID** — `grid-fragment-plan-shared-sizing-deferral`
+- **Status** — `not-started`. Phase 3 Task 17 cycle 5c.2b post-
+  PR-#100 review P2.
+- **Behavior** — auto-height paginatable grids run
+  `GridSizing.Resolve` three times per attempted fragment:
+  (1) in `PreMeasureGridRowExtent` to grow the wrapper to
+  natural extent; (2) in F1's `PreMeasureGridRowExtentAt`
+  probe (when no incoming cache present); (3) inside
+  `GridLayouter.AttemptLayout` for the actual dispatch. Each
+  `Resolve` runs §11 sizing + §8.5 placement; for grids with
+  many items + repeat-expanded tracks, this triples the §11
+  work per attempt + amplifies the cycle-5 resume cache's CPU
+  amortization rationale.
+- **Practical impact** — measurable CPU overhead on large
+  invoice / report grids; the resume cache hit path on page 2+
+  avoids one Resolve (cycle 5c.2a P1#2), but pages where the
+  cache is invalidated (= inline-size mismatch, identity
+  mismatch) or absent (= first-page) still triple-resolve.
+- **Missing** — a shared per-attempt `GridFragmentPlan`
+  immutable record carrying row geometry + placements + the
+  next-row fit prediction + the emitted-extent inputs, computed
+  ONCE per attempt + threaded through pre-measure +
+  `PreMeasureGridRowExtentAt` + `DispatchGridInner` so all
+  three sites consume the same authoritative resolve. Mirrors
+  the cycle-5 resume cache pattern but lives one layer up (=
+  per-attempt, not per-resume-cycle).
+- **Trigger** — when a benchmark on a large multi-page grid
+  shows measurable CPU regression vs cycle 5b atomic dispatch.
+  Until benchmarks land, accepted as a known cost since the
+  Length-only track tests in cycle 5c.2a/b don't surface it.
+- **Owner files** —
+  - `src/NetPdf.Layout/Layouters/GridSizing.cs` — `Result` type
+    becomes the shared plan's payload.
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` —
+    `PreMeasureGridRowExtent` + `PreMeasureGridRowExtentAt` +
+    `DispatchGridInner` thread the shared plan.
+  - `src/NetPdf.Layout/Layouters/GridLayouter.cs` —
+    `ConfigureEmission` accepts a precomputed plan in lieu of
+    running its own `Resolve`.
+- **Added** — Phase 3 Task 17 cycle 5c.2b + post-PR-#100 review
+  P2.
+- **Removal condition** — shared plan lands AND benchmark
+  shows ≤ 1× CPU vs cycle 5b atomic dispatch for paginatable-
+  grid fixtures.
 
 ---
 

@@ -256,6 +256,29 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// facade's renderer) wire a real resolver.</summary>
     private readonly IShaperResolver? _shaperResolver;
 
+    /// <summary>Per Phase 3 Task 17 cycle 5c.2b post-PR-#100 review
+    /// P1#1 — when <see langword="true"/>, this BlockLayouter
+    /// instance suppresses the outer-site paginatable-grid path
+    /// (= F1 pre-dispatch row-fit, the cycle-5b extent clamp +
+    /// <c>paginateGridForOuterChild</c> gate, F2 wrapper-resize).
+    /// Set by nested-context callers
+    /// (<c>GridLayouter.DispatchGridItemContents</c> +
+    /// <c>TableLayouter</c>'s cell-content + caption-content
+    /// dispatch) that intentionally discard <c>AttemptLayout</c>'s
+    /// result + can't propagate a <c>BlockContinuation</c> through
+    /// their parent's layouter. Without this guard, a paginatable
+    /// direct-child grid inside a table cell or grid item would
+    /// return <c>PageComplete(GridContinuation)</c> + only emit
+    /// rows preceding the split; the continuation is dropped + the
+    /// remaining rows silently vanish (= the parallel-flows
+    /// fragmentation contract of CSS Fragmentation L3 + the
+    /// independent-fragmentation rule for table cells / grid
+    /// items). Cycle 5c.2d will wire nested continuation
+    /// propagation where the parent layouter supports it; until
+    /// then nested grids dispatch atomically via the cycle-1
+    /// contract.</summary>
+    private readonly bool _disableGridPagination;
+
     /// <summary>Per Phase 3 Task 12 sub-cycle 5 hardening Finding 5 —
     /// when <see langword="true"/>, the inline-pass through
     /// <c>InlineLayouter.LayoutPerRun</c> downgrades
@@ -434,7 +457,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         IBlockFragmentSink sink,
         LayoutContinuation? incomingContinuation = null,
         IPaginateDiagnosticsSink? diagnostics = null,
-        IShaperResolver? shaperResolver = null)
+        IShaperResolver? shaperResolver = null,
+        bool disableGridPagination = false)
     {
         ArgumentNullException.ThrowIfNull(rootBox);
         ArgumentNullException.ThrowIfNull(sink);
@@ -467,6 +491,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         _incomingContinuation = incomingContinuation;
         _diagnostics = diagnostics;
         _shaperResolver = shaperResolver;
+        _disableGridPagination = disableGridPagination;
     }
 
     /// <inheritdoc />
@@ -1733,7 +1758,31 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // making that helper grid-aware. The recursive-site
             // wiring + production-pipeline tests land in cycle 5c.2d.
             // </para>
-            if (IsPaginatableGrid(child))
+            // Per Phase 3 Task 17 cycle 5c.2b post-PR-#100 review:
+            //   P1#1 — <c>_disableGridPagination</c> gate. Nested
+            //     BlockLayouters (grid-item / table-cell / table-
+            //     caption contexts) cannot propagate a
+            //     BlockContinuation to their parent layouter; the
+            //     parent intentionally discards the inner result.
+            //     Activating the clamp here would route
+            //     PageComplete(GridContinuation) up + the parent's
+            //     discard would silently drop remaining grid rows.
+            //   P1#3 — <c>IsHeightAuto(child)</c> gate. Explicit-
+            //     height grids interact with
+            //     <see cref="MeasureSubtreeVisualBlockExtent"/>'s
+            //     style-height-restore in a way that defeats the
+            //     clamp (= F3 deferral
+            //     <c>grid-explicit-height-paginate-deferral</c>).
+            //     Until cycle 5c.2c makes that helper grid-aware,
+            //     the clamp would corrupt the authored wrapper
+            //     geometry without enabling pagination — strictly
+            //     worse than leaving the grid atomic. Gating to
+            //     auto-height grids only preserves authored
+            //     forced-overflow geometry for explicit-height
+            //     grids.
+            if (IsPaginatableGrid(child)
+                && !_disableGridPagination
+                && IsHeightAuto(child))
             {
                 var pageRemainingForOuterGrid =
                     fragmentainer.BlockSize
@@ -2524,7 +2573,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // emission + no sink-rollback contract complexity + the
             // probe reuses the existing <c>GridSizing.Resolve</c>
             // pattern from <see cref="PreMeasureGridRowExtent"/>.</para>
+            // Per Phase 3 Task 17 cycle 5c.2b post-PR-#100 review P1#1
+            // — F1 also gated by <c>!_disableGridPagination</c>. In
+            // a nested-context BlockLayouter (table cell / grid
+            // item / table caption) the F1 defer would route
+            // PageComplete(BlockContinuation) up to a parent that
+            // discards the result, silently dropping the grid.
             if (IsPaginatableGrid(child)
+                && !_disableGridPagination
                 && strategy != LayoutAttemptStrategy.LastResort
                 && emittedThisAttempt > 0)
             {
@@ -3006,14 +3062,28 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         wrapperCursor, resizedWrapperBlockSize);
                     // Recompute the cursor advance to use the
                     // emitted-content extent instead of the natural
-                    // / clamped budget. Margin contributions stay
-                    // (= pre/post margins are independent of inner
-                    // content) + the subtree-aware contribution
-                    // from cycle 2c is dropped because the inner
-                    // grid's contribution is now the emitted
-                    // extent, not the natural subtree extent.
+                    // / clamped budget.
+                    //
+                    // <para>Per Phase 3 Task 17 cycle 5c.2b
+                    // post-PR-#100 review P1#2 — use <c>topShift</c>
+                    // rather than <c>marginStart</c>. The block-flow
+                    // cursor accounting (per CSS 2.1 §8.3.1 margin
+                    // collapsing) advances by
+                    // <c>topShift + borderBox + marginEnd</c>:
+                    // <c>topShift</c> already encodes the ADDITIONAL
+                    // distance after sibling-margin collapse (=
+                    // <c>marginStart</c> when first on page; the
+                    // collapsed delta otherwise). Substituting
+                    // <c>marginStart</c> double-counts the top
+                    // margin whenever a preceding sibling's bottom
+                    // margin absorbed part of the collapse — e.g.,
+                    // sibling marginBottom=80, grid marginTop=10:
+                    // collapsed gap = 80, so topShift contribution
+                    // = 0 (the 80 is already in UsedBlockSize from
+                    // the prior block). Pre-fix charged 10 again;
+                    // post-fix correctly charges 0.</para>
                     cursorAdvanceForGrid =
-                        marginStart + resizedWrapperBlockSize + marginEnd;
+                        topShift + resizedWrapperBlockSize + marginEnd;
                 }
 
                 // Cursor advance + bookkeeping mirror the flex/multicol

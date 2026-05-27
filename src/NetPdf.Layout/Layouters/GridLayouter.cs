@@ -1044,7 +1044,18 @@ internal sealed class GridLayouter : ILayouter, IDisposable
             sink: translatingSink,
             incomingContinuation: null,
             diagnostics: _diagnostics,
-            shaperResolver: _shaperResolver);
+            shaperResolver: _shaperResolver,
+            // Per Phase 3 Task 17 cycle 5c.2b post-PR-#100 review
+            // P1#1 — grid items are a CSS Fragmentation L3
+            // "parallel flow" + GridLayouter discards the inner
+            // BlockLayouter's result (= no continuation propagation
+            // to the outer grid). A paginatable direct-child grid
+            // inside a grid item would return
+            // PageComplete(GridContinuation) → silent row loss on
+            // the discarded continuation. Suppress grid pagination
+            // here until nested-continuation propagation is wired
+            // (= 5c.2d scope).
+            disableGridPagination: true);
         using var itemResolver = new BreakResolver();
         _ = itemLayouter.AttemptLayout(
             innerFragmentainer,

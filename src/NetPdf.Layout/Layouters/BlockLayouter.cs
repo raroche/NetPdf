@@ -4146,6 +4146,122 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 }
             }
 
+            // Per Phase 3 Task 17 cycle 5c.2d post-PR-#102 review
+            // P1#1 — recursive-site F1 pre-dispatch row-fit defer.
+            // Without this, a recursive grid whose first remaining
+            // row exceeds the page-remaining content area (= e.g.
+            // body's first child is a 200px block + body's second
+            // child is a grid with 100px rows + page-remaining
+            // after the 200px sibling is 50px) would force-emit
+            // the first row past the page edge instead of cleanly
+            // deferring to the next page.
+            //
+            // <para>The recursive site does NOT have access to the
+            // attempt's strategy (= the recursion doesn't propagate
+            // it). Mirrors the outer-site F1 but uses
+            // <c>childBlockOffset &gt; 0</c> as the productivity
+            // guard (= deferral helps when the grid isn't at the
+            // top of the page; on a fresh page the parent re-enters
+            // the recursion with childBlockOffset back at 0 + F1
+            // doesn't fire → atomic dispatch + forced-overflow if
+            // needed). Doesn't use <c>emittedThisAttempt</c>
+            // because that local belongs to the outer
+            // <see cref="AttemptLayout"/> + isn't accessible from
+            // recursion.</para>
+            //
+            // <para>When F1 fires, the recursion returns a
+            // <c>BlockContinuation(ResumeAtChild=childIdx,
+            // LayouterState=GridContinuation(RowIndex=startRow,
+            // Cache=incomingCache, EmittedBlockExtent=0))</c>
+            // without emitting the wrapper. The outer
+            // <see cref="AttemptLayout"/> wraps this into a
+            // PageComplete with the outer's
+            // <c>ConsumedBlockSize</c> accounting (= mirrors the
+            // existing chain-propagation pattern at line ~3254
+            // for any nested deferral).</para>
+            if (IsPaginatableGrid(child)
+                && !_disableGridPagination
+                && paginateGridForChild
+                && _capturedFragmentainer is not null
+                && childBlockOffset > 0)
+            {
+                int recursiveProbeStartRow = 0;
+                GridContinuation? recursiveIncomingForProbe = null;
+                if (incomingBlockChain is not null
+                    && childIdx == incomingBlockChain.ResumeAtChild
+                    && incomingBlockChain.LayouterState is GridContinuation recProbeGrid)
+                {
+                    recursiveProbeStartRow = recProbeGrid.RowIndex;
+                    recursiveIncomingForProbe = recProbeGrid;
+                }
+
+                var recursiveGridChrome =
+                    borderStart + paddingStart + paddingEnd + borderEnd;
+                var recursivePageRemainingForGridContent =
+                    _capturedFragmentainer.BlockSize
+                    - childBlockOffset
+                    - recursiveGridChrome;
+                // Next-page remaining: a fresh page where this
+                // recursion's parent starts at the top. Approximated
+                // as <c>fragmentainer.BlockSize - chrome</c>; the
+                // parent's own offset on the next page is unknown
+                // from this depth, so use the upper bound. F1's
+                // predicate is `row would fit if the next page
+                // gave us a fresh allocation` — the bound is safe
+                // because if the row doesn't fit even this
+                // upper-bound budget, deferral can't help → F1
+                // doesn't fire + atomic dispatch handles overflow.
+                var recursiveNextPageRemainingForGridContent =
+                    _capturedFragmentainer.BlockSize - recursiveGridChrome;
+
+                if (recursivePageRemainingForGridContent > 0)
+                {
+                    // Per cycle 5c.2a P1#2 — the probe uses the
+                    // actual grid content geometry; mirrors the
+                    // outer site.
+                    var recursiveProbeGridGeom =
+                        GridGeometryHelper.ComputeContentGeometry(
+                            gridBox: child,
+                            borderBoxInlineSize: childBorderBoxInlineSize,
+                            borderBoxBlockSize: childBorderBoxBlockSize,
+                            borderBoxInlineOffset: childInlineOffset,
+                            borderBoxBlockOffset: childBlockOffset);
+                    var recursiveFirstRowExtent = PreMeasureGridRowExtentAt(
+                        gridBox: child,
+                        rowIndex: recursiveProbeStartRow,
+                        contentInlineSize: recursiveProbeGridGeom.ContentInlineSize,
+                        contentBlockSize: recursiveProbeGridGeom.ContentBlockSize,
+                        incomingCache: recursiveIncomingForProbe?.Cache,
+                        cancellationToken: cancellationToken);
+                    if (recursiveFirstRowExtent
+                            > recursivePageRemainingForGridContent + GridSizing.SizeEpsilonPublic
+                        && recursiveFirstRowExtent
+                            <= recursiveNextPageRemainingForGridContent + GridSizing.SizeEpsilonPublic)
+                    {
+                        // Defer without emitting the wrapper. The
+                        // recursion's return propagates up via
+                        // chained BlockContinuation; the outer
+                        // AttemptLayout wraps into PageComplete
+                        // with proper ConsumedBlockSize accounting.
+                        // If the incoming chain already consumed
+                        // a GridContinuation at this child, null
+                        // it out (= the chain-consumption pattern
+                        // shared with multicol / flex).
+                        if (recursiveIncomingForProbe is not null)
+                        {
+                            incomingBlockChain = null;
+                        }
+                        return new BlockContinuation(
+                            ResumeAtChild: childIdx,
+                            ConsumedBlockSize: 0,
+                            LayouterState: new GridContinuation(
+                                RowIndex: recursiveProbeStartRow,
+                                Cache: recursiveIncomingForProbe?.Cache,
+                                EmittedBlockExtent: 0));
+                    }
+                }
+            }
+
             // Per Phase 3 Task 17 cycle 5c.2d — capture sink cursor
             // BEFORE wrapper emit. Mirrors the outer-site pattern
             // at line ~2596: the F2 wrapper-resize consumer (below

@@ -4529,59 +4529,263 @@ public sealed class BlockLayouterTests
     }
 
     [Fact]
-    public void Cycle5c2a_F1_resume_contract_uses_incoming_grid_continuation_row_index()
+    public void Cycle5c2a_F1_progress_guard_first_child_with_margin_top_does_not_defer()
     {
-        // Resume contract: F1's probe must use the RowIndex from the
-        // incoming BlockContinuation's LayouterState (= GridContinuation),
-        // not always 0. Without this, the resume page would probe row 0
-        // even though row 0 was emitted on the prior page — leading to
-        // a stale fit decision (= probe rowSizes[0] when rowSizes[2] is
-        // the next-to-emit row).
+        // Per PR-#99 review P1#1 — direct regression for the zero-
+        // progress page loop. With the OLD progress guard
+        // (<c>pageRemaining &lt; fullPage</c>), a first-on-page grid
+        // with positive <c>margin-top</c> had
+        // <c>pageRemaining = BlockSize - 0 - marginStart - chrome</c>
+        // less than <c>fullPage = BlockSize - chrome</c>, so the
+        // guard fired even though the page was fresh; F1 would defer
+        // a row > pageRemaining + ≤ fullPage, and the next page
+        // (also fresh, same first-child grid with same marginTop)
+        // would repeat the same defer → unbounded blank-page loop
+        // since <see cref="LayoutRetryCoordinator"/> returns
+        // PageComplete without escalating to LastResort.
         //
-        // Setup: 3-row grid 50/50/200. Direct-set
-        // <c>fragmentainer.UsedBlockSize</c> to simulate prior in-
-        // attempt content (= retry-with-partial-progress scenario; the
-        // setter exposes the wire that ConfigureEmission would use in
-        // production). Resume at the grid (child 0) with
-        // GridContinuation(RowIndex=2) → F1 probes rowSizes[2] = 200.
-        // If F1 mistakenly probed rowSizes[0] = 50, it'd see 50 fits
-        // remaining + not defer.
+        // POST-P1#1 fix: progress guard is
+        // <c>emittedThisAttempt &gt; 0</c>. When the grid is the
+        // first emittable child on this attempt, F1 does NOT defer
+        // regardless of the marginTop / pageRemaining geometry.
+        //
+        // Repro fixture: BlockSize=300, grid is first child,
+        // marginTop=50, wrapper height=50, first row track=280.
+        // With OLD code: pageRemaining=250 < fullPage=300 → guard
+        // fires + 280 > 250 + 280 ≤ 300 → defer (zero-progress loop).
+        // With NEW code: emittedThisAttempt=0 → guard fails → no
+        // defer + grid wrapper emits.
         var sink = new RecordingFragmentSink();
         var root = Box.CreateRoot(MakeStyle());
 
-        var grid = BuildGridContainerWithRowTracks(rowsPx: new[] { 50.0, 50.0, 200.0 });
-        SetLengthPx(grid.Style, PropertyId.Height, 30);
+        var grid = BuildGridContainerWithRowTracks(rowsPx: new[] { 280.0 });
+        SetLengthPx(grid.Style, PropertyId.MarginTop, 50);
+        SetLengthPx(grid.Style, PropertyId.Height, 50);
         grid.AppendChild(Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement()));
         root.AppendChild(grid);
 
-        var incoming = new BlockContinuation(
-            ResumeAtChild: 0,
-            ConsumedBlockSize: 100,
-            LayouterState: new GridContinuation(RowIndex: 2));
-
-        using var layouter = new BlockLayouter(root, sink, incoming);
-        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 400);
-        // Simulate prior content on THIS page (= 250 of 400 used)
-        // so pageRemaining is tight enough to surface F1's defer.
-        ctx.UsedBlockSize = 250;
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 300);
         var layoutCtx = new LayoutContext(ctx);
         using var resolver = new BreakResolver();
 
         var result = layouter.AttemptLayout(
             ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
 
-        // pageRemainingForGridContent = 400 - 250 - 0 - 0 = 150.
-        // F1 probes rowSizes[2] = 200 > 150 + ε → defer.
-        // fullPageRemainingForGridContent = 400 → 200 ≤ 400 + ε →
-        // defer is productive. Outgoing continuation preserves
-        // RowIndex=2 (NOT 0); EmittedBlockExtent=0.
-        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
-        Assert.Empty(sink.Fragments);
-        var outBlock = (BlockContinuation)result.Continuation!;
-        Assert.Equal(0, outBlock.ResumeAtChild);
-        var outGrid = (GridContinuation)outBlock.LayouterState!;
-        Assert.Equal(2, outGrid.RowIndex);
-        Assert.Equal(0.0, outGrid.EmittedBlockExtent);
+        // Progress invariant: F1 did NOT defer → grid wrapper IS in
+        // sink + layouter does NOT return PageComplete with zero
+        // progress (= empty sink + BlockContinuation for the same
+        // child).
+        Assert.Contains(sink.Fragments, f => ReferenceEquals(f.Box, grid));
+        // Sink has at least one fragment from this attempt — any
+        // PageComplete result therefore commits real progress.
+        Assert.NotEmpty(sink.Fragments);
+    }
+
+    [Fact]
+    public void Cycle5c2a_F1_P1_first_child_terminates_via_coordinator()
+    {
+        // Per PR-#99 review P1#1 required test #2 — same scenario as
+        // the direct test above but driven through the multi-page
+        // continuation loop, not a single <c>AttemptLayout</c> call.
+        // Pre-fix this would not terminate; post-fix it commits the
+        // grid on the first attempt + returns AllDone.
+        //
+        // We page-drive manually rather than using
+        // <see cref="LayoutRetryCoordinator"/> because the
+        // coordinator's <c>Run</c> covers a SINGLE page's retry loop;
+        // the page-driving loop (= continue until AllDone) is the
+        // pipeline's responsibility. A bounded iteration count
+        // catches any regression that reintroduces the unbounded
+        // PageComplete loop.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var grid = BuildGridContainerWithRowTracks(rowsPx: new[] { 280.0 });
+        SetLengthPx(grid.Style, PropertyId.MarginTop, 50);
+        SetLengthPx(grid.Style, PropertyId.Height, 50);
+        grid.AppendChild(Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement()));
+        root.AppendChild(grid);
+
+        // Drive the page-loop manually with a strict iteration cap
+        // so a regression that reintroduces the unbounded zero-
+        // progress loop fails the test instead of hanging CI.
+        LayoutContinuation? incoming = null;
+        var pageCount = 0;
+        const int maxPages = 8;
+        LayoutAttemptOutcome lastOutcome;
+        do
+        {
+            using var pageLayouter = new BlockLayouter(root, sink, incoming);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 300);
+            var layoutCtx = new LayoutContext(ctx);
+            using var resolver = new BreakResolver();
+            using var coordinator = new RecordingCoordinator();
+            var result = coordinator.RunAndAssertNotNeedsRewind(
+                pageLayouter, ctx, ref layoutCtx, resolver);
+            lastOutcome = result.Outcome;
+            incoming = result.Continuation;
+            pageCount++;
+        }
+        while (lastOutcome != LayoutAttemptOutcome.AllDone
+            && incoming is not null
+            && pageCount < maxPages);
+
+        Assert.Equal(LayoutAttemptOutcome.AllDone, lastOutcome);
+        Assert.InRange(pageCount, 1, 2);
+        Assert.Contains(sink.Fragments, f => ReferenceEquals(f.Box, grid));
+    }
+
+    [Fact]
+    public void Cycle5c2a_F1_helper_cache_hit_reads_from_cache_when_identity_and_inline_size_match()
+    {
+        // Per PR-#99 review P1#2 + required test #3 — direct unit
+        // test of <c>PreMeasureGridRowExtentAt</c>'s cache-
+        // consultation behavior. When an incoming
+        // <see cref="GridResumeCache"/> has matching identity +
+        // inline-size, the probe MUST read
+        // <c>cache.RowBaseSizes[rowIndex]</c> directly rather than
+        // running a fresh <c>GridSizing.Resolve</c>. Without this,
+        // the resume page's F1 decision could diverge from
+        // GridLayouter's actual emission (= probe row-size != emit
+        // row-size).
+        var grid = BuildGridContainerWithRowTracks(rowsPx: new[] { 100.0, 100.0, 100.0 });
+
+        // Fabricate a cache with row sizes DIFFERENT from the
+        // declared track list (= 50/50/50 instead of 100/100/100)
+        // so we can detect that the probe reads from the cache
+        // rather than re-resolving the style.
+        var cache = new GridResumeCache(
+            GridIdentity: grid,
+            OriginalContentInlineSize: 400.0,
+            RowBaseSizes: ImmutableArray.Create(50.0, 50.0, 50.0),
+            ColumnBaseSizes: ImmutableArray.Create(100.0),
+            RowPositions: ImmutableArray.Create(0.0, 50.0, 100.0),
+            ColumnPositions: ImmutableArray.Create(0.0),
+            ItemPlacements: ImmutableArray<GridItemPlacement>.Empty);
+
+        var extent = BlockLayouter.PreMeasureGridRowExtentAt(
+            gridBox: grid,
+            rowIndex: 1,
+            contentInlineSize: 400.0,
+            contentBlockSize: 300.0,
+            incomingCache: cache,
+            cancellationToken: default);
+
+        Assert.Equal(50.0, extent);
+    }
+
+    [Fact]
+    public void Cycle5c2a_F1_helper_cache_miss_when_inline_size_differs_falls_back_to_fresh_resolve()
+    {
+        // Per PR-#99 review P1#2 — when cache.OriginalContentInlineSize
+        // doesn't match the requested contentInlineSize (= same grid
+        // but a different page width), the cache is stale for fr /
+        // maximize-distributed columns; the probe MUST run a fresh
+        // sizing pass against the new inline-size (mirroring
+        // GridLayouter's cycle-5b PR-#97 F4 behavior).
+        var grid = BuildGridContainerWithRowTracks(rowsPx: new[] { 100.0, 100.0 });
+
+        // Cache built at inline-size 400 with FABRICATED row sizes
+        // (50). At inline-size 600 (= different page width), the
+        // probe should fall through to a fresh GridSizing.Resolve
+        // which returns 100 (= the declared length tracks).
+        var cache = new GridResumeCache(
+            GridIdentity: grid,
+            OriginalContentInlineSize: 400.0,
+            RowBaseSizes: ImmutableArray.Create(50.0, 50.0),
+            ColumnBaseSizes: ImmutableArray.Create(100.0),
+            RowPositions: ImmutableArray.Create(0.0, 50.0),
+            ColumnPositions: ImmutableArray.Create(0.0),
+            ItemPlacements: ImmutableArray<GridItemPlacement>.Empty);
+
+        var extent = BlockLayouter.PreMeasureGridRowExtentAt(
+            gridBox: grid,
+            rowIndex: 0,
+            contentInlineSize: 600.0,
+            contentBlockSize: 300.0,
+            incomingCache: cache,
+            cancellationToken: default);
+
+        Assert.Equal(100.0, extent);
+    }
+
+    [Fact]
+    public void Cycle5c2a_F1_helper_cache_miss_when_identity_differs_falls_back_to_fresh_resolve()
+    {
+        // Per PR-#99 review P1#2 — when cache.GridIdentity doesn't
+        // ReferenceEqual the gridBox parameter, the cache was built
+        // for a different grid container (= routing bug); the probe
+        // MUST reject the cache + run a fresh resolve. Mirrors
+        // GridLayouter's PR-#96 review F5 validation.
+        var gridForCache = BuildGridContainerWithRowTracks(rowsPx: new[] { 50.0 });
+        var gridForProbe = BuildGridContainerWithRowTracks(rowsPx: new[] { 100.0 });
+
+        var cache = new GridResumeCache(
+            GridIdentity: gridForCache,
+            OriginalContentInlineSize: 400.0,
+            RowBaseSizes: ImmutableArray.Create(50.0),
+            ColumnBaseSizes: ImmutableArray.Create(100.0),
+            RowPositions: ImmutableArray.Create(0.0),
+            ColumnPositions: ImmutableArray.Create(0.0),
+            ItemPlacements: ImmutableArray<GridItemPlacement>.Empty);
+
+        var extent = BlockLayouter.PreMeasureGridRowExtentAt(
+            gridBox: gridForProbe,
+            rowIndex: 0,
+            contentInlineSize: 400.0,
+            contentBlockSize: 300.0,
+            incomingCache: cache,
+            cancellationToken: default);
+
+        // Cache rejected by identity → fresh resolve returns the
+        // declared track size of gridForProbe (= 100), NOT the
+        // cache's 50.
+        Assert.Equal(100.0, extent);
+    }
+
+    [Fact]
+    public void Cycle5c2a_F1_helper_handles_out_of_range_and_negative_row_indices()
+    {
+        // Per PR-#99 review P1#2 — defensive return for bad rowIndex
+        // values. Out-of-range + negative both return 0 so the
+        // caller's row-fit comparison naturally fails (= 0 always
+        // fits any positive remaining + defer never triggers from
+        // a degenerate probe).
+        var grid = BuildGridContainerWithRowTracks(rowsPx: new[] { 100.0 });
+
+        Assert.Equal(0.0, BlockLayouter.PreMeasureGridRowExtentAt(
+            gridBox: grid, rowIndex: -1,
+            contentInlineSize: 400, contentBlockSize: 300,
+            incomingCache: null, cancellationToken: default));
+        Assert.Equal(0.0, BlockLayouter.PreMeasureGridRowExtentAt(
+            gridBox: grid, rowIndex: 5,
+            contentInlineSize: 400, contentBlockSize: 300,
+            incomingCache: null, cancellationToken: default));
+    }
+
+    /// <summary>Test double mirroring
+    /// <see cref="LayoutRetryCoordinator"/>'s contract for the
+    /// page-driving termination test. Wraps the coordinator's
+    /// <c>Run</c> + asserts the result is never
+    /// <c>NeedsRewind</c> (= the contract guarantee).</summary>
+    private sealed class RecordingCoordinator : System.IDisposable
+    {
+        private readonly LayoutRetryCoordinator _inner = new();
+
+        public LayoutAttemptResult RunAndAssertNotNeedsRewind(
+            BlockLayouter layouter,
+            FragmentainerContext fragmentainer,
+            ref LayoutContext layout,
+            IBreakResolver resolver)
+        {
+            var result = _inner.Run(
+                layouter, fragmentainer, ref layout, resolver);
+            Assert.NotEqual(LayoutAttemptOutcome.NeedsRewind, result.Outcome);
+            return result;
+        }
+
+        public void Dispose() { /* nothing to dispose */ }
     }
 
     /// <summary>Per Phase 3 Task 17 cycle 5c.2a — fixture helper to

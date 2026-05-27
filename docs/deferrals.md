@@ -1895,18 +1895,30 @@ flags the categories):
   `PreMeasureGridRowExtent` + the actual dispatch); the
   duplicate work is acceptable given §11 sizing is cheap
   relative to item placement + emission.
-- **Practical impact** — cycle 5b's outer-site clamp + gate-flip
-  remains REVERTED in 5c.2a (= no production observable change).
-  The 5c.2a ship provides the F1 mechanism as a PRECONDITION
-  for cycle 5c.2b's clamp reactivation; once 5c.2b activates the
-  gate + adds F2 wrapper-resize, the F1 logic catches Strict-
-  defer scenarios BEFORE wrapper emit. Until then the F1 check
-  is reached in production but its
-  <c>pageRemainingForGridContent &lt; fullPage</c> guard never
-  matches the row-fit predicate for paginatable scenarios (=
-  break-check upstream catches oversized wrappers first).
-  Verified: 5099 unit + 97 RealDocs + AOT/JIT byte-parity all
-  green; byte-output is unchanged.
+- **Practical impact (post-PR-#99 review P2#1 correction)** — the
+  F1 mechanism is **ACTIVE at the outer-site
+  `BlockLayouter.AttemptLayout` contract level**, not dormant.
+  Direct-construction callers — tests, integration harnesses,
+  any future driver that places a paginatable grid as a direct
+  outer-site child of <c>BlockLayouter._rootBox</c> with a tight
+  page-remaining geometry — observe the F1 defer routing
+  immediately. PR-#99's `Cycle5c2a_F1_*` unit tests prove this.
+  Production HTML fixtures, however, route grid containers
+  through the recursive <see cref="EmitBlockSubtreeRecursive"/>
+  emission path (= the `<body><div class="grid">…</div></body>`
+  shape hits the recursive site, not the outer site); the
+  recursive site keeps cycle-1 atomic dispatch until cycle 5c.2d
+  wires it. So production HTML fixtures see no behavior change
+  TODAY, but the F1 contract is permanent + observable from this
+  ship forward. AOT/JIT byte-parity of existing fixtures is
+  PRESERVED (= 2942DD1E…30C3DE7) because those fixtures don't
+  reach the outer-site grid path; this should NOT be read as
+  "F1 is dormant" — it's accurate confirmation that the
+  recursive path's atomic-dispatch contract is unchanged.
+  Cycle 5c.2b will reactivate the outer-site clamp + flip
+  <c>paginateGridForOuterChild</c>; cycle 5c.2d will wire the
+  recursive site, at which point production HTML fixtures with
+  multi-row paginatable grids start exercising F1 + F2.
 - **Owner files** —
   - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — F1 helper +
     pre-dispatch row-fit check ✓ (cycle 5c.2a).

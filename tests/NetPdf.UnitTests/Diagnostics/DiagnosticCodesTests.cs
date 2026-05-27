@@ -863,6 +863,24 @@ public sealed class DiagnosticCodesTests
             NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutGridFrUnderIndefiniteApproximated001);
     }
 
+    [Fact]
+    public void Layout_grid_percentage_track_approximated_001_constants_are_stable()
+    {
+        Assert.Equal("LAYOUT-GRID-PERCENTAGE-TRACK-APPROXIMATED-001",
+            DiagnosticCodes.LayoutGridPercentageTrackApproximated001);
+        Assert.Equal(DiagnosticCodes.LayoutGridPercentageTrackApproximated001,
+            NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutGridPercentageTrackApproximated001);
+    }
+
+    [Fact]
+    public void Layout_grid_max_expanded_tracks_truncated_001_constants_are_stable()
+    {
+        Assert.Equal("LAYOUT-GRID-MAX-EXPANDED-TRACKS-TRUNCATED-001",
+            DiagnosticCodes.LayoutGridMaxExpandedTracksTruncated001);
+        Assert.Equal(DiagnosticCodes.LayoutGridMaxExpandedTracksTruncated001,
+            NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutGridMaxExpandedTracksTruncated001);
+    }
+
     private static string LoadRegistry()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

@@ -52,6 +52,10 @@ public sealed class DeferralsParityTests
         "float-continuation-propagation",
         "flex-layouter-features",
         "grid-track-sizing-cycle3-narrowed-scope",
+        "grid-maximize-extra-space-receiver-deferred",
+        "grid-box-sizing-border-box-deferred",
+        "grid-sizing-perf-optimizations-deferred",
+        "grid-sizing-architecture-followups-deferred",
     };
 
     [Fact]

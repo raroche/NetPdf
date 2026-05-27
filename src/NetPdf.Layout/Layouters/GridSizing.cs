@@ -3,6 +3,7 @@
 
 using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using System.Threading;
 using NetPdf.Css.ComputedValues;
 using NetPdf.Css.Properties;
@@ -136,22 +137,24 @@ internal static class GridSizing
 
         var ctx = new SizingContext(emit);
 
-        var rowKinds = new List<GridTrackKind>();
-        var colKinds = new List<GridTrackKind>();
+        // Per PR-#95 review Q1 — kindsOut/rowKinds/colKinds were dead
+        // code (populated but never read; TrackSizingInfo.Kind already
+        // carries the value). Removed to drop 2 List allocations + the
+        // unused parameter from ResolveTrackSizes.
         var rowInfos = new List<TrackSizingInfo>();
         var colInfos = new List<TrackSizingInfo>();
-        var rowSizes = ResolveTrackSizes(
+        ResolveTrackSizes(
             gridBox.Style.ReadGridTemplateRows(),
             contentBlockSize, isBlockIndefinite,
-            rowKinds, rowInfos, ctx);
-        var colSizes = ResolveTrackSizes(
+            rowInfos, ctx, cancellationToken);
+        ResolveTrackSizes(
             gridBox.Style.ReadGridTemplateColumns(),
             contentInlineSize, isInlineIndefinite,
-            colKinds, colInfos, ctx);
+            colInfos, ctx, cancellationToken);
 
         // Empty track template → no cells. Per PR-#92 review F6, emit
         // implicit-track diagnostic per dropped grid-item child.
-        if (rowSizes.Count == 0 || colSizes.Count == 0)
+        if (rowInfos.Count == 0 || colInfos.Count == 0)
         {
             foreach (var child in gridBox.Children)
             {
@@ -160,8 +163,8 @@ internal static class GridSizing
             }
             return new Result
             {
-                RowSizes = rowSizes,
-                ColSizes = colSizes,
+                RowSizes = new List<double>(),
+                ColSizes = new List<double>(),
                 RowPositions = new List<double>(),
                 ColPositions = new List<double>(),
                 PlacedItems = new List<PlacedItem>(),
@@ -169,8 +172,8 @@ internal static class GridSizing
             };
         }
 
-        var rowCount = rowSizes.Count;
-        var colCount = colSizes.Count;
+        var rowCount = rowInfos.Count;
+        var colCount = colInfos.Count;
         var occupancy = new bool[rowCount, colCount];
 
         // Gather grid items + classify placement.
@@ -199,27 +202,27 @@ internal static class GridSizing
             colInfos, placedItems, isRowAxis: false);
         if (rowIntrinsicChanged)
         {
-            ResolveFrTracks(rowInfos, contentBlockSize, ctx);
+            ResolveFrTracks(rowInfos, contentBlockSize, ctx, cancellationToken);
         }
         if (colIntrinsicChanged)
         {
-            ResolveFrTracks(colInfos, contentInlineSize, ctx);
+            ResolveFrTracks(colInfos, contentInlineSize, ctx, cancellationToken);
         }
 
-        // Per Phase 3 Task 17 cycle 4 — §11.6 Maximize step. After
-        // fr distribution + intrinsic resolution, if there's free
-        // space in the container + tracks have growthLimit > baseSize,
-        // distribute the free space proportionally up to each track's
-        // growth limit. Fr tracks don't participate (§11.7 already
-        // consumed remaining space via flex distribution).
+        // Per Phase 3 Task 17 cycle 4 + post-PR-#95 review C1 — §11.6
+        // "Maximize Tracks": equal-share distribution to non-fr tracks
+        // with finite GrowthLimit > BaseSize, freezing each as it
+        // reaches its growth limit. Per CSS Grid §11.5.1 + §11.6 (NOT
+        // proportional-to-headroom; cycle-4 initial impl had it wrong
+        // and matched flexbox semantics instead of grid).
         MaximizeTracks(rowInfos, contentBlockSize);
         MaximizeTracks(colInfos, contentInlineSize);
 
-        // Materialize the finalized sizes (= post-fr + post-intrinsic
-        // + post-Maximize) back into the legacy List<double> shape
-        // used by position computation + emission.
-        for (var i = 0; i < rowInfos.Count; i++) rowSizes[i] = rowInfos[i].BaseSize;
-        for (var i = 0; i < colInfos.Count; i++) colSizes[i] = colInfos[i].BaseSize;
+        // Per PR-#95 review P3 — single materialization pass (was 2x;
+        // ResolveTrackSizes used to materialize prematurely then we
+        // overwrote post-Maximize).
+        var rowSizes = MaterializeSizes(rowInfos);
+        var colSizes = MaterializeSizes(colInfos);
 
         // Compute positions + finite check.
         var rowPositions = ComputeTrackPositions(rowSizes, contentBlockOffset);
@@ -256,16 +259,43 @@ internal static class GridSizing
     //  Sizing context (= diagnostic-emission state for one Resolve call)
     // =====================================================================
 
-    /// <summary>Per-Resolve state. Tracks the one-shot
-    /// track-kind-unsupported + fr-under-indefinite diagnostics so
-    /// they don't spam per-track.</summary>
+    /// <summary>Per-Resolve state. Tracks one-shot diagnostic guards so
+    /// each KIND of warning fires at most once per axis-pair (= per
+    /// grid container), avoiding spam from `repeat(N, ...)`.
+    /// <para><b>Per PR-#95 review R5</b>: shared across rows + columns
+    /// by design — one grid → one diagnostic per cause. If row + col
+    /// both trip the same kind, only the first fires. Per cause type
+    /// is its own one-shot, so a row unsupported-kind + col percentage
+    /// emit two diagnostics (not just one).</para>
+    /// <para><b>Kept as <c>internal sealed class</c></b> (not ref struct)
+    /// to keep the call signature stable + because the SafeEmit delegate
+    /// captured by GridLayouter is more natural with reference semantics.
+    /// The single allocation per Resolve is negligible vs. the layout
+    /// work that follows.</para></summary>
     internal sealed class SizingContext
     {
         public EmitDiagnostic? Emitter { get; }
         public bool EmittedTrackKindDiagnostic { get; set; }
         public bool EmittedFrIndefiniteDiagnostic { get; set; }
+        public bool EmittedPercentageDiagnostic { get; set; }
+        public bool EmittedTruncationDiagnostic { get; set; }
         public SizingContext(EmitDiagnostic? emitter) { Emitter = emitter; }
         public void Emit(PaginateDiagnostic d) => Emitter?.Invoke(d);
+    }
+
+    /// <summary>Per PR-#95 review H1 — epsilon-based double comparison
+    /// for "did this size change" checks. Exact <c>!=</c> on doubles
+    /// is fragile under accumulated FP drift from fr distribution +
+    /// Maximize iteration. <see cref="SizeEpsilon"/> = 1e-9 px, well
+    /// below sub-pixel paint precision but above FP rounding noise
+    /// for layout sizes up to ~1e6 px.</summary>
+    private const double SizeEpsilon = 1e-9;
+
+    private static bool SizesDiffer(double a, double b)
+    {
+        if (double.IsNaN(a) || double.IsNaN(b)) return true;
+        if (a == b) return false;
+        return Math.Abs(a - b) > SizeEpsilon;
     }
 
     // =====================================================================
@@ -331,20 +361,28 @@ internal static class GridSizing
     ///
     /// <para><b>DoS guard</b>: total expanded item count caps at
     /// <see cref="TrackList.MaxExpandedTrackCount"/>; on overflow the
-    /// expansion truncates + emits the track-kind-unsupported
-    /// diagnostic.</para>
+    /// expansion truncates + emits
+    /// <see cref="PaginateDiagnosticCodes.LayoutGridMaxExpandedTracksTruncated001"/>
+    /// (per PR-#95 review R2 — was previously the misleading
+    /// "track kind Length unsupported" diagnostic).</para>
     ///
     /// <para><b>Named lines preserved</b>: <see cref="TrackRepeatNamedLine"/>
     /// items inside the pattern become <see cref="TrackListNamedLine"/>
     /// items in the expanded list, repeating with each iteration per
-    /// CSS Grid §7.2.3.</para></summary>
+    /// CSS Grid §7.2.3.</para>
+    ///
+    /// <para><b>Cancellation</b>: per PR-#95 review P6, the inner repeat
+    /// loop checks the cancellation token at iteration boundaries since
+    /// hostile CSS with combinations of large repeats can spin up to
+    /// <see cref="TrackList.MaxExpandedTrackCount"/> iterations.</para></summary>
     private static List<TrackListItem> ExpandTrackList(
-        TrackList trackList, SizingContext ctx)
+        TrackList trackList, SizingContext ctx, CancellationToken ct)
     {
         var expanded = new List<TrackListItem>(trackList.Items.Length);
         var truncated = false;
         foreach (var item in trackList.Items)
         {
+            ct.ThrowIfCancellationRequested();
             if (expanded.Count >= TrackList.MaxExpandedTrackCount)
             {
                 truncated = true;
@@ -360,6 +398,7 @@ internal static class GridSizing
                     // Explicit integer count: unroll pattern N times.
                     for (var r = 0; r < tr.Repeat.Count; r++)
                     {
+                        ct.ThrowIfCancellationRequested();
                         foreach (var p in tr.Repeat.Pattern)
                         {
                             if (expanded.Count >= TrackList.MaxExpandedTrackCount)
@@ -390,31 +429,32 @@ internal static class GridSizing
         }
         if (truncated)
         {
-            EmitTrackKindDiagnostic(ctx, GridTrackKind.Length);
+            EmitTruncationDiagnostic(ctx);
         }
         return expanded;
     }
 
-    private static List<double> ResolveTrackSizes(
+    private static void ResolveTrackSizes(
         TrackList trackList, double containerExtent, bool isAxisIndefinite,
-        List<GridTrackKind> kindsOut, List<TrackSizingInfo> infoOut,
-        SizingContext ctx)
+        List<TrackSizingInfo> infoOut, SizingContext ctx,
+        CancellationToken ct)
     {
-        var expanded = ExpandTrackList(trackList, ctx);
+        var expanded = ExpandTrackList(trackList, ctx, ct);
         foreach (var item in expanded)
         {
             if (item is TrackListEntry entry)
             {
-                var info = ClassifyEntry(entry.Entry, ctx);
-                infoOut.Add(info);
-                kindsOut.Add(info.Kind);
+                infoOut.Add(ClassifyEntry(entry.Entry, ctx));
             }
             else if (item is TrackListRepeat)
             {
-                // auto-fill / auto-fit — cycle 7 scope.
-                EmitTrackKindDiagnostic(ctx, GridTrackKind.Length);
+                // auto-fill / auto-fit — cycle 7 scope. Per PR-#95
+                // review R2 — emit the unsupported-kind diagnostic with
+                // the actual kind (was hardcoded to Length, misleading).
+                EmitTrackKindDiagnostic(ctx, GridTrackKind.Auto);
             }
             // TrackListNamedLine — cycle 7 named-line resolution.
+            // Kept in the expanded list so cycle 7 can read positionally.
         }
 
         // Per PR-#93 review F3 — fr under indefinite axis approximated.
@@ -431,15 +471,19 @@ internal static class GridSizing
         }
 
         // §11.7 fr distribution (cycle 4 — with iterative removal step).
-        ResolveFrTracks(infoOut, containerExtent, ctx);
-        return MaterializeSizes(infoOut);
+        ResolveFrTracks(infoOut, containerExtent, ctx, ct);
     }
 
     /// <summary>Per Phase 3 Task 17 cycle 4 — classify one
     /// <see cref="TrackEntry"/> into a <see cref="TrackSizingInfo"/>.
     /// Handles Length / Fr / intrinsic / MinMax / FitContent. Returns
     /// a fully populated info struct (subkind fields default to
-    /// <see cref="GridTrackKind.Auto"/> for non-MinMax tracks).</summary>
+    /// <see cref="GridTrackKind.Auto"/> for non-MinMax tracks).
+    ///
+    /// <para><b>Per PR-#95 review H3 + C3</b>: percentage tracks
+    /// (top-level OR inside minmax/fit-content sub-args) emit
+    /// <c>LayoutGridPercentageTrackApproximated001</c> and collapse
+    /// to 0 instead of being silently misinterpreted as pixels.</para></summary>
     private static TrackSizingInfo ClassifyEntry(TrackEntry entry, SizingContext ctx)
     {
         switch (entry.Kind)
@@ -450,6 +494,20 @@ internal static class GridSizing
                     BaseSize = entry.LengthPx,
                     MinBaseSize = entry.LengthPx,
                     GrowthLimit = entry.LengthPx,
+                    Kind = GridTrackKind.Length,
+                };
+            case GridTrackKind.Length:
+                // Per PR-#95 review H3 — Length with IsPercentage=true.
+                // Cycle-4 initial impl fell into the default branch with
+                // the misleading "kind Length unsupported" diagnostic.
+                // Now emits the dedicated percentage diagnostic + 0
+                // placeholder.
+                EmitPercentageDiagnostic(ctx);
+                return new TrackSizingInfo
+                {
+                    BaseSize = 0,
+                    MinBaseSize = 0,
+                    GrowthLimit = 0,
                     Kind = GridTrackKind.Length,
                 };
             case GridTrackKind.Fr:
@@ -479,7 +537,7 @@ internal static class GridSizing
                 // Length/Auto/MinContent/MaxContent (NOT Fr); max
                 // is additionally Fr-allowed. Base from min; growth
                 // (+ fr if applicable) from max.
-                return ClassifyMinMax(entry);
+                return ClassifyMinMax(entry, ctx);
             case GridTrackKind.FitContent:
                 // Cycle 4 — fit-content(limit). Per §7.2.2 the size
                 // is max(auto-min, min(limit, max-content)). Cycle 4
@@ -487,6 +545,20 @@ internal static class GridSizing
                 // L19 declared contribution. Stored as base=0,
                 // growth=limit; intrinsic resolution will clamp via
                 // min(limit, contribution).
+                if (entry.IsPercentage)
+                {
+                    // Per PR-#95 review C3 — fit-content(50%) silently
+                    // becoming fit-content(50px) is worse than emitting.
+                    EmitPercentageDiagnostic(ctx);
+                    return new TrackSizingInfo
+                    {
+                        BaseSize = 0,
+                        MinBaseSize = 0,
+                        GrowthLimit = 0,
+                        Kind = GridTrackKind.FitContent,
+                        FitContentLimit = 0,
+                    };
+                }
                 return new TrackSizingInfo
                 {
                     BaseSize = 0,
@@ -496,7 +568,6 @@ internal static class GridSizing
                     FitContentLimit = entry.LengthPx,
                 };
             default:
-                // Length with IsPercentage = true → cycle-4+ scope.
                 EmitTrackKindDiagnostic(ctx, entry.Kind);
                 return new TrackSizingInfo
                 {
@@ -511,14 +582,27 @@ internal static class GridSizing
     /// <summary>Per Phase 3 Task 17 cycle 4 — classify a MinMax entry.
     /// Base from min (Length pinned, intrinsic = 0 placeholder);
     /// growth from max (Length pinned, Fr → IsFr=true uncapped,
-    /// intrinsic = ∞ placeholder).</summary>
-    private static TrackSizingInfo ClassifyMinMax(TrackEntry entry)
+    /// intrinsic = ∞ placeholder).
+    /// <para><b>Per PR-#95 review C3</b>: percentage sub-args
+    /// (<c>minmax(50%, 1fr)</c>) emit a diagnostic and collapse to 0
+    /// for the percentage side instead of being silently treated as
+    /// pixels.</para></summary>
+    private static TrackSizingInfo ClassifyMinMax(TrackEntry entry, SizingContext ctx)
     {
         // Min arg — base size.
         double baseSize = 0;
         if (entry.MinSubKind == GridTrackKind.Length)
         {
-            baseSize = entry.MinSubLengthPx;
+            if (entry.MinSubIsPercentage)
+            {
+                EmitPercentageDiagnostic(ctx);
+                // baseSize stays 0 — the percentage is treated as 0
+                // until cycle 5+ ships percentage resolution.
+            }
+            else
+            {
+                baseSize = entry.MinSubLengthPx;
+            }
         }
         // Intrinsic min (Auto/MinContent/MaxContent) → base stays 0;
         // intrinsic resolution will fill from placed items.
@@ -529,7 +613,15 @@ internal static class GridSizing
         double frFactor = 0;
         if (entry.MaxSubKind == GridTrackKind.Length)
         {
-            growthLimit = entry.MaxSubLengthPx;
+            if (entry.MaxSubIsPercentage)
+            {
+                EmitPercentageDiagnostic(ctx);
+                growthLimit = 0;
+            }
+            else
+            {
+                growthLimit = entry.MaxSubLengthPx;
+            }
         }
         else if (entry.MaxSubKind == GridTrackKind.Fr)
         {
@@ -562,14 +654,18 @@ internal static class GridSizing
         };
     }
 
-    /// <summary>Per Phase 3 Task 17 cycle 4 — extract the per-track
-    /// final size (= BaseSize) into a List&lt;double&gt; for the
-    /// downstream position-computation + emission paths that still
-    /// consume the legacy List&lt;double&gt; shape.</summary>
+    /// <summary>Per Phase 3 Task 17 cycle 4 + post-PR-#95 review P3 —
+    /// extract the per-track final size (= BaseSize) into a
+    /// List&lt;double&gt; for the downstream position-computation +
+    /// emission paths that still consume the legacy List&lt;double&gt;
+    /// shape. Called ONCE after Maximize (was twice in cycle-4 initial
+    /// impl — once eagerly inside ResolveTrackSizes, once again after
+    /// Maximize overwrote the values).</summary>
     private static List<double> MaterializeSizes(List<TrackSizingInfo> infos)
     {
         var sizes = new List<double>(infos.Count);
-        for (var i = 0; i < infos.Count; i++) sizes.Add(infos[i].BaseSize);
+        var span = CollectionsMarshal.AsSpan(infos);
+        for (var i = 0; i < span.Length; i++) sizes.Add(span[i].BaseSize);
         return sizes;
     }
 
@@ -604,9 +700,13 @@ internal static class GridSizing
     /// removal step now matters.</para></summary>
     private static void ResolveFrTracks(
         List<TrackSizingInfo> infos, double containerExtent,
-        SizingContext ctx)
+        SizingContext ctx, CancellationToken ct)
     {
+        // Per PR-#95 review P1 — single Span aliasing the List for
+        // zero-copy ref-mutation across the rest of the method.
+        var span = CollectionsMarshal.AsSpan(infos);
         var hasFr = false;
+        var frTrackCount = 0;
         // Reset fr-track BaseSize to MinBaseSize (= floor) so a
         // re-distribution pass after intrinsic resolution starts
         // from the floor + recomputes. Without this, the prior
@@ -614,34 +714,41 @@ internal static class GridSizing
         // and trigger the §11.7 removal step incorrectly. Per cycle
         // 4 — fr tracks inside <c>minmax(min, fr)</c> with intrinsic
         // mins get their floor updated by intrinsic resolution.
-        for (var i = 0; i < infos.Count; i++)
+        for (var i = 0; i < span.Length; i++)
         {
-            if (infos[i].IsFr)
+            if (span[i].IsFr)
             {
                 hasFr = true;
-                var info = infos[i];
-                info.BaseSize = info.MinBaseSize;
-                infos[i] = info;
+                frTrackCount++;
+                span[i].BaseSize = span[i].MinBaseSize;
             }
         }
         if (!hasFr) return;
 
         // Per-track "frozen" flag — fr tracks whose base exceeds
         // their proportional share get treated as fixed for the
-        // remaining iterations.
-        var frozen = new bool[infos.Count];
+        // remaining iterations. Per PR-#95 review P2 — stackalloc
+        // for the common case (≤ 64 tracks) avoids the heap alloc.
+        Span<bool> frozen = span.Length <= 64
+            ? stackalloc bool[span.Length]
+            : new bool[span.Length];
+        frozen.Clear();
 
-        // Iterate until no more removals. Bounded by the number of fr
-        // tracks (each iteration removes at least one or terminates).
-        for (var iter = 0; iter <= infos.Count; iter++)
+        // Per PR-#95 review H2 — bound matches the spec (each pass
+        // freezes ≥1 fr track or terminates; +1 for the final
+        // converged-distribution pass). Was infos.Count (= total
+        // tracks, looser than needed).
+        var maxPasses = frTrackCount + 1;
+        for (var pass = 0; pass <= maxPasses; pass++)
         {
+            ct.ThrowIfCancellationRequested();
             double nonFlexBase = 0;
-            for (var i = 0; i < infos.Count; i++)
+            for (var i = 0; i < span.Length; i++)
             {
-                if (infos[i].IsFr && !frozen[i]) continue;
+                if (span[i].IsFr && !frozen[i]) continue;
                 // Frozen fr OR non-fr tracks contribute their current
                 // baseSize to the non-flex sum.
-                nonFlexBase += infos[i].BaseSize;
+                nonFlexBase += span[i].BaseSize;
             }
             var leftover = containerExtent - nonFlexBase;
             if (leftover <= 0 || !double.IsFinite(leftover))
@@ -653,9 +760,9 @@ internal static class GridSizing
 
             // Per PR-#93 F1 — spec-correct flexFactorSum.
             double rawSum = 0;
-            for (var i = 0; i < infos.Count; i++)
+            for (var i = 0; i < span.Length; i++)
             {
-                if (infos[i].IsFr && !frozen[i]) rawSum += infos[i].FrFactor;
+                if (span[i].IsFr && !frozen[i]) rawSum += span[i].FrFactor;
             }
             if (!double.IsFinite(rawSum))
             {
@@ -675,17 +782,17 @@ internal static class GridSizing
                 // No fr factors left (= all frozen). Nothing more to do.
                 return;
             }
-            var flexFactorSum = System.Math.Max(rawSum, 1.0);
+            var flexFactorSum = Math.Max(rawSum, 1.0);
             var hypoFr = leftover / flexFactorSum;
             if (!double.IsFinite(hypoFr)) return;
 
             // Iterative removal — freeze any unfrozen fr track whose
             // base > hypoFr × factor (= the minimum prevents shrinkage).
             var anyFrozenThisPass = false;
-            for (var i = 0; i < infos.Count; i++)
+            for (var i = 0; i < span.Length; i++)
             {
-                if (!infos[i].IsFr || frozen[i]) continue;
-                if (infos[i].BaseSize > hypoFr * infos[i].FrFactor)
+                if (!span[i].IsFr || frozen[i]) continue;
+                if (span[i].BaseSize > hypoFr * span[i].FrFactor)
                 {
                     frozen[i] = true;
                     anyFrozenThisPass = true;
@@ -696,87 +803,148 @@ internal static class GridSizing
             {
                 // Converged — apply the final distribution to all
                 // unfrozen fr tracks.
-                for (var i = 0; i < infos.Count; i++)
+                for (var i = 0; i < span.Length; i++)
                 {
-                    if (!infos[i].IsFr || frozen[i]) continue;
-                    var distributed = hypoFr * infos[i].FrFactor;
-                    var info = infos[i];
-                    info.BaseSize = System.Math.Max(info.BaseSize, distributed);
-                    infos[i] = info;
+                    if (!span[i].IsFr || frozen[i]) continue;
+                    var distributed = hypoFr * span[i].FrFactor;
+                    if (distributed > span[i].BaseSize)
+                    {
+                        span[i].BaseSize = distributed;
+                    }
                 }
                 return;
             }
         }
+
+        // Per PR-#95 review H2 — exhausted the safety bound without
+        // converging. This shouldn't be reachable since each iteration
+        // either freezes ≥1 track OR returns; emit a diagnostic to
+        // surface the impossible state.
+        ctx.Emit(new PaginateDiagnostic(
+            Code: PaginateDiagnosticCodes.LayoutGridNonFiniteGeometry001,
+            Message: "Grid §11.7 fr distribution failed to converge "
+                + $"within {maxPasses + 1} passes (= one per fr track "
+                + "plus a final distribution pass). This indicates an "
+                + "internal algorithm bug or a degenerate input that "
+                + "produces oscillating freeze decisions; fr tracks "
+                + "stay at their pre-distribution floor values to "
+                + "avoid corrupting downstream paint.",
+            Severity: PaginateDiagnosticSeverity.Warning));
     }
 
     // =====================================================================
     //  §11.6 Maximize step (cycle 4)
     // =====================================================================
 
-    /// <summary>Per Phase 3 Task 17 cycle 4 — CSS Grid §11.6
-    /// "Maximize Tracks".
+    /// <summary>Per Phase 3 Task 17 cycle 4 + post-PR-#95 review C1 —
+    /// CSS Grid §11.6 "Maximize Tracks".
     ///
-    /// <para>After fr distribution + intrinsic resolution, if there's
-    /// remaining free space (= container - SUM(base) > 0), distribute
-    /// it across tracks proportionally up to each track's growth
-    /// limit. Fr tracks are excluded (= §11.7 already consumed any
-    /// flex-derived space).</para>
+    /// <para>Per W3C spec
+    /// (<see href="https://www.w3.org/TR/css-grid-1/#algo-grow-tracks"/>):
+    /// "If the free space is positive, distribute it EQUALLY to the
+    /// base sizes of all tracks, freezing tracks as they reach their
+    /// growth limits (and continuing to grow the unfrozen tracks as
+    /// needed)."</para>
     ///
-    /// <para><b>Distribution rule</b>: each non-fr track with
-    /// growthLimit &gt; baseSize is eligible. Available headroom per
-    /// track = (growthLimit - baseSize). When the total headroom
-    /// exceeds the free space, distribute proportionally; when it
-    /// fits, each track grows to its full growth limit.</para>
+    /// <para><b>This is NOT proportional-to-headroom</b> (= flexbox
+    /// semantics). The cycle-4 INITIAL impl used `ratio = freeSpace /
+    /// totalHeadroom` then `headroom × ratio` per track — that's wrong.
+    /// PR-#95 review C1 caught the divergence with counter-examples
+    /// like <c>minmax(50px, 100px) minmax(50px, 1000px)</c> in 400px:
+    /// spec says A=100 (frozen) B=300; old impl said A=65 B=335.</para>
     ///
-    /// <para><b>Pre-cycle-4</b>: this step didn't fire because no
-    /// track had a finite growthLimit distinct from baseSize. Cycle
-    /// 4's <c>minmax(min, max)</c> + <c>fit-content(limit)</c>
-    /// introduce growthLimits that can exceed baseSizes, so Maximize
-    /// now matters.</para></summary>
+    /// <para><b>Algorithm</b> (mirrors §11.7.1's iterative freezing):</para>
+    /// <list type="number">
+    ///   <item>Mark non-eligible tracks frozen up-front (fr; infinite
+    ///   GrowthLimit; GrowthLimit ≤ BaseSize).</item>
+    ///   <item>While unfrozen tracks remain + free space > 0:
+    ///   share = freeSpace / unfrozenCount. Each unfrozen track tries
+    ///   to grow by share. Tracks whose new BaseSize would meet/exceed
+    ///   GrowthLimit are clamped + frozen.</item>
+    ///   <item>If no track froze this pass, the share fits — apply +
+    ///   return.</item>
+    /// </list>
+    ///
+    /// <para><b>Per PR-#95 review H4 known-gap</b>: tracks with infinite
+    /// GrowthLimit (e.g., auto/min-content/max-content with no placed
+    /// items) are excluded. Per §11.5.1 step 3 the spec distributes
+    /// leftover to "extra-space-receiver" tracks (intrinsic max-content
+    /// then fr) AFTER finite-limit tracks freeze. Cycle 4 doesn't
+    /// implement that second pass; documented in deferrals.md as
+    /// `grid-maximize-extra-space-receiver-deferred`. In practice,
+    /// intrinsic-with-items always sets growthLimit=base so the gap
+    /// only manifests for degenerate empty-track-with-no-items cases.</para>
+    ///
+    /// <para><b>Per PR-#95 review C2</b>: FitContent tracks have their
+    /// GrowthLimit pinned to <c>effective</c> after intrinsic
+    /// resolution (ResolveIntrinsicTracks now sets GrowthLimit =
+    /// BaseSize for FitContent), so Maximize correctly leaves them
+    /// alone.</para></summary>
     private static void MaximizeTracks(
         List<TrackSizingInfo> infos, double containerExtent)
     {
         if (!double.IsFinite(containerExtent) || containerExtent <= 0) return;
 
-        double totalBase = 0;
-        for (var i = 0; i < infos.Count; i++) totalBase += infos[i].BaseSize;
-        var freeSpace = containerExtent - totalBase;
-        if (freeSpace <= 0 || !double.IsFinite(freeSpace)) return;
+        var span = CollectionsMarshal.AsSpan(infos);
+        if (span.Length == 0) return;
 
-        // Eligible tracks: non-fr with finite growthLimit > baseSize.
-        // (Fr tracks already consumed via §11.7. Infinite growthLimit
-        // tracks are the "auto" / intrinsic-max-content kind — they
-        // absorb leftover only if no finite-limit tracks exist;
-        // simplified for cycle 4 to "finite-limit takes priority".)
-        double totalHeadroom = 0;
-        var anyFinite = false;
-        for (var i = 0; i < infos.Count; i++)
+        // Per PR-#95 review P1+P2 — Span ref-access + stackalloc for
+        // small-track-count case.
+        Span<bool> frozen = span.Length <= 64
+            ? stackalloc bool[span.Length]
+            : new bool[span.Length];
+        frozen.Clear();
+
+        // Mark non-eligible tracks frozen up-front.
+        var unfrozenCount = 0;
+        for (var i = 0; i < span.Length; i++)
         {
-            if (infos[i].IsFr) continue;
-            var headroom = infos[i].GrowthLimit - infos[i].BaseSize;
-            if (headroom <= 0) continue;
-            if (double.IsFinite(infos[i].GrowthLimit))
+            ref readonly var t = ref span[i];
+            if (t.IsFr || !double.IsFinite(t.GrowthLimit) || t.GrowthLimit <= t.BaseSize)
             {
-                totalHeadroom += headroom;
-                anyFinite = true;
+                frozen[i] = true;
+            }
+            else
+            {
+                unfrozenCount++;
             }
         }
+        if (unfrozenCount == 0) return;
 
-        if (anyFinite && totalHeadroom > 0)
+        // Iterative equal-distribute + freeze. Bound: at most
+        // unfrozenCount passes (each freezes ≥1 OR converges).
+        for (var pass = 0; pass <= unfrozenCount; pass++)
         {
-            // Distribute free space proportional to headroom, capped
-            // at each track's growthLimit.
-            var ratio = System.Math.Min(1.0, freeSpace / totalHeadroom);
-            for (var i = 0; i < infos.Count; i++)
+            double totalBase = 0;
+            for (var i = 0; i < span.Length; i++) totalBase += span[i].BaseSize;
+            var freeSpace = containerExtent - totalBase;
+            if (freeSpace <= SizeEpsilon || !double.IsFinite(freeSpace)) return;
+
+            // Count currently unfrozen.
+            var liveCount = 0;
+            for (var i = 0; i < span.Length; i++) if (!frozen[i]) liveCount++;
+            if (liveCount == 0) return;
+
+            var share = freeSpace / liveCount;
+            var anyFrozenThisPass = false;
+            for (var i = 0; i < span.Length; i++)
             {
-                if (infos[i].IsFr) continue;
-                if (!double.IsFinite(infos[i].GrowthLimit)) continue;
-                var headroom = infos[i].GrowthLimit - infos[i].BaseSize;
-                if (headroom <= 0) continue;
-                var info = infos[i];
-                info.BaseSize += headroom * ratio;
-                infos[i] = info;
+                if (frozen[i]) continue;
+                var newBase = span[i].BaseSize + share;
+                if (newBase >= span[i].GrowthLimit)
+                {
+                    // Clamp + freeze.
+                    span[i].BaseSize = span[i].GrowthLimit;
+                    frozen[i] = true;
+                    anyFrozenThisPass = true;
+                }
+                else
+                {
+                    span[i].BaseSize = newBase;
+                }
             }
+
+            if (!anyFrozenThisPass) return;
         }
     }
 
@@ -817,9 +985,11 @@ internal static class GridSizing
         List<PlacedItem> placedItems, bool isRowAxis)
     {
         var anyChanged = false;
-        for (var i = 0; i < infos.Count; i++)
+        // Per PR-#95 review P1 — Span ref-access for mutation.
+        var span = CollectionsMarshal.AsSpan(infos);
+        for (var i = 0; i < span.Length; i++)
         {
-            var info = infos[i];
+            ref var info = ref span[i];
             var needsContribution =
                 info.Kind is GridTrackKind.Auto
                     or GridTrackKind.MinContent
@@ -847,21 +1017,21 @@ internal static class GridSizing
                 case GridTrackKind.Auto:
                 case GridTrackKind.MinContent:
                 case GridTrackKind.MaxContent:
-                    if (maxContribution != info.BaseSize)
+                    // Per PR-#95 review H1 — epsilon comparison.
+                    if (SizesDiffer(maxContribution, info.BaseSize))
                     {
                         info.BaseSize = maxContribution;
                         info.MinBaseSize = maxContribution;
                         // For uncapped intrinsic tracks, growthLimit
                         // tracks baseSize (= no headroom for Maximize).
                         info.GrowthLimit = maxContribution;
-                        infos[i] = info;
                         anyChanged = true;
                     }
                     break;
                 case GridTrackKind.MinMax:
                     var changed = false;
                     if (IsIntrinsicKind(info.MinSubKind)
-                        && maxContribution > info.BaseSize)
+                        && maxContribution > info.BaseSize + SizeEpsilon)
                     {
                         info.BaseSize = maxContribution;
                         info.MinBaseSize = maxContribution;
@@ -869,8 +1039,8 @@ internal static class GridSizing
                     }
                     if (IsIntrinsicKind(info.MaxSubKind))
                     {
-                        var newGrowth = System.Math.Max(info.BaseSize, maxContribution);
-                        if (newGrowth != info.GrowthLimit)
+                        var newGrowth = Math.Max(info.BaseSize, maxContribution);
+                        if (SizesDiffer(newGrowth, info.GrowthLimit))
                         {
                             info.GrowthLimit = newGrowth;
                             changed = true;
@@ -882,21 +1052,27 @@ internal static class GridSizing
                         info.GrowthLimit = info.BaseSize;
                         changed = true;
                     }
-                    if (changed)
-                    {
-                        infos[i] = info;
-                        anyChanged = true;
-                    }
+                    if (changed) anyChanged = true;
                     break;
                 case GridTrackKind.FitContent:
                     // Per §7.2.2: effective = min(limit, max-content).
                     // L19 approximation: max-content = maxContribution.
-                    var effective = System.Math.Min(info.FitContentLimit, maxContribution);
-                    if (effective != info.BaseSize)
+                    var effective = Math.Min(info.FitContentLimit, maxContribution);
+                    if (SizesDiffer(effective, info.BaseSize))
                     {
                         info.BaseSize = effective;
-                        info.MinBaseSize = effective;
-                        infos[i] = info;
+                        // Per PR-#95 review H7 — only update MinBaseSize
+                        // for fr-participating tracks. FitContent never
+                        // is. Keeps MinBaseSize semantics clean (= the
+                        // fr re-distribution floor).
+                        // Per PR-#95 review C2 — pin GrowthLimit so
+                        // Maximize doesn't subsequently grow this track
+                        // past its §7.2.2 result. Before the fix,
+                        // GrowthLimit stayed at FitContentLimit and
+                        // Maximize would grow the track to the LIMIT
+                        // even though the formula said it should sit at
+                        // <c>effective</c> = min(limit, content).
+                        info.GrowthLimit = effective;
                         anyChanged = true;
                     }
                     break;
@@ -1229,6 +1405,46 @@ internal static class GridSizing
                 + "are cycle 5-7 scope). The track contributes 0 px "
                 + "to the track sum or truncates at the MaxExpanded "
                 + "cap.",
+            Severity: PaginateDiagnosticSeverity.Warning));
+    }
+
+    /// <summary>Per PR-#95 review C3 + H3 — emitted when a percentage
+    /// track is encountered (top-level Length, or as a minmax/
+    /// fit-content sub-arg). One-shot per Resolve call.</summary>
+    private static void EmitPercentageDiagnostic(SizingContext ctx)
+    {
+        if (ctx.EmittedPercentageDiagnostic) return;
+        ctx.EmittedPercentageDiagnostic = true;
+        ctx.Emit(new PaginateDiagnostic(
+            Code: PaginateDiagnosticCodes.LayoutGridPercentageTrackApproximated001,
+            Message: "Grid track uses a <percentage> value (top-level "
+                + "or inside minmax()/fit-content() sub-args). Cycle 4 "
+                + "doesn't yet resolve percentages against the "
+                + "container's extent; the track contributes 0 px so "
+                + "the author sees a clearly broken layout instead of "
+                + "an authoritative-looking-but-wrong pixel value. "
+                + "Cycle 5+ ships percentage resolution against the "
+                + "container's definite extent.",
+            Severity: PaginateDiagnosticSeverity.Warning));
+    }
+
+    /// <summary>Per PR-#95 review R2 — emitted when repeat() expansion
+    /// hits <see cref="TrackList.MaxExpandedTrackCount"/>. Distinguished
+    /// from the generic unsupported-kind diagnostic so authors can
+    /// understand "your CSS was too large + truncated" vs. "you used
+    /// a feature we don't support".</summary>
+    private static void EmitTruncationDiagnostic(SizingContext ctx)
+    {
+        if (ctx.EmittedTruncationDiagnostic) return;
+        ctx.EmittedTruncationDiagnostic = true;
+        ctx.Emit(new PaginateDiagnostic(
+            Code: PaginateDiagnosticCodes.LayoutGridMaxExpandedTracksTruncated001,
+            Message: "Grid track list's repeat() expansion would exceed "
+                + $"TrackList.MaxExpandedTrackCount = {TrackList.MaxExpandedTrackCount} "
+                + "entries. Expansion truncates at the cap to prevent "
+                + "unbounded memory allocation from hostile CSS like "
+                + "repeat(10000, 1px 1fr 1px 1fr 1fr 1px). Items placed "
+                + "at indices in the truncated tail are silently dropped.",
             Severity: PaginateDiagnosticSeverity.Warning));
     }
 

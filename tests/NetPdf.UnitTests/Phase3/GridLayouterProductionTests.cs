@@ -823,6 +823,74 @@ public sealed class GridLayouterProductionTests
     }
 
     // ====================================================================
+    //  Cycle 4 post-PR-#95 hardening — production pipeline tests for the
+    //  fr-removal + invalid-CSS + percentage-diag scenarios.
+    // ====================================================================
+
+    [Fact]
+    public async Task Production_html_minmax_fr_removal_step_freezes_when_min_too_large()
+    {
+        // grid-template-columns: minmax(300px, 1fr) 1fr in 600px fragmentainer.
+        //   Track 1: base=300 (min), IsFr=true factor=1.
+        //   Track 2: base=0, IsFr=true factor=1.
+        //   Pass 1: nonFlex=0, leftover=600, sum=2, hypoFr=300.
+        //     Track 1: base 300 > 300×1=300? NO (boundary). Distributed=300, no growth.
+        //   No freeze → converged. Track 1 stays at max(300, 300)=300. Track 2 = 300.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 50px;
+                    grid-template-columns: minmax(300px, 1fr) 1fr;
+                }
+                .a { grid-row-start: 1; grid-column-start: 1; }
+                .b { grid-row-start: 1; grid-column-start: 2; }
+            </style></head><body>
+            <div class="grid">
+              <div class="a"></div>
+              <div class="b"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var a = FindByClass(sink, "a");
+        var b = FindByClass(sink, "b");
+        Assert.NotNull(a);
+        Assert.NotNull(b);
+        Assert.Equal(300.0, a!.Value.InlineSize, precision: 3);
+        Assert.Equal(300.0, b!.Value.InlineSize, precision: 3);
+    }
+
+    [Fact]
+    public async Task Production_html_minmax_invalid_min_exceeds_max_treats_max_as_min()
+    {
+        // grid-template-columns: minmax(200px, 100px) — invalid per §11.5.
+        //   max=min → track sits at 200.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 50px;
+                    grid-template-columns: minmax(200px, 100px);
+                }
+                .a { grid-row-start: 1; grid-column-start: 1; }
+            </style></head><body>
+            <div class="grid">
+              <div class="a"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var a = FindByClass(sink, "a");
+        Assert.NotNull(a);
+        Assert.Equal(200.0, a!.Value.InlineSize, precision: 3);
+    }
+
+    // ====================================================================
     //  Pipeline driver — mirrors FlexLayouterProductionTests.
     // ====================================================================
 

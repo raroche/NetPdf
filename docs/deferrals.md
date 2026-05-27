@@ -2071,8 +2071,10 @@ flags the categories):
 ## grid-explicit-height-paginate-deferral
 
 - **ID** — `grid-explicit-height-paginate-deferral`
-- **Status** — `not-started`. Phase 3 Task 17 cycle 5b post-PR-#97
-  review F3.
+- **Status** — `approximated` (paginatable path shipped + verified
+  by 3 `Cycle5c2c_F3_*` unit tests; recursive-site activation +
+  production tests in cycle 5c.2d). Phase 3 Task 17 cycle 5c.2c
+  ships the consumer-side fix.
 - **Behavior** — grids with explicit `height: 300px` style get
   their natural extent restored by
   `MeasureSubtreeVisualBlockExtent` AFTER the paginatable-grid
@@ -2081,24 +2083,34 @@ flags the categories):
   branch, which dispatches grid atomically (`allowPagination:
   false`). So even with cycle 5b's outer-site wiring active,
   explicit-height grids would never paginate.
-- **Missing** — grid-specific extent handling in the
-  `MeasureSubtreeVisualBlockExtent` path (= when the grid is
-  paginatable + already clamped, don't restore the style height).
-  OR a "planned grid fragment extent" channel that the resolver
-  reads instead of the style height.
-- **Practical impact** — cycle 5b's "all grids paginatable" claim
-  via `IsPaginatableGrid` was false for explicit-height grids.
-  Activating outer-site without this fix breaks the most common
-  styled-invoice case.
-- **Trigger** — cycle 5c. Coordinates with F1 + F2 since all
-  three involve the wrapper-vs-content extent flow.
+- **Cycle 5c.2c SHIPPED** — new subtree-extent clamp in the
+  outer-site dispatch path (right next to the existing flex /
+  table clamps): when `paginateGridForOuterChild` is true AND
+  the recursive measure returned a value greater than the
+  post-clamp `borderBoxBlockSize`, the subtree extent is
+  CLAMPED back to the post-clamp wrapper extent. This prevents
+  `effectiveBlockSize = max(borderBox, subtree)` from restoring
+  the authored height + firing forced-overflow at the corrupted
+  geometry. The cycle-5c.2b-post-PR-#100-P1#3
+  <c>IsHeightAuto(child)</c> gate on the outer-site clamp is
+  REMOVED in this cycle since explicit-height grids now flow
+  through F1 + F2 cleanly.
+- **Practical impact** — explicit-height grids in invoices /
+  reports now paginate cleanly at row boundaries when their
+  authored height exceeds the page-remaining + the first row
+  fits. Pre-cycle-5c.2c the grid would render past the page
+  edge via forced-overflow; post-cycle-5c.2c the grid splits
+  with correct wrapper sizing.
+- **Trigger** — cycle 5c.2c. Coordinates with F1 (cycle 5c.2a)
+  + F2 (cycle 5c.2b) for the full outer-site pagination
+  pipeline.
 - **Owner files** —
   - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` —
-    `MeasureSubtreeVisualBlockExtent` + the explicit-height read
-    path.
-  - `src/NetPdf.Layout/Layouters/GridLayouter.cs` — may expose a
-    "planned fragment extent" query.
+    `MeasureSubtreeVisualBlockExtent` consumer path: subtree-
+    extent clamp added at the break-check site ✓ (cycle 5c.2c).
 - **Added** — Phase 3 Task 17 cycle 5b + post-PR-#97 review F3.
-- **Removal condition** — explicit-height grids on tight pages
-  paginate correctly + don't fall into forced-overflow with
-  pagination disabled.
+- **Updated** — Phase 3 Task 17 cycle 5c.2c (F3 ships).
+- **Removal condition** — cycle 5c.2d wires the recursive site +
+  production-pipeline tests on real HTML fixtures verify
+  explicit-height grids paginate end-to-end through the full
+  HTML → cascade → BoxBuilder → BlockLayouter chain.

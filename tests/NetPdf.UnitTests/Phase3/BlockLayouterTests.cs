@@ -5336,7 +5336,7 @@ public sealed class BlockLayouterTests
     }
 
     [Fact]
-    public void Cycle5c2b_P1_3_explicit_height_grid_not_clamped_until_F3_ships()
+    public void Cycle5c2c_F3_explicit_height_grid_paginates_on_fresh_page()
     {
         // Per PR-#100 review P1#3: the cycle-5b extent clamp +
         // gate-flip must NOT fire for explicit-height grids
@@ -5349,12 +5349,34 @@ public sealed class BlockLayouterTests
         // diagnostic mismatch + worse visual artifact than just
         // leaving the grid atomic).
         //
-        // Fixture: explicit-height grid (height: 300) larger than
-        // a 250 fresh page. Without the IsHeightAuto gate, the
-        // clamp would shrink borderBoxBlockSize to 250. With the
-        // gate (post-P1#3), the clamp doesn't fire + the wrapper
-        // emits at its authored 300 via the forced-overflow path
-        // (= existing cycle-1 behavior).
+        // Per Phase 3 Task 17 cycle 5c.2c — F3 ships
+        // (= MeasureSubtreeVisualBlockExtent subtree-extent clamp
+        // now honors paginateGridForOuterChild). Test rewritten
+        // from cycle-5c.2b-post-PR-#100-P1#3 (= "wrapper stays at
+        // authored 300") to assert the NEW F3-enabled behavior:
+        // explicit-height grid paginates cleanly.
+        //
+        // Fixture: explicit-height grid (height: 300, rows
+        // [100,100,100]) on a 250 fresh page. With F3:
+        //   1. PreMeasure leaves borderBoxBlockSize at 300
+        //      (= explicit height, no grow).
+        //   2. Outer-site clamp fires (pageRemaining 250 < 300
+        //      + > chrome): shrinks borderBoxBlockSize → 250 +
+        //      flips paginateGridForOuterChild=true.
+        //   3. MeasureSubtreeVisualBlockExtent returns 300 (=
+        //      style-derived); F3 clamp caps it back to 250.
+        //      Pre-F3 the subtree extent dominated effectiveSize
+        //      = 300 → break-check forced-overflow at the
+        //      CORRUPTED clamped wrapper geometry.
+        //   4. Break-check sees chunk 250 ≤ remaining 250 →
+        //      Continue.
+        //   5. F1 doesn't fire (= emittedThisAttempt == 0).
+        //   6. Wrapper emit at 250.
+        //   7. GridLayouter with allowPagination=true: budget 250,
+        //      emits rows 0+1 (= 200 ≤ 250). Returns
+        //      PageComplete(GridContinuation(RowIndex=2,
+        //      EmittedBlockExtent=200)).
+        //   8. F2 resize: wrapper BlockSize = 0 + 200 = 200.
         var sink = new RecordingFragmentSink();
         var root = Box.CreateRoot(MakeStyle());
 
@@ -5366,41 +5388,55 @@ public sealed class BlockLayouterTests
         root.AppendChild(grid);
 
         using var layouter = new BlockLayouter(root, sink);
-        // Page 250 < grid 300 → without the gate, clamp would
-        // shrink wrapper to 250 (= corrupt). With the gate,
-        // wrapper stays at authored 300 + forced-overflow fires.
         var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 250);
         var layoutCtx = new LayoutContext(ctx);
         using var resolver = new BreakResolver();
 
-        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
 
-        // Wrapper at authored height (border-box = 0 + 300 + 0
-        // = 300), NOT the clamped 250.
+        // F3 paginates the explicit-height grid:
+        //   - PageComplete with BlockContinuation pointing at grid.
+        //   - Wrapper BlockSize = emittedExtent (200), NOT the
+        //     authored 300, NOT the clamped 250.
+        //   - GridContinuation carries RowIndex=2 (= row 2 next).
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
         var wrapperFragment = sink.Fragments
             .First(f => ReferenceEquals(f.Box, grid));
-        Assert.Equal(300.0, wrapperFragment.BlockSize, precision: 3);
+        Assert.Equal(200.0, wrapperFragment.BlockSize, precision: 3);
+        var blockCont = (BlockContinuation)result.Continuation!;
+        Assert.Equal(0, blockCont.ResumeAtChild);
+        var gridCont = (GridContinuation)blockCont.LayouterState!;
+        Assert.Equal(2, gridCont.RowIndex);
     }
 
     [Fact]
-    public void Cycle5c2b_P1_3_explicit_height_grid_after_sibling_no_partial_clamp()
+    public void Cycle5c2c_F3_explicit_height_grid_after_sibling_paginates_correctly()
     {
-        // Per PR-#100 review P1#3 required test #2: an explicit-
-        // height grid AFTER preceding content must not get
-        // partially clamped + emitted with inconsistent geometry.
-        // The IsHeightAuto gate prevents the clamp from firing →
-        // grid passes through to break-check + either commits at
-        // authored size or breaks normally.
+        // Per Phase 3 Task 17 cycle 5c.2c — F3 explicit-height
+        // pagination. Replaces cycle-5c.2b-post-PR-#100-P1#3 test
+        // <c>explicit_height_grid_after_sibling_no_partial_clamp</c>
+        // which pinned the old "no partial clamp" behavior.
         //
-        // Fixture: sibling 150 + explicit-height grid 200 + page
-        // 300. Remaining after sibling = 150. Pre-P1#3 the clamp
-        // would shrink grid wrapper from 200 → 150 + flip gate.
-        // GridLayouter with allowPagination=true would split the
-        // grid (= partial emit at incorrect wrapper geometry).
-        // Post-P1#3: clamp doesn't fire → grid wrapper stays at
-        // 200 → break-check returns BreakHere (= chunk 200 >
-        // remaining 150) → PageComplete without grid emit, resume
-        // on next page. Authored wrapper geometry preserved.
+        // Fixture: sibling 150 + explicit-height grid 200 (rows
+        // [100,100]) + page 300. With F3:
+        //   1. Sibling emits 150 → UsedBlockSize = 150.
+        //   2. Grid: PreMeasure leaves borderBoxBlockSize = 200
+        //      (= explicit height, no grow).
+        //   3. Outer-site clamp fires: pageRemaining 150 < 200 +
+        //      > chrome 0 → shrinks to 150 + flips gate.
+        //   4. F3 subtree-clamp caps subtree extent to 150.
+        //   5. Break-check Continue.
+        //   6. F1 doesn't fire (= row 0 = 100 ≤ pageRemaining 150).
+        //   7. Wrapper emit at 150.
+        //   8. GridLayouter dispatches with allowPagination=true:
+        //      emits row 0 (= 100 ≤ 150 budget). Row 1 doesn't
+        //      fit (100 > 50 remaining). Returns
+        //      PageComplete(GridContinuation(RowIndex=1,
+        //      EmittedBlockExtent=100)).
+        //   9. F2 resize: wrapper BlockSize = 0 + 100 = 100.
+        //   10. Cursor advance: topShift(0) + 100 + 0 = 100.
+        //       UsedBlockSize = 150 + 100 = 250.
         var sink = new RecordingFragmentSink();
         var root = Box.CreateRoot(MakeStyle());
 
@@ -5423,16 +5459,67 @@ public sealed class BlockLayouterTests
         var result = layouter.AttemptLayout(
             ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
 
-        // Sibling emitted; grid NOT emitted (= break-check breaks
-        // before grid; resume on next page). Sink contains only
-        // the sibling fragment.
+        // Sibling + grid wrapper BOTH emit (= F3 enables
+        // pagination instead of break-before-grid). Wrapper at
+        // emitted extent (100), GridContinuation routes row 1
+        // to the next page.
         Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
-        Assert.DoesNotContain(sink.Fragments, f => ReferenceEquals(f.Box, grid));
+        Assert.Contains(sink.Fragments, f => ReferenceEquals(f.Box, sibling));
+        Assert.Contains(sink.Fragments, f => ReferenceEquals(f.Box, grid));
+        var wrapperFragment = sink.Fragments
+            .First(f => ReferenceEquals(f.Box, grid));
+        Assert.Equal(100.0, wrapperFragment.BlockSize, precision: 3);
+        Assert.Equal(250.0, ctx.UsedBlockSize, precision: 3);
         var blockCont = (BlockContinuation)result.Continuation!;
         Assert.Equal(1, blockCont.ResumeAtChild);
-        // No GridContinuation in the chain — the grid wasn't
-        // dispatched (= clamp didn't fire + atomic-break instead).
-        Assert.Null(blockCont.LayouterState);
+        var gridCont = (GridContinuation)blockCont.LayouterState!;
+        Assert.Equal(1, gridCont.RowIndex);
+    }
+
+    [Fact]
+    public void Cycle5c2c_F3_explicit_height_grid_oversized_for_fresh_page_forced_overflow()
+    {
+        // Per Phase 3 Task 17 cycle 5c.2c — F3 explicit-height
+        // grid that exceeds even a fresh page falls through to
+        // forced-overflow at the AUTHORED wrapper geometry (=
+        // existing cycle-1 behavior preserved). The outer-site
+        // clamp requires `pageRemaining > chrome` (= chrome would
+        // fit) AND `pageRemaining < borderBoxBlockSize`. When
+        // the grid's chrome alone exceeds page-remaining (= a
+        // pathological case), the clamp doesn't fire; the grid
+        // falls into forced-overflow at the authored size.
+        //
+        // More realistic case: grid first row exceeds a fresh
+        // page. F1 doesn't fire (= grid is first emittable +
+        // progress guard blocks); grid dispatches; GridLayouter
+        // under LastResort force-emits the oversized row +
+        // LayoutGridForcedOverflow001 diagnostic. Wrapper at the
+        // clamped extent; overflow is the painter's problem.
+        //
+        // This test pins the OVERSIZED-FIRST-ROW case to prove
+        // F3 doesn't break the LastResort progress contract.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var grid = BuildGridContainerWithRowTracks(rowsPx: new[] { 500.0 });
+        SetLengthPx(grid.Style, PropertyId.Height, 500);
+        grid.AppendChild(Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement()));
+        root.AppendChild(grid);
+
+        using var layouter = new BlockLayouter(root, sink, diagnostics: diag);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 250);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // The grid wrapper IS in the sink — F3 doesn't prevent
+        // emission, it just changes wrapper geometry. The wrapper
+        // emits at the clamped budget (250) since clamp fires +
+        // GridLayouter force-emits the 500px row past the budget
+        // (= visual overflow, LayoutGridForcedOverflow001 fires).
+        Assert.Contains(sink.Fragments, f => ReferenceEquals(f.Box, grid));
     }
 
     [Fact]

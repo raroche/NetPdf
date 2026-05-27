@@ -418,4 +418,29 @@ internal static class PaginateDiagnosticCodes
     /// Severity: Warning.</summary>
     public const string LayoutGridForcedOverflow001 =
         "LAYOUT-GRID-FORCED-OVERFLOW-001";
+
+    /// <summary>Phase 3 Task 17 cycle 5 + post-PR-#96 review F3 — a
+    /// grid resume continuation arrives at a page with a different
+    /// <c>contentInlineSize</c> than the cache was built for (e.g.,
+    /// left/right pages with different margins, or nested
+    /// fragmentainers). Inline track sizes (fr / Maximize'd) are
+    /// stale at the new size; the cache is invalidated + a fresh §11
+    /// sizing + §8.5 placement pass runs. Note that sparse auto-
+    /// placement is order-sensitive — a different placement may
+    /// emerge from the fresh resolve if items were partially emitted
+    /// on the prior page. Callers should avoid resuming a grid into
+    /// a page with a different inline content size. Severity: Warning.</summary>
+    public const string LayoutGridResumeInlineSizeMismatch001 =
+        "LAYOUT-GRID-RESUME-INLINE-SIZE-MISMATCH-001";
+
+    /// <summary>Phase 3 Task 17 cycle 5 + post-PR-#96 review F5 — a
+    /// grid resume cache was rejected by the receiving GridLayouter
+    /// because of a structural anomaly: cache GridIdentity does not
+    /// match the rootBox (= cache routed to the wrong grid), inconsistent
+    /// array lengths, out-of-bounds item placement, non-finite
+    /// geometry, or a non-Box item payload. The cache is rejected +
+    /// a fresh resolve runs. This indicates a layouter-dispatch bug
+    /// in the BlockLayouter continuation routing. Severity: Warning.</summary>
+    public const string LayoutGridResumeCacheRejected001 =
+        "LAYOUT-GRID-RESUME-CACHE-REJECTED-001";
 }

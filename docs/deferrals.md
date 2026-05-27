@@ -1787,3 +1787,54 @@ flags the categories):
 - **Removal condition** — when the refactors land, the file
   splits exist, and the tests still pass with no behavioral
   change.
+
+---
+
+## grid-break-resolver-integration-deferred
+
+- **ID** — `grid-break-resolver-integration-deferred`
+- **Status** — `approximated`. Phase 3 Task 17 cycle 5 + post-PR-#96
+  review F2 (full IBreakResolver wiring deferred).
+- **Behavior** — `GridLayouter.AttemptLayout` accepts
+  `IBreakResolver` + `LayoutAttemptStrategy` parameters as
+  required by the layouter interface, but cycle 5 hardening only
+  consults `LayoutAttemptStrategy` (= `LastResort` vs everything-
+  else gate for force-overflow per PR-#96 F1+F2 partial). The
+  resolver itself is not consulted: grid row boundaries are NOT
+  registered as `BreakOpportunity` values; author break policy
+  (`break-before` / `break-after` / `break-inside` on grid rows
+  + items) is not honored; the cost-model optimizer can't
+  influence grid-row break decisions.
+- **Missing** —
+  - Model grid row boundaries as `BreakOpportunity` values
+    registered with `IBreakResolver`.
+  - Define grid rewind behavior explicitly (= what does the
+    resolver do when `break-inside: avoid` on a row fires inside
+    a grid? Does it walk back to the prior page-eligible row?).
+  - Honor `break-before` / `break-after` on grid items + auto-
+    break opportunities between rows per CSS Fragmentation L3 §5.
+  - Restrict the §4.4 progress-rule overflow to `LastResort`
+    behavior in the resolver itself (not just the layouter's
+    strategy parameter).
+- **Trigger** — alongside CSS `break-before` / `break-after` /
+  `break-inside` support for grid rows (= the property values
+  must first parse + resolve through the cascade; cycle 5+
+  hardening can then wire them into the resolver).
+- **Owner files** —
+  - `src/NetPdf.Layout/Layouters/GridLayouter.cs` —
+    `ComputePaginatedRowRange` would consult the resolver per row.
+  - `src/NetPdf.Paginate/IBreakResolver.cs` — may need a new
+    `RegisterGridRowBoundary` API or extension of existing
+    `RegisterBreakOpportunity`.
+  - `src/NetPdf.Css/properties.json` — `break-before` /
+    `break-after` / `break-inside` if not already registered.
+- **Practical impact** — cycle 5 ships row-by-row pagination
+  driven solely by geometry. Authors who use CSS break properties
+  on grid items today (= rare in invoice/report use cases that
+  drive v1) see no effect. The cycle-5 LastResort gating (F1+F2
+  partial) is sufficient for the cycle 5b dispatch flow to be
+  safe; the FULL resolver integration is a separate cycle's work.
+- **Added** — Phase 3 Task 17 cycle 5 + post-PR-#96 review F2.
+- **Removal condition** — `BreakOpportunity` integration ships
+  + the resolver controls grid row breaks + CSS break-*
+  properties are honored on grid rows / items.

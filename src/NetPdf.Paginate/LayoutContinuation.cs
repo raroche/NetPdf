@@ -158,9 +158,13 @@ internal sealed record FlexContinuation : LayoutContinuation
 /// <paramref name="Cache"/> field was originally typed <c>object?</c>;
 /// cycle 5 promoted it to <see cref="GridResumeCache"/>, a concrete
 /// internal record carrying the row/column sizes + positions +
-/// per-item placement. Per CLAUDE.md "AOT-clean" rules the cache is
-/// strongly typed (no runtime cast); the layout pipeline reads it
-/// without reflection.</para>
+/// per-item placement. The cache itself is strongly typed at the
+/// Paginate package boundary; per PR-#96 review F6 the GridIdentity
+/// + per-placement Box references are typed as <see cref="object"/>
+/// (= same circular-dep workaround as <see cref="BlockContinuation.LayouterState"/>)
+/// — the Layout-side <c>GridLayouter</c> casts back to its
+/// <c>Box</c> type at the layouter-internal seam. The cast is
+/// validated by <c>GridLayouter.ValidateCachePerF5</c> on resume.</para>
 ///
 /// <para><b>Row-spanning items (cycle 6 scope)</b>: cycle 5 ships
 /// pagination assuming each item occupies exactly one row (= cycle 1
@@ -190,18 +194,37 @@ internal sealed record GridContinuation(
 /// sensitive + would yield a DIFFERENT placement on resume if items
 /// were partially emitted on the prior page.
 ///
-/// <para><see cref="RowBaseSizes"/> / <see cref="ColumnBaseSizes"/>
-/// carry the post-Maximize final track sizes (= the
-/// <c>RowSizes</c>/<c>ColSizes</c> the layouter's emit loop reads).
-/// <see cref="RowPositions"/> / <see cref="ColumnPositions"/> carry
-/// the cumulative offsets in the wrapper's content-box coordinates
-/// (= what emit sums to get per-fragment offsets).</para>
+/// <para><b>Positions are RELATIVE to the grid's content-box
+/// origin</b> (per PR-#96 review F3): <see cref="RowPositions"/>[0]
+/// = 0; <see cref="ColumnPositions"/>[0] = 0; subsequent entries are
+/// cumulative track sizes. The resume layouter adds the current
+/// page's <c>contentInlineOffset</c> / <c>contentBlockOffset</c> at
+/// emit time. This shape is correct regardless of whether the resume
+/// page has a different inline / block content origin than the
+/// original page (e.g., left/right pages with different margins,
+/// or nested fragmentainers).</para>
+///
+/// <para><see cref="GridIdentity"/> per PR-#96 review F5 — the
+/// original grid container's <c>Box</c> reference (typed
+/// <see cref="object"/> for the same circular-dep reason as
+/// <see cref="GridItemPlacement.Box"/>). The resume layouter
+/// validates <c>cache.GridIdentity == rootBox</c> to reject caches
+/// routed to the wrong grid container.</para>
+///
+/// <para><see cref="OriginalContentInlineSize"/> per PR-#96 review
+/// F3 — the inline content size used during the original Resolve
+/// pass. If the resume page has a different inline size, fr / max-
+/// imized column widths are stale; the resume layouter detects the
+/// mismatch + invalidates the cache (= forces a fresh sizing pass
+/// for the resume page).</para>
 ///
 /// <para><see cref="ItemPlacements"/> per design doc § cycle 5 — the
 /// per-item (Row, Col) tuples from the sparse auto-placement pass,
 /// in DOM order. The resume layouter iterates this list verbatim +
 /// emits only items whose Row ≥ continuation.RowIndex.</para></summary>
 internal sealed record GridResumeCache(
+    object GridIdentity,
+    double OriginalContentInlineSize,
     System.Collections.Immutable.ImmutableArray<double> RowBaseSizes,
     System.Collections.Immutable.ImmutableArray<double> ColumnBaseSizes,
     System.Collections.Immutable.ImmutableArray<double> RowPositions,

@@ -6393,13 +6393,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         return sizing.RowExtentSum;
     }
 
-    /// <summary>Per Phase 3 Task 17 cycle 1 (Hello World) — mirrors
+    /// <summary>Per Phase 3 Task 17 cycle 1 (Hello World) + cycle 5
+    /// (pagination parameters added; cycle 5 hardening kept gates
+    /// DORMANT — call sites still pass <c>allowPagination: false</c>
+    /// + <c>incomingContinuation: null</c>) — mirrors
     /// <see cref="DispatchFlexInner"/> for grid containers. The single
     /// helper used by all 3 dispatch sites (outer / recursive /
-    /// forced-overflow-reroute) so future cycles (= cycle 5 multi-page
-    /// grid) can extend in one place. Cycle 1 ships atomic emission
-    /// only (= no <c>allowPagination</c> parameter; cycle 5 will add it
-    /// when wiring multi-page grid pagination).</summary>
+    /// forced-overflow-reroute). Cycle 5b activates the dispatch by
+    /// passing <c>allowPagination: true</c> at the pre-grow-gate-
+    /// triggered sites + threading the incoming
+    /// <c>BlockContinuation.LayouterState=GridContinuation</c> through.</summary>
     private LayoutAttemptResult DispatchGridInner(
         Box gridBox,
         double contentInlineOffset,

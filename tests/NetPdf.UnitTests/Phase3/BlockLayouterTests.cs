@@ -4813,6 +4813,677 @@ public sealed class BlockLayouterTests
     }
 
     // ====================================================================
+    //  Cycle 5c.2b F2 — outer-site clamp + gate-flip + wrapper-resize
+    //
+    //  Tests covering the cycle-5b PR-#97 reverted outer-site activation:
+    //  cycle 5c.2a F1 (above) + cycle 5c.2b F2 (here) make the gate-flip
+    //  safe by routing Strict-defer pre-empt without empty wrappers + by
+    //  resizing the wrapper to the actual emitted-rows extent (not the
+    //  clamped budget). The IBlockFragmentSink.UpdateFragmentBlockSize
+    //  API mutation preserves z-order (= wrapper stays ahead of children
+    //  in the fragment list) without re-emitting.
+    // ====================================================================
+
+    [Fact]
+    public void Cycle5c2b_F2_wrapper_resizes_to_emitted_extent_on_partial_emit()
+    {
+        // Page=300, sibling 200, grid has 3 rows of 100px each + auto
+        // height (= natural extent 300). Page remaining after sibling
+        // = 100; clamp shrinks borderBoxBlockSize to 100 + flips
+        // paginateGridForOuterChild=true. GridLayouter dispatches with
+        // allowPagination=true → emits row 0 only (100 fits 100
+        // budget; row 1 doesn't) → returns PageComplete with
+        // GridContinuation(RowIndex=1, EmittedBlockExtent=100). F2
+        // consumer resizes the wrapper from 100 (clamped budget) to
+        // 100 (chrome=0 + emittedExtent=100) — identical today
+        // because the budget equals the emitted-extent in this
+        // single-fit case. The test pins the WRAPPER RESIZE PATH
+        // executes (= UpdateFragmentBlockSize was called) by
+        // checking the recorded wrapper has the expected BlockSize.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var siblingStyle = MakeStyle();
+        SetLengthPx(siblingStyle, PropertyId.Height, 200);
+        var sibling = Box.ForElement(BoxKind.BlockContainer, siblingStyle, MakeElement());
+        root.AppendChild(sibling);
+
+        var grid = BuildGridContainerWithRowTracks(rowsPx: new[] { 100.0, 100.0, 100.0 });
+        // No explicit height → auto-grid; PreMeasureGridRowExtent
+        // grows borderBoxBlockSize to natural 300. The clamp then
+        // shrinks to remaining = 100.
+        grid.AppendChild(Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement()));
+        grid.AppendChild(Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement()));
+        grid.AppendChild(Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement()));
+        root.AppendChild(grid);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 300);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // Expectations:
+        //   - PageComplete with BlockContinuation routing to the grid.
+        //   - Sink contains sibling + wrapper (= 2 wrappers minimum;
+        //     the grid item is emitted INSIDE the wrapper after it).
+        //   - Wrapper BlockSize equals emittedExtent + chrome = 100
+        //     (= F2 resize hit; pre-F2 it would be 100 too because
+        //     budget == emitted in this case; the stronger test is
+        //     the multi-row scenario below).
+        //   - Outgoing GridContinuation has RowIndex=1 (= one row
+        //     emitted, row 1 next).
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var blockCont = (BlockContinuation)result.Continuation!;
+        Assert.Equal(1, blockCont.ResumeAtChild);
+        var gridCont = (GridContinuation)blockCont.LayouterState!;
+        Assert.Equal(1, gridCont.RowIndex);
+        Assert.Equal(100.0, gridCont.EmittedBlockExtent);
+        // Wrapper fragment is in the sink (= 2nd fragment after
+        // sibling); BlockSize matches emitted-extent + chrome (0
+        // here since no border/padding).
+        var wrapperFragment = sink.Fragments
+            .First(f => ReferenceEquals(f.Box, grid));
+        Assert.Equal(100.0, wrapperFragment.BlockSize);
+    }
+
+    [Fact]
+    public void Cycle5c2b_F2_wrapper_resize_eliminates_empty_trailing_space()
+    {
+        // The CRITICAL F2 test — wrapper budget DIVERGES from emitted
+        // extent. Page=300, sibling 50, grid has rows [80, 80, 80] +
+        // auto height. Sibling consumes 50; page remaining = 250.
+        // Clamp shrinks borderBoxBlockSize to 250 + flips gate ON.
+        // GridLayouter with allowPagination=true emits rows 0+1+2
+        // (= 240 fits 250) → PageComplete(GridContinuation(...,
+        // EmittedBlockExtent=240)). PRE-F2: wrapper paints at 250
+        // (= empty 10px trailing space). POST-F2: wrapper paints at
+        // 240 (= matches emitted content exactly).
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var siblingStyle = MakeStyle();
+        SetLengthPx(siblingStyle, PropertyId.Height, 50);
+        var sibling = Box.ForElement(BoxKind.BlockContainer, siblingStyle, MakeElement());
+        root.AppendChild(sibling);
+
+        var grid = BuildGridContainerWithRowTracks(rowsPx: new[] { 80.0, 80.0, 80.0 });
+        grid.AppendChild(Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement()));
+        grid.AppendChild(Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement()));
+        grid.AppendChild(Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement()));
+        root.AppendChild(grid);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 300);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // Critical assertion: wrapper BlockSize == 240 (= sum of
+        // emitted row tracks), NOT 250 (= clamped budget). Pre-F2
+        // this would have been 250 → 10px empty trailing space.
+        var wrapperFragment = sink.Fragments
+            .First(f => ReferenceEquals(f.Box, grid));
+        Assert.Equal(240.0, wrapperFragment.BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public void Cycle5c2b_F2_cursor_advance_uses_emitted_extent_not_budget()
+    {
+        // Twin to the trailing-space test — verifies the cursor
+        // advance (= fragmentainer.UsedBlockSize after the grid) uses
+        // emittedExtent + chrome, not the clamped budget. Page=300,
+        // sibling 50, grid rows [80, 80, 80]. After dispatch:
+        //   - sibling consumed 50
+        //   - grid wrapper would have advanced by clamped budget 250
+        //     (pre-F2) → UsedBlockSize = 300 (= full page)
+        //   - F2 advances by emittedExtent 240 → UsedBlockSize = 290
+        // The 10px difference matters when other siblings follow the
+        // grid: pre-F2 they'd be displaced 10px past their correct
+        // position.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var siblingStyle = MakeStyle();
+        SetLengthPx(siblingStyle, PropertyId.Height, 50);
+        var sibling = Box.ForElement(BoxKind.BlockContainer, siblingStyle, MakeElement());
+        root.AppendChild(sibling);
+
+        var grid = BuildGridContainerWithRowTracks(rowsPx: new[] { 80.0, 80.0, 80.0 });
+        grid.AppendChild(Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement()));
+        grid.AppendChild(Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement()));
+        grid.AppendChild(Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement()));
+        root.AppendChild(grid);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 300);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // UsedBlockSize after the run: sibling(50) + grid(240
+        // emitted, NOT 250 budget) = 290. Pre-F2 this would be 300
+        // (full page) due to wrapper-budget over-advance.
+        Assert.Equal(290.0, ctx.UsedBlockSize, precision: 3);
+    }
+
+    [Fact]
+    public void Cycle5c2b_F2_gate_off_path_uses_unmodified_marginbox_cursor_advance()
+    {
+        // When the clamp doesn't fire (= wrapper fits remaining +
+        // grid is atomic-dispatched), the gate stays OFF + F2
+        // wrapper-resize does NOT run. Cursor advance uses
+        // marginBoxBlockSizeForCursor (= subtree-aware natural
+        // extent) as in cycle 2c. Pins the GATE-OFF code path.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var grid = BuildGridContainerWithRowTracks(rowsPx: new[] { 80.0 });
+        grid.AppendChild(Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement()));
+        root.AppendChild(grid);
+
+        using var layouter = new BlockLayouter(root, sink);
+        // Grid wrapper 80 fits the 600 page comfortably → clamp
+        // doesn't fire → gate stays OFF → atomic dispatch + no F2
+        // resize.
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 600);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // Wrapper at natural size (80) since gate is OFF + no
+        // F2 resize triggered.
+        var wrapperFragment = sink.Fragments
+            .First(f => ReferenceEquals(f.Box, grid));
+        Assert.Equal(80.0, wrapperFragment.BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public void Cycle5c2b_F2_AllDone_final_resume_page_resizes_wrapper()
+    {
+        // The critical F1+F2 round-trip: page 1 emits row 0, defers
+        // remaining via PageComplete; page 2 (resume page) emits the
+        // remaining rows in AllDone. On page 2, the wrapper must
+        // size to the emitted-rows extent (= LastEmittedBlockExtent
+        // on AllDone, per cycle 5c.1 PR-#98 review F1), NOT the
+        // clamped budget. Mirrors GridLayouterTests'
+        // <c>Cycle5c1_F1_AllDone_final_fragment_of_split_grid_exposes_remaining_extent</c>
+        // but exercised through the full BlockLayouter dispatch +
+        // F2 wrapper-resize consumer.
+        //
+        // Fixture: 3-row grid 100/100/100. Page block 300; sibling
+        // 200 on page 1 → grid emits row 0 (100 of 100 remaining).
+        // Page 2 (resume): empty page, grid is first emittable,
+        // remaining 300; grid emits rows 1+2 (= 200 total). Wrapper
+        // BlockSize on page 2 must be 200, NOT 300 (= natural) or
+        // 300 (= clamped budget).
+        var grid = BuildGridContainerWithRowTracks(rowsPx: new[] { 100.0, 100.0, 100.0 });
+        grid.AppendChild(Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement()));
+        grid.AppendChild(Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement()));
+        grid.AppendChild(Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement()));
+
+        var siblingStyle = MakeStyle();
+        SetLengthPx(siblingStyle, PropertyId.Height, 200);
+        var sibling = Box.ForElement(BoxKind.BlockContainer, siblingStyle, MakeElement());
+
+        var root = Box.CreateRoot(MakeStyle());
+        root.AppendChild(sibling);
+        root.AppendChild(grid);
+
+        // Page 1: emits sibling + row 0 of grid (= clamp to 100
+        // remaining → 1 row of 100 fits).
+        var sink1 = new RecordingFragmentSink();
+        using var layouter1 = new BlockLayouter(root, sink1);
+        var ctx1 = new FragmentainerContext(contentInlineSize: 600, blockSize: 300);
+        var layoutCtx1 = new LayoutContext(ctx1);
+        using var resolver1 = new BreakResolver();
+        var result1 = layouter1.AttemptLayout(
+            ctx1, ref layoutCtx1, resolver1, LayoutAttemptStrategy.Strict);
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result1.Outcome);
+        var continuation = (BlockContinuation)result1.Continuation!;
+
+        // Page 2: resume page with the continuation, fresh
+        // fragmentainer. Should emit rows 1+2.
+        var sink2 = new RecordingFragmentSink();
+        using var layouter2 = new BlockLayouter(root, sink2, continuation);
+        var ctx2 = new FragmentainerContext(contentInlineSize: 600, blockSize: 300);
+        var layoutCtx2 = new LayoutContext(ctx2);
+        using var resolver2 = new BreakResolver();
+        var result2 = layouter2.AttemptLayout(
+            ctx2, ref layoutCtx2, resolver2, LayoutAttemptStrategy.Strict);
+
+        // Page 2 emits the grid wrapper. With F2 + the cycle-5c.1
+        // AllDone-extent contract, the wrapper resizes to 200 (=
+        // emittedExtent for rows 1+2). Pre-F2 it would be either 300
+        // (= natural) or unclamped.
+        var wrapperFragment2 = sink2.Fragments
+            .First(f => ReferenceEquals(f.Box, grid));
+        Assert.Equal(200.0, wrapperFragment2.BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public void Cycle5c2b_F2_sink_UpdateFragmentBlockSize_replaces_blocksize_preserves_other_fields()
+    {
+        // Direct unit test of the new IBlockFragmentSink API. Verifies
+        // that UpdateFragmentBlockSize mutates ONLY the BlockSize +
+        // preserves Box, InlineOffset, BlockOffset, InlineSize,
+        // InlineLayout. Catches regressions in the test sink's `with`
+        // expression / mutation pattern.
+        var sink = new RecordingFragmentSink();
+        var box = Box.CreateRoot(MakeStyle());
+        sink.Emit(new BoxFragment(
+            Box: box,
+            InlineOffset: 10,
+            BlockOffset: 20,
+            InlineSize: 100,
+            BlockSize: 200));
+        Assert.Equal(1, sink.Cursor);
+
+        sink.UpdateFragmentBlockSize(cursor: 0, newBlockSize: 50);
+
+        var fragment = sink.Fragments[0];
+        Assert.Same(box, fragment.Box);
+        Assert.Equal(10, fragment.InlineOffset);
+        Assert.Equal(20, fragment.BlockOffset);
+        Assert.Equal(100, fragment.InlineSize);
+        Assert.Equal(50, fragment.BlockSize);
+    }
+
+    [Fact]
+    public void Cycle5c2b_F2_sink_UpdateFragmentBlockSize_out_of_range_is_safe_noop()
+    {
+        // The sink contract permits invalid indices as defensive
+        // no-ops (= rather than throw). Test sinks mirror the
+        // pattern; this verifies neither out-of-range index nor
+        // empty sink crash.
+        var sink = new RecordingFragmentSink();
+        // Empty sink:
+        sink.UpdateFragmentBlockSize(cursor: 0, newBlockSize: 100);
+        sink.UpdateFragmentBlockSize(cursor: -1, newBlockSize: 100);
+        Assert.Equal(0, sink.Cursor);
+
+        // Populate one fragment + try out-of-range:
+        var box = Box.CreateRoot(MakeStyle());
+        sink.Emit(new BoxFragment(box, 0, 0, 100, 200));
+        sink.UpdateFragmentBlockSize(cursor: 5, newBlockSize: 999);
+        sink.UpdateFragmentBlockSize(cursor: -1, newBlockSize: 999);
+        Assert.Equal(200, sink.Fragments[0].BlockSize);
+    }
+
+    // ====================================================================
+    //  Cycle 5c.2b post-PR-#100 review hardening
+    //
+    //  P1#1: nested-context BlockLayouters (table cell / grid item /
+    //  table caption) suppress grid pagination so a paginatable direct-
+    //  child grid can't return PageComplete(GridContinuation) into a
+    //  parent that discards it (= silent row loss). The
+    //  <c>disableGridPagination</c> constructor flag is the seam.
+    //
+    //  P1#2: F2 cursor arithmetic uses <c>topShift</c>, not
+    //  <c>marginStart</c>, so adjacent-sibling margin collapse is not
+    //  double-counted (per CSS 2.1 §8.3.1).
+    //
+    //  P1#3: the outer-site extent clamp is also gated by
+    //  <c>IsHeightAuto(child)</c> so explicit-height grids don't get
+    //  their authored wrapper geometry corrupted before cycle 5c.2c
+    //  ships F3 (= grid-aware MeasureSubtreeVisualBlockExtent).
+    // ====================================================================
+
+    [Fact]
+    public void Cycle5c2b_P1_1_nested_block_layouter_disables_grid_pagination()
+    {
+        // Direct test of the disableGridPagination flag. When a
+        // nested BlockLayouter is constructed with the flag set,
+        // even a scenario that WOULD trigger F1's defer at the
+        // root falls through to atomic dispatch + emits the
+        // wrapper. Critical for the table-cell / grid-item context
+        // where the parent discards the inner result.
+        //
+        // Fixture: identical to the F1-defers test (= prior
+        // sibling + paginatable grid first row exceeds remaining
+        // + Strict). With disableGridPagination=true, F1 is
+        // bypassed → wrapper emits.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var siblingStyle = MakeStyle();
+        SetLengthPx(siblingStyle, PropertyId.Height, 200);
+        var sibling = Box.ForElement(BoxKind.BlockContainer, siblingStyle, MakeElement());
+        root.AppendChild(sibling);
+
+        var grid = BuildGridContainerWithRowTracks(rowsPx: new[] { 150.0 });
+        SetLengthPx(grid.Style, PropertyId.Height, 50);
+        grid.AppendChild(Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement()));
+        root.AppendChild(grid);
+
+        using var layouter = new BlockLayouter(
+            rootBox: root,
+            sink: sink,
+            incomingContinuation: null,
+            diagnostics: null,
+            shaperResolver: null,
+            disableGridPagination: true);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 300);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // With pagination suppressed, the wrapper IS emitted on
+        // this page (F1 doesn't defer + the clamp doesn't fire +
+        // F2 doesn't resize).
+        Assert.Contains(sink.Fragments, f => ReferenceEquals(f.Box, grid));
+    }
+
+    [Fact]
+    public void Cycle5c2b_P1_1_table_cell_with_paginatable_grid_renders_all_rows()
+    {
+        // Per PR-#100 review P1#1 required test #1: a table cell
+        // containing a direct-child paginatable grid must render
+        // EVERY grid row exactly once — no silent loss from a
+        // discarded continuation. The cell's nested BlockLayouter
+        // is now constructed with disableGridPagination=true (=
+        // see TableLayouter.cs cell-content dispatch), so the
+        // grid dispatches atomically + emits all 4 rows under
+        // visual-overflow semantics (= cycle-1 contract).
+        //
+        // Direct GridLayouter assertion: when a BlockLayouter is
+        // constructed with disableGridPagination=true + given a
+        // root containing only a paginatable grid in a tight
+        // budget that WOULD trigger F1 / the clamp, all grid
+        // rows must emit (= no defer + no clamp + atomic).
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var grid = BuildGridContainerWithRowTracks(
+            rowsPx: new[] { 100.0, 100.0, 100.0, 100.0 });
+        var item1 = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        var item2 = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        var item3 = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        var item4 = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        grid.AppendChild(item1);
+        grid.AppendChild(item2);
+        grid.AppendChild(item3);
+        grid.AppendChild(item4);
+        root.AppendChild(grid);
+
+        // Inner fragmentainer modeling the cell's available
+        // block-extent. Without disableGridPagination, the F1
+        // clamp would defer / split this — losing rows.
+        using var layouter = new BlockLayouter(
+            rootBox: root,
+            sink: sink,
+            incomingContinuation: null,
+            diagnostics: null,
+            shaperResolver: null,
+            disableGridPagination: true);
+        var ctx = new FragmentainerContext(contentInlineSize: 100, blockSize: 300);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // CRITICAL — no GridContinuation in the result (= F1 didn't
+        // route + the result has no nested grid state for a parent
+        // to discard). Outcome may be AllDone (= grid fit) or
+        // PageComplete (= outer forced-overflow fired because the
+        // grid's natural extent 400 exceeds the page 300; that's
+        // outer-block-layouter behavior, NOT grid pagination).
+        if (result.Continuation is BlockContinuation bc)
+        {
+            Assert.Null(bc.LayouterState);
+        }
+        // All 4 grid items emitted (no row loss) — the dispatch
+        // was atomic per the disableGridPagination contract.
+        Assert.Contains(sink.Fragments, f => ReferenceEquals(f.Box, item1));
+        Assert.Contains(sink.Fragments, f => ReferenceEquals(f.Box, item2));
+        Assert.Contains(sink.Fragments, f => ReferenceEquals(f.Box, item3));
+        Assert.Contains(sink.Fragments, f => ReferenceEquals(f.Box, item4));
+    }
+
+    [Fact]
+    public void Cycle5c2b_P1_2_F2_cursor_advance_honors_collapsed_margins()
+    {
+        // Per PR-#100 review P1#2: F2 must use topShift, not
+        // marginStart. Fixture: sibling marginBottom=80, grid
+        // marginTop=10. Per CSS 2.1 §8.3.1, the collapsed gap is
+        // max(80,10)=80 — the 80 was already added by the prior
+        // block's emit, so the grid's topShift contribution is 0
+        // (no additional). With marginStart-based arithmetic
+        // (pre-P1#2), F2 charges 10 again → cursor over-advances
+        // by 10px. With topShift-based arithmetic (post-P1#2),
+        // cursor advance is correct.
+        //
+        // Scenario: sibling 100 (+ marginBottom 80), then
+        // paginatable grid (marginTop 10, height auto, single
+        // row 50). Page 300.
+        //   Cursor after sibling: BlockOffset 0 → emit at 0..100;
+        //     UsedBlockSize advances by marginBox = 0+100+80=180.
+        //   At grid: prevBlockMarginEnd=80, marginStart=10
+        //     → effectiveTopGap = max(80,10) = 80;
+        //     topShift = 80 - 80 = 0;
+        //     blockOffset = 180 + 0 = 180.
+        //   Grid wrapper natural extent 50 → fits remaining 120.
+        //   Clamp doesn't fire → atomic dispatch → wrapper at 50.
+        //   Standard cursor advance:
+        //     marginBoxBlockSizeForCursor = topShift + 50 +
+        //     marginEnd(0) = 50.
+        //
+        // But to exercise F2's cursor recomputation, we need
+        // F2 to fire. Construct a scenario where the clamp
+        // fires (auto-height grid wrapper > remaining + remaining
+        // > chrome).
+        //
+        // Fixture v2: page 300, sibling 100 + marginBottom 80,
+        // grid marginTop 10 + auto-height with 3 rows of 100
+        // (natural extent 300). PreMeasure grows wrapper to 300.
+        //   After sibling: UsedBlockSize=180.
+        //   At grid: topShift = 0 (collapsed); pageRemaining =
+        //     300 - 180 - 0 = 120; clamp fires
+        //     (120 < 300 + 120 > chrome 0) → borderBoxBlockSize=120,
+        //     paginateGridForOuterChild=true.
+        //   GridLayouter with allowPagination=true emits row 0
+        //     (= 100 fits 120) → PageComplete(GridContinuation,
+        //     EmittedBlockExtent=100).
+        //   F2 wrapper-resize: BlockSize = chrome(0) + 100 = 100.
+        //   F2 cursor advance (post-P1#2 topShift-based):
+        //     topShift(0) + 100 + marginEnd(0) = 100.
+        //   UsedBlockSize after grid = 180 + 100 = 280.
+        //
+        // Pre-P1#2 (marginStart-based) would have computed:
+        //   marginStart(10) + 100 + 0 = 110;
+        //   UsedBlockSize after grid = 180 + 110 = 290 (= 10
+        //   over-advance from double-counted margin).
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var siblingStyle = MakeStyle();
+        SetLengthPx(siblingStyle, PropertyId.Height, 100);
+        SetLengthPx(siblingStyle, PropertyId.MarginBottom, 80);
+        var sibling = Box.ForElement(BoxKind.BlockContainer, siblingStyle, MakeElement());
+        root.AppendChild(sibling);
+
+        var grid = BuildGridContainerWithRowTracks(rowsPx: new[] { 100.0, 100.0, 100.0 });
+        SetLengthPx(grid.Style, PropertyId.MarginTop, 10);
+        grid.AppendChild(Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement()));
+        grid.AppendChild(Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement()));
+        grid.AppendChild(Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement()));
+        root.AppendChild(grid);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 300);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // Correct cursor advance: 100 (sibling border-box) + 80
+        // (sibling marginBottom, collapsed) + 0 (no additional
+        // topShift) + 100 (emitted grid row) + 0 (grid marginEnd)
+        // = 280. Pre-P1#2 was 290 (= 10 over-advance).
+        Assert.Equal(280.0, ctx.UsedBlockSize, precision: 3);
+        // Wrapper still at the resized extent (100).
+        var wrapperFragment = sink.Fragments
+            .First(f => ReferenceEquals(f.Box, grid));
+        Assert.Equal(100.0, wrapperFragment.BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public void Cycle5c2b_P1_3_explicit_height_grid_not_clamped_until_F3_ships()
+    {
+        // Per PR-#100 review P1#3: the cycle-5b extent clamp +
+        // gate-flip must NOT fire for explicit-height grids
+        // until cycle 5c.2c ships F3 (= grid-aware
+        // MeasureSubtreeVisualBlockExtent). Without this gate,
+        // the clamp shrinks borderBoxBlockSize but
+        // MeasureSubtreeVisualBlockExtent restores the natural
+        // extent → forced-overflow path emits the wrapper at the
+        // CLAMPED size with content overflowing the WRAPPER (=
+        // diagnostic mismatch + worse visual artifact than just
+        // leaving the grid atomic).
+        //
+        // Fixture: explicit-height grid (height: 300) larger than
+        // a 250 fresh page. Without the IsHeightAuto gate, the
+        // clamp would shrink borderBoxBlockSize to 250. With the
+        // gate (post-P1#3), the clamp doesn't fire + the wrapper
+        // emits at its authored 300 via the forced-overflow path
+        // (= existing cycle-1 behavior).
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var grid = BuildGridContainerWithRowTracks(rowsPx: new[] { 100.0, 100.0, 100.0 });
+        SetLengthPx(grid.Style, PropertyId.Height, 300);
+        grid.AppendChild(Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement()));
+        grid.AppendChild(Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement()));
+        grid.AppendChild(Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement()));
+        root.AppendChild(grid);
+
+        using var layouter = new BlockLayouter(root, sink);
+        // Page 250 < grid 300 → without the gate, clamp would
+        // shrink wrapper to 250 (= corrupt). With the gate,
+        // wrapper stays at authored 300 + forced-overflow fires.
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 250);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // Wrapper at authored height (border-box = 0 + 300 + 0
+        // = 300), NOT the clamped 250.
+        var wrapperFragment = sink.Fragments
+            .First(f => ReferenceEquals(f.Box, grid));
+        Assert.Equal(300.0, wrapperFragment.BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public void Cycle5c2b_P1_3_explicit_height_grid_after_sibling_no_partial_clamp()
+    {
+        // Per PR-#100 review P1#3 required test #2: an explicit-
+        // height grid AFTER preceding content must not get
+        // partially clamped + emitted with inconsistent geometry.
+        // The IsHeightAuto gate prevents the clamp from firing →
+        // grid passes through to break-check + either commits at
+        // authored size or breaks normally.
+        //
+        // Fixture: sibling 150 + explicit-height grid 200 + page
+        // 300. Remaining after sibling = 150. Pre-P1#3 the clamp
+        // would shrink grid wrapper from 200 → 150 + flip gate.
+        // GridLayouter with allowPagination=true would split the
+        // grid (= partial emit at incorrect wrapper geometry).
+        // Post-P1#3: clamp doesn't fire → grid wrapper stays at
+        // 200 → break-check returns BreakHere (= chunk 200 >
+        // remaining 150) → PageComplete without grid emit, resume
+        // on next page. Authored wrapper geometry preserved.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var siblingStyle = MakeStyle();
+        SetLengthPx(siblingStyle, PropertyId.Height, 150);
+        var sibling = Box.ForElement(BoxKind.BlockContainer, siblingStyle, MakeElement());
+        root.AppendChild(sibling);
+
+        var grid = BuildGridContainerWithRowTracks(rowsPx: new[] { 100.0, 100.0 });
+        SetLengthPx(grid.Style, PropertyId.Height, 200);
+        grid.AppendChild(Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement()));
+        grid.AppendChild(Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement()));
+        root.AppendChild(grid);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 300);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // Sibling emitted; grid NOT emitted (= break-check breaks
+        // before grid; resume on next page). Sink contains only
+        // the sibling fragment.
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        Assert.DoesNotContain(sink.Fragments, f => ReferenceEquals(f.Box, grid));
+        var blockCont = (BlockContinuation)result.Continuation!;
+        Assert.Equal(1, blockCont.ResumeAtChild);
+        // No GridContinuation in the chain — the grid wasn't
+        // dispatched (= clamp didn't fire + atomic-break instead).
+        Assert.Null(blockCont.LayouterState);
+    }
+
+    [Fact]
+    public void Cycle5c2b_P1_2_F2_final_resume_fragment_with_margin_advances_correctly()
+    {
+        // Per PR-#100 review P1#2 required test #2: final resume
+        // fragment of a split grid with margins must compute cursor
+        // advance correctly. The resume page's grid is the first
+        // emittable child → topShift = grid's marginStart. F2
+        // resize fires (incoming continuation) + cursor advance
+        // uses topShift-based form.
+        //
+        // Page 2 of a split: incoming GridContinuation(RowIndex=1,
+        // Cache=null for simplicity). Grid marginTop=20, rows
+        // [100, 100, 100]. Page 300. The resume emits rows 1+2
+        // (= 200 extent). UsedBlockSize after grid:
+        //   topShift (= marginStart = 20)
+        //   + resized wrapper (= chrome 0 + emittedExtent 200 = 200)
+        //   + marginEnd (= 0) = 220.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var grid = BuildGridContainerWithRowTracks(rowsPx: new[] { 100.0, 100.0, 100.0 });
+        SetLengthPx(grid.Style, PropertyId.MarginTop, 20);
+        grid.AppendChild(Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement()));
+        grid.AppendChild(Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement()));
+        grid.AppendChild(Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement()));
+        root.AppendChild(grid);
+
+        var incoming = new BlockContinuation(
+            ResumeAtChild: 0,
+            ConsumedBlockSize: 100,
+            LayouterState: new GridContinuation(RowIndex: 1));
+
+        using var layouter = new BlockLayouter(root, sink, incoming);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 300);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // UsedBlockSize after: topShift (= marginTop 20) + emitted
+        // (200) + marginEnd (0) = 220.
+        Assert.Equal(220.0, ctx.UsedBlockSize, precision: 3);
+        // Wrapper resized to chrome (0) + emittedExtent (200) = 200.
+        var wrapperFragment = sink.Fragments
+            .First(f => ReferenceEquals(f.Box, grid));
+        Assert.Equal(200.0, wrapperFragment.BlockSize, precision: 3);
+    }
+
+    // ====================================================================
     //  Test doubles + helpers
     // ====================================================================
 
@@ -4830,6 +5501,20 @@ public sealed class BlockLayouterTests
                 Fragments.RemoveRange(cursor, Fragments.Count - cursor);
             }
         }
+
+        public void UpdateFragmentBlockSize(int cursor, double newBlockSize)
+        {
+            // Per Phase 3 Task 17 cycle 5c.2b — F2 wrapper-resize.
+            // Mutate the BoxFragment at <c>cursor</c> in place so the
+            // BlockLayouter's post-dispatch wrapper-resize consumer
+            // can shrink a paginatable-grid / paginatable-flex
+            // wrapper from the clamped budget to the actual emitted
+            // extent without breaking z-order (= the wrapper stays
+            // ahead of its children in the fragment list).
+            if (cursor < 0 || cursor >= Fragments.Count) return;
+            Fragments[cursor] = Fragments[cursor] with { BlockSize = newBlockSize };
+        }
+
     }
 
     /// <summary>Resolver that returns Continue for the first

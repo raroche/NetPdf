@@ -256,6 +256,29 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// facade's renderer) wire a real resolver.</summary>
     private readonly IShaperResolver? _shaperResolver;
 
+    /// <summary>Per Phase 3 Task 17 cycle 5c.2b post-PR-#100 review
+    /// P1#1 — when <see langword="true"/>, this BlockLayouter
+    /// instance suppresses the outer-site paginatable-grid path
+    /// (= F1 pre-dispatch row-fit, the cycle-5b extent clamp +
+    /// <c>paginateGridForOuterChild</c> gate, F2 wrapper-resize).
+    /// Set by nested-context callers
+    /// (<c>GridLayouter.DispatchGridItemContents</c> +
+    /// <c>TableLayouter</c>'s cell-content + caption-content
+    /// dispatch) that intentionally discard <c>AttemptLayout</c>'s
+    /// result + can't propagate a <c>BlockContinuation</c> through
+    /// their parent's layouter. Without this guard, a paginatable
+    /// direct-child grid inside a table cell or grid item would
+    /// return <c>PageComplete(GridContinuation)</c> + only emit
+    /// rows preceding the split; the continuation is dropped + the
+    /// remaining rows silently vanish (= the parallel-flows
+    /// fragmentation contract of CSS Fragmentation L3 + the
+    /// independent-fragmentation rule for table cells / grid
+    /// items). Cycle 5c.2d will wire nested continuation
+    /// propagation where the parent layouter supports it; until
+    /// then nested grids dispatch atomically via the cycle-1
+    /// contract.</summary>
+    private readonly bool _disableGridPagination;
+
     /// <summary>Per Phase 3 Task 12 sub-cycle 5 hardening Finding 5 —
     /// when <see langword="true"/>, the inline-pass through
     /// <c>InlineLayouter.LayoutPerRun</c> downgrades
@@ -434,7 +457,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         IBlockFragmentSink sink,
         LayoutContinuation? incomingContinuation = null,
         IPaginateDiagnosticsSink? diagnostics = null,
-        IShaperResolver? shaperResolver = null)
+        IShaperResolver? shaperResolver = null,
+        bool disableGridPagination = false)
     {
         ArgumentNullException.ThrowIfNull(rootBox);
         ArgumentNullException.ThrowIfNull(sink);
@@ -467,6 +491,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         _incomingContinuation = incomingContinuation;
         _diagnostics = diagnostics;
         _shaperResolver = shaperResolver;
+        _disableGridPagination = disableGridPagination;
     }
 
     /// <inheritdoc />
@@ -1689,36 +1714,89 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 }
             }
 
-            // Per Phase 3 Task 17 cycle 5b post-PR-#97 review F1+F2+F3
-            // — the paginatable-grid extent clamp at this site was
-            // REVERTED. Three architectural issues blocked activation:
+            // Per Phase 3 Task 17 cycle 5c.2b — paginatable-grid
+            // outer-site extent clamp + gate-flip (REACTIVATED after
+            // the cycle-5b PR-#97 revert). The cycle-5a F1 pre-
+            // dispatch row-fit decision (above, BEFORE the wrapper
+            // emit) handles the Strict-defer pre-empt; cycle-5b's
+            // initial activation was reverted because the same site
+            // emitted the wrapper at the clamped budget extent even
+            // when GridLayouter only emitted K of N rows (= F2's
+            // empty trailing space + cursor inflation). Cycle 5c.2b
+            // ships F2's wrapper-resize consumer (below at the
+            // IsGridContainer dispatch branch) which mutates the
+            // wrapper's BlockSize to <c>chrome + emittedExtent</c>
+            // post-dispatch + recomputes the cursor advance to
+            // match. With F1 + F2 both in place, this clamp is safe
+            // to re-enable.
             //
-            // F1 — strategy-aware row-fit decision must run BEFORE the
-            // wrapper is emitted at line ~2352, not after. The current
-            // code emits the wrapper first; a subsequent
-            // PageComplete(GridContinuation(0, null)) under Strict
-            // strategy would leave an empty committed wrapper on the
-            // prior page. Needs pre-dispatch row-fit OR wrapper
-            // rollback/backfill semantics.
+            // <para>Mirrors the paginatable-flex clamp at
+            // line ~1630 — when the wrapper's grown natural extent
+            // would overflow the remaining fragmentainer space AND
+            // the container is eligible per
+            // <see cref="IsPaginatableGrid"/>, clamp
+            // <c>borderBoxBlockSize</c> to what fits + flip
+            // <c>paginateGridForOuterChild</c> ON so the dispatch
+            // block below passes
+            // <c>allowPagination: true</c> through to
+            // <c>GridLayouter</c>. With the clamp in place the
+            // break-check below sees a fitting chunk (= no forced-
+            // overflow path) + the normal Continue path dispatches
+            // with pagination enabled — <c>GridLayouter</c> emits
+            // rows up to the clamped budget + returns
+            // <c>PageComplete(GridContinuation)</c> for the rest;
+            // the F2 consumer then resizes the wrapper to the
+            // actual emitted extent (= eliminates the empty
+            // trailing space + corrects sibling placement).</para>
             //
-            // F2 — wrapper would paint at the full clamped extent
-            // (= 250px) even when GridLayouter emits only 2 of 3 rows
-            // (= 200px). The wrapper must size to emitted-rows-extent
-            // + chrome, not the budget. Needs an emitted-extent
-            // contract returned from GridLayouter (mirror flex
-            // cycle-4e EmittedBlockExtent).
-            //
-            // F3 — explicit-height grids (height:300px) have
-            // MeasureSubtreeVisualBlockExtent restore the 300px after
-            // the clamp, so the wrapper falls into forced-overflow
-            // with allowPagination:false. Needs grid-specific extent
-            // handling in the resolver path.
-            //
-            // Each gets a dedicated deferrals.md entry; cycle 5c picks
-            // up the architectural work. For now the
-            // paginateGridForOuterChild flag stays at its initial
-            // value (false) — API surface preserved for cycle 5c to
-            // activate.
+            // <para>F3 (= explicit-height grids) is still deferred
+            // (see <c>docs/deferrals.md</c>
+            // <c>grid-explicit-height-paginate-deferral</c>); the
+            // <see cref="MeasureSubtreeVisualBlockExtent"/> restore
+            // path makes explicit-height grids fall into the
+            // forced-overflow branch. Cycle 5c.2c addresses F3 by
+            // making that helper grid-aware. The recursive-site
+            // wiring + production-pipeline tests land in cycle 5c.2d.
+            // </para>
+            // Per Phase 3 Task 17 cycle 5c.2b post-PR-#100 review:
+            //   P1#1 — <c>_disableGridPagination</c> gate. Nested
+            //     BlockLayouters (grid-item / table-cell / table-
+            //     caption contexts) cannot propagate a
+            //     BlockContinuation to their parent layouter; the
+            //     parent intentionally discards the inner result.
+            //     Activating the clamp here would route
+            //     PageComplete(GridContinuation) up + the parent's
+            //     discard would silently drop remaining grid rows.
+            //   P1#3 — <c>IsHeightAuto(child)</c> gate. Explicit-
+            //     height grids interact with
+            //     <see cref="MeasureSubtreeVisualBlockExtent"/>'s
+            //     style-height-restore in a way that defeats the
+            //     clamp (= F3 deferral
+            //     <c>grid-explicit-height-paginate-deferral</c>).
+            //     Until cycle 5c.2c makes that helper grid-aware,
+            //     the clamp would corrupt the authored wrapper
+            //     geometry without enabling pagination — strictly
+            //     worse than leaving the grid atomic. Gating to
+            //     auto-height grids only preserves authored
+            //     forced-overflow geometry for explicit-height
+            //     grids.
+            if (IsPaginatableGrid(child)
+                && !_disableGridPagination
+                && IsHeightAuto(child))
+            {
+                var pageRemainingForOuterGrid =
+                    fragmentainer.BlockSize
+                    - fragmentainer.UsedBlockSize - topShift;
+                var outerGridBorderPaddingBlock =
+                    borderStart + paddingStart + paddingEnd + borderEnd;
+                if (pageRemainingForOuterGrid > 0
+                    && pageRemainingForOuterGrid < borderBoxBlockSize
+                    && pageRemainingForOuterGrid > outerGridBorderPaddingBlock)
+                {
+                    borderBoxBlockSize = pageRemainingForOuterGrid;
+                    paginateGridForOuterChild = true;
+                }
+            }
 
             // Per cycle 2c post-PR-29 review #7 — `marginBoxBlockSize`
             // (= `topShift + borderBoxBlockSize + marginEnd`) was
@@ -2194,7 +2272,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                             contentBlockSize: forcedGridGeom.ContentBlockSize,
                             fragmentainer: fragmentainer,
                             layout: ref layout,
-                            cancellationToken: cancellationToken);
+                            cancellationToken: cancellationToken,
+                            lastEmittedBlockExtent: out _);
 
                         fragmentainer.UsedBlockSize = Math.Max(0,
                             fragmentainer.UsedBlockSize + marginBoxBlockSizeForCursor);
@@ -2494,7 +2573,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // emission + no sink-rollback contract complexity + the
             // probe reuses the existing <c>GridSizing.Resolve</c>
             // pattern from <see cref="PreMeasureGridRowExtent"/>.</para>
+            // Per Phase 3 Task 17 cycle 5c.2b post-PR-#100 review P1#1
+            // — F1 also gated by <c>!_disableGridPagination</c>. In
+            // a nested-context BlockLayouter (table cell / grid
+            // item / table caption) the F1 defer would route
+            // PageComplete(BlockContinuation) up to a parent that
+            // discards the result, silently dropping the grid.
             if (IsPaginatableGrid(child)
+                && !_disableGridPagination
                 && strategy != LayoutAttemptStrategy.LastResort
                 && emittedThisAttempt > 0)
             {
@@ -2584,6 +2670,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 }
             }
 
+            // Per Phase 3 Task 17 cycle 5c.2b F2 — capture the sink
+            // cursor BEFORE emitting the wrapper so the post-dispatch
+            // wrapper-resize consumer (below, at the IsGridContainer
+            // dispatch branch) can mutate the wrapper's BlockSize in
+            // place via <see cref="IBlockFragmentSink.UpdateFragmentBlockSize"/>
+            // after the inner GridLayouter reports its
+            // <c>LastEmittedBlockExtent</c>. Z-order is preserved (=
+            // the wrapper stays at this cursor index, ahead of its
+            // children).
+            var wrapperCursor = _sink.Cursor;
             _sink.Emit(new BoxFragment(
                 Box: child,
                 InlineOffset: inFlowInlineOffset,
@@ -2902,13 +2998,98 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     fragmentainer: fragmentainer,
                     layout: ref layout,
                     cancellationToken: cancellationToken,
+                    lastEmittedBlockExtent: out var gridLastEmittedBlockExtent,
                     allowPagination: paginateGridForOuterChild,
                     incomingContinuation: incomingGridContinuation);
+
+                // Per Phase 3 Task 17 cycle 5c.2b F2 — wrapper-resize
+                // + cursor-advance consumer for grids in a multi-page
+                // state. <c>gridLastEmittedBlockExtent</c> (= the
+                // <c>GridLayouter.LastEmittedBlockExtent</c> property
+                // from cycle 5c.1, populated on EVERY outcome) is the
+                // TRUE occupied content-box block extent of the
+                // emitted rows.
+                //
+                // <para>F2 fires when EITHER:
+                //   * <c>paginateGridForOuterChild</c> is on (= the
+                //     outer-site clamp fired this page; the wrapper
+                //     was emitted at the clamped budget but
+                //     GridLayouter may have only emitted K of N
+                //     rows). Pre-F2 the wrapper paints empty
+                //     trailing space + the cursor over-advances,
+                //     displacing following siblings.
+                //   * <c>incomingGridContinuation</c> is non-null
+                //     (= resuming a previously-deferred grid;
+                //     GridLayouter emits only the remaining rows
+                //     even when the gate doesn't fire on this
+                //     page). Without this branch, the AllDone-on-
+                //     resume case from cycle 5c.1 PR-#98 review F1
+                //     would leave the wrapper at the FULL grid's
+                //     natural extent on the final page → empty
+                //     trailing space below the last emitted row.
+                // </para>
+                //
+                // <para>Single-page grids (no clamp, no resume) hit
+                // neither condition + take the natural-extent
+                // <c>marginBoxBlockSizeForCursor</c> path (= byte-
+                // identical to pre-cycle-5c.2b behavior for fixtures
+                // that don't paginate grids).</para>
+                //
+                // <para>Chrome derivation: the wrapper's vertical
+                // chrome is the sum of borders + paddings on the
+                // block axis (= <c>borderStart + paddingStart +
+                // paddingEnd + borderEnd</c>). The wrapper's
+                // BlockSize equals <c>chrome + emittedExtent</c>;
+                // the cursor advance equals <c>marginStart +
+                // chrome + emittedExtent + marginEnd</c> (= margin-
+                // box). Both derivations use the same
+                // <c>gridLastEmittedBlockExtent</c> from
+                // GridLayouter so wrapper geometry +
+                // <c>UsedBlockSize</c> +
+                // <c>BlockContinuation.ConsumedBlockSize</c> all
+                // agree.</para>
+                double cursorAdvanceForGrid = marginBoxBlockSizeForCursor;
+                var f2WrapperResizeFires =
+                    paginateGridForOuterChild
+                    || incomingGridContinuation is not null;
+                if (f2WrapperResizeFires)
+                {
+                    var gridChromeBlock =
+                        borderStart + paddingStart + paddingEnd + borderEnd;
+                    var resizedWrapperBlockSize =
+                        gridChromeBlock + gridLastEmittedBlockExtent;
+                    _sink.UpdateFragmentBlockSize(
+                        wrapperCursor, resizedWrapperBlockSize);
+                    // Recompute the cursor advance to use the
+                    // emitted-content extent instead of the natural
+                    // / clamped budget.
+                    //
+                    // <para>Per Phase 3 Task 17 cycle 5c.2b
+                    // post-PR-#100 review P1#2 — use <c>topShift</c>
+                    // rather than <c>marginStart</c>. The block-flow
+                    // cursor accounting (per CSS 2.1 §8.3.1 margin
+                    // collapsing) advances by
+                    // <c>topShift + borderBox + marginEnd</c>:
+                    // <c>topShift</c> already encodes the ADDITIONAL
+                    // distance after sibling-margin collapse (=
+                    // <c>marginStart</c> when first on page; the
+                    // collapsed delta otherwise). Substituting
+                    // <c>marginStart</c> double-counts the top
+                    // margin whenever a preceding sibling's bottom
+                    // margin absorbed part of the collapse — e.g.,
+                    // sibling marginBottom=80, grid marginTop=10:
+                    // collapsed gap = 80, so topShift contribution
+                    // = 0 (the 80 is already in UsedBlockSize from
+                    // the prior block). Pre-fix charged 10 again;
+                    // post-fix correctly charges 0.</para>
+                    cursorAdvanceForGrid =
+                        topShift + resizedWrapperBlockSize + marginEnd;
+                }
 
                 // Cursor advance + bookkeeping mirror the flex/multicol
                 // path.
                 fragmentainer.UsedBlockSize = Math.Max(0,
-                    fragmentainer.UsedBlockSize + marginBoxBlockSizeForCursor);
+                    fragmentainer.UsedBlockSize + cursorAdvanceForGrid);
                 prevBlockMarginEnd = marginEnd;
                 hasPriorAdjoiningBlock = true;
                 emittedThisAttempt++;
@@ -4146,7 +4327,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     contentBlockSize: nestedGridGeom.ContentBlockSize,
                     fragmentainer: _capturedFragmentainer,
                     layout: ref nestedGridLayoutCtx,
-                    cancellationToken: cancellationToken);
+                    cancellationToken: cancellationToken,
+                    lastEmittedBlockExtent: out _);
 
                 // Advance the cursor + bookkeeping; skip the
                 // EmitBlockSubtreeRecursive below.
@@ -6519,6 +6701,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 _cursor = cursor;
             }
         }
+
+        public void UpdateFragmentBlockSize(int cursor, double newBlockSize)
+        {
+            // Per Phase 3 Task 17 cycle 5c.2b — measure-only sink
+            // discards fragments after extent tracking, so there's no
+            // stored fragment to mutate. The wrapper-resize doesn't
+            // affect this sink's measurement output (= column natural
+            // extent is captured at Emit time from BlockOffset +
+            // BlockSize). Forward-compat no-op.
+        }
     }
 
     /// <summary>Per Phase 3 Task 14 cycle 1 hardening (Finding 2) —
@@ -6785,15 +6977,23 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     }
 
     /// <summary>Per Phase 3 Task 17 cycle 1 (Hello World) + cycle 5
-    /// (pagination parameters added; cycle 5 hardening kept gates
-    /// DORMANT — call sites still pass <c>allowPagination: false</c>
-    /// + <c>incomingContinuation: null</c>) — mirrors
+    /// (pagination parameters added; cycle 5b initial ship kept gates
+    /// DORMANT) + cycle 5c.2b (gate flipped at the outer-site clamp;
+    /// F2 wrapper-resize wired) — mirrors
     /// <see cref="DispatchFlexInner"/> for grid containers. The single
     /// helper used by all 3 dispatch sites (outer / recursive /
-    /// forced-overflow-reroute). Cycle 5b activates the dispatch by
-    /// passing <c>allowPagination: true</c> at the pre-grow-gate-
-    /// triggered sites + threading the incoming
-    /// <c>BlockContinuation.LayouterState=GridContinuation</c> through.</summary>
+    /// forced-overflow-reroute).
+    ///
+    /// <para>Per Phase 3 Task 17 cycle 5c.2b F2 — exposes
+    /// <c>gridLayouter.LastEmittedBlockExtent</c> via the
+    /// <paramref name="lastEmittedBlockExtent"/> out parameter so the
+    /// outer-site caller can resize the wrapper fragment + adjust
+    /// cursor advance to the actual emitted-rows extent (not the
+    /// clamped budget). The property is populated by
+    /// <see cref="GridLayouter.AttemptLayout"/> on EVERY outcome
+    /// (PageComplete, AllDone, Strict-defer, early-return). Callers
+    /// that don't consume the value (= forced-overflow + recursive
+    /// sites in 5c.2b's dormant scope) pass <c>out _</c>.</para></summary>
     private LayoutAttemptResult DispatchGridInner(
         Box gridBox,
         double contentInlineOffset,
@@ -6803,6 +7003,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         FragmentainerContext fragmentainer,
         ref LayoutContext layout,
         CancellationToken cancellationToken,
+        out double lastEmittedBlockExtent,
         bool allowPagination = false,
         GridContinuation? incomingContinuation = null)
     {
@@ -6819,12 +7020,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             contentBlockSize: contentBlockSize,
             allowPagination: allowPagination);
         using var gridResolver = new BreakResolver();
-        return gridLayouter.AttemptLayout(
+        var result = gridLayouter.AttemptLayout(
             fragmentainer,
             ref layout,
             gridResolver,
             LayoutAttemptStrategy.LastResort,
             cancellationToken);
+        lastEmittedBlockExtent = gridLayouter.LastEmittedBlockExtent;
+        return result;
     }
 
     /// <summary>Per Phase 3 Task 14 cycle 2 hardening (Finding #5) —

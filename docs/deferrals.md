@@ -1936,8 +1936,14 @@ flags the categories):
 ## grid-fragment-extent-emitted-rows-only-deferral
 
 - **ID** — `grid-fragment-extent-emitted-rows-only-deferral`
-- **Status** — `approximated` (partial). Phase 3 Task 17 cycle 5c.1
-  ships the producer side; cycle 5c.2 wires the consumer.
+- **Status** — `approximated` (consumer shipped + verified by 7
+  `Cycle5c2b_F2_*` unit tests; explicit-height grids still pending
+  F3 in cycle 5c.2c; recursive site + production tests in 5c.2d).
+  Phase 3 Task 17 cycle 5c.1 ships the producer side; cycle 5c.2b
+  ships the consumer (= F2 wrapper-resize via
+  `IBlockFragmentSink.UpdateFragmentBlockSize` + cursor-advance
+  using emitted extent + cycle-5b outer-site clamp reactivated
+  for auto-height grids).
 - **Behavior** — when grid pagination IS active, the wrapper
   fragment paints at the clamped extent (= page budget) and the
   cursor advances by the full clamped extent. But `GridLayouter`
@@ -1959,33 +1965,106 @@ flags the categories):
   <c>GridContinuation.EmittedBlockExtent</c> field is kept as a
   redundant carrier when a continuation exists; the layouter
   property is the primary source for cycle 5c.2.
-- **Cycle 5c.2 MISSING (consumer side)** — `BlockLayouter` must
-  read <c>gridLayouter.LastEmittedBlockExtent</c> after
-  `DispatchGridInner` returns + size the wrapper BoxFragment to
-  <c>LastEmittedBlockExtent + chrome</c> + advance the cursor by
-  that, NOT the clamped budget. Coordinates with F1 (pre-dispatch
-  row-fit / rollback) + F3 (explicit-height grid handling).
-- **Practical impact** — cycle 5b's outer-site activation remains
-  REVERTED until cycle 5c.2 wires the consumer + the F1/F3
-  architectural fixes land. Without the consumer wiring,
-  `LastEmittedBlockExtent` is populated but unused (= byte-parity
-  preserved; zero runtime impact).
+- **Cycle 5c.2b SHIPPED (consumer side)** — `BlockLayouter` now
+  reads <c>gridLayouter.LastEmittedBlockExtent</c> via
+  <c>DispatchGridInner</c>'s new
+  <c>out double lastEmittedBlockExtent</c> parameter + sizes the
+  wrapper <c>BoxFragment</c> to
+  <c>LastEmittedBlockExtent + chrome</c> via the new
+  <see cref="IBlockFragmentSink.UpdateFragmentBlockSize"/> sink
+  mutation API + advances the cursor by
+  <c>marginStart + chrome + LastEmittedBlockExtent + marginEnd</c>.
+  The F2 consumer fires when EITHER
+  <c>paginateGridForOuterChild</c> is on (= the outer-site clamp
+  fired this page) OR <c>incomingGridContinuation</c> is non-null
+  (= resuming a previously-deferred grid; the AllDone-on-resume
+  case from cycle 5c.1 PR-#98 review F1 needs the wrapper to size
+  to the remaining-rows extent, NOT the full grid's natural
+  extent). The cycle-5b outer-site clamp + gate-flip
+  (<c>paginateGridForOuterChild</c>) is REACTIVATED for auto-height
+  grids on this cycle.
+- **Practical impact** — paginatable-grid scenarios at the outer
+  site now produce visually-correct wrapper sizing + cumulative
+  consumed accounting + correct sibling placement on both pages of
+  a split grid. AOT/JIT byte-parity of existing fixtures is
+  preserved (= production HTML fixtures route through the
+  recursive `EmitBlockSubtreeRecursive` path which is unchanged
+  until cycle 5c.2d).
 - **Trigger** — cycle 5c.2. Coordinates with F1 (pre-dispatch
-  row-fit or wrapper rollback) + F3 (explicit-height handling).
+  row-fit, shipped 5c.2a) + F3 (explicit-height handling, cycle
+  5c.2c).
 - **Owner files** —
   - `src/NetPdf.Layout/Layouters/GridLayouter.cs` — exposes
     `LastEmittedBlockExtent` ✓ (cycle 5c.1).
   - `src/NetPdf.Paginate/LayoutContinuation.cs` — adds
     `GridContinuation.EmittedBlockExtent` field ✓ (cycle 5c.1).
+  - `src/NetPdf.Layout/Layouters/IBlockFragmentSink.cs` — new
+    `UpdateFragmentBlockSize(cursor, newBlockSize)` ✓ (cycle 5c.2b).
   - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` — wrapper
-    BoxFragment emit + cursor advance both use the emitted extent
-    (cycle 5c.2).
+    BoxFragment resize + cursor advance both use the emitted
+    extent ✓ (cycle 5c.2b).
 - **Added** — Phase 3 Task 17 cycle 5b + post-PR-#97 review F2.
 - **Updated** — Phase 3 Task 17 cycle 5c.1 + post-PR-#98 review
   F1 + F3 (producer side ships).
-- **Removal condition** — cycle 5c.2 wires the consumer +
-  end-to-end production tests verify wrapper sizing + cumulative
-  consumed + sibling placement on both pages of a split grid.
+- **Updated** — Phase 3 Task 17 cycle 5c.2b (consumer side ships).
+- **Updated** — Phase 3 Task 17 cycle 5c.2b + post-PR-#100 review
+  P1#1 + P1#2 + P1#3 (= nested-context callers opt out of
+  pagination via <c>disableGridPagination</c>; F2 cursor advance
+  uses <c>topShift</c>; explicit-height grids gated out of the
+  clamp until F3).
+- **Removal condition** — cycle 5c.2d wires the recursive
+  `EmitBlockSubtreeRecursive` site + ships production-pipeline
+  multi-page tests verifying end-to-end wrapper sizing +
+  cumulative consumed + sibling placement on real HTML fixtures.
+
+---
+
+## grid-fragment-plan-shared-sizing-deferral
+
+- **ID** — `grid-fragment-plan-shared-sizing-deferral`
+- **Status** — `not-started`. Phase 3 Task 17 cycle 5c.2b post-
+  PR-#100 review P2.
+- **Behavior** — auto-height paginatable grids run
+  `GridSizing.Resolve` three times per attempted fragment:
+  (1) in `PreMeasureGridRowExtent` to grow the wrapper to
+  natural extent; (2) in F1's `PreMeasureGridRowExtentAt`
+  probe (when no incoming cache present); (3) inside
+  `GridLayouter.AttemptLayout` for the actual dispatch. Each
+  `Resolve` runs §11 sizing + §8.5 placement; for grids with
+  many items + repeat-expanded tracks, this triples the §11
+  work per attempt + amplifies the cycle-5 resume cache's CPU
+  amortization rationale.
+- **Practical impact** — measurable CPU overhead on large
+  invoice / report grids; the resume cache hit path on page 2+
+  avoids one Resolve (cycle 5c.2a P1#2), but pages where the
+  cache is invalidated (= inline-size mismatch, identity
+  mismatch) or absent (= first-page) still triple-resolve.
+- **Missing** — a shared per-attempt `GridFragmentPlan`
+  immutable record carrying row geometry + placements + the
+  next-row fit prediction + the emitted-extent inputs, computed
+  ONCE per attempt + threaded through pre-measure +
+  `PreMeasureGridRowExtentAt` + `DispatchGridInner` so all
+  three sites consume the same authoritative resolve. Mirrors
+  the cycle-5 resume cache pattern but lives one layer up (=
+  per-attempt, not per-resume-cycle).
+- **Trigger** — when a benchmark on a large multi-page grid
+  shows measurable CPU regression vs cycle 5b atomic dispatch.
+  Until benchmarks land, accepted as a known cost since the
+  Length-only track tests in cycle 5c.2a/b don't surface it.
+- **Owner files** —
+  - `src/NetPdf.Layout/Layouters/GridSizing.cs` — `Result` type
+    becomes the shared plan's payload.
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` —
+    `PreMeasureGridRowExtent` + `PreMeasureGridRowExtentAt` +
+    `DispatchGridInner` thread the shared plan.
+  - `src/NetPdf.Layout/Layouters/GridLayouter.cs` —
+    `ConfigureEmission` accepts a precomputed plan in lieu of
+    running its own `Resolve`.
+- **Added** — Phase 3 Task 17 cycle 5c.2b + post-PR-#100 review
+  P2.
+- **Removal condition** — shared plan lands AND benchmark
+  shows ≤ 1× CPU vs cycle 5b atomic dispatch for paginatable-
+  grid fixtures.
 
 ---
 

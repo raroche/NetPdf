@@ -39,4 +39,42 @@ internal interface IBlockFragmentSink : IFragmentSink
     /// candidate-break checkpoints; <see cref="IFragmentSink.RollbackTo"/>
     /// truncates back to this value on rewind.</summary>
     int Cursor { get; }
+
+    /// <summary>Per Phase 3 Task 17 cycle 5c.2b F2 — retroactively
+    /// resize a previously emitted wrapper fragment's
+    /// <see cref="BoxFragment.BlockSize"/>. Used by BlockLayouter
+    /// after a paginatable-grid / paginatable-flex dispatch returns
+    /// to shrink the wrapper from the clamped page-budget extent
+    /// down to the actual emitted-content extent — without this,
+    /// a wrapper clamped to 250 but with content only 200 paints
+    /// 50px of empty space + over-advances the cursor (= sibling
+    /// displacement).
+    ///
+    /// <para><b>Z-order constraint preserved.</b> The wrapper
+    /// fragment was already emitted BEFORE the inner layouter's
+    /// item fragments (mirrors painter draw order). Mutating
+    /// <c>BlockSize</c> in place doesn't change list position; the
+    /// wrapper continues to paint first + its background / borders
+    /// stay correct.</para>
+    ///
+    /// <para><b>Contract.</b> <paramref name="cursor"/> must be a
+    /// valid index (= 0 ≤ cursor &lt; <see cref="Cursor"/>) when
+    /// called. Implementations replace the fragment at that index
+    /// with a copy whose <see cref="BoxFragment.BlockSize"/> equals
+    /// <paramref name="newBlockSize"/>; other fields (Box,
+    /// InlineOffset, BlockOffset, InlineSize, InlineLayout) are
+    /// preserved. <paramref name="newBlockSize"/> must be finite +
+    /// non-negative; the caller validates (= mirrors the
+    /// <c>FlexContinuation.EmittedBlockExtent</c> /
+    /// <c>GridContinuation.EmittedBlockExtent</c> constructor
+    /// validation). Implementations that don't store fragments
+    /// (= measure-only sinks) may treat this as a no-op since they
+    /// don't paint anything for the wrapper resize to fix.</para>
+    ///
+    /// <para>Cycle 5c.2b ships the GRID consumer; cycle 4f
+    /// previously deferred the FLEX consumer pending this same API
+    /// (see <c>docs/deferrals.md</c>
+    /// <c>flex-wrapper-resize-consumer-deferral</c>). Both
+    /// consumers share this method.</para></summary>
+    void UpdateFragmentBlockSize(int cursor, double newBlockSize);
 }

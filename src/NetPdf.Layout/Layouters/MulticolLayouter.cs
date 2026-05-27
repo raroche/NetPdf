@@ -1419,6 +1419,16 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
                 _cursor = cursor;
             }
         }
+
+        public void UpdateFragmentBlockSize(int cursor, double newBlockSize)
+        {
+            // Per Phase 3 Task 17 cycle 5c.2b — measure-only sink has
+            // no stored fragment to mutate (fragments are discarded
+            // post-cursor-bookkeeping). The natural block extent is
+            // already captured via the max-bottom tracking; a wrapper
+            // resize after dispatch doesn't affect the dry-run's
+            // measurement output.
+        }
     }
 
     /// <summary>Per Phase 3 Task 14 cycle 1 — decorator over
@@ -1467,5 +1477,8 @@ internal sealed class MulticolLayouter : ILayouter, IDisposable
             });
 
         public void RollbackTo(int cursor) => _outerSink.RollbackTo(cursor);
+
+        public void UpdateFragmentBlockSize(int cursor, double newBlockSize) =>
+            _outerSink.UpdateFragmentBlockSize(cursor, newBlockSize);
     }
 }

@@ -1545,3 +1545,82 @@ flags the categories):
   `<self-position>` decoder with FlexLayouter.
 - **Baseline alignment** in grid cells — blocked on L18.
 - **`grid` shorthand parser** — Task 19/20 housekeeping post-cycle-7.
+
+---
+
+## grid-track-sizing-cycle3-narrowed-scope
+
+- **ID** — `grid-track-sizing-cycle3-narrowed-scope`
+- **Status** — `partial`. Phase 3 Task 17 cycle 3 + post-PR-#94 review
+  hardening F4.
+- **Behavior** — CSS Grid track sizing (CSS Grid Layout L1 §11) ships
+  three track kinds via the shared `GridSizing` service:
+  - **Length tracks** — fully spec-correct (resolved in §11.4
+    pre-pass).
+  - **Flexible (`fr`) tracks** — §11.7 "Find the Size of an fr"
+    with the spec-correct `flexFactorSum = max(SUM(factors), 1.0)`
+    floor (the floor applies once to the TOTAL, not per-track).
+    Under an indefinite block axis fr collapses to zero +
+    `LayoutGridFrUnderIndefiniteApproximated001` fires.
+  - **Intrinsic (`auto` / `min-content` / `max-content`) tracks** —
+    approximated via the **L19 declared-dimension contribution**
+    (`GridSizing.ItemOuterContribution`): each item contributes
+    its explicit width/height + border + padding + margin if
+    declared, otherwise contributes 0. Same approximation surface
+    as flex `min-width: auto`.
+- **NOT in cycle 3** — explicitly deferred so the narrowed scope
+  doesn't drift:
+  - **True intrinsic content measurement (L19)** — running a
+    sub-BlockLayouter dry-run to obtain per-item
+    min-content/max-content from rendered descendants. The L19
+    approximation above is the placeholder until L19 ships.
+  - **§11.6 Maximize step** — the post-fr-resolution pass that
+    grows base sizes up to growth limits when the grid has free
+    space + no fr tracks consumed it. Cycle 4 picks this up.
+  - **Auto-track stretch** — distributing leftover container space
+    across `auto` tracks per `align-content` / `justify-content`
+    `stretch`. Separate sub-task (CSS Box Alignment L3 §6) that
+    shares its `<content-distribution>` decoder with the existing
+    FlexLayouter path.
+  - **`box-sizing: border-box`** — `GridSizing.ItemOuterContribution`
+    currently always treats declared width/height as content-box +
+    adds chrome. Honoring `box-sizing: border-box` (subtract
+    border + padding from the declared dimension before adding to
+    track sum) is part of the broader box-sizing pass that touches
+    BlockLayouter + FlexLayouter symmetrically.
+  - **Percentage track / item dimensions resolved against the grid's
+    indefinite axis** — the cycle-3 path treats percentages as 0 in
+    the indefinite case (the standard CSS Sizing L3 rule). Definite-
+    axis percentages already resolve through the existing computed-
+    value path.
+- **Missing** — the five bullets above; plus the cycle-4+ track
+  kinds (`minmax()` / `fit-content()` / `repeat(integer)`) that
+  cycle 4 will add.
+- **Added** — Phase 3 Task 17 cycle 3 initial ship (intrinsic via
+  L19 approximation); cycle 3 post-PR-#94 review hardening F4
+  (= explicit narrowed-scope enumeration so reviewers + future me
+  don't read the cycle-3 XML doc as "intrinsic tracks fully shipped").
+- **Owner files** —
+  - `src/NetPdf.Layout/Layouters/GridSizing.cs` — shared sizing
+    service (Length + Fr + intrinsic via L19); single source of
+    truth for both pre-measure (BlockLayouter) and emit
+    (GridLayouter).
+  - `src/NetPdf.Layout/Layouters/GridLayouter.cs` — thin emission
+    wrapper; XML doc explicitly enumerates the narrowed scope.
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` —
+    `PreMeasureGridRowExtent` calls `GridSizing.Resolve` with
+    `emit: null` so auto-height wrappers reserve intrinsic-row
+    space without double-firing diagnostics.
+- **Trigger** — cycle 4 (this Task) ships `minmax()` / `fit-content()`
+  / `repeat(integer)` + activates the iterative §11.7 fr-removal
+  step. Cycle 5+ ships multi-page row split. The L19 deferral
+  (true intrinsic content measurement) is the engine-wide blocker
+  that closes the L19 approximation here + in FlexLayouter
+  simultaneously.
+- **Removal condition** — each bullet under "NOT in cycle 3"
+  closes individually as the corresponding cycle/task ships. The
+  whole entry retires when L19 + §11.6 Maximize + auto-track
+  stretch + `box-sizing: border-box` + indefinite-axis percentage
+  resolution are all in place; at that point the GridSizing
+  service is the spec-complete §11 implementation and this
+  enumeration becomes legacy documentation.

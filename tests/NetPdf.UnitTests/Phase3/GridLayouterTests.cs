@@ -1062,6 +1062,191 @@ public sealed class GridLayouterTests
     }
 
     // =====================================================================
+    //  Cycle 3 — intrinsic sizing (auto / min-content / max-content)
+    // =====================================================================
+
+    [Fact]
+    public void Cycle3_auto_track_sizes_from_item_explicit_height()
+    {
+        // Per cycle 3 — auto row track size = max declared height of
+        // items placed at that row (L19 approximation).
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rows = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForAuto())));
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForLength(100))));
+        var grid = BuildGridContainerWithTemplates(rows, cols);
+        SetExplicitWidth(grid, 100);
+        SetExplicitHeight(grid, 200);
+
+        var item = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        item.Style.Set(PropertyId.Height, ComputedSlot.FromLengthPx(75));
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Single(sink.Fragments);
+        AssertFragmentEquals(sink, item, inlineOffset: 0, blockOffset: 0, inlineSize: 100, blockSize: 75);
+        // Cycle 3 supports auto → no unsupported-kind diagnostic.
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridTrackKindUnsupported001);
+    }
+
+    [Fact]
+    public void Cycle3_auto_track_takes_max_of_spanning_items()
+    {
+        // Multiple items in same row, different declared heights →
+        // track size = MAX (50 vs 100 → 100).
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rows = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForAuto())));
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForLength(50)),
+            new TrackListEntry(TrackEntry.ForLength(50))));
+        var grid = BuildGridContainerWithTemplates(rows, cols);
+        SetExplicitWidth(grid, 100);
+        SetExplicitHeight(grid, 200);
+
+        var itemA = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        itemA.Style.Set(PropertyId.Height, ComputedSlot.FromLengthPx(50));
+        var itemB = BuildItemWithExplicitPlacement(row: 1, col: 2);
+        itemB.Style.Set(PropertyId.Height, ComputedSlot.FromLengthPx(100));
+        grid.AppendChild(itemA);
+        grid.AppendChild(itemB);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Equal(2, sink.Fragments.Count);
+        AssertFragmentEquals(sink, itemA, inlineOffset: 0, blockOffset: 0, inlineSize: 50, blockSize: 100);
+        AssertFragmentEquals(sink, itemB, inlineOffset: 50, blockOffset: 0, inlineSize: 50, blockSize: 100);
+    }
+
+    [Fact]
+    public void Cycle3_min_content_and_max_content_resolve_like_auto_L19_known_gap()
+    {
+        // Per the cycle-3 L19 approximation — auto / min-content /
+        // max-content all resolve identically. Cycle ?? L19 will
+        // diverge their resolution.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rows = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForMinContent()),
+            new TrackListEntry(TrackEntry.ForMaxContent())));
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForLength(100))));
+        var grid = BuildGridContainerWithTemplates(rows, cols);
+        SetExplicitWidth(grid, 100);
+        SetExplicitHeight(grid, 200);
+
+        var item1 = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        item1.Style.Set(PropertyId.Height, ComputedSlot.FromLengthPx(60));
+        var item2 = BuildItemWithExplicitPlacement(row: 2, col: 1);
+        item2.Style.Set(PropertyId.Height, ComputedSlot.FromLengthPx(80));
+        grid.AppendChild(item1);
+        grid.AppendChild(item2);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        // Both resolve identically — using item's declared height.
+        AssertFragmentEquals(sink, item1, inlineOffset: 0, blockOffset: 0, inlineSize: 100, blockSize: 60);
+        AssertFragmentEquals(sink, item2, inlineOffset: 0, blockOffset: 60, inlineSize: 100, blockSize: 80);
+    }
+
+    [Fact]
+    public void Cycle3_auto_column_sizes_from_item_explicit_width()
+    {
+        // Symmetric: auto COLUMN sized from item's width.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rows = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForLength(50))));
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForAuto())));
+        var grid = BuildGridContainerWithTemplates(rows, cols);
+        SetExplicitWidth(grid, 200);
+        SetExplicitHeight(grid, 50);
+
+        var item = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        item.Style.Set(PropertyId.Width, ComputedSlot.FromLengthPx(120));
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        AssertFragmentEquals(sink, item, inlineOffset: 0, blockOffset: 0, inlineSize: 120, blockSize: 50);
+    }
+
+    [Fact]
+    public void Cycle3_auto_track_with_no_declared_dimension_is_zero_L19_known_gap()
+    {
+        // Per the cycle-3 L19 deferral — items with no explicit
+        // width/height contribute 0 to auto tracks. Cycle ?? L19 will
+        // ship true intrinsic content measurement. KNOWN GAP pinned.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rows = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForAuto())));
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForLength(100))));
+        var grid = BuildGridContainerWithTemplates(rows, cols);
+        SetExplicitWidth(grid, 100);
+        SetExplicitHeight(grid, 200);
+
+        var item = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        // NO height declaration.
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        AssertFragmentEquals(sink, item, inlineOffset: 0, blockOffset: 0, inlineSize: 100, blockSize: 0);
+    }
+
+    [Fact]
+    public void Cycle3_auto_plus_fr_redistributes_after_intrinsic()
+    {
+        // grid-template-rows: auto 1fr in 400px:
+        //   pass 1 sizing: auto=0, fr=400 (no intrinsic yet).
+        //   pass 2 placement: item1@row1, item2@row2.
+        //   pass 3 intrinsic: auto gets item1's 75 → 75.
+        //   pass 4 fr re-distribute: leftover = 400-75=325 → fr=325.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rows = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForAuto()),
+            new TrackListEntry(TrackEntry.ForFr(1))));
+        var cols = new TrackList(ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForLength(100))));
+        var grid = BuildGridContainerWithTemplates(rows, cols);
+        SetExplicitWidth(grid, 100);
+        SetExplicitHeight(grid, 400);
+
+        var item1 = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        item1.Style.Set(PropertyId.Height, ComputedSlot.FromLengthPx(75));
+        var item2 = BuildItemWithExplicitPlacement(row: 2, col: 1);
+        grid.AppendChild(item1);
+        grid.AppendChild(item2);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Equal(2, sink.Fragments.Count);
+        AssertFragmentEquals(sink, item1, inlineOffset: 0, blockOffset: 0, inlineSize: 100, blockSize: 75);
+        AssertFragmentEquals(sink, item2, inlineOffset: 0, blockOffset: 75, inlineSize: 100, blockSize: 325);
+    }
+
+    // =====================================================================
     //  Helpers
     // =====================================================================
 

@@ -6344,22 +6344,36 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     {
         var rows = gridBox.Style.ReadGridTemplateRows();
         if (rows.Items.IsDefaultOrEmpty) return 0;
-        double sum = 0;
-        foreach (var item in rows.Items)
-        {
-            if (item is NetPdf.Css.ComputedValues.TrackListEntry entry
-                && entry.Entry.Kind == NetPdf.Css.ComputedValues.GridTrackKind.Length
-                && !entry.Entry.IsPercentage)
-            {
-                sum += entry.Entry.LengthPx;
-            }
-            // Cycle 1 ignores non-Length tracks (= 0 contribution).
-            // Cycle 2-4 + 7 will widen this to fr / intrinsic / minmax /
-            // fit-content / repeat in lockstep with the layouter-side
-            // changes; the BlockLayouter consumer doesn't need to
-            // change as long as the helper signature stays stable.
-        }
-        return sum;
+        // Per PR-#94 review F1 + F6 — delegate to the shared
+        // GridSizing.Resolve service so wrapper measurement + emission
+        // agree on the row extent. Pre-F1 this method summed only
+        // Length tracks → auto-height grids with intrinsic rows
+        // (cycle 3) left the wrapper at chrome-only extent +
+        // following block-flow siblings overlapped grid content.
+        // Post-F1 GridSizing.Resolve runs the full placement +
+        // intrinsic resolution + fr distribution pipeline, returning
+        // the natural row extent.
+        //
+        // For pre-measure we use a generous indefinite-extent signal
+        // (= 0) on the block axis (= indefinite-height grid; fr collapses
+        // per the F3 LayoutGridFrUnderIndefiniteApproximated001 path).
+        // The inline extent is harder to know precisely without the
+        // BlockLayouter's full state; use a reasonable default (= 0
+        // means "any positive width"; intrinsic-column resolution
+        // doesn't need definite inline for row extent computation).
+        //
+        // Pre-measure passes a null diagnostic emitter so this dry-run
+        // doesn't double-emit warnings (= the actual emission pass
+        // emits them via GridLayouter.SafeEmit).
+        var sizing = GridSizing.Resolve(
+            gridBox: gridBox,
+            contentInlineOffset: 0,
+            contentBlockOffset: 0,
+            contentInlineSize: 1, // any positive value; positions are discarded
+            contentBlockSize: 1,  // pre-measure can't know definite block extent
+            emit: null,
+            cancellationToken: default);
+        return sizing.RowExtentSum;
     }
 
     /// <summary>Per Phase 3 Task 17 cycle 1 (Hello World) — mirrors

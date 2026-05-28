@@ -2938,6 +2938,211 @@ public sealed class GridLayouterTests
     }
 
     // =====================================================================
+    //  PR-#104 review F9 — edge-case coverage for spanning pagination.
+    // =====================================================================
+
+    [Fact]
+    public void Cycle6b_F9_multiple_spans_same_row_use_max_span_end()
+    {
+        // Two items at row 2 (= 0-based row 1) — A spans 2 rows, B
+        // spans 3 rows. The per-row max-span-end is row 1 + 3 = 4.
+        // Budget for rows 1+2 only → spanClampedEnd clamps at row 1
+        // (= startRow + 1 = 1) → entire spans deferred to next page.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 100.0, 100.0, 100.0 },
+            colsPx: new[] { 50.0, 50.0 });
+        SetExplicitWidth(grid, 100);
+        SetExplicitHeight(grid, 400);
+        var head = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        // A at row 2, col 1, span 2.
+        var a = BuildItemWithExplicitStartAndSpan(
+            rowStart: 2, rowSpan: 2, colStart: 1, colSpan: 1);
+        // B at row 2, col 2, span 3 — extends past budget further than A.
+        var b = BuildItemWithExplicitStartAndSpan(
+            rowStart: 2, rowSpan: 3, colStart: 2, colSpan: 1);
+        grid.AppendChild(head);
+        grid.AppendChild(a);
+        grid.AppendChild(b);
+
+        using var layouter = new GridLayouter(
+            rootBox: grid, sink: sink, incomingContinuation: null,
+            diagnostics: diag, shaperResolver: shaper);
+        // Budget = 200px → fits rows 1+2 naively; both A and B span
+        // past, so both defer.
+        layouter.ConfigureEmission(0, 0, 100, 200, allowPagination: true);
+        var ctx = new FragmentainerContext(contentInlineSize: 100, blockSize: 200);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // Page 1 emits only head; both spanning items defer.
+        Assert.Single(sink.Fragments);
+        Assert.Same(head, sink.Fragments[0].Box);
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var continuation = Assert.IsType<GridContinuation>(result.Continuation);
+        Assert.Equal(1, continuation.RowIndex);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridForcedOverflow001);
+    }
+
+    [Fact]
+    public void Cycle6b_F9_earliest_violating_span_clamps_page_end()
+    {
+        // Two spanning items: A at row 1 spans 2, B at row 2 spans 3.
+        // Budget for 4 rows. Naively rows 1-4 fit; but B spans 2..5
+        // which extends past row 4 → spanClampedEnd is B.Row=1 (=
+        // 0-based; 1-based row 2). Only row 1 emits.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 100.0, 100.0, 100.0, 100.0 },
+            colsPx: new[] { 50.0, 50.0 });
+        SetExplicitWidth(grid, 100);
+        SetExplicitHeight(grid, 500);
+        var a = BuildItemWithExplicitStartAndSpan(
+            rowStart: 1, rowSpan: 2, colStart: 1, colSpan: 1);
+        var b = BuildItemWithExplicitStartAndSpan(
+            rowStart: 2, rowSpan: 3, colStart: 2, colSpan: 1);
+        grid.AppendChild(a);
+        grid.AppendChild(b);
+
+        using var layouter = new GridLayouter(
+            rootBox: grid, sink: sink, incomingContinuation: null,
+            diagnostics: diag, shaperResolver: shaper);
+        layouter.ConfigureEmission(0, 0, 100, 400, allowPagination: true);
+        var ctx = new FragmentainerContext(contentInlineSize: 100, blockSize: 400);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+
+        // Naive fit allows rows 1..4 (= 4 rows × 100 = 400 budget).
+        // B at 0-based row 1 spans to exclusive row 4 (= span 3 from
+        // row 1). 4 == naiveEnd=4 → no clamp. A at row 0 spans to
+        // exclusive row 2 (within naiveEnd) → no clamp. So 4 rows
+        // emit; row 4 (= 5th row, no items) defers via continuation.
+        Assert.Equal(2, sink.Fragments.Count);
+        AssertFragmentEquals(sink, a,
+            inlineOffset: 0, blockOffset: 0,
+            inlineSize: 50, blockSize: 200);
+        AssertFragmentEquals(sink, b,
+            inlineOffset: 50, blockOffset: 100,
+            inlineSize: 50, blockSize: 300);
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var continuation = Assert.IsType<GridContinuation>(result.Continuation);
+        Assert.Equal(4, continuation.RowIndex);
+    }
+
+    [Fact]
+    public void Cycle6b_F9_strict_then_lastresort_force_emits_spanning_item()
+    {
+        // An oversized spanning item under Strict defers the entire
+        // grid (= clean rewind). On the resume-page, LastResort kicks
+        // in (per cycle 5 hardening) + force-emits the spanning item
+        // with the F8-reworded diagnostic.
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 200.0, 200.0 },
+            colsPx: new[] { 100.0 });
+        SetExplicitWidth(grid, 100);
+        SetExplicitHeight(grid, 400);
+        var span = BuildItemWithExplicitStartAndSpan(
+            rowStart: 1, rowSpan: 2, colStart: 1, colSpan: 1);
+        grid.AppendChild(span);
+
+        // Page 1 — Strict, budget 100 < 200 = first row's height →
+        // defer entire grid (no diagnostic).
+        var page1Sink = new RecordingFragmentSink();
+        using var page1 = new GridLayouter(
+            rootBox: grid, sink: page1Sink,
+            incomingContinuation: null,
+            diagnostics: diag, shaperResolver: shaper);
+        page1.ConfigureEmission(0, 0, 100, 100, allowPagination: true);
+        var ctx1 = new FragmentainerContext(contentInlineSize: 100, blockSize: 100);
+        var layoutCtx1 = new LayoutContext(ctx1);
+        using var resolver1 = new BreakResolver();
+        var result1 = page1.AttemptLayout(
+            ctx1, ref layoutCtx1, resolver1, LayoutAttemptStrategy.Strict);
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result1.Outcome);
+        Assert.Empty(page1Sink.Fragments);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridForcedOverflow001);
+
+        // Resume page 2 — LastResort, still budget 100 < 400 needed for
+        // the full spanning item → force-emit with the F8-reworded
+        // diagnostic mentioning "end line".
+        var page2Sink = new RecordingFragmentSink();
+        using var page2 = new GridLayouter(
+            rootBox: grid, sink: page2Sink,
+            incomingContinuation: result1.Continuation as GridContinuation,
+            diagnostics: diag, shaperResolver: shaper);
+        page2.ConfigureEmission(0, 0, 100, 100, allowPagination: true);
+        var ctx2 = new FragmentainerContext(contentInlineSize: 100, blockSize: 100);
+        var layoutCtx2 = new LayoutContext(ctx2);
+        using var resolver2 = new BreakResolver();
+        var result2 = page2.AttemptLayout(
+            ctx2, ref layoutCtx2, resolver2, LayoutAttemptStrategy.LastResort);
+
+        // Spanning item force-emitted (overflowing the page edge).
+        Assert.Single(page2Sink.Fragments);
+        Assert.Same(span, page2Sink.Fragments[0].Box);
+        // Per F8 — diagnostic mentions "end line" rather than the
+        // misleading "ending at row" wording.
+        Assert.Contains(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridForcedOverflow001
+                && d.Message.Contains("end line"));
+    }
+
+    [Fact]
+    public void Cycle6b_F9_auto_placed_row_span_defers_atomically()
+    {
+        // Auto-placed `grid-row: span 2` item — same atomicity contract
+        // as explicit-row spans. Confirms cycle 6b doesn't only key on
+        // PlacementKind.Definite items.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 100.0, 100.0 },
+            colsPx: new[] { 100.0 });
+        SetExplicitWidth(grid, 100);
+        SetExplicitHeight(grid, 300);
+        // Auto-placed `grid-row: span 2` — placed at (0, 0) via cycle
+        // 6's auto-placement (= the first sparse run of 2 rows).
+        var item = BuildItemWithSpanRowStart(spanCount: 2);
+        grid.AppendChild(item);
+
+        using var layouter = new GridLayouter(
+            rootBox: grid, sink: sink, incomingContinuation: null,
+            diagnostics: diag, shaperResolver: shaper);
+        // Budget 100 = only row 0 fits. Item starts at row 0 + spans 2
+        // → defers entirely on Strict.
+        layouter.ConfigureEmission(0, 0, 100, 100, allowPagination: true);
+        var ctx = new FragmentainerContext(contentInlineSize: 100, blockSize: 100);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // Item deferred (no fragments emitted) — auto-placed spans
+        // participate in the cycle 6b atomicity contract.
+        Assert.Empty(sink.Fragments);
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridForcedOverflow001);
+    }
+
+    // =====================================================================
     //  Cycle 5 post-PR-#96 hardening — F1 (LastResort gating), F3
     //  (inline-size mismatch invalidates cache), F4 (lazy cache build),
     //  F5 (cache identity + structural validation)

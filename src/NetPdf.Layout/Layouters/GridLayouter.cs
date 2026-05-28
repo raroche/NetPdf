@@ -905,22 +905,38 @@ internal sealed class GridLayouter : ILayouter, IDisposable
             break;
         }
 
-        // Step 2 — span atomicity (cycle 6b). For every spanning
-        // item that starts on this page (item.Row in [startRow,
-        // naiveEnd)) but extends past (item.Row + item.RowSpan >
-        // naiveEnd), clamp endRowExclusive to item.Row so the item
-        // defers to next page.
-        var spanClampedEnd = naiveEnd;
+        // Per PR-#104 review F7 — precompute per-row max-span-end
+        // (= the maximum `item.Row + item.RowSpan` across all items
+        // anchored at that row). Single O(items + rowCount) pass; the
+        // span-atomicity check is then O(rowsOnThisPage) instead of
+        // O(items × pages). The full cache-plan version that amortizes
+        // across pages is tracked under `grid-fragment-plan-shared-
+        // sizing-deferral`.
+        var maxSpanEndPerRow = new int[rowCount];
+        for (var r = 0; r < rowCount; r++) maxSpanEndPerRow[r] = r + 1;
         foreach (var item in placedItems)
         {
-            if (item.Row < 0) continue;
-            var rowSpan = Math.Max(1, item.RowSpan);
-            if (item.Row < startRow) continue;
-            if (item.Row >= spanClampedEnd) continue;
-            var itemEndExclusive = item.Row + rowSpan;
-            if (itemEndExclusive > naiveEnd)
+            if (item.Row < 0 || item.Row >= rowCount) continue;
+            var itemRowSpan = Math.Max(1, item.RowSpan);
+            var itemEnd = item.Row + itemRowSpan;
+            if (itemEnd > maxSpanEndPerRow[item.Row])
             {
-                if (item.Row < spanClampedEnd) spanClampedEnd = item.Row;
+                maxSpanEndPerRow[item.Row] = itemEnd;
+            }
+        }
+
+        // Step 2 — span atomicity (cycle 6b). For every spanning item
+        // that starts on this page (item.Row in [startRow, naiveEnd))
+        // but extends past (item.Row + item.RowSpan > naiveEnd), clamp
+        // endRowExclusive to item.Row so the item defers to next page.
+        // Uses the per-row precompute so the cost is O(rowsOnThisPage).
+        var spanClampedEnd = naiveEnd;
+        for (var r = startRow; r < spanClampedEnd; r++)
+        {
+            if (maxSpanEndPerRow[r] > naiveEnd)
+            {
+                spanClampedEnd = r;
+                break;
             }
         }
 
@@ -940,23 +956,25 @@ internal sealed class GridLayouter : ILayouter, IDisposable
                 //  (b) The single row at startRow is taller than
                 //      the budget (cycle-5 contract) — emit it.
                 var forceEnd = startRow + 1;
-                foreach (var item in placedItems)
+                if (startRow < rowCount && maxSpanEndPerRow[startRow] > forceEnd)
                 {
-                    if (item.Row != startRow) continue;
-                    var rowSpan = Math.Max(1, item.RowSpan);
-                    var itemEnd = item.Row + rowSpan;
-                    if (itemEnd > forceEnd) forceEnd = itemEnd;
+                    forceEnd = maxSpanEndPerRow[startRow];
                 }
                 if (forceEnd > rowCount) forceEnd = rowCount;
 
                 if (forceEnd > startRow + 1)
                 {
+                    // Per PR-#104 review F8 — forceEnd is the EXCLUSIVE
+                    // 0-based row index after the last occupied row;
+                    // its 1-based equivalent is the END LINE of the
+                    // spanning item (= the line AFTER the last cell).
                     SafeEmit(new PaginateDiagnostic(
                         Code: PaginateDiagnosticCodes.LayoutGridForcedOverflow001,
-                        Message: $"Grid spanning item starting at row "
-                            + $"{startRow + 1} (span ending at row "
-                            + $"{forceEnd}) does not fit the "
-                            + $"fragmentainer block budget "
+                        Message: $"Grid spanning item at row "
+                            + $"{startRow + 1} (occupying rows "
+                            + $"{startRow + 1}..{forceEnd} inclusive, "
+                            + $"end line {forceEnd + 1}) does not fit "
+                            + $"the fragmentainer block budget "
                             + $"({budget:F1}px) on its first attempt "
                             + "under LastResort strategy. Per CSS "
                             + "Fragmentation L3 §4.4 progress rule the "

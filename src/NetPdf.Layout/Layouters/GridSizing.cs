@@ -170,17 +170,20 @@ internal static class GridSizing
         // named-area references (e.g., `grid-row-start: head`).
         var gridAreas = gridBox.Style.ReadGridTemplateAreas();
 
-        // Per Phase 3 Task 18 cycle 7b + post-PR-#106 review F2 #6 —
-        // build per-axis named-line occurrence maps. Combines authored
-        // `[name]` lines from grid-template-rows/columns + implicit
-        // `<area>-start` / `<area>-end` lines from grid-template-areas
-        // per §8.4. Shares ExpandTrackList with the sizing pass so
-        // repeat caps + cancellation align.
+        // Per Phase 3 Task 18 cycle 7b + 7c + post-PR-#106 review
+        // F2 #6 — build per-axis named-line occurrence maps. Combines
+        // authored `[name]` lines from grid-template-rows/columns +
+        // implicit `<area>-start` / `<area>-end` lines from grid-
+        // template-areas per §8.4. Shares container-aware
+        // ExpandTrackList with the sizing pass so auto-fill / auto-fit
+        // iteration counts + named lines inside auto-repeats agree.
         var rowNamedLines = BuildNamedLineMap(
             gridBox.Style.ReadGridTemplateRows(), gridAreas, isRow: true,
+            containerExtent: contentBlockSize, isAxisIndefinite: isBlockIndefinite,
             ctx, cancellationToken);
         var colNamedLines = BuildNamedLineMap(
             gridBox.Style.ReadGridTemplateColumns(), gridAreas, isRow: false,
+            containerExtent: contentInlineSize, isAxisIndefinite: isInlineIndefinite,
             ctx, cancellationToken);
 
         var placedItems = new List<PlacedItem>(gridBox.Children.Count);
@@ -455,8 +458,55 @@ internal static class GridSizing
     private static List<TrackListItem> ExpandTrackList(
         TrackList trackList, SizingContext ctx, CancellationToken ct)
     {
+        // Per Phase 3 Task 18 cycle 7c — defer to the container-aware
+        // overload with no extent + indefinite-axis so auto-fill /
+        // auto-fit fall through to their cycle-4 placeholder behavior
+        // (= kept as TrackListRepeat). Callers with container geometry
+        // call the overload directly.
+        return ExpandTrackList(trackList, ctx, ct,
+            containerExtent: 0.0, isAxisIndefinite: true);
+    }
+
+    /// <summary>Per Phase 3 Task 18 cycle 7c — container-aware
+    /// expansion that derives the iteration count for
+    /// <c>repeat(auto-fill, …)</c> / <c>repeat(auto-fit, …)</c> from
+    /// the container extent per CSS Grid L1 §7.2.3.1.
+    ///
+    /// <para><b>Algorithm</b>:
+    /// <list type="number">
+    ///   <item>Compute <c>otherSize</c> = sum of FIXED sizes from the
+    ///   non-auto-repeat items in <see cref="TrackList.Items"/>
+    ///   (= length tracks, explicit-count repeats' length tracks, and
+    ///   minmax min-floors).</item>
+    ///   <item>Compute <c>patternSize</c> = sum of the auto-repeat
+    ///   pattern's fixed sizes.</item>
+    ///   <item><c>iterations = floor((containerExtent - otherSize) /
+    ///   patternSize)</c>, clamped to ≥ 1 and to
+    ///   <see cref="MaxImplicitTracksPerAxis"/>.</item>
+    ///   <item>Indefinite axis OR <c>patternSize ≤ 0</c> → 1
+    ///   iteration (= the spec's fallback).</item>
+    /// </list></para>
+    ///
+    /// <para><b>auto-fill vs auto-fit</b>: identical expansion in
+    /// cycle 7c. Per §7.2.3.1, auto-fit additionally collapses empty
+    /// tracks (= those with no placed items) to 0 size AFTER
+    /// placement; that collapse pass is tracked under
+    /// <c>grid-auto-fit-collapse-empty-tracks-deferral</c>. Cycle 7c
+    /// treats both as auto-fill so the pattern at least renders.</para></summary>
+    private static List<TrackListItem> ExpandTrackList(
+        TrackList trackList, SizingContext ctx, CancellationToken ct,
+        double containerExtent, bool isAxisIndefinite)
+    {
         var expanded = new List<TrackListItem>(trackList.Items.Length);
         var truncated = false;
+
+        // Pre-compute the auto-repeat iteration count once. Per
+        // §7.2.3.1 at most one auto-fill or auto-fit repeat is allowed
+        // per track list; if multiple appear we use the cap for the
+        // first and pass the rest through as 1 iteration.
+        int autoIterations = ComputeAutoRepeatIterations(
+            trackList, containerExtent, isAxisIndefinite);
+
         foreach (var item in trackList.Items)
         {
             ct.ThrowIfCancellationRequested();
@@ -476,33 +526,29 @@ internal static class GridSizing
                     for (var r = 0; r < tr.Repeat.Count; r++)
                     {
                         ct.ThrowIfCancellationRequested();
-                        foreach (var p in tr.Repeat.Pattern)
+                        if (UnrollPattern(tr.Repeat.Pattern, expanded))
                         {
-                            if (expanded.Count >= TrackList.MaxExpandedTrackCount)
-                            {
-                                truncated = true;
-                                break;
-                            }
-                            switch (p)
-                            {
-                                case TrackRepeatEntry re:
-                                    expanded.Add(new TrackListEntry(re.Entry));
-                                    break;
-                                case TrackRepeatNamedLine nl:
-                                    expanded.Add(TrackListNamedLine.Create(nl.Name));
-                                    break;
-                            }
+                            truncated = true;
+                            break;
                         }
-                        if (truncated) break;
                     }
                     break;
-                case TrackListRepeat:
-                    // auto-fill (count=0) / auto-fit (count=-1) —
-                    // unsupported in cycle 4; keep as-is so classify
-                    // emits the unsupported diagnostic.
-                    expanded.Add(item);
+                case TrackListRepeat autoTr:
+                    // Per Phase 3 Task 18 cycle 7c — auto-fill (Count=0)
+                    // / auto-fit (Count=-1) unroll their pattern
+                    // `autoIterations` times.
+                    for (var r = 0; r < autoIterations; r++)
+                    {
+                        ct.ThrowIfCancellationRequested();
+                        if (UnrollPattern(autoTr.Repeat.Pattern, expanded))
+                        {
+                            truncated = true;
+                            break;
+                        }
+                    }
                     break;
             }
+            if (truncated) break;
         }
         if (truncated)
         {
@@ -511,12 +557,125 @@ internal static class GridSizing
         return expanded;
     }
 
+    /// <summary>Per Phase 3 Task 18 cycle 7c — unroll one repeat-
+    /// pattern iteration into <paramref name="expanded"/>. Returns
+    /// <see langword="true"/> when the global truncation cap stops
+    /// the inner loop short; caller exits the outer iteration.</summary>
+    private static bool UnrollPattern(
+        System.Collections.Immutable.ImmutableArray<TrackRepeatItem> pattern,
+        List<TrackListItem> expanded)
+    {
+        foreach (var p in pattern)
+        {
+            if (expanded.Count >= TrackList.MaxExpandedTrackCount)
+            {
+                return true;
+            }
+            switch (p)
+            {
+                case TrackRepeatEntry re:
+                    expanded.Add(new TrackListEntry(re.Entry));
+                    break;
+                case TrackRepeatNamedLine nl:
+                    expanded.Add(TrackListNamedLine.Create(nl.Name));
+                    break;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>Per Phase 3 Task 18 cycle 7c + CSS Grid L1 §7.2.3.1 —
+    /// derive the iteration count for the FIRST auto-fill / auto-fit
+    /// repeat in <paramref name="trackList"/>. Returns 1 when the
+    /// axis is indefinite or when the pattern has no fixed size
+    /// (= the spec's fallback when count cannot be derived).</summary>
+    private static int ComputeAutoRepeatIterations(
+        TrackList trackList, double containerExtent, bool isAxisIndefinite)
+    {
+        if (isAxisIndefinite) return 1;
+        if (!double.IsFinite(containerExtent) || containerExtent <= 0)
+            return 1;
+
+        // Find the first auto-fill / auto-fit repeat and compute its
+        // pattern's fixed size. Also accumulate the fixed size of
+        // other items to subtract from the available extent.
+        TrackRepeat? autoRepeat = null;
+        double otherSize = 0;
+        foreach (var item in trackList.Items)
+        {
+            switch (item)
+            {
+                case TrackListEntry te:
+                    otherSize += GetTrackFixedSize(te.Entry);
+                    break;
+                case TrackListRepeat tr when tr.Repeat.Count > 0:
+                    foreach (var p in tr.Repeat.Pattern)
+                    {
+                        if (p is TrackRepeatEntry re)
+                        {
+                            otherSize += tr.Repeat.Count * GetTrackFixedSize(re.Entry);
+                        }
+                    }
+                    break;
+                case TrackListRepeat atr when autoRepeat is null:
+                    autoRepeat = atr.Repeat;
+                    break;
+                // Additional auto-repeats are invalid per spec but
+                // tolerated as 1-iteration each by the main loop.
+            }
+        }
+        if (autoRepeat is null) return 1;
+
+        double patternSize = 0;
+        foreach (var p in autoRepeat.Pattern)
+        {
+            if (p is TrackRepeatEntry re)
+            {
+                patternSize += GetTrackFixedSize(re.Entry);
+            }
+        }
+        if (patternSize <= 0) return 1;
+
+        var available = containerExtent - otherSize;
+        if (available < patternSize) return 1;
+        var iterations = (int)Math.Floor(available / patternSize);
+        if (iterations < 1) iterations = 1;
+        if (iterations > MaxImplicitTracksPerAxis)
+            iterations = MaxImplicitTracksPerAxis;
+        return iterations;
+    }
+
+    /// <summary>Per Phase 3 Task 18 cycle 7c — fixed (= "definite
+    /// pixel") size of a track entry for the purposes of the
+    /// auto-fill / auto-fit count derivation. Length tracks contribute
+    /// their declared px; <c>minmax(min, max)</c> contributes its
+    /// min-floor when that min is a fixed length; everything else
+    /// (fr, auto, min/max-content, percentage, fit-content) is 0 —
+    /// indefinite for count derivation per §7.2.3.1.</summary>
+    private static double GetTrackFixedSize(TrackEntry entry)
+    {
+        switch (entry.Kind)
+        {
+            case GridTrackKind.Length when !entry.IsPercentage:
+                return entry.LengthPx;
+            case GridTrackKind.MinMax
+                when entry.MinSubKind == GridTrackKind.Length
+                    && !entry.MinSubIsPercentage:
+                return entry.MinSubLengthPx;
+            default:
+                return 0;
+        }
+    }
+
     private static void ResolveTrackSizes(
         TrackList trackList, double containerExtent, bool isAxisIndefinite,
         List<TrackSizingInfo> infoOut, SizingContext ctx,
         CancellationToken ct)
     {
-        var expanded = ExpandTrackList(trackList, ctx, ct);
+        // Per Phase 3 Task 18 cycle 7c — pass container extent so
+        // auto-fill / auto-fit derive their iteration count.
+        var expanded = ExpandTrackList(
+            trackList, ctx, ct, containerExtent, isAxisIndefinite);
         foreach (var item in expanded)
         {
             if (item is TrackListEntry entry)
@@ -525,13 +684,15 @@ internal static class GridSizing
             }
             else if (item is TrackListRepeat)
             {
-                // auto-fill / auto-fit — cycle 7 scope. Per PR-#95
-                // review R2 — emit the unsupported-kind diagnostic with
-                // the actual kind (was hardcoded to Length, misleading).
+                // Per Phase 3 Task 18 cycle 7c — an auto-repeat that
+                // survives expansion means the count was 0 (= no fit).
+                // The 1-iteration fallback should have prevented this,
+                // so reaching this branch indicates a degenerate input.
                 EmitTrackKindDiagnostic(ctx, GridTrackKind.Auto);
             }
-            // TrackListNamedLine — cycle 7 named-line resolution.
-            // Kept in the expanded list so cycle 7 can read positionally.
+            // TrackListNamedLine — cycle 7b named-line resolution.
+            // Kept in the expanded list so the named-line builder
+            // can read positionally.
         }
 
         // Per PR-#93 review F3 — fr under indefinite axis approximated.
@@ -1912,9 +2073,9 @@ internal static class GridSizing
     /// authored-plus-implicit collisions all coexist; resolution picks
     /// the first occurrence (= lowest line number after sorting).</para>
     ///
-    /// <para><b>Per PR-#106 review F2 #6</b>: shares
-    /// <see cref="ExpandTrackList"/> with the sizing pass so repeat
-    /// expansion respects the same
+    /// <para><b>Per PR-#106 review F2 #6</b>: shares the container-
+    /// aware <c>ExpandTrackList</c> overload with the sizing pass so
+    /// repeat expansion respects the same
     /// <see cref="TrackList.MaxExpandedTrackCount"/> cap +
     /// <see cref="CancellationToken"/> contract. Pre-fix this code
     /// duplicated the repeat handler without cancellation checks.</para>
@@ -1926,14 +2087,18 @@ internal static class GridSizing
     /// `grid-implicit-named-area-and-occurrence-syntax-deferral`.</para></summary>
     private static Dictionary<string, List<int>> BuildNamedLineMap(
         TrackList trackList, GridTemplateAreas areas, bool isRow,
+        double containerExtent, bool isAxisIndefinite,
         SizingContext ctx, CancellationToken cancellationToken)
     {
         var map = new Dictionary<string, List<int>>(StringComparer.Ordinal);
 
-        // Walk authored items via the shared expansion (= same cap +
-        // cancellation as sizing). currentLine starts at 1 (= the line
-        // BEFORE the first track).
-        var expanded = ExpandTrackList(trackList, ctx, cancellationToken);
+        // Walk authored items via the shared container-aware expansion
+        // (= same auto-fill / auto-fit iteration count as sizing, so
+        // names inside auto-repeats land at line numbers matching the
+        // actual track positions).
+        var expanded = ExpandTrackList(
+            trackList, ctx, cancellationToken,
+            containerExtent, isAxisIndefinite);
         int currentLine = 1;
         foreach (var item in expanded)
         {

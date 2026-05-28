@@ -4068,6 +4068,194 @@ public sealed class GridLayouterTests
     }
 
     // =====================================================================
+    //  Phase 3 Task 18 cycle 7c — repeat(auto-fill, …) /
+    //  repeat(auto-fit, …) container-size-derived count per CSS Grid
+    //  L1 §7.2.3.1.
+    // =====================================================================
+
+    [Fact]
+    public void Cycle7c_auto_fill_derives_count_from_container_extent()
+    {
+        // grid-template-columns: repeat(auto-fill, 100px) in a 350px
+        // container → floor(350 / 100) = 3 columns. 5 items in row-
+        // major fill: items 0+1+2 at row 0, items 3+4 at row 1.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = BuildLengthTrackList(new[] { 50.0 });
+        var colsTrack = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                new TrackListRepeat(TrackRepeat.Create(
+                    count: 0, // auto-fill
+                    pattern: ImmutableArray.Create<TrackRepeatItem>(
+                        new TrackRepeatEntry(TrackEntry.ForLength(100.0)))))));
+        var grid = BuildGridContainerWithTemplates(rowsTrack, colsTrack);
+        SetExplicitWidth(grid, 350);
+
+        var items = new Box[5];
+        for (var i = 0; i < 5; i++)
+        {
+            items[i] = BuildAutoPlacedItem();
+            grid.AppendChild(items[i]);
+        }
+
+        RunGridLayouter(grid, sink, diag, shaper,
+            contentInlineSize: 350, contentBlockSize: 400);
+
+        Assert.Equal(5, sink.Fragments.Count);
+        AssertFragmentEquals(sink, items[0],
+            inlineOffset: 0, blockOffset: 0, inlineSize: 100, blockSize: 50);
+        AssertFragmentEquals(sink, items[1],
+            inlineOffset: 100, blockOffset: 0, inlineSize: 100, blockSize: 50);
+        AssertFragmentEquals(sink, items[2],
+            inlineOffset: 200, blockOffset: 0, inlineSize: 100, blockSize: 50);
+        // Row 1 (implicit since row template only has 1 row).
+        AssertFragmentEquals(sink, items[3],
+            inlineOffset: 0, blockOffset: 50, inlineSize: 100, blockSize: 0);
+        AssertFragmentEquals(sink, items[4],
+            inlineOffset: 100, blockOffset: 50, inlineSize: 100, blockSize: 0);
+    }
+
+    [Fact]
+    public void Cycle7c_auto_fit_treated_identically_to_auto_fill()
+    {
+        // Per grid-auto-fit-collapse-empty-tracks-deferral — cycle 7c
+        // ships auto-fit as auto-fill (= no empty-track collapse).
+        // Same input as the auto-fill test should produce the same
+        // tracks (= 3 columns × 100px in 350px).
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = BuildLengthTrackList(new[] { 50.0 });
+        var colsTrack = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                new TrackListRepeat(TrackRepeat.Create(
+                    count: -1, // auto-fit
+                    pattern: ImmutableArray.Create<TrackRepeatItem>(
+                        new TrackRepeatEntry(TrackEntry.ForLength(100.0)))))));
+        var grid = BuildGridContainerWithTemplates(rowsTrack, colsTrack);
+        SetExplicitWidth(grid, 350);
+
+        var item = BuildItemWithExplicitPlacement(row: 1, col: 3);
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper,
+            contentInlineSize: 350, contentBlockSize: 400);
+
+        Assert.Single(sink.Fragments);
+        // Item at column 3 (0-based col 2) → inlineOffset 200.
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 200, blockOffset: 0,
+            inlineSize: 100, blockSize: 50);
+    }
+
+    [Fact]
+    public void Cycle7c_auto_fill_indefinite_axis_falls_back_to_single_iteration()
+    {
+        // Per §7.2.3.1 — auto-fill under an indefinite axis (= no
+        // declared height; width: auto in this case) defaults to 1
+        // pattern iteration.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = BuildLengthTrackList(new[] { 50.0 });
+        var colsTrack = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                new TrackListRepeat(TrackRepeat.Create(
+                    count: 0,
+                    pattern: ImmutableArray.Create<TrackRepeatItem>(
+                        new TrackRepeatEntry(TrackEntry.ForLength(100.0)))))));
+        var grid = BuildGridContainerWithTemplates(rowsTrack, colsTrack);
+        // No SetExplicitWidth → grid's width is indefinite. The grid
+        // layouter falls back to 1 iteration of the pattern.
+
+        var item = BuildAutoPlacedItem();
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper,
+            contentInlineSize: 350, contentBlockSize: 400);
+
+        Assert.Single(sink.Fragments);
+        // 1 iteration → 1 column of 100px.
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 0,
+            inlineSize: 100, blockSize: 50);
+    }
+
+    [Fact]
+    public void Cycle7c_auto_fill_zero_pattern_size_falls_back_to_single_iteration()
+    {
+        // Per §7.2.3.1 — when the pattern's fixed size is 0 (e.g.,
+        // `repeat(auto-fill, 1fr)` or all-intrinsic), the count
+        // cannot be derived → fall back to 1 iteration.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = BuildLengthTrackList(new[] { 50.0 });
+        // Pattern: a single fr track (= no fixed size).
+        var colsTrack = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                new TrackListRepeat(TrackRepeat.Create(
+                    count: 0,
+                    pattern: ImmutableArray.Create<TrackRepeatItem>(
+                        new TrackRepeatEntry(TrackEntry.ForFr(1.0)))))));
+        var grid = BuildGridContainerWithTemplates(rowsTrack, colsTrack);
+        SetExplicitWidth(grid, 350);
+
+        var item = BuildAutoPlacedItem();
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper,
+            contentInlineSize: 350, contentBlockSize: 400);
+
+        Assert.Single(sink.Fragments);
+        // 1 iteration → 1 fr track → grows to fill container (350px).
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 0,
+            inlineSize: 350, blockSize: 50);
+    }
+
+    [Fact]
+    public void Cycle7c_auto_fill_subtracts_other_fixed_tracks_from_container()
+    {
+        // grid-template-columns: 50px repeat(auto-fill, 100px) 30px
+        // in a 380px container → (380 - 50 - 30) / 100 = 3 iterations.
+        // Total = 50 + 100 + 100 + 100 + 30 = 380px.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = BuildLengthTrackList(new[] { 50.0 });
+        var colsTrack = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(50.0)),
+                new TrackListRepeat(TrackRepeat.Create(
+                    count: 0,
+                    pattern: ImmutableArray.Create<TrackRepeatItem>(
+                        new TrackRepeatEntry(TrackEntry.ForLength(100.0))))),
+                new TrackListEntry(TrackEntry.ForLength(30.0))));
+        var grid = BuildGridContainerWithTemplates(rowsTrack, colsTrack);
+        SetExplicitWidth(grid, 380);
+
+        var trailingItem = BuildItemWithExplicitPlacement(row: 1, col: 5);
+        grid.AppendChild(trailingItem);
+
+        RunGridLayouter(grid, sink, diag, shaper,
+            contentInlineSize: 380, contentBlockSize: 400);
+
+        Assert.Single(sink.Fragments);
+        // 5 columns total: 50px + 100 + 100 + 100 + 30 = 380. Col 5
+        // (= 0-based col 4) is the trailing 30px track at offset 350.
+        AssertFragmentEquals(sink, trailingItem,
+            inlineOffset: 350, blockOffset: 0,
+            inlineSize: 30, blockSize: 50);
+    }
+
+    // =====================================================================
     //  Phase 3 Task 18 cycle 7b — named-line placement.
     //  `grid-row-start: name` resolves against the per-axis named-line
     //  lookup map combining authored `[name]` lines from grid-template-

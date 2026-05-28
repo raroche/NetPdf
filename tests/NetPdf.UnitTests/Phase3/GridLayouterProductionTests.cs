@@ -1601,6 +1601,54 @@ public sealed class GridLayouterProductionTests
     }
 
     // ====================================================================
+    //  Phase 3 Task 18 cycle 7c — repeat(auto-fill, …) /
+    //  repeat(auto-fit, …) via real CSS.
+    // ====================================================================
+
+    [Fact]
+    public async Task Cycle7c_production_repeat_auto_fill_indefinite_axis_falls_back_to_one_iteration()
+    {
+        // Per §7.2.3.1 — auto-fill under an indefinite axis (= grid
+        // has no explicit `width`) falls back to 1 pattern iteration.
+        // This is the production-side counterpart to the direct-
+        // construction test `Cycle7c_auto_fill_indefinite_axis_falls
+        // _back_to_single_iteration`. Three items stack in the single
+        // 100px column (with row 0 + 2 implicit rows of 0 size).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 50px;
+                    grid-template-columns: repeat(auto-fill, 100px);
+                }
+            </style></head><body>
+                <div class="grid">
+                    <div class="a"></div>
+                    <div class="b"></div>
+                    <div class="c"></div>
+                </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var a = FindByClass(sink, "a");
+        var b = FindByClass(sink, "b");
+        var c = FindByClass(sink, "c");
+        Assert.NotNull(a);
+        Assert.NotNull(b);
+        Assert.NotNull(c);
+
+        // Each item lands at the single 100px-wide column at offset 0.
+        // a at row 0; b/c land at implicit row 1/2 (= auto-sized 0).
+        Assert.Equal(100, a!.Value.InlineSize, precision: 3);
+        Assert.Equal(0, a.Value.InlineOffset, precision: 3);
+        Assert.Equal(0, a.Value.BlockOffset, precision: 3);
+        Assert.Equal(0, b!.Value.InlineOffset, precision: 3);
+        Assert.Equal(0, c!.Value.InlineOffset, precision: 3);
+    }
+
+    // ====================================================================
     //  Phase 3 Task 18 cycle 7b — named-line placement via real HTML.
     // ====================================================================
 

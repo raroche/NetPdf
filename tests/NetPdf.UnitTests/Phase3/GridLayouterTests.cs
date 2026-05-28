@@ -4195,14 +4195,19 @@ public sealed class GridLayouterTests
     }
 
     [Fact]
-    public void Cycle7b_authored_line_wins_over_implicit_area_line_on_collision()
+    public void Cycle7b_first_occurrence_wins_when_implicit_and_authored_share_name()
     {
-        // grid-template-areas declares area `head` (= implicit lines
-        // head-start at line 1, head-end at line 2). grid-template-
-        // rows ALSO has an authored `[head-start]` line at a DIFFERENT
-        // position (line 3). The authored line WINS per cycle 7b's
-        // TryAdd-first ordering (authored lines walked before area
-        // derivation).
+        // Per PR-#106 review F1 #2 + CSS Grid L1 §8.3 — when multiple
+        // lines share a name, the FIRST occurrence (= lowest line
+        // number) wins. The grid-template-areas implicit lines and
+        // any authored `[name]` lines all share the named-line map;
+        // resolution sorts by line number.
+        //
+        // Setup: head area at row 0 (lines 1..2) → implicit head-
+        // start = line 1, head-end = line 2. Authored [head-start]
+        // ALSO at line 3 (= between explicit rows 2 and 3). The
+        // FIRST occurrence of head-start (= line 1) wins → item at
+        // row index 0.
         var sink = new RecordingFragmentSink();
         var diag = new RecordingDiagnosticsSink();
         using var shaper = new SyntheticShaperResolver();
@@ -4223,10 +4228,114 @@ public sealed class GridLayouterTests
         RunGridLayouter(grid, sink, diag, shaper);
 
         Assert.Single(sink.Fragments);
-        // Authored head-start = line 3 = row index 2 → blockOffset 200.
+        // First-occurrence head-start = implicit line 1 = row index 0.
         AssertFragmentEquals(sink, item,
-            inlineOffset: 0, blockOffset: 200,
+            inlineOffset: 0, blockOffset: 0,
             inlineSize: 50, blockSize: 100);
+    }
+
+    [Fact]
+    public void Cycle7b_authored_foo_start_resolves_when_no_area_named_foo()
+    {
+        // Per PR-#106 review F1 #3 — for `grid-row-start: foo`, try
+        // foo-start FIRST. If no area named `foo` exists, but the
+        // author declared `[foo-start]` in grid-template-rows, the
+        // lookup still resolves via the line map.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(100.0)),
+                TrackListNamedLine.Create("foo-start"),
+                new TrackListEntry(TrackEntry.ForLength(100.0))));
+        var colsTrack = BuildLengthTrackList(new[] { 50.0 });
+        var grid = BuildGridContainerWithTemplates(rowsTrack, colsTrack);
+        // No grid-template-areas; the named-line map only contains
+        // authored entries.
+
+        var item = BuildItemWithNamedAreaStarts(rowName: "foo", colName: null);
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Single(sink.Fragments);
+        // grid-row-start: foo → try foo-start → line 2 → row index 1.
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 100,
+            inlineSize: 50, blockSize: 100);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+    }
+
+    [Fact]
+    public void Cycle7b_integer_ident_syntax_is_deferred_with_specific_diagnostic()
+    {
+        // Per PR-#106 review F2 #4 — `grid-row-start: foo 2`
+        // (occurrence syntax) falls back to auto with a diagnostic
+        // pointing at grid-implicit-named-area-and-occurrence-syntax-
+        // deferral. Documents the gap and enables grep-from-source.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                TrackListNamedLine.Create("foo"),
+                new TrackListEntry(TrackEntry.ForLength(100.0)),
+                TrackListNamedLine.Create("foo"),
+                new TrackListEntry(TrackEntry.ForLength(100.0))));
+        var colsTrack = BuildLengthTrackList(new[] { 50.0 });
+        var grid = BuildGridContainerWithTemplates(rowsTrack, colsTrack);
+
+        // `grid-row-start: foo 2` — 2nd occurrence of foo.
+        var style = MakeStyle();
+        var rowValue = GridLineValue.ForNamedLineNumber("foo", 2);
+        style.SetSideTablePayload(PropertyId.GridRowStart, (object)rowValue);
+        style.Set(PropertyId.GridRowStart, ComputedSlot.FromSideTableIndex(0));
+        var item = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        // Falls back to auto + emits the diagnostic.
+        Assert.Single(sink.Fragments);
+        var diagnostic = Assert.Single(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+        Assert.Contains("occurrence", diagnostic.Message);
+        Assert.Contains("grid-implicit-named-area-and-occurrence-syntax-deferral",
+            diagnostic.Message);
+    }
+
+    [Fact]
+    public void Cycle7b_span_ident_syntax_is_deferred_with_specific_diagnostic()
+    {
+        // Per PR-#106 review F2 #4 — `grid-row-start: span foo`
+        // also falls back with a deferral-tagged diagnostic.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 100.0 },
+            colsPx: new[] { 50.0 });
+
+        var style = MakeStyle();
+        var rowValue = GridLineValue.ForSpanName("foo");
+        style.SetSideTablePayload(PropertyId.GridRowStart, (object)rowValue);
+        style.Set(PropertyId.GridRowStart, ComputedSlot.FromSideTableIndex(0));
+        var item = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Single(sink.Fragments);
+        var diagnostic = Assert.Single(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+        Assert.Contains("span <custom-ident>", diagnostic.Message);
+        Assert.Contains("grid-implicit-named-area-and-occurrence-syntax-deferral",
+            diagnostic.Message);
     }
 
     // =====================================================================

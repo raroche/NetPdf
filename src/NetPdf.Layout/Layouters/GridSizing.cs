@@ -170,14 +170,18 @@ internal static class GridSizing
         // named-area references (e.g., `grid-row-start: head`).
         var gridAreas = gridBox.Style.ReadGridTemplateAreas();
 
-        // Per Phase 3 Task 18 cycle 7b — build per-axis named-line
-        // lookup maps. Combines authored `[name]` lines from
-        // grid-template-rows/columns + implicit `<area>-start` /
-        // `<area>-end` lines from grid-template-areas per §8.4.
+        // Per Phase 3 Task 18 cycle 7b + post-PR-#106 review F2 #6 —
+        // build per-axis named-line occurrence maps. Combines authored
+        // `[name]` lines from grid-template-rows/columns + implicit
+        // `<area>-start` / `<area>-end` lines from grid-template-areas
+        // per §8.4. Shares ExpandTrackList with the sizing pass so
+        // repeat caps + cancellation align.
         var rowNamedLines = BuildNamedLineMap(
-            gridBox.Style.ReadGridTemplateRows(), gridAreas, isRow: true);
+            gridBox.Style.ReadGridTemplateRows(), gridAreas, isRow: true,
+            ctx, cancellationToken);
         var colNamedLines = BuildNamedLineMap(
-            gridBox.Style.ReadGridTemplateColumns(), gridAreas, isRow: false);
+            gridBox.Style.ReadGridTemplateColumns(), gridAreas, isRow: false,
+            ctx, cancellationToken);
 
         var placedItems = new List<PlacedItem>(gridBox.Children.Count);
         foreach (var child in gridBox.Children)
@@ -1885,96 +1889,146 @@ internal static class GridSizing
     ///   case is rare in practice + the spec's reverse-auto-placement
     ///   algorithm is cycle 7 scope)</item>
     /// </list></summary>
-    /// <summary>Per Phase 3 Task 18 cycle 7b — build a per-axis named
-    /// → 1-based-line-number lookup that <see cref="ReadPlacement"/>
-    /// consults when a placement uses a <c>&lt;custom-ident&gt;</c>
-    /// that doesn't match a named area directly.
+    /// <summary>Per Phase 3 Task 18 cycle 7b + post-PR-#106 review F1
+    /// + F2 + F6 — build a per-axis named → occurrence-list lookup that
+    /// <see cref="ReadPlacement"/> consults when a placement uses a
+    /// <c>&lt;custom-ident&gt;</c>.
     ///
-    /// <para><b>Sources combined</b> per CSS Grid L1 §8.4:</para>
+    /// <para><b>Sources combined</b> per CSS Grid L1 §8.3 + §8.4:</para>
     /// <list type="number">
-    ///   <item><b>Author-declared named lines</b>: walk the
-    ///   <see cref="TrackList"/> for <see cref="TrackListNamedLine"/>
-    ///   items. Each name maps to the line at the item's position
-    ///   (line 1 is before the first track; subsequent lines advance
-    ///   per track entry).</item>
+    ///   <item><b>Author-declared named lines</b>: walk the expanded
+    ///   <see cref="TrackList"/> (= same expansion service the sizing
+    ///   pass uses, so repeat caps + cancellation match) for
+    ///   <see cref="TrackListNamedLine"/> items. Each name occurrence
+    ///   appends to its list.</item>
     ///   <item><b>Implicit area-derived lines</b>: for each named area
-    ///   in <paramref name="areas"/>, the <c>&lt;name&gt;-start</c>
-    ///   maps to the area's start line on this axis and
-    ///   <c>&lt;name&gt;-end</c> to its end line.</item>
+    ///   in <paramref name="areas"/>, append the area's start line to
+    ///   the <c>&lt;name&gt;-start</c> list and the end line to
+    ///   <c>&lt;name&gt;-end</c>.</item>
     /// </list>
     ///
-    /// <para><b>Conflict resolution</b>: when both an author-declared
-    /// line and an implicit area-derived line resolve to the same
-    /// name, the FIRST-added wins (= author lines win since they're
-    /// walked before the area derivation). The map uses
-    /// <see cref="Dictionary{TKey, TValue}.TryAdd"/> to enforce this.</para>
+    /// <para><b>Per PR-#106 review F1 #2</b>: stored as an occurrence
+    /// LIST instead of a single int. Multiple `[foo]` declarations or
+    /// authored-plus-implicit collisions all coexist; resolution picks
+    /// the first occurrence (= lowest line number after sorting).</para>
     ///
-    /// <para><b>Cycle-7b scope limit</b>: positive-integer
-    /// <c>repeat(N, [name] &lt;track&gt;)</c> expansion is honored;
-    /// <c>repeat(auto-fill, …)</c> / <c>repeat(auto-fit, …)</c>
-    /// expansion happens at layout time (= cycle 7c scope) and is
-    /// skipped here. Authored lines inside auto-fill repeats won't
-    /// resolve until cycle 7c lands.</para></summary>
-    private static Dictionary<string, int> BuildNamedLineMap(
-        TrackList trackList, GridTemplateAreas areas, bool isRow)
+    /// <para><b>Per PR-#106 review F2 #6</b>: shares
+    /// <see cref="ExpandTrackList"/> with the sizing pass so repeat
+    /// expansion respects the same
+    /// <see cref="TrackList.MaxExpandedTrackCount"/> cap +
+    /// <see cref="CancellationToken"/> contract. Pre-fix this code
+    /// duplicated the repeat handler without cancellation checks.</para>
+    ///
+    /// <para><b>Still deferred to cycle 7c+</b>: <c>repeat(auto-fill,
+    /// …)</c> / <c>repeat(auto-fit, …)</c> expansion is layout-time
+    /// dynamic (= container-size dependent); named lines inside those
+    /// repeats remain unresolved. Tracked under
+    /// `grid-implicit-named-area-and-occurrence-syntax-deferral`.</para></summary>
+    private static Dictionary<string, List<int>> BuildNamedLineMap(
+        TrackList trackList, GridTemplateAreas areas, bool isRow,
+        SizingContext ctx, CancellationToken cancellationToken)
     {
-        var map = new Dictionary<string, int>(StringComparer.Ordinal);
+        var map = new Dictionary<string, List<int>>(StringComparer.Ordinal);
 
-        // Walk authored items. currentLine starts at 1 (= the line
-        // BEFORE the first track). A TrackListNamedLine at the current
-        // position records the name → currentLine. A TrackListEntry
-        // advances currentLine by 1.
+        // Walk authored items via the shared expansion (= same cap +
+        // cancellation as sizing). currentLine starts at 1 (= the line
+        // BEFORE the first track).
+        var expanded = ExpandTrackList(trackList, ctx, cancellationToken);
         int currentLine = 1;
-        foreach (var item in trackList.Items)
+        foreach (var item in expanded)
         {
+            cancellationToken.ThrowIfCancellationRequested();
             switch (item)
             {
                 case TrackListNamedLine namedLine:
-                    map.TryAdd(namedLine.Name, currentLine);
+                    AddLineOccurrence(map, namedLine.Name, currentLine);
                     break;
                 case TrackListEntry:
                     currentLine++;
                     break;
-                case TrackListRepeat repeat when repeat.Repeat.Count > 0:
-                    // Positive-count repeat: unroll the pattern N times.
-                    for (var r = 0; r < repeat.Repeat.Count; r++)
-                    {
-                        foreach (var p in repeat.Repeat.Pattern)
-                        {
-                            switch (p)
-                            {
-                                case TrackRepeatNamedLine rnl:
-                                    map.TryAdd(rnl.Name, currentLine);
-                                    break;
-                                case TrackRepeatEntry:
-                                    currentLine++;
-                                    break;
-                            }
-                        }
-                    }
-                    break;
-                // auto-fill (count=0) / auto-fit (count=-1) — cycle 7c.
-                // Names inside those repeats don't resolve in cycle 7b.
+                // TrackListRepeat with auto-fill/auto-fit stays as-is;
+                // ExpandTrackList passes them through. Names inside
+                // those repeats remain unresolved (= cycle 7c scope).
             }
         }
 
-        // Implicit `<area>-start` / `<area>-end` lines per §8.4. Per
-        // the conflict-resolution rule, TryAdd preserves author lines
-        // if a name collision occurs.
+        // Implicit `<area>-start` / `<area>-end` lines per §8.4.
         foreach (var (name, rect) in areas.NameToRect)
         {
             var startLine = isRow ? rect.RowStart : rect.ColumnStart;
             var endLine = isRow ? rect.RowEnd : rect.ColumnEnd;
-            map.TryAdd($"{name}-start", startLine);
-            map.TryAdd($"{name}-end", endLine);
+            AddLineOccurrence(map, $"{name}-start", startLine);
+            AddLineOccurrence(map, $"{name}-end", endLine);
+        }
+
+        // Sort each occurrence list ascending so the FIRST occurrence
+        // (= map[name][0]) is the lowest-numbered line per spec §8.3.
+        foreach (var list in map.Values)
+        {
+            list.Sort();
         }
 
         return map;
     }
 
+    private static void AddLineOccurrence(
+        Dictionary<string, List<int>> map, string name, int line)
+    {
+        if (!map.TryGetValue(name, out var list))
+        {
+            list = new List<int>(1);
+            map[name] = list;
+        }
+        list.Add(line);
+    }
+
+    /// <summary>Per Phase 3 Task 18 cycle 7b + post-PR-#106 review F1
+    /// #3 — resolve a <c>&lt;custom-ident&gt;</c> reference for a
+    /// START longhand per CSS Grid L1 §8.3. Tries
+    /// <c>&lt;ident&gt;-start</c> first (= catches both authored
+    /// <c>[foo-start]</c> lines AND implicit <c>foo-start</c> lines
+    /// auto-generated from a named area <c>foo</c>), then falls back
+    /// to bare <c>&lt;ident&gt;</c>. First occurrence wins (= lowest
+    /// line number).</summary>
+    private static int? ResolveStartLineFromIdent(
+        string ident, Dictionary<string, List<int>> namedLines)
+    {
+        if (namedLines.TryGetValue(ident + "-start", out var compoundLines)
+            && compoundLines.Count > 0)
+        {
+            return compoundLines[0];
+        }
+        if (namedLines.TryGetValue(ident, out var bareLines)
+            && bareLines.Count > 0)
+        {
+            return bareLines[0];
+        }
+        return null;
+    }
+
+    /// <summary>Per Phase 3 Task 18 cycle 7b + post-PR-#106 review F1
+    /// #3 — mirror of <see cref="ResolveStartLineFromIdent"/> for END
+    /// longhands. Tries <c>&lt;ident&gt;-end</c> first, then bare
+    /// <c>&lt;ident&gt;</c>.</summary>
+    private static int? ResolveEndLineFromIdent(
+        string ident, Dictionary<string, List<int>> namedLines)
+    {
+        if (namedLines.TryGetValue(ident + "-end", out var compoundLines)
+            && compoundLines.Count > 0)
+        {
+            return compoundLines[0];
+        }
+        if (namedLines.TryGetValue(ident, out var bareLines)
+            && bareLines.Count > 0)
+        {
+            return bareLines[0];
+        }
+        return null;
+    }
+
     private static PlacementSpec ReadPlacement(
         ComputedStyle style, bool isRow, GridTemplateAreas areas,
-        Dictionary<string, int> namedLines, SizingContext ctx)
+        Dictionary<string, List<int>> namedLines, SizingContext ctx)
     {
         var start = isRow ? style.ReadGridRowStart() : style.ReadGridColumnStart();
         var end = isRow ? style.ReadGridRowEnd() : style.ReadGridColumnEnd();
@@ -1985,45 +2039,49 @@ internal static class GridSizing
             if (start.NamedLine is not null)
             {
                 return EmitPlacementApproximatedAndFallToAuto(ctx,
-                    "span <named-line> (named lines are cycle-7b scope)");
+                    "`span <custom-ident>` syntax (see grid-implicit-"
+                    + "named-area-and-occurrence-syntax-deferral)");
             }
             // Per §8.3.1 — `span 0` normalizes to `span 1`.
             var span = Math.Max(1, start.LineNumber);
             return new PlacementSpec(PlacementKind.Auto, 0, span);
         }
 
-        // (2) start: named-line (= bare custom-ident) — cycle 7a
-        // resolves against grid-template-areas; cycle 7b extends to
-        // authored `[name]` lines + implicit area-derived
-        // `<name>-start` / `<name>-end` lines per §8.4.
+        // (2) start: NamedLine (= bare custom-ident). Per CSS Grid L1
+        // §8.3 + post-PR-#106 review F1 #3 — try `<ident>-start` first
+        // (= matches author's `[foo-start]` line OR implicit foo-start
+        // line auto-generated from a named area `foo`), then bare
+        // `<ident>` (= author's `[foo]` line). The cycle-7a area-
+        // direct lookup is REDUNDANT here because the named-line map
+        // already contains the implicit `<area>-start` / `<area>-end`
+        // lines for every entry in `grid-template-areas`.
         if (start.Kind == GridLineKind.NamedLine && start.NamedLine is not null)
         {
-            var areaName = start.NamedLine;
-            if (areas.NameToRect.TryGetValue(areaName, out var areaRect))
+            var ident = start.NamedLine;
+            var resolvedStartLine = ResolveStartLineFromIdent(ident, namedLines);
+            if (resolvedStartLine is int startLineNum)
             {
-                return ResolveNamedAreaPlacement(
-                    areaRect, end, isRow, areas, namedLines, ctx);
-            }
-            // Per Phase 3 Task 18 cycle 7b — try the named-line map.
-            // Matches both authored `[name]` lines and the implicit
-            // `<area>-start` / `<area>-end` lines auto-generated from
-            // named areas per §8.4.
-            if (namedLines.TryGetValue(areaName, out var lineNumber))
-            {
-                return ResolveNamedLineToPlacement(
-                    lineNumber, end, isRow, areas, namedLines, ctx);
+                return CombineLineStartWithEnd(
+                    startLineNum, end, isRow, namedLines, ctx);
             }
             return EmitPlacementApproximatedAndFallToAuto(ctx,
-                $"named line '{areaName}' in grid-*-start does not match "
-                + "any grid-template-areas area, authored [name] line, "
-                + "or implicit <area>-start/-end line");
+                $"<custom-ident> '{ident}' in grid-*-start does not "
+                + "match any `<ident>-start` line or bare `<ident>` "
+                + "line (see grid-implicit-named-area-and-occurrence-"
+                + "syntax-deferral for reverse-implicit-area + "
+                + "occurrence forms)");
         }
 
-        // (3) start: LineNumber + NamedLine qualifier — cycle 7b scope
+        // (3) start: LineNumber + NamedLine qualifier (= `foo 2`).
+        // Per PR-#106 review F2 #4 — occurrence-aware resolution is
+        // tracked in grid-implicit-named-area-and-occurrence-syntax-
+        // deferral. Falls back to auto with a deferral-tagged
+        // diagnostic so authors see the gap.
         if (start.Kind == GridLineKind.LineNumber && start.NamedLine is not null)
         {
             return EmitPlacementApproximatedAndFallToAuto(ctx,
-                "named-line qualifier with integer (cycle-7b scope)");
+                "`<integer> <custom-ident>` occurrence syntax (see "
+                + "grid-implicit-named-area-and-occurrence-syntax-deferral)");
         }
 
         // (3) start: auto — let end drive
@@ -2038,42 +2096,38 @@ internal static class GridSizing
                 if (end.NamedLine is not null)
                 {
                     return EmitPlacementApproximatedAndFallToAuto(ctx,
-                        "span <named-line> in grid-*-end (cycle-7b scope)");
+                        "`span <custom-ident>` syntax in grid-*-end "
+                        + "(see grid-implicit-named-area-and-occurrence-"
+                        + "syntax-deferral)");
                 }
                 var span = Math.Max(1, end.LineNumber);
                 return new PlacementSpec(PlacementKind.Auto, 0, span);
             }
             if (end.Kind == GridLineKind.NamedLine && end.NamedLine is not null)
             {
-                // Per Phase 3 Task 18 cycle 7a — end-only named-area
-                // reference. Place at the area's end line minus one
-                // (= the cell BEFORE the end line) as a single cell.
-                // The spec's full reverse-auto-placement search is
-                // tracked in grid-reverse-auto-placement-deferral.
-                if (areas.NameToRect.TryGetValue(end.NamedLine, out var areaRect))
+                // Per CSS Grid L1 §8.3 + PR-#106 review F1 #3 — try
+                // <ident>-end first (= catches authored foo-end OR
+                // implicit foo-end from area `foo`), then bare <ident>.
+                var resolvedEndLine = ResolveEndLineFromIdent(
+                    end.NamedLine, namedLines);
+                if (resolvedEndLine is int endLineNum)
                 {
-                    var endLine = isRow ? areaRect.RowEnd : areaRect.ColumnEnd;
+                    // auto-start + definite-end uses the cycle-6a
+                    // simplification (single cell at end - 1); the
+                    // spec's reverse-auto-placement search is tracked
+                    // in grid-reverse-auto-placement-deferral.
                     EmitPlacementApproximatedDiagnostic(ctx,
-                        $"auto-start with named-area-end '{end.NamedLine}' "
-                        + "uses single-cell placement at end-1 (= the "
+                        $"auto-start with `<custom-ident>` end '{end.NamedLine}' "
+                        + "uses single-cell placement at end-1 (= "
                         + "grid-reverse-auto-placement-deferral simplification)");
                     return new PlacementSpec(
-                        PlacementKind.Definite, endLine - 1, 1);
-                }
-                // Per Phase 3 Task 18 cycle 7b — try the named-line map
-                // for authored / area-derived `<name>-end` lines.
-                if (namedLines.TryGetValue(end.NamedLine, out var endLineFromMap))
-                {
-                    EmitPlacementApproximatedDiagnostic(ctx,
-                        $"auto-start with named-line-end '{end.NamedLine}' "
-                        + "uses single-cell placement at end-1 (= the "
-                        + "grid-reverse-auto-placement-deferral simplification)");
-                    return new PlacementSpec(
-                        PlacementKind.Definite, endLineFromMap - 1, 1);
+                        PlacementKind.Definite, endLineNum - 1, 1);
                 }
                 return EmitPlacementApproximatedAndFallToAuto(ctx,
-                    $"named line '{end.NamedLine}' in grid-*-end does not "
-                    + "match any area, authored line, or implicit area line");
+                    $"<custom-ident> '{end.NamedLine}' in grid-*-end does "
+                    + "not match any `<ident>-end` or bare `<ident>` line "
+                    + "(see grid-implicit-named-area-and-occurrence-"
+                    + "syntax-deferral)");
             }
             if (end.Kind == GridLineKind.LineNumber
                 && end.NamedLine is null
@@ -2151,48 +2205,29 @@ internal static class GridSizing
                 "negative line numbers in placement (cycle-7 scope)");
         }
 
-        // end is named — cycle 7a resolves against grid-template-areas;
-        // cycle 7b extends to the named-line map.
+        // end is named — try <ident>-end first, then bare <ident>.
         if (end.Kind == GridLineKind.NamedLine && end.NamedLine is not null)
         {
-            if (areas.NameToRect.TryGetValue(end.NamedLine, out var endAreaRect))
+            var resolvedEnd = ResolveEndLineFromIdent(end.NamedLine, namedLines);
+            if (resolvedEnd is int endLineNum)
             {
-                var endLine = isRow ? endAreaRect.RowEnd : endAreaRect.ColumnEnd;
-                return SpanBetweenLines(startLine, endLine);
-            }
-            if (namedLines.TryGetValue(end.NamedLine, out var endLineFromMap))
-            {
-                return SpanBetweenLines(startLine, endLineFromMap);
+                return SpanBetweenLines(startLine, endLineNum);
             }
         }
         EmitPlacementApproximatedAndFallToAuto(ctx,
-            "named line in grid-*-end — using start with span 1");
+            $"<custom-ident> '{end.NamedLine}' in grid-*-end does not "
+            + "resolve — using start line with span 1");
         return new PlacementSpec(PlacementKind.Definite, startLine, 1);
     }
 
-    /// <summary>Per Phase 3 Task 18 cycle 7a — resolve a named-area
-    /// start placement (start ident matched an area name). Examines
-    /// the end line to determine the placement extent:
-    /// <list type="bullet">
-    ///   <item>end = Auto → span the full area on this axis.</item>
-    ///   <item>end = NamedLine matching another area → span from this
-    ///   area's start to that area's end (applying §8.3 swap if
-    ///   needed).</item>
-    ///   <item>end = NamedLine matching SAME area → span the full area
-    ///   (= equivalent to `grid-area: name` shorthand).</item>
-    ///   <item>end = integer line number → span from this area's start
-    ///   to that line.</item>
-    ///   <item>end = span N → use this area's start + span N.</item>
-    /// </list></summary>
-    /// <summary>Per Phase 3 Task 18 cycle 7b — turn a named-line
-    /// start lookup into a definite placement spec by combining it
-    /// with the end-clause. The end may be auto (= single cell),
-    /// span N, an integer line, or another named line (= area or
-    /// named-line map).</summary>
-    private static PlacementSpec ResolveNamedLineToPlacement(
+    /// <summary>Per Phase 3 Task 18 cycle 7b + post-PR-#106 review F1
+    /// — combine a resolved start line (from a custom-ident lookup)
+    /// with the end-clause to build a Definite placement spec. The
+    /// end may be auto (= single cell), span N, an integer line, or
+    /// another custom-ident (= recursive line lookup).</summary>
+    private static PlacementSpec CombineLineStartWithEnd(
         int startLine, GridLineValue end, bool isRow,
-        GridTemplateAreas areas, Dictionary<string, int> namedLines,
-        SizingContext ctx)
+        Dictionary<string, List<int>> namedLines, SizingContext ctx)
     {
         if (end.Kind == GridLineKind.Auto)
         {
@@ -2216,21 +2251,15 @@ internal static class GridSizing
         }
         if (end.Kind == GridLineKind.NamedLine && end.NamedLine is not null)
         {
-            // Resolve end ident against areas (= area's end line) or
-            // named-line map.
-            if (areas.NameToRect.TryGetValue(end.NamedLine, out var endAreaRect))
+            // Per §8.3 — try <ident>-end first, then bare <ident>.
+            var resolvedEnd = ResolveEndLineFromIdent(end.NamedLine, namedLines);
+            if (resolvedEnd is int endLineNum)
             {
-                var endLine = isRow ? endAreaRect.RowEnd : endAreaRect.ColumnEnd;
-                return SpanBetweenLines(startLine, endLine);
-            }
-            if (namedLines.TryGetValue(end.NamedLine, out var endLineNumber))
-            {
-                return SpanBetweenLines(startLine, endLineNumber);
+                return SpanBetweenLines(startLine, endLineNum);
             }
             EmitPlacementApproximatedDiagnostic(ctx,
-                $"named line '{end.NamedLine}' in grid-*-end does not "
-                + "match any area, authored line, or implicit area line "
-                + "— using single-cell placement at start");
+                $"<custom-ident> '{end.NamedLine}' in grid-*-end does not "
+                + "resolve — using single-cell placement at start");
             return new PlacementSpec(PlacementKind.Definite, startLine, 1);
         }
         return new PlacementSpec(PlacementKind.Definite, startLine, 1);
@@ -2253,82 +2282,17 @@ internal static class GridSizing
             PlacementKind.Definite, startLine, endLine - startLine);
     }
 
-    private static PlacementSpec ResolveNamedAreaPlacement(
-        GridAreaRect areaRect, GridLineValue end, bool isRow,
-        GridTemplateAreas areas, Dictionary<string, int> namedLines,
-        SizingContext ctx)
-    {
-        var areaStartLine = isRow ? areaRect.RowStart : areaRect.ColumnStart;
-        var areaEndLine = isRow ? areaRect.RowEnd : areaRect.ColumnEnd;
-        var areaSpan = areaEndLine - areaStartLine;
-
-        if (end.Kind == GridLineKind.Auto)
-        {
-            // Per CSS Grid §8.4 — a single named-area start with auto
-            // end spans the FULL area (= the area's implicit end line
-            // is the same area).
-            return new PlacementSpec(
-                PlacementKind.Definite, areaStartLine, Math.Max(1, areaSpan));
-        }
-        if (end.Kind == GridLineKind.Span)
-        {
-            if (end.NamedLine is not null)
-            {
-                EmitPlacementApproximatedAndFallToAuto(ctx,
-                    "span <named-line> in grid-*-end — using area span");
-                return new PlacementSpec(
-                    PlacementKind.Definite, areaStartLine, Math.Max(1, areaSpan));
-            }
-            var span = Math.Max(1, end.LineNumber);
-            return new PlacementSpec(PlacementKind.Definite, areaStartLine, span);
-        }
-        if (end.Kind == GridLineKind.LineNumber && end.NamedLine is null
-            && end.LineNumber > 0)
-        {
-            var endLine = end.LineNumber;
-            if (endLine == areaStartLine)
-            {
-                return new PlacementSpec(PlacementKind.Definite, areaStartLine, 1);
-            }
-            if (endLine < areaStartLine)
-            {
-                return new PlacementSpec(
-                    PlacementKind.Definite, endLine, areaStartLine - endLine);
-            }
-            return new PlacementSpec(
-                PlacementKind.Definite, areaStartLine, endLine - areaStartLine);
-        }
-        if (end.Kind == GridLineKind.NamedLine && end.NamedLine is not null)
-        {
-            // Cycle 7a area lookup + cycle 7b named-line map fallback.
-            if (areas.NameToRect.TryGetValue(end.NamedLine, out var endAreaRect))
-            {
-                var endLine = isRow ? endAreaRect.RowEnd : endAreaRect.ColumnEnd;
-                return SpanBetweenLines(areaStartLine, endLine);
-            }
-            if (namedLines.TryGetValue(end.NamedLine, out var endLineFromMap))
-            {
-                return SpanBetweenLines(areaStartLine, endLineFromMap);
-            }
-        }
-        // Unknown / unsupported end shape — span the full area on
-        // this axis. The diagnostic surfaces the deviation.
-        EmitPlacementApproximatedDiagnostic(ctx,
-            $"named-area-start with grid-*-end kind {end.Kind} "
-            + "(named line / negative line) uses the area's full span");
-        return new PlacementSpec(
-            PlacementKind.Definite, areaStartLine, Math.Max(1, areaSpan));
-    }
-
+    /// <summary>Per PR-#106 review F3 #8 — message no longer claims
+    /// "cycle 7 will ship named lines + areas + dense" since cycles
+    /// 7a (areas) and 7b (named lines) have already shipped. The
+    /// caller passes the specific unsupported syntax + a deferral
+    /// pointer for the reader to find the gap.</summary>
     private static PlacementSpec EmitPlacementApproximatedAndFallToAuto(
         SizingContext ctx, string reason)
     {
         ctx.Emit(new PaginateDiagnostic(
             Code: PaginateDiagnosticCodes.LayoutGridPlacementApproximated001,
-            Message: $"Grid item placement falls back to auto: {reason}. "
-                + "Cycle 6 ships <integer> + span placement + implicit "
-                + "tracks + grid-auto-flow row/column; cycle 7 will ship "
-                + "named lines + areas + dense.",
+            Message: $"Grid item placement falls back to auto: {reason}.",
             Severity: PaginateDiagnosticSeverity.Warning));
         return new PlacementSpec(PlacementKind.Auto, 0, 1);
     }

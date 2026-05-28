@@ -2398,3 +2398,48 @@ flags the categories):
   implicit `grid-area: foo` rectangle, (b) `grid-row-start: foo 2`
   resolving to the 2nd line named `foo`, and (c) `grid-row-end:
   span foo` spanning to the next `foo` line after the start.
+
+---
+
+## grid-auto-fit-collapse-empty-tracks-deferral
+
+- **ID** — `grid-auto-fit-collapse-empty-tracks-deferral`
+- **Status** — `approximated`. Phase 3 Task 18 cycle 7c.
+- **Behavior** — Cycle 7c ships `repeat(auto-fill, …)` and
+  `repeat(auto-fit, …)` expansion via the container-aware
+  `ExpandTrackList` overload that derives the iteration count
+  from `(containerExtent − otherFixedSizes) ÷ patternFixedSize`,
+  clamped to ≥ 1 and to `MaxImplicitTracksPerAxis`. For cycle 7c
+  `auto-fit` is treated IDENTICALLY to `auto-fill` — both produce
+  the same expanded track list. Per CSS Grid L1 §7.2.3.1,
+  `auto-fit` additionally collapses empty tracks (= tracks with
+  no placed items) to 0 size and merges their surrounding
+  gutters AFTER placement; that collapse pass is the missing
+  piece.
+- **Missing** — A post-placement pass that walks each
+  auto-fit-derived track and:
+  - tags tracks with no items in the placement occupancy as
+    "collapsed";
+  - shrinks collapsed tracks to 0 size in
+    `ResolveTrackSizes`'s `TrackSizingInfo` output;
+  - merges adjacent gutters around collapsed tracks per
+    §7.2.3.1.
+- **Trigger** — corpus invoice / report uses
+  `grid-template-columns: repeat(auto-fit, minmax(100px, 1fr))`
+  with FEWER items than the derived count (= empty trailing
+  tracks expected to collapse for centering), OR a user-reported
+  case where `auto-fit` and `auto-fill` render IDENTICALLY when
+  the spec intends `auto-fit` to compress.
+- **Owner files** —
+  - `src/NetPdf.Layout/Layouters/GridSizing.cs` — `Resolve`
+    would track which tracks came from an `auto-fit` repeat
+    (= add an `IsAutoFitDerived` flag to `TrackSizingInfo`);
+    after placement, walk the occupancy + collapse empties.
+  - `src/NetPdf.Layout/Layouters/GridLayouter.cs` — emission
+    layer reads the post-collapse positions verbatim.
+- **Added** — Phase 3 Task 18 cycle 7c (this branch).
+- **Removal condition** — `auto-fit` collapses empty tracks to 0
+  + gutters merge appropriately + a production-pipeline test
+  pins `repeat(auto-fit, …)` rendering DIFFERENTLY from
+  `repeat(auto-fill, …)` when the item count is less than the
+  derived track count.

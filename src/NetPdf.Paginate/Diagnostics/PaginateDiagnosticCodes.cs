@@ -408,6 +408,19 @@ internal static class PaginateDiagnosticCodes
     public const string LayoutGridMaxExpandedTracksTruncated001 =
         "LAYOUT-GRID-MAX-EXPANDED-TRACKS-TRUNCATED-001";
 
+    /// <summary>Phase 3 Task 18 cycle 7c + post-PR-#107 review F2 #4 —
+    /// a <c>grid-template-rows</c> / <c>-columns</c> declaration uses
+    /// <c>repeat(auto-fit, …)</c>. Cycle 7c expands auto-fit
+    /// IDENTICALLY to auto-fill (= the iteration count comes from
+    /// <c>(containerExtent − otherFixedSizes) ÷ patternFixedSize</c>);
+    /// per CSS Grid L1 §7.2.3.1, auto-fit additionally collapses
+    /// tracks with no placed items to 0 size AFTER placement. That
+    /// post-placement collapse is tracked under
+    /// `grid-auto-fit-collapse-empty-tracks-deferral`. Fires once per
+    /// <c>AttemptLayout</c>. Severity: Warning.</summary>
+    public const string LayoutGridAutoFitApproximated001 =
+        "LAYOUT-GRID-AUTO-FIT-APPROXIMATED-001";
+
     /// <summary>Phase 3 Task 17 cycle 5 — a single grid row exceeds
     /// the fragmentainer's block-axis budget on its first attempt.
     /// Per CSS Fragmentation L3 §4.4 progress rule the row is

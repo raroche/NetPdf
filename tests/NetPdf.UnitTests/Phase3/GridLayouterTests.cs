@@ -385,10 +385,14 @@ public sealed class GridLayouterTests
     }
 
     [Fact]
-    public void Empty_grid_template_emits_no_items_and_no_throw()
+    public void Empty_grid_template_with_one_item_emits_via_implicit_grid()
     {
-        // grid-template-rows: none + grid-template-columns: none →
-        // 0 tracks → no cells → no item fragments emitted; no throw.
+        // Per PR-#103 review F1 — grid-template-rows: none +
+        // grid-template-columns: none with an item is now an
+        // implicit-only grid. Cycle 6 seeds a 1×1 implicit grid + the
+        // sparse-cursor places the item at (0,0). Auto-sized implicit
+        // row/col with no item intrinsic contribution collapse to 0
+        // so the fragment is 0×0.
         var sink = new RecordingFragmentSink();
         var diag = new RecordingDiagnosticsSink();
         using var shaper = new SyntheticShaperResolver();
@@ -399,7 +403,30 @@ public sealed class GridLayouterTests
 
         RunGridLayouter(grid, sink, diag, shaper);
 
+        Assert.Single(sink.Fragments);
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 0,
+            inlineSize: 0, blockSize: 0);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridImplicitTrackUnsupported001);
+    }
+
+    [Fact]
+    public void Empty_grid_template_with_no_items_is_degenerate_noop()
+    {
+        // Per PR-#103 review F1 — a grid with no template AND no
+        // items is a degenerate no-op (no fragments, no diagnostic).
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildEmptyGridContainer();
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
         Assert.Empty(sink.Fragments);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridImplicitTrackUnsupported001);
     }
 
     // =====================================================================
@@ -1011,25 +1038,27 @@ public sealed class GridLayouterTests
     // =====================================================================
 
     [Fact]
-    public void Empty_grid_template_with_children_emits_implicit_track_diagnostic_per_item()
+    public void Empty_grid_template_with_children_lays_out_via_implicit_only_grid()
     {
-        // Per F6 — pre-fix the 0-track early-return silently dropped
-        // children; post-fix each grid-item child gets a diagnostic.
+        // Per PR-#103 review F1 — pre-fix the 0-track early-return
+        // silently dropped children. Cycle 6 generates a 1×1 implicit
+        // seed + implicit rows per overflow; 3 auto-placed items in
+        // row-mode fill (0,0), (1,0), (2,0). All fragments are 0×0
+        // since the implicit row/col are auto-sized with no item
+        // contribution.
         var sink = new RecordingFragmentSink();
         var diag = new RecordingDiagnosticsSink();
         using var shaper = new SyntheticShaperResolver();
 
         var grid = BuildEmptyGridContainer();
-        grid.AppendChild(BuildAutoPlacedItem());
-        grid.AppendChild(BuildAutoPlacedItem());
-        grid.AppendChild(BuildAutoPlacedItem());
+        var items = new[] { BuildAutoPlacedItem(), BuildAutoPlacedItem(), BuildAutoPlacedItem() };
+        foreach (var item in items) grid.AppendChild(item);
 
         RunGridLayouter(grid, sink, diag, shaper);
 
-        Assert.Empty(sink.Fragments);
-        var implicitDiagnostics = diag.Diagnostics.FindAll(d =>
+        Assert.Equal(3, sink.Fragments.Count);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
             d.Code == PaginateDiagnosticCodes.LayoutGridImplicitTrackUnsupported001);
-        Assert.Equal(3, implicitDiagnostics.Count);
     }
 
     // =====================================================================
@@ -3331,6 +3360,319 @@ public sealed class GridLayouterTests
         AssertFragmentEquals(sink, item,
             inlineOffset: 150, blockOffset: 0,
             inlineSize: 50, blockSize: 50);
+    }
+
+    // =====================================================================
+    //  PR-#103 review F1–F7 — coverage for the review-pass-resolved
+    //  findings: implicit-only grids, captured-explicit-count negative
+    //  resolution, sparse-occupancy DoS guard, auto-flow:column
+    //  transpose, col-locked cursor advance, auto-start definite-end
+    //  diagnostic.
+    // =====================================================================
+
+    [Fact]
+    public void F1_grid_template_columns_only_generates_implicit_rows()
+    {
+        // grid-template-columns: 50px 100px + no grid-template-rows +
+        // 4 auto items in row-mode → fills (0,0), (0,1), (1,0), (1,1)
+        // with implicit row 1 added.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = TrackList.None;
+        var colsTrack = BuildLengthTrackList(new[] { 50.0, 100.0 });
+        var grid = BuildGridContainerWithTemplates(rowsTrack, colsTrack);
+        var items = new Box[4];
+        for (var i = 0; i < 4; i++)
+        {
+            items[i] = BuildAutoPlacedItem();
+            grid.AppendChild(items[i]);
+        }
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Equal(4, sink.Fragments.Count);
+        AssertFragmentEquals(sink, items[0],
+            inlineOffset: 0, blockOffset: 0, inlineSize: 50, blockSize: 0);
+        AssertFragmentEquals(sink, items[1],
+            inlineOffset: 50, blockOffset: 0, inlineSize: 100, blockSize: 0);
+        AssertFragmentEquals(sink, items[2],
+            inlineOffset: 0, blockOffset: 0, inlineSize: 50, blockSize: 0);
+        AssertFragmentEquals(sink, items[3],
+            inlineOffset: 50, blockOffset: 0, inlineSize: 100, blockSize: 0);
+    }
+
+    [Fact]
+    public void F1_grid_template_rows_only_generates_implicit_columns()
+    {
+        // grid-template-rows: 50px 100px + no grid-template-columns +
+        // 4 auto items in column-mode → fills (0,0), (1,0), (0,1),
+        // (1,1) with implicit column 1 added.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = BuildLengthTrackList(new[] { 50.0, 100.0 });
+        var colsTrack = TrackList.None;
+        var grid = BuildGridContainerWithTemplates(rowsTrack, colsTrack);
+        SetGridAutoFlow(grid, GridAutoFlowValue.Column);
+        var items = new Box[4];
+        for (var i = 0; i < 4; i++)
+        {
+            items[i] = BuildAutoPlacedItem();
+            grid.AppendChild(items[i]);
+        }
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Equal(4, sink.Fragments.Count);
+        AssertFragmentEquals(sink, items[0],
+            inlineOffset: 0, blockOffset: 0, inlineSize: 0, blockSize: 50);
+        AssertFragmentEquals(sink, items[1],
+            inlineOffset: 0, blockOffset: 50, inlineSize: 0, blockSize: 100);
+    }
+
+    [Fact]
+    public void F2_negative_line_resolves_against_original_explicit_grid()
+    {
+        // Per PR-#103 review F2 — earlier items grow the implicit row
+        // count; a later `grid-row-start: -1` must still resolve
+        // against the ORIGINAL 2-row explicit grid (= line 3 = row
+        // index 2), not against the post-grown extent.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 200.0 },
+            colsPx: new[] { 50.0 });
+        // Item A at row 5 grows implicit rows past the original 2.
+        var a = BuildItemWithExplicitPlacement(row: 5, col: 1);
+        // Item B at row -1 must resolve against ORIGINAL explicitRowCount=2
+        // → row 2 (= implicit row immediately after the explicit grid),
+        // NOT row 4 (which would be -1 against the grown count).
+        var b = BuildItemWithExplicitPlacement(row: -1, col: 1);
+        grid.AppendChild(a);
+        grid.AppendChild(b);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Equal(2, sink.Fragments.Count);
+        // Item B at row 2 = blockOffset 300 (100 + 200) — the first
+        // implicit row position (auto-sized to 0 since no item
+        // contribution there).
+        AssertFragmentEquals(sink, b,
+            inlineOffset: 0, blockOffset: 300,
+            inlineSize: 50, blockSize: 0);
+    }
+
+    [Fact]
+    public void F3_far_out_coord_drops_item_with_diagnostic_no_oom()
+    {
+        // Per PR-#103 review F3 — `grid-row-start: 50000` would have
+        // OOM-ed under the dense bool-matrix occupancy. Cycle-6a-
+        // post-F3 caps implicit growth at MaxImplicitTracksPerAxis
+        // (1024) and drops the item with a truncation diagnostic.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0 },
+            colsPx: new[] { 100.0 });
+        var benign = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var hostile = BuildItemWithExplicitPlacement(row: 50_000, col: 1);
+        grid.AppendChild(benign);
+        grid.AppendChild(hostile);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        // Benign item lands; hostile dropped + diagnostic.
+        Assert.Single(sink.Fragments);
+        Assert.Same(benign, sink.Fragments[0].Box);
+        Assert.Contains(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridMaxExpandedTracksTruncated001);
+        Assert.Contains(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridImplicitTrackUnsupported001);
+    }
+
+    [Fact]
+    public void F4_grid_auto_flow_column_with_column_locked_item_runs_pass2()
+    {
+        // Per PR-#103 review F4 — in column-flow, `definite-column +
+        // auto-row` items are the MAJOR-locked Pass 2 (analogous to
+        // `definite-row + auto-col` in row-flow). The col-locked item
+        // gets placed at its anchored column with the first free row
+        // run.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 100.0 },
+            colsPx: new[] { 100.0, 100.0 });
+        SetGridAutoFlow(grid, GridAutoFlowValue.Column);
+
+        // Col-locked item: grid-column: 2, grid-row: auto.
+        var colLocked = BuildItemWithColOnlyPlacement(col: 2);
+        // Fully-auto item: should land AFTER the col-locked one in
+        // source order, sharing the cursor.
+        var auto = BuildAutoPlacedItem();
+        grid.AppendChild(colLocked);
+        grid.AppendChild(auto);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Equal(2, sink.Fragments.Count);
+        // colLocked at (0, 1) — column-locked Pass 2 finds first row.
+        AssertFragmentEquals(sink, colLocked,
+            inlineOffset: 100, blockOffset: 0,
+            inlineSize: 100, blockSize: 100);
+        // auto fills (0, 0) per column-major source order (since the
+        // col-locked Pass 2 ran first; the cursor for both-auto starts
+        // at the major origin).
+        AssertFragmentEquals(sink, auto,
+            inlineOffset: 0, blockOffset: 0,
+            inlineSize: 100, blockSize: 100);
+    }
+
+    [Fact]
+    public void F4_grid_auto_flow_column_with_row_locked_item_shares_cursor()
+    {
+        // Per PR-#103 review F4 — in column-flow, `definite-row,
+        // auto-col` is the MINOR-locked case (analog of
+        // `definite-col, auto-row` in row-flow); it shares the
+        // auto-placement cursor with both-auto items.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 100.0 },
+            colsPx: new[] { 100.0, 100.0 });
+        SetGridAutoFlow(grid, GridAutoFlowValue.Column);
+
+        // Row-locked item: grid-row: 2, grid-column: auto.
+        var rowLocked = BuildItemWithRowOnlyPlacement(row: 2);
+        // Following auto item should advance past it via the cursor.
+        var auto = BuildAutoPlacedItem();
+        grid.AppendChild(rowLocked);
+        grid.AppendChild(auto);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Equal(2, sink.Fragments.Count);
+        // rowLocked at (1, 0) — row 1 anchored, first free column.
+        AssertFragmentEquals(sink, rowLocked,
+            inlineOffset: 0, blockOffset: 100,
+            inlineSize: 100, blockSize: 100);
+        // Cursor advanced past rowLocked → auto lands at next column
+        // (column-major, so after rowLocked's column wraps).
+        Assert.NotEqual(rowLocked.Style, auto.Style); // sanity
+    }
+
+    [Fact]
+    public void F5_col_locked_item_advances_cursor_for_following_auto_item()
+    {
+        // Per PR-#103 review F5 — in row-flow, a column-locked item
+        // shares the auto-placement cursor with both-auto items.
+        // Without F5 the cursor stayed at (0,0) so a following auto
+        // item landed at (0,0) on top of the col-locked one.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 100.0 },
+            colsPx: new[] { 100.0, 100.0 });
+
+        // Col-locked: grid-column: 2, grid-row: auto.
+        var colLocked = BuildItemWithColOnlyPlacement(col: 2);
+        var auto = BuildAutoPlacedItem();
+        grid.AppendChild(colLocked);
+        grid.AppendChild(auto);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Equal(2, sink.Fragments.Count);
+        // colLocked at (0, 1).
+        AssertFragmentEquals(sink, colLocked,
+            inlineOffset: 100, blockOffset: 0,
+            inlineSize: 100, blockSize: 100);
+        // With F5: cursor advanced past colLocked (cursor at col=2,
+        // wraps to row 1, col 0). auto lands at (1, 0).
+        // Without F5 (pre-fix): cursor was still (0, 0) → auto would
+        // overlap colLocked at (0, 0) or land at (0, 0) before
+        // colLocked.
+        AssertFragmentEquals(sink, auto,
+            inlineOffset: 0, blockOffset: 100,
+            inlineSize: 100, blockSize: 100);
+    }
+
+    [Fact]
+    public void F7_auto_start_definite_end_emits_placement_approximated_diagnostic()
+    {
+        // Per PR-#103 review F7 — `grid-row: auto / 3` uses the cycle
+        // 6a simplification (single cell at end-1 = row 2) + emits
+        // the placement-approximated diagnostic so authors see they're
+        // in approximation territory. The spec's full reverse-auto-
+        // placement is deferred to grid-reverse-auto-placement-deferral.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 50.0, 100.0, 150.0 },
+            colsPx: new[] { 200.0 });
+        // grid-row: auto / 3 — row-end at line 3, no start.
+        var style = MakeStyle();
+        var rowEndValue = GridLineValue.ForLineNumber(3);
+        style.SetSideTablePayload(PropertyId.GridRowEnd, (object)rowEndValue);
+        style.Set(PropertyId.GridRowEnd, ComputedSlot.FromSideTableIndex(0));
+        var item = Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Single(sink.Fragments);
+        // Cycle 6a simplification: single cell at row (3 - 1) = row 1.
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 50,
+            inlineSize: 200, blockSize: 100);
+        Assert.Contains(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+    }
+
+    [Fact]
+    public void F6_implicit_track_truncation_drops_item_without_index_error()
+    {
+        // Per PR-#103 review F6 — when AppendImplicitTracks hits the
+        // per-axis cap, GrowRowsIfNeeded returns false + the caller
+        // drops the item with a diagnostic. PlacedItem.Row stays at
+        // -1 so the emission loop's `item.Row < 0` skip avoids any
+        // out-of-bounds array access on materialized track positions.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 50.0 },
+            colsPx: new[] { 50.0 });
+        // Single far-out item — should drop cleanly without OOM or
+        // throwing on the materialized-track lookup.
+        var farOut = BuildItemWithExplicitPlacement(row: 2000, col: 2000);
+        grid.AppendChild(farOut);
+
+        // Should not throw.
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        // No fragments emitted (the far-out item dropped).
+        Assert.Empty(sink.Fragments);
+        Assert.Contains(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridImplicitTrackUnsupported001);
+        Assert.Contains(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridMaxExpandedTracksTruncated001);
     }
 
     // =====================================================================

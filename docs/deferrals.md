@@ -2336,3 +2336,41 @@ flags the categories):
   `grid-template-rows: 100px auto auto` with a `grid-row: 1 /
   4` item of intrinsic 200px → spec says auto rows each get
   50, equal-share approximation gives each 200/3 ≈ 67).
+
+---
+
+## grid-reverse-auto-placement-deferral
+
+- **ID** — `grid-reverse-auto-placement-deferral`
+- **Status** — `approximated`. Phase 3 Task 18 cycle 6a (post-
+  PR-#103 review F7).
+- **Behavior** — `grid-row-start: auto; grid-row-end: <integer>`
+  (and the column-axis analog) — the "auto start with definite
+  end" case — currently collapses to a single cell at row
+  `end - 1`. The placement-approximated diagnostic
+  `LAYOUT-GRID-PLACEMENT-APPROXIMATED-001` fires so authors see
+  they're in approximation territory.
+- **Missing** — Per CSS Grid L1 §8.5 step 4, the spec's full
+  reverse-auto-placement searches BACKWARD from the item's
+  end line for the FIRST free row run of the item's span. The
+  cycle-6a simplification ignores the search and just lands a
+  single cell.
+- **Trigger** — corpus invoice / report uses `grid-row: auto /
+  N` for an item with an explicit span (e.g., `grid-row: auto /
+  span 3` would be currently mishandled as auto/3 → single cell
+  at row 2; the spec wants the item placed BACKWARD from row 2
+  spanning 3 rows above), OR a user-reported case where
+  auto-start-definite-end items render at the wrong row.
+- **Owner files** —
+  - `src/NetPdf.Layout/Layouters/GridSizing.cs` — `ReadPlacement`
+    auto-start-definite-end branch (currently emits diagnostic +
+    returns single-cell). Replace with a reverse-search algorithm
+    that scans backward from the end line for a free run.
+- **Added** — Phase 3 Task 18 cycle 6a (this branch).
+- **Removal condition** — `ReadPlacement` (or the placement
+  service) implements the spec's reverse-auto-placement search;
+  the placement-approximated diagnostic no longer fires for the
+  auto-start-definite-end case + a test pins the spec-correct
+  behavior (e.g., `grid-row: auto / 4; height: 50px` in a
+  4-row grid + 2 prior rows occupied → item lands at row 3
+  not row 2).

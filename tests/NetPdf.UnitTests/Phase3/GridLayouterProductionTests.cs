@@ -648,10 +648,12 @@ public sealed class GridLayouterProductionTests
     }
 
     [Fact]
-    public async Task Production_html_empty_grid_template_emits_no_item_fragments()
+    public async Task Production_html_empty_grid_template_emits_via_implicit_only_grid()
     {
-        // No grid-template-rows / -columns → 0 explicit tracks → items
-        // drop (cycle 1 doesn't generate implicit tracks).
+        // Per PR-#103 review F1 — no grid-template-rows / -columns
+        // with items is now an implicit-only grid (cycle 6). Items
+        // lay out via the seeded 1×1 implicit grid + cycle-grown
+        // implicit rows.
         const string html = """
             <!DOCTYPE html><html><head><style>
                 .grid { display: grid; }
@@ -668,9 +670,9 @@ public sealed class GridLayouterProductionTests
         // The grid wrapper fragment IS emitted by BlockLayouter.
         var gridFragment = FindByClass(sink, "grid", BoxKind.GridContainer);
         Assert.NotNull(gridFragment);
-        // No item fragments though.
-        Assert.Null(FindByClass(sink, "a"));
-        Assert.Null(FindByClass(sink, "b"));
+        // Item fragments now emit through the implicit-only grid.
+        Assert.NotNull(FindByClass(sink, "a"));
+        Assert.NotNull(FindByClass(sink, "b"));
     }
 
     // ====================================================================

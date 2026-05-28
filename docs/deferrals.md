@@ -2331,55 +2331,70 @@ flags the categories):
 
 ---
 
-## grid-named-line-placement-deferral
+## grid-implicit-named-area-and-occurrence-syntax-deferral
 
-- **ID** — `grid-named-line-placement-deferral`
-- **Status** — `approximated`. Phase 3 Task 18 cycle 7a (post-
-  PR-#105 review F11).
-- **Behavior** — Cycle 7a `GridSizing.ReadPlacement` resolves
-  `<custom-ident>` references on `grid-row-start` /
-  `grid-row-end` / `grid-column-start` / `grid-column-end`
-  against the parent grid's `grid-template-areas` map. Idents
-  that don't match a named area fall back to auto-placement
-  with `LAYOUT-GRID-PLACEMENT-APPROXIMATED-001`. Per CSS Grid L1
-  §8.4, the cycle-7a path misses three spec-correct behaviors:
-  - **Author-declared named lines** in `grid-template-rows` /
-    `grid-template-columns` (e.g., `grid-template-rows: [head-start]
-    100px [head-end main-start] 100px [main-end]`). The current
-    `TrackList` AST carries `TrackListNamedLine` items but
-    `ReadPlacement` doesn't consume them.
-  - **Implicit `*-start` / `*-end` lines** auto-generated from
-    `grid-template-areas` area names (per §8.4 — for area `head`,
-    implicit lines `head-start` and `head-end` are created on
-    both axes; `grid-row-start: head-start` is equivalent to
-    `grid-row-start: head`). Currently `head-start` falls through
-    to auto.
-  - **Implicit `*-start` / `*-end` area names** auto-generated
-    from author-declared named lines with matching `-start` /
-    `-end` suffixes — the reverse contract from §8.4.
-- **Missing** — A named-line lookup map per grid container that
-  combines:
-  - explicit lines from `grid-template-rows` / `-columns`
-    TrackListNamedLine items;
-  - implicit `<area>-start` / `<area>-end` lines from
-    `grid-template-areas`;
-  - implicit `<line>-start` / `<line>-end` areas from suffix-
-    matching author lines.
-  `ReadPlacement` would consult this map when a NamedLine
-  reference fails the direct-area lookup.
+- **ID** — `grid-implicit-named-area-and-occurrence-syntax-deferral`
+- **Status** — `approximated`. Phase 3 Task 18 cycle 7b (post-
+  PR-#106 review). Replaces the
+  `grid-named-line-placement-deferral` (= the F11 placeholder added
+  in cycle 7a). Cycle 7b shipped the line-map lookup with first-
+  occurrence resolution + spec-correct ordering (`<ident>-start` /
+  `<ident>-end` tried before bare `<ident>`); the remaining gaps
+  are itemized below.
+- **Behavior** — Cycle 7b `GridSizing.ReadPlacement` resolves
+  `<custom-ident>` references via a per-axis named-line occurrence
+  map built from `grid-template-rows` / `grid-template-columns`
+  authored lines + `grid-template-areas`-derived implicit `<area>-
+  start` / `<area>-end` lines. Per CSS Grid L1 §8.3 the resolution
+  order is: for a start longhand, try `<ident>-start` (first
+  occurrence) → bare `<ident>` (first occurrence). For an end
+  longhand: `<ident>-end` (first occurrence) → bare `<ident>`.
+  Missing forms still fall back to auto-placement with
+  `LAYOUT-GRID-PLACEMENT-APPROXIMATED-001`:
+  - **Implicit named areas from author named-line pairs**: per
+    CSS Grid L1 §8.4, a `[foo-start] … [foo-end]` pair in
+    `grid-template-rows` AND `grid-template-columns` together
+    creates an IMPLICIT named area `foo` even when `foo` is
+    absent from `grid-template-areas`. Cycle 7b only derives
+    lines from areas — not areas from line-pairs.
+  - **`<integer> <custom-ident>`**: e.g., `grid-row-start: foo 2`
+    = the 2nd occurrence of line named `foo`. The parser AST
+    carries this via `GridLineValue.ForNamedLineNumber`; the
+    placement service falls back to auto.
+  - **`span <custom-ident>`**: e.g.,
+    `grid-row-end: span foo` = span to the next line named
+    `foo` after the start line. Parser via
+    `GridLineValue.ForSpanName`; placement falls back.
+  - **`span <custom-ident> <integer>`**: e.g.,
+    `grid-row-end: span foo 2` = span to the 2nd line named
+    `foo`. Parser via
+    `GridLineValue.ForSpanNameOccurrence`; placement falls back.
+- **Missing** —
+  - A reverse implicit-named-area derivation pass that walks both
+    axes' line maps and registers a `GridAreaRect` in
+    `GridTemplateAreas.NameToRect` whenever `foo-start` AND
+    `foo-end` exist on BOTH axes.
+  - Occurrence-aware lookup helpers that accept a 1-based count
+    (with negative-counts-from-end semantics per §8.3).
+  - Span-by-name resolution that walks the occurrence list
+    forward from the resolved start line.
 - **Trigger** — corpus invoice / report uses
-  `grid-template-rows: [foo] 100px` named lines, OR a user-
-  reported case where `grid-row-start: foo-start` doesn't
-  resolve against a declared `grid-template-areas` area named
-  `foo`.
+  `[foo-start] … [foo-end]` line pairs without a corresponding
+  `grid-template-areas` entry, OR `grid-row-start: foo 2` / `span
+  foo` occurrence syntax, OR a user-reported case where the
+  authored line pair fails to produce an implicit `grid-area: foo`
+  resolution.
 - **Owner files** —
-  - `src/NetPdf.Layout/Layouters/GridSizing.cs` —
-    `ReadPlacement` + a new named-line lookup helper.
-  - `src/NetPdf.Css/ComputedValues/Grid.cs` — possibly a new
-    `NamedLineMap` AST stored alongside `GridTemplateAreas` /
-    `TrackList`.
-- **Added** — Phase 3 Task 18 cycle 7a (this branch).
-- **Removal condition** — cycle 7b ships the named-line lookup;
-  the placement-approximated diagnostic no longer fires for
-  authored named lines or auto-generated `*-start` / `*-end`
-  lines from area names + lines.
+  - `src/NetPdf.Layout/Layouters/GridSizing.cs` — `BuildNamedLineMap`
+    (= would build a NamedAreaMap by intersecting the two axes'
+    line maps for matching `*-start` / `*-end` pairs) +
+    `ReadPlacement` (= would consume occurrence counts +
+    span-by-name).
+- **Added** — Phase 3 Task 18 cycle 7b (post-PR-#106 review).
+- **Removal condition** — the reverse implicit-named-area
+  derivation ships AND `<integer> <custom-ident>` / `span <ident>`
+  / `span <ident> <int>` resolve correctly AND production-pipeline
+  tests pin (a) `[foo-start]…[foo-end]` line pairs producing an
+  implicit `grid-area: foo` rectangle, (b) `grid-row-start: foo 2`
+  resolving to the 2nd line named `foo`, and (c) `grid-row-end:
+  span foo` spanning to the next `foo` line after the start.

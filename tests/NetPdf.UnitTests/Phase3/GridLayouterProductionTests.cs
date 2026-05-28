@@ -1601,6 +1601,56 @@ public sealed class GridLayouterProductionTests
     }
 
     // ====================================================================
+    //  Phase 3 Task 18 cycle 7b — named-line placement via real HTML.
+    // ====================================================================
+
+    [Fact]
+    public async Task Cycle7b_production_named_lines_resolve_via_real_css()
+    {
+        // Real HTML with `[header-start]` / `[header-end]` author named
+        // lines in grid-template-rows. Items reference the lines via
+        // `grid-row-start: header-start` (= cycle 7b lookup).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: [top] 100px [middle] 100px [bottom] 100px [end];
+                    grid-template-columns: 100px;
+                    width: 100px;
+                }
+                .a { grid-row: top / middle; }
+                .b { grid-row: middle / bottom; }
+                .c { grid-row: bottom / end; }
+            </style></head><body>
+                <div class="grid">
+                    <div class="a"></div>
+                    <div class="b"></div>
+                    <div class="c"></div>
+                </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var a = FindByClass(sink, "a");
+        var b = FindByClass(sink, "b");
+        var c = FindByClass(sink, "c");
+        Assert.NotNull(a);
+        Assert.NotNull(b);
+        Assert.NotNull(c);
+
+        // top = line 1; middle = line 2; bottom = line 3; end = line 4.
+        // a: top / middle → row 0; b: middle / bottom → row 1;
+        // c: bottom / end → row 2.
+        Assert.Equal(0, a!.Value.BlockOffset, precision: 3);
+        Assert.Equal(100, a.Value.BlockSize, precision: 3);
+        Assert.Equal(100, b!.Value.BlockOffset, precision: 3);
+        Assert.Equal(100, b.Value.BlockSize, precision: 3);
+        Assert.Equal(200, c!.Value.BlockOffset, precision: 3);
+        Assert.Equal(100, c.Value.BlockSize, precision: 3);
+    }
+
+    // ====================================================================
     //  Pipeline driver — mirrors FlexLayouterProductionTests.
     // ====================================================================
 

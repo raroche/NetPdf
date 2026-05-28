@@ -1376,6 +1376,55 @@ public sealed class GridLayouterProductionTests
     }
 
     [Fact]
+    public async Task Cycle6b_production_spanning_item_defers_atomically_across_pages()
+    {
+        // Per Phase 3 Task 18 cycle 6b — a spanning item that would
+        // straddle a page break defers entirely to the resume page.
+        // 3-row auto-height grid: row 1 = single item; rows 2+3 =
+        // spanning item B. Budget = 200px (= 2 rows). The naive
+        // (cycle-5) computation would emit row 1 + row 2 on page 1,
+        // straddling B's rectangle. Cycle 6b rewinds endRowExclusive
+        // to row 1 (= B's start) so the entire B defers to page 2.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 100px 100px 100px;
+                    grid-template-columns: 100px;
+                }
+                .a    { grid-row: 1; grid-column: 1; }
+                .span { grid-row: 2 / span 2; grid-column: 1; }
+            </style></head><body>
+            <div class="grid">
+                <div class="a"></div>
+                <div class="span"></div>
+            </div>
+            </body></html>
+            """;
+
+        var pages = await RenderMultiPageAsync(
+            html, contentInlineSize: 100, blockSize: 250, maxPages: 4);
+
+        Assert.Equal(2, pages.Count);
+
+        // Page 1: only A emits (span deferred per cycle 6b atomicity).
+        var page1 = pages[0];
+        Assert.NotNull(FindByClass(page1.Sink, "a"));
+        Assert.Null(FindByClass(page1.Sink, "span"));
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, page1.Result.Outcome);
+
+        // Page 2: span emits entirely (rectangle spanning both rows
+        // 2+3 of the grid).
+        var page2 = pages[1];
+        Assert.Null(FindByClass(page2.Sink, "a"));
+        var spanFragment = FindByClass(page2.Sink, "span");
+        Assert.NotNull(spanFragment);
+        // BlockSize = sum of spanned rows (100 + 100 = 200).
+        Assert.Equal(200.0, spanFragment!.Value.BlockSize, precision: 3);
+        Assert.Equal(LayoutAttemptOutcome.AllDone, page2.Result.Outcome);
+    }
+
+    [Fact]
     public async Task Cycle6_production_grid_auto_flow_column_orders_items_column_major()
     {
         // Real HTML with `grid-auto-flow: column` causes 4 auto-placed

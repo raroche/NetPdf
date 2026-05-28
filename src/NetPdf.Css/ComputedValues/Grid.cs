@@ -558,20 +558,55 @@ internal readonly record struct GridLineValue
     }
 }
 
-/// <summary>Per CSS Grid L1 §7.7 — direction of sparse auto-placement.
-/// Cycle 6 ships <see cref="Row"/> + <see cref="Column"/>; the
-/// <c>dense</c> modifier is cycle 7 scope.</summary>
+/// <summary>Per CSS Grid L1 §7.7 — flow direction + density modifier
+/// for the sparse auto-placement algorithm. Cycle 6 shipped
+/// <see cref="Row"/> + <see cref="Column"/>; cycle 7d adds the
+/// <c>dense</c> packing modifier per CSS Grid §8.5.
+///
+/// <para><b>ID encoding</b> matches the cycle-7d keyword resolver
+/// table: 0 = row, 1 = column, 2 = row dense, 3 = column dense.
+/// The <c>IsDense</c> / <c>IsColumn</c> extension methods on
+/// <see cref="GridAutoFlowValueExtensions"/> make the bit semantics
+/// explicit at the call site.</para></summary>
 internal enum GridAutoFlowValue : byte
 {
     /// <summary><c>row</c> (the property default) — items pack along
-    /// the inline axis first, then advance to the next row when the
-    /// current row's column-axis is exhausted.</summary>
+    /// the inline axis first; sparse mode advances the cursor and
+    /// doesn't backtrack to fill earlier holes.</summary>
     Row = 0,
 
-    /// <summary><c>column</c> — items pack along the block axis first,
-    /// then advance to the next column when the current column's
-    /// row-axis is exhausted.</summary>
+    /// <summary><c>column</c> — items pack along the block axis first;
+    /// sparse mode.</summary>
     Column = 1,
+
+    /// <summary>Per Phase 3 Task 18 cycle 7d — <c>row dense</c> (= the
+    /// canonical form of bare <c>dense</c>). Dense packing fills
+    /// earlier holes left by explicitly-placed items.</summary>
+    RowDense = 2,
+
+    /// <summary>Per Phase 3 Task 18 cycle 7d — <c>column dense</c>.</summary>
+    ColumnDense = 3,
+}
+
+/// <summary>Per Phase 3 Task 18 cycle 7d — extension helpers that
+/// decompose <see cref="GridAutoFlowValue"/> into its two
+/// independent bits: direction (row vs column) and density (sparse
+/// vs dense).</summary>
+internal static class GridAutoFlowValueExtensions
+{
+    /// <summary>True when the dense packing modifier is set
+    /// (= <see cref="GridAutoFlowValue.RowDense"/> or
+    /// <see cref="GridAutoFlowValue.ColumnDense"/>).</summary>
+    public static bool IsDense(this GridAutoFlowValue value)
+        => value == GridAutoFlowValue.RowDense
+            || value == GridAutoFlowValue.ColumnDense;
+
+    /// <summary>True when the flow direction is column-major
+    /// (= <see cref="GridAutoFlowValue.Column"/> or
+    /// <see cref="GridAutoFlowValue.ColumnDense"/>).</summary>
+    public static bool IsColumn(this GridAutoFlowValue value)
+        => value == GridAutoFlowValue.Column
+            || value == GridAutoFlowValue.ColumnDense;
 }
 
 /// <summary>Per Phase 3 Task 18 cycle 7a + CSS Grid L1 §7.3 — the

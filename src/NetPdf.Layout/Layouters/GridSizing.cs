@@ -1533,7 +1533,12 @@ internal static class GridSizing
         CancellationToken cancellationToken)
     {
         var occupancy = new GrowableOccupancy(rowInfos.Count, colInfos.Count);
-        var isRowFlow = gridAutoFlow == GridAutoFlowValue.Row;
+        // Per Phase 3 Task 18 cycle 7d — `IsColumn` honors both
+        // `column` and `column dense`. `IsDense` is consulted in the
+        // Pass 3+4 cursor walk to reset the cursor before each search
+        // so earlier holes get filled per CSS Grid §8.5.
+        var isRowFlow = !gridAutoFlow.IsColumn();
+        var isDense = gridAutoFlow.IsDense();
 
         // Pass 1 — both definite. Mark rectangles + grow tracks.
         for (var i = 0; i < placedItems.Count; i++)
@@ -1674,6 +1679,17 @@ internal static class GridSizing
                 && item.ColSpec.Kind == PlacementKind.Definite)
             {
                 continue;
+            }
+
+            // Per Phase 3 Task 18 cycle 7d + CSS Grid §8.5 — dense
+            // packing resets the cursor to the origin before each
+            // search so earlier holes (left by definite items or by
+            // smaller items skipping past) get filled first. Sparse
+            // packing keeps the cursor advancing.
+            if (isDense)
+            {
+                cursorMajor = 0;
+                cursorMinor = 0;
             }
 
             var majorSpec = isRowFlow ? item.RowSpec : item.ColSpec;

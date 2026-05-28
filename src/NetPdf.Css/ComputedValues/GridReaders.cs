@@ -126,22 +126,24 @@ internal static class GridReaders
         return GridTemplateAreas.None;
     }
 
-    /// <summary>Per Phase 3 Task 18 cycle 6 — read the
-    /// <c>grid-auto-flow</c> keyword. Returns <see cref="GridAutoFlowValue.Row"/>
-    /// for the unset / default / wrong-typed path (= the CSS-spec
-    /// default per §7.7). Cycle 7 will add <c>dense</c> + the combined
-    /// <c>row dense</c> / <c>column dense</c> forms.</summary>
+    /// <summary>Per Phase 3 Task 18 cycle 6 + 7d — read the
+    /// <c>grid-auto-flow</c> keyword. Returns
+    /// <see cref="GridAutoFlowValue.Row"/> for the unset / default /
+    /// wrong-typed path (= the CSS-spec default per §7.7). The keyword
+    /// IDs come from <c>KeywordResolver.BuildGridAutoFlowTable</c>:
+    /// 0 = row, 1 = column, 2 = row dense, 3 = column dense.</summary>
     public static GridAutoFlowValue ReadGridAutoFlow(this ComputedStyle style)
     {
         var slot = style.Get(PropertyId.GridAutoFlow);
         if (slot.Tag == ComputedSlotTag.Keyword)
         {
-            // Keyword id 0 = "row" (the default + first in the
-            // KeywordResolver.Tables[GridAutoFlow] table).
-            // Keyword id 1 = "column".
-            return slot.AsKeyword() == 1
-                ? GridAutoFlowValue.Column
-                : GridAutoFlowValue.Row;
+            return slot.AsKeyword() switch
+            {
+                1 => GridAutoFlowValue.Column,
+                2 => GridAutoFlowValue.RowDense,
+                3 => GridAutoFlowValue.ColumnDense,
+                _ => GridAutoFlowValue.Row,
+            };
         }
         return GridAutoFlowValue.Row;
     }

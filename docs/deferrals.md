@@ -2242,3 +2242,135 @@ flags the categories):
   pagination disabled AND production HTML fixtures with
   explicit-height multipage grids verify end-to-end through
   the full HTML → cascade → BoxBuilder → BlockLayouter chain.
+
+---
+
+## grid-row-span-atomic-pagination-deferral
+
+- **ID** — `grid-row-span-atomic-pagination-deferral`
+- **Status** — `not-started`. Phase 3 Task 18 cycle 6a placement
+  ships span (`grid-row: A / span N`); cycle 6b adds the atomic-
+  to-row-span pagination contract.
+- **Behavior** — Cycle 6a `GridLayouter.AttemptLayout`'s emission
+  loop iterates `placedItems` and emits each item at
+  `(rowPositions[item.Row], colPositions[item.Col])` with size
+  `(SumTrackSizes(rowSizes, item.Row, item.RowSpan), SumTrackSizes(colSizes, item.Col, item.ColSpan))`.
+  The page-break gate keys on the item's STARTING row (=
+  `item.Row >= startRow && item.Row < endRowExclusive`). A
+  spanning item whose tail rows fall past `endRowExclusive`
+  emits with its rectangle straddling the page boundary
+  (= visually overflows the page edge); a spanning item
+  whose starting row is on a prior page is skipped on resume
+  pages entirely (= the tail portion is lost). Cycle 5's
+  `ComputePaginatedRowRange` doesn't consider span data.
+- **Missing** — Per the cycle-5 design contract (= "spanning
+  items atomic to their row span"):
+  - `ComputePaginatedRowRange` extended to compute the largest
+    K such that no spanning item with `start ≤ K` has
+    `end > K`. The actual `endRowExclusive` becomes
+    `min(naive_K, spanning_K)`.
+  - When a spanning item would straddle the page break,
+    `endRowExclusive` rewinds to the spanning item's start
+    row (item defers to next page; if it would also straddle
+    next page's budget, force-overflow per §4.4 progress).
+  - Resume page emits the spanning item as a single rectangle
+    spanning its full span starting at its row.
+- **Trigger** — corpus invoice / report uses `grid-row: span N`
+  in a multi-page grid, OR a user-reported case where a
+  spanning item visually clips at page boundaries.
+- **Owner files** —
+  - `src/NetPdf.Layout/Layouters/GridLayouter.cs` —
+    `ComputePaginatedRowRange` (line ~855) extended to take
+    `placedItems` + return span-aware K; emission loop's
+    item-row filter updated to honor the span-atomic contract.
+- **Added** — Phase 3 Task 18 cycle 6a (this branch).
+- **Removal condition** — `ComputePaginatedRowRange` accounts
+  for spanning items + a production HTML test renders a multi-
+  page grid with `grid-row: span 2` items demonstrating clean
+  break behavior (= no straddling, no skip-on-resume).
+
+---
+
+## grid-spanning-item-intrinsic-distribution-deferral
+
+- **ID** — `grid-spanning-item-intrinsic-distribution-deferral`
+- **Status** — `approximated`. Phase 3 Task 18 cycle 6a ships
+  equal-share distribution; spec-strict §11.5.1 step 3
+  distribution-proportional is post-cycle-6.
+- **Behavior** — A spanning item (= `grid-row: span N` or
+  `grid-row: A / B` with `B - A > 1`) contributes to the
+  intrinsic sizing of EACH spanned track per
+  `GridSizing.ResolveIntrinsicTracks`. Cycle 6a's approximation:
+  `perTrackContribution = itemContribution / span`. The item's
+  outer contribution (= declared dimension + chrome) is divided
+  equally across spanned intrinsic tracks. A spanning item with
+  no intrinsic tracks in its span (= all definite-length /
+  fr / minmax-definite) doesn't grow any track.
+- **Missing** — Per CSS Grid L1 §11.5.1 step 3, the spec
+  distributes a spanning item's contribution as follows:
+  - Subtract the BaseSize contributions of any spanned tracks
+    with definite (Length / Fr-with-min) base sizing.
+  - The remainder is distributed across the spanning intrinsic
+    tracks proportional to each track's intrinsic-size
+    contribution (= proportional-to-headroom), not equal-share.
+  - When the remainder is negative (= sum of definite bases
+    exceeds the item's contribution), no growth is distributed
+    (= the intrinsic tracks stay at their current bases).
+- **Trigger** — corpus invoice / report uses `grid-row: span N`
+  with mixed-kind tracks (some length / fr, some auto /
+  min-content) AND the equal-share approximation produces
+  visible mis-sizing (e.g., the spanning item over-grows the
+  intrinsic tracks because the per-track equal share exceeds
+  what the spec would distribute after subtracting definite-
+  track contributions).
+- **Owner files** —
+  - `src/NetPdf.Layout/Layouters/GridSizing.cs` —
+    `ResolveIntrinsicTracks` (cycle 6a per-track contribution
+    block) extended to walk the spanned-track classification
+    pre-pass + apply the spec-strict subtract-then-distribute
+    algorithm.
+- **Added** — Phase 3 Task 18 cycle 6a (this branch).
+- **Removal condition** — `ResolveIntrinsicTracks` implements
+  the §11.5.1 step 3 distribution-proportional algorithm + a
+  test pins a representative mixed-kind span case (e.g.,
+  `grid-template-rows: 100px auto auto` with a `grid-row: 1 /
+  4` item of intrinsic 200px → spec says auto rows each get
+  50, equal-share approximation gives each 200/3 ≈ 67).
+
+---
+
+## grid-reverse-auto-placement-deferral
+
+- **ID** — `grid-reverse-auto-placement-deferral`
+- **Status** — `approximated`. Phase 3 Task 18 cycle 6a (post-
+  PR-#103 review F7).
+- **Behavior** — `grid-row-start: auto; grid-row-end: <integer>`
+  (and the column-axis analog) — the "auto start with definite
+  end" case — currently collapses to a single cell at row
+  `end - 1`. The placement-approximated diagnostic
+  `LAYOUT-GRID-PLACEMENT-APPROXIMATED-001` fires so authors see
+  they're in approximation territory.
+- **Missing** — Per CSS Grid L1 §8.5 step 4, the spec's full
+  reverse-auto-placement searches BACKWARD from the item's
+  end line for the FIRST free row run of the item's span. The
+  cycle-6a simplification ignores the search and just lands a
+  single cell.
+- **Trigger** — corpus invoice / report uses `grid-row: auto /
+  N` for an item with an explicit span (e.g., `grid-row: auto /
+  span 3` would be currently mishandled as auto/3 → single cell
+  at row 2; the spec wants the item placed BACKWARD from row 2
+  spanning 3 rows above), OR a user-reported case where
+  auto-start-definite-end items render at the wrong row.
+- **Owner files** —
+  - `src/NetPdf.Layout/Layouters/GridSizing.cs` — `ReadPlacement`
+    auto-start-definite-end branch (currently emits diagnostic +
+    returns single-cell). Replace with a reverse-search algorithm
+    that scans backward from the end line for a free run.
+- **Added** — Phase 3 Task 18 cycle 6a (this branch).
+- **Removal condition** — `ReadPlacement` (or the placement
+  service) implements the spec's reverse-auto-placement search;
+  the placement-approximated diagnostic no longer fires for the
+  auto-start-definite-end case + a test pins the spec-correct
+  behavior (e.g., `grid-row: auto / 4; height: 50px` in a
+  4-row grid + 2 prior rows occupied → item lands at row 3
+  not row 2).

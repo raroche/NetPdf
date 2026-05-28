@@ -648,10 +648,12 @@ public sealed class GridLayouterProductionTests
     }
 
     [Fact]
-    public async Task Production_html_empty_grid_template_emits_no_item_fragments()
+    public async Task Production_html_empty_grid_template_emits_via_implicit_only_grid()
     {
-        // No grid-template-rows / -columns → 0 explicit tracks → items
-        // drop (cycle 1 doesn't generate implicit tracks).
+        // Per PR-#103 review F1 — no grid-template-rows / -columns
+        // with items is now an implicit-only grid (cycle 6). Items
+        // lay out via the seeded 1×1 implicit grid + cycle-grown
+        // implicit rows.
         const string html = """
             <!DOCTYPE html><html><head><style>
                 .grid { display: grid; }
@@ -668,9 +670,9 @@ public sealed class GridLayouterProductionTests
         // The grid wrapper fragment IS emitted by BlockLayouter.
         var gridFragment = FindByClass(sink, "grid", BoxKind.GridContainer);
         Assert.NotNull(gridFragment);
-        // No item fragments though.
-        Assert.Null(FindByClass(sink, "a"));
-        Assert.Null(FindByClass(sink, "b"));
+        // Item fragments now emit through the implicit-only grid.
+        Assert.NotNull(FindByClass(sink, "a"));
+        Assert.NotNull(FindByClass(sink, "b"));
     }
 
     // ====================================================================
@@ -1293,6 +1295,128 @@ public sealed class GridLayouterProductionTests
             return null;
         }
         return null;
+    }
+
+    // ====================================================================
+    //  Phase 3 Task 18 cycle 6 — production HTML pipeline for span /
+    //  implicit tracks / grid-auto-flow
+    // ====================================================================
+
+    [Fact]
+    public async Task Cycle6_production_grid_row_2_slash_span_2_spans_two_rows()
+    {
+        // Real HTML with `grid-row: 2 / span 2` flows through the full
+        // pipeline (CSS preprocessing + cascade + BoxBuilder +
+        // BlockLayouter dispatch + GridLayouter emission) and produces
+        // a single fragment spanning rows 2-3 of the explicit grid.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 50px 100px 150px;
+                    grid-template-columns: 200px;
+                    width: 200px;
+                    height: 300px;
+                }
+                .span { grid-row: 2 / span 2; grid-column: 1; }
+            </style></head><body>
+                <div class="grid">
+                    <div class="span"></div>
+                </div>
+            </body></html>
+            """;
+
+        var (sink, diagSink, _) = await RenderViaFullPipelineAsync(html);
+
+        var span = FindByClass(sink, "span");
+        Assert.NotNull(span);
+        // Item at row index 1 (= 1-based line 2), span 2 → rows 1+2.
+        // BlockOffset = row 0's height (50). BlockSize = sum of rows
+        // 1 (100) + row 2 (150) = 250.
+        Assert.Equal(50, span!.Value.BlockOffset, precision: 3);
+        Assert.Equal(250, span.Value.BlockSize, precision: 3);
+        // Inline geometry: single 200px col, item occupies all of it.
+        Assert.Equal(200, span.Value.InlineSize, precision: 3);
+        Assert.DoesNotContain(diagSink.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+    }
+
+    [Fact]
+    public async Task Cycle6_production_grid_auto_rows_50px_sizes_implicit_rows()
+    {
+        // Real HTML using `grid-auto-rows: 50px` to size implicit rows.
+        // Item with grid-row-start: 3 lands at row index 2 — past the
+        // 1-row explicit grid; the implicit-track generator creates
+        // rows 1 and 2 sized 50px each from grid-auto-rows.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 100px;
+                    grid-template-columns: 200px;
+                    grid-auto-rows: 50px;
+                    width: 200px;
+                    height: 200px;
+                }
+                .implicit { grid-row-start: 3; grid-column-start: 1; }
+            </style></head><body>
+                <div class="grid">
+                    <div class="implicit"></div>
+                </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var implicitItem = FindByClass(sink, "implicit");
+        Assert.NotNull(implicitItem);
+        // Row 0 (100) + row 1 implicit (50) = blockOffset 150 for row 2.
+        Assert.Equal(150, implicitItem!.Value.BlockOffset, precision: 3);
+        Assert.Equal(50, implicitItem.Value.BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public async Task Cycle6_production_grid_auto_flow_column_orders_items_column_major()
+    {
+        // Real HTML with `grid-auto-flow: column` causes 4 auto-placed
+        // items to fill column-first (= items 0+1 in col 0, items 2+3
+        // in col 1) rather than row-first.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 100px 100px;
+                    grid-template-columns: 100px 100px;
+                    grid-auto-flow: column;
+                    width: 200px;
+                    height: 200px;
+                }
+                .a, .b, .c, .d { }
+            </style></head><body>
+                <div class="grid">
+                    <div class="a"></div>
+                    <div class="b"></div>
+                    <div class="c"></div>
+                    <div class="d"></div>
+                </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var a = FindByClass(sink, "a"); var b = FindByClass(sink, "b");
+        var c = FindByClass(sink, "c"); var d = FindByClass(sink, "d");
+        Assert.NotNull(a); Assert.NotNull(b); Assert.NotNull(c); Assert.NotNull(d);
+
+        // Column-major order: a@(0,0), b@(1,0), c@(0,1), d@(1,1).
+        Assert.Equal(0, a!.Value.InlineOffset, precision: 3);
+        Assert.Equal(0, a.Value.BlockOffset, precision: 3);
+        Assert.Equal(0, b!.Value.InlineOffset, precision: 3);
+        Assert.Equal(100, b.Value.BlockOffset, precision: 3);
+        Assert.Equal(100, c!.Value.InlineOffset, precision: 3);
+        Assert.Equal(0, c.Value.BlockOffset, precision: 3);
+        Assert.Equal(100, d!.Value.InlineOffset, precision: 3);
+        Assert.Equal(100, d.Value.BlockOffset, precision: 3);
     }
 
     // ====================================================================

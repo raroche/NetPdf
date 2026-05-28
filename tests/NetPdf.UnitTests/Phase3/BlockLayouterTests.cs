@@ -1749,16 +1749,21 @@ public sealed class BlockLayouterTests
     [Fact]
     public void PostPr28_recursion_does_not_walk_into_flex_grid_or_replaced_children()
     {
-        // Per cycle-2b post-PR-28 review #3 — same predicate guard
-        // applies to Flex / Grid / BlockReplacedElement.
+        // Per cycle-2b post-PR-28 review #3 — BlockLayouter recursion
+        // skips flex/grid/replaced subtrees; their dedicated layouters
+        // emit those items instead.
         //
-        // Per Phase 3 Task 15 cycle 1 (Hello World) — the flex
-        // container now dispatches into FlexLayouter which DOES emit
-        // its block-level item children. Grid / BlockReplacedElement
-        // remain skipped (no dedicated layouter wired yet — Phase 3
-        // Tasks 16+ will ship those). This test pins the cycle-1
-        // shift: flex items now appear; grid items + replaced inner
-        // content still don't.
+        // Phase 3 Task 15 cycle 1: FlexLayouter shipped + emits flex
+        // items. Phase 3 Task 17 cycle 1: GridLayouter shipped + emits
+        // grid items when the grid has an explicit template. PR-#103
+        // review F1: cycle 6a's implicit-only grid path means a grid
+        // with NO template still emits its items via implicit tracks.
+        // BlockReplacedElement remains atomic (no inner-content
+        // dispatch yet).
+        //
+        // Net fragment count: 5 (flex wrapper, flex item, grid
+        // wrapper, grid item via GridLayouter implicit-only path, img
+        // wrapper).
         var sink = new RecordingFragmentSink();
         var root = Box.CreateRoot(MakeStyle());
 
@@ -1796,18 +1801,15 @@ public sealed class BlockLayouterTests
         layouter.AttemptLayout(
             ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
 
-        // Per Phase 3 Task 15 cycle 1 — 4 fragments: flex wrapper,
-        // flex item (via FlexLayouter dispatch), grid wrapper, img
-        // wrapper. Grid + replaced inner content still belong to
-        // dedicated layouters not yet wired.
-        Assert.Equal(4, sink.Fragments.Count);
+        // 5 fragments per PR-#103 review F1: flex wrapper, flex item,
+        // grid wrapper, grid item via GridLayouter implicit-only
+        // path, img wrapper.
+        Assert.Equal(5, sink.Fragments.Count);
         Assert.Same(flex, sink.Fragments[0].Box);
         Assert.Same(flexItem, sink.Fragments[1].Box);
         Assert.Same(grid, sink.Fragments[2].Box);
-        Assert.Same(img, sink.Fragments[3].Box);
-        // Cycle 1 — flexItem IS now emitted (FlexLayouter); gridItem
-        // is still not.
-        Assert.DoesNotContain(sink.Fragments, f => ReferenceEquals(f.Box, gridItem));
+        Assert.Same(gridItem, sink.Fragments[3].Box);
+        Assert.Same(img, sink.Fragments[4].Box);
     }
 
     [Fact]

@@ -590,12 +590,24 @@ internal sealed class GridLayouter : ILayouter, IDisposable
             // startRow were emitted on a prior page (continuation
             // resume); items at or after endRowExclusive will be
             // emitted on the next page (outgoing continuation).
+            //
+            // Per Phase 3 Task 18 cycle 6 — the gate now keys on the
+            // item's STARTING row (= item.Row). Spanning items whose
+            // tail rows fall past endRowExclusive currently render
+            // with the rectangle overflowing the page edge; the
+            // atomic-to-row-span rewind contract is cycle 6b scope.
+            // See `docs/deferrals.md#grid-row-span-atomic-pagination-deferral`.
             if (item.Row < startRow || item.Row >= endRowExclusive) continue;
+            var rowSpan = Math.Max(1, item.RowSpan);
+            var colSpan = Math.Max(1, item.ColSpan);
             var inlineOffset = _contentInlineOffset + colPositionsRelative[item.Col];
             var blockOffset = _contentBlockOffset
                 + (rowPositionsRelative[item.Row] - rowOffsetShift);
-            var inlineSize = colSizesRelative[item.Col];
-            var blockSize = rowSizesRelative[item.Row];
+            // Per Phase 3 Task 18 cycle 6 — size is the sum of the
+            // item's spanned tracks (= the rectangle's extent). For
+            // span=1 items this collapses to the single-track size.
+            var inlineSize = SumTrackSizes(colSizesRelative, item.Col, colSpan);
+            var blockSize = SumTrackSizes(rowSizesRelative, item.Row, rowSpan);
             _sink.Emit(new BoxFragment(
                 Box: item.Box,
                 InlineOffset: inlineOffset,
@@ -794,11 +806,20 @@ internal sealed class GridLayouter : ILayouter, IDisposable
                     Severity: PaginateDiagnosticSeverity.Warning));
                 return false;
             }
-            if (p.Row >= rowCount || p.Col >= colCount)
+            // Per Phase 3 Task 18 cycle 6 — validate the FAR corner of
+            // the item's rectangle, not just its origin. Spans default
+            // to 1 for legacy caches per GridItemPlacement's record
+            // defaults.
+            var rowSpan = Math.Max(1, p.RowSpan);
+            var colSpan = Math.Max(1, p.ColSpan);
+            if (p.Row < 0 || p.Col < 0
+                || p.Row + rowSpan > rowCount
+                || p.Col + colSpan > colCount)
             {
                 SafeEmit(new PaginateDiagnostic(
                     Code: PaginateDiagnosticCodes.LayoutGridResumeCacheRejected001,
-                    Message: $"Grid resume cache placement ({p.Row}, {p.Col}) "
+                    Message: $"Grid resume cache placement rectangle "
+                        + $"[{p.Row}, {p.Row + rowSpan}) × [{p.Col}, {p.Col + colSpan}) "
                         + $"is out of bounds for {rowCount}×{colCount} grid. "
                         + "Cache is rejected.",
                     Severity: PaginateDiagnosticSeverity.Warning));
@@ -920,6 +941,22 @@ internal sealed class GridLayouter : ILayouter, IDisposable
         return (endRowExclusive, NeedsContinuation: false, DeferEntireGrid: false);
     }
 
+    /// <summary>Per Phase 3 Task 18 cycle 6 — sum the contiguous-track
+    /// sizes <c>sizes[start..start+span]</c>. Defends against
+    /// boundary-overrun (= a malformed cache where item.Row + RowSpan
+    /// exceeds rowCount silently clamps to the available extent
+    /// instead of throwing). For span=1 the result is just
+    /// <c>sizes[start]</c>.</summary>
+    private static double SumTrackSizes(
+        IReadOnlyList<double> sizes, int start, int span)
+    {
+        if (start < 0 || start >= sizes.Count) return 0;
+        var endExclusive = Math.Min(start + Math.Max(1, span), sizes.Count);
+        double sum = 0;
+        for (var i = start; i < endExclusive; i++) sum += sizes[i];
+        return sum;
+    }
+
     /// <summary>Per Phase 3 Task 17 cycle 5 + post-PR-#96 review F3 +
     /// F4 + F5 — build the resume cache from the first-page Resolve
     /// result. Called LAZILY (only when a split actually produces
@@ -949,7 +986,12 @@ internal sealed class GridLayouter : ILayouter, IDisposable
             .CreateBuilder<GridItemPlacement>(placedItems.Count);
         foreach (var p in placedItems)
         {
-            placementsBuilder.Add(new GridItemPlacement(p.Box, p.Row, p.Col));
+            // Per Phase 3 Task 18 cycle 6 — persist the item's span
+            // extents so the resume layouter re-emits the rectangle.
+            placementsBuilder.Add(new GridItemPlacement(
+                p.Box, p.Row, p.Col,
+                Math.Max(1, p.RowSpan),
+                Math.Max(1, p.ColSpan)));
         }
         return new GridResumeCache(
             GridIdentity: gridIdentity,
@@ -980,8 +1022,15 @@ internal sealed class GridLayouter : ILayouter, IDisposable
                 Box = (Box)p.Box,
                 Row = p.Row,
                 Col = p.Col,
+                // Per Phase 3 Task 18 cycle 6 — restore span extents
+                // so the resume emission loop sizes the rectangle
+                // correctly. Legacy caches built before cycle 6 default
+                // RowSpan / ColSpan to 1 per the GridItemPlacement
+                // record's parameter defaults.
+                RowSpan = Math.Max(1, p.RowSpan),
+                ColSpan = Math.Max(1, p.ColSpan),
                 // RowSpec/ColSpec aren't used post-placement so default
-                // (Auto) is fine.
+                // (Auto, Line=0, Span=1) is fine.
                 RowSpec = default,
                 ColSpec = default,
             });

@@ -557,3 +557,19 @@ internal readonly record struct GridLineValue
         };
     }
 }
+
+/// <summary>Per CSS Grid L1 §7.7 — direction of sparse auto-placement.
+/// Cycle 6 ships <see cref="Row"/> + <see cref="Column"/>; the
+/// <c>dense</c> modifier is cycle 7 scope.</summary>
+internal enum GridAutoFlowValue : byte
+{
+    /// <summary><c>row</c> (the property default) — items pack along
+    /// the inline axis first, then advance to the next row when the
+    /// current row's column-axis is exhausted.</summary>
+    Row = 0,
+
+    /// <summary><c>column</c> — items pack along the block axis first,
+    /// then advance to the next column when the current column's
+    /// row-axis is exhausted.</summary>
+    Column = 1,
+}

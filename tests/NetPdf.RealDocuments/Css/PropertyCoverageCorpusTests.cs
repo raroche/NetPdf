@@ -110,7 +110,10 @@ public sealed class PropertyCoverageCorpusTests
         // allowlist entries. The remaining grid properties (=
         // shorthands + named-area + gap variants) ship in later
         // cycles + stay deferred for now.
-        "grid-area", "grid-auto-columns", "grid-auto-flow", "grid-auto-rows",
+        // grid-auto-columns / grid-auto-rows / grid-auto-flow promoted
+        // out of the allowlist by Phase 3 Task 18 cycle 6 (span +
+        // implicit tracks + auto-flow direction).
+        "grid-area",
         "grid-column", "grid-column-gap",
         "grid-row", "grid-row-gap",
         "grid-template", "grid-template-areas",

@@ -109,6 +109,23 @@ internal static class GridReaders
         return ReadTrackListPropertyWithAutoDefault(style, PropertyId.GridAutoColumns);
     }
 
+    /// <summary>Per Phase 3 Task 18 cycle 7a — read the parsed
+    /// <c>grid-template-areas</c> AST. Returns
+    /// <see cref="GridTemplateAreas.None"/> when the property is
+    /// unset, declared as <c>none</c> (= default), or the side-table
+    /// entry is missing / wrong-typed.</summary>
+    public static GridTemplateAreas ReadGridTemplateAreas(this ComputedStyle style)
+    {
+        var slot = style.Get(PropertyId.GridTemplateAreas);
+        if (slot.Tag == ComputedSlotTag.SideTableIndex
+            && style.TryGetSideTablePayload<GridTemplateAreas>(
+                PropertyId.GridTemplateAreas, out var areas))
+        {
+            return areas;
+        }
+        return GridTemplateAreas.None;
+    }
+
     /// <summary>Per Phase 3 Task 18 cycle 6 — read the
     /// <c>grid-auto-flow</c> keyword. Returns <see cref="GridAutoFlowValue.Row"/>
     /// for the unset / default / wrong-typed path (= the CSS-spec

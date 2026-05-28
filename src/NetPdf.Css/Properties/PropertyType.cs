@@ -79,6 +79,15 @@ internal enum PropertyType : byte
     /// named lines. The 4-arg <c>grid-area</c> shorthand expands into four
     /// of these (= one per longhand).</summary>
     GridLine = 25,
+    /// <summary>A CSS Grid L1 §7.3 grid-template-areas value — the
+    /// multi-string syntax <c>"head head" "main side" "foot foot"</c>
+    /// declaring a 2-D map of named cell regions. Stores the parsed
+    /// AST (= rows × columns of cell-names + a derived name → rectangle
+    /// map) via the ComputedSlot side-table pattern. Each named region
+    /// must form a rectangle in the grid; <c>.</c> tokens are null
+    /// cells. Resolution at placement time turns <c>grid-row-start:
+    /// head</c> into the named area's row-start line.</summary>
+    GridTemplateAreas = 26,
     /// <summary>A custom property type — value is opaque to the parser dispatch table.</summary>
     Custom = 255,
 }

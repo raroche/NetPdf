@@ -573,3 +573,71 @@ internal enum GridAutoFlowValue : byte
     /// row-axis is exhausted.</summary>
     Column = 1,
 }
+
+/// <summary>Per Phase 3 Task 18 cycle 7a + CSS Grid L1 §7.3 — the
+/// parsed AST for a <c>grid-template-areas</c> declaration. Stores
+/// both the source rectangle of cell names (row-major) AND the
+/// derived name → rectangle map so placement-time lookups by area
+/// name are O(1).
+///
+/// <para><b>Validation invariants</b> (per §7.3 + the resolver's
+/// validation pass):</para>
+/// <list type="bullet">
+///   <item><see cref="RowCount"/> ≥ 1 (each row is one CSS string;
+///   the empty AST <see cref="None"/> represents the property default
+///   <c>none</c>).</item>
+///   <item>All rows have the same column count (= ragged rows are
+///   rejected at parse time).</item>
+///   <item>For each named cell, every occurrence in the grid forms
+///   a single rectangle (= same-name cells must be adjacent in both
+///   axes; non-rectangular shapes are rejected).</item>
+///   <item><c>.</c> tokens are NULL cells (no entry in
+///   <see cref="NameToRect"/>).</item>
+/// </list>
+///
+/// <para><b>Coordinate system</b>: <see cref="Cells"/> is indexed
+/// <c>[row, column]</c> 0-based. <see cref="GridAreaRect"/>'s
+/// <c>RowStart</c> / <c>ColumnStart</c> are 1-based grid LINE
+/// numbers (matching the convention used by GridLineValue);
+/// <c>RowEnd</c> / <c>ColumnEnd</c> are exclusive (= start + span).</para></summary>
+internal sealed record GridTemplateAreas(
+    int RowCount,
+    int ColumnCount,
+    System.Collections.Immutable.ImmutableArray<string?> Cells,
+    System.Collections.Immutable.ImmutableDictionary<string, GridAreaRect> NameToRect)
+{
+    /// <summary>Per CSS Grid L1 §7.3 — the property-default value
+    /// (<c>none</c>). No named areas; the placement service treats
+    /// any <c>&lt;custom-ident&gt;</c> placement against this as
+    /// "unknown name" (= falls back to auto per cycle-6a's existing
+    /// approximated-and-fall-to-auto path).</summary>
+    public static readonly GridTemplateAreas None = new(
+        RowCount: 0,
+        ColumnCount: 0,
+        Cells: System.Collections.Immutable.ImmutableArray<string?>.Empty,
+        NameToRect: System.Collections.Immutable.ImmutableDictionary<string, GridAreaRect>.Empty);
+
+    /// <summary>Indexer for the <c>[row, column]</c> cell name.
+    /// Returns <see langword="null"/> for null cells (= <c>.</c>) or
+    /// out-of-bounds queries.</summary>
+    public string? this[int row, int column]
+    {
+        get
+        {
+            if (row < 0 || row >= RowCount || column < 0 || column >= ColumnCount)
+                return null;
+            return Cells[row * ColumnCount + column];
+        }
+    }
+}
+
+/// <summary>Per Phase 3 Task 18 cycle 7a + CSS Grid L1 §7.3 — the
+/// derived rectangle for one named grid area.
+///
+/// <para>Line numbers are 1-based (matching <see cref="GridLineValue"/>
+/// convention). <see cref="RowEnd"/> / <see cref="ColumnEnd"/> are
+/// EXCLUSIVE end lines (= the line AFTER the last occupied row /
+/// column). So an area spanning rows 1-3 has <c>RowStart=1</c> +
+/// <c>RowEnd=4</c> (= span 3).</para></summary>
+internal readonly record struct GridAreaRect(
+    int RowStart, int RowEnd, int ColumnStart, int ColumnEnd);

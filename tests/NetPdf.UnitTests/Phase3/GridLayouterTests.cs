@@ -3850,6 +3850,224 @@ public sealed class GridLayouterTests
     }
 
     // =====================================================================
+    //  Phase 3 Task 18 cycle 7a — grid-template-areas + named-area
+    //  placement (= `grid-row-start: head`, `grid-area: head` etc.).
+    // =====================================================================
+
+    [Fact]
+    public void Cycle7a_named_area_start_with_auto_end_spans_full_area_on_axis()
+    {
+        // grid-template-areas: "head head" "main side" — 2-row × 2-col
+        // grid. `grid-row-start: head` (without explicit end) spans
+        // the FULL head area on the row axis (= 1 row, since head is
+        // one row tall). Pair with grid-column-start auto → auto-
+        // placed column.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 100.0 },
+            colsPx: new[] { 50.0, 150.0 });
+        SetGridTemplateAreas(grid, "\"head head\" \"main side\"");
+        var item = BuildItemWithNamedAreaStarts(rowName: "head", colName: null);
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Single(sink.Fragments);
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 0,
+            inlineSize: 50, blockSize: 100);
+        // Per PR-#105 review F4 — happy-path placement must not emit
+        // any placement-approximated diagnostic; the resolved position
+        // came directly from the named-area lookup.
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+    }
+
+    [Fact]
+    public void Cycle7a_grid_area_shorthand_lands_item_in_full_named_area()
+    {
+        // `grid-area: head` shorthand expands to all four longhands
+        // as `head`. Per cycle-7a placement, this lands the item in
+        // the full head rectangle (= 1 row × 2 cols, total 200px wide).
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 100.0 },
+            colsPx: new[] { 50.0, 150.0 });
+        SetGridTemplateAreas(grid, "\"head head\" \"main side\"");
+        var item = BuildItemWithNamedAreaStartsAndEnds(
+            rowStart: "head", rowEnd: "head",
+            colStart: "head", colEnd: "head");
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Single(sink.Fragments);
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 0,
+            inlineSize: 200, blockSize: 100);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+    }
+
+    [Fact]
+    public void Cycle7a_named_area_main_lands_at_row_2_col_1()
+    {
+        // The `main` area is at row 2 col 1 in the invoice template.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 100.0 },
+            colsPx: new[] { 50.0, 150.0 });
+        SetGridTemplateAreas(grid, "\"head head\" \"main side\"");
+        var item = BuildItemWithNamedAreaStartsAndEnds(
+            rowStart: "main", rowEnd: "main",
+            colStart: "main", colEnd: "main");
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Single(sink.Fragments);
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 100,
+            inlineSize: 50, blockSize: 100);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+    }
+
+    [Fact]
+    public void Cycle7a_unknown_area_name_falls_back_to_auto_with_diagnostic()
+    {
+        // `grid-row-start: nope` where "nope" isn't an area name → auto
+        // placement + diagnostic.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0 },
+            colsPx: new[] { 50.0 });
+        SetGridTemplateAreas(grid, "\"head\"");
+        var item = BuildItemWithNamedAreaStarts(rowName: "nope", colName: null);
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Single(sink.Fragments);
+        Assert.Contains(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+    }
+
+    [Fact]
+    public void Cycle7a_three_row_template_spans_via_named_area()
+    {
+        // 3-row template; an item in the foot area lands at row 3.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 100.0, 50.0 },
+            colsPx: new[] { 100.0, 100.0 });
+        SetGridTemplateAreas(grid,
+            "\"head head\" \"main side\" \"foot foot\"");
+        var item = BuildItemWithNamedAreaStartsAndEnds(
+            rowStart: "foot", rowEnd: "foot",
+            colStart: "foot", colEnd: "foot");
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Single(sink.Fragments);
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 200,
+            inlineSize: 200, blockSize: 50);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+    }
+
+    // =================================================================
+    //  PR-#105 review F5 — grid-template-areas with missing /
+    //  partial explicit tracks. Cycle 6a's implicit-only path handles
+    //  this when the cascade default for grid-template-rows /
+    //  grid-template-columns is `none`.
+    // =================================================================
+
+    [Fact]
+    public void F5_grid_template_areas_with_no_explicit_tracks_uses_implicit()
+    {
+        // No grid-template-rows / -columns declared. With cycle 6a's
+        // implicit-only grid path, items in the areas map use auto-
+        // sized implicit tracks. Without item dimensions, tracks
+        // collapse to 0; the fragment still gets a valid placement.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = TrackList.None;
+        var colsTrack = TrackList.None;
+        var grid = BuildGridContainerWithTemplates(rowsTrack, colsTrack);
+        SetGridTemplateAreas(grid, "\"head head\" \"main side\"");
+        var head = BuildItemWithNamedAreaStartsAndEnds(
+            rowStart: "head", rowEnd: "head",
+            colStart: "head", colEnd: "head");
+        var main = BuildItemWithNamedAreaStartsAndEnds(
+            rowStart: "main", rowEnd: "main",
+            colStart: "main", colEnd: "main");
+        grid.AppendChild(head);
+        grid.AppendChild(main);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        // 2 items emit. Implicit tracks generated past the cycle-6a
+        // 1×1 seed (= rows 0+1, cols 0+1). All sized 0 since items
+        // have no declared dimensions; positions are valid.
+        Assert.Equal(2, sink.Fragments.Count);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+    }
+
+    [Fact]
+    public void F5_grid_template_areas_with_partial_explicit_rows_grows_implicit()
+    {
+        // Areas declare 3 rows; explicit grid-template-rows only
+        // declares 2. Cycle 6a's implicit-track generation handles
+        // the third (implicit) row via grid-auto-rows: auto (default).
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 100.0 },
+            colsPx: new[] { 100.0, 100.0 });
+        SetGridTemplateAreas(grid,
+            "\"head head\" \"main side\" \"foot foot\"");
+        var foot = BuildItemWithNamedAreaStartsAndEnds(
+            rowStart: "foot", rowEnd: "foot",
+            colStart: "foot", colEnd: "foot");
+        grid.AppendChild(foot);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Single(sink.Fragments);
+        // foot occupies row 2 (= 1-based row 3 = 0-based 2, past the
+        // 2 explicit rows). blockOffset = 200 (two 100px rows above);
+        // blockSize = 0 (implicit row auto-sized; no item content).
+        AssertFragmentEquals(sink, foot,
+            inlineOffset: 0, blockOffset: 200,
+            inlineSize: 200, blockSize: 0);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+    }
+
+    // =====================================================================
     //  PR-#103 review F1–F7 — coverage for the review-pass-resolved
     //  findings: implicit-only grids, captured-explicit-count negative
     //  resolution, sparse-occupancy DoS guard, auto-flow:column
@@ -4375,6 +4593,63 @@ public sealed class GridLayouterTests
         var keywordId = flow == GridAutoFlowValue.Column ? 1 : 0;
         grid.Style.Set(PropertyId.GridAutoFlow,
             ComputedSlot.FromKeyword(keywordId));
+    }
+
+    /// <summary>Per Phase 3 Task 18 cycle 7a — set the
+    /// <c>grid-template-areas</c> property on the grid container by
+    /// invoking the CSS resolver pipeline against the literal CSS
+    /// value (e.g., <c>"head head" "main side"</c>). The parsed AST
+    /// lands in the side-table.</summary>
+    private static void SetGridTemplateAreas(Box grid, string cssValue)
+    {
+        var result = NetPdf.Css.ComputedValues.PropertyResolvers
+            .PropertyResolverDispatch.Resolve(
+                PropertyId.GridTemplateAreas, cssValue);
+        result.MaterializeInto(grid.Style, PropertyId.GridTemplateAreas);
+    }
+
+    /// <summary>Per Phase 3 Task 18 cycle 7a — build an item with
+    /// named-area references on <c>grid-row-start</c> /
+    /// <c>grid-column-start</c>. Pass <see langword="null"/> for an
+    /// axis to leave it as auto.</summary>
+    private static Box BuildItemWithNamedAreaStarts(string? rowName, string? colName)
+    {
+        var style = MakeStyle();
+        if (rowName is not null)
+        {
+            var rowValue = GridLineValue.ForNamedLine(rowName);
+            style.SetSideTablePayload(PropertyId.GridRowStart, (object)rowValue);
+            style.Set(PropertyId.GridRowStart, ComputedSlot.FromSideTableIndex(0));
+        }
+        if (colName is not null)
+        {
+            var colValue = GridLineValue.ForNamedLine(colName);
+            style.SetSideTablePayload(PropertyId.GridColumnStart, (object)colValue);
+            style.Set(PropertyId.GridColumnStart, ComputedSlot.FromSideTableIndex(0));
+        }
+        return Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+    }
+
+    /// <summary>Per Phase 3 Task 18 cycle 7a — build an item with
+    /// named-area references on ALL four placement longhands
+    /// (= the <c>grid-area: name</c> shorthand expansion).</summary>
+    private static Box BuildItemWithNamedAreaStartsAndEnds(
+        string rowStart, string rowEnd, string colStart, string colEnd)
+    {
+        var style = MakeStyle();
+        var rowStartValue = GridLineValue.ForNamedLine(rowStart);
+        style.SetSideTablePayload(PropertyId.GridRowStart, (object)rowStartValue);
+        style.Set(PropertyId.GridRowStart, ComputedSlot.FromSideTableIndex(0));
+        var rowEndValue = GridLineValue.ForNamedLine(rowEnd);
+        style.SetSideTablePayload(PropertyId.GridRowEnd, (object)rowEndValue);
+        style.Set(PropertyId.GridRowEnd, ComputedSlot.FromSideTableIndex(0));
+        var colStartValue = GridLineValue.ForNamedLine(colStart);
+        style.SetSideTablePayload(PropertyId.GridColumnStart, (object)colStartValue);
+        style.Set(PropertyId.GridColumnStart, ComputedSlot.FromSideTableIndex(0));
+        var colEndValue = GridLineValue.ForNamedLine(colEnd);
+        style.SetSideTablePayload(PropertyId.GridColumnEnd, (object)colEndValue);
+        style.Set(PropertyId.GridColumnEnd, ComputedSlot.FromSideTableIndex(0));
+        return Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
     }
 
     private static ComputedStyle MakeStyle() => ComputedStyle.RentForExclusiveTesting();

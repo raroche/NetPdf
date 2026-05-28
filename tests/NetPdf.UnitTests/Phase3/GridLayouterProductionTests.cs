@@ -1469,6 +1469,138 @@ public sealed class GridLayouterProductionTests
     }
 
     // ====================================================================
+    //  Phase 3 Task 18 cycle 7a — grid-template-areas + grid-area
+    // ====================================================================
+
+    [Fact]
+    public async Task Cycle7a_production_grid_template_areas_lays_out_named_items()
+    {
+        // Real HTML with `grid-template-areas` + `grid-area: name` on
+        // children. Items lay out in the named rectangles per CSS Grid
+        // §7.3 + §8.4. The grid-area shorthand expander (cycle 0c)
+        // routes the name to all four longhands; cycle 7a's placement
+        // service resolves it via grid-template-areas.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 100px 100px 50px;
+                    grid-template-columns: 100px 100px;
+                    grid-template-areas:
+                        "head head"
+                        "main side"
+                        "foot foot";
+                }
+                .h { grid-area: head; }
+                .m { grid-area: main; }
+                .s { grid-area: side; }
+                .f { grid-area: foot; }
+            </style></head><body>
+            <div class="grid">
+                <div class="h"></div>
+                <div class="m"></div>
+                <div class="s"></div>
+                <div class="f"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var h = FindByClass(sink, "h");
+        var m = FindByClass(sink, "m");
+        var s = FindByClass(sink, "s");
+        var f = FindByClass(sink, "f");
+        Assert.NotNull(h); Assert.NotNull(m); Assert.NotNull(s); Assert.NotNull(f);
+
+        // head: row 0, cols 0+1 → 200×100 at (0, 0).
+        Assert.Equal(0, h!.Value.InlineOffset, precision: 3);
+        Assert.Equal(0, h.Value.BlockOffset, precision: 3);
+        Assert.Equal(200, h.Value.InlineSize, precision: 3);
+        Assert.Equal(100, h.Value.BlockSize, precision: 3);
+        // main: row 1, col 0 → 100×100 at (0, 100).
+        Assert.Equal(0, m!.Value.InlineOffset, precision: 3);
+        Assert.Equal(100, m.Value.BlockOffset, precision: 3);
+        Assert.Equal(100, m.Value.InlineSize, precision: 3);
+        Assert.Equal(100, m.Value.BlockSize, precision: 3);
+        // side: row 1, col 1 → 100×100 at (100, 100).
+        Assert.Equal(100, s!.Value.InlineOffset, precision: 3);
+        Assert.Equal(100, s.Value.BlockOffset, precision: 3);
+        Assert.Equal(100, s.Value.InlineSize, precision: 3);
+        Assert.Equal(100, s.Value.BlockSize, precision: 3);
+        // foot: row 2, cols 0+1 → 200×50 at (0, 200).
+        Assert.Equal(0, f!.Value.InlineOffset, precision: 3);
+        Assert.Equal(200, f.Value.BlockOffset, precision: 3);
+        Assert.Equal(200, f.Value.InlineSize, precision: 3);
+        Assert.Equal(50, f.Value.BlockSize, precision: 3);
+    }
+
+    // ====================================================================
+    //  PR-#105 review F6 — cross-feature integration: named-area
+    //  placement (cycle 7a) + spanning-pagination atomicity (cycle 6b).
+    // ====================================================================
+
+    [Fact]
+    public async Task F6_named_area_spanning_two_rows_defers_atomically_across_pages()
+    {
+        // grid-template-areas declares a `tall` area spanning rows 2+3.
+        // Each row is 100px; page budget = 150px fits row 1 + half of
+        // row 2 naively. Per cycle 6b's atomicity contract, the
+        // `tall` spanning item defers entirely to page 2; per cycle
+        // 7a's named-area resolution, the placement comes from the
+        // areas map (= no fallback path). Proves both features
+        // integrate cleanly.
+        // No explicit grid `height` — exercises cycle 6a's auto-
+        // height paginatable path (= the `grid-explicit-height-
+        // paginate-deferral` is intentionally avoided here).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 100px 100px 100px;
+                    grid-template-columns: 100px;
+                    grid-template-areas:
+                        "head"
+                        "tall"
+                        "tall";
+                    width: 100px;
+                }
+                .h { grid-area: head; }
+                .t { grid-area: tall; }
+            </style></head><body>
+                <div class="grid">
+                    <div class="h"></div>
+                    <div class="t"></div>
+                </div>
+            </body></html>
+            """;
+
+        var pages = await RenderMultiPageAsync(
+            html, contentInlineSize: 100, blockSize: 150, maxPages: 4);
+
+        Assert.True(pages.Count >= 2,
+            $"Expected ≥ 2 pages; got {pages.Count}");
+
+        // Page 1: only `head` emits (tall defers atomically per cycle
+        // 6b). If cycle 6b's atomicity contract had broken, tall
+        // would have started on page 1 with its rectangle straddling
+        // the page break.
+        var headOnPage1 = FindByClass(pages[0].Sink, "h");
+        var tallOnPage1 = FindByClass(pages[0].Sink, "t");
+        Assert.NotNull(headOnPage1);
+        Assert.Null(tallOnPage1);
+
+        // Page 2: `tall` emits at its full 200px span. If cycle 7a's
+        // named-area resolution had fallen back to auto, the item
+        // would have landed at a single cell, not the 200px named
+        // area.
+        var tallOnPage2 = FindByClass(pages[1].Sink, "t");
+        Assert.NotNull(tallOnPage2);
+        Assert.Equal(200, tallOnPage2!.Value.BlockSize, precision: 3);
+        Assert.Equal(100, tallOnPage2.Value.InlineSize, precision: 3);
+    }
+
+    // ====================================================================
     //  Pipeline driver — mirrors FlexLayouterProductionTests.
     // ====================================================================
 

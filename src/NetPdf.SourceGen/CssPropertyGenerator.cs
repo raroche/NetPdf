@@ -76,7 +76,10 @@ public sealed class CssPropertyGenerator : IIncrementalGenerator
         // (= grid-template-rows / grid-template-columns); GridLine
         // encodes grid-row-start / -end / grid-column-start / -end
         // (= auto / <integer> / span <integer> / <ident>).
-        "GridTemplateList", "GridLine",
+        // Phase 3 Task 18 cycle 7a — GridTemplateAreas stores the
+        // parsed AST for the multi-string `grid-template-areas` value
+        // (= 2-D map of named cell regions).
+        "GridTemplateList", "GridLine", "GridTemplateAreas",
         "Custom",
     };
 

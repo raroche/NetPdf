@@ -144,6 +144,13 @@ public sealed class PropertyDefaultsParityTests
             // wiring in cycle 0b promotes them to Resolved.
             PropertyType.GridTemplateList,
             PropertyType.GridLine,
+            // Per Phase 3 Task 18 cycle 7a — GridTemplateAreas joined
+            // the resolved family. Routes through
+            // GridTemplateAreasResolver; the default `none` resolves
+            // to Keyword(0) (= no side-table entry), and any non-
+            // default value lands the parsed 2-D map in the
+            // side-table.
+            PropertyType.GridTemplateAreas,
         };
 
         var failures = new List<string>();
@@ -205,6 +212,13 @@ public sealed class PropertyDefaultsParityTests
             // wiring in cycle 0b promotes them to Resolved.
             PropertyType.GridTemplateList,
             PropertyType.GridLine,
+            // Per Phase 3 Task 18 cycle 7a — GridTemplateAreas joined
+            // the resolved family. Routes through
+            // GridTemplateAreasResolver; the default `none` resolves
+            // to Keyword(0) (= no side-table entry), and any non-
+            // default value lands the parsed 2-D map in the
+            // side-table.
+            PropertyType.GridTemplateAreas,
         };
 
         var failures = new List<string>();

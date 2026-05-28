@@ -113,10 +113,11 @@ public sealed class PropertyCoverageCorpusTests
         // grid-auto-columns / grid-auto-rows / grid-auto-flow promoted
         // out of the allowlist by Phase 3 Task 18 cycle 6 (span +
         // implicit tracks + auto-flow direction).
+        // grid-template-areas promoted by Phase 3 Task 18 cycle 7a.
         "grid-area",
         "grid-column", "grid-column-gap",
         "grid-row", "grid-row-gap",
-        "grid-template", "grid-template-areas",
+        "grid-template",
         "gap", "row-gap",
         // column-gap promoted out of the allowlist by Phase 3 Task 14
         // cycle 1 — the property is now registered + resolves via the

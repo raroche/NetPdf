@@ -1469,6 +1469,73 @@ public sealed class GridLayouterProductionTests
     }
 
     // ====================================================================
+    //  Phase 3 Task 18 cycle 7a — grid-template-areas + grid-area
+    // ====================================================================
+
+    [Fact]
+    public async Task Cycle7a_production_grid_template_areas_lays_out_named_items()
+    {
+        // Real HTML with `grid-template-areas` + `grid-area: name` on
+        // children. Items lay out in the named rectangles per CSS Grid
+        // §7.3 + §8.4. The grid-area shorthand expander (cycle 0c)
+        // routes the name to all four longhands; cycle 7a's placement
+        // service resolves it via grid-template-areas.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 100px 100px 50px;
+                    grid-template-columns: 100px 100px;
+                    grid-template-areas:
+                        "head head"
+                        "main side"
+                        "foot foot";
+                }
+                .h { grid-area: head; }
+                .m { grid-area: main; }
+                .s { grid-area: side; }
+                .f { grid-area: foot; }
+            </style></head><body>
+            <div class="grid">
+                <div class="h"></div>
+                <div class="m"></div>
+                <div class="s"></div>
+                <div class="f"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var h = FindByClass(sink, "h");
+        var m = FindByClass(sink, "m");
+        var s = FindByClass(sink, "s");
+        var f = FindByClass(sink, "f");
+        Assert.NotNull(h); Assert.NotNull(m); Assert.NotNull(s); Assert.NotNull(f);
+
+        // head: row 0, cols 0+1 → 200×100 at (0, 0).
+        Assert.Equal(0, h!.Value.InlineOffset, precision: 3);
+        Assert.Equal(0, h.Value.BlockOffset, precision: 3);
+        Assert.Equal(200, h.Value.InlineSize, precision: 3);
+        Assert.Equal(100, h.Value.BlockSize, precision: 3);
+        // main: row 1, col 0 → 100×100 at (0, 100).
+        Assert.Equal(0, m!.Value.InlineOffset, precision: 3);
+        Assert.Equal(100, m.Value.BlockOffset, precision: 3);
+        Assert.Equal(100, m.Value.InlineSize, precision: 3);
+        Assert.Equal(100, m.Value.BlockSize, precision: 3);
+        // side: row 1, col 1 → 100×100 at (100, 100).
+        Assert.Equal(100, s!.Value.InlineOffset, precision: 3);
+        Assert.Equal(100, s.Value.BlockOffset, precision: 3);
+        Assert.Equal(100, s.Value.InlineSize, precision: 3);
+        Assert.Equal(100, s.Value.BlockSize, precision: 3);
+        // foot: row 2, cols 0+1 → 200×50 at (0, 200).
+        Assert.Equal(0, f!.Value.InlineOffset, precision: 3);
+        Assert.Equal(200, f.Value.BlockOffset, precision: 3);
+        Assert.Equal(200, f.Value.InlineSize, precision: 3);
+        Assert.Equal(50, f.Value.BlockSize, precision: 3);
+    }
+
+    // ====================================================================
     //  Pipeline driver — mirrors FlexLayouterProductionTests.
     // ====================================================================
 

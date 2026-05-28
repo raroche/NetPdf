@@ -165,12 +165,17 @@ internal static class GridSizing
         // initial PlacedItem.RowSpan / ColSpan mirror RowSpec.Span /
         // ColSpec.Span so the layouter's emission loop can size
         // multi-cell rectangles without re-reading the CSS values.
+        // Per Phase 3 Task 18 cycle 7a — read the parent's
+        // grid-template-areas map so item placement can resolve
+        // named-area references (e.g., `grid-row-start: head`).
+        var gridAreas = gridBox.Style.ReadGridTemplateAreas();
+
         var placedItems = new List<PlacedItem>(gridBox.Children.Count);
         foreach (var child in gridBox.Children)
         {
             if (!IsGridItem(child)) continue;
-            var rowSpec = ReadPlacement(child.Style, isRow: true, ctx);
-            var colSpec = ReadPlacement(child.Style, isRow: false, ctx);
+            var rowSpec = ReadPlacement(child.Style, isRow: true, gridAreas, ctx);
+            var colSpec = ReadPlacement(child.Style, isRow: false, gridAreas, ctx);
             placedItems.Add(new PlacedItem
             {
                 Box = child,
@@ -1870,7 +1875,7 @@ internal static class GridSizing
     ///   algorithm is cycle 7 scope)</item>
     /// </list></summary>
     private static PlacementSpec ReadPlacement(
-        ComputedStyle style, bool isRow, SizingContext ctx)
+        ComputedStyle style, bool isRow, GridTemplateAreas areas, SizingContext ctx)
     {
         var start = isRow ? style.ReadGridRowStart() : style.ReadGridColumnStart();
         var end = isRow ? style.ReadGridRowEnd() : style.ReadGridColumnEnd();
@@ -1881,19 +1886,35 @@ internal static class GridSizing
             if (start.NamedLine is not null)
             {
                 return EmitPlacementApproximatedAndFallToAuto(ctx,
-                    "span <named-line> (named lines are cycle-7 scope)");
+                    "span <named-line> (named lines are cycle-7b scope)");
             }
             // Per §8.3.1 — `span 0` normalizes to `span 1`.
             var span = Math.Max(1, start.LineNumber);
             return new PlacementSpec(PlacementKind.Auto, 0, span);
         }
 
-        // (2) start: named-line — cycle 7 scope
-        if (start.Kind == GridLineKind.NamedLine
-            || (start.Kind == GridLineKind.LineNumber && start.NamedLine is not null))
+        // (2) start: named-line (= bare custom-ident) — cycle 7a
+        // resolves this against grid-template-areas when the ident
+        // matches an area name.
+        if (start.Kind == GridLineKind.NamedLine && start.NamedLine is not null)
+        {
+            var areaName = start.NamedLine;
+            if (areas.NameToRect.TryGetValue(areaName, out var areaRect))
+            {
+                return ResolveNamedAreaPlacement(
+                    areaRect, end, isRow, areas, ctx);
+            }
+            return EmitPlacementApproximatedAndFallToAuto(ctx,
+                $"named line '{areaName}' in grid-*-start does not match "
+                + "any grid-template-areas area (cycle-7b will ship "
+                + "<line-names> in grid-template-rows/columns)");
+        }
+
+        // (3) start: LineNumber + NamedLine qualifier — cycle 7b scope
+        if (start.Kind == GridLineKind.LineNumber && start.NamedLine is not null)
         {
             return EmitPlacementApproximatedAndFallToAuto(ctx,
-                "named lines in grid-row-start / grid-column-start (cycle-7 scope)");
+                "named-line qualifier with integer (cycle-7b scope)");
         }
 
         // (3) start: auto — let end drive
@@ -1908,10 +1929,31 @@ internal static class GridSizing
                 if (end.NamedLine is not null)
                 {
                     return EmitPlacementApproximatedAndFallToAuto(ctx,
-                        "span <named-line> in grid-*-end (cycle-7 scope)");
+                        "span <named-line> in grid-*-end (cycle-7b scope)");
                 }
                 var span = Math.Max(1, end.LineNumber);
                 return new PlacementSpec(PlacementKind.Auto, 0, span);
+            }
+            if (end.Kind == GridLineKind.NamedLine && end.NamedLine is not null)
+            {
+                // Per Phase 3 Task 18 cycle 7a — end-only named-area
+                // reference. Place at the area's end line minus one
+                // (= the cell BEFORE the end line) as a single cell.
+                // The spec's full reverse-auto-placement search is
+                // tracked in grid-reverse-auto-placement-deferral.
+                if (areas.NameToRect.TryGetValue(end.NamedLine, out var areaRect))
+                {
+                    var endLine = isRow ? areaRect.RowEnd : areaRect.ColumnEnd;
+                    EmitPlacementApproximatedDiagnostic(ctx,
+                        $"auto-start with named-area-end '{end.NamedLine}' "
+                        + "uses single-cell placement at end-1 (= the "
+                        + "grid-reverse-auto-placement-deferral simplification)");
+                    return new PlacementSpec(
+                        PlacementKind.Definite, endLine - 1, 1);
+                }
+                return EmitPlacementApproximatedAndFallToAuto(ctx,
+                    $"named line '{end.NamedLine}' in grid-*-end does not "
+                    + "match any grid-template-areas area (cycle-7b scope)");
             }
             if (end.Kind == GridLineKind.LineNumber
                 && end.NamedLine is null
@@ -1989,10 +2031,111 @@ internal static class GridSizing
                 "negative line numbers in placement (cycle-7 scope)");
         }
 
-        // end is named — cycle 7 scope.
+        // end is named — cycle 7a resolves against grid-template-areas
+        // when the ident matches an area name.
+        if (end.Kind == GridLineKind.NamedLine && end.NamedLine is not null
+            && areas.NameToRect.TryGetValue(end.NamedLine, out var endAreaRect))
+        {
+            var endLine = isRow ? endAreaRect.RowEnd : endAreaRect.ColumnEnd;
+            // Span from startLine to endLine. Apply the §8.3 swap rule.
+            if (endLine == startLine)
+            {
+                return new PlacementSpec(PlacementKind.Definite, startLine, 1);
+            }
+            if (endLine < startLine)
+            {
+                return new PlacementSpec(
+                    PlacementKind.Definite, endLine, startLine - endLine);
+            }
+            return new PlacementSpec(
+                PlacementKind.Definite, startLine, endLine - startLine);
+        }
         EmitPlacementApproximatedAndFallToAuto(ctx,
             "named line in grid-*-end — using start with span 1");
         return new PlacementSpec(PlacementKind.Definite, startLine, 1);
+    }
+
+    /// <summary>Per Phase 3 Task 18 cycle 7a — resolve a named-area
+    /// start placement (start ident matched an area name). Examines
+    /// the end line to determine the placement extent:
+    /// <list type="bullet">
+    ///   <item>end = Auto → span the full area on this axis.</item>
+    ///   <item>end = NamedLine matching another area → span from this
+    ///   area's start to that area's end (applying §8.3 swap if
+    ///   needed).</item>
+    ///   <item>end = NamedLine matching SAME area → span the full area
+    ///   (= equivalent to `grid-area: name` shorthand).</item>
+    ///   <item>end = integer line number → span from this area's start
+    ///   to that line.</item>
+    ///   <item>end = span N → use this area's start + span N.</item>
+    /// </list></summary>
+    private static PlacementSpec ResolveNamedAreaPlacement(
+        GridAreaRect areaRect, GridLineValue end, bool isRow,
+        GridTemplateAreas areas, SizingContext ctx)
+    {
+        var areaStartLine = isRow ? areaRect.RowStart : areaRect.ColumnStart;
+        var areaEndLine = isRow ? areaRect.RowEnd : areaRect.ColumnEnd;
+        var areaSpan = areaEndLine - areaStartLine;
+
+        if (end.Kind == GridLineKind.Auto)
+        {
+            // Per CSS Grid §8.4 — a single named-area start with auto
+            // end spans the FULL area (= the area's implicit end line
+            // is the same area).
+            return new PlacementSpec(
+                PlacementKind.Definite, areaStartLine, Math.Max(1, areaSpan));
+        }
+        if (end.Kind == GridLineKind.Span)
+        {
+            if (end.NamedLine is not null)
+            {
+                EmitPlacementApproximatedAndFallToAuto(ctx,
+                    "span <named-line> in grid-*-end — using area span");
+                return new PlacementSpec(
+                    PlacementKind.Definite, areaStartLine, Math.Max(1, areaSpan));
+            }
+            var span = Math.Max(1, end.LineNumber);
+            return new PlacementSpec(PlacementKind.Definite, areaStartLine, span);
+        }
+        if (end.Kind == GridLineKind.LineNumber && end.NamedLine is null
+            && end.LineNumber > 0)
+        {
+            var endLine = end.LineNumber;
+            if (endLine == areaStartLine)
+            {
+                return new PlacementSpec(PlacementKind.Definite, areaStartLine, 1);
+            }
+            if (endLine < areaStartLine)
+            {
+                return new PlacementSpec(
+                    PlacementKind.Definite, endLine, areaStartLine - endLine);
+            }
+            return new PlacementSpec(
+                PlacementKind.Definite, areaStartLine, endLine - areaStartLine);
+        }
+        if (end.Kind == GridLineKind.NamedLine && end.NamedLine is not null
+            && areas.NameToRect.TryGetValue(end.NamedLine, out var endAreaRect))
+        {
+            var endLine = isRow ? endAreaRect.RowEnd : endAreaRect.ColumnEnd;
+            if (endLine == areaStartLine)
+            {
+                return new PlacementSpec(PlacementKind.Definite, areaStartLine, 1);
+            }
+            if (endLine < areaStartLine)
+            {
+                return new PlacementSpec(
+                    PlacementKind.Definite, endLine, areaStartLine - endLine);
+            }
+            return new PlacementSpec(
+                PlacementKind.Definite, areaStartLine, endLine - areaStartLine);
+        }
+        // Unknown / unsupported end shape — span the full area on
+        // this axis. The diagnostic surfaces the deviation.
+        EmitPlacementApproximatedDiagnostic(ctx,
+            $"named-area-start with grid-*-end kind {end.Kind} "
+            + "(named line / negative line) uses the area's full span");
+        return new PlacementSpec(
+            PlacementKind.Definite, areaStartLine, Math.Max(1, areaSpan));
     }
 
     private static PlacementSpec EmitPlacementApproximatedAndFallToAuto(

@@ -47,6 +47,7 @@
     { "name": "grid-column-start", "id": "GridColumnStart", "type": "GridLine", "default": "auto", "inherit": false, "applies_to": "GridItems", "computed": "Specified" },
     { "name": "grid-row-end", "id": "GridRowEnd", "type": "GridLine", "default": "auto", "inherit": false, "applies_to": "GridItems", "computed": "Specified" },
     { "name": "grid-row-start", "id": "GridRowStart", "type": "GridLine", "default": "auto", "inherit": false, "applies_to": "GridItems", "computed": "Specified" },
+    { "name": "grid-template-areas", "id": "GridTemplateAreas", "type": "GridTemplateAreas", "default": "none", "inherit": false, "applies_to": "GridContainers", "computed": "Specified" },
     { "name": "grid-template-columns", "id": "GridTemplateColumns", "type": "GridTemplateList", "default": "none", "inherit": false, "applies_to": "GridContainers", "computed": "Specified" },
     { "name": "grid-template-rows", "id": "GridTemplateRows", "type": "GridTemplateList", "default": "none", "inherit": false, "applies_to": "GridContainers", "computed": "Specified" },
     { "name": "font-family", "id": "FontFamily", "type": "FontFamilyList", "default": "serif", "inherit": true, "applies_to": "All", "computed": "Specified" },

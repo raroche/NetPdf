@@ -121,6 +121,8 @@ internal static class PropertyResolverDispatch
                 trimmed, propertyId, meta.Name, diagnostics, location),
             PropertyType.GridLine => GridLineResolver.Resolve(
                 trimmed, propertyId, meta.Name, diagnostics, location),
+            PropertyType.GridTemplateAreas => GridTemplateAreasResolver.Resolve(
+                trimmed, propertyId, meta.Name, diagnostics, location),
 
             // Cycle-2 PropertyTypes — return UnsupportedUnvalidated (NOT Deferred)
             // because the dispatch hasn't validated the value text against the

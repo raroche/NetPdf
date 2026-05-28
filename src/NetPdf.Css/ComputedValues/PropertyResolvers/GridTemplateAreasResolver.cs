@@ -4,6 +4,8 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Globalization;
+using System.Text;
 using NetPdf.Css.Diagnostics;
 using NetPdf.Css.Parser;
 using NetPdf.Css.Properties;
@@ -38,6 +40,19 @@ namespace NetPdf.Css.ComputedValues.PropertyResolvers;
 ///   <see cref="GridTemplateAreas.None"/>.</item>
 /// </list>
 ///
+/// <para><b>Per PR-#105 review F1 — DoS guards</b>: the resolver caps
+/// the source-text length, max rows, max columns, and max total cells
+/// it will process before emitting a truncation diagnostic + Invalid
+/// result. Hostile CSS like 100,000 rows × 1 cell or a 50,000-char
+/// area-name string cannot exhaust memory or CPU.</para>
+///
+/// <para><b>Per PR-#105 review F1 — single-pass rectangle validation</b>:
+/// instead of the original cycle-7a O(uniqueNames × cells) outside-
+/// scan, the resolver walks the cells once tracking per-name
+/// <c>(minRow, maxRow, minCol, maxCol, count)</c>. At the end each
+/// name's bounding-rectangle area must equal its cell count — both
+/// conditions detect L-shapes and disjoint regions.</para>
+///
 /// <para><b>Invalid input</b> emits
 /// <see cref="CssDiagnosticCodes.CssPropertyValueInvalid001"/> with a
 /// spec-referencing reason. The cascade falls back to the property's
@@ -47,6 +62,34 @@ internal static class GridTemplateAreasResolver
 {
     public const int KeywordIdNone = 0;
 
+    // ---- PR-#105 review F1 — DoS guards ----
+    /// <summary>Maximum source-text length the resolver will tokenize.
+    /// 16 KiB is generous for hand-authored CSS but blocks the
+    /// pathological 100,000-character input.</summary>
+    internal const int MaxSourceLength = 16 * 1024;
+
+    /// <summary>Maximum rows (= number of CSS strings). 256 is well
+    /// above any realistic invoice / report template (typically ≤ 10).
+    /// Combined with <see cref="MaxColumns"/> the total cells stay
+    /// bounded.</summary>
+    internal const int MaxRows = 256;
+
+    /// <summary>Maximum columns per row. Same rationale as
+    /// <see cref="MaxRows"/>.</summary>
+    internal const int MaxColumns = 256;
+
+    /// <summary>Hard ceiling on total cells across all rows. Even with
+    /// <see cref="MaxRows"/> × <see cref="MaxColumns"/> = 65536, this
+    /// ceiling is enforced separately because the typical template is
+    /// much smaller and we'd rather diagnose 32K cells (which is
+    /// already suspect) than allocate it.</summary>
+    internal const int MaxTotalCells = 16 * 1024;
+
+    /// <summary>Maximum length of an area-name custom-ident. CSS
+    /// identifiers are essentially unbounded in spec, but a 64-char
+    /// cap is well above realistic use + blocks DoS via long names.</summary>
+    internal const int MaxIdentLength = 64;
+
     public static ResolverResult Resolve(
         string value,
         PropertyId propertyId,
@@ -54,178 +97,101 @@ internal static class GridTemplateAreasResolver
         ICssDiagnosticsSink? diagnostics,
         CssSourceLocation location)
     {
+        // Per PR-#105 review F1 — pre-check source length before any
+        // allocation.
+        if (value is not null && value.Length > MaxSourceLength)
+        {
+            EmitInvalid(diagnostics, propertyName, value,
+                $"source length {value.Length} exceeds the "
+                + $"grid-template-areas cap of {MaxSourceLength} chars",
+                location);
+            return ResolverResult.Invalid();
+        }
+
         // Defense in depth: CSS-wide keywords cannot serve as a
         // grid-template-areas value at this resolver (the cascade
         // should have intercepted them). Mirrors the pattern from
         // GridLineResolver / GridTemplateListResolver.
-        if (GridLineResolver.IsCssWideKeyword(value))
+        if (GridLineResolver.IsCssWideKeyword(value ?? string.Empty))
         {
-            EmitInvalid(diagnostics, propertyName, value,
+            EmitInvalid(diagnostics, propertyName, value ?? string.Empty,
                 "CSS-wide keyword reached the grid-template-areas resolver "
                 + "(cycle-7a defense-in-depth path)",
                 location);
             return ResolverResult.Invalid();
         }
 
-        var trimmed = value.AsSpan().Trim();
+        var span = (value ?? string.Empty).AsSpan();
+        var trimmed = span.Trim();
         if (trimmed.IsEmpty
             || trimmed.Equals("none", StringComparison.OrdinalIgnoreCase))
         {
             return ResolverResult.Resolved(ComputedSlot.FromKeyword(KeywordIdNone));
         }
 
-        // Tokenize as a sequence of CSS strings. Each <string> token is
-        // enclosed in single or double quotes per CSS Values L4 §3.2.
-        // Whitespace between strings is permitted; anything else is an
-        // error.
-        var rowStrings = new List<string>();
-        if (!TryTokenizeRowStrings(value, rowStrings, out var tokenizeError))
+        // Tokenize quoted-string rows + split each into cell tokens
+        // in a single pass. Cells flatten directly into a row-major
+        // array; we also accumulate per-name bounds for the single-
+        // pass rectangle validation (per PR-#105 review F1).
+        var parseResult = ParseCells(value!);
+        if (!parseResult.Ok)
         {
-            EmitInvalid(diagnostics, propertyName, value, tokenizeError, location);
+            EmitInvalid(diagnostics, propertyName, value!,
+                parseResult.Error, location);
             return ResolverResult.Invalid();
         }
 
-        if (rowStrings.Count == 0)
+        var cellsBuilder = ImmutableArray.CreateBuilder<string?>(
+            parseResult.RowCount * parseResult.ColumnCount);
+        for (var i = 0; i < parseResult.Cells.Count; i++)
         {
-            EmitInvalid(diagnostics, propertyName, value,
-                "grid-template-areas requires at least one <string> row "
-                + "per CSS Grid L1 §7.3", location);
-            return ResolverResult.Invalid();
+            cellsBuilder.Add(parseResult.Cells[i]);
         }
+        var flatCells = cellsBuilder.ToImmutable();
 
-        // Split each row string on whitespace into cell tokens.
-        var cellsByRow = new List<string?[]>(rowStrings.Count);
-        var columnCount = -1;
-        for (var r = 0; r < rowStrings.Count; r++)
-        {
-            var cells = SplitRowIntoCells(rowStrings[r]);
-            if (cells.Length == 0)
-            {
-                EmitInvalid(diagnostics, propertyName, value,
-                    $"grid-template-areas row {r + 1} is empty — each "
-                    + "row string must contain at least one cell token "
-                    + "(<custom-ident> or .) per CSS Grid L1 §7.3",
-                    location);
-                return ResolverResult.Invalid();
-            }
-            if (columnCount < 0)
-            {
-                columnCount = cells.Length;
-            }
-            else if (cells.Length != columnCount)
-            {
-                EmitInvalid(diagnostics, propertyName, value,
-                    $"grid-template-areas row {r + 1} has {cells.Length} "
-                    + $"cell tokens but row 1 has {columnCount} (= ragged "
-                    + "rows are invalid per CSS Grid L1 §7.3)",
-                    location);
-                return ResolverResult.Invalid();
-            }
-            cellsByRow.Add(cells);
-        }
-
-        // Validate every named cell forms a single rectangle.
-        var rowCount = cellsByRow.Count;
-        var flatCells = ImmutableArray.CreateBuilder<string?>(rowCount * columnCount);
-        for (var r = 0; r < rowCount; r++)
-        {
-            for (var c = 0; c < columnCount; c++)
-            {
-                flatCells.Add(cellsByRow[r][c]);
-            }
-        }
-        var flat = flatCells.ToImmutable();
-
+        // Derive name → rectangle from the per-name accumulators.
+        // Validate: bounding-rect area must equal count (= no holes,
+        // no outside-rectangle occurrences).
         var nameToRect = ImmutableDictionary.CreateBuilder<string, GridAreaRect>(
             StringComparer.Ordinal);
-        for (var r = 0; r < rowCount; r++)
+        foreach (var (name, bounds) in parseResult.NameBounds)
         {
-            for (var c = 0; c < columnCount; c++)
+            var rowSpan = bounds.MaxRow - bounds.MinRow + 1;
+            var colSpan = bounds.MaxCol - bounds.MinCol + 1;
+            if ((long)rowSpan * colSpan != bounds.Count)
             {
-                var name = flat[r * columnCount + c];
-                if (name is null) continue;
-                if (nameToRect.ContainsKey(name)) continue;
-
-                // Find the rectangle extent of this name. Walk right
-                // along this row to find the column extent; then walk
-                // down to find the row extent. Then verify EVERY cell
-                // in the rectangle has the same name AND no cell with
-                // this name exists outside the rectangle.
-                var colEnd = c + 1;
-                while (colEnd < columnCount
-                    && flat[r * columnCount + colEnd] == name)
-                {
-                    colEnd++;
-                }
-                var rowEnd = r + 1;
-                while (rowEnd < rowCount
-                    && flat[rowEnd * columnCount + c] == name)
-                {
-                    rowEnd++;
-                }
-                // Validate rectangle interior.
-                for (var rr = r; rr < rowEnd; rr++)
-                {
-                    for (var cc = c; cc < colEnd; cc++)
-                    {
-                        if (flat[rr * columnCount + cc] != name)
-                        {
-                            EmitInvalid(diagnostics, propertyName, value,
-                                $"grid-template-areas named area '{name}' "
-                                + $"does not form a rectangle (cell at row "
-                                + $"{rr + 1}, column {cc + 1} is "
-                                + (flat[rr * columnCount + cc] is null
-                                    ? "null"
-                                    : $"'{flat[rr * columnCount + cc]}'")
-                                + $" instead of '{name}') per CSS Grid L1 §7.3",
-                                location);
-                            return ResolverResult.Invalid();
-                        }
-                    }
-                }
-                // Validate no cell with this name exists OUTSIDE the
-                // rectangle. Scan the full grid.
-                for (var rr = 0; rr < rowCount; rr++)
-                {
-                    for (var cc = 0; cc < columnCount; cc++)
-                    {
-                        var outside = rr < r || rr >= rowEnd
-                            || cc < c || cc >= colEnd;
-                        if (outside && flat[rr * columnCount + cc] == name)
-                        {
-                            EmitInvalid(diagnostics, propertyName, value,
-                                $"grid-template-areas named area '{name}' "
-                                + "occupies non-rectangular cells (cell at "
-                                + $"row {rr + 1}, column {cc + 1} is "
-                                + "outside the area's bounding rectangle) "
-                                + "per CSS Grid L1 §7.3",
-                                location);
-                            return ResolverResult.Invalid();
-                        }
-                    }
-                }
-                // 1-based line numbers; end is exclusive.
-                nameToRect[name] = new GridAreaRect(
-                    RowStart: r + 1, RowEnd: rowEnd + 1,
-                    ColumnStart: c + 1, ColumnEnd: colEnd + 1);
+                EmitInvalid(diagnostics, propertyName, value!,
+                    $"named area '{name}' is not a rectangle (= cells "
+                    + $"with this name don't fill a contiguous bounding "
+                    + $"box of {rowSpan}×{colSpan}={rowSpan * colSpan} "
+                    + $"cells; saw {bounds.Count} occurrences)",
+                    location);
+                return ResolverResult.Invalid();
             }
+            nameToRect[name] = new GridAreaRect(
+                RowStart: bounds.MinRow + 1, RowEnd: bounds.MaxRow + 2,
+                ColumnStart: bounds.MinCol + 1, ColumnEnd: bounds.MaxCol + 2);
         }
 
         var ast = new GridTemplateAreas(
-            RowCount: rowCount,
-            ColumnCount: columnCount,
-            Cells: flat,
+            RowCount: parseResult.RowCount,
+            ColumnCount: parseResult.ColumnCount,
+            Cells: flatCells,
             NameToRect: nameToRect.ToImmutable());
         return ResolverResult.ResolvedSideTable((object)ast);
     }
 
-    /// <summary>Validates a <c>grid-template-areas</c> value without
-    /// emitting a diagnostic. Mirrors
-    /// <see cref="GridLineResolver.TryValidate"/>; used by the
-    /// CSS-shorthand expanders for cycle-7 features.</summary>
+    /// <summary>Side-effect-free validation for shorthand expanders.
+    /// Per PR-#105 review F2, shares the full validation logic
+    /// (including rectangle invariants) with <see cref="Resolve"/> so
+    /// invalid templates can't pass pre-validation. Differs from
+    /// <see cref="Resolve"/> only in that it doesn't allocate the
+    /// flat-cells immutable array OR the side-table payload + doesn't
+    /// emit diagnostics.</summary>
     internal static bool TryValidate(string value)
     {
         if (value is null) return false;
+        if (value.Length > MaxSourceLength) return false;
         if (GridLineResolver.IsCssWideKeyword(value)) return false;
         var trimmed = value.AsSpan().Trim();
         if (trimmed.IsEmpty
@@ -233,37 +199,63 @@ internal static class GridTemplateAreasResolver
         {
             return true;
         }
-        var rowStrings = new List<string>();
-        if (!TryTokenizeRowStrings(value, rowStrings, out _)) return false;
-        if (rowStrings.Count == 0) return false;
-        var columnCount = -1;
-        var cellsByRow = new List<string?[]>(rowStrings.Count);
-        foreach (var rowString in rowStrings)
+        var parseResult = ParseCells(value);
+        if (!parseResult.Ok) return false;
+        // Per PR-#105 review F2 — apply the same rectangle validation
+        // as Resolve. Without this, invalid L-shaped / disjoint
+        // templates would pass pre-validation in shorthand expanders.
+        foreach (var (_, bounds) in parseResult.NameBounds)
         {
-            var cells = SplitRowIntoCells(rowString);
-            if (cells.Length == 0) return false;
-            if (columnCount < 0) columnCount = cells.Length;
-            else if (cells.Length != columnCount) return false;
-            cellsByRow.Add(cells);
+            var rowSpan = bounds.MaxRow - bounds.MinRow + 1;
+            var colSpan = bounds.MaxCol - bounds.MinCol + 1;
+            if ((long)rowSpan * colSpan != bounds.Count) return false;
         }
-        // Skip the rectangle-validation pass; this is a lighter
-        // pre-validation for shorthand expanders. The full resolver
-        // does the strict pass.
         return true;
     }
 
-    /// <summary>Tokenize the input as a sequence of CSS strings
-    /// (quoted single or double). Returns <see langword="false"/> with
-    /// a <paramref name="error"/> describing the failure on bad
-    /// input.</summary>
-    private static bool TryTokenizeRowStrings(
-        string value, List<string> rowStrings, out string error)
+    // =================================================================
+    //  Single-pass parser. Tokenizes + cell-splits + name-bounds
+    //  accumulation in one pass. Returns a `ParseResult` that the
+    //  caller turns into either the side-table payload (Resolve) or
+    //  a bool (TryValidate).
+    // =================================================================
+
+    private readonly struct NameBounds(int minRow, int maxRow, int minCol, int maxCol, int count)
     {
-        error = string.Empty;
-        var i = 0;
+        public int MinRow { get; } = minRow;
+        public int MaxRow { get; } = maxRow;
+        public int MinCol { get; } = minCol;
+        public int MaxCol { get; } = maxCol;
+        public int Count { get; } = count;
+
+        public NameBounds Extend(int row, int col) => new(
+            Math.Min(MinRow, row), Math.Max(MaxRow, row),
+            Math.Min(MinCol, col), Math.Max(MaxCol, col),
+            Count + 1);
+    }
+
+    private sealed class ParseResult
+    {
+        public bool Ok;
+        public string Error = string.Empty;
+        public int RowCount;
+        public int ColumnCount;
+        public List<string?> Cells = new();
+        public Dictionary<string, NameBounds> NameBounds =
+            new(StringComparer.Ordinal);
+    }
+
+    private static ParseResult ParseCells(string value)
+    {
+        var result = new ParseResult();
         var span = value.AsSpan();
+        var i = 0;
+        var rowIndex = 0;
+        var firstRowColumnCount = -1;
+
         while (i < span.Length)
         {
+            // Skip whitespace between row strings.
             var c = span[i];
             if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f')
             {
@@ -272,55 +264,234 @@ internal static class GridTemplateAreasResolver
             }
             if (c != '"' && c != '\'')
             {
-                error = $"grid-template-areas expects a sequence of CSS "
-                    + $"strings but found unexpected character '{c}' at "
-                    + $"position {i}";
-                return false;
+                result.Error = $"expected a CSS string (quoted with \"…\" "
+                    + $"or '…') but found '{c}' at position {i}";
+                return result;
             }
-            var quote = c;
-            i++;
-            var start = i;
-            while (i < span.Length && span[i] != quote)
+
+            if (rowIndex >= MaxRows)
             {
-                // Reject embedded newlines per CSS Syntax §4.3.5 (bad
-                // string token). The author should use one quoted
-                // string per row.
-                if (span[i] == '\n' || span[i] == '\r' || span[i] == '\f')
-                {
-                    error = $"grid-template-areas row string contains a "
-                        + $"raw newline at position {i}; each row must be "
-                        + "a single-line CSS string";
-                    return false;
-                }
-                i++;
+                result.Error = $"row count exceeds MaxRows={MaxRows} cap "
+                    + "(grid-template-areas DoS guard)";
+                return result;
             }
-            if (i >= span.Length)
+
+            // Read the quoted string with escape handling
+            // (PR-#105 review F3). Returns the decoded string + the
+            // new cursor position.
+            if (!TryReadCssString(span, ref i, out var rowString, out var stringError))
             {
-                error = $"grid-template-areas row string starting at "
-                    + $"position {start - 1} is missing its closing "
-                    + $"quote '{quote}'";
-                return false;
+                result.Error = stringError;
+                return result;
             }
-            rowStrings.Add(span.Slice(start, i - start).ToString());
-            i++; // skip closing quote
+
+            // Split the row string into cell tokens with proper error
+            // reporting (PR-#105 review F10 — actual reason instead
+            // of empty-array sentinel).
+            var rowCellsStart = result.Cells.Count;
+            var splitError = SplitRowIntoCellsInto(
+                rowString, rowIndex, result.Cells, result.NameBounds);
+            if (splitError is not null)
+            {
+                result.Error = splitError;
+                return result;
+            }
+            var thisRowCellCount = result.Cells.Count - rowCellsStart;
+            if (thisRowCellCount == 0)
+            {
+                result.Error = $"row {rowIndex + 1} is empty — each "
+                    + "row string must contain at least one cell token "
+                    + "(<custom-ident> or .) per CSS Grid L1 §7.3";
+                return result;
+            }
+            if (thisRowCellCount > MaxColumns)
+            {
+                result.Error = $"row {rowIndex + 1} has {thisRowCellCount} "
+                    + $"cells, exceeding MaxColumns={MaxColumns} cap";
+                return result;
+            }
+            if (firstRowColumnCount < 0)
+            {
+                firstRowColumnCount = thisRowCellCount;
+            }
+            else if (thisRowCellCount != firstRowColumnCount)
+            {
+                result.Error = $"row {rowIndex + 1} has {thisRowCellCount} "
+                    + $"cell tokens but row 1 has {firstRowColumnCount} "
+                    + "(= ragged rows are invalid per CSS Grid L1 §7.3)";
+                return result;
+            }
+            if (result.Cells.Count > MaxTotalCells)
+            {
+                result.Error = $"total cell count exceeds "
+                    + $"MaxTotalCells={MaxTotalCells} cap";
+                return result;
+            }
+            rowIndex++;
         }
-        return true;
+
+        if (rowIndex == 0)
+        {
+            result.Error = "grid-template-areas requires at least one "
+                + "<string> row per CSS Grid L1 §7.3";
+            return result;
+        }
+
+        result.Ok = true;
+        result.RowCount = rowIndex;
+        result.ColumnCount = firstRowColumnCount;
+        return result;
     }
 
-    /// <summary>Split a row string on whitespace into cell tokens.
-    /// Each token is either <c>&lt;custom-ident&gt;</c> (= returned
-    /// verbatim) or one or more <c>.</c> characters (= null cell —
-    /// returned as <see langword="null"/>). Multiple <c>.</c>
-    /// characters in a row count as a single null cell per §7.3
-    /// (= same effect as a single <c>.</c>).</summary>
-    private static string?[] SplitRowIntoCells(string row)
+    /// <summary>Per PR-#105 review F3 — read one CSS string token per
+    /// CSS Syntax L3 §4.3.5 with escape handling. Decodes the four
+    /// escape forms per §4.3.7: hex escape (up to 6 hex digits +
+    /// optional whitespace), line continuation (backslash + newline,
+    /// ignored), literal-next-char escape, and null/surrogate fallback
+    /// to U+FFFD. Rejects raw newlines (per spec §4.3.5 a CSS string
+    /// is terminated at a raw newline; we treat that as parse error
+    /// to surface the issue rather than producing a "bad string"
+    /// token).</summary>
+    private static bool TryReadCssString(
+        ReadOnlySpan<char> span, ref int cursor,
+        out string decoded, out string error)
     {
-        var cells = new List<string?>();
+        decoded = string.Empty;
+        error = string.Empty;
+        if (cursor >= span.Length)
+        {
+            error = "expected a CSS string but reached end of input";
+            return false;
+        }
+        var quote = span[cursor];
+        if (quote != '"' && quote != '\'')
+        {
+            error = $"expected quote character but saw '{span[cursor]}' "
+                + $"at position {cursor}";
+            return false;
+        }
+        cursor++; // skip opening quote
+        var startPos = cursor - 1;
+        var sb = new StringBuilder();
+        while (cursor < span.Length)
+        {
+            var c = span[cursor];
+            if (c == quote)
+            {
+                cursor++; // skip closing quote
+                decoded = sb.ToString();
+                return true;
+            }
+            if (c == '\n' || c == '\r' || c == '\f')
+            {
+                error = $"row string starting at position {startPos} "
+                    + $"contains a raw newline (forbidden per CSS Syntax "
+                    + "L3 §4.3.5; each row must be a single-line CSS "
+                    + "string)";
+                return false;
+            }
+            if (c == '\\')
+            {
+                cursor++;
+                if (cursor >= span.Length)
+                {
+                    error = $"row string starting at position {startPos} "
+                        + "ends with a dangling backslash escape";
+                    return false;
+                }
+                var next = span[cursor];
+                // Line continuation: backslash + newline → empty.
+                if (next == '\n' || next == '\r' || next == '\f')
+                {
+                    // Consume CR/LF/CRLF pair as a single newline.
+                    if (next == '\r' && cursor + 1 < span.Length && span[cursor + 1] == '\n')
+                    {
+                        cursor += 2;
+                    }
+                    else
+                    {
+                        cursor++;
+                    }
+                    continue;
+                }
+                // Hex escape: 1..6 hex digits + optional whitespace.
+                if (IsHexDigit(next))
+                {
+                    var hexStart = cursor;
+                    var hexLen = 0;
+                    while (hexLen < 6 && cursor < span.Length
+                        && IsHexDigit(span[cursor]))
+                    {
+                        cursor++;
+                        hexLen++;
+                    }
+                    // Optional trailing whitespace consumed (per §4.3.7).
+                    if (cursor < span.Length)
+                    {
+                        var ws = span[cursor];
+                        if (ws == ' ' || ws == '\t' || ws == '\n' || ws == '\r' || ws == '\f')
+                        {
+                            // CRLF → consume both.
+                            if (ws == '\r' && cursor + 1 < span.Length && span[cursor + 1] == '\n')
+                            {
+                                cursor += 2;
+                            }
+                            else
+                            {
+                                cursor++;
+                            }
+                        }
+                    }
+                    var hexStr = span.Slice(hexStart, hexLen).ToString();
+                    if (uint.TryParse(hexStr, NumberStyles.HexNumber,
+                        CultureInfo.InvariantCulture, out var cp))
+                    {
+                        // Per §4.3.7: null code point and surrogates →
+                        // U+FFFD; values > U+10FFFF → U+FFFD.
+                        if (cp == 0 || (cp >= 0xD800 && cp <= 0xDFFF) || cp > 0x10FFFF)
+                        {
+                            sb.Append('�');
+                        }
+                        else
+                        {
+                            sb.Append(char.ConvertFromUtf32((int)cp));
+                        }
+                    }
+                    continue;
+                }
+                // Literal-next-char escape (= \X for any non-hex, non-
+                // newline char). Append the literal character.
+                sb.Append(next);
+                cursor++;
+                continue;
+            }
+            sb.Append(c);
+            cursor++;
+        }
+        error = $"row string starting at position {startPos} is missing "
+            + $"its closing quote '{quote}'";
+        return false;
+    }
+
+    private static bool IsHexDigit(char c)
+        => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+
+    /// <summary>Per PR-#105 review F10 — split a row string into cell
+    /// tokens, appending each token to <paramref name="cells"/> and
+    /// updating <paramref name="nameBounds"/> in a single pass.
+    /// Returns <see langword="null"/> on success; an error message
+    /// (with the offending character and its row-relative position)
+    /// on failure.</summary>
+    private static string? SplitRowIntoCellsInto(
+        string row, int rowIndex,
+        List<string?> cells,
+        Dictionary<string, NameBounds> nameBounds)
+    {
         var span = row.AsSpan();
         var i = 0;
+        var colInRow = 0;
         while (i < span.Length)
         {
-            // Skip whitespace.
             if (span[i] == ' ' || span[i] == '\t')
             {
                 i++;
@@ -331,29 +502,51 @@ internal static class GridTemplateAreasResolver
             {
                 while (i < span.Length && span[i] == '.') i++;
                 cells.Add(null);
+                colInRow++;
                 continue;
             }
-            // A custom-ident: run of identifier characters (= per
-            // cycle-6a's GridLineResolver tokenizer convention,
-            // alphanumeric + dash + underscore is sufficient for the
-            // custom-ident grammar at this layer).
-            var start = i;
-            while (i < span.Length && IsIdentChar(span[i])) i++;
-            if (i == start)
+            if (IsIdentStart(span[i]))
             {
-                // Unrecognized character — return an empty array to
-                // signal failure to the caller (= caller will emit a
-                // diagnostic via the "row is empty" check).
-                return System.Array.Empty<string?>();
+                var start = i;
+                while (i < span.Length && IsIdentContinue(span[i])) i++;
+                var len = i - start;
+                if (len > MaxIdentLength)
+                {
+                    return $"row {rowIndex + 1} contains a custom-ident "
+                        + $"of length {len} (exceeds MaxIdentLength="
+                        + $"{MaxIdentLength} cap)";
+                }
+                var name = span.Slice(start, len).ToString();
+                cells.Add(name);
+                if (nameBounds.TryGetValue(name, out var existing))
+                {
+                    nameBounds[name] = existing.Extend(rowIndex, colInRow);
+                }
+                else
+                {
+                    nameBounds[name] = new NameBounds(
+                        rowIndex, rowIndex, colInRow, colInRow, 1);
+                }
+                colInRow++;
+                continue;
             }
-            cells.Add(span.Slice(start, i - start).ToString());
+            // Unrecognized character — report with row-relative position.
+            return $"row {rowIndex + 1} contains an unexpected character "
+                + $"'{span[i]}' at row position {i} (expected "
+                + "<custom-ident>, '.', or whitespace)";
         }
-        return cells.ToArray();
+        return null;
     }
 
-    private static bool IsIdentChar(char c)
-        => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
-        || (c >= '0' && c <= '9') || c == '-' || c == '_';
+    private static bool IsIdentStart(char c)
+        => (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'
+            // Per CSS Syntax §4.4 — non-ASCII identifier code points are
+            // allowed. Cycle-7a accepts U+0080+ as ident-start so escaped
+            // / Unicode area names parse.
+            || c >= 0x80;
+
+    private static bool IsIdentContinue(char c)
+        => IsIdentStart(c) || (c >= '0' && c <= '9') || c == '-';
 
     private static void EmitInvalid(
         ICssDiagnosticsSink? sink, string propertyName, string value,

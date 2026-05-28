@@ -3879,6 +3879,11 @@ public sealed class GridLayouterTests
         AssertFragmentEquals(sink, item,
             inlineOffset: 0, blockOffset: 0,
             inlineSize: 50, blockSize: 100);
+        // Per PR-#105 review F4 — happy-path placement must not emit
+        // any placement-approximated diagnostic; the resolved position
+        // came directly from the named-area lookup.
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
     }
 
     [Fact]
@@ -3906,6 +3911,8 @@ public sealed class GridLayouterTests
         AssertFragmentEquals(sink, item,
             inlineOffset: 0, blockOffset: 0,
             inlineSize: 200, blockSize: 100);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
     }
 
     [Fact]
@@ -3931,6 +3938,8 @@ public sealed class GridLayouterTests
         AssertFragmentEquals(sink, item,
             inlineOffset: 0, blockOffset: 100,
             inlineSize: 50, blockSize: 100);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
     }
 
     [Fact]
@@ -3980,6 +3989,82 @@ public sealed class GridLayouterTests
         AssertFragmentEquals(sink, item,
             inlineOffset: 0, blockOffset: 200,
             inlineSize: 200, blockSize: 50);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+    }
+
+    // =================================================================
+    //  PR-#105 review F5 — grid-template-areas with missing /
+    //  partial explicit tracks. Cycle 6a's implicit-only path handles
+    //  this when the cascade default for grid-template-rows /
+    //  grid-template-columns is `none`.
+    // =================================================================
+
+    [Fact]
+    public void F5_grid_template_areas_with_no_explicit_tracks_uses_implicit()
+    {
+        // No grid-template-rows / -columns declared. With cycle 6a's
+        // implicit-only grid path, items in the areas map use auto-
+        // sized implicit tracks. Without item dimensions, tracks
+        // collapse to 0; the fragment still gets a valid placement.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = TrackList.None;
+        var colsTrack = TrackList.None;
+        var grid = BuildGridContainerWithTemplates(rowsTrack, colsTrack);
+        SetGridTemplateAreas(grid, "\"head head\" \"main side\"");
+        var head = BuildItemWithNamedAreaStartsAndEnds(
+            rowStart: "head", rowEnd: "head",
+            colStart: "head", colEnd: "head");
+        var main = BuildItemWithNamedAreaStartsAndEnds(
+            rowStart: "main", rowEnd: "main",
+            colStart: "main", colEnd: "main");
+        grid.AppendChild(head);
+        grid.AppendChild(main);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        // 2 items emit. Implicit tracks generated past the cycle-6a
+        // 1×1 seed (= rows 0+1, cols 0+1). All sized 0 since items
+        // have no declared dimensions; positions are valid.
+        Assert.Equal(2, sink.Fragments.Count);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+    }
+
+    [Fact]
+    public void F5_grid_template_areas_with_partial_explicit_rows_grows_implicit()
+    {
+        // Areas declare 3 rows; explicit grid-template-rows only
+        // declares 2. Cycle 6a's implicit-track generation handles
+        // the third (implicit) row via grid-auto-rows: auto (default).
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 100.0 },
+            colsPx: new[] { 100.0, 100.0 });
+        SetGridTemplateAreas(grid,
+            "\"head head\" \"main side\" \"foot foot\"");
+        var foot = BuildItemWithNamedAreaStartsAndEnds(
+            rowStart: "foot", rowEnd: "foot",
+            colStart: "foot", colEnd: "foot");
+        grid.AppendChild(foot);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Single(sink.Fragments);
+        // foot occupies row 2 (= 1-based row 3 = 0-based 2, past the
+        // 2 explicit rows). blockOffset = 200 (two 100px rows above);
+        // blockSize = 0 (implicit row auto-sized; no item content).
+        AssertFragmentEquals(sink, foot,
+            inlineOffset: 0, blockOffset: 200,
+            inlineSize: 200, blockSize: 0);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
     }
 
     // =====================================================================

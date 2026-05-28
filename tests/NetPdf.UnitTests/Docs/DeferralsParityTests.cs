@@ -63,6 +63,7 @@ public sealed class DeferralsParityTests
         "grid-fragment-plan-shared-sizing-deferral",
         "grid-spanning-item-intrinsic-distribution-deferral",
         "grid-reverse-auto-placement-deferral",
+        "grid-named-line-placement-deferral",
         "recursive-block-continuation-consumed-extent-accounting-deferral",
     };
 

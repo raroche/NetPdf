@@ -260,8 +260,12 @@ State of the project after Phase 5:
 - The compatibility matrix accurately describes what's supported.
 
 Post-v1 roadmap continues per the plan:
-- **v1.1** — tagged PDF (PDF/UA-1).
-- **v1.2** — PDF/A-3u, PDF/A-2u.
+- **v1.1** — tagged PDF (PDF/UA-1). Work breakdown lives in
+  [`docs/accessibility.md`](../accessibility.md) — TODO checklist with
+  phases A (`/StructTreeRoot` infrastructure) through G (non-PDF/UA
+  accessibility features). The semantic IR is already built in v1.0;
+  v1.1 wires the emission.
+- **v1.2** — PDF/A-3u, PDF/A-2u. (Prerequisite: v1.1's tagging surface.)
 - **v1.3** — CSS Grid L2 (subgrid).
 - **v1.4** — container queries, `:has()` rendering, anchor positioning.
 - **v2.0** — optional rendering APIs (PDF→image preview, programmatic PDF append/merge), AES-256 encryption.

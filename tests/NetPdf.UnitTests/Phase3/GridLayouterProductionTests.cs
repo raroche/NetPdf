@@ -1536,6 +1536,71 @@ public sealed class GridLayouterProductionTests
     }
 
     // ====================================================================
+    //  PR-#105 review F6 — cross-feature integration: named-area
+    //  placement (cycle 7a) + spanning-pagination atomicity (cycle 6b).
+    // ====================================================================
+
+    [Fact]
+    public async Task F6_named_area_spanning_two_rows_defers_atomically_across_pages()
+    {
+        // grid-template-areas declares a `tall` area spanning rows 2+3.
+        // Each row is 100px; page budget = 150px fits row 1 + half of
+        // row 2 naively. Per cycle 6b's atomicity contract, the
+        // `tall` spanning item defers entirely to page 2; per cycle
+        // 7a's named-area resolution, the placement comes from the
+        // areas map (= no fallback path). Proves both features
+        // integrate cleanly.
+        // No explicit grid `height` — exercises cycle 6a's auto-
+        // height paginatable path (= the `grid-explicit-height-
+        // paginate-deferral` is intentionally avoided here).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 100px 100px 100px;
+                    grid-template-columns: 100px;
+                    grid-template-areas:
+                        "head"
+                        "tall"
+                        "tall";
+                    width: 100px;
+                }
+                .h { grid-area: head; }
+                .t { grid-area: tall; }
+            </style></head><body>
+                <div class="grid">
+                    <div class="h"></div>
+                    <div class="t"></div>
+                </div>
+            </body></html>
+            """;
+
+        var pages = await RenderMultiPageAsync(
+            html, contentInlineSize: 100, blockSize: 150, maxPages: 4);
+
+        Assert.True(pages.Count >= 2,
+            $"Expected ≥ 2 pages; got {pages.Count}");
+
+        // Page 1: only `head` emits (tall defers atomically per cycle
+        // 6b). If cycle 6b's atomicity contract had broken, tall
+        // would have started on page 1 with its rectangle straddling
+        // the page break.
+        var headOnPage1 = FindByClass(pages[0].Sink, "h");
+        var tallOnPage1 = FindByClass(pages[0].Sink, "t");
+        Assert.NotNull(headOnPage1);
+        Assert.Null(tallOnPage1);
+
+        // Page 2: `tall` emits at its full 200px span. If cycle 7a's
+        // named-area resolution had fallen back to auto, the item
+        // would have landed at a single cell, not the 200px named
+        // area.
+        var tallOnPage2 = FindByClass(pages[1].Sink, "t");
+        Assert.NotNull(tallOnPage2);
+        Assert.Equal(200, tallOnPage2!.Value.BlockSize, precision: 3);
+        Assert.Equal(100, tallOnPage2.Value.InlineSize, precision: 3);
+    }
+
+    // ====================================================================
     //  Pipeline driver — mirrors FlexLayouterProductionTests.
     // ====================================================================
 

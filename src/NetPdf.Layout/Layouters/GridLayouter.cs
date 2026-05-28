@@ -537,6 +537,7 @@ internal sealed class GridLayouter : ILayouter, IDisposable
                     startRow: startRow,
                     rowSizesView: rowSizesRelative,
                     rowPositionsView: rowPositionsRelative,
+                    placedItems: placedItems,
                     budget: _contentBlockSize,
                     strategy: strategy);
 
@@ -857,13 +858,17 @@ internal sealed class GridLayouter : ILayouter, IDisposable
     /// </list>
     /// </para>
     ///
-    /// <para><b>Span-aware computation (cycle 6 scope)</b>: cycle 5
-    /// assumes each item occupies exactly one row (= cycle 1
-    /// contract). Cycle 6's <c>span N</c> placement extends this so
-    /// the break point K must satisfy "no item placed at rows ≤ K
-    /// has any span past K". The current implementation is forward-
-    /// compatible: cycle 6 will add a per-row "max span end" lookup
-    /// + extend the loop condition.</para>
+    /// <para><b>Span-aware computation (cycle 6b scope)</b>: per the
+    /// cycle-5 design contract, spanning items are ATOMIC TO THEIR
+    /// ROW SPAN. If an item starts on this page (item.Row in
+    /// [startRow, naiveEnd)) but extends past (item.Row + item.RowSpan
+    /// &gt; naiveEnd), the entire item defers — we rewind endRowExclusive
+    /// to item.Row so the item moves to the next page. If the spanning
+    /// item starts at startRow and can't fit in any single page (=
+    /// taller than the fragmentainer), the §4.4 progress rule kicks
+    /// in: LastResort force-emits the full item (= rectangle overflows
+    /// the page edge); other strategies defer the entire grid + the
+    /// resume page eventually reaches LastResort.</para>
     ///
     /// <para><b>F2 deferred (full IBreakResolver wiring)</b>: cycle 5
     /// hardening only respects strategy. Full integration (model rows
@@ -878,38 +883,112 @@ internal sealed class GridLayouter : ILayouter, IDisposable
             int startRow,
             IReadOnlyList<double> rowSizesView,
             IReadOnlyList<double> rowPositionsView,
+            IReadOnlyList<PlacedItem> placedItems,
             double budget,
             LayoutAttemptStrategy strategy)
     {
         var rowCount = rowSizesView.Count;
         var baselineRelative = startRow > 0 ? rowPositionsView[startRow] : 0.0;
-        var endRowExclusive = startRow;
+
+        // Step 1 — naive row-by-row fit. naiveEnd is the largest K
+        // such that sum_of_row_sizes[startRow..K) fits the budget.
+        var naiveEnd = startRow;
         for (var r = startRow; r < rowCount; r++)
         {
-            // Row r's bottom edge in this-page coordinates (= 0-based
-            // from the start of this page's emitted region).
             var rowBottomThisPage =
                 (rowPositionsView[r] + rowSizesView[r]) - baselineRelative;
-
             if (rowBottomThisPage <= budget + GridSizing.SizeEpsilonPublic)
             {
-                // Row r fits — commit it.
-                endRowExclusive = r + 1;
+                naiveEnd = r + 1;
                 continue;
             }
+            break;
+        }
 
-            // Row r doesn't fit.
-            if (r == startRow)
+        // Per PR-#104 review F7 — precompute per-row max-span-end
+        // (= the maximum `item.Row + item.RowSpan` across all items
+        // anchored at that row). Single O(items + rowCount) pass; the
+        // span-atomicity check is then O(rowsOnThisPage) instead of
+        // O(items × pages). The full cache-plan version that amortizes
+        // across pages is tracked under `grid-fragment-plan-shared-
+        // sizing-deferral`.
+        var maxSpanEndPerRow = new int[rowCount];
+        for (var r = 0; r < rowCount; r++) maxSpanEndPerRow[r] = r + 1;
+        foreach (var item in placedItems)
+        {
+            if (item.Row < 0 || item.Row >= rowCount) continue;
+            var itemRowSpan = Math.Max(1, item.RowSpan);
+            var itemEnd = item.Row + itemRowSpan;
+            if (itemEnd > maxSpanEndPerRow[item.Row])
             {
-                // First row on this page can't fit. Per F1+F2: only
-                // force-emit under LastResort; otherwise defer the
-                // whole grid to the next page (= rewind signal).
-                if (strategy == LayoutAttemptStrategy.LastResort)
+                maxSpanEndPerRow[item.Row] = itemEnd;
+            }
+        }
+
+        // Step 2 — span atomicity (cycle 6b). For every spanning item
+        // that starts on this page (item.Row in [startRow, naiveEnd))
+        // but extends past (item.Row + item.RowSpan > naiveEnd), clamp
+        // endRowExclusive to item.Row so the item defers to next page.
+        // Uses the per-row precompute so the cost is O(rowsOnThisPage).
+        var spanClampedEnd = naiveEnd;
+        for (var r = startRow; r < spanClampedEnd; r++)
+        {
+            if (maxSpanEndPerRow[r] > naiveEnd)
+            {
+                spanClampedEnd = r;
+                break;
+            }
+        }
+
+        // Step 3 — handle the "nothing committed on this page" case.
+        if (spanClampedEnd <= startRow)
+        {
+            // Either the budget-based naive computation dropped the
+            // first row (naiveEnd == startRow) OR a spanning item
+            // starting at startRow extends past it.
+            if (strategy == LayoutAttemptStrategy.LastResort)
+            {
+                // Force-emit something per §4.4 progress rule. Two
+                // sub-cases:
+                //  (a) A spanning item starts at startRow + extends
+                //      past — emit the full item span (= rectangle
+                //      overflows the page edge).
+                //  (b) The single row at startRow is taller than
+                //      the budget (cycle-5 contract) — emit it.
+                var forceEnd = startRow + 1;
+                if (startRow < rowCount && maxSpanEndPerRow[startRow] > forceEnd)
+                {
+                    forceEnd = maxSpanEndPerRow[startRow];
+                }
+                if (forceEnd > rowCount) forceEnd = rowCount;
+
+                if (forceEnd > startRow + 1)
+                {
+                    // Per PR-#104 review F8 — forceEnd is the EXCLUSIVE
+                    // 0-based row index after the last occupied row;
+                    // its 1-based equivalent is the END LINE of the
+                    // spanning item (= the line AFTER the last cell).
+                    SafeEmit(new PaginateDiagnostic(
+                        Code: PaginateDiagnosticCodes.LayoutGridForcedOverflow001,
+                        Message: $"Grid spanning item at row "
+                            + $"{startRow + 1} (occupying rows "
+                            + $"{startRow + 1}..{forceEnd} inclusive, "
+                            + $"end line {forceEnd + 1}) does not fit "
+                            + $"the fragmentainer block budget "
+                            + $"({budget:F1}px) on its first attempt "
+                            + "under LastResort strategy. Per CSS "
+                            + "Fragmentation L3 §4.4 progress rule the "
+                            + "item is force-emitted in full to prevent "
+                            + "pagination deadlock; content overflows "
+                            + "the fragmentainer-block-end region.",
+                        Severity: PaginateDiagnosticSeverity.Warning));
+                }
+                else
                 {
                     SafeEmit(new PaginateDiagnostic(
                         Code: PaginateDiagnosticCodes.LayoutGridForcedOverflow001,
-                        Message: $"Grid row {r + 1} (height "
-                            + $"{rowSizesView[r]:F1}px) exceeds the "
+                        Message: $"Grid row {startRow + 1} (height "
+                            + $"{rowSizesView[startRow]:F1}px) exceeds the "
                             + $"fragmentainer block budget "
                             + $"({budget:F1}px) on its first attempt "
                             + "under LastResort strategy. Per CSS "
@@ -918,27 +997,20 @@ internal sealed class GridLayouter : ILayouter, IDisposable
                             + "deadlock; content overflows the "
                             + "fragmentainer-block-end region.",
                         Severity: PaginateDiagnosticSeverity.Warning));
-                    endRowExclusive = r + 1;
-                    continue;
                 }
-                else
-                {
-                    // Strict / default — defer the whole grid. Caller
-                    // returns PageComplete(GridContinuation(startRow,
-                    // null)); the BlockLayouter dispatch rewinds + the
-                    // resume page eventually reaches LastResort.
-                    return (startRow, NeedsContinuation: false, DeferEntireGrid: true);
-                }
+                return (forceEnd, NeedsContinuation: forceEnd < rowCount, DeferEntireGrid: false);
             }
-
-            // Row r doesn't fit + we already committed at least one
-            // row → break + caller emits continuation for rows
-            // [endRowExclusive, rowCount).
-            return (endRowExclusive, NeedsContinuation: true, DeferEntireGrid: false);
+            else
+            {
+                // Strict / default — defer the whole grid.
+                return (startRow, NeedsContinuation: false, DeferEntireGrid: true);
+            }
         }
 
-        // All remaining rows fit on this page → no continuation.
-        return (endRowExclusive, NeedsContinuation: false, DeferEntireGrid: false);
+        // Step 4 — some rows fit. Continuation needed if more rows
+        // remain past spanClampedEnd.
+        var needsContinuation = spanClampedEnd < rowCount;
+        return (spanClampedEnd, NeedsContinuation: needsContinuation, DeferEntireGrid: false);
     }
 
     /// <summary>Per Phase 3 Task 18 cycle 6 — sum the contiguous-track

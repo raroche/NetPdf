@@ -4152,11 +4152,12 @@ public sealed class GridLayouterTests
     }
 
     [Fact]
-    public void Cycle7c_auto_fill_indefinite_axis_falls_back_to_single_iteration()
+    public void Cycle7c_F1_minmax_uses_max_when_definite()
     {
-        // Per §7.2.3.1 — auto-fill under an indefinite axis (= no
-        // declared height; width: auto in this case) defaults to 1
-        // pattern iteration.
+        // Per PR-#107 review F1 #2 — `minmax(100px, 200px)` has both
+        // sides definite; the count derivation uses the MAX (200) per
+        // spec, floored by the min (= no actual floor since 200 > 100).
+        // In a 600px container: floor(600 / 200) = 3 columns.
         var sink = new RecordingFragmentSink();
         var diag = new RecordingDiagnosticsSink();
         using var shaper = new SyntheticShaperResolver();
@@ -4167,10 +4168,126 @@ public sealed class GridLayouterTests
                 new TrackListRepeat(TrackRepeat.Create(
                     count: 0,
                     pattern: ImmutableArray.Create<TrackRepeatItem>(
+                        new TrackRepeatEntry(TrackEntry.ForMinMax(
+                            TrackEntry.ForLength(100.0),
+                            TrackEntry.ForLength(200.0))))))));
+        var grid = BuildGridContainerWithTemplates(rowsTrack, colsTrack);
+        SetExplicitWidth(grid, 600);
+
+        // Item at column 3 (0-based col 2). With 3 cols × 200px max
+        // each, col 2 starts at offset 400.
+        var item = BuildItemWithExplicitPlacement(row: 1, col: 3);
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper,
+            contentInlineSize: 600, contentBlockSize: 400);
+
+        Assert.Single(sink.Fragments);
+        // Cycle 4 ships minmax with maximize → tracks grow to 200px each.
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 400, blockOffset: 0,
+            inlineSize: 200, blockSize: 50);
+    }
+
+    [Fact]
+    public void Cycle7c_F1_minmax_uses_min_when_only_min_definite()
+    {
+        // Per PR-#107 review F1 #2 — `minmax(auto, 100px)` has min
+        // intrinsic and max definite; per spec use the definite side
+        // (max = 100). Per `minmax(100px, auto)` (max intrinsic, min
+        // definite), use the min for count derivation. This test
+        // covers the second variant — count comes from the 100px
+        // min floor.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = BuildLengthTrackList(new[] { 50.0 });
+        var colsTrack = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                new TrackListRepeat(TrackRepeat.Create(
+                    count: 0,
+                    pattern: ImmutableArray.Create<TrackRepeatItem>(
+                        new TrackRepeatEntry(TrackEntry.ForMinMax(
+                            TrackEntry.ForLength(100.0),
+                            TrackEntry.ForAuto())))))));
+        var grid = BuildGridContainerWithTemplates(rowsTrack, colsTrack);
+        SetExplicitWidth(grid, 350);
+
+        // Min-definite → count uses 100; floor(350/100) = 3 iterations.
+        var trailingItem = BuildItemWithExplicitPlacement(row: 1, col: 3);
+        grid.AppendChild(trailingItem);
+
+        RunGridLayouter(grid, sink, diag, shaper,
+            contentInlineSize: 350, contentBlockSize: 400);
+
+        Assert.Single(sink.Fragments);
+        // Col 3 = 0-based col 2; with min=100 the track sizes >= 100.
+        // The Maximize step may grow tracks to fill 350px; col 2 sits
+        // at offset 200 (= 2 × 100 base, since intrinsic-resolution
+        // produces 0 then equal-distribute via Maximize spreads
+        // leftover). Verify the offset is non-zero (= multiple cols).
+        Assert.True(sink.Fragments[0].InlineOffset >= 200,
+            $"Expected col 2 at offset ≥ 200; got {sink.Fragments[0].InlineOffset}");
+    }
+
+    [Fact]
+    public void Cycle7c_F1_percentage_resolves_against_container_extent()
+    {
+        // Per PR-#107 review F1 #3 — `repeat(auto-fill, 25%)` in a
+        // 400px container: 25% × 400 = 100; floor(400/100) = 4
+        // iterations.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = BuildLengthTrackList(new[] { 50.0 });
+        var colsTrack = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                new TrackListRepeat(TrackRepeat.Create(
+                    count: 0,
+                    pattern: ImmutableArray.Create<TrackRepeatItem>(
+                        new TrackRepeatEntry(TrackEntry.ForPercentage(25.0)))))));
+        var grid = BuildGridContainerWithTemplates(rowsTrack, colsTrack);
+        SetExplicitWidth(grid, 400);
+
+        // Item at col 4 (0-based col 3) — verifies 4 columns derived.
+        var item = BuildItemWithExplicitPlacement(row: 1, col: 4);
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper,
+            contentInlineSize: 400, contentBlockSize: 400);
+
+        Assert.Single(sink.Fragments);
+        // Item at column 4 (1-based) = col 3 (0-based) → derivation
+        // produced at least 4 iterations. (Cycle 4 % tracks still
+        // sized 0 by `LayoutGridPercentageTrackApproximated001`; this
+        // test verifies COUNT derivation succeeded, not the sized
+        // value.) The fragment lands successfully = no implicit-
+        // track-drop diagnostic.
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridImplicitTrackUnsupported001);
+    }
+
+    [Fact]
+    public void Cycle7c_F2_auto_fit_emits_approximation_diagnostic()
+    {
+        // Per PR-#107 review F2 #4 — auto-fit emits a one-shot
+        // `LAYOUT-GRID-AUTO-FIT-APPROXIMATED-001` warning so authors
+        // know the empty-track collapse pass is approximated.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = BuildLengthTrackList(new[] { 50.0 });
+        var colsTrack = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                new TrackListRepeat(TrackRepeat.Create(
+                    count: -1, // auto-fit
+                    pattern: ImmutableArray.Create<TrackRepeatItem>(
                         new TrackRepeatEntry(TrackEntry.ForLength(100.0)))))));
         var grid = BuildGridContainerWithTemplates(rowsTrack, colsTrack);
-        // No SetExplicitWidth → grid's width is indefinite. The grid
-        // layouter falls back to 1 iteration of the pattern.
+        SetExplicitWidth(grid, 350);
 
         var item = BuildAutoPlacedItem();
         grid.AppendChild(item);
@@ -4178,11 +4295,67 @@ public sealed class GridLayouterTests
         RunGridLayouter(grid, sink, diag, shaper,
             contentInlineSize: 350, contentBlockSize: 400);
 
-        Assert.Single(sink.Fragments);
-        // 1 iteration → 1 column of 100px.
-        AssertFragmentEquals(sink, item,
-            inlineOffset: 0, blockOffset: 0,
-            inlineSize: 100, blockSize: 50);
+        Assert.Contains(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridAutoFitApproximated001);
+    }
+
+    [Fact]
+    public void Cycle7c_F2_auto_fill_does_not_emit_auto_fit_diagnostic()
+    {
+        // Per PR-#107 review F2 #4 — the diagnostic fires ONLY for
+        // auto-fit, not auto-fill.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = BuildLengthTrackList(new[] { 50.0 });
+        var colsTrack = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                new TrackListRepeat(TrackRepeat.Create(
+                    count: 0, // auto-fill
+                    pattern: ImmutableArray.Create<TrackRepeatItem>(
+                        new TrackRepeatEntry(TrackEntry.ForLength(100.0)))))));
+        var grid = BuildGridContainerWithTemplates(rowsTrack, colsTrack);
+        SetExplicitWidth(grid, 350);
+
+        var item = BuildAutoPlacedItem();
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper,
+            contentInlineSize: 350, contentBlockSize: 400);
+
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridAutoFitApproximated001);
+    }
+
+    [Fact]
+    public void Cycle7c_F2_global_truncation_cap_emits_diagnostic()
+    {
+        // Per PR-#107 review F2 #5 — `repeat(auto-fill, 1px)` in a
+        // huge container would derive > MaxExpandedTrackCount tracks;
+        // the global cap truncates + emits
+        // LayoutGridMaxExpandedTracksTruncated001.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = BuildLengthTrackList(new[] { 50.0 });
+        var colsTrack = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                new TrackListRepeat(TrackRepeat.Create(
+                    count: 0,
+                    pattern: ImmutableArray.Create<TrackRepeatItem>(
+                        new TrackRepeatEntry(TrackEntry.ForLength(1.0)))))));
+        var grid = BuildGridContainerWithTemplates(rowsTrack, colsTrack);
+        // 100,000px container → 100,000 iterations of 1px would
+        // exceed TrackList.MaxExpandedTrackCount = 50,000.
+        SetExplicitWidth(grid, 100_000);
+
+        RunGridLayouter(grid, sink, diag, shaper,
+            contentInlineSize: 100_000, contentBlockSize: 400);
+
+        Assert.Contains(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridMaxExpandedTracksTruncated001);
     }
 
     [Fact]

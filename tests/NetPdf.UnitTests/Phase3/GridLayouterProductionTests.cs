@@ -1606,14 +1606,15 @@ public sealed class GridLayouterProductionTests
     // ====================================================================
 
     [Fact]
-    public async Task Cycle7c_production_repeat_auto_fill_indefinite_axis_falls_back_to_one_iteration()
+    public async Task Cycle7c_production_repeat_auto_fill_derives_count_from_layout_extent()
     {
-        // Per §7.2.3.1 — auto-fill under an indefinite axis (= grid
-        // has no explicit `width`) falls back to 1 pattern iteration.
-        // This is the production-side counterpart to the direct-
-        // construction test `Cycle7c_auto_fill_indefinite_axis_falls
-        // _back_to_single_iteration`. Three items stack in the single
-        // 100px column (with row 0 + 2 implicit rows of 0 size).
+        // Per PR-#107 review F1 #1 — even when the grid has `width:
+        // auto` (= the Width slot is Keyword(auto) rather than a
+        // LengthPx), the BlockLayouter passes a FINITE content
+        // extent that the GridLayouter uses for auto-fill count
+        // derivation. The fragmentainer here is 600px so a
+        // `repeat(auto-fill, 100px)` yields 6 columns; three items
+        // fill cols 0/1/2 of row 0.
         const string html = """
             <!DOCTYPE html><html><head><style>
                 .grid {
@@ -1639,13 +1640,17 @@ public sealed class GridLayouterProductionTests
         Assert.NotNull(b);
         Assert.NotNull(c);
 
-        // Each item lands at the single 100px-wide column at offset 0.
-        // a at row 0; b/c land at implicit row 1/2 (= auto-sized 0).
+        // Each item lands at a separate 100px-wide column on row 0.
         Assert.Equal(100, a!.Value.InlineSize, precision: 3);
+        Assert.Equal(100, b!.Value.InlineSize, precision: 3);
+        Assert.Equal(100, c!.Value.InlineSize, precision: 3);
         Assert.Equal(0, a.Value.InlineOffset, precision: 3);
+        Assert.Equal(100, b.Value.InlineOffset, precision: 3);
+        Assert.Equal(200, c.Value.InlineOffset, precision: 3);
+        // All on the explicit row 0.
         Assert.Equal(0, a.Value.BlockOffset, precision: 3);
-        Assert.Equal(0, b!.Value.InlineOffset, precision: 3);
-        Assert.Equal(0, c!.Value.InlineOffset, precision: 3);
+        Assert.Equal(0, b.Value.BlockOffset, precision: 3);
+        Assert.Equal(0, c.Value.BlockOffset, precision: 3);
     }
 
     // ====================================================================

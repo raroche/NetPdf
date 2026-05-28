@@ -179,11 +179,11 @@ internal static class GridSizing
         // iteration counts + named lines inside auto-repeats agree.
         var rowNamedLines = BuildNamedLineMap(
             gridBox.Style.ReadGridTemplateRows(), gridAreas, isRow: true,
-            containerExtent: contentBlockSize, isAxisIndefinite: isBlockIndefinite,
+            containerExtent: contentBlockSize,
             ctx, cancellationToken);
         var colNamedLines = BuildNamedLineMap(
             gridBox.Style.ReadGridTemplateColumns(), gridAreas, isRow: false,
-            containerExtent: contentInlineSize, isAxisIndefinite: isInlineIndefinite,
+            containerExtent: contentInlineSize,
             ctx, cancellationToken);
 
         var placedItems = new List<PlacedItem>(gridBox.Children.Count);
@@ -353,6 +353,11 @@ internal static class GridSizing
         public bool EmittedFrIndefiniteDiagnostic { get; set; }
         public bool EmittedPercentageDiagnostic { get; set; }
         public bool EmittedTruncationDiagnostic { get; set; }
+        /// <summary>Per PR-#107 review F2 #4 — one-shot guard for the
+        /// auto-fit approximation diagnostic; mirrors the other
+        /// one-shot flags so the same diagnostic doesn't repeat per
+        /// item or per pass.</summary>
+        public bool EmittedAutoFitDiagnostic { get; set; }
         public SizingContext(EmitDiagnostic? emitter) { Emitter = emitter; }
         public void Emit(PaginateDiagnostic d) => Emitter?.Invoke(d);
     }
@@ -435,9 +440,11 @@ internal static class GridSizing
 
     /// <summary>Per Phase 3 Task 17 cycle 4 — expand <c>repeat(N, ...)</c>
     /// groups inline. Positive-count repeats unroll into N pattern
-    /// copies; <c>auto-fill</c> (count 0) and <c>auto-fit</c> (count
-    /// -1) remain as <see cref="TrackListRepeat"/> placeholders that
-    /// the classify pass treats as unsupported (cycle 7 ships those).
+    /// copies. Cycle 7c additionally expands <c>auto-fill</c>
+    /// (count 0) and <c>auto-fit</c> (count -1) repeats with the
+    /// container-derived iteration count from
+    /// <see cref="ComputeAutoRepeatIterations"/>; the container-aware
+    /// overload below is the entry point for that path.
     ///
     /// <para><b>DoS guard</b>: total expanded item count caps at
     /// <see cref="TrackList.MaxExpandedTrackCount"/>; on overflow the
@@ -459,43 +466,33 @@ internal static class GridSizing
         TrackList trackList, SizingContext ctx, CancellationToken ct)
     {
         // Per Phase 3 Task 18 cycle 7c — defer to the container-aware
-        // overload with no extent + indefinite-axis so auto-fill /
-        // auto-fit fall through to their cycle-4 placeholder behavior
-        // (= kept as TrackListRepeat). Callers with container geometry
+        // overload with extent 0 so auto-fill / auto-fit fall back to
+        // their 1-iteration default. Callers with container geometry
         // call the overload directly.
-        return ExpandTrackList(trackList, ctx, ct,
-            containerExtent: 0.0, isAxisIndefinite: true);
+        return ExpandTrackList(trackList, ctx, ct, containerExtent: 0.0);
     }
 
-    /// <summary>Per Phase 3 Task 18 cycle 7c — container-aware
-    /// expansion that derives the iteration count for
+    /// <summary>Per Phase 3 Task 18 cycle 7c + post-PR-#107 review —
+    /// container-aware expansion that derives the iteration count for
     /// <c>repeat(auto-fill, …)</c> / <c>repeat(auto-fit, …)</c> from
     /// the container extent per CSS Grid L1 §7.2.3.1.
     ///
-    /// <para><b>Algorithm</b>:
-    /// <list type="number">
-    ///   <item>Compute <c>otherSize</c> = sum of FIXED sizes from the
-    ///   non-auto-repeat items in <see cref="TrackList.Items"/>
-    ///   (= length tracks, explicit-count repeats' length tracks, and
-    ///   minmax min-floors).</item>
-    ///   <item>Compute <c>patternSize</c> = sum of the auto-repeat
-    ///   pattern's fixed sizes.</item>
-    ///   <item><c>iterations = floor((containerExtent - otherSize) /
-    ///   patternSize)</c>, clamped to ≥ 1 and to
-    ///   <see cref="MaxImplicitTracksPerAxis"/>.</item>
-    ///   <item>Indefinite axis OR <c>patternSize ≤ 0</c> → 1
-    ///   iteration (= the spec's fallback).</item>
-    /// </list></para>
+    /// <para><b>Per PR-#107 review F2 #4</b>: emits a one-shot
+    /// <see cref="PaginateDiagnosticCodes.LayoutGridAutoFitApproximated001"/>
+    /// when an auto-fit repeat is encountered; until the empty-track
+    /// collapse pass lands, auto-fit and auto-fill produce identical
+    /// expansions (= the deferral is visible at runtime, not just in
+    /// the docs).</para>
     ///
-    /// <para><b>auto-fill vs auto-fit</b>: identical expansion in
-    /// cycle 7c. Per §7.2.3.1, auto-fit additionally collapses empty
-    /// tracks (= those with no placed items) to 0 size AFTER
-    /// placement; that collapse pass is tracked under
-    /// <c>grid-auto-fit-collapse-empty-tracks-deferral</c>. Cycle 7c
-    /// treats both as auto-fill so the pattern at least renders.</para></summary>
+    /// <para><b>Per PR-#107 review F2 #5</b>: per-axis truncation
+    /// caps apply at the GLOBAL
+    /// <see cref="TrackList.MaxExpandedTrackCount"/> level only.
+    /// Hostile <c>repeat(auto-fill, 1px)</c> in a huge container hits
+    /// the global cap + emits
+    /// <see cref="PaginateDiagnosticCodes.LayoutGridMaxExpandedTracksTruncated001"/>.</para></summary>
     private static List<TrackListItem> ExpandTrackList(
         TrackList trackList, SizingContext ctx, CancellationToken ct,
-        double containerExtent, bool isAxisIndefinite)
+        double containerExtent)
     {
         var expanded = new List<TrackListItem>(trackList.Items.Length);
         var truncated = false;
@@ -505,7 +502,19 @@ internal static class GridSizing
         // per track list; if multiple appear we use the cap for the
         // first and pass the rest through as 1 iteration.
         int autoIterations = ComputeAutoRepeatIterations(
-            trackList, containerExtent, isAxisIndefinite);
+            trackList, containerExtent);
+
+        // Per PR-#107 review F2 #4 — emit a one-shot auto-fit
+        // approximation diagnostic when the track list contains an
+        // auto-fit repeat (Count == -1).
+        foreach (var item in trackList.Items)
+        {
+            if (item is TrackListRepeat tr && tr.Repeat.Count == -1)
+            {
+                EmitAutoFitApproximatedDiagnostic(ctx);
+                break;
+            }
+        }
 
         foreach (var item in trackList.Items)
         {
@@ -584,15 +593,37 @@ internal static class GridSizing
         return false;
     }
 
-    /// <summary>Per Phase 3 Task 18 cycle 7c + CSS Grid L1 §7.2.3.1 —
-    /// derive the iteration count for the FIRST auto-fill / auto-fit
-    /// repeat in <paramref name="trackList"/>. Returns 1 when the
-    /// axis is indefinite or when the pattern has no fixed size
-    /// (= the spec's fallback when count cannot be derived).</summary>
+    /// <summary>Per Phase 3 Task 18 cycle 7c + post-PR-#107 review
+    /// F1 #1 + F2 #5 + CSS Grid L1 §7.2.3.1 — derive the iteration
+    /// count for the FIRST auto-fill / auto-fit repeat in
+    /// <paramref name="trackList"/>.
+    ///
+    /// <para><b>Per PR-#107 review F1 #1</b>: the gating check is now
+    /// just <c>containerExtent</c> finite + positive. The cycle-7c
+    /// initial impl ALSO required <c>isAxisIndefinite == false</c>,
+    /// which gated the spec-correct behavior for block-level grids
+    /// with <c>width: auto</c> sitting in a definite containing
+    /// block (= BlockLayouter passes a finite content extent even
+    /// when the Width slot is Keyword). Dropping the slot-tag gate
+    /// lets those common cases derive the count from the actual
+    /// layout-time available extent.</para>
+    ///
+    /// <para><b>Per PR-#107 review F2 #5</b>: the per-axis
+    /// <see cref="MaxImplicitTracksPerAxis"/> cap is dropped here —
+    /// it's for placement-time implicit growth, not author-declared
+    /// auto-repeat output. The
+    /// <see cref="TrackList.MaxExpandedTrackCount"/> global cap +
+    /// <c>ExpandTrackList</c>'s truncation diagnostic catch hostile
+    /// inputs like <c>repeat(auto-fill, 1px)</c> in a huge container.</para>
+    ///
+    /// <para>Returns 1 when <paramref name="containerExtent"/> is
+    /// non-finite or non-positive OR the auto-repeat pattern has no
+    /// fixed size (= the spec's fallback when count cannot be
+    /// derived). Returns the spec-derived count otherwise; the outer
+    /// expansion loop enforces the global cap.</para></summary>
     private static int ComputeAutoRepeatIterations(
-        TrackList trackList, double containerExtent, bool isAxisIndefinite)
+        TrackList trackList, double containerExtent)
     {
-        if (isAxisIndefinite) return 1;
         if (!double.IsFinite(containerExtent) || containerExtent <= 0)
             return 1;
 
@@ -606,14 +637,15 @@ internal static class GridSizing
             switch (item)
             {
                 case TrackListEntry te:
-                    otherSize += GetTrackFixedSize(te.Entry);
+                    otherSize += GetTrackFixedSize(te.Entry, containerExtent);
                     break;
                 case TrackListRepeat tr when tr.Repeat.Count > 0:
                     foreach (var p in tr.Repeat.Pattern)
                     {
                         if (p is TrackRepeatEntry re)
                         {
-                            otherSize += tr.Repeat.Count * GetTrackFixedSize(re.Entry);
+                            otherSize += tr.Repeat.Count
+                                * GetTrackFixedSize(re.Entry, containerExtent);
                         }
                     }
                     break;
@@ -631,7 +663,7 @@ internal static class GridSizing
         {
             if (p is TrackRepeatEntry re)
             {
-                patternSize += GetTrackFixedSize(re.Entry);
+                patternSize += GetTrackFixedSize(re.Entry, containerExtent);
             }
         }
         if (patternSize <= 0) return 1;
@@ -640,31 +672,78 @@ internal static class GridSizing
         if (available < patternSize) return 1;
         var iterations = (int)Math.Floor(available / patternSize);
         if (iterations < 1) iterations = 1;
-        if (iterations > MaxImplicitTracksPerAxis)
-            iterations = MaxImplicitTracksPerAxis;
         return iterations;
     }
 
-    /// <summary>Per Phase 3 Task 18 cycle 7c — fixed (= "definite
-    /// pixel") size of a track entry for the purposes of the
-    /// auto-fill / auto-fit count derivation. Length tracks contribute
-    /// their declared px; <c>minmax(min, max)</c> contributes its
-    /// min-floor when that min is a fixed length; everything else
-    /// (fr, auto, min/max-content, percentage, fit-content) is 0 —
-    /// indefinite for count derivation per §7.2.3.1.</summary>
-    private static double GetTrackFixedSize(TrackEntry entry)
+    /// <summary>Per Phase 3 Task 18 cycle 7c + post-PR-#107 review
+    /// F1 #2 + #3 — fixed (= "definite pixel") size of a track entry
+    /// for auto-fill / auto-fit count derivation per CSS Grid L1
+    /// §7.2.3.1. The spec says: "treating each track as its max track
+    /// sizing function if that is definite or as its minimum track
+    /// sizing function otherwise". Percentage track sizes resolve
+    /// against <paramref name="containerExtent"/> when finite.
+    ///
+    /// <para><b>Per-kind rules</b>:</para>
+    /// <list type="bullet">
+    ///   <item><b>Length px</b>: use as-is.</item>
+    ///   <item><b>Length %</b>: <c>(% / 100) × containerExtent</c>
+    ///   (= the cycle-4 percentage-deferred path is bypassed for
+    ///   auto-fill count purposes since spec REQUIRES container
+    ///   extent for count derivation).</item>
+    ///   <item><b>MinMax</b>: max if definite (length); else min if
+    ///   definite; else 0. When both are definite, <c>max(max, min)</c>
+    ///   (= max floored by min per §7.2.4 — max cannot resolve below
+    ///   min).</item>
+    ///   <item><b>fr / auto / min-content / max-content / fit-
+    ///   content</b>: 0 (= indefinite for count derivation).</item>
+    /// </list></summary>
+    private static double GetTrackFixedSize(TrackEntry entry, double containerExtent)
     {
         switch (entry.Kind)
         {
             case GridTrackKind.Length when !entry.IsPercentage:
                 return entry.LengthPx;
-            case GridTrackKind.MinMax
-                when entry.MinSubKind == GridTrackKind.Length
-                    && !entry.MinSubIsPercentage:
-                return entry.MinSubLengthPx;
+            case GridTrackKind.Length when entry.IsPercentage:
+                return ResolvePercentage(entry.LengthPx, containerExtent);
+            case GridTrackKind.MinMax:
+                var maxDefinite = entry.MaxSubKind == GridTrackKind.Length;
+                var minDefinite = entry.MinSubKind == GridTrackKind.Length;
+                if (maxDefinite && minDefinite)
+                {
+                    var maxPx = entry.MaxSubIsPercentage
+                        ? ResolvePercentage(entry.MaxSubLengthPx, containerExtent)
+                        : entry.MaxSubLengthPx;
+                    var minPx = entry.MinSubIsPercentage
+                        ? ResolvePercentage(entry.MinSubLengthPx, containerExtent)
+                        : entry.MinSubLengthPx;
+                    return Math.Max(maxPx, minPx);
+                }
+                if (maxDefinite)
+                {
+                    return entry.MaxSubIsPercentage
+                        ? ResolvePercentage(entry.MaxSubLengthPx, containerExtent)
+                        : entry.MaxSubLengthPx;
+                }
+                if (minDefinite)
+                {
+                    return entry.MinSubIsPercentage
+                        ? ResolvePercentage(entry.MinSubLengthPx, containerExtent)
+                        : entry.MinSubLengthPx;
+                }
+                return 0;
             default:
                 return 0;
         }
+    }
+
+    /// <summary>Per PR-#107 review F1 #3 — resolve a percentage track
+    /// size against the container extent. Returns 0 when the extent
+    /// is non-finite or non-positive (= the auto-fill caller will
+    /// fall back to 1 iteration via its zero-pattern-size check).</summary>
+    private static double ResolvePercentage(double percent, double containerExtent)
+    {
+        if (!double.IsFinite(containerExtent) || containerExtent <= 0) return 0;
+        return percent * containerExtent / 100.0;
     }
 
     private static void ResolveTrackSizes(
@@ -672,10 +751,15 @@ internal static class GridSizing
         List<TrackSizingInfo> infoOut, SizingContext ctx,
         CancellationToken ct)
     {
-        // Per Phase 3 Task 18 cycle 7c — pass container extent so
-        // auto-fill / auto-fit derive their iteration count.
+        // Per Phase 3 Task 18 cycle 7c + post-PR-#107 review F1 #1 —
+        // pass container extent so auto-fill / auto-fit derive their
+        // iteration count. The cycle-7c initial impl also gated on
+        // `isAxisIndefinite`, which prevented spec-correct derivation
+        // for block-level grids with `width: auto` in a definite
+        // containing block (= BlockLayouter passes finite content
+        // size even when the Width slot is Keyword). Dropped.
         var expanded = ExpandTrackList(
-            trackList, ctx, ct, containerExtent, isAxisIndefinite);
+            trackList, ctx, ct, containerExtent);
         foreach (var item in expanded)
         {
             if (item is TrackListEntry entry)
@@ -2080,14 +2164,14 @@ internal static class GridSizing
     /// <see cref="CancellationToken"/> contract. Pre-fix this code
     /// duplicated the repeat handler without cancellation checks.</para>
     ///
-    /// <para><b>Still deferred to cycle 7c+</b>: <c>repeat(auto-fill,
-    /// …)</c> / <c>repeat(auto-fit, …)</c> expansion is layout-time
-    /// dynamic (= container-size dependent); named lines inside those
-    /// repeats remain unresolved. Tracked under
-    /// `grid-implicit-named-area-and-occurrence-syntax-deferral`.</para></summary>
+    /// <para><b>Per Phase 3 Task 18 cycle 7c</b>: auto-fill / auto-fit
+    /// repeats are now expanded with the container-aware iteration
+    /// count, so named lines inside those repeats land at line numbers
+    /// matching the actual track positions. The cycle-7b limitation
+    /// is gone.</para></summary>
     private static Dictionary<string, List<int>> BuildNamedLineMap(
         TrackList trackList, GridTemplateAreas areas, bool isRow,
-        double containerExtent, bool isAxisIndefinite,
+        double containerExtent,
         SizingContext ctx, CancellationToken cancellationToken)
     {
         var map = new Dictionary<string, List<int>>(StringComparer.Ordinal);
@@ -2097,8 +2181,7 @@ internal static class GridSizing
         // names inside auto-repeats land at line numbers matching the
         // actual track positions).
         var expanded = ExpandTrackList(
-            trackList, ctx, cancellationToken,
-            containerExtent, isAxisIndefinite);
+            trackList, ctx, cancellationToken, containerExtent);
         int currentLine = 1;
         foreach (var item in expanded)
         {
@@ -2111,9 +2194,11 @@ internal static class GridSizing
                 case TrackListEntry:
                     currentLine++;
                     break;
-                // TrackListRepeat with auto-fill/auto-fit stays as-is;
-                // ExpandTrackList passes them through. Names inside
-                // those repeats remain unresolved (= cycle 7c scope).
+                // TrackListRepeat — handled by ExpandTrackList, which
+                // unrolls positive-count + auto-fill / auto-fit repeats
+                // inline so any TrackRepeatNamedLine entries surface as
+                // TrackListNamedLine items in the expanded list (=
+                // captured by the case above).
             }
         }
 
@@ -2516,11 +2601,11 @@ internal static class GridSizing
                 + "intrinsic auto / min-content / max-content via the "
                 + "L19 approximation + minmax() with intrinsic-aware "
                 + "base/growth + fit-content(limit) per §7.2.2 + "
-                + "repeat(<integer>, ...) expansion; auto-fill / "
-                + "auto-fit / percentage tracks + named-line lookup "
-                + "are cycle 5-7 scope). The track contributes 0 px "
-                + "to the track sum or truncates at the MaxExpanded "
-                + "cap.",
+                + "repeat(<integer>, ...) expansion; cycle 7c ships "
+                + "repeat(auto-fill, ...) / repeat(auto-fit, ...) "
+                + "with container-derived count). The track "
+                + "contributes 0 px to the track sum or truncates at "
+                + "the MaxExpanded cap.",
             Severity: PaginateDiagnosticSeverity.Warning));
     }
 
@@ -2561,6 +2646,33 @@ internal static class GridSizing
                 + "unbounded memory allocation from hostile CSS like "
                 + "repeat(10000, 1px 1fr 1px 1fr 1fr 1px). Items placed "
                 + "at indices in the truncated tail are silently dropped.",
+            Severity: PaginateDiagnosticSeverity.Warning));
+    }
+
+    /// <summary>Per PR-#107 review F2 #4 — emit a one-shot
+    /// `LAYOUT-GRID-AUTO-FIT-APPROXIMATED-001` warning when the
+    /// track list uses <c>repeat(auto-fit, …)</c>. The diagnostic
+    /// surfaces the cycle-7c approximation (= auto-fit expands
+    /// identically to auto-fill; the post-placement empty-track
+    /// collapse pass is tracked under
+    /// `grid-auto-fit-collapse-empty-tracks-deferral`).</summary>
+    private static void EmitAutoFitApproximatedDiagnostic(SizingContext ctx)
+    {
+        if (ctx.EmittedAutoFitDiagnostic) return;
+        ctx.EmittedAutoFitDiagnostic = true;
+        ctx.Emit(new PaginateDiagnostic(
+            Code: PaginateDiagnosticCodes.LayoutGridAutoFitApproximated001,
+            Message: "Grid uses repeat(auto-fit, …). Cycle 7c expands "
+                + "auto-fit IDENTICALLY to auto-fill; per CSS Grid L1 "
+                + "§7.2.3.1 auto-fit additionally collapses empty "
+                + "tracks (= those with no placed items) to 0 size "
+                + "AFTER placement. That post-placement collapse is "
+                + "deferred under "
+                + "`grid-auto-fit-collapse-empty-tracks-deferral`. "
+                + "Layouts that rely on the difference between auto-fit "
+                + "and auto-fill (= compacted vs. fixed columns when "
+                + "the item count is less than the derived track count) "
+                + "render identically until the deferral is picked up.",
             Severity: PaginateDiagnosticSeverity.Warning));
     }
 

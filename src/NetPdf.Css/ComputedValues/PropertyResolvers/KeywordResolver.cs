@@ -208,6 +208,13 @@ internal static class KeywordResolver
         // out-of-scope for cycle 1).
         b[PropertyId.FontStyle] = T("normal", "italic", "oblique");
 
+        // grid-auto-flow — CSS Grid L1 §7.7. Phase 3 Task 18 cycle 6
+        // ships single-keyword `row` / `column` (the fill-direction for
+        // sparse auto-placement). The `dense` modifier (= backtracking
+        // placement that fills earlier holes) is cycle 7 scope; combined
+        // forms `row dense` / `column dense` are likewise cycle 7.
+        b[PropertyId.GridAutoFlow] = T("row", "column");
+
         // list-style-type — CSS Lists 3 §7.1 (subset of named counter-styles
         // shipped in cycle 1; full @counter-style support is post-v1).
         b[PropertyId.ListStyleType] = T("none", "disc", "circle", "square",

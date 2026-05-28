@@ -174,26 +174,63 @@ internal static class GridSizing
 
         var rowCount = rowInfos.Count;
         var colCount = colInfos.Count;
-        var occupancy = new bool[rowCount, colCount];
 
-        // Gather grid items + classify placement.
+        // Gather grid items + classify placement. Per Phase 3 Task 18
+        // cycle 6, the placement spec carries the per-axis span; the
+        // initial PlacedItem.RowSpan / ColSpan mirror RowSpec.Span /
+        // ColSpec.Span so the layouter's emission loop can size
+        // multi-cell rectangles without re-reading the CSS values.
         var placedItems = new List<PlacedItem>(gridBox.Children.Count);
         foreach (var child in gridBox.Children)
         {
             if (!IsGridItem(child)) continue;
-            CheckEndLineForSpanDiagnostic(child.Style, isRow: true, ctx);
-            CheckEndLineForSpanDiagnostic(child.Style, isRow: false, ctx);
+            var rowSpec = ReadPlacement(child.Style, isRow: true, ctx);
+            var colSpec = ReadPlacement(child.Style, isRow: false, ctx);
             placedItems.Add(new PlacedItem
             {
                 Box = child,
-                RowSpec = ReadPlacement(child.Style, isRow: true, ctx),
-                ColSpec = ReadPlacement(child.Style, isRow: false, ctx),
+                RowSpec = rowSpec,
+                ColSpec = colSpec,
                 Row = -1,
                 Col = -1,
+                RowSpan = rowSpec.Span,
+                ColSpan = colSpec.Span,
             });
         }
 
-        RunPlacement(placedItems, occupancy, rowCount, colCount, ctx, cancellationToken);
+        // Per Phase 3 Task 18 cycle 6 — placement may extend the grid
+        // with implicit tracks (per CSS Grid §7.4). The placement
+        // service consumes grid-auto-rows / grid-auto-columns /
+        // grid-auto-flow to grow the track lists in-place; rowInfos /
+        // colInfos may have additional entries appended after the
+        // call. Returns the FINAL grid extent.
+        var gridAutoRows = gridBox.Style.ReadGridAutoRows();
+        var gridAutoColumns = gridBox.Style.ReadGridAutoColumns();
+        var gridAutoFlow = gridBox.Style.ReadGridAutoFlow();
+        var grownOccupancy = RunPlacementWithSpans(
+            placedItems, rowInfos, colInfos,
+            gridAutoRows, gridAutoColumns, gridAutoFlow,
+            ctx, cancellationToken);
+        // Per-axis growth may have re-shaped the fr distribution
+        // (flexFactorSum changes when implicit tracks appended fr ones,
+        // and the leftover space depends on the now-larger non-flex
+        // base sum). Re-resolve fr for both axes if the grid grew.
+        if (rowInfos.Count > rowCount)
+        {
+            ResolveFrTracks(rowInfos, contentBlockSize, ctx, cancellationToken);
+        }
+        if (colInfos.Count > colCount)
+        {
+            ResolveFrTracks(colInfos, contentInlineSize, ctx, cancellationToken);
+        }
+        // Refresh rowCount / colCount after potential growth. The
+        // occupancy returned by RunPlacementWithSpans is dimensioned
+        // to the final size; intrinsic resolution below indexes via
+        // (PlacedItem.Row, PlacedItem.RowSpan) so the absolute counts
+        // are only used by downstream geometry.
+        rowCount = rowInfos.Count;
+        colCount = colInfos.Count;
+        _ = grownOccupancy;
 
         // Intrinsic resolution from placed items.
         var rowIntrinsicChanged = ResolveIntrinsicTracks(
@@ -1010,10 +1047,30 @@ internal static class GridSizing
             foreach (var item in placedItems)
             {
                 if (item.Row < 0 || item.Col < 0) continue;
-                var matchesTrack = isRowAxis ? (item.Row == i) : (item.Col == i);
+                // Per Phase 3 Task 18 cycle 6 — check whether track i
+                // is in the item's rectangle. For spanning items,
+                // multiple tracks match the same item.
+                var itemSpan = isRowAxis
+                    ? Math.Max(1, item.RowSpan)
+                    : Math.Max(1, item.ColSpan);
+                var start = isRowAxis ? item.Row : item.Col;
+                var matchesTrack = i >= start && i < start + itemSpan;
                 if (!matchesTrack) continue;
-                var contribution = ItemOuterContribution(item.Box, isRowAxis);
-                if (contribution > maxContribution) maxContribution = contribution;
+                // Cycle 6a per-track contribution from a spanning item:
+                // equal-share distribution (= contribution / span).
+                // The spec-strict §11.5.1 step 3 algorithm subtracts
+                // already-resolved length-track contributions then
+                // distributes the remainder across intrinsic tracks
+                // proportionally; that's tracked as
+                // `grid-spanning-item-intrinsic-distribution-deferral`.
+                var rawContribution = ItemOuterContribution(item.Box, isRowAxis);
+                var perTrackContribution = itemSpan > 1
+                    ? rawContribution / itemSpan
+                    : rawContribution;
+                if (perTrackContribution > maxContribution)
+                {
+                    maxContribution = perTrackContribution;
+                }
             }
 
             if (maxContribution <= 0) continue;
@@ -1143,15 +1200,63 @@ internal static class GridSizing
     }
 
     // =====================================================================
-    //  Placement (CSS Grid §8.5 4-pass algorithm)
+    //  Placement (CSS Grid §8.5 4-pass algorithm with span + implicit
+    //  tracks + auto-flow direction, per Phase 3 Task 18 cycle 6)
     // =====================================================================
 
-    private static void RunPlacement(
-        List<PlacedItem> placedItems, bool[,] occupancy,
-        int rowCount, int colCount, SizingContext ctx,
+    /// <summary>Per Phase 3 Task 18 cycle 6 — extended placement service
+    /// that handles span rectangles, generates implicit tracks per
+    /// CSS Grid §7.4, and honors <c>grid-auto-flow: row | column</c>.
+    ///
+    /// <para><b>Algorithm</b> (mirrors the §8.5 4-pass shape; the
+    /// occupancy grid is a <see cref="GrowableOccupancy"/> that expands
+    /// when an item's placement requests a track past the current
+    /// extent):</para>
+    /// <list type="number">
+    ///   <item><b>Pass 1 — both definite</b>: an item with explicit
+    ///   row + column placement marks a rectangle
+    ///   <c>[rowStart, rowStart+rowSpan) × [colStart, colStart+colSpan)</c>
+    ///   as occupied. If the requested rectangle extends past the
+    ///   current grid extent, the occupancy + matching infos list
+    ///   grow via <see cref="AppendImplicitTracks"/>.</item>
+    ///   <item><b>Pass 2 — row-locked</b>: definite row, auto column.
+    ///   Find the first column run of <c>colSpan</c> free cells in the
+    ///   row.</item>
+    ///   <item><b>Pass 3 — col-locked</b>: definite column, auto row.
+    ///   Find the first row run of <c>rowSpan</c> free cells in the
+    ///   column.</item>
+    ///   <item><b>Pass 4 — both auto</b>: sparse cursor walks looking
+    ///   for the next free rectangle of
+    ///   <c>rowSpan × colSpan</c>. Walking direction is row-major
+    ///   when <c>grid-auto-flow: row</c> (the default) and column-
+    ///   major when <c>grid-auto-flow: column</c>.</item>
+    /// </list>
+    ///
+    /// <para>The returned occupancy is dimensioned to the final grid
+    /// extent (= explicit + implicit). Callers use it only for
+    /// diagnostic purposes — the per-item placement lives in
+    /// <see cref="PlacedItem.Row"/> / <see cref="PlacedItem.Col"/> +
+    /// <see cref="PlacedItem.RowSpan"/> / <see cref="PlacedItem.ColSpan"/>.</para>
+    ///
+    /// <para><b>Cycle 6a known gap — atomic-to-row-span pagination</b>:
+    /// see <c>docs/deferrals.md#grid-row-span-atomic-pagination-deferral</c>.
+    /// A spanning item whose last row would land on a later page
+    /// currently emits with its rectangle straddling the page break
+    /// (rendered fragment overflows the page edge); cycle 6b ships
+    /// the atomic-to-span rewind contract.</para></summary>
+    private static GrowableOccupancy RunPlacementWithSpans(
+        List<PlacedItem> placedItems,
+        List<TrackSizingInfo> rowInfos,
+        List<TrackSizingInfo> colInfos,
+        TrackList gridAutoRows,
+        TrackList gridAutoColumns,
+        GridAutoFlowValue gridAutoFlow,
+        SizingContext ctx,
         CancellationToken cancellationToken)
     {
-        // Pass 1 — both explicit.
+        var occupancy = new GrowableOccupancy(rowInfos.Count, colInfos.Count);
+
+        // Pass 1 — both definite. Mark rectangles + grow tracks.
         for (var i = 0; i < placedItems.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -1161,21 +1266,43 @@ internal static class GridSizing
             {
                 continue;
             }
-            var rowZero = ResolveDefiniteToZeroBased(item.RowSpec.Line, rowCount);
-            var colZero = ResolveDefiniteToZeroBased(item.ColSpec.Line, colCount);
-            if (rowZero < 0 || rowZero >= rowCount
-                || colZero < 0 || colZero >= colCount)
+
+            var rowZero = ResolveDefiniteToZeroBased(
+                item.RowSpec.Line, rowInfos.Count);
+            var colZero = ResolveDefiniteToZeroBased(
+                item.ColSpec.Line, colInfos.Count);
+            if (rowZero < 0 || colZero < 0)
             {
+                // Negative resolved index (= line number references a
+                // line before line 1). Cycle 6a doesn't generate
+                // implicit tracks at the start; degenerate to a
+                // diagnostic + drop the item.
                 EmitImplicitTrackDiagnostic(ctx, item.Box);
                 continue;
             }
+
+            var rowSpan = Math.Max(1, item.RowSpec.Span);
+            var colSpan = Math.Max(1, item.ColSpec.Span);
+            var rowEndExclusive = rowZero + rowSpan;
+            var colEndExclusive = colZero + colSpan;
+
+            // Grow the grid with implicit tracks if the item extends
+            // past the current extent.
+            GrowRowsIfNeeded(rowInfos, occupancy, rowEndExclusive,
+                gridAutoRows, ctx);
+            GrowColumnsIfNeeded(colInfos, occupancy, colEndExclusive,
+                gridAutoColumns, ctx);
+
             item.Row = rowZero;
             item.Col = colZero;
-            occupancy[rowZero, colZero] = true;
+            item.RowSpan = rowSpan;
+            item.ColSpan = colSpan;
+            occupancy.MarkRectangle(rowZero, colZero, rowSpan, colSpan);
             placedItems[i] = item;
         }
 
-        // Pass 2 — row-locked (definite row, auto col).
+        // Pass 2 — definite row, auto column. Find the first column
+        // run of colSpan free cells in the row.
         for (var i = 0; i < placedItems.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -1186,25 +1313,44 @@ internal static class GridSizing
                 continue;
             }
             if (item.Row >= 0) continue;
-            var rowZero = ResolveDefiniteToZeroBased(item.RowSpec.Line, rowCount);
-            if (rowZero < 0 || rowZero >= rowCount)
+
+            var rowZero = ResolveDefiniteToZeroBased(
+                item.RowSpec.Line, rowInfos.Count);
+            if (rowZero < 0)
             {
                 EmitImplicitTrackDiagnostic(ctx, item.Box);
                 continue;
             }
-            var colZero = FindFirstFreeColumnInRow(occupancy, rowZero, colCount);
+            var rowSpan = Math.Max(1, item.RowSpec.Span);
+            var colSpan = Math.Max(1, item.ColSpec.Span);
+            GrowRowsIfNeeded(rowInfos, occupancy, rowZero + rowSpan,
+                gridAutoRows, ctx);
+
+            var colZero = FindFirstFreeColumnRunInRows(
+                occupancy, rowZero, rowSpan, colSpan);
             if (colZero < 0)
             {
-                EmitImplicitTrackDiagnostic(ctx, item.Box);
-                continue;
+                // No free run within current columns — grow via
+                // implicit columns.
+                colZero = occupancy.ColCount;
+                GrowColumnsIfNeeded(colInfos, occupancy, colZero + colSpan,
+                    gridAutoColumns, ctx);
             }
+
             item.Row = rowZero;
             item.Col = colZero;
-            occupancy[rowZero, colZero] = true;
+            item.RowSpan = rowSpan;
+            item.ColSpan = colSpan;
+            occupancy.MarkRectangle(rowZero, colZero, rowSpan, colSpan);
             placedItems[i] = item;
         }
 
-        // Pass 3 + 4 — col-locked + both-auto share a cursor (§8.5).
+        // Pass 3 + 4 — col-locked + both-auto share a cursor. Per
+        // grid-auto-flow: row → row-major (cursor advances column
+        // first, wraps to next row). grid-auto-flow: column →
+        // column-major (cursor advances row first, wraps to next
+        // column). Pass-3 (col-locked) is grouped here because both
+        // it and pass-4 walk the same cursor in the same direction.
         var cursorRow = 0;
         var cursorCol = 0;
         for (var i = 0; i < placedItems.Count; i++)
@@ -1216,62 +1362,172 @@ internal static class GridSizing
             if (item.RowSpec.Kind == PlacementKind.Definite
                 && item.ColSpec.Kind == PlacementKind.Auto)
             {
+                // Pass 2 already handled this above.
                 continue;
             }
+
+            var rowSpan = Math.Max(1, item.RowSpec.Span);
+            var colSpan = Math.Max(1, item.ColSpec.Span);
 
             if (item.RowSpec.Kind == PlacementKind.Auto
                 && item.ColSpec.Kind == PlacementKind.Definite)
             {
-                var colZero = ResolveDefiniteToZeroBased(item.ColSpec.Line, colCount);
-                if (colZero < 0 || colZero >= colCount)
+                var colZero = ResolveDefiniteToZeroBased(
+                    item.ColSpec.Line, colInfos.Count);
+                if (colZero < 0)
                 {
                     EmitImplicitTrackDiagnostic(ctx, item.Box);
                     continue;
                 }
-                var rowZero = FindFirstFreeRowInColumnFrom(
-                    occupancy, colZero, rowCount, startRow: cursorRow);
+                GrowColumnsIfNeeded(colInfos, occupancy, colZero + colSpan,
+                    gridAutoColumns, ctx);
+
+                var rowZero = FindFirstFreeRowRunInColumnsFrom(
+                    occupancy, colZero, colSpan, rowSpan,
+                    startRow: cursorRow);
                 if (rowZero < 0)
                 {
-                    EmitImplicitTrackDiagnostic(ctx, item.Box);
-                    continue;
+                    // Grow rows + place at the new bottom.
+                    rowZero = Math.Max(occupancy.RowCount, cursorRow);
+                    GrowRowsIfNeeded(rowInfos, occupancy, rowZero + rowSpan,
+                        gridAutoRows, ctx);
                 }
+
                 item.Row = rowZero;
                 item.Col = colZero;
-                occupancy[rowZero, colZero] = true;
+                item.RowSpan = rowSpan;
+                item.ColSpan = colSpan;
+                occupancy.MarkRectangle(rowZero, colZero, rowSpan, colSpan);
                 placedItems[i] = item;
                 continue;
             }
 
+            // Pass 4 — both auto. Walk the cursor for a free
+            // rowSpan×colSpan rectangle.
             if (item.RowSpec.Kind == PlacementKind.Auto
                 && item.ColSpec.Kind == PlacementKind.Auto)
             {
-                if (!TryFindNextSparseCell(
-                        occupancy, cursorRow, cursorCol, rowCount, colCount,
-                        out var foundRow, out var foundCol))
-                {
-                    EmitImplicitTrackDiagnostic(ctx, item.Box);
-                    continue;
-                }
+                var (foundRow, foundCol) = FindNextSparseRectangle(
+                    occupancy, cursorRow, cursorCol, rowSpan, colSpan,
+                    gridAutoFlow, rowInfos, colInfos,
+                    gridAutoRows, gridAutoColumns, ctx);
+
                 item.Row = foundRow;
                 item.Col = foundCol;
-                occupancy[foundRow, foundCol] = true;
+                item.RowSpan = rowSpan;
+                item.ColSpan = colSpan;
+                occupancy.MarkRectangle(foundRow, foundCol, rowSpan, colSpan);
                 placedItems[i] = item;
-                cursorRow = foundRow;
-                cursorCol = foundCol + 1;
-                if (cursorCol >= colCount)
+
+                // Advance the cursor past the placed rectangle.
+                if (gridAutoFlow == GridAutoFlowValue.Column)
                 {
-                    cursorRow++;
-                    cursorCol = 0;
+                    cursorRow = foundRow + rowSpan;
+                    cursorCol = foundCol;
+                    if (cursorRow >= occupancy.RowCount)
+                    {
+                        cursorRow = 0;
+                        cursorCol = foundCol + colSpan;
+                    }
+                }
+                else
+                {
+                    cursorCol = foundCol + colSpan;
+                    cursorRow = foundRow;
+                    if (cursorCol >= occupancy.ColCount)
+                    {
+                        cursorCol = 0;
+                        cursorRow = foundRow + rowSpan;
+                    }
                 }
                 continue;
             }
         }
+
+        return occupancy;
     }
 
     // =====================================================================
     //  Placement helpers
     // =====================================================================
 
+    /// <summary>Per Phase 3 Task 18 cycle 6 — a 2D occupancy grid that
+    /// can grow on either axis as implicit tracks are appended.
+    /// Backed by a single <see cref="List{T}"/> indexed row-major
+    /// (<c>data[row * colCount + col]</c>); growing rows is O(append),
+    /// growing columns requires re-shuffling existing rows.</summary>
+    internal sealed class GrowableOccupancy
+    {
+        private List<bool> _data;
+        public int RowCount { get; private set; }
+        public int ColCount { get; private set; }
+
+        public GrowableOccupancy(int initialRows, int initialCols)
+        {
+            RowCount = initialRows;
+            ColCount = initialCols;
+            _data = new List<bool>(Math.Max(1, initialRows * initialCols));
+            for (var i = 0; i < initialRows * initialCols; i++) _data.Add(false);
+        }
+
+        public bool IsOccupied(int row, int col)
+        {
+            if (row < 0 || row >= RowCount || col < 0 || col >= ColCount) return false;
+            return _data[row * ColCount + col];
+        }
+
+        public void MarkRectangle(int rowStart, int colStart, int rowSpan, int colSpan)
+        {
+            for (var r = rowStart; r < rowStart + rowSpan && r < RowCount; r++)
+            {
+                for (var c = colStart; c < colStart + colSpan && c < ColCount; c++)
+                {
+                    _data[r * ColCount + c] = true;
+                }
+            }
+        }
+
+        public void GrowRows(int newRowCount)
+        {
+            if (newRowCount <= RowCount) return;
+            var needed = (newRowCount - RowCount) * ColCount;
+            for (var i = 0; i < needed; i++) _data.Add(false);
+            RowCount = newRowCount;
+        }
+
+        public void GrowColumns(int newColCount)
+        {
+            if (newColCount <= ColCount) return;
+            // Need to re-pack: each existing row gets (newColCount - ColCount)
+            // false slots appended after its current ColCount-th slot.
+            var oldColCount = ColCount;
+            var newData = new List<bool>(RowCount * newColCount);
+            for (var r = 0; r < RowCount; r++)
+            {
+                for (var c = 0; c < oldColCount; c++)
+                {
+                    newData.Add(_data[r * oldColCount + c]);
+                }
+                for (var c = oldColCount; c < newColCount; c++)
+                {
+                    newData.Add(false);
+                }
+            }
+            _data = newData;
+            ColCount = newColCount;
+        }
+    }
+
+    /// <summary>Resolves a 1-based grid line number (possibly negative
+    /// per §8.3 for end-relative addressing) to a 0-based track index.
+    /// Returns -1 for invalid input (= line 0). Negative inputs resolve
+    /// against the explicit grid: <c>-1</c> = line <c>trackCount+1</c>,
+    /// <c>-2</c> = line <c>trackCount</c>, etc. The result may equal
+    /// <c>trackCount</c> (= an implicit-row index past the explicit
+    /// grid; cycle 6's placement service grows the grid to fit).
+    /// Negative line numbers that resolve to less than line 1 return a
+    /// negative track index — the caller drops the item with a
+    /// diagnostic since cycle 6a doesn't generate pre-implicit tracks.</summary>
     private static int ResolveDefiniteToZeroBased(int lineNumber, int trackCount)
     {
         if (lineNumber == 0) return -1;
@@ -1279,91 +1535,381 @@ internal static class GridSizing
         return trackCount + 1 + lineNumber;
     }
 
-    private static int FindFirstFreeColumnInRow(bool[,] occupancy, int row, int colCount)
+    /// <summary>Find the first column index C such that the rectangle
+    /// <c>[rowStart, rowStart+rowSpan) × [C, C+colSpan)</c> is fully
+    /// free within the occupancy. Returns -1 if no run fits within
+    /// the current column extent.</summary>
+    private static int FindFirstFreeColumnRunInRows(
+        GrowableOccupancy occupancy, int rowStart, int rowSpan, int colSpan)
     {
-        for (var c = 0; c < colCount; c++)
+        for (var c = 0; c + colSpan <= occupancy.ColCount; c++)
         {
-            if (!occupancy[row, c]) return c;
-        }
-        return -1;
-    }
-
-    private static int FindFirstFreeRowInColumnFrom(
-        bool[,] occupancy, int col, int rowCount, int startRow)
-    {
-        for (var r = startRow; r < rowCount; r++)
-        {
-            if (!occupancy[r, col]) return r;
-        }
-        return -1;
-    }
-
-    private static bool TryFindNextSparseCell(
-        bool[,] occupancy, int startRow, int startCol,
-        int rowCount, int colCount,
-        out int row, out int col)
-    {
-        if (startRow >= rowCount) { row = -1; col = -1; return false; }
-        var r = startRow;
-        var c = startCol;
-        while (r < rowCount)
-        {
-            while (c < colCount)
+            if (IsRectangleFree(occupancy, rowStart, c, rowSpan, colSpan))
             {
-                if (!occupancy[r, c]) { row = r; col = c; return true; }
+                return c;
+            }
+        }
+        return -1;
+    }
+
+    /// <summary>Find the first row index R ≥ <paramref name="startRow"/>
+    /// such that the rectangle <c>[R, R+rowSpan) × [colStart, colStart+colSpan)</c>
+    /// is fully free. Returns -1 if no run fits within the current
+    /// row extent.</summary>
+    private static int FindFirstFreeRowRunInColumnsFrom(
+        GrowableOccupancy occupancy, int colStart, int colSpan,
+        int rowSpan, int startRow)
+    {
+        for (var r = startRow; r + rowSpan <= occupancy.RowCount; r++)
+        {
+            if (IsRectangleFree(occupancy, r, colStart, rowSpan, colSpan))
+            {
+                return r;
+            }
+        }
+        return -1;
+    }
+
+    private static bool IsRectangleFree(
+        GrowableOccupancy occupancy, int rowStart, int colStart,
+        int rowSpan, int colSpan)
+    {
+        for (var r = rowStart; r < rowStart + rowSpan; r++)
+        {
+            for (var c = colStart; c < colStart + colSpan; c++)
+            {
+                if (occupancy.IsOccupied(r, c)) return false;
+            }
+        }
+        return true;
+    }
+
+    /// <summary>Per Phase 3 Task 18 cycle 6 — sparse-cursor walk for
+    /// the both-auto placement case, per CSS Grid §8.5.
+    ///
+    /// <para><b>Direction</b> per <paramref name="autoFlow"/>:</para>
+    /// <list type="bullet">
+    ///   <item><c>row</c> (default) — cursor advances column-first
+    ///   within each row; wraps to next row when column overflows.
+    ///   The IMPLICIT axis is rows: implicit rows are added (per
+    ///   <c>grid-auto-rows</c>) as the cursor advances past current
+    ///   extent. Column count is bounded by the explicit grid + any
+    ///   definite-column items that grew it.</item>
+    ///   <item><c>column</c> — cursor advances row-first within each
+    ///   column; wraps to next column when row overflows. The
+    ///   IMPLICIT axis is columns: implicit columns are added per
+    ///   <c>grid-auto-columns</c>; row count is bounded by the
+    ///   explicit grid.</item>
+    /// </list>
+    ///
+    /// <para><b>Degenerate spans</b>: if <paramref name="colSpan"/> in
+    /// row mode (or <paramref name="rowSpan"/> in column mode) exceeds
+    /// the current EXPLICIT-axis extent, the item is clamped to start
+    /// at line 1 of that axis (the rectangle may overflow the grid
+    /// visually); a diagnostic is not emitted here (the caller's
+    /// implicit-grid + intrinsic-sizing diagnostics surface the
+    /// situation).</para></summary>
+    private static (int Row, int Col) FindNextSparseRectangle(
+        GrowableOccupancy occupancy, int cursorRow, int cursorCol,
+        int rowSpan, int colSpan, GridAutoFlowValue autoFlow,
+        List<TrackSizingInfo> rowInfos, List<TrackSizingInfo> colInfos,
+        TrackList gridAutoRows, TrackList gridAutoColumns,
+        SizingContext ctx)
+    {
+        if (autoFlow == GridAutoFlowValue.Column)
+        {
+            // Column-major: cursor advances row-first within each
+            // column; implicit columns added as cursor walks past
+            // current extent. Row count clamped to explicit-axis.
+            if (rowSpan > occupancy.RowCount && occupancy.RowCount > 0)
+            {
+                // Item's row-span exceeds explicit rows; clamp start.
+                rowSpan = occupancy.RowCount;
+            }
+            var c = cursorCol;
+            var r = cursorRow;
+            // Cap on iterations to prevent runaway growth from hostile
+            // input. Spec terminates because each unfit advance grows
+            // implicit columns; cap mirrors TrackList.MaxExpandedTrackCount.
+            var maxAdvance = TrackList.MaxExpandedTrackCount;
+            for (var step = 0; step < maxAdvance; step++)
+            {
+                if (r + rowSpan > occupancy.RowCount)
+                {
+                    // Row would overflow the explicit-row extent
+                    // (column mode doesn't add implicit rows). Wrap
+                    // to next column.
+                    r = 0;
+                    c++;
+                    continue;
+                }
+                // Grow implicit columns if cursor reaches past current.
+                if (c + colSpan > occupancy.ColCount)
+                {
+                    GrowColumnsIfNeeded(colInfos, occupancy, c + colSpan,
+                        gridAutoColumns, ctx);
+                }
+                if (IsRectangleFree(occupancy, r, c, rowSpan, colSpan))
+                {
+                    return (r, c);
+                }
+                r++;
+            }
+            // Fallback (should not be reached given the cap is generous).
+            return (cursorRow, occupancy.ColCount);
+        }
+        else
+        {
+            // Row-major: cursor advances column-first within each row;
+            // implicit rows added as cursor walks past current extent.
+            // Column count clamped to explicit-axis.
+            if (colSpan > occupancy.ColCount && occupancy.ColCount > 0)
+            {
+                colSpan = occupancy.ColCount;
+            }
+            var r = cursorRow;
+            var c = cursorCol;
+            var maxAdvance = TrackList.MaxExpandedTrackCount;
+            for (var step = 0; step < maxAdvance; step++)
+            {
+                if (c + colSpan > occupancy.ColCount)
+                {
+                    // Column would overflow the explicit-column extent
+                    // (row mode doesn't add implicit columns). Wrap
+                    // to next row.
+                    c = 0;
+                    r++;
+                    continue;
+                }
+                // Grow implicit rows if cursor reaches past current.
+                if (r + rowSpan > occupancy.RowCount)
+                {
+                    GrowRowsIfNeeded(rowInfos, occupancy, r + rowSpan,
+                        gridAutoRows, ctx);
+                }
+                if (IsRectangleFree(occupancy, r, c, rowSpan, colSpan))
+                {
+                    return (r, c);
+                }
                 c++;
             }
-            c = 0;
-            r++;
+            return (occupancy.RowCount, cursorCol);
         }
-        row = -1; col = -1;
-        return false;
+    }
+
+    /// <summary>Per Phase 3 Task 18 cycle 6 + CSS Grid §7.4 — extend
+    /// <paramref name="rowInfos"/> with implicit row tracks sized per
+    /// <paramref name="gridAutoRows"/>, cycling the pattern as needed
+    /// to reach <paramref name="requiredCount"/> total tracks. No-op
+    /// when the existing count already satisfies the request.</summary>
+    private static void GrowRowsIfNeeded(
+        List<TrackSizingInfo> rowInfos, GrowableOccupancy occupancy,
+        int requiredCount, TrackList gridAutoRows, SizingContext ctx)
+    {
+        if (requiredCount <= rowInfos.Count) return;
+        AppendImplicitTracks(rowInfos, requiredCount - rowInfos.Count,
+            gridAutoRows, ctx);
+        occupancy.GrowRows(rowInfos.Count);
+    }
+
+    private static void GrowColumnsIfNeeded(
+        List<TrackSizingInfo> colInfos, GrowableOccupancy occupancy,
+        int requiredCount, TrackList gridAutoColumns, SizingContext ctx)
+    {
+        if (requiredCount <= colInfos.Count) return;
+        AppendImplicitTracks(colInfos, requiredCount - colInfos.Count,
+            gridAutoColumns, ctx);
+        occupancy.GrowColumns(colInfos.Count);
+    }
+
+    /// <summary>Per Phase 3 Task 18 cycle 6 — append
+    /// <paramref name="count"/> implicit tracks to
+    /// <paramref name="infos"/>, cycling through the
+    /// <paramref name="pattern"/> entries (= the <c>grid-auto-rows</c>
+    /// or <c>grid-auto-columns</c> AST). Per CSS Grid §7.4 the values
+    /// list cycles; an empty pattern (= reader returned an unexpected
+    /// shape) falls back to <see cref="GridTrackKind.Auto"/>.</summary>
+    private static void AppendImplicitTracks(
+        List<TrackSizingInfo> infos, int count, TrackList pattern,
+        SizingContext ctx)
+    {
+        // Collect just the track entries from the pattern (ignore any
+        // named-line items the parser may have preserved).
+        var entries = new List<TrackEntry>();
+        foreach (var item in pattern.Items)
+        {
+            if (item is TrackListEntry e) entries.Add(e.Entry);
+        }
+        // Defensive: if the pattern is empty (= reader returned the
+        // none / wrong-typed fallback), use a single Auto track.
+        if (entries.Count == 0)
+        {
+            entries.Add(TrackEntry.ForAuto());
+        }
+        // DoS guard: cap the total expanded track count.
+        for (var i = 0; i < count; i++)
+        {
+            if (infos.Count >= TrackList.MaxExpandedTrackCount)
+            {
+                EmitTruncationDiagnostic(ctx);
+                return;
+            }
+            var entry = entries[i % entries.Count];
+            infos.Add(ClassifyEntry(entry, ctx));
+        }
     }
 
     // =====================================================================
     //  Placement spec reading
     // =====================================================================
 
+    /// <summary>Per Phase 3 Task 17 cycle 1 + Task 18 cycle 6 — read
+    /// the four grid-line longhands for one axis and reduce them to a
+    /// single <see cref="PlacementSpec"/> (kind + start-line +
+    /// span). Cycle 6 added span handling per CSS Grid L1 §8.3.
+    ///
+    /// <para><b>Decision matrix</b> (named-line / negative-line edge
+    /// cases route to <see cref="EmitPlacementApproximatedAndFallToAuto"/>
+    /// — cycle 7 wires named lines):</para>
+    /// <list type="bullet">
+    ///   <item>(auto, auto) → Auto / span 1</item>
+    ///   <item>(span N, *) → Auto / span N (auto-placed N-span)</item>
+    ///   <item>(integer, auto) → Definite / span 1</item>
+    ///   <item>(integer, integer) → Definite / span = end - start (with
+    ///   §8.3 swap when end ≤ start)</item>
+    ///   <item>(integer, span N) → Definite / span N</item>
+    ///   <item>(auto, span N) → Auto / span N</item>
+    ///   <item>(auto, integer) → Definite at (end - 1) / span 1 (cycle
+    ///   6a simplification — the "auto-positioned but ending at line N"
+    ///   case is rare in practice + the spec's reverse-auto-placement
+    ///   algorithm is cycle 7 scope)</item>
+    /// </list></summary>
     private static PlacementSpec ReadPlacement(
         ComputedStyle style, bool isRow, SizingContext ctx)
     {
-        var value = isRow ? style.ReadGridRowStart() : style.ReadGridColumnStart();
-        return value.Kind switch
+        var start = isRow ? style.ReadGridRowStart() : style.ReadGridColumnStart();
+        var end = isRow ? style.ReadGridRowEnd() : style.ReadGridColumnEnd();
+
+        // (1) start: span N (= auto-positioned N-span)
+        if (start.Kind == GridLineKind.Span)
         {
-            GridLineKind.Auto => new PlacementSpec(PlacementKind.Auto, 0),
-            GridLineKind.LineNumber when value.NamedLine is null
-                => new PlacementSpec(PlacementKind.Definite, value.LineNumber),
-            _ => EmitPlacementApproximatedAndFallToAuto(ctx, value.Kind),
-        };
+            if (start.NamedLine is not null)
+            {
+                return EmitPlacementApproximatedAndFallToAuto(ctx,
+                    "span <named-line> (named lines are cycle-7 scope)");
+            }
+            // Per §8.3.1 — `span 0` normalizes to `span 1`.
+            var span = Math.Max(1, start.LineNumber);
+            return new PlacementSpec(PlacementKind.Auto, 0, span);
+        }
+
+        // (2) start: named-line — cycle 7 scope
+        if (start.Kind == GridLineKind.NamedLine
+            || (start.Kind == GridLineKind.LineNumber && start.NamedLine is not null))
+        {
+            return EmitPlacementApproximatedAndFallToAuto(ctx,
+                "named lines in grid-row-start / grid-column-start (cycle-7 scope)");
+        }
+
+        // (3) start: auto — let end drive
+        if (start.Kind == GridLineKind.Auto)
+        {
+            if (end.Kind == GridLineKind.Auto)
+            {
+                return new PlacementSpec(PlacementKind.Auto, 0, 1);
+            }
+            if (end.Kind == GridLineKind.Span)
+            {
+                if (end.NamedLine is not null)
+                {
+                    return EmitPlacementApproximatedAndFallToAuto(ctx,
+                        "span <named-line> in grid-*-end (cycle-7 scope)");
+                }
+                var span = Math.Max(1, end.LineNumber);
+                return new PlacementSpec(PlacementKind.Auto, 0, span);
+            }
+            if (end.Kind == GridLineKind.LineNumber
+                && end.NamedLine is null
+                && end.LineNumber > 0)
+            {
+                // Cycle 6a simplification: auto-start + definite-end =
+                // single cell at (end - 1). The spec's full reverse-
+                // auto-placement (= search backward from end for an open
+                // slot N rows tall) is cycle 7 scope.
+                return new PlacementSpec(
+                    PlacementKind.Definite, end.LineNumber - 1, 1);
+            }
+            return EmitPlacementApproximatedAndFallToAuto(ctx,
+                $"grid-*-start: auto / grid-*-end: {end.Kind} "
+                + "(negative-line / named-line in end — cycle-7 scope)");
+        }
+
+        // (4) start: integer line number (no named ident)
+        // (cases where start.Kind == LineNumber + NamedLine == null)
+        var startLine = start.LineNumber;
+
+        if (end.Kind == GridLineKind.Auto)
+        {
+            return new PlacementSpec(PlacementKind.Definite, startLine, 1);
+        }
+
+        if (end.Kind == GridLineKind.Span)
+        {
+            if (end.NamedLine is not null)
+            {
+                EmitPlacementApproximatedAndFallToAuto(ctx,
+                    "span <named-line> in grid-*-end — using start with span 1");
+                return new PlacementSpec(PlacementKind.Definite, startLine, 1);
+            }
+            var span = Math.Max(1, end.LineNumber);
+            return new PlacementSpec(PlacementKind.Definite, startLine, span);
+        }
+
+        if (end.Kind == GridLineKind.LineNumber && end.NamedLine is null)
+        {
+            // Both positive: span = end - start (swap if end ≤ start per §8.3).
+            if (startLine > 0 && end.LineNumber > 0)
+            {
+                if (end.LineNumber == startLine)
+                {
+                    // Zero-span via identical lines collapses to single
+                    // cell (per §8.3 a zero-span is equivalent to span 1
+                    // after normalization).
+                    return new PlacementSpec(PlacementKind.Definite, startLine, 1);
+                }
+                if (end.LineNumber < startLine)
+                {
+                    var swapStart = end.LineNumber;
+                    var swapEnd = startLine;
+                    return new PlacementSpec(
+                        PlacementKind.Definite, swapStart, swapEnd - swapStart);
+                }
+                return new PlacementSpec(
+                    PlacementKind.Definite, startLine, end.LineNumber - startLine);
+            }
+            // Negative-line interactions are cycle-7 scope (need the
+            // final grid bounds to resolve).
+            return EmitPlacementApproximatedAndFallToAuto(ctx,
+                "negative line numbers in placement (cycle-7 scope)");
+        }
+
+        // end is named — cycle 7 scope.
+        EmitPlacementApproximatedAndFallToAuto(ctx,
+            "named line in grid-*-end — using start with span 1");
+        return new PlacementSpec(PlacementKind.Definite, startLine, 1);
     }
 
     private static PlacementSpec EmitPlacementApproximatedAndFallToAuto(
-        SizingContext ctx, GridLineKind kind)
+        SizingContext ctx, string reason)
     {
         ctx.Emit(new PaginateDiagnostic(
             Code: PaginateDiagnosticCodes.LayoutGridPlacementApproximated001,
-            Message: $"Grid item placement kind {kind} is not supported in "
-                + "cycle 1; falling back to auto-placement. Cycle 6 will "
-                + "ship span; cycle 7 will ship named lines + areas.",
+            Message: $"Grid item placement falls back to auto: {reason}. "
+                + "Cycle 6 ships <integer> + span placement + implicit "
+                + "tracks + grid-auto-flow row/column; cycle 7 will ship "
+                + "named lines + areas + dense.",
             Severity: PaginateDiagnosticSeverity.Warning));
-        return new PlacementSpec(PlacementKind.Auto, 0);
-    }
-
-    private static void CheckEndLineForSpanDiagnostic(
-        ComputedStyle style, bool isRow, SizingContext ctx)
-    {
-        var endValue = isRow ? style.ReadGridRowEnd() : style.ReadGridColumnEnd();
-        if (endValue.Kind != GridLineKind.Auto)
-        {
-            ctx.Emit(new PaginateDiagnostic(
-                Code: PaginateDiagnosticCodes.LayoutGridPlacementApproximated001,
-                Message: (isRow ? "grid-row-end" : "grid-column-end")
-                    + $" = {endValue.Kind} (non-default) — cycle 1 doesn't"
-                    + " support multi-cell spans, so the item is placed at"
-                    + " its start line as a single cell (= the authored"
-                    + " area is shrunk). Cycle 6 ships span semantics.",
-                Severity: PaginateDiagnosticSeverity.Warning));
-        }
+        return new PlacementSpec(PlacementKind.Auto, 0, 1);
     }
 
     // =====================================================================
@@ -1509,10 +2055,13 @@ internal static class GridSizing
     }
 }
 
-/// <summary>Per Phase 3 Task 17 cycle 1 — a single grid item's
-/// placement state. Cycle 3 review hardening moved this from
-/// <see cref="GridLayouter"/> to <see cref="GridSizing"/> so the
-/// shared sizing service can return placement info to consumers.</summary>
+/// <summary>Per Phase 3 Task 17 cycle 1 + Task 18 cycle 6 (span +
+/// implicit tracks) — a single grid item's placement state. Cycle 3
+/// review hardening moved this from <see cref="GridLayouter"/> to
+/// <see cref="GridSizing"/> so the shared sizing service can return
+/// placement info to consumers. Cycle 6 added the per-axis span
+/// fields so the layouter can emit fragments spanning the rectangle
+/// <c>[Row, Row+RowSpan) × [Col, Col+ColSpan)</c>.</summary>
 internal struct PlacedItem
 {
     public Box Box;
@@ -1524,10 +2073,30 @@ internal struct PlacedItem
     /// <summary>0-based final column index after placement. -1 when
     /// unplaced.</summary>
     public int Col;
+    /// <summary>Per Phase 3 Task 18 cycle 6 — number of rows occupied
+    /// (= 1 for single-cell items, &gt; 1 for span items). The item
+    /// occupies <c>[Row, Row+RowSpan)</c>.</summary>
+    public int RowSpan;
+    /// <summary>Per Phase 3 Task 18 cycle 6 — number of columns
+    /// occupied. The item occupies <c>[Col, Col+ColSpan)</c>.</summary>
+    public int ColSpan;
 }
 
-/// <summary>Per Phase 3 Task 17 cycle 1 — classified placement spec.</summary>
-internal readonly record struct PlacementSpec(PlacementKind Kind, int Line);
+/// <summary>Per Phase 3 Task 17 cycle 1 + Task 18 cycle 6 — a
+/// classified placement spec. <see cref="Span"/> is the multi-cell
+/// extent: 1 for single-cell items, &gt; 1 for spanning. Cycle 7 will
+/// add a separate named-line placement kind.
+///
+/// <para><b>Kind interpretation</b>:</para>
+/// <list type="bullet">
+///   <item><see cref="PlacementKind.Auto"/>: position is auto-determined
+///   by the sparse-cursor pass; <see cref="Span"/> may still be ≥ 1
+///   (= auto position + span N, e.g., <c>grid-row: span 2</c>).</item>
+///   <item><see cref="PlacementKind.Definite"/>: <see cref="Line"/> is
+///   the 1-based start line; <see cref="Span"/> is the extent.</item>
+/// </list></summary>
+internal readonly record struct PlacementSpec(
+    PlacementKind Kind, int Line, int Span = 1);
 
 internal enum PlacementKind : byte
 {

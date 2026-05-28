@@ -84,6 +84,79 @@ internal static class GridReaders
         return ReadGridLineProperty(style, PropertyId.GridColumnEnd);
     }
 
+    /// <summary>Per Phase 3 Task 18 cycle 6 — read the parsed
+    /// <c>grid-auto-rows</c> AST (= the per-row track-sizing pattern
+    /// the implicit-track generator cycles through when items extend
+    /// past the explicit grid). Returns a single-<see cref="GridTrackKind.Auto"/>
+    /// <see cref="TrackList"/> for the property default (<c>auto</c>);
+    /// any explicit declaration lands its AST in the side-table.
+    ///
+    /// <para><b>Cycling contract per §7.4:</b> when N implicit rows are
+    /// needed and the AST has M entries, row at implicit index i uses
+    /// entry <c>i mod M</c>. The empty-AST fallback (= unset / wrong-
+    /// typed slot) returns a single <see cref="GridTrackKind.Auto"/>
+    /// entry, matching the spec default.</para></summary>
+    public static TrackList ReadGridAutoRows(this ComputedStyle style)
+    {
+        return ReadTrackListPropertyWithAutoDefault(style, PropertyId.GridAutoRows);
+    }
+
+    /// <summary>Per Phase 3 Task 18 cycle 6 — read the parsed
+    /// <c>grid-auto-columns</c> AST. Same contract as
+    /// <see cref="ReadGridAutoRows"/>.</summary>
+    public static TrackList ReadGridAutoColumns(this ComputedStyle style)
+    {
+        return ReadTrackListPropertyWithAutoDefault(style, PropertyId.GridAutoColumns);
+    }
+
+    /// <summary>Per Phase 3 Task 18 cycle 6 — read the
+    /// <c>grid-auto-flow</c> keyword. Returns <see cref="GridAutoFlowValue.Row"/>
+    /// for the unset / default / wrong-typed path (= the CSS-spec
+    /// default per §7.7). Cycle 7 will add <c>dense</c> + the combined
+    /// <c>row dense</c> / <c>column dense</c> forms.</summary>
+    public static GridAutoFlowValue ReadGridAutoFlow(this ComputedStyle style)
+    {
+        var slot = style.Get(PropertyId.GridAutoFlow);
+        if (slot.Tag == ComputedSlotTag.Keyword)
+        {
+            // Keyword id 0 = "row" (the default + first in the
+            // KeywordResolver.Tables[GridAutoFlow] table).
+            // Keyword id 1 = "column".
+            return slot.AsKeyword() == 1
+                ? GridAutoFlowValue.Column
+                : GridAutoFlowValue.Row;
+        }
+        return GridAutoFlowValue.Row;
+    }
+
+    /// <summary>Helper that mirrors <see cref="ReadTrackListProperty"/>
+    /// but maps the missing-side-table-entry path to a single
+    /// <see cref="GridTrackKind.Auto"/> track (= the
+    /// <c>grid-auto-rows</c> / <c>grid-auto-columns</c> spec default)
+    /// instead of the empty <see cref="TrackList.None"/>. Without this,
+    /// implicit-track generation in <c>GridSizing</c> would have no
+    /// pattern to cycle through and items extending past the explicit
+    /// grid would still be dropped.</summary>
+    private static TrackList ReadTrackListPropertyWithAutoDefault(
+        ComputedStyle style, PropertyId id)
+    {
+        var slot = style.Get(id);
+        if (slot.Tag == ComputedSlotTag.SideTableIndex
+            && style.TryGetSideTablePayload<TrackList>(id, out var list))
+        {
+            return list;
+        }
+        return SingleAutoTrack;
+    }
+
+    /// <summary>Per Phase 3 Task 18 cycle 6 — the single-Auto-track
+    /// TrackList used as the default for <c>grid-auto-rows</c> /
+    /// <c>grid-auto-columns</c>. Allocated once + shared; the type is
+    /// immutable.</summary>
+    private static readonly TrackList SingleAutoTrack = new(
+        System.Collections.Immutable.ImmutableArray.Create<TrackListItem>(
+            new TrackListEntry(TrackEntry.ForAuto())));
+
     private static TrackList ReadTrackListProperty(ComputedStyle style, PropertyId id)
     {
         var slot = style.Get(id);

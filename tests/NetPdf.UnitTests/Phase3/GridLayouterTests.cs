@@ -120,12 +120,16 @@ public sealed class GridLayouterTests
     }
 
     [Fact]
-    public void Negative_minus_one_is_implicit_track_drops_with_diagnostic()
+    public void Negative_minus_one_resolves_to_line_after_last_track_via_implicit()
     {
         // Per PR-#92 review F3 — `-1` = the line AFTER the last track
         // (= line N+1 in a grid with N tracks). Single-cell placement
-        // at line N+1 requires an implicit row per §7.5 + cycle 1
-        // doesn't support implicit tracks → item drops.
+        // at line N+1 requires an implicit row per §7.5 (= row N+1
+        // 0-based = row 2 in a 2-row grid). Cycle 6 generates implicit
+        // tracks for items extending past the explicit grid; the new
+        // implicit row sizes from grid-auto-rows (= the default `auto`
+        // means size to the item's contribution, which is 0 here since
+        // the item has no declared dimensions).
         var sink = new RecordingFragmentSink();
         var diag = new RecordingDiagnosticsSink();
         using var shaper = new SyntheticShaperResolver();
@@ -136,8 +140,17 @@ public sealed class GridLayouterTests
 
         RunGridLayouter(grid, sink, diag, shaper);
 
-        Assert.Empty(sink.Fragments);
-        Assert.Contains(diag.Diagnostics, d =>
+        // Item lands at the implicit (row 2, col 2) past the explicit
+        // grid. Implicit tracks are auto-sized; with no item
+        // contribution they collapse to 0px so the fragment's inline /
+        // block size is 0. The fragment ORIGIN at (200, 300) = sum of
+        // explicit col widths + sum of explicit row heights.
+        Assert.Single(sink.Fragments);
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 200, blockOffset: 300,
+            inlineSize: 0, blockSize: 0);
+        // Cycle 6 ships implicit tracks → no LayoutGridImplicitTrackUnsupported001 fires.
+        Assert.DoesNotContain(diag.Diagnostics, d =>
             d.Code == PaginateDiagnosticCodes.LayoutGridImplicitTrackUnsupported001);
     }
 
@@ -337,10 +350,12 @@ public sealed class GridLayouterTests
     }
 
     [Fact]
-    public void Single_cell_grid_with_more_items_drops_overflow()
+    public void Single_cell_grid_with_more_items_grows_implicit_rows()
     {
-        // 1×1 grid — 3 items. First lands; remaining 2 overflow + drop
-        // with implicit-track diagnostic.
+        // 1×1 grid — 3 auto-placed items. Cycle 6 generates implicit
+        // rows (one per overflowing auto-placed item) sized per
+        // grid-auto-rows (default `auto`, collapses to 0 when items
+        // have no intrinsic contribution).
         var sink = new RecordingFragmentSink();
         var diag = new RecordingDiagnosticsSink();
         using var shaper = new SyntheticShaperResolver();
@@ -351,12 +366,22 @@ public sealed class GridLayouterTests
 
         RunGridLayouter(grid, sink, diag, shaper);
 
-        Assert.Single(sink.Fragments);
-        AssertFragmentEquals(sink, items[0], inlineOffset: 0, blockOffset: 0, inlineSize: 100, blockSize: 100);
-        // 2 dropped items → 2 implicit-track diagnostics.
-        var implicitDiagnostics = diag.Diagnostics.FindAll(d =>
+        // All 3 items emit. Item[0] in the explicit cell; items[1] +
+        // items[2] in implicit rows past the explicit grid (auto-sized
+        // to 0).
+        Assert.Equal(3, sink.Fragments.Count);
+        AssertFragmentEquals(sink, items[0],
+            inlineOffset: 0, blockOffset: 0,
+            inlineSize: 100, blockSize: 100);
+        AssertFragmentEquals(sink, items[1],
+            inlineOffset: 0, blockOffset: 100,
+            inlineSize: 100, blockSize: 0);
+        AssertFragmentEquals(sink, items[2],
+            inlineOffset: 0, blockOffset: 100,
+            inlineSize: 100, blockSize: 0);
+        // Cycle 6 ships implicit tracks → no LayoutGridImplicitTrackUnsupported001 fires.
+        Assert.DoesNotContain(diag.Diagnostics, d =>
             d.Code == PaginateDiagnosticCodes.LayoutGridImplicitTrackUnsupported001);
-        Assert.Equal(2, implicitDiagnostics.Count);
     }
 
     [Fact]
@@ -804,32 +829,41 @@ public sealed class GridLayouterTests
     }
 
     [Fact]
-    public void Span_placement_falls_back_to_auto_with_diagnostic()
+    public void Span_placement_auto_positions_with_row_span_extent()
     {
-        // Cycle 1: span is not supported. Falls back to auto-placement.
+        // Per Phase 3 Task 18 cycle 6 — `grid-row-start: span 2` is
+        // an auto-placed N-row span. In a 1×2 explicit grid an
+        // implicit row is generated so the item occupies rows 0+1 at
+        // column 0. The implicit row is auto-sized (= 0 with no
+        // intrinsic contribution from the item) so the fragment's
+        // block extent is rowSizes[0] + rowSizes[1] = 100 + 0 = 100.
         var sink = new RecordingFragmentSink();
         var diag = new RecordingDiagnosticsSink();
         using var shaper = new SyntheticShaperResolver();
 
         var grid = BuildGridContainer(rowsPx: new[] { 100.0 }, colsPx: new[] { 50.0, 150.0 });
-        // Item with grid-row-start: span 2 — cycle 1 ignores span,
-        // treats as auto-placement.
         var item = BuildItemWithSpanRowStart(spanCount: 2);
         grid.AppendChild(item);
 
         RunGridLayouter(grid, sink, diag, shaper);
 
         Assert.Single(sink.Fragments);
-        AssertFragmentEquals(sink, item, inlineOffset: 0, blockOffset: 0, inlineSize: 50, blockSize: 100);
-        Assert.Contains(diag.Diagnostics, d =>
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 0,
+            inlineSize: 50, blockSize: 100);
+        // Cycle 6 ships span placement → no placement-approximated diagnostic.
+        Assert.DoesNotContain(diag.Diagnostics, d =>
             d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
     }
 
     [Fact]
-    public void Item_outside_explicit_grid_drops_with_diagnostic()
+    public void Item_outside_explicit_grid_grows_implicit_rows()
     {
-        // grid-row-start: 5 in a 2-row grid → row index 4 → outside [0,2).
-        // Cycle 1 doesn't generate implicit tracks → item drops.
+        // Per Phase 3 Task 18 cycle 6 — `grid-row-start: 5` in a
+        // 2-row grid places the item at row index 4 (= 1-based line 5).
+        // Cycle 6 generates implicit rows past the explicit grid (rows
+        // 2, 3, 4 sized per grid-auto-rows = `auto` default, collapsing
+        // to 0 with no item contribution).
         var sink = new RecordingFragmentSink();
         var diag = new RecordingDiagnosticsSink();
         using var shaper = new SyntheticShaperResolver();
@@ -840,8 +874,14 @@ public sealed class GridLayouterTests
 
         RunGridLayouter(grid, sink, diag, shaper);
 
-        Assert.Empty(sink.Fragments);
-        Assert.Contains(diag.Diagnostics, d =>
+        Assert.Single(sink.Fragments);
+        // Block offset = sum of explicit row heights (100 + 200) +
+        // implicit rows 2..3 (= 0 each) = 300.
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 300,
+            inlineSize: 50, blockSize: 0);
+        // Cycle 6 ships implicit tracks → no diagnostic.
+        Assert.DoesNotContain(diag.Diagnostics, d =>
             d.Code == PaginateDiagnosticCodes.LayoutGridImplicitTrackUnsupported001);
     }
 
@@ -916,31 +956,38 @@ public sealed class GridLayouterTests
     // =====================================================================
 
     [Fact]
-    public void Non_auto_grid_row_end_emits_placement_approximated_diagnostic()
+    public void Cycle6_grid_row_1_slash_3_spans_two_rows()
     {
-        // Per F5 — `grid-row: 1 / 3` (= span 2 rows) gets shrunk to a
-        // single cell at the start line in cycle 1. The diagnostic
-        // surfaces the silent area shrink.
+        // Per Phase 3 Task 18 cycle 6 — `grid-row: 1 / 3` resolves to
+        // a 2-row span (lines 1 through 3) at column 0. The fragment's
+        // block extent is rowSizes[0] + rowSizes[1] = 100 + 200 = 300.
         var sink = new RecordingFragmentSink();
         var diag = new RecordingDiagnosticsSink();
         using var shaper = new SyntheticShaperResolver();
 
         var grid = BuildGridContainer(rowsPx: new[] { 100.0, 200.0 }, colsPx: new[] { 50.0, 150.0 });
+        // rowEnd=1 here uses BuildItemWithExplicitStartAndEnd's
+        // (rowStart=1, rowEnd=3, colStart=1, colEnd=1) shape — note
+        // colEnd=1 with colStart=1 → §8.3 swap reduces to span 1.
         var item = BuildItemWithExplicitStartAndEnd(rowStart: 1, rowEnd: 3, colStart: 1, colEnd: 1);
         grid.AppendChild(item);
 
         RunGridLayouter(grid, sink, diag, shaper);
 
         Assert.Single(sink.Fragments);
-        // Item lands at single cell (1, 1) per start lines only.
-        AssertFragmentEquals(sink, item, inlineOffset: 0, blockOffset: 0, inlineSize: 50, blockSize: 100);
-        Assert.Contains(diag.Diagnostics, d =>
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 0,
+            inlineSize: 50, blockSize: 300);
+        // Cycle 6 ships span end values → no placement-approximated diagnostic.
+        Assert.DoesNotContain(diag.Diagnostics, d =>
             d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
     }
 
     [Fact]
-    public void Non_auto_grid_column_end_emits_placement_approximated_diagnostic()
+    public void Cycle6_grid_column_1_slash_3_spans_two_columns()
     {
+        // Per Phase 3 Task 18 cycle 6 — `grid-column: 1 / 3` spans
+        // both columns of a 2-column grid (= entire row width).
         var sink = new RecordingFragmentSink();
         var diag = new RecordingDiagnosticsSink();
         using var shaper = new SyntheticShaperResolver();
@@ -952,7 +999,10 @@ public sealed class GridLayouterTests
         RunGridLayouter(grid, sink, diag, shaper);
 
         Assert.Single(sink.Fragments);
-        Assert.Contains(diag.Diagnostics, d =>
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 0,
+            inlineSize: 200, blockSize: 100);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
             d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
     }
 
@@ -3011,6 +3061,279 @@ public sealed class GridLayouterTests
     }
 
     // =====================================================================
+    //  Phase 3 Task 18 cycle 6 — span placement + implicit tracks +
+    //  grid-auto-flow row/column
+    // =====================================================================
+
+    [Fact]
+    public void Cycle6_explicit_row_span_2_fills_two_explicit_rows()
+    {
+        // grid-row: 1 / span 2 + grid-column: 1 in a 2×2 explicit grid:
+        // item occupies rows 0+1 at col 0; the rectangle is fully
+        // within the explicit grid (no implicit growth).
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 200.0 },
+            colsPx: new[] { 50.0, 150.0 });
+        var item = BuildItemWithExplicitStartAndSpan(
+            rowStart: 1, rowSpan: 2, colStart: 1, colSpan: 1);
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Single(sink.Fragments);
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 0,
+            inlineSize: 50, blockSize: 300);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+    }
+
+    [Fact]
+    public void Cycle6_auto_placement_with_row_span_finds_next_free_run()
+    {
+        // 1×2 grid, item A at (1, 1) explicit; item B auto-placed with
+        // grid-row: span 2 → B needs a 2-row × 1-col free run. The
+        // first column has the explicit item at (0, 0); the search
+        // continues to column 1 in row 0 (1-row vertical) — doesn't
+        // fit (needs 2). Grows to row 1 (implicit) and places B at
+        // (0, 1) with rowSpan=2.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0 },
+            colsPx: new[] { 50.0, 150.0 });
+        var a = BuildItemWithExplicitPlacement(row: 1, col: 1);
+        var b = BuildItemWithSpanRowStart(spanCount: 2);
+        grid.AppendChild(a);
+        grid.AppendChild(b);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Equal(2, sink.Fragments.Count);
+        AssertFragmentEquals(sink, a,
+            inlineOffset: 0, blockOffset: 0,
+            inlineSize: 50, blockSize: 100);
+        // B at (0, 1) spanning the explicit row 0 + an implicit row
+        // (auto-sized to 0 with no item contribution). Total block
+        // extent = 100 + 0 = 100.
+        AssertFragmentEquals(sink, b,
+            inlineOffset: 50, blockOffset: 0,
+            inlineSize: 150, blockSize: 100);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+    }
+
+    [Fact]
+    public void Cycle6_grid_auto_rows_50px_sizes_implicit_rows()
+    {
+        // 1-row explicit grid, grid-auto-rows: 50px. Item with
+        // grid-row-start: 3 → row 2 (implicit). The implicit row gets
+        // sized to 50px per grid-auto-rows; rows 1 also implicit (=
+        // 50px). So row 0 = 100 (explicit), row 1 = 50 (implicit),
+        // row 2 = 50 (implicit). Item at row 2 → blockOffset = 150.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0 },
+            colsPx: new[] { 50.0 });
+        SetGridAutoRows(grid, 50.0);
+        var item = BuildItemWithExplicitPlacement(row: 3, col: 1);
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Single(sink.Fragments);
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 150,
+            inlineSize: 50, blockSize: 50);
+    }
+
+    [Fact]
+    public void Cycle6_grid_auto_flow_column_reverses_sparse_fill_direction()
+    {
+        // 2×2 explicit grid, grid-auto-flow: column, 4 auto-placed
+        // items. Per §8.5 column-major order: (0,0), (1,0), (0,1), (1,1).
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 200.0 },
+            colsPx: new[] { 50.0, 150.0 });
+        SetGridAutoFlow(grid, GridAutoFlowValue.Column);
+        var items = new Box[4];
+        for (var i = 0; i < 4; i++)
+        {
+            items[i] = BuildAutoPlacedItem();
+            grid.AppendChild(items[i]);
+        }
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Equal(4, sink.Fragments.Count);
+        // Column-major fill: items[0] at (0,0), items[1] at (1,0),
+        // items[2] at (0,1), items[3] at (1,1).
+        AssertFragmentEquals(sink, items[0],
+            inlineOffset: 0, blockOffset: 0, inlineSize: 50, blockSize: 100);
+        AssertFragmentEquals(sink, items[1],
+            inlineOffset: 0, blockOffset: 100, inlineSize: 50, blockSize: 200);
+        AssertFragmentEquals(sink, items[2],
+            inlineOffset: 50, blockOffset: 0, inlineSize: 150, blockSize: 100);
+        AssertFragmentEquals(sink, items[3],
+            inlineOffset: 50, blockOffset: 100, inlineSize: 150, blockSize: 200);
+    }
+
+    [Fact]
+    public void Cycle6_span_0_normalizes_to_span_1_per_section_8_3_1()
+    {
+        // Per CSS Grid L1 §8.3.1, `span 0` is invalid and normalizes
+        // to `span 1`. GridLineValue.ForSpan rejects 0 at the factory;
+        // ReadPlacement clamps Span via Math.Max(1, ...) to defend
+        // against any path that bypasses the factory (e.g., the
+        // resolver's tokenizer). This test pins the clamp behavior by
+        // constructing a GridLineValue with the lowest legal Span (1)
+        // and verifying the placement is a single-cell.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0 },
+            colsPx: new[] { 50.0 });
+        var item = BuildItemWithSpanRowStart(spanCount: 1);
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Single(sink.Fragments);
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 0,
+            inlineSize: 50, blockSize: 100);
+    }
+
+    [Fact]
+    public void Cycle6_grid_row_2_slash_5_spans_three_rows_with_swap()
+    {
+        // grid-row: 2 / 5 → start line 2, end line 5 → spans 3 rows
+        // (rows 1, 2, 3 in 0-based). In a 4-row explicit grid the
+        // item fits without implicit growth.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 50.0, 75.0, 25.0 },
+            colsPx: new[] { 50.0 });
+        var item = BuildItemWithExplicitStartAndEnd(
+            rowStart: 2, rowEnd: 5, colStart: 1, colEnd: 1);
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Single(sink.Fragments);
+        // blockOffset = sum of row 0 (100) = 100; blockSize = sum of
+        // rows 1, 2, 3 = 50 + 75 + 25 = 150.
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 100,
+            inlineSize: 50, blockSize: 150);
+    }
+
+    [Fact]
+    public void Cycle6_grid_row_5_slash_2_swap_per_section_8_3()
+    {
+        // Per §8.3 — if end ≤ start, the values swap. So `5 / 2`
+        // becomes `2 / 5` → span 3 rows starting at row 1.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 50.0, 75.0, 25.0 },
+            colsPx: new[] { 50.0 });
+        var item = BuildItemWithExplicitStartAndEnd(
+            rowStart: 5, rowEnd: 2, colStart: 1, colEnd: 1);
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Single(sink.Fragments);
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 100,
+            inlineSize: 50, blockSize: 150);
+    }
+
+    [Fact]
+    public void Cycle6_spanning_item_distributes_intrinsic_contribution_equally()
+    {
+        // 2-row grid with `grid-template-rows: auto auto`, item with
+        // grid-row: 1 / 3 (span 2) and declared height: 100px. Cycle 6a
+        // equal-share distribution: each auto row gets 100/2 = 50px.
+        // (Spec-strict §11.5.1 step 3 would distribute differently;
+        // tracked in grid-spanning-item-intrinsic-distribution-deferral.)
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        // Build an auto/auto grid (= two intrinsic rows).
+        var rowsTrack = new TrackList(
+            System.Collections.Immutable.ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForAuto()),
+                new TrackListEntry(TrackEntry.ForAuto())));
+        var colsTrack = new TrackList(
+            System.Collections.Immutable.ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(50.0))));
+        var grid = BuildGridContainerWithTemplates(rowsTrack, colsTrack);
+
+        var item = BuildItemWithExplicitStartAndEnd(
+            rowStart: 1, rowEnd: 3, colStart: 1, colEnd: 1);
+        SetExplicitHeight(item, 100);
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Single(sink.Fragments);
+        // Each auto row sized to 50px (= 100/2 equal-share). Item
+        // spans both rows so blockSize = 50 + 50 = 100.
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 0,
+            inlineSize: 50, blockSize: 100);
+    }
+
+    [Fact]
+    public void Cycle6_grid_auto_columns_50px_sizes_implicit_columns()
+    {
+        // 1-col explicit grid, grid-auto-columns: 50px. Item with
+        // grid-column-start: 3 → col 2 (implicit). Implicit col 1 =
+        // 50, implicit col 2 = 50. Item at col 2 → inlineOffset =
+        // 100 (col 0) + 50 (col 1) = 150.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 50.0 },
+            colsPx: new[] { 100.0 });
+        SetGridAutoColumns(grid, 50.0);
+        var item = BuildItemWithExplicitPlacement(row: 1, col: 3);
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Single(sink.Fragments);
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 150, blockOffset: 0,
+            inlineSize: 50, blockSize: 50);
+    }
+
+    // =====================================================================
     //  Helpers
     // =====================================================================
 
@@ -3168,6 +3491,61 @@ public sealed class GridLayouterTests
         // No grid-row-start / grid-column-start set → readers return
         // GridLineValue.Auto.
         return Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+    }
+
+    /// <summary>Per Phase 3 Task 18 cycle 6 — build an item with
+    /// explicit start (LineNumber) and span end (Span) on both axes
+    /// (= the canonical `grid-row: 2 / span 3` shape).</summary>
+    private static Box BuildItemWithExplicitStartAndSpan(
+        int rowStart, int rowSpan, int colStart, int colSpan)
+    {
+        var style = MakeStyle();
+        var rowStartValue = GridLineValue.ForLineNumber(rowStart);
+        style.SetSideTablePayload(PropertyId.GridRowStart, (object)rowStartValue);
+        style.Set(PropertyId.GridRowStart, ComputedSlot.FromSideTableIndex(0));
+        var rowEndValue = GridLineValue.ForSpan(rowSpan);
+        style.SetSideTablePayload(PropertyId.GridRowEnd, (object)rowEndValue);
+        style.Set(PropertyId.GridRowEnd, ComputedSlot.FromSideTableIndex(0));
+        var colStartValue = GridLineValue.ForLineNumber(colStart);
+        style.SetSideTablePayload(PropertyId.GridColumnStart, (object)colStartValue);
+        style.Set(PropertyId.GridColumnStart, ComputedSlot.FromSideTableIndex(0));
+        var colEndValue = GridLineValue.ForSpan(colSpan);
+        style.SetSideTablePayload(PropertyId.GridColumnEnd, (object)colEndValue);
+        style.Set(PropertyId.GridColumnEnd, ComputedSlot.FromSideTableIndex(0));
+        return Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+    }
+
+    /// <summary>Per Phase 3 Task 18 cycle 6 — set a fixed-pixel
+    /// pattern on <c>grid-auto-rows</c> so implicit rows take the
+    /// declared size instead of cycle 6a's <c>auto</c> default.</summary>
+    private static void SetGridAutoRows(Box grid, double px)
+    {
+        var pattern = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(px))));
+        grid.Style.SetSideTablePayload(PropertyId.GridAutoRows, pattern);
+        grid.Style.Set(PropertyId.GridAutoRows,
+            ComputedSlot.FromSideTableIndex(0));
+    }
+
+    private static void SetGridAutoColumns(Box grid, double px)
+    {
+        var pattern = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(px))));
+        grid.Style.SetSideTablePayload(PropertyId.GridAutoColumns, pattern);
+        grid.Style.Set(PropertyId.GridAutoColumns,
+            ComputedSlot.FromSideTableIndex(0));
+    }
+
+    /// <summary>Per Phase 3 Task 18 cycle 6 — set the auto-placement
+    /// flow direction. Cycle 6 keyword table: id 0 = <c>row</c>
+    /// (default), id 1 = <c>column</c>.</summary>
+    private static void SetGridAutoFlow(Box grid, GridAutoFlowValue flow)
+    {
+        var keywordId = flow == GridAutoFlowValue.Column ? 1 : 0;
+        grid.Style.Set(PropertyId.GridAutoFlow,
+            ComputedSlot.FromKeyword(keywordId));
     }
 
     private static ComputedStyle MakeStyle() => ComputedStyle.RentForExclusiveTesting();

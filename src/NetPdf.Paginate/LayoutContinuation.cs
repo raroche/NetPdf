@@ -288,11 +288,22 @@ internal sealed record GridResumeCache(
 ///
 /// <para><see cref="Row"/> and <see cref="Col"/> are 0-based final
 /// indices; negative values indicate unplaced (= dropped per the
-/// implicit-tracks-unsupported diagnostic).</para></summary>
+/// implicit-tracks-unsupported diagnostic).</para>
+///
+/// <para>Per Phase 3 Task 18 cycle 6 — <see cref="RowSpan"/> and
+/// <see cref="ColSpan"/> carry the item's track span (= 1 for a
+/// single-cell item, &gt; 1 for items with <c>grid-row: A / span N</c>
+/// or <c>grid-row: A / B</c>). The item occupies the rectangle
+/// <c>[Row, Row+RowSpan) × [Col, Col+ColSpan)</c>. Cycle 5 cache
+/// entries with span 0 (= legacy single-cell shape) are still valid
+/// — the consumer treats <c>span ≤ 0</c> as 1 for resume-cache
+/// compatibility.</para></summary>
 internal sealed record GridItemPlacement(
     object Box,
     int Row,
-    int Col);
+    int Col,
+    int RowSpan = 1,
+    int ColSpan = 1);
 
 /// <summary>Per Phase 3 Task 14 cycles 1-2 — multicol container split
 /// across pages. CSS Multi-column L1 §2 defines the multicol container

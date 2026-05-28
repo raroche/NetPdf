@@ -4068,6 +4068,168 @@ public sealed class GridLayouterTests
     }
 
     // =====================================================================
+    //  Phase 3 Task 18 cycle 7b — named-line placement.
+    //  `grid-row-start: name` resolves against the per-axis named-line
+    //  lookup map combining authored `[name]` lines from grid-template-
+    //  rows/columns + implicit `<area>-start` / `<area>-end` lines from
+    //  grid-template-areas per CSS Grid L1 §8.4.
+    // =====================================================================
+
+    [Fact]
+    public void Cycle7b_authored_named_line_resolves_to_definite_placement()
+    {
+        // grid-template-rows: [head-start] 100px [head-end] 100px.
+        // 'head-end' = line 2 → row index 1.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                TrackListNamedLine.Create("head-start"),
+                new TrackListEntry(TrackEntry.ForLength(100.0)),
+                TrackListNamedLine.Create("head-end"),
+                new TrackListEntry(TrackEntry.ForLength(100.0))));
+        var colsTrack = BuildLengthTrackList(new[] { 50.0 });
+        var grid = BuildGridContainerWithTemplates(rowsTrack, colsTrack);
+
+        var item = BuildItemWithNamedAreaStarts(rowName: "head-end", colName: null);
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Single(sink.Fragments);
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 100,
+            inlineSize: 50, blockSize: 100);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+    }
+
+    [Fact]
+    public void Cycle7b_implicit_area_start_line_resolves_via_named_line_map()
+    {
+        // grid-template-areas: "head" "main" → head at row 0 (lines
+        // 1..2). Per §8.4 implicit lines head-start = line 1 and
+        // head-end = line 2 are auto-generated. `grid-row-start:
+        // head-end` resolves to line 2 = row index 1.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 100.0 },
+            colsPx: new[] { 50.0 });
+        SetGridTemplateAreas(grid, "\"head\" \"main\"");
+
+        var item = BuildItemWithNamedAreaStarts(rowName: "head-end", colName: null);
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Single(sink.Fragments);
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 100,
+            inlineSize: 50, blockSize: 100);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+    }
+
+    [Fact]
+    public void Cycle7b_named_line_pair_spans_between_two_idents()
+    {
+        // grid-template-rows: [a] 100px [b] 100px [c] 100px [d].
+        // `grid-row: a / d` spans 3 rows starting at line 1. Column
+        // axis stays auto (= no row-ident references on it).
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                TrackListNamedLine.Create("a"),
+                new TrackListEntry(TrackEntry.ForLength(100.0)),
+                TrackListNamedLine.Create("b"),
+                new TrackListEntry(TrackEntry.ForLength(100.0)),
+                TrackListNamedLine.Create("c"),
+                new TrackListEntry(TrackEntry.ForLength(100.0)),
+                TrackListNamedLine.Create("d")));
+        var colsTrack = BuildLengthTrackList(new[] { 50.0 });
+        var grid = BuildGridContainerWithTemplates(rowsTrack, colsTrack);
+
+        var item = BuildItemWithRowNamedLines(rowStart: "a", rowEnd: "d");
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Single(sink.Fragments);
+        // a = line 1, d = line 4 → span 3 rows starting at row 0.
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 0,
+            inlineSize: 50, blockSize: 300);
+        Assert.DoesNotContain(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+    }
+
+    [Fact]
+    public void Cycle7b_unknown_named_line_still_falls_back_to_auto_with_diagnostic()
+    {
+        // No grid-template-areas, no named lines → ident "ghost"
+        // doesn't resolve anywhere. Falls back to auto + diagnostic
+        // (= the cycle 7a fall-back path is preserved).
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0 },
+            colsPx: new[] { 50.0 });
+        var item = BuildItemWithNamedAreaStarts(rowName: "ghost", colName: null);
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Single(sink.Fragments);
+        Assert.Contains(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutGridPlacementApproximated001);
+    }
+
+    [Fact]
+    public void Cycle7b_authored_line_wins_over_implicit_area_line_on_collision()
+    {
+        // grid-template-areas declares area `head` (= implicit lines
+        // head-start at line 1, head-end at line 2). grid-template-
+        // rows ALSO has an authored `[head-start]` line at a DIFFERENT
+        // position (line 3). The authored line WINS per cycle 7b's
+        // TryAdd-first ordering (authored lines walked before area
+        // derivation).
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var rowsTrack = new TrackList(
+            ImmutableArray.Create<TrackListItem>(
+                new TrackListEntry(TrackEntry.ForLength(100.0)),
+                new TrackListEntry(TrackEntry.ForLength(100.0)),
+                TrackListNamedLine.Create("head-start"),
+                new TrackListEntry(TrackEntry.ForLength(100.0))));
+        var colsTrack = BuildLengthTrackList(new[] { 50.0 });
+        var grid = BuildGridContainerWithTemplates(rowsTrack, colsTrack);
+        SetGridTemplateAreas(grid, "\"head\" \"main\" \"foot\"");
+
+        var item = BuildItemWithNamedAreaStarts(rowName: "head-start", colName: null);
+        grid.AppendChild(item);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Single(sink.Fragments);
+        // Authored head-start = line 3 = row index 2 → blockOffset 200.
+        AssertFragmentEquals(sink, item,
+            inlineOffset: 0, blockOffset: 200,
+            inlineSize: 50, blockSize: 100);
+    }
+
+    // =====================================================================
     //  PR-#103 review F1–F7 — coverage for the review-pass-resolved
     //  findings: implicit-only grids, captured-explicit-count negative
     //  resolution, sparse-occupancy DoS guard, auto-flow:column
@@ -4627,6 +4789,23 @@ public sealed class GridLayouterTests
             style.SetSideTablePayload(PropertyId.GridColumnStart, (object)colValue);
             style.Set(PropertyId.GridColumnStart, ComputedSlot.FromSideTableIndex(0));
         }
+        return Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+    }
+
+    /// <summary>Per Phase 3 Task 18 cycle 7b — build an item with
+    /// named-line references on ONLY the row axis (grid-row-start /
+    /// grid-row-end); columns left auto. Avoids cross-axis ident
+    /// pollution for tests that exercise row-axis named lines while
+    /// the column axis has no matching idents.</summary>
+    private static Box BuildItemWithRowNamedLines(string rowStart, string rowEnd)
+    {
+        var style = MakeStyle();
+        var rowStartValue = GridLineValue.ForNamedLine(rowStart);
+        style.SetSideTablePayload(PropertyId.GridRowStart, (object)rowStartValue);
+        style.Set(PropertyId.GridRowStart, ComputedSlot.FromSideTableIndex(0));
+        var rowEndValue = GridLineValue.ForNamedLine(rowEnd);
+        style.SetSideTablePayload(PropertyId.GridRowEnd, (object)rowEndValue);
+        style.Set(PropertyId.GridRowEnd, ComputedSlot.FromSideTableIndex(0));
         return Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
     }
 

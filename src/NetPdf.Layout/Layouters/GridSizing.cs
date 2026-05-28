@@ -170,12 +170,23 @@ internal static class GridSizing
         // named-area references (e.g., `grid-row-start: head`).
         var gridAreas = gridBox.Style.ReadGridTemplateAreas();
 
+        // Per Phase 3 Task 18 cycle 7b — build per-axis named-line
+        // lookup maps. Combines authored `[name]` lines from
+        // grid-template-rows/columns + implicit `<area>-start` /
+        // `<area>-end` lines from grid-template-areas per §8.4.
+        var rowNamedLines = BuildNamedLineMap(
+            gridBox.Style.ReadGridTemplateRows(), gridAreas, isRow: true);
+        var colNamedLines = BuildNamedLineMap(
+            gridBox.Style.ReadGridTemplateColumns(), gridAreas, isRow: false);
+
         var placedItems = new List<PlacedItem>(gridBox.Children.Count);
         foreach (var child in gridBox.Children)
         {
             if (!IsGridItem(child)) continue;
-            var rowSpec = ReadPlacement(child.Style, isRow: true, gridAreas, ctx);
-            var colSpec = ReadPlacement(child.Style, isRow: false, gridAreas, ctx);
+            var rowSpec = ReadPlacement(
+                child.Style, isRow: true, gridAreas, rowNamedLines, ctx);
+            var colSpec = ReadPlacement(
+                child.Style, isRow: false, gridAreas, colNamedLines, ctx);
             placedItems.Add(new PlacedItem
             {
                 Box = child,
@@ -1874,8 +1885,96 @@ internal static class GridSizing
     ///   case is rare in practice + the spec's reverse-auto-placement
     ///   algorithm is cycle 7 scope)</item>
     /// </list></summary>
+    /// <summary>Per Phase 3 Task 18 cycle 7b — build a per-axis named
+    /// → 1-based-line-number lookup that <see cref="ReadPlacement"/>
+    /// consults when a placement uses a <c>&lt;custom-ident&gt;</c>
+    /// that doesn't match a named area directly.
+    ///
+    /// <para><b>Sources combined</b> per CSS Grid L1 §8.4:</para>
+    /// <list type="number">
+    ///   <item><b>Author-declared named lines</b>: walk the
+    ///   <see cref="TrackList"/> for <see cref="TrackListNamedLine"/>
+    ///   items. Each name maps to the line at the item's position
+    ///   (line 1 is before the first track; subsequent lines advance
+    ///   per track entry).</item>
+    ///   <item><b>Implicit area-derived lines</b>: for each named area
+    ///   in <paramref name="areas"/>, the <c>&lt;name&gt;-start</c>
+    ///   maps to the area's start line on this axis and
+    ///   <c>&lt;name&gt;-end</c> to its end line.</item>
+    /// </list>
+    ///
+    /// <para><b>Conflict resolution</b>: when both an author-declared
+    /// line and an implicit area-derived line resolve to the same
+    /// name, the FIRST-added wins (= author lines win since they're
+    /// walked before the area derivation). The map uses
+    /// <see cref="Dictionary{TKey, TValue}.TryAdd"/> to enforce this.</para>
+    ///
+    /// <para><b>Cycle-7b scope limit</b>: positive-integer
+    /// <c>repeat(N, [name] &lt;track&gt;)</c> expansion is honored;
+    /// <c>repeat(auto-fill, …)</c> / <c>repeat(auto-fit, …)</c>
+    /// expansion happens at layout time (= cycle 7c scope) and is
+    /// skipped here. Authored lines inside auto-fill repeats won't
+    /// resolve until cycle 7c lands.</para></summary>
+    private static Dictionary<string, int> BuildNamedLineMap(
+        TrackList trackList, GridTemplateAreas areas, bool isRow)
+    {
+        var map = new Dictionary<string, int>(StringComparer.Ordinal);
+
+        // Walk authored items. currentLine starts at 1 (= the line
+        // BEFORE the first track). A TrackListNamedLine at the current
+        // position records the name → currentLine. A TrackListEntry
+        // advances currentLine by 1.
+        int currentLine = 1;
+        foreach (var item in trackList.Items)
+        {
+            switch (item)
+            {
+                case TrackListNamedLine namedLine:
+                    map.TryAdd(namedLine.Name, currentLine);
+                    break;
+                case TrackListEntry:
+                    currentLine++;
+                    break;
+                case TrackListRepeat repeat when repeat.Repeat.Count > 0:
+                    // Positive-count repeat: unroll the pattern N times.
+                    for (var r = 0; r < repeat.Repeat.Count; r++)
+                    {
+                        foreach (var p in repeat.Repeat.Pattern)
+                        {
+                            switch (p)
+                            {
+                                case TrackRepeatNamedLine rnl:
+                                    map.TryAdd(rnl.Name, currentLine);
+                                    break;
+                                case TrackRepeatEntry:
+                                    currentLine++;
+                                    break;
+                            }
+                        }
+                    }
+                    break;
+                // auto-fill (count=0) / auto-fit (count=-1) — cycle 7c.
+                // Names inside those repeats don't resolve in cycle 7b.
+            }
+        }
+
+        // Implicit `<area>-start` / `<area>-end` lines per §8.4. Per
+        // the conflict-resolution rule, TryAdd preserves author lines
+        // if a name collision occurs.
+        foreach (var (name, rect) in areas.NameToRect)
+        {
+            var startLine = isRow ? rect.RowStart : rect.ColumnStart;
+            var endLine = isRow ? rect.RowEnd : rect.ColumnEnd;
+            map.TryAdd($"{name}-start", startLine);
+            map.TryAdd($"{name}-end", endLine);
+        }
+
+        return map;
+    }
+
     private static PlacementSpec ReadPlacement(
-        ComputedStyle style, bool isRow, GridTemplateAreas areas, SizingContext ctx)
+        ComputedStyle style, bool isRow, GridTemplateAreas areas,
+        Dictionary<string, int> namedLines, SizingContext ctx)
     {
         var start = isRow ? style.ReadGridRowStart() : style.ReadGridColumnStart();
         var end = isRow ? style.ReadGridRowEnd() : style.ReadGridColumnEnd();
@@ -1894,20 +1993,30 @@ internal static class GridSizing
         }
 
         // (2) start: named-line (= bare custom-ident) — cycle 7a
-        // resolves this against grid-template-areas when the ident
-        // matches an area name.
+        // resolves against grid-template-areas; cycle 7b extends to
+        // authored `[name]` lines + implicit area-derived
+        // `<name>-start` / `<name>-end` lines per §8.4.
         if (start.Kind == GridLineKind.NamedLine && start.NamedLine is not null)
         {
             var areaName = start.NamedLine;
             if (areas.NameToRect.TryGetValue(areaName, out var areaRect))
             {
                 return ResolveNamedAreaPlacement(
-                    areaRect, end, isRow, areas, ctx);
+                    areaRect, end, isRow, areas, namedLines, ctx);
+            }
+            // Per Phase 3 Task 18 cycle 7b — try the named-line map.
+            // Matches both authored `[name]` lines and the implicit
+            // `<area>-start` / `<area>-end` lines auto-generated from
+            // named areas per §8.4.
+            if (namedLines.TryGetValue(areaName, out var lineNumber))
+            {
+                return ResolveNamedLineToPlacement(
+                    lineNumber, end, isRow, areas, namedLines, ctx);
             }
             return EmitPlacementApproximatedAndFallToAuto(ctx,
                 $"named line '{areaName}' in grid-*-start does not match "
-                + "any grid-template-areas area (cycle-7b will ship "
-                + "<line-names> in grid-template-rows/columns)");
+                + "any grid-template-areas area, authored [name] line, "
+                + "or implicit <area>-start/-end line");
         }
 
         // (3) start: LineNumber + NamedLine qualifier — cycle 7b scope
@@ -1951,9 +2060,20 @@ internal static class GridSizing
                     return new PlacementSpec(
                         PlacementKind.Definite, endLine - 1, 1);
                 }
+                // Per Phase 3 Task 18 cycle 7b — try the named-line map
+                // for authored / area-derived `<name>-end` lines.
+                if (namedLines.TryGetValue(end.NamedLine, out var endLineFromMap))
+                {
+                    EmitPlacementApproximatedDiagnostic(ctx,
+                        $"auto-start with named-line-end '{end.NamedLine}' "
+                        + "uses single-cell placement at end-1 (= the "
+                        + "grid-reverse-auto-placement-deferral simplification)");
+                    return new PlacementSpec(
+                        PlacementKind.Definite, endLineFromMap - 1, 1);
+                }
                 return EmitPlacementApproximatedAndFallToAuto(ctx,
                     $"named line '{end.NamedLine}' in grid-*-end does not "
-                    + "match any grid-template-areas area (cycle-7b scope)");
+                    + "match any area, authored line, or implicit area line");
             }
             if (end.Kind == GridLineKind.LineNumber
                 && end.NamedLine is null
@@ -2031,24 +2151,19 @@ internal static class GridSizing
                 "negative line numbers in placement (cycle-7 scope)");
         }
 
-        // end is named — cycle 7a resolves against grid-template-areas
-        // when the ident matches an area name.
-        if (end.Kind == GridLineKind.NamedLine && end.NamedLine is not null
-            && areas.NameToRect.TryGetValue(end.NamedLine, out var endAreaRect))
+        // end is named — cycle 7a resolves against grid-template-areas;
+        // cycle 7b extends to the named-line map.
+        if (end.Kind == GridLineKind.NamedLine && end.NamedLine is not null)
         {
-            var endLine = isRow ? endAreaRect.RowEnd : endAreaRect.ColumnEnd;
-            // Span from startLine to endLine. Apply the §8.3 swap rule.
-            if (endLine == startLine)
+            if (areas.NameToRect.TryGetValue(end.NamedLine, out var endAreaRect))
             {
-                return new PlacementSpec(PlacementKind.Definite, startLine, 1);
+                var endLine = isRow ? endAreaRect.RowEnd : endAreaRect.ColumnEnd;
+                return SpanBetweenLines(startLine, endLine);
             }
-            if (endLine < startLine)
+            if (namedLines.TryGetValue(end.NamedLine, out var endLineFromMap))
             {
-                return new PlacementSpec(
-                    PlacementKind.Definite, endLine, startLine - endLine);
+                return SpanBetweenLines(startLine, endLineFromMap);
             }
-            return new PlacementSpec(
-                PlacementKind.Definite, startLine, endLine - startLine);
         }
         EmitPlacementApproximatedAndFallToAuto(ctx,
             "named line in grid-*-end — using start with span 1");
@@ -2069,9 +2184,79 @@ internal static class GridSizing
     ///   to that line.</item>
     ///   <item>end = span N → use this area's start + span N.</item>
     /// </list></summary>
+    /// <summary>Per Phase 3 Task 18 cycle 7b — turn a named-line
+    /// start lookup into a definite placement spec by combining it
+    /// with the end-clause. The end may be auto (= single cell),
+    /// span N, an integer line, or another named line (= area or
+    /// named-line map).</summary>
+    private static PlacementSpec ResolveNamedLineToPlacement(
+        int startLine, GridLineValue end, bool isRow,
+        GridTemplateAreas areas, Dictionary<string, int> namedLines,
+        SizingContext ctx)
+    {
+        if (end.Kind == GridLineKind.Auto)
+        {
+            return new PlacementSpec(PlacementKind.Definite, startLine, 1);
+        }
+        if (end.Kind == GridLineKind.Span)
+        {
+            if (end.NamedLine is not null)
+            {
+                EmitPlacementApproximatedAndFallToAuto(ctx,
+                    "span <named-line> in grid-*-end — using start with span 1");
+                return new PlacementSpec(PlacementKind.Definite, startLine, 1);
+            }
+            var span = Math.Max(1, end.LineNumber);
+            return new PlacementSpec(PlacementKind.Definite, startLine, span);
+        }
+        if (end.Kind == GridLineKind.LineNumber && end.NamedLine is null
+            && end.LineNumber > 0)
+        {
+            return SpanBetweenLines(startLine, end.LineNumber);
+        }
+        if (end.Kind == GridLineKind.NamedLine && end.NamedLine is not null)
+        {
+            // Resolve end ident against areas (= area's end line) or
+            // named-line map.
+            if (areas.NameToRect.TryGetValue(end.NamedLine, out var endAreaRect))
+            {
+                var endLine = isRow ? endAreaRect.RowEnd : endAreaRect.ColumnEnd;
+                return SpanBetweenLines(startLine, endLine);
+            }
+            if (namedLines.TryGetValue(end.NamedLine, out var endLineNumber))
+            {
+                return SpanBetweenLines(startLine, endLineNumber);
+            }
+            EmitPlacementApproximatedDiagnostic(ctx,
+                $"named line '{end.NamedLine}' in grid-*-end does not "
+                + "match any area, authored line, or implicit area line "
+                + "— using single-cell placement at start");
+            return new PlacementSpec(PlacementKind.Definite, startLine, 1);
+        }
+        return new PlacementSpec(PlacementKind.Definite, startLine, 1);
+    }
+
+    /// <summary>Build a Definite placement spec from two line numbers,
+    /// applying the §8.3 swap when end ≤ start.</summary>
+    private static PlacementSpec SpanBetweenLines(int startLine, int endLine)
+    {
+        if (endLine == startLine)
+        {
+            return new PlacementSpec(PlacementKind.Definite, startLine, 1);
+        }
+        if (endLine < startLine)
+        {
+            return new PlacementSpec(
+                PlacementKind.Definite, endLine, startLine - endLine);
+        }
+        return new PlacementSpec(
+            PlacementKind.Definite, startLine, endLine - startLine);
+    }
+
     private static PlacementSpec ResolveNamedAreaPlacement(
         GridAreaRect areaRect, GridLineValue end, bool isRow,
-        GridTemplateAreas areas, SizingContext ctx)
+        GridTemplateAreas areas, Dictionary<string, int> namedLines,
+        SizingContext ctx)
     {
         var areaStartLine = isRow ? areaRect.RowStart : areaRect.ColumnStart;
         var areaEndLine = isRow ? areaRect.RowEnd : areaRect.ColumnEnd;
@@ -2113,21 +2298,18 @@ internal static class GridSizing
             return new PlacementSpec(
                 PlacementKind.Definite, areaStartLine, endLine - areaStartLine);
         }
-        if (end.Kind == GridLineKind.NamedLine && end.NamedLine is not null
-            && areas.NameToRect.TryGetValue(end.NamedLine, out var endAreaRect))
+        if (end.Kind == GridLineKind.NamedLine && end.NamedLine is not null)
         {
-            var endLine = isRow ? endAreaRect.RowEnd : endAreaRect.ColumnEnd;
-            if (endLine == areaStartLine)
+            // Cycle 7a area lookup + cycle 7b named-line map fallback.
+            if (areas.NameToRect.TryGetValue(end.NamedLine, out var endAreaRect))
             {
-                return new PlacementSpec(PlacementKind.Definite, areaStartLine, 1);
+                var endLine = isRow ? endAreaRect.RowEnd : endAreaRect.ColumnEnd;
+                return SpanBetweenLines(areaStartLine, endLine);
             }
-            if (endLine < areaStartLine)
+            if (namedLines.TryGetValue(end.NamedLine, out var endLineFromMap))
             {
-                return new PlacementSpec(
-                    PlacementKind.Definite, endLine, areaStartLine - endLine);
+                return SpanBetweenLines(areaStartLine, endLineFromMap);
             }
-            return new PlacementSpec(
-                PlacementKind.Definite, areaStartLine, endLine - areaStartLine);
         }
         // Unknown / unsupported end shape — span the full area on
         // this axis. The diagnostic surfaces the deviation.

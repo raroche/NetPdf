@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
 using System;
+using NetPdf.Css.ComputedValues.PropertyResolvers;
 
 namespace NetPdf.Css.Parser.Preprocessing;
 
@@ -46,12 +47,25 @@ namespace NetPdf.Css.Parser.Preprocessing;
 /// <see cref="GridAreaShorthandExpander"/> + <see cref="FlexShorthandExpander"/>
 /// pattern.</para>
 ///
-/// <para><b>Atomic invalidation</b> on unparseable input: invalid
-/// shorthand contributes none of its longhands. The
-/// <see cref="CssPreprocessor"/> emits invalid-sentinel longhand
-/// recovery records carrying the raw shorthand value; the
-/// downstream resolvers reject them + the cascade falls back to
-/// the property initial values.</para>
+/// <para><b>Atomic validation</b> per post-PR-#111 review P1#1 +
+/// CSS Cascade L4 §4.2: the expander validates EVERY author-derived
+/// track-list segment (the <c>&lt;rows&gt;</c> / <c>&lt;columns&gt;</c>
+/// values + any <c>&lt;auto-tracks&gt;</c> tail) via
+/// <see cref="GridTemplateListResolver.TryValidate"/> BEFORE returning
+/// success. A single invalid segment fails the whole expansion so the
+/// shorthand contributes NONE of its longhands. Without this, an
+/// input like <c>grid: bogus / 100px</c> would have applied the valid
+/// <c>grid-template-columns: 100px</c> + reset the auto-* longhands
+/// while silently dropping the invalid rows value — a partial
+/// application that violates §4.2.</para>
+///
+/// <para><b>Atomic invalidation</b> on failed expansion: the
+/// <see cref="CssPreprocessor"/> emits guaranteed-invalid sentinel
+/// longhand recovery records for all six longhands (per post-PR-#111
+/// review P1#2 — NOT the raw shorthand value, which can be valid for
+/// a track-list longhand, e.g. a no-slash <c>grid: 100px 100px</c>).
+/// The sentinel is rejected by every grid longhand resolver, so the
+/// cascade falls back to the property initial values.</para>
 /// </summary>
 internal static class GridShorthandExpander
 {
@@ -163,6 +177,15 @@ internal static class GridShorthandExpander
             {
                 return false;
             }
+            // Per post-PR-#111 review P1#1 — atomically validate the
+            // author-derived <columns> + the <auto-rows> tail before
+            // committing. An invalid segment drops the whole shorthand.
+            if (!GridTemplateListResolver.TryValidate(right)) return false;
+            if (!string.IsNullOrEmpty(autoTracks)
+                && !GridTemplateListResolver.TryValidate(autoTracks))
+            {
+                return false;
+            }
             autoFlow = dense ? "row dense" : "row";
             autoRows = string.IsNullOrEmpty(autoTracks) ? "auto" : autoTracks;
             // Per §7.4 reset rule: <columns> sets grid-template-columns;
@@ -183,6 +206,14 @@ internal static class GridShorthandExpander
             {
                 return false;
             }
+            // Per post-PR-#111 review P1#1 — atomically validate the
+            // author-derived <rows> + the <auto-columns> tail.
+            if (!GridTemplateListResolver.TryValidate(left)) return false;
+            if (!string.IsNullOrEmpty(autoTracks)
+                && !GridTemplateListResolver.TryValidate(autoTracks))
+            {
+                return false;
+            }
             autoFlow = dense ? "column dense" : "column";
             autoColumns = string.IsNullOrEmpty(autoTracks) ? "auto" : autoTracks;
             templateRows = left;
@@ -194,6 +225,15 @@ internal static class GridShorthandExpander
 
         // Form: <rows> / <columns>. Resets all the auto-* longhands +
         // grid-template-areas per §7.4.
+        // Per post-PR-#111 review P1#1 — atomically validate BOTH
+        // author-derived track lists before committing. This rejects
+        // the deferred inline-template-string form
+        // (`grid: "a a" 50px / 1fr 100px`) — the string token isn't a
+        // valid track list — plus any `grid: bogus / 100px` /
+        // `grid: 100px / bogus` shape, so the cascade falls back to
+        // initial values rather than partially applying.
+        if (!GridTemplateListResolver.TryValidate(left)) return false;
+        if (!GridTemplateListResolver.TryValidate(right)) return false;
         templateRows = left;
         templateColumns = right;
         templateAreas = "none";
@@ -222,8 +262,12 @@ internal static class GridShorthandExpander
     /// false when (a) the segment doesn't contain <c>auto-flow</c>
     /// (= caller error — caller should have used the non-auto-flow
     /// form path), (b) the <c>dense</c> token appears without
-    /// <c>auto-flow</c>, or (c) the auto-flow / dense tokens are
-    /// duplicated.</returns>
+    /// <c>auto-flow</c>, (c) the auto-flow / dense tokens are
+    /// duplicated, or (d) per post-PR-#111 review P1#3 — an
+    /// <c>auto-flow</c> or <c>dense</c> token appears AFTER the
+    /// auto-tracks tail begins (= they belong only to the head per
+    /// the <c>[ auto-flow &amp;&amp; dense? ]</c> production, never
+    /// inside the <c>&lt;track-size&gt;+</c> tail).</returns>
     private static bool TryParseAutoFlowSegment(
         string segment, out bool dense, out string autoTracks)
     {
@@ -275,6 +319,27 @@ internal static class GridShorthandExpander
 
         if (tailStart >= 0)
         {
+            // Per post-PR-#111 review P1#3 — the head tokens
+            // (auto-flow / dense) belong only to the
+            // <c>[ auto-flow &amp;&amp; dense? ]</c> production, never
+            // inside the <c>&lt;track-size&gt;+</c> tail. Reject a
+            // standalone `auto-flow` or `dense` token anywhere in the
+            // tail (e.g. `auto-flow 200px dense` or
+            // `auto-flow 50px auto-flow`). Without this, those tokens
+            // leaked into the auto-tracks value, which the §7.4 grammar
+            // forbids; the downstream track-list validator MIGHT catch
+            // a bare `dense`/`auto-flow` ident as an invalid track, but
+            // making the rejection explicit here keeps the grammar
+            // contract self-evident + independent of track-list
+            // validator internals.
+            for (var i = tailStart; i < tokens.Length; i++)
+            {
+                if (tokens[i].Equals("auto-flow", StringComparison.OrdinalIgnoreCase)
+                    || tokens[i].Equals("dense", StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+            }
             // Join remaining tokens with single spaces (preserves
             // multi-token track values like `100px 200px`).
             autoTracks = string.Join(" ", tokens, tailStart, tokens.Length - tailStart);

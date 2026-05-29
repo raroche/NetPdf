@@ -900,22 +900,39 @@ internal static class CssPreprocessor
                     else
                     {
                         // Atomic invalidation per CSS Cascade L4 §4.2 +
-                        // PR-#91 review F1 — emit invalid-sentinel
-                        // longhands carrying the raw shorthand value
-                        // so each longhand's resolver rejects them
-                        // and the cascade falls back to initial values.
+                        // post-PR-#111 review P1#2 — emit a GUARANTEED-
+                        // INVALID sentinel (NOT the raw shorthand value)
+                        // for all six longhands so each longhand's
+                        // resolver rejects them + the cascade falls
+                        // back to initial values.
+                        //
+                        // Why not the raw value (as grid-row/grid-area
+                        // do): those grid-line shorthands only fail
+                        // TryExpand when the raw contains '/' or invalid
+                        // grid-line tokens — values which are reliably
+                        // invalid for the grid-line longhands. The
+                        // `grid` shorthand fails TryExpand for shapes
+                        // like `grid: 100px 100px` (no slash) whose raw
+                        // value IS a valid `grid-template-rows` track
+                        // list — emitting it would partially apply the
+                        // invalid shorthand. The sentinel
+                        // (<see cref="GridInvalidShorthandSentinel"/>) is
+                        // rejected by every grid longhand resolver
+                        // (GridTemplateList tokenizer errors on it,
+                        // grid-auto-flow keyword table has no entry,
+                        // grid-template-areas needs a quoted string).
                         EmitInvalidGridShorthandRecovery(output,
-                            "grid-template-rows", cleanValue, isImportant, ordinal);
+                            "grid-template-rows", GridInvalidShorthandSentinel, isImportant, ordinal);
                         EmitInvalidGridShorthandRecovery(output,
-                            "grid-template-columns", cleanValue, isImportant, ordinal);
+                            "grid-template-columns", GridInvalidShorthandSentinel, isImportant, ordinal);
                         EmitInvalidGridShorthandRecovery(output,
-                            "grid-template-areas", cleanValue, isImportant, ordinal);
+                            "grid-template-areas", GridInvalidShorthandSentinel, isImportant, ordinal);
                         EmitInvalidGridShorthandRecovery(output,
-                            "grid-auto-rows", cleanValue, isImportant, ordinal);
+                            "grid-auto-rows", GridInvalidShorthandSentinel, isImportant, ordinal);
                         EmitInvalidGridShorthandRecovery(output,
-                            "grid-auto-columns", cleanValue, isImportant, ordinal);
+                            "grid-auto-columns", GridInvalidShorthandSentinel, isImportant, ordinal);
                         EmitInvalidGridShorthandRecovery(output,
-                            "grid-auto-flow", cleanValue, isImportant, ordinal);
+                            "grid-auto-flow", GridInvalidShorthandSentinel, isImportant, ordinal);
                     }
                 }
                 else
@@ -1006,6 +1023,27 @@ internal static class CssPreprocessor
     /// Spec says the invalid shorthand should drop + the earlier 3 win;
     /// our cycle-0c implementation drops both to initial value (auto).
     /// Documented in deferrals.md.</para></summary>
+    /// <summary>Per post-PR-#111 review P1#2 — a sentinel value
+    /// guaranteed invalid for EVERY grid longhand resolver, used when
+    /// the <c>grid</c> shorthand fails to expand. A bare <c>/</c>:
+    /// <list type="bullet">
+    ///   <item><b>GridTemplateList</b> (grid-template-rows/columns,
+    ///   grid-auto-rows/columns): the tokenizer errors on <c>/</c>
+    ///   ("unexpected character") → Invalid.</item>
+    ///   <item><b>Keyword</b> (grid-auto-flow): <c>/</c> is not an
+    ///   admitted keyword → Invalid.</item>
+    ///   <item><b>GridTemplateAreas</b>: requires quoted strings; a
+    ///   bare <c>/</c> has none → Invalid.</item>
+    /// </list>
+    /// Unlike the raw shorthand value (which the grid-line / grid-area
+    /// expanders reuse safely because their failure modes always carry
+    /// a <c>/</c> or invalid grid-line token), the <c>grid</c>
+    /// shorthand's no-slash failure shapes (e.g. <c>grid: 100px 100px</c>)
+    /// carry a raw value that IS valid for a track-list longhand — so
+    /// the sentinel is required to keep invalidation atomic. Pinned by
+    /// <c>GridShorthandSentinelTests</c>.</summary>
+    internal const string GridInvalidShorthandSentinel = "/";
+
     private static void EmitInvalidGridShorthandRecovery(
         ImmutableArray<CssDeclarationRecovery>.Builder output,
         string longhandName,

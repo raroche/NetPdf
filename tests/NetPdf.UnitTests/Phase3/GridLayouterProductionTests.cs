@@ -270,69 +270,79 @@ public sealed class GridLayouterProductionTests
     }
 
     [Fact]
-    public async Task Cycle8_production_grid_shorthand_auto_flow_column_dense_lands_per_section_8_5()
+    public async Task Cycle8_production_grid_shorthand_dense_backfills_hole_distinct_from_sparse()
     {
-        // Per Phase 3 Task 18 cycle 8 — `grid: <rows> / auto-flow
-        // dense <auto-cols>` shorthand sets grid-template-rows,
-        // grid-auto-columns, grid-auto-flow: column dense.
-        // §7.4 + §7.7 + §8.5 dense placement (cycle 7d).
+        // Per Phase 3 Task 18 cycle 8 + post-PR-#111 review P2#2 — the
+        // `grid: auto-flow dense <auto-rows> / <cols>` shorthand sets
+        // row-flow DENSE (§7.4 + §7.7 + §8.5 cycle 7d dense packing).
+        // This fixture produces a DIFFERENT layout under dense vs
+        // sparse, so it actually proves the shorthand landed `dense`
+        // (the prior fixture placed identically either way).
         //
-        // Fixture: <c>grid: 100px 100px / auto-flow dense 50px</c>
-        // — 2 explicit rows, auto-flow column dense, 50px auto
-        // columns. 3 auto-placed items: walk columns top-to-bottom,
-        // backfilling earlier holes per dense semantics.
+        // `grid: auto-flow dense 50px / 50px 50px 50px 50px`:
+        //   - 4 explicit 50px columns, implicit 50px rows, row dense.
+        //   - D both-definite at (row 1, col 2) → occupies cell (0, 1).
+        //   - A col-span 2 (auto) → row 0 can't fit at cols 0-1 (col 1
+        //     occupied) → lands at cols 2-3 → (0, 100).
+        //   - B 1-cell auto → DENSE rewinds the cursor + BACKFILLS the
+        //     (0, 0) hole → block offset 0. SPARSE would walk past it +
+        //     wrap to row 1 → block offset 50. The block-offset == 0
+        //     assertion is the dense-vs-sparse discriminator.
         const string html = """
             <!DOCTYPE html><html><head><style>
                 .grid {
                     display: grid;
-                    grid: 100px 100px / auto-flow dense 50px;
+                    grid: auto-flow dense 50px / 50px 50px 50px 50px;
                     width: 200px;
                 }
+                .d { grid-row: 1; grid-column: 2; }
+                .a { grid-column: span 2; }
             </style></head><body>
             <div class="grid">
+              <div class="d"></div>
               <div class="a"></div>
               <div class="b"></div>
-              <div class="c"></div>
             </div>
             </body></html>
             """;
 
         var (sink, _, _) = await RenderViaFullPipelineAsync(html);
 
+        var d = FindByClass(sink, "d");
         var a = FindByClass(sink, "a");
         var b = FindByClass(sink, "b");
-        var c = FindByClass(sink, "c");
 
+        Assert.NotNull(d);
         Assert.NotNull(a);
         Assert.NotNull(b);
-        Assert.NotNull(c);
-        // Column flow with 2 rows: auto items walk column by column.
-        // a at (0, 0); b at (0, 100); c at column 1 row 0 = (50, 0).
-        // Implicit column uses grid-auto-columns: 50px.
-        Assert.Equal(0.0, a!.Value.InlineOffset, precision: 3);
+        // D at (row 0, col 1) → inline 50, block 0.
+        Assert.Equal(50.0, d!.Value.InlineOffset, precision: 3);
+        Assert.Equal(0.0, d.Value.BlockOffset, precision: 3);
+        // A spans cols 2-3 → inline 100, block 0, width 100.
+        Assert.Equal(100.0, a!.Value.InlineOffset, precision: 3);
         Assert.Equal(0.0, a.Value.BlockOffset, precision: 3);
-        Assert.Equal(50.0, a.Value.InlineSize, precision: 3);
-        Assert.Equal(100.0, a.Value.BlockSize, precision: 3);
+        Assert.Equal(100.0, a.Value.InlineSize, precision: 3);
+        // B dense-backfills the (0, 0) hole → inline 0, BLOCK 0.
+        // Sparse would have placed B at block 50 (row 1). This is the
+        // assertion that proves `dense` landed from the shorthand.
         Assert.Equal(0.0, b!.Value.InlineOffset, precision: 3);
-        Assert.Equal(100.0, b.Value.BlockOffset, precision: 3);
+        Assert.Equal(0.0, b.Value.BlockOffset, precision: 3);
         Assert.Equal(50.0, b.Value.InlineSize, precision: 3);
-        Assert.Equal(100.0, b.Value.BlockSize, precision: 3);
-        Assert.Equal(50.0, c!.Value.InlineOffset, precision: 3);
-        Assert.Equal(0.0, c.Value.BlockOffset, precision: 3);
-        Assert.Equal(50.0, c.Value.InlineSize, precision: 3);
-        Assert.Equal(100.0, c.Value.BlockSize, precision: 3);
     }
 
     [Fact]
-    public async Task Cycle8_production_grid_shorthand_none_resets_all_six_longhands()
+    public async Task Cycle8_production_grid_shorthand_none_collapses_to_zero_size()
     {
-        // Per Phase 3 Task 18 cycle 8 — `grid: none` resets every
-        // longhand to its initial value. Verify by overriding a
-        // prior grid declaration with `grid: none`: items have NO
-        // explicit tracks, so they fall back to the implicit
-        // grid-auto-rows (= auto = 0 height for empty content).
-        // The grid effectively collapses; this proves none reset
-        // wins via the source-order cascade.
+        // Per Phase 3 Task 18 cycle 8 + post-PR-#111 review P2#3 —
+        // `grid: none` resets every longhand to its initial value,
+        // overriding the earlier explicit-track declarations in the
+        // SAME rule. With grid-template-* reset to none + grid-auto-*
+        // reset to auto + empty .a content, the single item collapses
+        // to a zero-size cell at the origin. (The cascade-level proof
+        // that all longhands reset lives in
+        // `GridShorthandProductionTests.Grid_shorthand_none_resets_template_longhands`;
+        // this asserts the layout CONSEQUENCE — zero size, not just
+        // offset.)
         const string html = """
             <!DOCTYPE html><html><head><style>
                 .grid {
@@ -350,13 +360,13 @@ public sealed class GridLayouterProductionTests
 
         var (sink, _, _) = await RenderViaFullPipelineAsync(html);
         var a = FindByClass(sink, "a");
-        // The earlier explicit-track declarations should be reset
-        // by `grid: none` (later in source order). With auto rows
-        // + auto columns + empty .a content, the item lands at
-        // origin with zero size.
         Assert.NotNull(a);
         Assert.Equal(0.0, a!.Value.InlineOffset, precision: 3);
         Assert.Equal(0.0, a.Value.BlockOffset, precision: 3);
+        // Zero size proves the earlier 50px×100px explicit tracks were
+        // reset by `grid: none` (otherwise .a would size to a track).
+        Assert.Equal(0.0, a.Value.InlineSize, precision: 3);
+        Assert.Equal(0.0, a.Value.BlockSize, precision: 3);
     }
 
     [Fact]

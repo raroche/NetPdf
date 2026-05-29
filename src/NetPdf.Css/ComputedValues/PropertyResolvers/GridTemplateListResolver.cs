@@ -167,6 +167,74 @@ internal static class GridTemplateListResolver
         }
     }
 
+    /// <summary>Per Phase 3 Task 18 cycle 8 post-PR-#111 review P1#1 —
+    /// side-effect-free validation for shorthand expanders. Mirrors the
+    /// <see cref="GridLineResolver.TryValidate"/> +
+    /// <see cref="GridTemplateAreasResolver.TryValidate"/> pattern: the
+    /// <c>grid</c> shorthand expander pre-validates every author-derived
+    /// track-list segment BEFORE emitting any longhand recovery record,
+    /// so an invalid segment drops the whole shorthand atomically per
+    /// CSS Cascade L4 §4.2 (= "invalid shorthand contributes none of
+    /// its longhands").
+    ///
+    /// <para>Returns <see langword="true"/> for any input that
+    /// <see cref="Resolve"/> would turn into
+    /// <see cref="ResolverResult.Resolved"/> /
+    /// <see cref="ResolverResult.ResolvedSideTable"/> /
+    /// <see cref="ResolverResult.Deferred"/> (= the relative-unit case
+    /// is well-formed CSS that needs layout context — still VALID);
+    /// returns <see langword="false"/> only for the
+    /// <see cref="ResolverResult.Invalid"/> cases. Mirrors the early-
+    /// rejection guards in <see cref="Resolve"/>; the two MUST stay in
+    /// sync. Does NOT emit a diagnostic (= the expander's caller owns
+    /// the diagnostic when the whole shorthand drops).</para></summary>
+    internal static bool TryValidate(string value)
+    {
+        if (value is null) return false;
+        // calc() → Invalid per the L19+ deferral (mirrors Resolve).
+        if (ContainsCaseInsensitive(value, "calc(")) return false;
+        // CSS-wide keyword → Invalid at this resolver (mirrors Resolve's
+        // defense-in-depth rejection). The expander handles whole-value
+        // CSS-wide keywords before reaching track validation, so this
+        // is defensive only.
+        if (GridLineResolver.IsCssWideKeyword(value)) return false;
+        // Relative units → Resolve returns Deferred (= well-formed,
+        // needs layout-time font/viewport context). Deferred is a VALID
+        // outcome — return true so the shorthand survives + the longhand
+        // re-resolves at layout time.
+        if (ContainsRelativeUnit(value)) return true;
+
+        var tokens = Tokenize(value, out var tokenizeError);
+        if (tokenizeError is not null) return false;
+        if (tokens.Count == 0) return false;
+
+        // Fast path: bare "none" → Resolved keyword at Resolve().
+        if (tokens.Count == 1
+            && tokens[0].Kind == TokenKind.Ident
+            && string.Equals(tokens[0].Text, "none", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        var parser = new Parser(tokens);
+        try
+        {
+            var items = parser.ParseTrackList();
+            if (!parser.AtEnd) return false;
+            if (items.Length == 0) return false;
+            if (items.Length > MaxParserTopLevelItems) return false;
+            return true;
+        }
+        catch (GridParseException)
+        {
+            return false;
+        }
+        catch (ArgumentException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>Per PR-#90 review F8 — upper bound on token count for one
     /// declaration. Each grid track contributes ~1-3 tokens; the worst-case
     /// legal track is something like <c>minmax(100px, 1fr)</c> (= 6 tokens

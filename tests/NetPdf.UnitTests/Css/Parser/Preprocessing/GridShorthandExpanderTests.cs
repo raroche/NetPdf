@@ -451,4 +451,112 @@ public sealed class GridShorthandExpanderTests
             expectedAutoCols: "auto",
             expectedAutoFlow: "row");
     }
+
+    // ============================================================
+    // Post-PR-#111 review P1#1 — atomic validation of author-derived
+    // track-list segments. An invalid segment drops the whole
+    // shorthand (CSS Cascade L4 §4.2).
+    // ============================================================
+
+    [Fact]
+    public void Invalid_rows_track_list_rejects_whole_shorthand()
+    {
+        // `bogus` is not a valid track size; even though the columns
+        // side (`100px`) is valid, §4.2 requires the whole shorthand
+        // to contribute nothing.
+        AssertRejects("bogus / 100px");
+    }
+
+    [Fact]
+    public void Invalid_columns_track_list_rejects_whole_shorthand()
+    {
+        AssertRejects("100px / bogus");
+    }
+
+    [Fact]
+    public void Both_sides_invalid_rejected()
+    {
+        AssertRejects("bogus / alsobogus");
+    }
+
+    [Fact]
+    public void Inline_template_string_form_rejected_as_deferred()
+    {
+        // The §7.4 `<line-names>? <string> <track-size>?` inline
+        // template-areas form is deferred to a follow-up cycle. The
+        // quoted string token isn't a valid track list, so the
+        // expander rejects it + the cascade falls back to initial
+        // values (= no partial application of the trailing
+        // `/ 1fr 100px`).
+        AssertRejects("\"head head\" 50px / 1fr 100px");
+        AssertRejects("\"head head\" \"main side\" / 1fr 1fr");
+    }
+
+    [Fact]
+    public void Invalid_auto_tracks_tail_rejects_whole_shorthand()
+    {
+        // The auto-tracks tail after `auto-flow` must be a valid
+        // track-size list. `bogus` is not.
+        AssertRejects("100px / auto-flow bogus");
+        AssertRejects("auto-flow bogus / 100px");
+    }
+
+    [Fact]
+    public void Invalid_columns_with_auto_flow_rows_rejected()
+    {
+        // Left auto-flow form: <columns> side (`bogus`) is invalid.
+        AssertRejects("auto-flow 100px / bogus");
+    }
+
+    // ============================================================
+    // Post-PR-#111 review P1#3 — auto-flow / dense tokens are only
+    // valid in the [ auto-flow && dense? ] head, never inside the
+    // <track-size>+ auto-tracks tail.
+    // ============================================================
+
+    [Fact]
+    public void Dense_after_auto_tracks_tail_rejected()
+    {
+        // `auto-flow 200px dense` — the `dense` token appears AFTER
+        // the auto-tracks tail begins, which the §7.4 grammar forbids.
+        AssertRejects("100px / auto-flow 200px dense");
+    }
+
+    [Fact]
+    public void Auto_flow_after_auto_tracks_tail_rejected()
+    {
+        AssertRejects("auto-flow 50px auto-flow / 100px");
+        AssertRejects("100px / auto-flow 50px auto-flow");
+    }
+
+    // ============================================================
+    // Post-PR-#111 review P1#1 — relative units defer-as-valid.
+    // GridTemplateListResolver.TryValidate returns true for relative
+    // units (em/rem/vw/...) since Resolve would Defer them (valid,
+    // re-resolved at layout time). The shorthand must SURVIVE these.
+    // ============================================================
+
+    [Fact]
+    public void Relative_unit_track_lists_survive_expansion()
+    {
+        AssertExpands("1em / 2rem",
+            expectedRows: "1em",
+            expectedCols: "2rem",
+            expectedAreas: "none",
+            expectedAutoRows: "auto",
+            expectedAutoCols: "auto",
+            expectedAutoFlow: "row");
+    }
+
+    [Fact]
+    public void Relative_unit_auto_tracks_tail_survives()
+    {
+        AssertExpands("100px / auto-flow 2em",
+            expectedRows: "100px",
+            expectedCols: "none",
+            expectedAreas: "none",
+            expectedAutoRows: "auto",
+            expectedAutoCols: "2em",
+            expectedAutoFlow: "column");
+    }
 }

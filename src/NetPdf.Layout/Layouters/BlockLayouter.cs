@@ -544,6 +544,35 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// coordinator's rewind/retry cycle).</summary>
     private bool _absoluteChildrenEmitted;
 
+    /// <summary>Per Phase 3 Task 19 cycle 2a — border-box geometry (in
+    /// fragmentainer/sink coordinates) of in-flow descendants that
+    /// establish an absolute containing block (<c>position</c> !=
+    /// <c>static</c>), recorded as they're emitted. The post-flow
+    /// abspos pass walks <c>Box.Parent</c> to the nearest such ancestor
+    /// + reads its geometry here to derive the containing block (=
+    /// padding box). Keyed by <see cref="Box"/>; last-write-wins so the
+    /// committed layout pass overwrites any rolled-back rewind attempt.
+    /// Lazily allocated (most documents have no positioned ancestors).</summary>
+    private System.Collections.Generic.Dictionary<Box, BoxFragment>? _positionedBoxGeometry;
+
+    /// <summary>Per Phase 3 Task 19 cycle 2a — record an in-flow box's
+    /// emitted border-box geometry IFF it establishes an absolute
+    /// containing block, so the abspos pass can anchor descendants to
+    /// it. No-op for the common (non-positioned) box.</summary>
+    private void RecordPositionedBoxGeometry(
+        Box box, double inlineOffset, double blockOffset,
+        double inlineSize, double blockSize)
+    {
+        if (!box.Style.EstablishesAbsoluteContainingBlock()) return;
+        _positionedBoxGeometry ??= new System.Collections.Generic.Dictionary<Box, BoxFragment>();
+        _positionedBoxGeometry[box] = new BoxFragment(
+            Box: box,
+            InlineOffset: inlineOffset,
+            BlockOffset: blockOffset,
+            InlineSize: inlineSize,
+            BlockSize: blockSize);
+    }
+
     private LayoutAttemptResult AttemptLayoutInFlow(
         FragmentainerContext fragmentainer,
         ref LayoutContext layout,
@@ -2852,6 +2881,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 BlockOffset: blockOffset,
                 InlineSize: borderBoxInlineSize,
                 BlockSize: borderBoxBlockSize));
+            // Per Phase 3 Task 19 cycle 2a — record positioned-CB
+            // establishers for abspos descendant anchoring.
+            RecordPositionedBoxGeometry(
+                child, inFlowInlineOffset, blockOffset,
+                borderBoxInlineSize, borderBoxBlockSize);
 
             // Per Phase 3 Task 14 cycle 1 — multicol container
             // dispatch. A block container with `column-count: N`
@@ -3531,7 +3565,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         ref LayoutContext layout,
         CancellationToken cancellationToken)
     {
-        var containingBlock = new AbsoluteContainingBlock(
+        // The initial containing block (cycle 1 fallback) = the
+        // fragmentainer content area. Cycle 2a anchors each abspos box
+        // to its NEAREST positioned ancestor's padding box when one
+        // exists (see ResolveContainingBlock); the ICB is the fallback
+        // when there's no positioned ancestor.
+        var icb = new AbsoluteContainingBlock(
             InlineOrigin: 0,
             BlockOrigin: 0,
             InlineSize: fragmentainer.ContentInlineSize,
@@ -3541,7 +3580,46 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // The diagnostics sink is captured once for the whole pass.
         var diagnostics = layout.Diagnostics ?? _diagnostics;
         EmitAbsolutelyPositionedDescendants(
-            _rootBox, containingBlock, diagnostics, ref layout, cancellationToken);
+            _rootBox, icb, diagnostics, ref layout, cancellationToken);
+    }
+
+    /// <summary>Per Phase 3 Task 19 cycle 2a — resolve the containing
+    /// block for <paramref name="absBox"/> per CSS Positioned Layout L3
+    /// §6: the nearest ancestor with <c>position</c> != <c>static</c>
+    /// (walked via <see cref="Box.Parent"/>), using that ancestor's
+    /// PADDING box (= its recorded border box inset by its border
+    /// widths). Falls back to <paramref name="icb"/> (the initial
+    /// containing block) when there's no positioned ancestor OR the
+    /// ancestor's geometry wasn't recorded (e.g., it was laid out via a
+    /// path that doesn't record — table cell / grid item / forced-
+    /// overflow; those fall back to the ICB in cycle 2a).</summary>
+    private AbsoluteContainingBlock ResolveContainingBlock(
+        Box absBox, AbsoluteContainingBlock icb)
+    {
+        for (var ancestor = absBox.Parent; ancestor is not null; ancestor = ancestor.Parent)
+        {
+            if (!ancestor.Style.EstablishesAbsoluteContainingBlock()) continue;
+            // Found the nearest positioned ancestor. Use its padding
+            // box if we recorded its geometry; else fall back to ICB.
+            if (_positionedBoxGeometry is not null
+                && _positionedBoxGeometry.TryGetValue(ancestor, out var borderBox))
+            {
+                var bl = ancestor.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
+                var bt = ancestor.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
+                var br = ancestor.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
+                var bb = ancestor.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
+                return new AbsoluteContainingBlock(
+                    InlineOrigin: borderBox.InlineOffset + bl,
+                    BlockOrigin: borderBox.BlockOffset + bt,
+                    InlineSize: System.Math.Max(0, borderBox.InlineSize - bl - br),
+                    BlockSize: System.Math.Max(0, borderBox.BlockSize - bt - bb));
+            }
+            // Positioned ancestor found but geometry not recorded —
+            // ICB fallback (cycle 2a limitation; documented).
+            return icb;
+        }
+        // No positioned ancestor → ICB.
+        return icb;
     }
 
     /// <summary>Per Phase 3 Task 19 cycle 1 — recursively walk
@@ -3578,11 +3656,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
 
     private void EmitOneAbsoluteBox(
         Box child,
-        AbsoluteContainingBlock containingBlock,
+        AbsoluteContainingBlock icb,
         IPaginateDiagnosticsSink? diagnostics,
         ref LayoutContext layout,
         CancellationToken cancellationToken)
     {
+        // Per Phase 3 Task 19 cycle 2a — anchor to the nearest
+        // positioned ancestor's padding box (ICB fallback).
+        var containingBlock = ResolveContainingBlock(child, icb);
         var placement = AbsoluteLayouter.ResolvePlacement(child, containingBlock);
         if (!placement.IsResolved)
         {
@@ -4676,6 +4757,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 BlockOffset: childBlockOffset,
                 InlineSize: childBorderBoxInlineSize,
                 BlockSize: childBorderBoxBlockSize));
+            // Per Phase 3 Task 19 cycle 2a — record positioned-CB
+            // establishers reached via the recursive walk so abspos
+            // descendants anchor to their nearest positioned ancestor.
+            RecordPositionedBoxGeometry(
+                child, childInlineOffset, childBlockOffset,
+                childBorderBoxInlineSize, childBorderBoxBlockSize);
 
             // Per Phase 3 Task 14 cycle 1 — nested multicol dispatch.
             // A nested block-flow descendant with `column-count: N`

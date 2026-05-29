@@ -2511,12 +2511,17 @@ flags the categories):
   positioned root's content box. Abspos descendants at ANY depth are
   collected by the top-level post-flow pass + anchored to this ICB.
 - **Missing** —
-  - **Nearest-positioned-ancestor CB + ancestor walk** — an abspos box
-    inside a `position: relative` ancestor must anchor to that
-    ancestor's PADDING box, not the ICB. Cycle 1 anchors everything to
-    the ICB (correct only when there's no positioned ancestor).
+  - ~~**Nearest-positioned-ancestor CB + ancestor walk**~~ — SHIPPED
+    in cycle 2a. An abspos box inside a `position: relative` (or any
+    non-`static`) ancestor now anchors to that ancestor's PADDING box
+    (`Box.Parent` walk + per-box geometry recorded during in-flow
+    emit; padding box = recorded border box inset by border widths).
+    ICB remains the fallback when there's no positioned ancestor.
+    Remaining gap: positioned ancestors laid out via the
+    forced-overflow / table-cell / grid-item paths aren't recorded yet
+    (those still fall back to the ICB) — cycle 2b.
   - **`auto` offset resolution (static position)** — `top`/`left` auto
-    should resolve to the box's static-flow position per §6.
+    should resolve to the box's static-flow position per §6. Cycle 2b.
   - **`right`/`bottom` anchoring + over-constrained resolution** — §6
     left/right/width (and top/bottom/height) constraint solving. Per
     post-PR-#112 review C1, a box with an EXPLICIT `right` or `bottom`

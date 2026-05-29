@@ -159,6 +159,43 @@ public sealed class AbsoluteLayouterProductionTests
         Assert.Equal(40.0, abs.Value.InlineSize, precision: 3);
     }
 
+    [Fact]
+    public async Task Cycle2a_production_abspos_anchors_to_relative_parent()
+    {
+        // Per Phase 3 Task 19 cycle 2a — `position: absolute` inside a
+        // `position: relative` parent anchors to the PARENT's padding
+        // box, not the initial containing block. The relative parent
+        // sits at block 100 (after a 100px spacer); the abspos child's
+        // top:10 left:20 resolve relative to the parent's content/
+        // padding-box origin (parent has no border → padding box ==
+        // border box origin = (0, 100)).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .spacer { height: 100px; }
+                .rel { position: relative; height: 300px; }
+                .abs {
+                    position: absolute;
+                    top: 10px; left: 20px;
+                    width: 50px; height: 30px;
+                }
+            </style></head><body>
+            <div class="spacer"></div>
+            <div class="rel">
+              <div class="abs"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _) = await RenderAsync(html);
+        var abs = FindByClass(sink, "abs");
+        Assert.NotNull(abs);
+        // Anchored to .rel's padding box (origin 0, 100) + top/left.
+        Assert.Equal(20.0, abs!.Value.InlineOffset, precision: 3); // 0 + 20
+        Assert.Equal(110.0, abs.Value.BlockOffset, precision: 3);  // 100 + 10
+        Assert.Equal(50.0, abs.Value.InlineSize, precision: 3);
+        Assert.Equal(30.0, abs.Value.BlockSize, precision: 3);
+    }
+
     // ================================================================
     //  Pipeline driver — mirrors GridLayouterProductionTests.
     // ================================================================

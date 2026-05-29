@@ -6181,6 +6181,99 @@ public sealed class BlockLayouterTests
         Assert.Equal(30.0, innerFrag.BlockSize, precision: 3);
     }
 
+    // --- Cycle 2a: nearest-positioned-ancestor containing block -------
+
+    [Fact]
+    public void Cycle2a_abspos_anchors_to_positioned_ancestor_padding_box()
+    {
+        // A position:relative ancestor establishes the containing block.
+        // The relative parent sits at block 50 (after a 50px spacer)
+        // with a 10px border; its abspos child with top:10 left:20
+        // anchors to the parent's PADDING box origin (border-box origin
+        // + border widths), NOT the ICB.
+        //
+        //   spacer: height 50 → relative parent border-box top = 50.
+        //   relative parent: border 10, height 200 → padding-box origin
+        //     = (10 inline, 50 + 10 = 60 block).
+        //   abs child top:10 left:20 → (10+20=30 inline, 60+10=70 block).
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var spacerStyle = MakeStyle();
+        SetLengthPx(spacerStyle, PropertyId.Height, 50);
+        root.AppendChild(Box.ForElement(BoxKind.BlockContainer, spacerStyle, MakeElement()));
+
+        var relStyle = MakeStyle();
+        SetKeyword(relStyle, PropertyId.Position, 1); // relative
+        SetLengthPx(relStyle, PropertyId.Height, 200);
+        SetLengthPx(relStyle, PropertyId.BorderTopWidth, 10);
+        SetLengthPx(relStyle, PropertyId.BorderLeftWidth, 10);
+        SetLengthPx(relStyle, PropertyId.BorderRightWidth, 10);
+        SetLengthPx(relStyle, PropertyId.BorderBottomWidth, 10);
+        var rel = Box.ForElement(BoxKind.BlockContainer, relStyle, MakeElement());
+        root.AppendChild(rel);
+
+        var absStyle = MakeStyle();
+        SetKeyword(absStyle, PropertyId.Position, 2); // absolute
+        SetLengthPx(absStyle, PropertyId.Top, 10);
+        SetLengthPx(absStyle, PropertyId.Left, 20);
+        SetLengthPx(absStyle, PropertyId.Width, 30);
+        SetLengthPx(absStyle, PropertyId.Height, 30);
+        var abs = Box.ForElement(BoxKind.BlockContainer, absStyle, MakeElement());
+        rel.AppendChild(abs);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        var absFrag = sink.Fragments.First(f => ReferenceEquals(f.Box, abs));
+        // Anchored to the relative parent's padding box, NOT the ICB.
+        Assert.Equal(30.0, absFrag.InlineOffset, precision: 3); // 10(border)+20(left)
+        Assert.Equal(70.0, absFrag.BlockOffset, precision: 3);  // 50(spacer)+10(border)+10(top)
+        Assert.Equal(30.0, absFrag.InlineSize, precision: 3);
+        Assert.Equal(30.0, absFrag.BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public void Cycle2a_abspos_no_positioned_ancestor_falls_back_to_icb()
+    {
+        // Sanity: with the relative parent made static, the abspos box
+        // falls back to the ICB (= fragmentainer origin), so top/left
+        // are NOT offset by the (now static) ancestor.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var staticParentStyle = MakeStyle();
+        SetLengthPx(staticParentStyle, PropertyId.Height, 200);
+        var staticParent = Box.ForElement(
+            BoxKind.BlockContainer, staticParentStyle, MakeElement());
+        root.AppendChild(staticParent);
+
+        var absStyle = MakeStyle();
+        SetKeyword(absStyle, PropertyId.Position, 2);
+        SetLengthPx(absStyle, PropertyId.Top, 10);
+        SetLengthPx(absStyle, PropertyId.Left, 20);
+        SetLengthPx(absStyle, PropertyId.Width, 30);
+        SetLengthPx(absStyle, PropertyId.Height, 30);
+        var abs = Box.ForElement(BoxKind.BlockContainer, absStyle, MakeElement());
+        staticParent.AppendChild(abs);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        var absFrag = sink.Fragments.First(f => ReferenceEquals(f.Box, abs));
+        // ICB anchoring: top/left from fragmentainer origin (0,0).
+        Assert.Equal(20.0, absFrag.InlineOffset, precision: 3);
+        Assert.Equal(10.0, absFrag.BlockOffset, precision: 3);
+    }
+
     private static ComputedStyle MakeStyle() => ComputedStyle.RentForExclusiveTesting();
 
     private static void SetLengthPx(ComputedStyle style, PropertyId id, double px) =>

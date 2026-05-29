@@ -191,6 +191,15 @@ internal static class CssPreprocessor
         // treats every identifier as a <custom-ident> per the §8.4
         // fallback rule.
         "grid-area",
+        // Per Phase 3 Task 18 cycle 8 — the `grid` shorthand per §7.4.
+        // <see cref="GridShorthandExpander.TryExpand"/> emits SIX
+        // longhand recovery records (the three grid-template-* +
+        // the three grid-auto-* longhands). Covers the `none` reset,
+        // the `<rows> / <columns>` plain template form, and both
+        // auto-flow forms with optional `dense`. The inline
+        // template-areas string form (`grid: "a a" 50px / 100px`)
+        // is deferred to a follow-up cycle.
+        "grid",
     }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
@@ -842,6 +851,71 @@ internal static class CssPreprocessor
                             "grid-row-end", cleanValue, isImportant, ordinal);
                         EmitInvalidGridShorthandRecovery(output,
                             "grid-column-end", cleanValue, isImportant, ordinal);
+                    }
+                }
+                // Per Phase 3 Task 18 cycle 8 — the `grid` shorthand
+                // per §7.4. Expands into all six grid-template-* +
+                // grid-auto-* longhands. The §7.4 reset rule applies
+                // (= longhands not set by the matched form reset to
+                // their initial values), so even the
+                // <c>&lt;rows&gt; / &lt;columns&gt;</c> form emits
+                // explicit `auto`/`row`/`none` for the unmentioned
+                // auto-* + template-areas longhands.
+                else if (normalizedName == "grid")
+                {
+                    if (GridShorthandExpander.TryExpand(
+                        cleanValue,
+                        out var gTemplateRows,
+                        out var gTemplateColumns,
+                        out var gTemplateAreas,
+                        out var gAutoRows,
+                        out var gAutoColumns,
+                        out var gAutoFlow))
+                    {
+                        output.Add(new CssDeclarationRecovery(
+                            "grid-template-rows", gTemplateRows, isImportant,
+                            IsFromShorthandExpansion: true,
+                            SourceOrdinal: ordinal));
+                        output.Add(new CssDeclarationRecovery(
+                            "grid-template-columns", gTemplateColumns, isImportant,
+                            IsFromShorthandExpansion: true,
+                            SourceOrdinal: ordinal));
+                        output.Add(new CssDeclarationRecovery(
+                            "grid-template-areas", gTemplateAreas, isImportant,
+                            IsFromShorthandExpansion: true,
+                            SourceOrdinal: ordinal));
+                        output.Add(new CssDeclarationRecovery(
+                            "grid-auto-rows", gAutoRows, isImportant,
+                            IsFromShorthandExpansion: true,
+                            SourceOrdinal: ordinal));
+                        output.Add(new CssDeclarationRecovery(
+                            "grid-auto-columns", gAutoColumns, isImportant,
+                            IsFromShorthandExpansion: true,
+                            SourceOrdinal: ordinal));
+                        output.Add(new CssDeclarationRecovery(
+                            "grid-auto-flow", gAutoFlow, isImportant,
+                            IsFromShorthandExpansion: true,
+                            SourceOrdinal: ordinal));
+                    }
+                    else
+                    {
+                        // Atomic invalidation per CSS Cascade L4 §4.2 +
+                        // PR-#91 review F1 — emit invalid-sentinel
+                        // longhands carrying the raw shorthand value
+                        // so each longhand's resolver rejects them
+                        // and the cascade falls back to initial values.
+                        EmitInvalidGridShorthandRecovery(output,
+                            "grid-template-rows", cleanValue, isImportant, ordinal);
+                        EmitInvalidGridShorthandRecovery(output,
+                            "grid-template-columns", cleanValue, isImportant, ordinal);
+                        EmitInvalidGridShorthandRecovery(output,
+                            "grid-template-areas", cleanValue, isImportant, ordinal);
+                        EmitInvalidGridShorthandRecovery(output,
+                            "grid-auto-rows", cleanValue, isImportant, ordinal);
+                        EmitInvalidGridShorthandRecovery(output,
+                            "grid-auto-columns", cleanValue, isImportant, ordinal);
+                        EmitInvalidGridShorthandRecovery(output,
+                            "grid-auto-flow", cleanValue, isImportant, ordinal);
                     }
                 }
                 else

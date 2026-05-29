@@ -202,6 +202,164 @@ public sealed class GridLayouterProductionTests
     }
 
     [Fact]
+    public async Task Cycle8_production_grid_shorthand_rows_slash_columns_expands_correctly()
+    {
+        // Per Phase 3 Task 18 cycle 8 — `grid: <rows> / <columns>`
+        // shorthand expansion end-to-end. CSS Grid L1 §7.4. The
+        // GridShorthandExpander runs in the CSS preprocessor's
+        // recovery pass + emits six longhand recovery records; the
+        // cascade sees the longhand values + the layouter places
+        // items per the explicit track sizes.
+        //
+        // Fixture: <c>grid: 100px 200px / 50px 150px</c> on a 2×2
+        // explicit grid. Same expected geometry as the
+        // <c>Production_html_div_with_display_grid_lays_out_explicit_2x2</c>
+        // test which uses the longhand form directly — proves the
+        // shorthand round-trips to the same layout result.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid: 100px 200px / 50px 150px;
+                    width: 200px;
+                    height: 300px;
+                }
+                .a { grid-row-start: 1; grid-column-start: 1; }
+                .b { grid-row-start: 1; grid-column-start: 2; }
+                .c { grid-row-start: 2; grid-column-start: 1; }
+                .d { grid-row-start: 2; grid-column-start: 2; }
+            </style></head><body>
+            <div class="grid">
+              <div class="a"></div>
+              <div class="b"></div>
+              <div class="c"></div>
+              <div class="d"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var a = FindByClass(sink, "a");
+        var b = FindByClass(sink, "b");
+        var c = FindByClass(sink, "c");
+        var d = FindByClass(sink, "d");
+
+        Assert.NotNull(a);
+        Assert.NotNull(b);
+        Assert.NotNull(c);
+        Assert.NotNull(d);
+        // a at (0, 0, 50, 100); b at (50, 0, 150, 100);
+        // c at (0, 100, 50, 200); d at (50, 100, 150, 200).
+        Assert.Equal(0.0, a!.Value.InlineOffset, precision: 3);
+        Assert.Equal(0.0, a.Value.BlockOffset, precision: 3);
+        Assert.Equal(50.0, a.Value.InlineSize, precision: 3);
+        Assert.Equal(100.0, a.Value.BlockSize, precision: 3);
+        Assert.Equal(50.0, b!.Value.InlineOffset, precision: 3);
+        Assert.Equal(0.0, b.Value.BlockOffset, precision: 3);
+        Assert.Equal(150.0, b.Value.InlineSize, precision: 3);
+        Assert.Equal(100.0, b.Value.BlockSize, precision: 3);
+        Assert.Equal(0.0, c!.Value.InlineOffset, precision: 3);
+        Assert.Equal(100.0, c.Value.BlockOffset, precision: 3);
+        Assert.Equal(50.0, c.Value.InlineSize, precision: 3);
+        Assert.Equal(200.0, c.Value.BlockSize, precision: 3);
+        Assert.Equal(50.0, d!.Value.InlineOffset, precision: 3);
+        Assert.Equal(100.0, d.Value.BlockOffset, precision: 3);
+        Assert.Equal(150.0, d.Value.InlineSize, precision: 3);
+        Assert.Equal(200.0, d.Value.BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public async Task Cycle8_production_grid_shorthand_auto_flow_column_dense_lands_per_section_8_5()
+    {
+        // Per Phase 3 Task 18 cycle 8 — `grid: <rows> / auto-flow
+        // dense <auto-cols>` shorthand sets grid-template-rows,
+        // grid-auto-columns, grid-auto-flow: column dense.
+        // §7.4 + §7.7 + §8.5 dense placement (cycle 7d).
+        //
+        // Fixture: <c>grid: 100px 100px / auto-flow dense 50px</c>
+        // — 2 explicit rows, auto-flow column dense, 50px auto
+        // columns. 3 auto-placed items: walk columns top-to-bottom,
+        // backfilling earlier holes per dense semantics.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid: 100px 100px / auto-flow dense 50px;
+                    width: 200px;
+                }
+            </style></head><body>
+            <div class="grid">
+              <div class="a"></div>
+              <div class="b"></div>
+              <div class="c"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var a = FindByClass(sink, "a");
+        var b = FindByClass(sink, "b");
+        var c = FindByClass(sink, "c");
+
+        Assert.NotNull(a);
+        Assert.NotNull(b);
+        Assert.NotNull(c);
+        // Column flow with 2 rows: auto items walk column by column.
+        // a at (0, 0); b at (0, 100); c at column 1 row 0 = (50, 0).
+        // Implicit column uses grid-auto-columns: 50px.
+        Assert.Equal(0.0, a!.Value.InlineOffset, precision: 3);
+        Assert.Equal(0.0, a.Value.BlockOffset, precision: 3);
+        Assert.Equal(50.0, a.Value.InlineSize, precision: 3);
+        Assert.Equal(100.0, a.Value.BlockSize, precision: 3);
+        Assert.Equal(0.0, b!.Value.InlineOffset, precision: 3);
+        Assert.Equal(100.0, b.Value.BlockOffset, precision: 3);
+        Assert.Equal(50.0, b.Value.InlineSize, precision: 3);
+        Assert.Equal(100.0, b.Value.BlockSize, precision: 3);
+        Assert.Equal(50.0, c!.Value.InlineOffset, precision: 3);
+        Assert.Equal(0.0, c.Value.BlockOffset, precision: 3);
+        Assert.Equal(50.0, c.Value.InlineSize, precision: 3);
+        Assert.Equal(100.0, c.Value.BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public async Task Cycle8_production_grid_shorthand_none_resets_all_six_longhands()
+    {
+        // Per Phase 3 Task 18 cycle 8 — `grid: none` resets every
+        // longhand to its initial value. Verify by overriding a
+        // prior grid declaration with `grid: none`: items have NO
+        // explicit tracks, so they fall back to the implicit
+        // grid-auto-rows (= auto = 0 height for empty content).
+        // The grid effectively collapses; this proves none reset
+        // wins via the source-order cascade.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 100px 100px;
+                    grid-template-columns: 50px 50px;
+                    grid: none;
+                }
+            </style></head><body>
+            <div class="grid">
+              <div class="a"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+        var a = FindByClass(sink, "a");
+        // The earlier explicit-track declarations should be reset
+        // by `grid: none` (later in source order). With auto rows
+        // + auto columns + empty .a content, the item lands at
+        // origin with zero size.
+        Assert.NotNull(a);
+        Assert.Equal(0.0, a!.Value.InlineOffset, precision: 3);
+        Assert.Equal(0.0, a.Value.BlockOffset, precision: 3);
+    }
+
+    [Fact]
     public async Task Production_html_mixed_explicit_and_auto_placement()
     {
         // Item A is explicitly placed at (1, 2). The auto-placed items

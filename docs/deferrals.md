@@ -2488,3 +2488,72 @@ flags the categories):
   pins `repeat(auto-fit, …)` rendering DIFFERENTLY from
   `repeat(auto-fill, …)` when the item count is less than the
   derived track count.
+
+---
+
+## abspos-cycle-1-explicit-only
+
+- **ID** — `abspos-cycle-1-explicit-only`
+- **Status** — `approximated`. Phase 3 Task 19 cycle 1 ships the
+  explicit-offset MVP; the rest of CSS Positioned Layout L3 §6 is
+  cycle 2+.
+- **Behavior** — `position: absolute` boxes are removed from normal
+  flow (don't advance the cursor, don't break margin adjacency) +
+  placed by `AbsoluteLayouter.ResolvePlacement` against the
+  establishing block's CONTENT box. Cycle 1 resolves ONLY explicit
+  pixel `top` + `left` + `width` + `height`. Any box using a deferred
+  feature is DROPPED (no fragment) with
+  `LAYOUT-ABSOLUTE-FEATURE-UNSUPPORTED-001` rather than mis-placed.
+- **Containing block (cycle 1)** — the establishing `BlockLayouter`'s
+  content area = the fragmentainer content box
+  `(0, 0, contentInlineSize, blockSize)`. For the top-level layouter
+  this coincides with the initial containing block AND with a
+  positioned root's content box. Abspos descendants at ANY depth are
+  collected by the top-level post-flow pass + anchored to this ICB.
+- **Missing** —
+  - **Nearest-positioned-ancestor CB + ancestor walk** — an abspos box
+    inside a `position: relative` ancestor must anchor to that
+    ancestor's PADDING box, not the ICB. Cycle 1 anchors everything to
+    the ICB (correct only when there's no positioned ancestor).
+  - **`auto` offset resolution (static position)** — `top`/`left` auto
+    should resolve to the box's static-flow position per §6.
+  - **`right`/`bottom` anchoring + over-constrained resolution** — §6
+    left/right/width (and top/bottom/height) constraint solving. Per
+    post-PR-#112 review C1, a box with an EXPLICIT `right` or `bottom`
+    (length or percentage) is DEFERRED (dropped with the diagnostic)
+    rather than silently placed via top/left — cycle 1 doesn't honor
+    them. Cycle 2 ships the full constraint solver (incl. the
+    over-constrained LTR "ignore right/bottom" rule).
+  - **Percentage** `top`/`left`/`width`/`height` (resolve against the
+    CB extent).
+  - **`auto` width/height** — shrink-to-fit + offset-derived sizing.
+  - **Padding-box CB** — cycle 1 uses the content box (= padding box
+    only when the ancestor has zero padding).
+  - **z-index paint ordering** — cycle 1 paints in source order.
+  - **Pagination interaction** — cycle 1 emits all abspos boxes on the
+    establishing block's FIRST page (the `AttemptLayout` wrapper runs
+    the pass once, for `_incomingContinuation is null`, on AllDone OR
+    PageComplete — per post-PR-#112 review C2 so multi-page in-flow
+    content doesn't drop abspos fragments). Deciding which page an
+    abspos box belongs on (e.g., anchored to content that paginates),
+    + abspos boxes taller than a page, remain deferred.
+  - **`position: fixed`** — Task 20 (same out-of-flow model, ICB/page
+    always the CB).
+- **Trigger** — real corpus documents using positioned overlays /
+  badges / watermarks beyond the explicit-offset MVP, OR a
+  user-reported case.
+- **Owner files** —
+  - `src/NetPdf.Layout/Layouters/AbsoluteLayouter.cs` — placement math
+    (extend to auto/percentage/right/bottom/auto-size).
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` —
+    `EmitAbsolutelyPositionedChildren` /
+    `EmitAbsolutelyPositionedDescendants` (CB = nearest-positioned-
+    ancestor padding box via the `Box.Parent` walk; pagination).
+  - `src/NetPdf.Layout/Layouters/ComputedStyleLayoutExtensions.cs` —
+    `ReadPosition` / `EstablishesAbsoluteContainingBlock`.
+- **Added** — Phase 3 Task 19 cycle 1.
+- **Removal condition** — the nearest-positioned-ancestor padding-box
+  CB resolution lands AND auto/percentage/right/bottom/auto-size are
+  resolved per §6 AND a production-pipeline test pins
+  `position: absolute` inside `position: relative` anchoring to the
+  relative ancestor (not the ICB).

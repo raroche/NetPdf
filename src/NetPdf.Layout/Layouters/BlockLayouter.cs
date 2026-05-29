@@ -495,7 +495,56 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     }
 
     /// <inheritdoc />
+    /// <remarks>Per Phase 3 Task 19 cycle 1 + post-PR-#112 review C2 —
+    /// thin wrapper around <see cref="AttemptLayoutInFlow"/> that runs
+    /// the <c>position: absolute</c> emission pass AFTER the in-flow
+    /// result is computed. Running it here (rather than inline before
+    /// one return) guarantees abspos boxes emit on the establishing
+    /// block's first page regardless of whether that page completes
+    /// with <see cref="LayoutAttemptOutcome.AllDone"/> OR
+    /// <see cref="LayoutAttemptOutcome.PageComplete"/> — multi-page
+    /// in-flow content used to skip the inline pre-AllDone call
+    /// entirely, dropping every abspos fragment.
+    ///
+    /// <para>Gates: the pass runs only on the FIRST page
+    /// (<c>_incomingContinuation is null</c> — resume pages skip it,
+    /// cycle-1 abspos-pagination deferral) + only for COMMITTED
+    /// outcomes (AllDone / PageComplete, NOT NeedsRewind — a rewind
+    /// rolls the sink back + retries, so abspos must wait for the
+    /// committed attempt) + at most once
+    /// (<see cref="_absoluteChildrenEmitted"/> guards against a
+    /// committed re-entry). Emitting after the core also preserves
+    /// paint order: abspos fragments append after all in-flow
+    /// fragments (= painted over in-flow content, the CSS default for
+    /// out-of-flow positioned boxes).</para></remarks>
     public LayoutAttemptResult AttemptLayout(
+        FragmentainerContext fragmentainer,
+        ref LayoutContext layout,
+        IBreakResolver resolver,
+        LayoutAttemptStrategy strategy,
+        CancellationToken cancellationToken = default)
+    {
+        var result = AttemptLayoutInFlow(
+            fragmentainer, ref layout, resolver, strategy, cancellationToken);
+
+        if (_incomingContinuation is null
+            && !_absoluteChildrenEmitted
+            && result.Outcome is LayoutAttemptOutcome.AllDone
+                or LayoutAttemptOutcome.PageComplete)
+        {
+            _absoluteChildrenEmitted = true;
+            EmitAbsolutelyPositionedChildren(fragmentainer, ref layout, cancellationToken);
+        }
+        return result;
+    }
+
+    /// <summary>Per post-PR-#112 review C2 — one-shot guard so the
+    /// abspos emission pass runs at most once per BlockLayouter
+    /// instance (defends against a committed re-entry after the
+    /// coordinator's rewind/retry cycle).</summary>
+    private bool _absoluteChildrenEmitted;
+
+    private LayoutAttemptResult AttemptLayoutInFlow(
         FragmentainerContext fragmentainer,
         ref LayoutContext layout,
         IBreakResolver resolver,
@@ -833,6 +882,19 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         {
             cancellationToken.ThrowIfCancellationRequested();
             var child = _rootBox.Children[childIdx];
+
+            // Per Phase 3 Task 19 cycle 1 — `position: absolute` boxes
+            // are removed from normal flow per CSS Positioned Layout L3
+            // §6: they don't advance the in-flow cursor + do NOT break
+            // margin adjacency (unlike inline content, which forms a
+            // line box). So the collapse chain is PRESERVED across them
+            // — skip without touching hasPriorAdjoiningBlock /
+            // prevBlockMarginEnd. The actual placement happens in the
+            // post-flow absolute pass (see EmitAbsolutelyPositionedChildren).
+            if (child.Style.IsAbsolutelyPositioned())
+            {
+                continue;
+            }
 
             // Cycle 1: only block-level children are laid out.
             if (!child.IsBlockLevel)
@@ -3417,8 +3479,234 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             }
         }
 
+        // Per Phase 3 Task 19 cycle 1 + post-PR-#112 review C2 — the
+        // abspos emission pass is NOT run here. It runs in the
+        // AttemptLayout WRAPPER after this core returns, so it fires on
+        // BOTH the AllDone path (reached here) AND the PageComplete
+        // paths (the early returns scattered through the in-flow loop
+        // for multi-page documents). Running it inline here would only
+        // cover AllDone, dropping every abspos fragment for any
+        // document whose in-flow content paginates.
+
         // All children laid out — no more pages needed.
         return LayoutAttemptResult.AllDone(cost: 0);
+    }
+
+    /// <summary>Per Phase 3 Task 19 cycle 1 — lay out + emit the
+    /// <c>position: absolute</c> direct children of <see cref="_rootBox"/>
+    /// per CSS Positioned Layout L3 §6. Runs AFTER the in-flow pass so
+    /// abspos boxes paint over in-flow content (cycle 1 = source-order
+    /// paint; z-index ordering is a later cycle).
+    ///
+    /// <para><b>Containing block (cycle 1):</b> the establishing
+    /// <c>BlockLayouter</c>'s content area = the fragmentainer content
+    /// box <c>(0, 0, contentInlineSize, blockSize)</c>. For the top-
+    /// level layouter this coincides with the initial containing block
+    /// AND with a positioned root's content box. The spec-correct
+    /// nearest-positioned-ancestor PADDING box + the ancestor walk
+    /// (so an abspos box anchors to its <c>position: relative</c>
+    /// ancestor rather than the ICB) is cycle 2 — see
+    /// <c>docs/deferrals.md#abspos-cycle-1-explicit-only</c>.</para>
+    ///
+    /// <para><b>Whole-subtree collection.</b> Abspos boxes appear at
+    /// ANY depth (real HTML nests them inside <c>&lt;body&gt;</c> etc.),
+    /// so this walks <see cref="_rootBox"/>'s entire descendant tree.
+    /// The in-flow passes (top-level loop + EmitBlockSubtreeRecursive)
+    /// skip abspos boxes, so emitting them here is the single emission
+    /// site (no double-emit). The walk does NOT descend INTO an abspos
+    /// box's own subtree — that box's descendants are laid out by the
+    /// inner sub-BlockLayouter (their own nested abspos boxes anchor to
+    /// the inner box once it's a positioned CB; cycle-1 they'd anchor
+    /// to the inner box's content area via that recursion).</para>
+    ///
+    /// <para>Each box's offsets/size are resolved by the pure
+    /// <see cref="AbsoluteLayouter.ResolvePlacement"/>; unresolved
+    /// (= cycle-1-deferred) boxes are DROPPED with a
+    /// <c>LAYOUT-ABSOLUTE-FEATURE-UNSUPPORTED-001</c> diagnostic rather
+    /// than mis-placed. Resolved boxes emit their border-box fragment +
+    /// dispatch inner content through a translating sub-BlockLayouter
+    /// (mirrors <c>GridLayouter.DispatchGridItemContents</c>).</para></summary>
+    private void EmitAbsolutelyPositionedChildren(
+        FragmentainerContext fragmentainer,
+        ref LayoutContext layout,
+        CancellationToken cancellationToken)
+    {
+        var containingBlock = new AbsoluteContainingBlock(
+            InlineOrigin: 0,
+            BlockOrigin: 0,
+            InlineSize: fragmentainer.ContentInlineSize,
+            BlockSize: fragmentainer.BlockSize);
+
+        // Collect abspos descendants at any depth (in source order).
+        // The diagnostics sink is captured once for the whole pass.
+        var diagnostics = layout.Diagnostics ?? _diagnostics;
+        EmitAbsolutelyPositionedDescendants(
+            _rootBox, containingBlock, diagnostics, ref layout, cancellationToken);
+    }
+
+    /// <summary>Per Phase 3 Task 19 cycle 1 — recursively walk
+    /// <paramref name="box"/>'s children, emitting each
+    /// <c>position: absolute</c> descendant against
+    /// <paramref name="containingBlock"/>. Does NOT recurse into an
+    /// abspos box's own subtree (the inner sub-BlockLayouter owns
+    /// that); DOES recurse through in-flow boxes to find abspos boxes
+    /// nested at any depth.</summary>
+    private void EmitAbsolutelyPositionedDescendants(
+        Box box,
+        AbsoluteContainingBlock containingBlock,
+        IPaginateDiagnosticsSink? diagnostics,
+        ref LayoutContext layout,
+        CancellationToken cancellationToken)
+    {
+        foreach (var child in box.Children)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (child.Style.IsAbsolutelyPositioned())
+            {
+                EmitOneAbsoluteBox(
+                    child, containingBlock, diagnostics, ref layout, cancellationToken);
+                // Do NOT descend into the abspos box here — its own
+                // descendants are laid out by the inner sub-BlockLayouter
+                // dispatched inside EmitOneAbsoluteBox.
+                continue;
+            }
+            // In-flow box: recurse to find deeper abspos descendants.
+            EmitAbsolutelyPositionedDescendants(
+                child, containingBlock, diagnostics, ref layout, cancellationToken);
+        }
+    }
+
+    private void EmitOneAbsoluteBox(
+        Box child,
+        AbsoluteContainingBlock containingBlock,
+        IPaginateDiagnosticsSink? diagnostics,
+        ref LayoutContext layout,
+        CancellationToken cancellationToken)
+    {
+        var placement = AbsoluteLayouter.ResolvePlacement(child, containingBlock);
+        if (!placement.IsResolved)
+        {
+            OptimizingBreakResolver.SafeEmit(
+                diagnostics,
+                new PaginateDiagnostic(
+                    PaginateDiagnosticCodes.LayoutAbsoluteFeatureUnsupported001,
+                    $"position:absolute box dropped (cycle-1 explicit-only): "
+                    + $"{placement.DeferReason}",
+                    PaginateDiagnosticSeverity.Warning));
+            return;
+        }
+
+        // Emit the border-box fragment at the resolved position.
+        _sink.Emit(new BoxFragment(
+            Box: child,
+            InlineOffset: placement.InlineOffset,
+            BlockOffset: placement.BlockOffset,
+            InlineSize: placement.InlineSize,
+            BlockSize: placement.BlockSize));
+
+        // Dispatch inner content (text / nested blocks) into the box's
+        // content area via a translating sub-BlockLayouter. The content
+        // box = border box minus border + padding; cycle 1 approximates
+        // the content origin/size as the border box (border/padding
+        // inset for abspos content is a cycle-2 refinement alongside
+        // the padding-box CB).
+        if (child.Children.Count > 0
+            && placement.InlineSize > 0 && placement.BlockSize > 0)
+        {
+            DispatchAbsoluteChildContents(
+                child,
+                placement.InlineOffset,
+                placement.BlockOffset,
+                placement.InlineSize,
+                placement.BlockSize,
+                ref layout,
+                cancellationToken);
+        }
+    }
+
+    /// <summary>Per Phase 3 Task 19 cycle 1 — dispatch an abspos box's
+    /// inner content into its content area via a translating
+    /// sub-BlockLayouter. Mirrors
+    /// <c>GridLayouter.DispatchGridItemContents</c>: a translating sink
+    /// maps inner box-relative offsets to outer sink coordinates; the
+    /// inner fragmentainer is sized to the box (atomic LastResort emit;
+    /// content overflow is cycle-1 behavior).</summary>
+    private void DispatchAbsoluteChildContents(
+        Box box,
+        double inlineOrigin,
+        double blockOrigin,
+        double inlineSize,
+        double blockSize,
+        ref LayoutContext outerLayout,
+        CancellationToken cancellationToken)
+    {
+        var translatingSink = new AbsoluteTranslatingSink(
+            outerSink: _sink,
+            inlineTranslation: inlineOrigin,
+            blockTranslation: blockOrigin);
+        var innerFragmentainer = new FragmentainerContext(
+            contentInlineSize: inlineSize,
+            blockSize: blockSize);
+        var innerLayout = new LayoutContext(innerFragmentainer)
+        {
+            Diagnostics = outerLayout.Diagnostics,
+            WritingMode = outerLayout.WritingMode,
+            IsRtl = outerLayout.IsRtl,
+        };
+        using var innerLayouter = new BlockLayouter(
+            rootBox: box,
+            sink: translatingSink,
+            incomingContinuation: null,
+            diagnostics: _diagnostics,
+            shaperResolver: _shaperResolver);
+        using var innerResolver = new BreakResolver();
+        _ = innerLayouter.AttemptLayout(
+            innerFragmentainer,
+            ref innerLayout,
+            innerResolver,
+            LayoutAttemptStrategy.LastResort,
+            cancellationToken);
+    }
+
+    /// <summary>Per Phase 3 Task 19 cycle 1 — translates inner
+    /// (box-relative) fragment offsets to outer sink coordinates.
+    /// Identical contract to <c>GridLayouter.TranslatingFragmentSink</c>;
+    /// duplicated here as a nested type to avoid cross-layouter
+    /// coupling (the rule-of-three extraction can wait until a third
+    /// consumer appears).</summary>
+    private sealed class AbsoluteTranslatingSink : IBlockFragmentSink
+    {
+        private readonly IBlockFragmentSink _outer;
+        private readonly double _inlineTranslation;
+        private readonly double _blockTranslation;
+        private readonly int _baseline;
+
+        public AbsoluteTranslatingSink(
+            IBlockFragmentSink outerSink,
+            double inlineTranslation,
+            double blockTranslation)
+        {
+            _outer = outerSink;
+            _inlineTranslation = inlineTranslation;
+            _blockTranslation = blockTranslation;
+            _baseline = outerSink.Cursor;
+        }
+
+        public int Cursor => _outer.Cursor - _baseline;
+
+        public void Emit(BoxFragment fragment)
+        {
+            _outer.Emit(fragment with
+            {
+                InlineOffset = fragment.InlineOffset + _inlineTranslation,
+                BlockOffset = fragment.BlockOffset + _blockTranslation,
+            });
+        }
+
+        public void RollbackTo(int cursor) => _outer.RollbackTo(_baseline + cursor);
+
+        public void UpdateFragmentBlockSize(int cursor, double newBlockSize)
+            => _outer.UpdateFragmentBlockSize(_baseline + cursor, newBlockSize);
     }
 
     /// <summary>Per Phase 3 Task 7 cycle 2b — recursively emit fragments
@@ -3591,6 +3879,20 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         {
             var child = parent.Children[childIdx];
             cancellationToken.ThrowIfCancellationRequested();
+
+            // Per Phase 3 Task 19 cycle 1 — `position: absolute` boxes
+            // are out-of-flow at EVERY depth (not just top-level
+            // children): skip them from the in-flow recursion without
+            // touching the margin-collapse chain (out-of-flow boxes
+            // don't break adjacency). The top-level AttemptLayout's
+            // post-flow pass (EmitAbsolutelyPositionedChildren) walks
+            // the whole subtree + emits them, so skipping here just
+            // keeps them out of normal flow.
+            if (child.Style.IsAbsolutelyPositioned())
+            {
+                continue;
+            }
+
             if (!child.IsBlockLevel)
             {
                 // Non-block content (inline / atomic) breaks margin

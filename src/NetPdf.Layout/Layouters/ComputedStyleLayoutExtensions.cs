@@ -106,6 +106,47 @@ internal static class ComputedStyleLayoutExtensions
         };
     }
 
+    /// <summary>Per Phase 3 Task 19 cycle 1 — decode
+    /// <see cref="PropertyId.Position"/> into a <see cref="PositionValue"/>.
+    /// Keyword indices match the source-gen'd table in
+    /// <see cref="NetPdf.Css.ComputedValues.PropertyResolvers.KeywordResolver"/>
+    /// (<c>T("static", "relative", "absolute", "fixed", "sticky")</c>):
+    /// 0=static (default), 1=relative, 2=absolute, 3=fixed, 4=sticky.
+    /// Unset / non-keyword slots fall back to
+    /// <see cref="PositionValue.Static"/> (= the CSS Positioned Layout
+    /// L3 §3 initial value).</summary>
+    public static PositionValue ReadPosition(this ComputedStyle style)
+    {
+        var keyword = style.ReadKeywordOrDefault(PropertyId.Position, defaultIndex: 0);
+        return keyword switch
+        {
+            1 => PositionValue.Relative,
+            2 => PositionValue.Absolute,
+            3 => PositionValue.Fixed,
+            4 => PositionValue.Sticky,
+            _ => PositionValue.Static,
+        };
+    }
+
+    /// <summary>Per Phase 3 Task 19 cycle 1 — <see langword="true"/>
+    /// when the box is removed from normal flow + positioned against a
+    /// containing block per CSS Positioned Layout L3 §6.
+    /// <c>position: absolute</c> only in cycle 1; <c>position: fixed</c>
+    /// (= same out-of-flow model but the ICB / page is always the
+    /// containing block) lands in Task 20 + is NOT treated as
+    /// out-of-flow here yet.</summary>
+    public static bool IsAbsolutelyPositioned(this ComputedStyle style)
+        => style.ReadPosition() == PositionValue.Absolute;
+
+    /// <summary>Per Phase 3 Task 19 cycle 1 — does this box establish a
+    /// containing block for absolutely-positioned descendants? Per CSS
+    /// Positioned Layout L3 §3.3 any box with <c>position</c> other than
+    /// <c>static</c> qualifies (cycle 1: relative / absolute / fixed /
+    /// sticky). <c>transform</c> / <c>filter</c> / <c>contain</c>
+    /// establishment is deferred (those properties aren't wired yet).</summary>
+    public static bool EstablishesAbsoluteContainingBlock(this ComputedStyle style)
+        => style.ReadPosition() != PositionValue.Static;
+
     /// <summary>Per Phase 3 Task 12 sub-cycle 3 — decode
     /// <see cref="PropertyId.CaptionSide"/> into a <see cref="CaptionSide"/>.
     /// CSS Tables 3 §11.5.2 admits the physical pair <c>top</c> /
@@ -1179,6 +1220,27 @@ internal enum CaptionSide : byte
 {
     Top = 0,
     Bottom = 1,
+}
+
+/// <summary>Per Phase 3 Task 19 cycle 1 — typed decode of
+/// <see cref="PropertyId.Position"/> per CSS Positioned Layout L3 §3.
+/// Values match the source-gen'd keyword table order
+/// (<c>static / relative / absolute / fixed / sticky</c>) so the byte
+/// value equals the keyword id.
+///
+/// <para>Cycle 1 implements <see cref="Absolute"/> placement against an
+/// explicitly-sized box anchored to the establishing block's content
+/// box. <see cref="Relative"/> only matters cycle-1 as a containing-
+/// block establisher (its own offset application is a separate slice);
+/// <see cref="Fixed"/> ships in Task 20; <see cref="Sticky"/> is
+/// post-v1.</para></summary>
+internal enum PositionValue : byte
+{
+    Static = 0,
+    Relative = 1,
+    Absolute = 2,
+    Fixed = 3,
+    Sticky = 4,
 }
 
 /// <summary>Per Phase 3 Task 12 sub-cycle 4 — typed decode of

@@ -456,4 +456,29 @@ internal static class PaginateDiagnosticCodes
     /// in the BlockLayouter continuation routing. Severity: Warning.</summary>
     public const string LayoutGridResumeCacheRejected001 =
         "LAYOUT-GRID-RESUME-CACHE-REJECTED-001";
+
+    /// <summary>Per Phase 3 Task 19 cycle 1 — emitted by
+    /// <c>BlockLayouter</c> / <c>AbsoluteLayouter</c> when an
+    /// <c>position: absolute</c> box exercises a feature the cycle-1
+    /// placement doesn't implement, so the box is dropped (no fragment
+    /// emitted) rather than mis-placed. Cycle 1 ships only EXPLICIT
+    /// pixel <c>top</c>/<c>left</c> + <c>width</c>/<c>height</c>
+    /// anchored to the establishing block's content box. The deferred
+    /// features that trigger this code:
+    /// <list type="bullet">
+    ///   <item><c>auto</c> offsets (static-position resolution) —
+    ///   cycle 2.</item>
+    ///   <item><c>right</c>/<c>bottom</c> anchoring + over-constrained
+    ///   resolution — cycle 2.</item>
+    ///   <item>percentage <c>top</c>/<c>left</c>/<c>width</c>/<c>height</c>
+    ///   — cycle 2.</item>
+    ///   <item><c>auto</c> width/height (shrink-to-fit / offset-derived
+    ///   sizing) — cycle 2.</item>
+    /// </list>
+    /// See <c>docs/deferrals.md#abspos-cycle-1-explicit-only</c> for the
+    /// full deferral list. Mirrors the
+    /// <c>LayoutTableFeatureUnsupported001</c> "feature silently
+    /// deferred + surfaced" pattern. Severity: Warning.</summary>
+    public const string LayoutAbsoluteFeatureUnsupported001 =
+        "LAYOUT-ABSOLUTE-FEATURE-UNSUPPORTED-001";
 }

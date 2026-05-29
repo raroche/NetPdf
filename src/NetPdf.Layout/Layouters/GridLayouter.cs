@@ -145,19 +145,22 @@ internal sealed class GridLayouter : ILayouter, IDisposable
     /// container overflows).</summary>
     private bool _allowPagination;
 
-    /// <summary>Per Phase 3 Task 17 cycle 5c.3 — the per-page block-
-    /// axis budget for emission. Separates the "geometry input" (=
-    /// <see cref="_contentBlockSize"/>, used by
-    /// <see cref="GridSizing.Resolve"/> to compute row sizes against
-    /// the authored container extent) from the "page budget" (=
-    /// page-remaining capacity that drives the
+    /// <summary>Per Phase 3 Task 17 cycle 5c.3 + post-PR-#110
+    /// review P3#2 — the per-page block-axis budget for emission.
+    /// Separates the "geometry input" (= <see cref="_contentBlockSize"/>,
+    /// used by <see cref="GridSizing.Resolve"/> to compute row sizes
+    /// against the authored container extent) from the "page budget"
+    /// (= page-remaining capacity that drives the
     /// <see cref="ComputePaginatedRowRange"/> row-fit cut-off). When
-    /// negative, the budget falls back to <see cref="_contentBlockSize"/>
-    /// (= the pre-cycle-5c.3 behavior where geometry + budget were
-    /// the same value); when non-negative, pagination uses the
-    /// explicit budget so explicit-height grids resolve rows against
-    /// authored height while still paginating per page-remaining
-    /// capacity.
+    /// <see langword="null"/>, the budget falls back to
+    /// <see cref="_contentBlockSize"/> (= the pre-cycle-5c.3 behavior
+    /// where geometry + budget were the same value); when non-null,
+    /// pagination uses the explicit budget so explicit-height grids
+    /// resolve rows against authored height while still paginating
+    /// per page-remaining capacity. Pre-PR-#110 review the field
+    /// used a <c>-1.0</c> sentinel; the nullable shape makes the
+    /// "either-or" contract self-documenting + matches
+    /// <see cref="ConfigureEmission"/>'s parameter shape.
     ///
     /// <para><b>Why this separation</b>: pre-5c.3 a 400px-tall grid
     /// with <c>grid-template-rows: 100px 1fr</c> on a 250px page got
@@ -170,7 +173,7 @@ internal sealed class GridLayouter : ILayouter, IDisposable
     /// separately to row-fit selection, explicit-height grids
     /// paginate correctly while authored row geometry stays
     /// authoritative.</para></summary>
-    private double _pageBlockBudget = -1.0;
+    private double? _pageBlockBudget;
 
     /// <summary>Per Phase 3 Task 17 cycle 5 — the resume-from-prior-
     /// page state, captured by the constructor. When non-null the
@@ -398,7 +401,7 @@ internal sealed class GridLayouter : ILayouter, IDisposable
         _contentInlineSize = contentInlineSize;
         _contentBlockSize = contentBlockSize;
         _allowPagination = allowPagination;
-        _pageBlockBudget = pageBlockBudget ?? -1.0;
+        _pageBlockBudget = pageBlockBudget;
         _emissionConfigured = true;
     }
 
@@ -598,9 +601,7 @@ internal sealed class GridLayouter : ILayouter, IDisposable
             // for explicit-height grids the page-budget is the
             // page-remaining capacity while the content-block-size
             // stays at the authored height (preserving row geometry).
-            var paginationBudget = _pageBlockBudget > 0
-                ? _pageBlockBudget
-                : _contentBlockSize;
+            var paginationBudget = _pageBlockBudget ?? _contentBlockSize;
             (endRowExclusive, needsContinuation, var deferEntireGrid) =
                 ComputePaginatedRowRange(
                     startRow: startRow,

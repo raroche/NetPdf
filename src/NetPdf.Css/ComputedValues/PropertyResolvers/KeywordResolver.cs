@@ -209,11 +209,16 @@ internal static class KeywordResolver
         b[PropertyId.FontStyle] = T("normal", "italic", "oblique");
 
         // grid-auto-flow — CSS Grid L1 §7.7. Phase 3 Task 18 cycle 6
-        // ships single-keyword `row` / `column` (the fill-direction for
-        // sparse auto-placement). The `dense` modifier (= backtracking
-        // placement that fills earlier holes) is cycle 7 scope; combined
-        // forms `row dense` / `column dense` are likewise cycle 7.
-        b[PropertyId.GridAutoFlow] = T("row", "column");
+        // shipped sparse `row` / `column`; cycle 7d adds the `dense`
+        // modifier (= backtracking placement that fills earlier holes).
+        // Per spec the grammar is `[ row | column ] || dense`, so
+        // multiple authored forms decode to the same semantic value.
+        // ID encoding:
+        //   0 = row              (sparse row)
+        //   1 = column           (sparse column)
+        //   2 = row dense        (= "dense" alone, "row dense", "dense row")
+        //   3 = column dense     (= "column dense", "dense column")
+        b[PropertyId.GridAutoFlow] = BuildGridAutoFlowTable();
 
         // list-style-type — CSS Lists 3 §7.1 (subset of named counter-styles
         // shipped in cycle 1; full @counter-style support is post-v1).
@@ -400,6 +405,28 @@ internal static class KeywordResolver
     {
         var dict = new Dictionary<string, int>(keywords.Length, StringComparer.Ordinal);
         for (var i = 0; i < keywords.Length; i++) dict[keywords[i]] = i;
+        return dict.ToFrozenDictionary(StringComparer.Ordinal);
+    }
+
+    /// <summary>Per Phase 3 Task 18 cycle 7d — build the grid-auto-flow
+    /// keyword table. Per CSS Grid L1 §7.7 the grammar is
+    /// <c>[ row | column ] || dense</c>; multiple authored forms map
+    /// to the same semantic id (e.g., bare <c>dense</c> ≡
+    /// <c>row dense</c> ≡ <c>dense row</c>).</summary>
+    private static FrozenDictionary<string, int> BuildGridAutoFlowTable()
+    {
+        // Keywords are whitespace-normalized by KeywordResolver before
+        // lookup, so we register the canonical-spaced forms here.
+        var dict = new Dictionary<string, int>(StringComparer.Ordinal)
+        {
+            ["row"] = 0,
+            ["column"] = 1,
+            ["row dense"] = 2,
+            ["dense row"] = 2,
+            ["dense"] = 2,
+            ["column dense"] = 3,
+            ["dense column"] = 3,
+        };
         return dict.ToFrozenDictionary(StringComparer.Ordinal);
     }
 }

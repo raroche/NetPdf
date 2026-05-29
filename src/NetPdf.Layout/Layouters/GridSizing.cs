@@ -1533,7 +1533,12 @@ internal static class GridSizing
         CancellationToken cancellationToken)
     {
         var occupancy = new GrowableOccupancy(rowInfos.Count, colInfos.Count);
-        var isRowFlow = gridAutoFlow == GridAutoFlowValue.Row;
+        // Per Phase 3 Task 18 cycle 7d — `IsColumn` honors both
+        // `column` and `column dense`. `IsDense` is consulted in the
+        // Pass 3+4 cursor walk to reset the cursor before each search
+        // so earlier holes get filled per CSS Grid §8.5.
+        var isRowFlow = !gridAutoFlow.IsColumn();
+        var isDense = gridAutoFlow.IsDense();
 
         // Pass 1 — both definite. Mark rectangles + grow tracks.
         for (var i = 0; i < placedItems.Count; i++)
@@ -1581,6 +1586,15 @@ internal static class GridSizing
 
         // Pass 2 — major-locked. Definite placement on the MAJOR
         // (auto-flow) axis + auto on the minor axis.
+        //
+        // Per post-PR-#108 review P1 + CSS Grid §8.5 step 3 — sparse
+        // placement must scan minor-axis runs starting "past any grid
+        // items previously placed in this row [= major slot] by this
+        // step", while dense placement scans from the start. We
+        // maintain a per-major-slot cursor that tracks the last minor
+        // end placed at each major position. In dense mode the cursor
+        // stays at 0 (= the helper start parameter is ignored).
+        var sparseMinorCursors = new Dictionary<int, int>();
         for (var i = 0; i < placedItems.Count; i++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -1616,13 +1630,35 @@ internal static class GridSizing
                 continue;
             }
 
-            // Find first minor-axis run of minorSpan free cells.
+            // Per post-PR-#108 review P1 — sparse uses the per-major
+            // cursor as the search start; dense always starts at 0.
+            // The cursor across all major rows covered by the span is
+            // the MAX, since this item occupies all of them up to its
+            // minor end.
+            var startMinor = 0;
+            if (!isDense)
+            {
+                for (var rr = majorZero; rr < majorZero + majorSpan; rr++)
+                {
+                    if (sparseMinorCursors.TryGetValue(rr, out var c)
+                        && c > startMinor)
+                    {
+                        startMinor = c;
+                    }
+                }
+            }
+
+            // Find first minor-axis run of minorSpan free cells at or
+            // after the start position.
             var minorZero = FindFirstFreeMinorRun(
-                occupancy, majorZero, majorSpan, minorSpan, isRowFlow);
+                occupancy, majorZero, majorSpan, minorSpan, isRowFlow, startMinor);
             if (minorZero < 0)
             {
-                // No room — start at the current minor extent and grow.
-                minorZero = isRowFlow ? occupancy.ColCount : occupancy.RowCount;
+                // No room — start at MAX(current minor extent, cursor)
+                // and grow.
+                minorZero = Math.Max(
+                    isRowFlow ? occupancy.ColCount : occupancy.RowCount,
+                    startMinor);
                 var minorGrew = isRowFlow
                     ? GrowColumnsIfNeeded(colInfos, occupancy,
                         minorZero + minorSpan, explicitColCount, gridAutoColumns, ctx)
@@ -1651,6 +1687,17 @@ internal static class GridSizing
             item.RowSpan = rowSpan;
             item.ColSpan = colSpan;
             placedItems[i] = item;
+
+            // Per post-PR-#108 review P1 — advance the per-major
+            // sparse cursor past the placed rectangle for every major
+            // row this item covers. Dense mode doesn't use the cursor.
+            if (!isDense)
+            {
+                for (var rr = majorZero; rr < majorZero + majorSpan; rr++)
+                {
+                    sparseMinorCursors[rr] = minorZero + minorSpan;
+                }
+            }
         }
 
         // Pass 3+4 — remaining items share the auto-placement cursor.
@@ -1674,6 +1721,17 @@ internal static class GridSizing
                 && item.ColSpec.Kind == PlacementKind.Definite)
             {
                 continue;
+            }
+
+            // Per Phase 3 Task 18 cycle 7d + CSS Grid §8.5 — dense
+            // packing resets the cursor to the origin before each
+            // search so earlier holes (left by definite items or by
+            // smaller items skipping past) get filled first. Sparse
+            // packing keeps the cursor advancing.
+            if (isDense)
+            {
+                cursorMajor = 0;
+                cursorMinor = 0;
             }
 
             var majorSpec = isRowFlow ? item.RowSpec : item.ColSpec;
@@ -1920,18 +1978,25 @@ internal static class GridSizing
         return true;
     }
 
-    /// <summary>Per Phase 3 Task 18 cycle 6 + PR-#103 review F4 — find
-    /// the first minor-axis index such that the rectangle anchored at
+    /// <summary>Per Phase 3 Task 18 cycle 6 + PR-#103 review F4 +
+    /// post-PR-#108 review P1 — find the first minor-axis index
+    /// <c>&gt;= startMinor</c> such that the rectangle anchored at
     /// (majorZero, M) spanning (majorSpan, minorSpan) is fully free.
     /// Returns -1 when no run fits within the current minor extent.
     /// In row-flow major = row, minor = column; in column-flow
-    /// major = column, minor = row.</summary>
+    /// major = column, minor = row.
+    ///
+    /// <para><b>Why <paramref name="startMinor"/>:</b> CSS Grid §8.5
+    /// requires sparse placement to scan "past any grid items
+    /// previously placed in this row by this step"; dense placement
+    /// scans from the start. Callers in sparse mode pass the per-major
+    /// cursor; callers in dense mode pass 0.</para></summary>
     private static int FindFirstFreeMinorRun(
         GrowableOccupancy occupancy, int majorZero, int majorSpan,
-        int minorSpan, bool isRowFlow)
+        int minorSpan, bool isRowFlow, int startMinor)
     {
         var minorExtent = isRowFlow ? occupancy.ColCount : occupancy.RowCount;
-        for (var m = 0; m + minorSpan <= minorExtent; m++)
+        for (var m = Math.Max(0, startMinor); m + minorSpan <= minorExtent; m++)
         {
             var (rowStart, colStart) = isRowFlow ? (majorZero, m) : (m, majorZero);
             var (rowSpan, colSpan) = isRowFlow

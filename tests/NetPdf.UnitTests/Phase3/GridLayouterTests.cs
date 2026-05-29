@@ -4068,6 +4068,394 @@ public sealed class GridLayouterTests
     }
 
     // =====================================================================
+    //  Phase 3 Task 18 cycle 7d — `grid-auto-flow: dense` per CSS Grid
+    //  §8.5. Dense packing resets the auto-placement cursor before
+    //  each search so earlier holes get filled.
+    // =====================================================================
+
+    [Fact]
+    public void Cycle7d_dense_fills_earlier_hole_left_by_definite_item()
+    {
+        // 2-row × 3-col grid with `grid-auto-flow: row dense`. An
+        // item explicitly placed at (1, 3) leaves cell (1, 2) empty.
+        // Two subsequent auto-placed items: SPARSE would walk past
+        // the hole and place at (1, 3) (= blocked by definite item)
+        // then (2, 1). DENSE rewinds to (1, 1) for each + fills the
+        // hole.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 100.0 },
+            colsPx: new[] { 50.0, 50.0, 50.0 });
+        SetGridAutoFlow(grid, GridAutoFlowValue.RowDense);
+
+        // Definite at row 1 col 3 (= last col of row 0).
+        var definite = BuildItemWithExplicitPlacement(row: 1, col: 3);
+        // Two auto-placed items.
+        var a = BuildAutoPlacedItem();
+        var b = BuildAutoPlacedItem();
+        grid.AppendChild(definite);
+        grid.AppendChild(a);
+        grid.AppendChild(b);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Equal(3, sink.Fragments.Count);
+        // definite at (0, 2) → inlineOffset 100.
+        AssertFragmentEquals(sink, definite,
+            inlineOffset: 100, blockOffset: 0,
+            inlineSize: 50, blockSize: 100);
+        // Per dense: a at (0, 0); b at (0, 1). Both row 0.
+        AssertFragmentEquals(sink, a,
+            inlineOffset: 0, blockOffset: 0,
+            inlineSize: 50, blockSize: 100);
+        AssertFragmentEquals(sink, b,
+            inlineOffset: 50, blockOffset: 0,
+            inlineSize: 50, blockSize: 100);
+    }
+
+    [Fact]
+    public void Cycle7d_sparse_and_dense_agree_when_cursor_unblocked()
+    {
+        // Per post-PR-#108 review P3 — when the auto-placement cursor
+        // hasn't advanced PAST any holes (= the holes are still in
+        // front of the cursor at placement time), sparse and dense
+        // produce IDENTICAL placements. This test pins that agreement;
+        // the strict sparse-vs-dense contrast lives in
+        // <see cref="Cycle7d_dense_backfills_hole_left_by_wide_span_item"/>
+        // and <see cref="Cycle7d_sparse_skips_hole_left_by_wide_span_item"/>.
+        //
+        // Setup: 3-col × 2-row grid with `row` (sparse) flow + a
+        // definite item at (1, 3) that occupies the trailing cell of
+        // row 0. Two 1-cell auto items follow. In sparse + dense, both
+        // 1-cell autos take the first free cells from cursor (0, 0):
+        //   - Auto a at (0, 0); auto b at (0, 1). No earlier holes.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 100.0 },
+            colsPx: new[] { 50.0, 50.0, 50.0 });
+        SetGridAutoFlow(grid, GridAutoFlowValue.Row);
+
+        var definite = BuildItemWithExplicitPlacement(row: 1, col: 3);
+        var a = BuildAutoPlacedItem();
+        var b = BuildAutoPlacedItem();
+        grid.AppendChild(definite);
+        grid.AppendChild(a);
+        grid.AppendChild(b);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Equal(3, sink.Fragments.Count);
+        AssertFragmentEquals(sink, a,
+            inlineOffset: 0, blockOffset: 0,
+            inlineSize: 50, blockSize: 100);
+        AssertFragmentEquals(sink, b,
+            inlineOffset: 50, blockOffset: 0,
+            inlineSize: 50, blockSize: 100);
+    }
+
+    [Fact]
+    public void Cycle7d_dense_backfills_hole_left_by_wide_span_item()
+    {
+        // Per post-PR-#108 review P2 — the canonical sparse-vs-dense
+        // contrast from CSS Grid §8.5: a wider span item creates a
+        // trailing gap that the cursor cannot return to. Dense rewinds
+        // the cursor before each search and BACKFILLS the gap; sparse
+        // walks past it.
+        //
+        // 4-col × 2-row grid with `row dense`:
+        //   - Definite item D at (1, 2) → occupies cell (0, 1).
+        //   - Auto A with col-span 2 → can't fit at (0, 0..1) because
+        //     (0, 1) is occupied; tries (0, 2..3); fits → A at (0, 2..3).
+        //     After A, sparse cursor would sit at (1, 0); dense cursor
+        //     resets before the next item.
+        //   - Auto B (1 cell) → cursor reset to (0, 0); first free
+        //     cell is (0, 0) → B at (0, 0). Dense backfilled the hole
+        //     left by A skipping past it.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 50.0, 50.0 },
+            colsPx: new[] { 50.0, 50.0, 50.0, 50.0 });
+        SetGridAutoFlow(grid, GridAutoFlowValue.RowDense);
+
+        var definite = BuildItemWithExplicitPlacement(row: 1, col: 2);
+        var a = BuildAutoPlacedItemWithColSpan(spanCount: 2);
+        var b = BuildAutoPlacedItem();
+        grid.AppendChild(definite);
+        grid.AppendChild(a);
+        grid.AppendChild(b);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Equal(3, sink.Fragments.Count);
+        // D at (0, 1) — definite.
+        AssertFragmentEquals(sink, definite,
+            inlineOffset: 50, blockOffset: 0,
+            inlineSize: 50, blockSize: 50);
+        // A at (0, 2..3) — first 2-col free run.
+        AssertFragmentEquals(sink, a,
+            inlineOffset: 100, blockOffset: 0,
+            inlineSize: 100, blockSize: 50);
+        // B at (0, 0) — dense rewind BACKFILLS the hole.
+        AssertFragmentEquals(sink, b,
+            inlineOffset: 0, blockOffset: 0,
+            inlineSize: 50, blockSize: 50);
+    }
+
+    [Fact]
+    public void Cycle7d_sparse_skips_hole_left_by_wide_span_item()
+    {
+        // Per post-PR-#108 review P2 — pair to the dense backfill test.
+        // SAME setup as <see cref="Cycle7d_dense_backfills_hole_left_by_wide_span_item"/>
+        // but with `row` (sparse) auto-flow. Sparse advances the cursor
+        // after A's wide span without rewinding, so B walks PAST the
+        // (0, 0) hole + wraps to row 1.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 50.0, 50.0 },
+            colsPx: new[] { 50.0, 50.0, 50.0, 50.0 });
+        SetGridAutoFlow(grid, GridAutoFlowValue.Row);
+
+        var definite = BuildItemWithExplicitPlacement(row: 1, col: 2);
+        var a = BuildAutoPlacedItemWithColSpan(spanCount: 2);
+        var b = BuildAutoPlacedItem();
+        grid.AppendChild(definite);
+        grid.AppendChild(a);
+        grid.AppendChild(b);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Equal(3, sink.Fragments.Count);
+        AssertFragmentEquals(sink, definite,
+            inlineOffset: 50, blockOffset: 0,
+            inlineSize: 50, blockSize: 50);
+        AssertFragmentEquals(sink, a,
+            inlineOffset: 100, blockOffset: 0,
+            inlineSize: 100, blockSize: 50);
+        // B at (1, 0) — sparse cursor walked past the (0, 0) hole.
+        // This is the only assertion that differs from the dense pair.
+        AssertFragmentEquals(sink, b,
+            inlineOffset: 0, blockOffset: 50,
+            inlineSize: 50, blockSize: 50);
+    }
+
+    [Fact]
+    public void Cycle7d_dense_pass2_backfills_row_locked_hole()
+    {
+        // Per post-PR-#108 review P1 — Pass 2 (row-locked items)
+        // sparse-vs-dense contrast. Without the Pass 2 sparse cursor
+        // fix, BOTH modes would scan from minor=0 (= dense behavior)
+        // even in sparse mode.
+        //
+        // Setup: 4-col × 1-row grid with `row dense`:
+        //   - Pass 1: D = both definite at (1, 2) → (0, 1).
+        //   - Pass 2: A = row-locked row 1 with col-span 2 → cursor
+        //     irrelevant in dense; finds (0, 0..1)? Blocked by D. Tries
+        //     (0, 2..3) → fits.
+        //   - Pass 2: B = row-locked row 1, 1 cell → dense rescans
+        //     from col 0; (0, 0) is FREE → B at (0, 0).
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 50.0 },
+            colsPx: new[] { 50.0, 50.0, 50.0, 50.0 });
+        SetGridAutoFlow(grid, GridAutoFlowValue.RowDense);
+
+        var definite = BuildItemWithExplicitPlacement(row: 1, col: 2);
+        var a = BuildRowLockedItemWithColSpan(row: 1, colSpan: 2);
+        var b = BuildItemWithRowOnlyPlacement(row: 1);
+        grid.AppendChild(definite);
+        grid.AppendChild(a);
+        grid.AppendChild(b);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Equal(3, sink.Fragments.Count);
+        AssertFragmentEquals(sink, definite,
+            inlineOffset: 50, blockOffset: 0,
+            inlineSize: 50, blockSize: 50);
+        AssertFragmentEquals(sink, a,
+            inlineOffset: 100, blockOffset: 0,
+            inlineSize: 100, blockSize: 50);
+        // B at (0, 0) — dense Pass 2 rescans from col 0.
+        AssertFragmentEquals(sink, b,
+            inlineOffset: 0, blockOffset: 0,
+            inlineSize: 50, blockSize: 50);
+    }
+
+    [Fact]
+    public void Cycle7d_sparse_pass2_skips_row_locked_hole()
+    {
+        // Per post-PR-#108 review P1 — sparse counterpart to the dense
+        // Pass 2 backfill. Same setup with `row` (sparse) auto-flow.
+        // After A places at (0, 2..3) advancing the row-0 sparse
+        // cursor to col 4, B starts scanning from col 4. The minor
+        // extent grows to fit B at (0, 4) instead of backfilling.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 50.0 },
+            colsPx: new[] { 50.0, 50.0, 50.0, 50.0 });
+        SetGridAutoFlow(grid, GridAutoFlowValue.Row);
+
+        var definite = BuildItemWithExplicitPlacement(row: 1, col: 2);
+        var a = BuildRowLockedItemWithColSpan(row: 1, colSpan: 2);
+        var b = BuildItemWithRowOnlyPlacement(row: 1);
+        grid.AppendChild(definite);
+        grid.AppendChild(a);
+        grid.AppendChild(b);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Equal(3, sink.Fragments.Count);
+        AssertFragmentEquals(sink, definite,
+            inlineOffset: 50, blockOffset: 0,
+            inlineSize: 50, blockSize: 50);
+        AssertFragmentEquals(sink, a,
+            inlineOffset: 100, blockOffset: 0,
+            inlineSize: 100, blockSize: 50);
+        // B at (0, 4) — sparse cursor advanced past (0, 0).
+        // Implicit col 4 is created at the grid-auto-columns default
+        // (= auto track, sized to content = 0 with no content).
+        AssertFragmentEquals(sink, b,
+            inlineOffset: 200, blockOffset: 0,
+            inlineSize: 0, blockSize: 50);
+    }
+
+    [Fact]
+    public void Cycle7d_dense_column_flow_backfills_hole()
+    {
+        // Per post-PR-#108 review P3 — proper column-flow dense
+        // coverage. Column-flow makes column the major axis + row
+        // the minor axis. A row-spanning auto item creates the
+        // trailing minor (row) hole; dense rewinds the cursor to
+        // backfill it.
+        //
+        // Setup: 4-row × 2-col grid with `column dense`:
+        //   - Definite D at (2, 1) → (1, 0). Occupies (row 1, col 0).
+        //   - Auto A row-span 2 → walking cols, cursor (col=0, row=0).
+        //     Wants 2 rows. (rows 0..1 in col 0)? row 1 occupied → no.
+        //     (rows 1..2): occupied. (rows 2..3 in col 0) → free →
+        //     places at (rows 2..3, col 0).
+        //   - Auto B (1 cell) → dense rewind cursor to (col=0, row=0).
+        //     (0, 0) FREE → B at (0, 0). Backfilled.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 25.0, 25.0, 25.0, 25.0 },
+            colsPx: new[] { 100.0, 100.0 });
+        SetGridAutoFlow(grid, GridAutoFlowValue.ColumnDense);
+
+        var definite = BuildItemWithExplicitPlacement(row: 2, col: 1);
+        var a = BuildAutoPlacedItemWithRowSpan(spanCount: 2);
+        var b = BuildAutoPlacedItem();
+        grid.AppendChild(definite);
+        grid.AppendChild(a);
+        grid.AppendChild(b);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Equal(3, sink.Fragments.Count);
+        // D at (1, 0).
+        AssertFragmentEquals(sink, definite,
+            inlineOffset: 0, blockOffset: 25,
+            inlineSize: 100, blockSize: 25);
+        // A at (2, 0) row-span 2.
+        AssertFragmentEquals(sink, a,
+            inlineOffset: 0, blockOffset: 50,
+            inlineSize: 100, blockSize: 50);
+        // B at (0, 0) — dense column-flow rewinds + backfills.
+        AssertFragmentEquals(sink, b,
+            inlineOffset: 0, blockOffset: 0,
+            inlineSize: 100, blockSize: 25);
+    }
+
+    [Fact]
+    public void Cycle7d_sparse_column_flow_skips_hole()
+    {
+        // Per post-PR-#108 review P3 — sparse column-flow counterpart.
+        // Same setup with `column` (sparse) auto-flow. After A places
+        // at (rows 2..3, col 0) advancing the cursor past row 3 in
+        // col 0, B walks to col 1 instead of rewinding.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 25.0, 25.0, 25.0, 25.0 },
+            colsPx: new[] { 100.0, 100.0 });
+        SetGridAutoFlow(grid, GridAutoFlowValue.Column);
+
+        var definite = BuildItemWithExplicitPlacement(row: 2, col: 1);
+        var a = BuildAutoPlacedItemWithRowSpan(spanCount: 2);
+        var b = BuildAutoPlacedItem();
+        grid.AppendChild(definite);
+        grid.AppendChild(a);
+        grid.AppendChild(b);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Equal(3, sink.Fragments.Count);
+        AssertFragmentEquals(sink, definite,
+            inlineOffset: 0, blockOffset: 25,
+            inlineSize: 100, blockSize: 25);
+        AssertFragmentEquals(sink, a,
+            inlineOffset: 0, blockOffset: 50,
+            inlineSize: 100, blockSize: 50);
+        // B at (0, 1) — sparse walks past col 0 hole, into col 1.
+        AssertFragmentEquals(sink, b,
+            inlineOffset: 100, blockOffset: 0,
+            inlineSize: 100, blockSize: 25);
+    }
+
+    [Fact]
+    public void Cycle7d_dense_column_flow_resets_column_cursor()
+    {
+        // Column-flow dense + a definite item should reset cursor.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+
+        var grid = BuildGridContainer(
+            rowsPx: new[] { 100.0, 100.0 },
+            colsPx: new[] { 100.0, 100.0, 100.0 });
+        SetGridAutoFlow(grid, GridAutoFlowValue.ColumnDense);
+
+        var definite = BuildItemWithExplicitPlacement(row: 2, col: 1);
+        var a = BuildAutoPlacedItem();
+        grid.AppendChild(definite);
+        grid.AppendChild(a);
+
+        RunGridLayouter(grid, sink, diag, shaper);
+
+        Assert.Equal(2, sink.Fragments.Count);
+        // definite at (1, 0); a at (0, 0).
+        AssertFragmentEquals(sink, definite,
+            inlineOffset: 0, blockOffset: 100,
+            inlineSize: 100, blockSize: 100);
+        AssertFragmentEquals(sink, a,
+            inlineOffset: 0, blockOffset: 0,
+            inlineSize: 100, blockSize: 100);
+    }
+
+    // =====================================================================
     //  Phase 3 Task 18 cycle 7c — repeat(auto-fill, …) /
     //  repeat(auto-fit, …) container-size-derived count per CSS Grid
     //  L1 §7.2.3.1.
@@ -5144,6 +5532,54 @@ public sealed class GridLayouterTests
         return Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
     }
 
+    /// <summary>Per post-PR-#108 review P1/P2 — build an auto-placed
+    /// item with a column-axis span (= column-end = span N). Row +
+    /// column-start stay auto so the item participates in the Pass 3+4
+    /// auto-placement cursor walk; the span makes it the canonical
+    /// `grid-column-end: span N` shape used by the dense-vs-sparse
+    /// contrast tests where a wider auto item creates a trailing hole
+    /// only dense can later backfill.</summary>
+    private static Box BuildAutoPlacedItemWithColSpan(int spanCount)
+    {
+        var style = MakeStyle();
+        var colEndValue = GridLineValue.ForSpan(spanCount);
+        style.SetSideTablePayload(PropertyId.GridColumnEnd, (object)colEndValue);
+        style.Set(PropertyId.GridColumnEnd, ComputedSlot.FromSideTableIndex(0));
+        return Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+    }
+
+    /// <summary>Per post-PR-#108 review P1/P2 — column-flow analog of
+    /// <see cref="BuildAutoPlacedItemWithColSpan"/>: an auto-placed
+    /// item with a row-axis span (= row-end = span N). Used in the
+    /// column-flow dense contrast tests where the major axis is column
+    /// and the minor axis is row, so a row-spanning auto item creates
+    /// the trailing minor-axis hole.</summary>
+    private static Box BuildAutoPlacedItemWithRowSpan(int spanCount)
+    {
+        var style = MakeStyle();
+        var rowEndValue = GridLineValue.ForSpan(spanCount);
+        style.SetSideTablePayload(PropertyId.GridRowEnd, (object)rowEndValue);
+        style.Set(PropertyId.GridRowEnd, ComputedSlot.FromSideTableIndex(0));
+        return Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+    }
+
+    /// <summary>Per post-PR-#108 review P1 — build a row-locked item
+    /// (definite grid-row-start) with a column-axis span (grid-column-end
+    /// = span N), column-start auto. Used by Pass 2 sparse-vs-dense
+    /// contrast tests where the row-locked item creates the trailing
+    /// hole the next row-locked item may or may not backfill.</summary>
+    private static Box BuildRowLockedItemWithColSpan(int row, int colSpan)
+    {
+        var style = MakeStyle();
+        var rowValue = GridLineValue.ForLineNumber(row);
+        style.SetSideTablePayload(PropertyId.GridRowStart, (object)rowValue);
+        style.Set(PropertyId.GridRowStart, ComputedSlot.FromSideTableIndex(0));
+        var colEndValue = GridLineValue.ForSpan(colSpan);
+        style.SetSideTablePayload(PropertyId.GridColumnEnd, (object)colEndValue);
+        style.Set(PropertyId.GridColumnEnd, ComputedSlot.FromSideTableIndex(0));
+        return Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
+    }
+
     /// <summary>Per PR-#92 review F5 — build an item with explicit
     /// start AND end lines on both axes (= the cycle-1 span case the
     /// diagnostic surfaces).</summary>
@@ -5217,12 +5653,24 @@ public sealed class GridLayouterTests
             ComputedSlot.FromSideTableIndex(0));
     }
 
-    /// <summary>Per Phase 3 Task 18 cycle 6 — set the auto-placement
-    /// flow direction. Cycle 6 keyword table: id 0 = <c>row</c>
-    /// (default), id 1 = <c>column</c>.</summary>
+    /// <summary>Per Phase 3 Task 18 cycle 6 + 7d + post-PR-#108 review
+    /// P1 — set the auto-placement flow direction + density modifier.
+    /// Cycle 7d keyword table:
+    /// 0 = <c>row</c> (default), 1 = <c>column</c>,
+    /// 2 = <c>row dense</c>, 3 = <c>column dense</c>. The cycle-6
+    /// version of this helper only handled Row/Column; RowDense and
+    /// ColumnDense silently fell through to Row, which made every
+    /// cycle-7d test pin sparse-row behavior while claiming to
+    /// exercise dense.</summary>
     private static void SetGridAutoFlow(Box grid, GridAutoFlowValue flow)
     {
-        var keywordId = flow == GridAutoFlowValue.Column ? 1 : 0;
+        var keywordId = flow switch
+        {
+            GridAutoFlowValue.Column => 1,
+            GridAutoFlowValue.RowDense => 2,
+            GridAutoFlowValue.ColumnDense => 3,
+            _ => 0,
+        };
         grid.Style.Set(PropertyId.GridAutoFlow,
             ComputedSlot.FromKeyword(keywordId));
     }

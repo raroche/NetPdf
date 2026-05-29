@@ -1601,6 +1601,54 @@ public sealed class GridLayouterProductionTests
     }
 
     // ====================================================================
+    //  Phase 3 Task 18 cycle 7d — `grid-auto-flow: dense` via real CSS.
+    // ====================================================================
+
+    [Fact]
+    public async Task Cycle7d_production_dense_fills_earlier_hole()
+    {
+        // Real HTML with `grid-auto-flow: dense`. An explicitly-placed
+        // item pinned at col 3 of row 1 leaves cells (1,1) and (1,2)
+        // open; auto-placed items rewind to fill them.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 100px 100px;
+                    grid-template-columns: 50px 50px 50px;
+                    grid-auto-flow: dense;
+                    width: 150px;
+                    height: 200px;
+                }
+                .pinned { grid-row: 1; grid-column: 3; }
+            </style></head><body>
+                <div class="grid">
+                    <div class="pinned"></div>
+                    <div class="a"></div>
+                    <div class="b"></div>
+                </div>
+            </body></html>
+            """;
+
+        var (sink, _, _) = await RenderViaFullPipelineAsync(html);
+
+        var pinned = FindByClass(sink, "pinned");
+        var a = FindByClass(sink, "a");
+        var b = FindByClass(sink, "b");
+        Assert.NotNull(pinned);
+        Assert.NotNull(a);
+        Assert.NotNull(b);
+
+        // pinned at col 2 (offset 100); a + b at cols 0 + 1.
+        Assert.Equal(100, pinned!.Value.InlineOffset, precision: 3);
+        Assert.Equal(0, pinned.Value.BlockOffset, precision: 3);
+        Assert.Equal(0, a!.Value.InlineOffset, precision: 3);
+        Assert.Equal(0, a.Value.BlockOffset, precision: 3);
+        Assert.Equal(50, b!.Value.InlineOffset, precision: 3);
+        Assert.Equal(0, b.Value.BlockOffset, precision: 3);
+    }
+
+    // ====================================================================
     //  Phase 3 Task 18 cycle 7c — repeat(auto-fill, …) /
     //  repeat(auto-fit, …) via real CSS.
     // ====================================================================

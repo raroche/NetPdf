@@ -3629,12 +3629,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     ///   OR via the table-cell / grid-item / forced-overflow paths that
     ///   don't record) → DEFER. Falling back to the ICB here would
     ///   silently MISPLACE the box at the wrong origin.</item>
-    ///   <item>Per P2#1 — a <c>position: relative</c> ancestor with an
-    ///   explicit inset (<c>top</c>/<c>right</c>/<c>bottom</c>/<c>left</c>)
-    ///   → DEFER. Relative-offset application (shifting the ancestor's
-    ///   visual box + therefore its abspos descendants' CB origin) is
-    ///   unimplemented; using the unshifted flow position would place
-    ///   the descendant against the wrong origin.</item>
+    ///   <item>Per cycle 2b — a <c>position: relative</c> ancestor with
+    ///   explicit inset offsets has its relative shift APPLIED to the CB
+    ///   origin (CSS 2.1 §9.4.3): the abspos descendant anchors to the
+    ///   ancestor's VISUALLY-SHIFTED padding box. (Cycle 2a deferred
+    ///   this; cycle 2b applies it.)</item>
     /// </list></summary>
     private AbsoluteContainingBlock? ResolveContainingBlock(
         Box absBox, AbsoluteContainingBlock icb)
@@ -3642,16 +3641,6 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         for (var ancestor = absBox.Parent; ancestor is not null; ancestor = ancestor.Parent)
         {
             if (!ancestor.Style.EstablishesAbsoluteContainingBlock()) continue;
-
-            // P2#1 — a relative ancestor with explicit inset offsets
-            // can't have its (unimplemented) relative shift applied to
-            // the CB origin → defer rather than anchor to the unshifted
-            // flow position.
-            if (ancestor.Style.ReadPosition() == PositionValue.Relative
-                && HasExplicitInset(ancestor.Style))
-            {
-                return null;
-            }
 
             // Found the nearest positioned ancestor. Use its padding
             // box IFF its geometry was recorded during in-flow emit.
@@ -3662,37 +3651,66 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 var bt = ancestor.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
                 var br = ancestor.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
                 var bb = ancestor.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
+
+                // Cycle 2b — apply the ancestor's relative-position shift
+                // (CSS 2.1 §9.4.3) to the CB origin. The recorded
+                // geometry is the ancestor's UNSHIFTED flow position
+                // (in-flow emit doesn't apply relative offsets yet); for
+                // a `position: relative` ancestor we add the shift here
+                // so abspos descendants anchor to the visually-shifted
+                // box. inline shift = left (or -right); block shift =
+                // top (or -bottom). Non-relative ancestors (absolute /
+                // fixed / sticky) already have their final position
+                // baked into the recorded geometry → zero shift.
+                var (relInline, relBlock) =
+                    ancestor.Style.ReadPosition() == PositionValue.Relative
+                        ? ComputeRelativeShift(ancestor.Style, borderBox.InlineSize)
+                        : (0.0, 0.0);
+
                 return new AbsoluteContainingBlock(
-                    InlineOrigin: borderBox.InlineOffset + bl,
-                    BlockOrigin: borderBox.BlockOffset + bt,
+                    InlineOrigin: borderBox.InlineOffset + bl + relInline,
+                    BlockOrigin: borderBox.BlockOffset + bt + relBlock,
                     InlineSize: System.Math.Max(0, borderBox.InlineSize - bl - br),
                     BlockSize: System.Math.Max(0, borderBox.BlockSize - bt - bb));
             }
-            // P1#1 — positioned ancestor found but geometry NOT recorded.
-            // Defer (drop + diagnose) instead of misplacing at the ICB.
+            // Per PR-#113 review P1#1 — positioned ancestor found but
+            // geometry NOT recorded (laid out via a path that doesn't
+            // record). Defer (drop + diagnose) instead of misplacing at
+            // the ICB.
             return null;
         }
         // No positioned ancestor → the ICB IS the containing block.
         return icb;
     }
 
-    /// <summary>Per post-PR-#113 review P2#1 — true when any physical
-    /// inset (<c>top</c>/<c>right</c>/<c>bottom</c>/<c>left</c>) is
-    /// explicitly specified (a length or percentage, not the
-    /// <c>auto</c> default). Used to detect a <c>position: relative</c>
-    /// ancestor whose unimplemented relative shift would otherwise
-    /// corrupt an abspos descendant's containing-block origin.</summary>
-    private static bool HasExplicitInset(ComputedStyle style)
+    /// <summary>Per Phase 3 Task 19 cycle 2b — compute the
+    /// relative-positioning shift (CSS 2.1 §9.4.3) for a
+    /// <c>position: relative</c> box. LTR / horizontal: inline shift =
+    /// <c>left</c> if specified else <c>-right</c> else 0; block shift =
+    /// <c>top</c> if specified else <c>-bottom</c> else 0. Percentages
+    /// resolve against <paramref name="cbInlineSize"/> (the ancestor's
+    /// own containing block ≈ its inline extent for this approximation;
+    /// §9.4.3 uses the containing-block dimensions).</summary>
+    private static (double inline, double block) ComputeRelativeShift(
+        ComputedStyle style, double cbInlineSize)
     {
-        return IsExplicitInset(style, PropertyId.Top)
-            || IsExplicitInset(style, PropertyId.Right)
-            || IsExplicitInset(style, PropertyId.Bottom)
-            || IsExplicitInset(style, PropertyId.Left);
+        var left = ReadInsetPxOrNull(style, PropertyId.Left, cbInlineSize);
+        var right = ReadInsetPxOrNull(style, PropertyId.Right, cbInlineSize);
+        var top = ReadInsetPxOrNull(style, PropertyId.Top, cbInlineSize);
+        var bottom = ReadInsetPxOrNull(style, PropertyId.Bottom, cbInlineSize);
+        var inline = left ?? (right is { } r ? -r : 0.0);
+        var block = top ?? (bottom is { } b ? -b : 0.0);
+        return (inline, block);
 
-        static bool IsExplicitInset(ComputedStyle s, PropertyId id)
+        static double? ReadInsetPxOrNull(ComputedStyle s, PropertyId id, double pctBase)
         {
-            var tag = s.Get(id).Tag;
-            return tag is ComputedSlotTag.LengthPx or ComputedSlotTag.Percentage;
+            var slot = s.Get(id);
+            return slot.Tag switch
+            {
+                ComputedSlotTag.LengthPx => slot.AsLengthPx(),
+                ComputedSlotTag.Percentage => slot.AsPercentage() / 100.0 * pctBase,
+                _ => (double?)null,
+            };
         }
     }
 
@@ -3747,12 +3765,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 diagnostics,
                 new PaginateDiagnostic(
                     PaginateDiagnosticCodes.LayoutAbsoluteFeatureUnsupported001,
-                    "position:absolute box dropped (cycle-2a): its containing block "
-                    + "(nearest positioned ancestor) could not be resolved on this "
-                    + "page — the ancestor was laid out via an unrecorded path "
-                    + "(later page / table-cell / grid-item / forced-overflow) OR is "
-                    + "`position: relative` with explicit inset offsets (relative-"
-                    + "offset application is a later cycle).",
+                    "position:absolute box dropped: its containing block (nearest "
+                    + "positioned ancestor) could not be resolved on this page — the "
+                    + "ancestor was laid out via a path that doesn't record geometry "
+                    + "(later page / table-cell / grid-item). Cycle 2b records the "
+                    + "block-flow / recursive / forced-overflow sites.",
                     PaginateDiagnosticSeverity.Warning));
             return;
         }

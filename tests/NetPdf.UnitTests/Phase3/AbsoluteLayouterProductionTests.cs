@@ -101,10 +101,11 @@ public sealed class AbsoluteLayouterProductionTests
     }
 
     [Fact]
-    public async Task Cycle1_production_abspos_auto_offset_dropped_with_diagnostic()
+    public async Task Cycle2b_production_abspos_auto_offsets_use_static_position()
     {
-        // No top/left set (= auto) → cycle-1 deferral → box dropped +
-        // LAYOUT-ABSOLUTE-FEATURE-UNSUPPORTED-001.
+        // Per Phase 3 Task 19 cycle 2b — no top/left (both auto) is no
+        // longer a deferral: both insets auto → static position (CB /
+        // ICB origin 0,0). The box emits at (0, 0) sized 50×30.
         const string html = """
             <!DOCTYPE html><html><head><style>
                 .abs {
@@ -116,10 +117,38 @@ public sealed class AbsoluteLayouterProductionTests
             </body></html>
             """;
 
-        var (sink, diag) = await RenderAsync(html);
-        Assert.Null(FindByClass(sink, "abs"));
-        Assert.Contains(diag.Diagnostics, d =>
-            d.Code == PaginateDiagnosticCodes.LayoutAbsoluteFeatureUnsupported001);
+        var (sink, _) = await RenderAsync(html);
+        var abs = FindByClass(sink, "abs");
+        Assert.NotNull(abs);
+        Assert.Equal(0.0, abs!.Value.InlineOffset, precision: 3);
+        Assert.Equal(0.0, abs.Value.BlockOffset, precision: 3);
+        Assert.Equal(50.0, abs.Value.InlineSize, precision: 3);
+        Assert.Equal(30.0, abs.Value.BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public async Task Cycle2b_production_abspos_right_anchored()
+    {
+        // right:20 + width:50, left auto → left = ICB(600) - 20 - 50 =
+        // 530. End-to-end right-anchoring through the §6 solver.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .abs {
+                    position: absolute;
+                    top: 5px; right: 20px;
+                    width: 50px; height: 30px;
+                }
+            </style></head><body>
+            <div class="abs"></div>
+            </body></html>
+            """;
+
+        var (sink, _) = await RenderAsync(html);
+        var abs = FindByClass(sink, "abs");
+        Assert.NotNull(abs);
+        Assert.Equal(530.0, abs!.Value.InlineOffset, precision: 3);
+        Assert.Equal(5.0, abs.Value.BlockOffset, precision: 3);
+        Assert.Equal(50.0, abs.Value.InlineSize, precision: 3);
     }
 
     [Fact]

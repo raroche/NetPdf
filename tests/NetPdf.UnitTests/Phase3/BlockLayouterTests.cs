@@ -6113,34 +6113,35 @@ public sealed class BlockLayouterTests
     }
 
     [Fact]
-    public void Cycle1_abspos_with_auto_offset_dropped_with_diagnostic()
+    public void Cycle2b_abspos_auto_top_uses_static_position()
     {
-        // `top` left auto (unset) → cycle-1 deferral → box dropped +
-        // LAYOUT-ABSOLUTE-FEATURE-UNSUPPORTED-001 emitted.
+        // Per Phase 3 Task 19 cycle 2b — `top` auto (unset) is no longer
+        // a deferral: top auto + bottom auto + height given → top =
+        // static position (CB origin 0). The box emits at (left, 0).
         var sink = new RecordingFragmentSink();
-        var diag = new RecordingDiagnosticsSink();
         var root = Box.CreateRoot(MakeStyle());
 
         var absStyle = MakeStyle();
         SetKeyword(absStyle, PropertyId.Position, 2);
-        // top intentionally unset (auto).
+        // top intentionally unset (auto) → static position.
         SetLengthPx(absStyle, PropertyId.Left, 20);
         SetLengthPx(absStyle, PropertyId.Width, 50);
         SetLengthPx(absStyle, PropertyId.Height, 30);
         var abs = Box.ForElement(BoxKind.BlockContainer, absStyle, MakeElement());
         root.AppendChild(abs);
 
-        using var layouter = new BlockLayouter(root, sink, diagnostics: diag);
+        using var layouter = new BlockLayouter(root, sink);
         var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
-        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diag };
+        var layoutCtx = new LayoutContext(ctx);
         using var resolver = new BreakResolver();
 
         layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
 
-        // No fragment for the dropped box.
-        Assert.DoesNotContain(sink.Fragments, f => ReferenceEquals(f.Box, abs));
-        Assert.Contains(diag.Diagnostics, d =>
-            d.Code == PaginateDiagnosticCodes.LayoutAbsoluteFeatureUnsupported001);
+        var absFrag = sink.Fragments.First(f => ReferenceEquals(f.Box, abs));
+        Assert.Equal(20.0, absFrag.InlineOffset, precision: 3);
+        Assert.Equal(0.0, absFrag.BlockOffset, precision: 3);  // static position
+        Assert.Equal(50.0, absFrag.InlineSize, precision: 3);
+        Assert.Equal(30.0, absFrag.BlockSize, precision: 3);
     }
 
     [Fact]
@@ -6275,16 +6276,16 @@ public sealed class BlockLayouterTests
     }
 
     [Fact]
-    public void Cycle2a_abspos_under_relative_ancestor_with_offsets_dropped_with_diagnostic()
+    public void Cycle2b_abspos_under_relative_ancestor_with_offsets_applies_shift()
     {
-        // Per post-PR-#113 review P2#1 — a `position: relative` ancestor
-        // with explicit inset offsets (top/left) would visually shift,
-        // moving its abspos descendants' CB origin. Relative-offset
-        // application is unimplemented, so the abspos child is DROPPED +
-        // LAYOUT-ABSOLUTE-FEATURE-UNSUPPORTED-001 emitted rather than
-        // anchored to the unshifted flow position.
+        // Per Phase 3 Task 19 cycle 2b — a `position: relative` ancestor
+        // with explicit inset offsets (top/left) has its §9.4.3 shift
+        // APPLIED to the abspos descendant's CB origin (cycle 2a
+        // deferred this). The relative parent's flow position is (0, 0)
+        // (first child, no border); its relative shift is (left 10,
+        // top 50) → shifted padding-box origin (10, 50). The abspos
+        // child top:0 left:0 → (10, 50).
         var sink = new RecordingFragmentSink();
-        var diag = new RecordingDiagnosticsSink();
         var root = Box.CreateRoot(MakeStyle());
 
         var relStyle = MakeStyle();
@@ -6304,16 +6305,18 @@ public sealed class BlockLayouterTests
         var abs = Box.ForElement(BoxKind.BlockContainer, absStyle, MakeElement());
         rel.AppendChild(abs);
 
-        using var layouter = new BlockLayouter(root, sink, diagnostics: diag);
+        using var layouter = new BlockLayouter(root, sink);
         var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
-        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diag };
+        var layoutCtx = new LayoutContext(ctx);
         using var resolver = new BreakResolver();
 
         layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
 
-        Assert.DoesNotContain(sink.Fragments, f => ReferenceEquals(f.Box, abs));
-        Assert.Contains(diag.Diagnostics, d =>
-            d.Code == PaginateDiagnosticCodes.LayoutAbsoluteFeatureUnsupported001);
+        var absFrag = sink.Fragments.First(f => ReferenceEquals(f.Box, abs));
+        // CB origin = rel flow (0,0) + relative shift (10, 50); abspos
+        // top:0 left:0 → (10, 50).
+        Assert.Equal(10.0, absFrag.InlineOffset, precision: 3);
+        Assert.Equal(50.0, absFrag.BlockOffset, precision: 3);
     }
 
     [Fact]

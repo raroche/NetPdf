@@ -2528,29 +2528,33 @@ flags the categories):
     EXCLUDE abspos children per P1#2 so they aren't double-emitted),
     so an abspos child of a positioned grid/flex anchors to the ICB or
     a higher recorded ancestor. Cycle 2b.
-  - **`position: relative` offset application** — per PR-#113 review
-    P2#1, a `position: relative` ancestor with explicit inset offsets
-    (`top`/`right`/`bottom`/`left`) would visually shift, moving its
-    abspos descendants' CB origin; relative-offset application is
-    unimplemented, so such abspos descendants are DROPPED + diagnosed
-    (not anchored to the unshifted flow position). Cycle 2b ships
-    relative-offset application (to both the relative box + its abspos
-    descendants' CB).
-  - **`auto` offset resolution (static position)** — `top`/`left` auto
-    should resolve to the box's static-flow position per §6. Cycle 2b.
-  - **`right`/`bottom` anchoring + over-constrained resolution** — §6
-    left/right/width (and top/bottom/height) constraint solving. Per
-    post-PR-#112 review C1, a box with an EXPLICIT `right` or `bottom`
-    (length or percentage) is DEFERRED (dropped with the diagnostic)
-    rather than silently placed via top/left — cycle 1 doesn't honor
-    them. Cycle 2 ships the full constraint solver (incl. the
-    over-constrained LTR "ignore right/bottom" rule).
-  - **Percentage** `top`/`left`/`width`/`height` (resolve against the
-    CB extent).
-  - **`auto` width/height** — shrink-to-fit + offset-derived sizing.
-  - **Padding-box CB** — cycle 1 uses the content box (= padding box
-    only when the ancestor has zero padding).
-  - **z-index paint ordering** — cycle 1 paints in source order.
+  - ~~**`position: relative` offset application (to the CB)**~~ —
+    SHIPPED in cycle 2b. A `position: relative` ancestor's §9.4.3 shift
+    (`left`/`top`, or `-right`/`-bottom`) is now applied to the abspos
+    descendant's CB origin. (The relative box's OWN in-flow fragment is
+    still emitted unshifted — applying relative offsets to the relative
+    box's own rendering is a separate relative-positioning slice.)
+  - ~~**`auto` offset resolution (static position)**~~ — SHIPPED in
+    cycle 2b as an APPROXIMATION: `auto` insets resolve to the CB
+    content origin (offset 0), exact when the box would have been the
+    first in-flow child. True static-flow-position tracking is a later
+    refinement.
+  - ~~**`right`/`bottom` anchoring + over-constrained resolution**~~ —
+    SHIPPED in cycle 2b: the full CSS 2.1 §10.3.7 / §10.6.4 constraint
+    solver (right/bottom anchoring, over-constrained "ignore the end
+    inset" LTR/ttb rule, auto-margin centering).
+  - ~~**Percentage** `top`/`left`/`width`/`height`~~ — SHIPPED in
+    cycle 2b (resolve against the CB inline / block extent).
+  - **`auto` width/height (true shrink-to-fit / content height)** —
+    cycle 2b approximates an `auto` size NOT pinned by both insets as
+    the AVAILABLE extent (CB minus resolved insets + margins + chrome).
+    The pinned-both-insets case (fill) is EXACT. True shrink-to-fit
+    (inline) + content height (block) need intrinsic-size measurement
+    (the speculative-measure machinery TableLayouter uses) — a later
+    refinement.
+  - **Padding-box CB** — uses the recorded border box inset by border
+    widths = the padding box (correct). [Resolved cycle 2a.]
+  - **z-index paint ordering** — paints in source order; no z-index.
   - **Pagination interaction** — cycle 1 emits all abspos boxes on the
     establishing block's FIRST page (the `AttemptLayout` wrapper runs
     the pass once, for `_incomingContinuation is null`, on AllDone OR

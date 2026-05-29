@@ -310,4 +310,121 @@ public sealed class KeywordResolverTests
         Assert.Equal("bold", result.RawText);
         Assert.Empty(sink.Diagnostics);
     }
+
+    // ============================================================
+    // Phase 3 Task 18 cycle 7d + post-PR-#108 review P3 — grid-auto-flow
+    // grammar coverage. Per CSS Grid L1 §7.7 the grammar is
+    //   grid-auto-flow = [ row | column ] || dense
+    // The `||` operator allows any order + any subset of one component
+    // from each alternative group. This means seven valid authored forms
+    // (row, column, dense, row dense, column dense, dense row,
+    // dense column) collapse to four canonical IDs (0..3). Invalid
+    // forms — repeating a component (`row row`, `dense dense`) or mixing
+    // two from the same group (`row column`) — must fall through to the
+    // resolver's invalid-keyword path.
+    // ============================================================
+
+    [Fact]
+    public void GridAutoFlow_row_resolves_to_id_0()
+        => AssertResolves("row", PropertyId.GridAutoFlow);
+    [Fact]
+    public void GridAutoFlow_column_resolves_to_id_1()
+        => AssertResolves("column", PropertyId.GridAutoFlow);
+    [Fact]
+    public void GridAutoFlow_dense_resolves_to_id_2()
+        => AssertResolves("dense", PropertyId.GridAutoFlow);
+    [Fact]
+    public void GridAutoFlow_row_dense_resolves_to_id_2()
+        => AssertResolves("row dense", PropertyId.GridAutoFlow);
+    [Fact]
+    public void GridAutoFlow_dense_row_resolves_to_id_2()
+        => AssertResolves("dense row", PropertyId.GridAutoFlow);
+    [Fact]
+    public void GridAutoFlow_column_dense_resolves_to_id_3()
+        => AssertResolves("column dense", PropertyId.GridAutoFlow);
+    [Fact]
+    public void GridAutoFlow_dense_column_resolves_to_id_3()
+        => AssertResolves("dense column", PropertyId.GridAutoFlow);
+
+    [Fact]
+    public void GridAutoFlow_keyword_ids_are_pinned()
+    {
+        // Per Phase 3 Task 10 cycle-2 review pattern — pin the IDs
+        // because they're part of the cascade → materializer contract.
+        // GridReaders.ReadGridAutoFlow switches on these IDs; reordering
+        // would silently break the layout.
+        Assert.True(KeywordResolver.TryGetId(PropertyId.GridAutoFlow, "row", out var idRow));
+        Assert.Equal(0, idRow);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.GridAutoFlow, "column", out var idCol));
+        Assert.Equal(1, idCol);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.GridAutoFlow, "dense", out var idDense));
+        Assert.Equal(2, idDense);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.GridAutoFlow, "row dense", out var idRowDense));
+        Assert.Equal(2, idRowDense);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.GridAutoFlow, "dense row", out var idDenseRow));
+        Assert.Equal(2, idDenseRow);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.GridAutoFlow, "column dense", out var idColDense));
+        Assert.Equal(3, idColDense);
+        Assert.True(KeywordResolver.TryGetId(PropertyId.GridAutoFlow, "dense column", out var idDenseCol));
+        Assert.Equal(3, idDenseCol);
+    }
+
+    [Fact]
+    public void GridAutoFlow_ROW_DENSE_case_insensitive_resolves()
+    {
+        // The resolver lowercases input before lookup, so authored
+        // case variations all canonicalize.
+        AssertResolves("ROW DENSE", PropertyId.GridAutoFlow);
+        AssertResolves("Row Dense", PropertyId.GridAutoFlow);
+        AssertResolves("DENSE", PropertyId.GridAutoFlow);
+        AssertResolves("Column Dense", PropertyId.GridAutoFlow);
+    }
+
+    [Fact]
+    public void GridAutoFlow_compact_whitespace_normalized()
+    {
+        // Authors may write any amount of whitespace between the parts
+        // per the resolver's NormalizeKeywordWhitespace contract.
+        AssertResolves("row  dense", PropertyId.GridAutoFlow);
+        AssertResolves("\trow dense\t", PropertyId.GridAutoFlow);
+        AssertResolves("dense\trow", PropertyId.GridAutoFlow);
+    }
+
+    [Fact]
+    public void GridAutoFlow_row_column_combination_is_invalid()
+    {
+        // `row column` mixes two values from the same group — per §7.7
+        // grammar `[ row | column ]` is a single alternative.
+        AssertInvalid("row column", PropertyId.GridAutoFlow);
+        AssertInvalid("column row", PropertyId.GridAutoFlow);
+    }
+
+    [Fact]
+    public void GridAutoFlow_repeated_keywords_invalid()
+    {
+        AssertInvalid("dense dense", PropertyId.GridAutoFlow);
+        AssertInvalid("row row", PropertyId.GridAutoFlow);
+        AssertInvalid("column column", PropertyId.GridAutoFlow);
+    }
+
+    [Fact]
+    public void GridAutoFlow_unknown_keyword_invalid()
+    {
+        AssertInvalid("sparse", PropertyId.GridAutoFlow);
+        AssertInvalid("inline", PropertyId.GridAutoFlow);
+        AssertInvalid("block", PropertyId.GridAutoFlow);
+        // Empty / whitespace-only should also fall through (no table entry).
+        AssertInvalid("", PropertyId.GridAutoFlow);
+    }
+
+    [Fact]
+    public void GridAutoFlow_three_keyword_combinations_invalid()
+    {
+        // Per §7.7 grammar there is no third component — the spec
+        // expressly limits `||` to one from each group, and `dense` is
+        // the only modifier. `row dense column` etc. must fail.
+        AssertInvalid("row dense column", PropertyId.GridAutoFlow);
+        AssertInvalid("dense row column", PropertyId.GridAutoFlow);
+        AssertInvalid("column dense row", PropertyId.GridAutoFlow);
+    }
 }

@@ -1014,20 +1014,27 @@ public sealed class GridLayouterProductionTests
     }
 
     [Fact]
-    public async Task Cycle5c2d_recursive_explicit_height_grid_stays_atomic_pending_F3()
+    public async Task Cycle5c3_recursive_explicit_height_grid_paginates()
     {
-        // Per PR-#101 review P1#1 — explicit-height grids stay
-        // atomic at the recursive site too (= same
-        // IsHeightAuto(child) gate as the outer site).
-        // Strengthened post-PR-#102 review P2#2 to also assert
-        // authored wrapper geometry preserved + diagnostic on
-        // unavoidable forced-overflow.
+        // Per Phase 3 Task 17 cycle 5c.3 — F3 SHIPPED at the
+        // recursive site too. Explicit-height grids reached via
+        // the recursive walk now paginate via the dual-input
+        // dispatch (= authored geometry for row sizing, clamped
+        // geometry for page budget) just like the outer site.
         //
         // Fixture: height: 200px grid with 2 rows of 100px on a
-        // 150px page → wrapper at authored 200 > page 150 →
-        // forced-overflow path (= grid is body's only direct
-        // child + body is at top of fresh page so no break-
-        // before is productive).
+        // 150px page. Pre-F3 the grid went through forced-overflow
+        // (wrapper at authored 200, atomic emit of both rows past
+        // the page edge). Post-F3:
+        //   1. Recursive site authored borderBox = 200.
+        //   2. Recursive clamp shrinks to pageRemaining 150.
+        //   3. Dispatch with authored 200 + budget 150.
+        //   4. Row 0 (100) fits, row 1 (100) makes 200 > 150 →
+        //      defer row 1 via GridContinuation.
+        //   5. F2 wrapper-resize shrinks wrapper to 100.
+        //   6. PaginationForcedOverflow001 no longer fires (= the
+        //      forced-overflow path doesn't run when F3 paginates
+        //      via the Continue path).
         const string html = """
             <!DOCTYPE html><html><head><style>
                 .grid {
@@ -1049,27 +1056,32 @@ public sealed class GridLayouterProductionTests
         var (sink, diag, result, _) = await RenderViaFullPipelineWithResultAsync(
             html, contentInlineSize: 100, blockSize: 150);
 
-        // No GridContinuation in the result chain — F3 isn't
-        // active for explicit-height; the grid renders atomic.
+        // GridContinuation present in chain (= F3 deferred row 1).
         var gridLeaf = result.Continuation is null
             ? null
             : FindGridContinuationLeaf(result.Continuation);
-        Assert.Null(gridLeaf);
-        // Both grid items emitted atomically (= no row drop).
+        Assert.NotNull(gridLeaf);
+        Assert.Equal(1, gridLeaf!.RowIndex);
+        // r1 emitted on page 1; r2 deferred to page 2.
         Assert.NotNull(FindByClass(sink, "r1"));
-        Assert.NotNull(FindByClass(sink, "r2"));
-        // Per P2#2 — authored wrapper geometry preserved (= 200,
-        // not clamped to 150). Look up by class since the grid
-        // div doesn't have a class; find by SourceElement tag
-        // name. Easier: just assert at least one fragment has
-        // BlockSize == 200 (= the grid wrapper).
-        Assert.Contains(sink.Fragments, f => Math.Abs(f.BlockSize - 200.0) < 0.001);
-        // Per P2#2 — unavoidable forced-overflow on a fresh
-        // 150px page produces PaginationForcedOverflow001 (the
-        // outer BlockLayouter's forced-overflow diagnostic; the
-        // grid is dispatched atomically per IsHeightAuto gate).
-        Assert.Contains(diag.Diagnostics, d =>
-            d.Code == PaginateDiagnosticCodes.PaginationForcedOverflow001);
+        Assert.Null(FindByClass(sink, "r2"));
+        // F2 wrapper-resize: grid wrapper at 100 (= 1 emitted
+        // row), NOT authored 200.
+        Assert.Contains(sink.Fragments, f => Math.Abs(f.BlockSize - 100.0) < 0.001);
+        Assert.DoesNotContain(sink.Fragments, f => Math.Abs(f.BlockSize - 200.0) < 0.001);
+        // KNOWN GAP: the OUTER body wrapper still triggers
+        // PAGINATION-FORCED-OVERFLOW-001 because its
+        // <c>MeasureSubtreeVisualBlockExtent</c> isn't grid-
+        // paginatable-aware — it reports the grid's authored
+        // 200 as the subtree extent for the body's break-check,
+        // which exceeds the 150 page. The body's forced-overflow
+        // emit at 0 then recurses into the grid, where F3
+        // paginates correctly. Eliminating the stale outer
+        // diagnostic requires teaching the subtree-extent helper
+        // to project paginatable descendants to their fragment
+        // budget — tracked separately (= the eventual
+        // <c>grid-fragment-plan-shared-sizing-deferral</c> shared
+        // plan would carry this).
     }
 
     [Fact]
@@ -1209,6 +1221,73 @@ public sealed class GridLayouterProductionTests
         Assert.NotNull(page2Wrapper);
         Assert.Equal(300.0, page1Wrapper!.Value.BlockSize, precision: 3);
         Assert.Equal(100.0, page2Wrapper!.Value.BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public async Task Cycle5c3_explicit_height_grid_with_fr_paginates_with_authored_geometry()
+    {
+        // Per Phase 3 Task 17 cycle 5c.3 — the end-to-end F3
+        // regression test through the full HTML →
+        // cascade → BoxBuilder → BlockLayouter pipeline.
+        //
+        // Fixture: <c>height: 400px;
+        // grid-template-rows: 100px 1fr</c> on a 250px page.
+        // The fr row MUST resolve to 300 (= 400 - 100 authored
+        // distribution), NOT 150 (= 250 - 100 budget-shrunk).
+        //   - Page 1 (250px): row 0 (100) fits, row 1 (300)
+        //     doesn't → emit r1 + defer r2 via continuation.
+        //     Wrapper resized to 100.
+        //   - Page 2 (250px): r2 emits at fr-resolved 300, but
+        //     since 300 > 250 page, the LastResort force-emits
+        //     it (= page-2 wrapper is 300, item r2 is 300, +
+        //     LAYOUT-GRID-FORCED-OVERFLOW-001 fires).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 100px 1fr;
+                    grid-template-columns: 100px;
+                    height: 400px;
+                }
+                .r1 { grid-row-start: 1; grid-column-start: 1; }
+                .r2 { grid-row-start: 2; grid-column-start: 1; }
+            </style></head><body>
+            <div class="grid">
+              <div class="r1"></div>
+              <div class="r2"></div>
+            </div>
+            </body></html>
+            """;
+
+        var pages = await RenderMultiPageAsync(
+            html, contentInlineSize: 100, blockSize: 250, maxPages: 4);
+
+        // 2 or 3 pages: page 1 emits r1, page 2 emits r2 (force-
+        // emit since 300 > 250 page), page 3 (if present) is the
+        // empty AllDone tail page from the helper's loop ordering.
+        Assert.InRange(pages.Count, 2, 3);
+
+        // Page 1: r1 emits + r2 deferred via continuation.
+        var page1 = pages[0];
+        Assert.NotNull(FindByClass(page1.Sink, "r1"));
+        Assert.Null(FindByClass(page1.Sink, "r2"));
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, page1.Result.Outcome);
+        // r1 is at the authored row 0 size (100).
+        var r1 = FindByClass(page1.Sink, "r1");
+        Assert.Equal(100.0, r1!.Value.BlockSize, precision: 3);
+        // F2-resized grid wrapper at 100 on page 1.
+        var page1Wrapper = FindGridWrapper(page1.Sink);
+        Assert.NotNull(page1Wrapper);
+        Assert.Equal(100.0, page1Wrapper!.Value.BlockSize, precision: 3);
+
+        // Page 2: r2 emits. The fr row resolved to AUTHORED
+        // 300, NOT page-budget 150 — this is the F3 correctness
+        // contract.
+        var page2 = pages[1];
+        Assert.Null(FindByClass(page2.Sink, "r1"));
+        Assert.NotNull(FindByClass(page2.Sink, "r2"));
+        var r2 = FindByClass(page2.Sink, "r2");
+        Assert.Equal(300.0, r2!.Value.BlockSize, precision: 3);
     }
 
     /// <summary>Per Phase 3 Task 17 cycle 5c.2d post-PR-#102

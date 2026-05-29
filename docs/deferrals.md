@@ -2173,9 +2173,14 @@ flags the categories):
 ## grid-explicit-height-paginate-deferral
 
 - **ID** — `grid-explicit-height-paginate-deferral`
-- **Status** — `not-started`. Phase 3 Task 17 cycle 5b post-
-  PR-#97 review F3 + cycle 5c.2c post-PR-#101 review P1#1
-  (= initial 5c.2c F3 mechanism REVERTED).
+- **Status** — `shipped (Phase 3 Task 17 cycle 5c.3)`. Initial
+  cycle-5c.2c F3 mechanism was REVERTED (cycle 5b post-PR-#97
+  review F3 + cycle 5c.2c post-PR-#101 review P1#1); the
+  cycle-5c.3 dual-input fix ships explicit-height grid
+  pagination via the minimum-viable "authored geometry for
+  row sizing, clamped geometry for page budget" separation,
+  without requiring the full
+  `grid-fragment-plan-shared-sizing-deferral` shared plan.
 - **Behavior** — grids with explicit `height: 300px` style get
   their natural extent restored by
   `MeasureSubtreeVisualBlockExtent` AFTER the paginatable-grid
@@ -2242,6 +2247,31 @@ flags the categories):
   pagination disabled AND production HTML fixtures with
   explicit-height multipage grids verify end-to-end through
   the full HTML → cascade → BoxBuilder → BlockLayouter chain.
+- **Shipped fix (cycle 5c.3)** — `GridLayouter.ConfigureEmission`
+  gained a `pageBlockBudget` parameter that separates "geometry
+  input" (= the authored container extent passed to
+  `GridSizing.Resolve` for row sizing) from "page budget" (=
+  the clamped page-remaining capacity that drives
+  `ComputePaginatedRowRange`'s row-fit cut-off). The
+  BlockLayouter outer + recursive grid dispatch sites capture
+  `authoredBorderBoxBlockSize` pre-clamp + thread it as the
+  ConfigureEmission `contentBlockSize` while passing the
+  clamped value as `pageBlockBudget`. The
+  `IsHeightAuto(child)` gate on the clamp is removed; the
+  subtree-extent clamp is re-enabled (= now safe because the
+  dual-input separation prevents the row-sizing corruption
+  that the cycle-5c.2c initial attempt produced). The full
+  `GridFragmentPlan` consolidation across pre-measure + F1 +
+  dispatch (= performance optimization that lets the §11
+  sizing work run once per attempt instead of three times)
+  is still tracked under
+  `grid-fragment-plan-shared-sizing-deferral`. KNOWN GAP at
+  the outer-body level: `MeasureSubtreeVisualBlockExtent`
+  isn't grid-paginatable-aware, so the body still triggers
+  `PAGINATION-FORCED-OVERFLOW-001` when its only descendant
+  is a tall paginatable grid; the body's forced-overflow
+  recursion still routes through the F3 recursive dispatch,
+  so end-to-end emission is correct.
 
 ---
 

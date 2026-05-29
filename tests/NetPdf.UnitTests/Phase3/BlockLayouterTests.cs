@@ -5351,32 +5351,36 @@ public sealed class BlockLayouterTests
     }
 
     [Fact]
-    public void Cycle5c2c_post_PR_101_explicit_height_grid_atomic_until_GridFragmentPlan_ships()
+    public void Cycle5c3_explicit_height_grid_paginates_via_outer_site()
     {
-        // Per PR-#101 review P1#1 — the cycle-5c.2c F3 mechanism
-        // was REVERTED. Clamping borderBoxBlockSize fed the
-        // shrunk size into GridSizing.Resolve as the
-        // contentBlockSize, causing fr / definite-height row
-        // sizing to redistribute against the smaller budget +
-        // silently lose authored row geometry. The
-        // <c>IsHeightAuto(child)</c> safety gate on the outer-
-        // site clamp is RESTORED; explicit-height grids stay on
-        // the atomic-dispatch path until the
-        // <c>grid-fragment-plan-shared-sizing-deferral</c> lands
-        // (= separates resolved geometry from fragment budget).
+        // Per Phase 3 Task 17 cycle 5c.3 — F3 SHIPPED. Explicit-
+        // height grids now paginate via the outer-site clamp +
+        // dual-input dispatch:
+        //   1. PreMeasure leaves borderBoxBlockSize at the
+        //      authored 300.
+        //   2. <c>authoredBorderBoxBlockSize</c> captures 300
+        //      pre-clamp.
+        //   3. Outer-site clamp (no longer gated on IsHeightAuto)
+        //      shrinks borderBoxBlockSize to pageRemaining 250 +
+        //      flips <c>paginateGridForOuterChild</c>.
+        //   4. Subtree-extent clamp brings <c>subtreeBlockExtent</c>
+        //      to 250 so the break-check stays in the Continue
+        //      path.
+        //   5. Dispatch passes AUTHORED contentBlockSize (300 -
+        //      0 chrome = 300) to <c>GridSizing.Resolve</c> +
+        //      clamped contentBlockSize (250) as
+        //      <c>pageBlockBudget</c>. Rows resolve as
+        //      [100, 100, 100] against authored 300 (= preserves
+        //      authored geometry).
+        //   6. <c>ComputePaginatedRowRange</c> with budget 250
+        //      emits rows 0..1 (sum 200), defers row 2 via
+        //      GridContinuation.
+        //   7. F2 wrapper-resize shrinks wrapper to chrome (0) +
+        //      lastEmittedBlockExtent (200) = 200.
         //
-        // Fixture: explicit-height grid (height: 300, rows
-        // [100,100,100]) on a 250 fresh page. Post-revert:
-        //   1. PreMeasure leaves borderBoxBlockSize at 300.
-        //   2. Outer-site clamp does NOT fire (= IsHeightAuto
-        //      gate). paginateGridForOuterChild stays false.
-        //   3. Break-check: chunk 300 > remaining 250 →
-        //      forced-overflow path (= grid is first emittable
-        //      + nothingEmittedThisAttempt).
-        //   4. Forced-overflow emits wrapper at AUTHORED 300 +
-        //      dispatches grid atomically (allowPagination=false).
-        //   5. GridLayouter atomic emit: all 3 rows render past
-        //      the 250 page edge (= visual overflow per cycle-1).
+        // Pre-F3 (cycle 5c.2c-post-PR-#101 state): wrapper at
+        // authored 300, atomic dispatch emits all 3 rows past
+        // the page edge.
         var sink = new RecordingFragmentSink();
         var root = Box.CreateRoot(MakeStyle());
 
@@ -5395,28 +5399,48 @@ public sealed class BlockLayouterTests
         var result = layouter.AttemptLayout(
             ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
 
-        // Authored wrapper geometry preserved (= 300, NOT the
-        // clamped 250). No GridContinuation = atomic dispatch
-        // produced no nested pagination state.
+        // F2 resized wrapper to chrome + emittedRowsExtent =
+        // 0 + 200 = 200 (= 2 emitted rows × 100).
         var wrapperFragment = sink.Fragments
             .First(f => ReferenceEquals(f.Box, grid));
-        Assert.Equal(300.0, wrapperFragment.BlockSize, precision: 3);
-        if (result.Continuation is BlockContinuation bc)
-        {
-            Assert.Null(bc.LayouterState);
-        }
+        Assert.Equal(200.0, wrapperFragment.BlockSize, precision: 3);
+        // PageComplete carries a chained BlockContinuation with
+        // a GridContinuation leaf pointing at row 2 (= the
+        // deferred row).
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var bc = (BlockContinuation)result.Continuation!;
+        var gridCont = (GridContinuation)bc.LayouterState!;
+        Assert.Equal(2, gridCont.RowIndex);
     }
 
     [Fact]
-    public void Cycle5c2c_post_PR_101_explicit_height_grid_after_sibling_no_partial_clamp()
+    public void Cycle5c3_explicit_height_grid_after_sibling_paginates_first_row()
     {
-        // Per PR-#101 review P1#1 — sibling + explicit-height
-        // grid scenario: clamp doesn't fire (= IsHeightAuto
-        // gate). Grid wrapper natural 200 > pageRemaining 150 →
-        // break-check returns BreakHere (= chunk doesn't fit
-        // remaining, grid is not first child) → PageComplete
-        // without grid emit, resume on next page. Authored
-        // wrapper geometry preserved.
+        // Per Phase 3 Task 17 cycle 5c.3 — sibling + explicit-
+        // height grid scenario WITH F3. The outer-site clamp
+        // now fires for explicit-height grids; the
+        // dual-input dispatch emits row 0 + defers row 1 via
+        // GridContinuation.
+        //
+        // Pre-F3 (cycle 5c.2c-post-PR-#101 state): the clamp
+        // didn't fire (IsHeightAuto gate), the break-check
+        // would fire BreakHere because the grid's natural
+        // borderBox (200) exceeded pageRemaining (150), and the
+        // grid was deferred whole via break-before.
+        //
+        // Post-F3:
+        //   1. After sibling (150) emits, UsedBlockSize=150.
+        //   2. pageRemaining for grid = 300 - 150 = 150.
+        //   3. authored borderBox = 200, clamp shrinks to 150.
+        //   4. Subtree-extent clamp brings subtreeBlockExtent
+        //      from 200 → 150 → break-check Continues.
+        //   5. F1 row-fit probe (Strict + emittedThisAttempt=1):
+        //      row 0 = 100 fits pageRemaining 150 (content) →
+        //      F1 does NOT defer.
+        //   6. Dispatch with authored 200 + budget 150. Rows
+        //      [100, 100]. Budget fits row 0 only → emit row 0,
+        //      defer row 1 via GridContinuation.
+        //   7. F2 resizes wrapper to 0 + 100 = 100.
         var sink = new RecordingFragmentSink();
         var root = Box.CreateRoot(MakeStyle());
 
@@ -5439,33 +5463,45 @@ public sealed class BlockLayouterTests
         var result = layouter.AttemptLayout(
             ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
 
-        // Sibling emitted; grid NOT emitted (break-before-grid).
-        // No GridContinuation — clamp didn't fire + atomic-break.
+        // Sibling + grid wrapper (F2-resized to 100) both
+        // emitted. PageComplete carries a chained
+        // BlockContinuation → GridContinuation(RowIndex=1).
         Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
         Assert.Contains(sink.Fragments, f => ReferenceEquals(f.Box, sibling));
-        Assert.DoesNotContain(sink.Fragments, f => ReferenceEquals(f.Box, grid));
+        var wrapperFragment = sink.Fragments
+            .First(f => ReferenceEquals(f.Box, grid));
+        Assert.Equal(100.0, wrapperFragment.BlockSize, precision: 3);
         var blockCont = (BlockContinuation)result.Continuation!;
         Assert.Equal(1, blockCont.ResumeAtChild);
-        Assert.Null(blockCont.LayouterState);
+        var gridCont = (GridContinuation)blockCont.LayouterState!;
+        Assert.Equal(1, gridCont.RowIndex);
     }
 
     [Fact]
-    public void Cycle5c2c_post_PR_101_oversized_first_row_LastResort_emits_diagnostic_and_makes_progress()
+    public void Cycle5c3_oversized_first_row_LastResort_emits_diagnostic_and_makes_progress()
     {
-        // Per PR-#101 review P2#1 — strengthen the oversized-row
-        // test. Previously the test only asserted the wrapper
-        // existed; it would pass even if the diagnostic wasn't
-        // emitted, the item was dropped, or progress broke.
-        // Post-fix the test asserts ALL of:
-        //   - LayoutGridForcedOverflow001 diagnostic emitted.
-        //   - Wrapper IS in the sink with authored geometry.
-        //   - Grid item IS in the sink (= no row drop).
-        //   - LastResort attempt result is AllDone OR PageComplete
-        //     (NOT NeedsRewind — LastResort forbids rewind per the
-        //     coordinator contract).
-        //   - The result's continuation does not carry a
-        //     fabricated GridContinuation (= atomic dispatch
-        //     under LastResort doesn't split).
+        // Per Phase 3 Task 17 cycle 5c.3 — F3 reroutes the
+        // oversized-first-row case through the Continue path
+        // with pagination enabled. The grid emits the oversized
+        // row via its OWN §4.4 force-emit path; the outer
+        // block-level forced-overflow path no longer fires.
+        //
+        // Pre-F3: clamp didn't fire (IsHeightAuto gate) →
+        // break-check BreakHere → outer forced-overflow path →
+        // PAGINATION-FORCED-OVERFLOW-001 + atomic dispatch.
+        //
+        // Post-F3:
+        //   1. authored borderBox = 500, clamp shrinks to 250.
+        //   2. Subtree-extent clamp brings 500 → 250.
+        //   3. Break-check Continue.
+        //   4. Dispatch with authored 500 contentBlockSize +
+        //      budget 250.
+        //   5. GridSizing.Resolve against 500: row = 500.
+        //   6. ComputePaginatedRowRange(budget=250) sees row 0
+        //      = 500 doesn't fit. LastResort force-emits row +
+        //      emits LAYOUT-GRID-FORCED-OVERFLOW-001.
+        //   7. LastEmittedBlockExtent = 500. F2 resizes
+        //      wrapper to 0 + 500 = 500.
         var sink = new RecordingFragmentSink();
         var diag = new RecordingDiagnosticsSink();
         var root = Box.CreateRoot(MakeStyle());
@@ -5487,48 +5523,45 @@ public sealed class BlockLayouterTests
         // Result is committed (not NeedsRewind per LastResort
         // contract): either AllDone or PageComplete.
         Assert.NotEqual(LayoutAttemptOutcome.NeedsRewind, result.Outcome);
-        // Wrapper in sink at authored geometry (= 500, NOT
-        // clamped — IsHeightAuto gate prevents clamp for
-        // explicit-height).
+        // Wrapper in sink at F2-resized geometry (= chrome 0 +
+        // emittedExtent 500 = 500). Authored row geometry
+        // preserved (= GridSizing.Resolve ran against authored
+        // 500, NOT clamped 250).
         var wrapperFragment = sink.Fragments
             .First(f => ReferenceEquals(f.Box, grid));
         Assert.Equal(500.0, wrapperFragment.BlockSize, precision: 3);
-        // Grid item dispatched + emitted (= no row drop under
-        // forced-overflow / atomic LastResort).
+        // Grid item dispatched + emitted (= the §4.4 force-emit
+        // path inside GridLayouter committed it).
         Assert.Contains(sink.Fragments, f => ReferenceEquals(f.Box, item));
-        // No fabricated GridContinuation (= atomic dispatch).
-        if (result.Continuation is BlockContinuation outBc)
-        {
-            Assert.Null(outBc.LayouterState);
-        }
-        // Pagination forced-overflow diagnostic fires for the
-        // oversized first-row scenario (= the outer
-        // BlockLayouter's forced-overflow path emits
-        // PAGINATION-FORCED-OVERFLOW-001 since the wrapper
-        // exceeds page; GridLayouter under atomic mode does NOT
-        // emit LayoutGridForcedOverflow001 since allowPagination
-        // is false, so the §4.4 force-emit path inside the grid
-        // doesn't fire — but the outer block-level diagnostic
-        // documents the overflow).
+        // GridLayouter emits LAYOUT-GRID-FORCED-OVERFLOW-001
+        // because the oversized row was force-emitted in
+        // LastResort + paginatable mode.
         Assert.Contains(diag.Diagnostics, d =>
-            d.Code == PaginateDiagnosticCodes.PaginationForcedOverflow001);
+            d.Code == PaginateDiagnosticCodes.LayoutGridForcedOverflow001);
     }
 
     [Fact]
-    public void Cycle5c2c_post_PR_101_explicit_height_with_fr_rows_preserves_authored_geometry()
+    public void Cycle5c3_explicit_height_with_fr_rows_preserves_authored_geometry()
     {
-        // Per PR-#101 review P1#1 required regression test —
+        // Per PR-#101 review P1#1 → Phase 3 Task 17 cycle 5c.3
+        // — THE CRITICAL F3 REGRESSION TEST:
         // <c>height: 400px; grid-template-rows: 100px 1fr</c>.
-        // Authored row resolution: 100 + 300 = 400. With the F3
-        // bug (pre-revert), the clamp shrunk borderBoxBlockSize
-        // to pageRemaining (e.g., 250), then GridSizing.Resolve
-        // ran against contentBlockSize=250 → fr row resolved to
-        // 250-100=150 instead of 300 (= 150px of authored row
-        // geometry silently lost).
         //
-        // Post-revert: IsHeightAuto gate prevents the clamp.
-        // GridSizing.Resolve runs against authored 400, fr row =
-        // 300. Atomic dispatch emits all rows at authored sizes.
+        // F3 minimum-viable correctness requirement: the fr row
+        // MUST resolve against AUTHORED 400 (not the clamped
+        // page budget), giving rows [100, 300]. The cycle 5c.2c
+        // initial F3 attempt fed the clamped 250 into
+        // <c>GridSizing.Resolve</c> as <c>contentBlockSize</c>,
+        // causing fr to redistribute against 250 → row 1 =
+        // 250 - 100 = 150 (= 150px silently lost). The fix:
+        // <c>ConfigureEmission</c>'s new <c>pageBlockBudget</c>
+        // parameter separates row-sizing input (authored 400)
+        // from pagination budget (clamped 250).
+        //
+        // Page 1 (this test): emit item1 (row 0, height 100) +
+        // defer row 1 via GridContinuation. Resume cache pins
+        // row 1 size = 300 (= the authored fr resolution); page
+        // 2 would emit item2 at that size.
         var sink = new RecordingFragmentSink();
         var root = Box.CreateRoot(MakeStyle());
 
@@ -5576,19 +5609,31 @@ public sealed class BlockLayouterTests
         var layoutCtx = new LayoutContext(ctx);
         using var resolver = new BreakResolver();
 
-        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
 
-        // Row geometry preserved: item 1 at row 0 (= 100 tall),
-        // item 2 at row 1 (= 300 tall). Verifies fr distributed
-        // against AUTHORED 400 - 100 = 300, not against any
-        // clamped budget. Pre-revert: fr would be 250-100=150
-        // (= silent loss of 150px).
+        // Page 1: item1 emitted at row 0 (= 100 tall). item2
+        // (row 1) is deferred via GridContinuation; the resume
+        // cache carries row sizes [100, 300] (= the AUTHORED fr
+        // distribution against 400, NOT the clamped 250).
         var item1Fragment = sink.Fragments
             .First(f => ReferenceEquals(f.Box, item1));
-        var item2Fragment = sink.Fragments
-            .First(f => ReferenceEquals(f.Box, item2));
         Assert.Equal(100.0, item1Fragment.BlockSize, precision: 3);
-        Assert.Equal(300.0, item2Fragment.BlockSize, precision: 3);
+        // item2 NOT in page 1 fragments (= deferred to page 2).
+        Assert.DoesNotContain(sink.Fragments, f => ReferenceEquals(f.Box, item2));
+        // Verify the resume cache pins row 1 size = AUTHORED 300
+        // (= the F3 correctness contract — fr resolved against
+        // authored 400, not clamped 250). Pre-F3 the cache
+        // would have shown row 1 size = 150 (silent geometry
+        // loss).
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var bc = (BlockContinuation)result.Continuation!;
+        var gridCont = (GridContinuation)bc.LayouterState!;
+        Assert.Equal(1, gridCont.RowIndex);
+        Assert.NotNull(gridCont.Cache);
+        Assert.Equal(2, gridCont.Cache!.RowBaseSizes.Length);
+        Assert.Equal(100.0, gridCont.Cache.RowBaseSizes[0], precision: 3);
+        Assert.Equal(300.0, gridCont.Cache.RowBaseSizes[1], precision: 3);
     }
 
     [Fact]

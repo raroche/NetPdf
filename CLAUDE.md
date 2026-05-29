@@ -56,6 +56,7 @@ These are non-negotiable. Every PR/commit must honor them. Detailed coding stand
 | Add a dependency | [docs/legal/dependency-dossier.md](docs/legal/dependency-dossier.md) |
 | Emit a new diagnostic | [docs/diagnostics-codes.md](docs/diagnostics-codes.md) — and run `/add-diagnostic-code`. |
 | Look up a PDF spec interpretation | [docs/pdf-spec-notes.md](docs/pdf-spec-notes.md) |
+| Plan accessibility / tagged-PDF work (PDF/UA-1, ships v1.1) | [docs/accessibility.md](docs/accessibility.md) — TODO roadmap; semantic IR is built in v1, emission ships v1.1. |
 | Manage secrets / API keys | [docs/secrets-and-credentials.md](docs/secrets-and-credentials.md) |
 | Know how we write code (SOLID, DRY, naming, testing) | [docs/coding-standards.md](docs/coding-standards.md) |
 | Run a recurring task | [.claude/skills/](.claude/skills/) — `phase-status`, `add-diagnostic-code`, `add-corpus-sample`, `add-css-property`, `render-corpus`, `bench`, `aot-check`, `uax-test`. |

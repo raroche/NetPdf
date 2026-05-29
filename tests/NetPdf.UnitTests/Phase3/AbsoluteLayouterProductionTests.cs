@@ -122,9 +122,74 @@ public sealed class AbsoluteLayouterProductionTests
             d.Code == PaginateDiagnosticCodes.LayoutAbsoluteFeatureUnsupported001);
     }
 
+    [Fact]
+    public async Task Cycle1_production_abspos_emitted_on_multipage_first_page()
+    {
+        // Per post-PR-#112 review C2 — when the in-flow content
+        // overflows page 1 (forcing a PageComplete), the abspos box
+        // must STILL be emitted on page 1. Pre-fix the abspos pass ran
+        // only before the AllDone return, so any multi-page document
+        // dropped every abspos fragment.
+        //
+        // Fixture: a tall in-flow block (1200px) on an 800px page →
+        // page 1 returns PageComplete. The abspos box (top:5 left:5)
+        // must appear in page 1's fragments.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .tall { height: 1200px; }
+                .abs {
+                    position: absolute;
+                    top: 5px; left: 5px;
+                    width: 40px; height: 40px;
+                }
+            </style></head><body>
+            <div class="tall"></div>
+            <div class="abs"></div>
+            </body></html>
+            """;
+
+        var (sink, _, result) = await RenderWithResultAsync(html);
+        // The in-flow tall block overflows → page 1 PageComplete.
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        // The abspos box is STILL emitted on page 1 (C2 fix).
+        var abs = FindByClass(sink, "abs");
+        Assert.NotNull(abs);
+        Assert.Equal(5.0, abs!.Value.InlineOffset, precision: 3);
+        Assert.Equal(5.0, abs.Value.BlockOffset, precision: 3);
+        Assert.Equal(40.0, abs.Value.InlineSize, precision: 3);
+    }
+
     // ================================================================
     //  Pipeline driver — mirrors GridLayouterProductionTests.
     // ================================================================
+
+    private static async Task<(RecordingFragmentSink sink, RecordingDiagnosticsSink diag,
+        LayoutAttemptResult result)>
+        RenderWithResultAsync(string html)
+    {
+        var host = new HtmlParsingHost();
+        var document = await host.ParseAsync(html, new HtmlPdfOptions());
+        var sheets = AdaptAllSheetsViaPreprocessor(document);
+        var cascade = CascadeResolver.Resolve(document, sheets, CssMediaContext.DefaultPrint);
+        var resolved = VarResolver.Resolve(cascade, document);
+        var box = BoxBuilder.Build(document, resolved);
+
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        using var shaper = new SyntheticShaperResolver();
+        using var layouter = new BlockLayouter(
+            rootBox: box,
+            sink: sink,
+            incomingContinuation: null,
+            diagnostics: diagSink,
+            shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diagSink };
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
+        return (sink, diagSink, result);
+    }
 
     private static async Task<(RecordingFragmentSink sink, RecordingDiagnosticsSink diag)>
         RenderAsync(string html)

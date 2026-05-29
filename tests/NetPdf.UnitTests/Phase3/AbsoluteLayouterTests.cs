@@ -30,7 +30,9 @@ public sealed class AbsoluteLayouterTests
     private static Box BuildAbsoluteBox(
         double? top = null, double? left = null,
         double? width = null, double? height = null,
-        bool topPercent = false, bool widthAuto = false)
+        bool topPercent = false, bool widthAuto = false,
+        double? right = null, double? bottom = null,
+        bool rightPercent = false)
     {
         var style = MakeStyle();
         // position: absolute = keyword id 2.
@@ -49,6 +51,15 @@ public sealed class AbsoluteLayouterTests
             style.Set(PropertyId.Width, ComputedSlot.FromLengthPx(w));
         }
         if (height is { } h) style.Set(PropertyId.Height, ComputedSlot.FromLengthPx(h));
+        if (rightPercent)
+        {
+            style.Set(PropertyId.Right, ComputedSlot.FromPercentage(right ?? 0));
+        }
+        else if (right is { } r)
+        {
+            style.Set(PropertyId.Right, ComputedSlot.FromLengthPx(r));
+        }
+        if (bottom is { } b) style.Set(PropertyId.Bottom, ComputedSlot.FromLengthPx(b));
         return Box.ForElement(BoxKind.BlockContainer, style, MakeElement());
     }
 
@@ -148,5 +159,52 @@ public sealed class AbsoluteLayouterTests
         Assert.True(p.IsResolved);
         Assert.Equal(0.0, p.InlineOffset, precision: 3);
         Assert.Equal(0.0, p.BlockOffset, precision: 3);
+    }
+
+    // ============================================================
+    // Post-PR-#112 review C1 — explicit right/bottom defers (cycle 1
+    // anchors via top/left only; right/bottom anchoring + over-
+    // constrained resolution is cycle 2). The box must NOT silently
+    // resolve via top/left while ignoring right/bottom.
+    // ============================================================
+
+    [Fact]
+    public void Explicit_right_defers_even_with_full_top_left_width_height()
+    {
+        // Over-specified (top+left+width+height ALL set) + an explicit
+        // right. Cycle 1 defers rather than silently ignoring `right`.
+        var box = BuildAbsoluteBox(top: 10, left: 20, width: 50, height: 30, right: 0);
+        var p = AbsoluteLayouter.ResolvePlacement(box, OriginCb);
+        Assert.False(p.IsResolved);
+        Assert.Contains("right", p.DeferReason);
+    }
+
+    [Fact]
+    public void Explicit_bottom_defers()
+    {
+        var box = BuildAbsoluteBox(top: 10, left: 20, width: 50, height: 30, bottom: 0);
+        var p = AbsoluteLayouter.ResolvePlacement(box, OriginCb);
+        Assert.False(p.IsResolved);
+        Assert.Contains("bottom", p.DeferReason);
+    }
+
+    [Fact]
+    public void Percentage_right_defers()
+    {
+        var box = BuildAbsoluteBox(
+            top: 10, left: 20, width: 50, height: 30, right: 25, rightPercent: true);
+        var p = AbsoluteLayouter.ResolvePlacement(box, OriginCb);
+        Assert.False(p.IsResolved);
+        Assert.Contains("right", p.DeferReason);
+    }
+
+    [Fact]
+    public void No_right_bottom_still_resolves()
+    {
+        // Sanity: the C1 fix doesn't break the happy path — a box with
+        // NO right/bottom (the default auto) resolves normally.
+        var box = BuildAbsoluteBox(top: 10, left: 20, width: 50, height: 30);
+        var p = AbsoluteLayouter.ResolvePlacement(box, OriginCb);
+        Assert.True(p.IsResolved);
     }
 }

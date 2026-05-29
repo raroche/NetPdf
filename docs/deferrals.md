@@ -2518,7 +2518,12 @@ flags the categories):
   - **`auto` offset resolution (static position)** — `top`/`left` auto
     should resolve to the box's static-flow position per §6.
   - **`right`/`bottom` anchoring + over-constrained resolution** — §6
-    left/right/width (and top/bottom/height) constraint solving.
+    left/right/width (and top/bottom/height) constraint solving. Per
+    post-PR-#112 review C1, a box with an EXPLICIT `right` or `bottom`
+    (length or percentage) is DEFERRED (dropped with the diagnostic)
+    rather than silently placed via top/left — cycle 1 doesn't honor
+    them. Cycle 2 ships the full constraint solver (incl. the
+    over-constrained LTR "ignore right/bottom" rule).
   - **Percentage** `top`/`left`/`width`/`height` (resolve against the
     CB extent).
   - **`auto` width/height** — shrink-to-fit + offset-derived sizing.
@@ -2526,8 +2531,12 @@ flags the categories):
     only when the ancestor has zero padding).
   - **z-index paint ordering** — cycle 1 paints in source order.
   - **Pagination interaction** — cycle 1 emits all abspos boxes on the
-    first page (the `startChildIdx == 0` guard); deciding which page
-    an abspos box lands on is deferred.
+    establishing block's FIRST page (the `AttemptLayout` wrapper runs
+    the pass once, for `_incomingContinuation is null`, on AllDone OR
+    PageComplete — per post-PR-#112 review C2 so multi-page in-flow
+    content doesn't drop abspos fragments). Deciding which page an
+    abspos box belongs on (e.g., anchored to content that paginates),
+    + abspos boxes taller than a page, remain deferred.
   - **`position: fixed`** — Task 20 (same out-of-flow model, ICB/page
     always the CB).
 - **Trigger** — real corpus documents using positioned overlays /

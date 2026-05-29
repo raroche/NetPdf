@@ -495,7 +495,56 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     }
 
     /// <inheritdoc />
+    /// <remarks>Per Phase 3 Task 19 cycle 1 + post-PR-#112 review C2 —
+    /// thin wrapper around <see cref="AttemptLayoutInFlow"/> that runs
+    /// the <c>position: absolute</c> emission pass AFTER the in-flow
+    /// result is computed. Running it here (rather than inline before
+    /// one return) guarantees abspos boxes emit on the establishing
+    /// block's first page regardless of whether that page completes
+    /// with <see cref="LayoutAttemptOutcome.AllDone"/> OR
+    /// <see cref="LayoutAttemptOutcome.PageComplete"/> — multi-page
+    /// in-flow content used to skip the inline pre-AllDone call
+    /// entirely, dropping every abspos fragment.
+    ///
+    /// <para>Gates: the pass runs only on the FIRST page
+    /// (<c>_incomingContinuation is null</c> — resume pages skip it,
+    /// cycle-1 abspos-pagination deferral) + only for COMMITTED
+    /// outcomes (AllDone / PageComplete, NOT NeedsRewind — a rewind
+    /// rolls the sink back + retries, so abspos must wait for the
+    /// committed attempt) + at most once
+    /// (<see cref="_absoluteChildrenEmitted"/> guards against a
+    /// committed re-entry). Emitting after the core also preserves
+    /// paint order: abspos fragments append after all in-flow
+    /// fragments (= painted over in-flow content, the CSS default for
+    /// out-of-flow positioned boxes).</para></remarks>
     public LayoutAttemptResult AttemptLayout(
+        FragmentainerContext fragmentainer,
+        ref LayoutContext layout,
+        IBreakResolver resolver,
+        LayoutAttemptStrategy strategy,
+        CancellationToken cancellationToken = default)
+    {
+        var result = AttemptLayoutInFlow(
+            fragmentainer, ref layout, resolver, strategy, cancellationToken);
+
+        if (_incomingContinuation is null
+            && !_absoluteChildrenEmitted
+            && result.Outcome is LayoutAttemptOutcome.AllDone
+                or LayoutAttemptOutcome.PageComplete)
+        {
+            _absoluteChildrenEmitted = true;
+            EmitAbsolutelyPositionedChildren(fragmentainer, ref layout, cancellationToken);
+        }
+        return result;
+    }
+
+    /// <summary>Per post-PR-#112 review C2 — one-shot guard so the
+    /// abspos emission pass runs at most once per BlockLayouter
+    /// instance (defends against a committed re-entry after the
+    /// coordinator's rewind/retry cycle).</summary>
+    private bool _absoluteChildrenEmitted;
+
+    private LayoutAttemptResult AttemptLayoutInFlow(
         FragmentainerContext fragmentainer,
         ref LayoutContext layout,
         IBreakResolver resolver,
@@ -3430,19 +3479,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             }
         }
 
-        // Per Phase 3 Task 19 cycle 1 — emit the establishing block's
-        // absolutely-positioned direct children AFTER the in-flow pass.
-        // Only on the first page (= not a resume): cycle-1 abspos
-        // pagination (deciding which page an abspos box lands on) is a
-        // deferral, so all abspos boxes emit on the page where their
-        // establishing block first lays out. Mirrors the spec's
-        // "out-of-flow, painted after in-flow content" model (cycle 1
-        // has no z-index ordering — paint order = source order).
-        if (startChildIdx == 0)
-        {
-            EmitAbsolutelyPositionedChildren(
-                fragmentainer, ref layout, cancellationToken);
-        }
+        // Per Phase 3 Task 19 cycle 1 + post-PR-#112 review C2 — the
+        // abspos emission pass is NOT run here. It runs in the
+        // AttemptLayout WRAPPER after this core returns, so it fires on
+        // BOTH the AllDone path (reached here) AND the PageComplete
+        // paths (the early returns scattered through the in-flow loop
+        // for multi-page documents). Running it inline here would only
+        // cover AllDone, dropping every abspos fragment for any
+        // document whose in-flow content paginates.
 
         // All children laid out — no more pages needed.
         return LayoutAttemptResult.AllDone(cost: 0);

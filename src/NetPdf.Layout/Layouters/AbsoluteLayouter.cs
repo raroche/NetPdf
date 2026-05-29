@@ -39,6 +39,30 @@ internal static class AbsoluteLayouter
     {
         var style = box.Style;
 
+        // Per post-PR-#112 review C1 — `right` / `bottom` anchoring +
+        // over-constrained resolution (CSS Positioned Layout L3 §6) are
+        // a documented cycle-2 deferral. If the author specified an
+        // EXPLICIT `right` or `bottom` (a length OR percentage — not the
+        // `auto` default), cycle 1 cannot honor it: defer the whole box
+        // rather than silently ignoring it + placing via top/left. This
+        // matches the contract in
+        // `docs/deferrals.md#abspos-cycle-1-explicit-only` (right/bottom
+        // → LAYOUT-ABSOLUTE-FEATURE-UNSUPPORTED-001). Cycle 2 implements
+        // the full §6 constraint solver (incl. the over-constrained LTR
+        // "ignore right/bottom" rule).
+        if (IsExplicitlySpecified(style, PropertyId.Right))
+        {
+            return AbsolutePlacement.Unresolved(
+                "`right` is specified — cycle 1 anchors via top/left only; "
+                + "right/bottom anchoring + over-constrained resolution is cycle 2");
+        }
+        if (IsExplicitlySpecified(style, PropertyId.Bottom))
+        {
+            return AbsolutePlacement.Unresolved(
+                "`bottom` is specified — cycle 1 anchors via top/left only; "
+                + "right/bottom anchoring + over-constrained resolution is cycle 2");
+        }
+
         // Cycle 1 requires explicit pixel top + left. `auto` (the
         // default) lands as an Unset/Keyword slot; percentages land as
         // a Percentage slot. Both defer.
@@ -99,6 +123,19 @@ internal static class AbsoluteLayouter
         }
         px = 0;
         return false;
+    }
+
+    /// <summary>Per post-PR-#112 review C1 — was an inset property
+    /// (<c>top</c>/<c>right</c>/<c>bottom</c>/<c>left</c>) EXPLICITLY
+    /// specified to a non-<c>auto</c> value? <c>auto</c> is the initial
+    /// value + lands as an Unset / Keyword slot; an explicit length or
+    /// percentage lands as a LengthPx / Percentage slot. Used to detect
+    /// <c>right</c>/<c>bottom</c> presence so cycle 1 can defer rather
+    /// than silently ignore them.</summary>
+    private static bool IsExplicitlySpecified(ComputedStyle style, PropertyId id)
+    {
+        var tag = style.Get(id).Tag;
+        return tag is ComputedSlotTag.LengthPx or ComputedSlotTag.Percentage;
     }
 }
 

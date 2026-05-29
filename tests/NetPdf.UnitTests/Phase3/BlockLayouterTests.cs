@@ -3,6 +3,7 @@
 
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Linq;
 using System.Threading;
 using NetPdf.Css.ComputedValues;
 using NetPdf.Css.Properties;
@@ -6021,6 +6022,163 @@ public sealed class BlockLayouterTests
             children.Add(child);
         }
         return (root, children);
+    }
+
+    // =====================================================================
+    //  Phase 3 Task 19 cycle 1 — position: absolute. Explicit-only
+    //  placement anchored to the establishing block's content box
+    //  (= the fragmentainer content area for the top-level layouter),
+    //  removed from normal flow.
+    // =====================================================================
+
+    [Fact]
+    public void Cycle1_abspos_child_emits_at_explicit_offsets()
+    {
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var absStyle = MakeStyle();
+        SetKeyword(absStyle, PropertyId.Position, 2); // absolute
+        SetLengthPx(absStyle, PropertyId.Top, 10);
+        SetLengthPx(absStyle, PropertyId.Left, 20);
+        SetLengthPx(absStyle, PropertyId.Width, 50);
+        SetLengthPx(absStyle, PropertyId.Height, 30);
+        var abs = Box.ForElement(BoxKind.BlockContainer, absStyle, MakeElement());
+        root.AppendChild(abs);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        var fragment = sink.Fragments.First(f => ReferenceEquals(f.Box, abs));
+        // CB = fragmentainer content area origin (0,0); top/left anchor.
+        Assert.Equal(20.0, fragment.InlineOffset, precision: 3);
+        Assert.Equal(10.0, fragment.BlockOffset, precision: 3);
+        Assert.Equal(50.0, fragment.InlineSize, precision: 3);
+        Assert.Equal(30.0, fragment.BlockSize, precision: 3);
+        // Abspos box is out-of-flow → UsedBlockSize NOT advanced by it.
+        Assert.Equal(0.0, ctx.UsedBlockSize, precision: 3);
+    }
+
+    [Fact]
+    public void Cycle1_abspos_is_removed_from_flow_siblings_unaffected()
+    {
+        // Two in-flow blocks bracketing an abspos box. The abspos box
+        // must NOT advance the cursor + must NOT break margin
+        // adjacency — the two in-flow blocks stack as if the abspos
+        // box weren't there.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var firstStyle = MakeStyle();
+        SetLengthPx(firstStyle, PropertyId.Height, 100);
+        var first = Box.ForElement(BoxKind.BlockContainer, firstStyle, MakeElement());
+        root.AppendChild(first);
+
+        var absStyle = MakeStyle();
+        SetKeyword(absStyle, PropertyId.Position, 2);
+        SetLengthPx(absStyle, PropertyId.Top, 500);
+        SetLengthPx(absStyle, PropertyId.Left, 0);
+        SetLengthPx(absStyle, PropertyId.Width, 50);
+        SetLengthPx(absStyle, PropertyId.Height, 50);
+        var abs = Box.ForElement(BoxKind.BlockContainer, absStyle, MakeElement());
+        root.AppendChild(abs);
+
+        var secondStyle = MakeStyle();
+        SetLengthPx(secondStyle, PropertyId.Height, 100);
+        var second = Box.ForElement(BoxKind.BlockContainer, secondStyle, MakeElement());
+        root.AppendChild(second);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        var firstFrag = sink.Fragments.First(f => ReferenceEquals(f.Box, first));
+        var secondFrag = sink.Fragments.First(f => ReferenceEquals(f.Box, second));
+        // first at block 0; second directly below at block 100 (= the
+        // abspos box between them in source order didn't displace it).
+        Assert.Equal(0.0, firstFrag.BlockOffset, precision: 3);
+        Assert.Equal(100.0, secondFrag.BlockOffset, precision: 3);
+        // abspos emitted at its own anchored position (block 500).
+        var absFrag = sink.Fragments.First(f => ReferenceEquals(f.Box, abs));
+        Assert.Equal(500.0, absFrag.BlockOffset, precision: 3);
+        // UsedBlockSize reflects only the two in-flow blocks (200).
+        Assert.Equal(200.0, ctx.UsedBlockSize, precision: 3);
+    }
+
+    [Fact]
+    public void Cycle1_abspos_with_auto_offset_dropped_with_diagnostic()
+    {
+        // `top` left auto (unset) → cycle-1 deferral → box dropped +
+        // LAYOUT-ABSOLUTE-FEATURE-UNSUPPORTED-001 emitted.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var absStyle = MakeStyle();
+        SetKeyword(absStyle, PropertyId.Position, 2);
+        // top intentionally unset (auto).
+        SetLengthPx(absStyle, PropertyId.Left, 20);
+        SetLengthPx(absStyle, PropertyId.Width, 50);
+        SetLengthPx(absStyle, PropertyId.Height, 30);
+        var abs = Box.ForElement(BoxKind.BlockContainer, absStyle, MakeElement());
+        root.AppendChild(abs);
+
+        using var layouter = new BlockLayouter(root, sink, diagnostics: diag);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diag };
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // No fragment for the dropped box.
+        Assert.DoesNotContain(sink.Fragments, f => ReferenceEquals(f.Box, abs));
+        Assert.Contains(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutAbsoluteFeatureUnsupported001);
+    }
+
+    [Fact]
+    public void Cycle1_abspos_inner_content_dispatched_at_translated_coords()
+    {
+        // An abspos box with an in-flow child block: the child's
+        // fragment must be emitted at the abspos box's content origin
+        // (= translated by the box's resolved position).
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var absStyle = MakeStyle();
+        SetKeyword(absStyle, PropertyId.Position, 2);
+        SetLengthPx(absStyle, PropertyId.Top, 40);
+        SetLengthPx(absStyle, PropertyId.Left, 60);
+        SetLengthPx(absStyle, PropertyId.Width, 200);
+        SetLengthPx(absStyle, PropertyId.Height, 200);
+        var abs = Box.ForElement(BoxKind.BlockContainer, absStyle, MakeElement());
+
+        var innerStyle = MakeStyle();
+        SetLengthPx(innerStyle, PropertyId.Height, 30);
+        var inner = Box.ForElement(BoxKind.BlockContainer, innerStyle, MakeElement());
+        abs.AppendChild(inner);
+        root.AppendChild(abs);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        var innerFrag = sink.Fragments.First(f => ReferenceEquals(f.Box, inner));
+        // Inner child at the abspos box's content origin (cycle 1 = box
+        // border-box origin, no padding inset): block 40, inline 60.
+        Assert.Equal(60.0, innerFrag.InlineOffset, precision: 3);
+        Assert.Equal(40.0, innerFrag.BlockOffset, precision: 3);
+        Assert.Equal(30.0, innerFrag.BlockSize, precision: 3);
     }
 
     private static ComputedStyle MakeStyle() => ComputedStyle.RentForExclusiveTesting();

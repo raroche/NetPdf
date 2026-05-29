@@ -1014,20 +1014,27 @@ public sealed class GridLayouterProductionTests
     }
 
     [Fact]
-    public async Task Cycle5c2d_recursive_explicit_height_grid_stays_atomic_pending_F3()
+    public async Task Cycle5c3_recursive_explicit_height_grid_paginates()
     {
-        // Per PR-#101 review P1#1 — explicit-height grids stay
-        // atomic at the recursive site too (= same
-        // IsHeightAuto(child) gate as the outer site).
-        // Strengthened post-PR-#102 review P2#2 to also assert
-        // authored wrapper geometry preserved + diagnostic on
-        // unavoidable forced-overflow.
+        // Per Phase 3 Task 17 cycle 5c.3 + post-PR-#110 review
+        // P1#2 — F3 SHIPPED at the recursive site too, AND the
+        // outer body's break-check projection eliminates the
+        // stale `PAGINATION-FORCED-OVERFLOW-001` that the
+        // initial cycle-5c.3 ship still emitted (see
+        // `grid-explicit-height-paginate-deferral` Residual
+        // approximation note for the cursor-advance scope).
         //
         // Fixture: height: 200px grid with 2 rows of 100px on a
-        // 150px page → wrapper at authored 200 > page 150 →
-        // forced-overflow path (= grid is body's only direct
-        // child + body is at top of fresh page so no break-
-        // before is productive).
+        // 150px page.
+        //   1. Outer body subtree measure projects the grid to
+        //      <c>min(authored 200, pageBlockSize 150) = 150</c>
+        //      → body break-check Continue (= no
+        //      `PAGINATION-FORCED-OVERFLOW-001`).
+        //   2. Body recurses; recursive grid dispatch sees
+        //      pageRemaining 150, authored 200 → clamp fires.
+        //   3. Dispatch with authored 200 + budget 150 + F2
+        //      wrapper-resize to the emitted-rows extent (100).
+        //   4. Row 0 fits, row 1 deferred via GridContinuation.
         const string html = """
             <!DOCTYPE html><html><head><style>
                 .grid {
@@ -1049,26 +1056,26 @@ public sealed class GridLayouterProductionTests
         var (sink, diag, result, _) = await RenderViaFullPipelineWithResultAsync(
             html, contentInlineSize: 100, blockSize: 150);
 
-        // No GridContinuation in the result chain — F3 isn't
-        // active for explicit-height; the grid renders atomic.
+        // GridContinuation present in chain (= F3 deferred row 1).
         var gridLeaf = result.Continuation is null
             ? null
             : FindGridContinuationLeaf(result.Continuation);
-        Assert.Null(gridLeaf);
-        // Both grid items emitted atomically (= no row drop).
+        Assert.NotNull(gridLeaf);
+        Assert.Equal(1, gridLeaf!.RowIndex);
+        // r1 emitted on page 1; r2 deferred to page 2.
         Assert.NotNull(FindByClass(sink, "r1"));
-        Assert.NotNull(FindByClass(sink, "r2"));
-        // Per P2#2 — authored wrapper geometry preserved (= 200,
-        // not clamped to 150). Look up by class since the grid
-        // div doesn't have a class; find by SourceElement tag
-        // name. Easier: just assert at least one fragment has
-        // BlockSize == 200 (= the grid wrapper).
-        Assert.Contains(sink.Fragments, f => Math.Abs(f.BlockSize - 200.0) < 0.001);
-        // Per P2#2 — unavoidable forced-overflow on a fresh
-        // 150px page produces PaginationForcedOverflow001 (the
-        // outer BlockLayouter's forced-overflow diagnostic; the
-        // grid is dispatched atomically per IsHeightAuto gate).
-        Assert.Contains(diag.Diagnostics, d =>
+        Assert.Null(FindByClass(sink, "r2"));
+        // F2 wrapper-resize: grid wrapper at 100 (= 1 emitted
+        // row), NOT authored 200.
+        Assert.Contains(sink.Fragments, f => Math.Abs(f.BlockSize - 100.0) < 0.001);
+        Assert.DoesNotContain(sink.Fragments, f => Math.Abs(f.BlockSize - 200.0) < 0.001);
+        // Per post-PR-#110 review P1#2 — the body's
+        // MeasureSubtreeVisualBlockExtent projection eliminates
+        // the stale outer-body `PAGINATION-FORCED-OVERFLOW-001`
+        // that fired pre-projection. The body's break-check
+        // takes the Continue path + the recursive grid F3
+        // dispatch handles the row-by-row pagination cleanly.
+        Assert.DoesNotContain(diag.Diagnostics, d =>
             d.Code == PaginateDiagnosticCodes.PaginationForcedOverflow001);
     }
 
@@ -1211,6 +1218,98 @@ public sealed class GridLayouterProductionTests
         Assert.Equal(100.0, page2Wrapper!.Value.BlockSize, precision: 3);
     }
 
+    [Fact]
+    public async Task Cycle5c3_explicit_height_grid_with_fr_paginates_with_authored_geometry()
+    {
+        // Per Phase 3 Task 17 cycle 5c.3 — the end-to-end F3
+        // regression test through the full HTML →
+        // cascade → BoxBuilder → BlockLayouter pipeline.
+        //
+        // Fixture: <c>height: 400px;
+        // grid-template-rows: 100px 1fr</c> on a 250px page.
+        // The fr row MUST resolve to 300 (= 400 - 100 authored
+        // distribution), NOT 150 (= 250 - 100 budget-shrunk).
+        //   - Page 1 (250px): row 0 (100) fits, row 1 (300)
+        //     doesn't → emit r1 + defer r2 via continuation.
+        //     Wrapper resized to 100.
+        //   - Page 2 (250px): r2 emits at fr-resolved 300, but
+        //     since 300 > 250 page, the LastResort force-emits
+        //     it (= page-2 wrapper is 300, item r2 is 300, +
+        //     LAYOUT-GRID-FORCED-OVERFLOW-001 fires).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 100px 1fr;
+                    grid-template-columns: 100px;
+                    height: 400px;
+                }
+                .r1 { grid-row-start: 1; grid-column-start: 1; }
+                .r2 { grid-row-start: 2; grid-column-start: 1; }
+            </style></head><body>
+            <div class="grid">
+              <div class="r1"></div>
+              <div class="r2"></div>
+            </div>
+            </body></html>
+            """;
+
+        var pages = await RenderMultiPageAsync(
+            html, contentInlineSize: 100, blockSize: 250, maxPages: 4);
+
+        // Per post-PR-#110 review P1#1 — exactly 2 pages (no
+        // empty AllDone tail page). The pre-P1#2 outer-body
+        // forced-overflow path advanced UsedBlockSize past the
+        // page extent + returned PageComplete pointing past
+        // the last child, producing a spurious page 3.
+        // MeasureSubtreeVisualBlockExtent's paginatable-grid
+        // projection (PR-#110 review P1#2) keeps the body's
+        // break-check on the Continue path so page 2 closes
+        // cleanly with AllDone.
+        Assert.Equal(2, pages.Count);
+
+        // Page 1: r1 emits + r2 deferred via continuation.
+        var page1 = pages[0];
+        Assert.NotNull(FindByClass(page1.Sink, "r1"));
+        Assert.Null(FindByClass(page1.Sink, "r2"));
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, page1.Result.Outcome);
+        // r1 is at the authored row 0 size (100).
+        var r1 = FindByClass(page1.Sink, "r1");
+        Assert.Equal(100.0, r1!.Value.BlockSize, precision: 3);
+        // F2-resized grid wrapper at 100 on page 1.
+        var page1Wrapper = FindGridWrapper(page1.Sink);
+        Assert.NotNull(page1Wrapper);
+        Assert.Equal(100.0, page1Wrapper!.Value.BlockSize, precision: 3);
+
+        // Per post-PR-#110 review P1#2 — no stale
+        // PAGINATION-FORCED-OVERFLOW-001 on page 1 even though
+        // the grid's authored extent (400) exceeds the page
+        // budget (250). The body's break-check sees the
+        // projected grid extent (= min(400, 250) = 250) +
+        // takes the Continue path. F3 emits row 0 cleanly +
+        // defers row 1 via the GridContinuation.
+        Assert.DoesNotContain(page1.Diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.PaginationForcedOverflow001);
+
+        // Page 2: r2 emits at AUTHORED fr-resolved 300px
+        // (NOT clamped 150). LastResort force-emits since
+        // 300 > 250 budget; the row geometry is preserved
+        // via the resume cache's RowBaseSizes pinned on page 1.
+        var page2 = pages[1];
+        Assert.Null(FindByClass(page2.Sink, "r1"));
+        Assert.NotNull(FindByClass(page2.Sink, "r2"));
+        var r2 = FindByClass(page2.Sink, "r2");
+        Assert.Equal(300.0, r2!.Value.BlockSize, precision: 3);
+        // Page 2 outcome AllDone (= the helper loop exits
+        // immediately + no further continuation).
+        Assert.Equal(LayoutAttemptOutcome.AllDone, page2.Result.Outcome);
+        // F2-resized grid wrapper on page 2 at 300 (= the
+        // emitted r2 extent).
+        var page2Wrapper = FindGridWrapper(page2.Sink);
+        Assert.NotNull(page2Wrapper);
+        Assert.Equal(300.0, page2Wrapper!.Value.BlockSize, precision: 3);
+    }
+
     /// <summary>Per Phase 3 Task 17 cycle 5c.2d post-PR-#102
     /// review P2#1 — page-loop driver. Calls
     /// <c>BlockLayouter.AttemptLayout</c> repeatedly, feeding
@@ -1218,7 +1317,10 @@ public sealed class GridLayouterProductionTests
     /// page's <c>incomingContinuation</c>, until AllDone or
     /// <paramref name="maxPages"/>. Mirrors what the production
     /// document driver would do.</summary>
-    private static async Task<List<(RecordingFragmentSink Sink, LayoutAttemptResult Result)>>
+    private static async Task<List<(
+        RecordingFragmentSink Sink,
+        LayoutAttemptResult Result,
+        RecordingDiagnosticsSink Diag)>>
         RenderMultiPageAsync(
             string html,
             double contentInlineSize,
@@ -1232,7 +1334,7 @@ public sealed class GridLayouterProductionTests
         var resolved = VarResolver.Resolve(cascade, document);
         var box = BoxBuilder.Build(document, resolved);
 
-        var pages = new List<(RecordingFragmentSink, LayoutAttemptResult)>();
+        var pages = new List<(RecordingFragmentSink, LayoutAttemptResult, RecordingDiagnosticsSink)>();
         LayoutContinuation? incoming = null;
         for (var pageIdx = 0; pageIdx < maxPages; pageIdx++)
         {
@@ -1252,7 +1354,7 @@ public sealed class GridLayouterProductionTests
             var result = layouter.AttemptLayout(
                 ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.LastResort);
 
-            pages.Add((sink, result));
+            pages.Add((sink, result, diagSink));
 
             if (result.Outcome == LayoutAttemptOutcome.AllDone) break;
             if (result.Continuation is null) break;

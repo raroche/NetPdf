@@ -145,6 +145,36 @@ internal sealed class GridLayouter : ILayouter, IDisposable
     /// container overflows).</summary>
     private bool _allowPagination;
 
+    /// <summary>Per Phase 3 Task 17 cycle 5c.3 + post-PR-#110
+    /// review P3#2 — the per-page block-axis budget for emission.
+    /// Separates the "geometry input" (= <see cref="_contentBlockSize"/>,
+    /// used by <see cref="GridSizing.Resolve"/> to compute row sizes
+    /// against the authored container extent) from the "page budget"
+    /// (= page-remaining capacity that drives the
+    /// <see cref="ComputePaginatedRowRange"/> row-fit cut-off). When
+    /// <see langword="null"/>, the budget falls back to
+    /// <see cref="_contentBlockSize"/> (= the pre-cycle-5c.3 behavior
+    /// where geometry + budget were the same value); when non-null,
+    /// pagination uses the explicit budget so explicit-height grids
+    /// resolve rows against authored height while still paginating
+    /// per page-remaining capacity. Pre-PR-#110 review the field
+    /// used a <c>-1.0</c> sentinel; the nullable shape makes the
+    /// "either-or" contract self-documenting + matches
+    /// <see cref="ConfigureEmission"/>'s parameter shape.
+    ///
+    /// <para><b>Why this separation</b>: pre-5c.3 a 400px-tall grid
+    /// with <c>grid-template-rows: 100px 1fr</c> on a 250px page got
+    /// its <c>contentBlockSize</c> clamped to 250px BEFORE
+    /// <see cref="GridSizing.Resolve"/> ran — the 1fr row redistributed
+    /// against the smaller budget (= 100 + 150 instead of authored
+    /// 100 + 300), silently losing 150px of grid geometry per
+    /// <c>grid-explicit-height-paginate-deferral</c>. By passing the
+    /// authored geometry to <c>Resolve</c> + the page budget
+    /// separately to row-fit selection, explicit-height grids
+    /// paginate correctly while authored row geometry stays
+    /// authoritative.</para></summary>
+    private double? _pageBlockBudget;
+
     /// <summary>Per Phase 3 Task 17 cycle 5 — the resume-from-prior-
     /// page state, captured by the constructor. When non-null the
     /// layouter skips the resolution + placement passes (using the
@@ -300,12 +330,27 @@ internal sealed class GridLayouter : ILayouter, IDisposable
     /// <see cref="LayoutAttemptStrategy.LastResort"/>: a Strict
     /// strategy + first row doesn't fit defers the entire grid via
     /// <c>PageComplete(GridContinuation(startRow, null))</c>.</param>
+    /// <param name="pageBlockBudget">Per Phase 3 Task 17 cycle 5c.3 —
+    /// the per-page block-axis budget for emission, separating
+    /// "geometry input" (= <paramref name="contentBlockSize"/>, used
+    /// by <see cref="GridSizing.Resolve"/> to compute row sizes
+    /// against the authored container extent) from "page budget" (=
+    /// page-remaining capacity that drives row-fit pagination). Pass
+    /// <see langword="null"/> (default) to use
+    /// <paramref name="contentBlockSize"/> as both inputs (= pre-5c.3
+    /// behavior — required for auto-height grids where the values
+    /// are the same anyway, and for any caller that hasn't been
+    /// updated yet). Pass a non-null value when an explicit-height
+    /// grid clamps for break-check fit but resolves row geometry
+    /// against the larger authored extent; the budget controls
+    /// pagination cut-off without corrupting row sizing.</param>
     public void ConfigureEmission(
         double contentInlineOffset,
         double contentBlockOffset,
         double contentInlineSize,
         double contentBlockSize,
-        bool allowPagination = false)
+        bool allowPagination = false,
+        double? pageBlockBudget = null)
     {
         if (!double.IsFinite(contentInlineSize) || contentInlineSize <= 0)
         {
@@ -335,11 +380,28 @@ internal sealed class GridLayouter : ILayouter, IDisposable
                 $"contentBlockOffset must be finite; got {contentBlockOffset}.");
         }
 
+        // Per Phase 3 Task 17 cycle 5c.3 — validate the optional page
+        // budget. Non-null values must be finite + positive (otherwise
+        // they'd produce a zero / negative row-fit budget downstream,
+        // and the cycle-1 ComputePaginatedRowRange contract requires
+        // a positive budget to make progress). Null falls through to
+        // contentBlockSize (= legacy single-input behavior).
+        if (pageBlockBudget is { } budget
+            && (!double.IsFinite(budget) || budget <= 0))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(pageBlockBudget),
+                $"pageBlockBudget must be finite + positive when non-null; "
+                + $"got {budget}. Pass null to use contentBlockSize as the "
+                + "budget (= pre-cycle-5c.3 single-input behavior).");
+        }
+
         _contentInlineOffset = contentInlineOffset;
         _contentBlockOffset = contentBlockOffset;
         _contentInlineSize = contentInlineSize;
         _contentBlockSize = contentBlockSize;
         _allowPagination = allowPagination;
+        _pageBlockBudget = pageBlockBudget;
         _emissionConfigured = true;
     }
 
@@ -532,13 +594,21 @@ internal sealed class GridLayouter : ILayouter, IDisposable
             //   grid on a fresh page).
             // - LastResort: force-emit the oversized first row per
             //   §4.4 progress rule + emit diagnostic.
+            // Per Phase 3 Task 17 cycle 5c.3 — pagination budget is the
+            // explicit page-budget (when ConfigureEmission supplied
+            // one) OR the content-block-size (= legacy single-input
+            // behavior). For auto-height grids the two are the same;
+            // for explicit-height grids the page-budget is the
+            // page-remaining capacity while the content-block-size
+            // stays at the authored height (preserving row geometry).
+            var paginationBudget = _pageBlockBudget ?? _contentBlockSize;
             (endRowExclusive, needsContinuation, var deferEntireGrid) =
                 ComputePaginatedRowRange(
                     startRow: startRow,
                     rowSizesView: rowSizesRelative,
                     rowPositionsView: rowPositionsRelative,
                     placedItems: placedItems,
-                    budget: _contentBlockSize,
+                    budget: paginationBudget,
                     strategy: strategy);
 
             if (deferEntireGrid)

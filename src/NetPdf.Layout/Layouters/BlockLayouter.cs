@@ -1749,14 +1749,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // actual emitted extent (= eliminates the empty
             // trailing space + corrects sibling placement).</para>
             //
-            // <para>F3 (= explicit-height grids) is still deferred
-            // (see <c>docs/deferrals.md</c>
-            // <c>grid-explicit-height-paginate-deferral</c>); the
-            // <see cref="MeasureSubtreeVisualBlockExtent"/> restore
-            // path makes explicit-height grids fall into the
-            // forced-overflow branch. Cycle 5c.2c addresses F3 by
-            // making that helper grid-aware. The recursive-site
-            // wiring + production-pipeline tests land in cycle 5c.2d.
+            // <para>F3 (= explicit-height grids) — SHIPPED in
+            // cycle 5c.3 + post-PR-#110 review P1#2 via the
+            // dual-input <c>pageBlockBudget</c> separation in
+            // <see cref="GridLayouter.ConfigureEmission"/> + the
+            // paginatable-grid projection in
+            // <see cref="MeasureSubtreeVisualBlockExtentRecursive"/>.
+            // See the resolved
+            // <c>grid-explicit-height-paginate-deferral</c> entry
+            // in <c>docs/deferrals.md</c> for the full ship
+            // summary + the residual cursor-advance approximation
+            // tracked under
+            // <c>recursive-block-continuation-consumed-extent-accounting-deferral</c>.
             // </para>
             // Per Phase 3 Task 17 cycle 5c.2b post-PR-#100 review
             // P1#1 — <c>_disableGridPagination</c> gate. Nested
@@ -1769,33 +1773,59 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // discard would silently drop remaining grid rows.
             //
             // <para>Per Phase 3 Task 17 cycle 5c.2c post-PR-#101
-            // review P1#1 — <c>IsHeightAuto(child)</c> gate
-            // RESTORED. The cycle-5c.2c F3 subtree-extent clamp
-            // approach was reverted because the clamp also fed the
-            // shrunk <c>borderBoxBlockSize</c> into
-            // <see cref="GridLayouter.ConfigureEmission"/> /
+            // review P1#1 — <c>IsHeightAuto(child)</c> gate was
+            // RESTORED then REMOVED again by cycle 5c.3 once the
+            // dual-input separation made the clamp safe for
+            // explicit-height grids. The cycle-5c.2c F3 subtree-
+            // extent clamp approach corrupted row geometry because
+            // the clamp fed the shrunk <c>borderBoxBlockSize</c>
+            // into <see cref="GridLayouter.ConfigureEmission"/> /
             // <see cref="GridSizing.Resolve"/> as the
             // <c>contentBlockSize</c>, causing fr / definite-height
             // row sizing to redistribute against the SMALLER
-            // budget — e.g., <c>height: 400px; grid-template-rows:
-            // 100px 1fr</c> on a 250px page would resolve rows as
-            // (100, 150) instead of the authored (100, 300),
-            // silently losing 150px of grid geometry. Explicit-
-            // height pagination needs a shared
-            // <c>GridFragmentPlan</c> that SEPARATES resolved
-            // geometry (= computed against authored container
-            // size) from fragment budget (= per-page emission
-            // capacity); tracked in
-            // <c>grid-fragment-plan-shared-sizing-deferral</c>
-            // (cycle 5c.2b post-PR-#100 review P2) +
-            // <c>grid-explicit-height-paginate-deferral</c>
-            // remains <c>not-started</c> until that plan ships.
-            // Auto-height grids stay clamped — they have no
-            // authored container extent to confuse with the
-            // fragment budget.</para>
+            // budget. Cycle 5c.3's <c>pageBlockBudget</c> parameter
+            // separates "row sizing input" (= authored geometry)
+            // from "page budget" (= clamped geometry); the
+            // dispatch site below computes both + threads them as
+            // separate <see cref="GridLayouter.ConfigureEmission"/>
+            // arguments. The full <c>GridFragmentPlan</c> perf
+            // consolidation across pre-measure + F1 + dispatch is
+            // still tracked under
+            // <c>grid-fragment-plan-shared-sizing-deferral</c>;
+            // <c>grid-explicit-height-paginate-deferral</c> is
+            // RESOLVED end-to-end (see deferrals.md).</para>
+            // Per Phase 3 Task 17 cycle 5c.3 — capture the AUTHORED
+            // (= pre-clamp) border-box block size so the
+            // <see cref="DispatchGridInner"/> call below can pass the
+            // authored geometry to <see cref="GridSizing.Resolve"/>
+            // while the clamped value drives break-check + page
+            // budget. For auto-height grids the two are equal (=
+            // the clamp shrinks the natural extent which was the
+            // authored "auto" computed value), so the dual-input
+            // mechanism degenerates to legacy behavior. For
+            // explicit-height grids the authored value preserves
+            // the row geometry (= `1fr` distributes against
+            // authored height, not page-remaining), fixing the
+            // `grid-explicit-height-paginate-deferral` correctness
+            // gap.
+            var authoredBorderBoxBlockSize = borderBoxBlockSize;
+            // Per Phase 3 Task 17 cycle 5c.3 — `IsHeightAuto(child)`
+            // gate REMOVED. The cycle-5c.2c gate was reverted
+            // because clamping `borderBoxBlockSize` for explicit-
+            // height grids fed the shrunk size into
+            // <see cref="GridSizing.Resolve"/>, silently corrupting
+            // fr / definite-height row sizing. Cycle 5c.3 ships
+            // the minimum-viable separation: authored size flows
+            // into Resolve (= row geometry preserved); clamped size
+            // flows into break-check + page budget (= correct
+            // pagination cut-off). The full
+            // `GridFragmentPlan` refactor
+            // (`grid-fragment-plan-shared-sizing-deferral`) is a
+            // future optimization that consolidates the §11
+            // sizing work across pre-measure + F1 + dispatch;
+            // this cycle only fixes the correctness gap.
             if (IsPaginatableGrid(child)
-                && !_disableGridPagination
-                && IsHeightAuto(child))
+                && !_disableGridPagination)
             {
                 var pageRemainingForOuterGrid =
                     fragmentainer.BlockSize
@@ -1967,20 +1997,40 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 subtreeBlockExtent = borderBoxBlockSize;
             }
             // Per Phase 3 Task 17 cycle 5c.2c post-PR-#101 review
-            // P1#1 — the F3 subtree-extent clamp that ORIGINALLY
-            // lived here was REVERTED. The mechanism + the clamp's
-            // sibling effect (= passing the shrunk
+            // P1#1 + cycle 5c.3 — the F3 subtree-extent clamp is
+            // RE-ENABLED with the dual-input fix from cycle 5c.3.
+            // The cycle-5c.2c version corrupted row geometry
+            // because the clamp fed the shrunk
             // <c>borderBoxBlockSize</c> into
-            // <c>GridSizing.Resolve</c>) caused explicit-height
-            // grids with fr / flexible rows to redistribute track
-            // sizes against the shrunk container, silently losing
-            // authored row geometry. <c>IsHeightAuto(child)</c>
-            // gates the outer-site clamp instead (above), keeping
-            // explicit-height grids on the atomic-dispatch path
-            // until a shared <c>GridFragmentPlan</c> lands that
-            // separates resolved geometry from fragment budget.
-            // The <c>grid-explicit-height-paginate-deferral</c>
-            // remains <c>not-started</c>.
+            // <c>GridSizing.Resolve</c> as both the geometry input
+            // AND the page budget. Cycle 5c.3 ships
+            // <see cref="GridLayouter.ConfigureEmission"/>'s
+            // <c>pageBlockBudget</c> parameter that separates the
+            // two: dispatch passes AUTHORED contentBlockSize to
+            // Resolve (= row geometry preserved) + clamped
+            // contentBlockSize as pageBlockBudget (= pagination
+            // cut-off). The clamp here can now also fire for
+            // explicit-height grids without silently losing
+            // authored row sizing — the dispatch site (line ~3041)
+            // computes both authored + clamped geometries when the
+            // gate fires.
+            //
+            // <para>Mirrors the flex clamp at line ~1984 — when the
+            // grid is paginatable AND the outer-site gate fired
+            // (= cleared the page-budget arithmetic above), clamp
+            // <c>subtreeBlockExtent</c> back to the clamped
+            // <c>borderBoxBlockSize</c> so the break-check below
+            // sees a chunk that fits within page-remaining and
+            // takes the Continue path (= GridLayouter dispatch
+            // paginates rows) instead of the forced-overflow path
+            // (= would emit the wrapper at clamped extent + dispatch
+            // atomically with mismatched content sizing).</para>
+            if (IsGridContainer(child)
+                && paginateGridForOuterChild
+                && subtreeBlockExtent > borderBoxBlockSize)
+            {
+                subtreeBlockExtent = borderBoxBlockSize;
+            }
             //
             // The "effective" border-box block size for pagination +
             // cursor purposes: max of own border-box + subtree extent.
@@ -2610,14 +2660,17 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // discards the result, silently dropping the grid.
             //
             // <para>Per Phase 3 Task 17 cycle 5c.2c post-PR-#101
-            // review P1#3 — F1 ALSO gated by
+            // review P1#3 + cycle 5c.3 — F1 ALSO gated by
             // <c>paginateGridForOuterChild</c>. The outer-site
             // clamp (above, in the pre-grow section) decides
             // whether the dispatch will actually paginate the
-            // grid: only when the wrapper would otherwise overflow
-            // page-remaining AND the chrome fits AND the grid is
-            // auto-height. F1 must mirror that decision — if the
-            // clamp didn't fire, dispatch passes
+            // grid: when the wrapper would otherwise overflow
+            // page-remaining AND the chrome fits. Cycle 5c.3
+            // removed the auto-height-only gate; explicit-height
+            // grids now also participate (their authored row
+            // geometry is preserved via the dual-input dispatch).
+            // F1 must mirror the clamp's decision — if the clamp
+            // didn't fire, dispatch passes
             // <c>allowPagination: false</c>, and a fabricated
             // GridContinuation here would route a continuation
             // that the resume page's F2 (= keyed off
@@ -2644,15 +2697,19 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     incomingGridForProbe = probeGridCont;
                 }
 
-                // Per PR-#99 review P1#2 — derive the content-box
-                // geometry the actual dispatch below will use, so the
-                // probe sees the same sizing inputs. Matches the
+                // Per PR-#99 review P1#2 + cycle 5c.3 — derive the
+                // content-box geometry the actual dispatch below will
+                // use as its ROW-SIZING input, so the probe sees the
+                // same sizing inputs. For explicit-height grids that
+                // triggered the cycle-5c.3 clamp, this is the AUTHORED
+                // (= pre-clamp) borderBoxBlockSize; for auto-height
+                // grids the authored == clamped. Matches the
                 // <see cref="GridGeometryHelper.ComputeContentGeometry"/>
                 // call on the IsGridContainer dispatch branch.
                 var probeGridGeom = GridGeometryHelper.ComputeContentGeometry(
                     gridBox: child,
                     borderBoxInlineSize: borderBoxInlineSize,
-                    borderBoxBlockSize: borderBoxBlockSize,
+                    borderBoxBlockSize: authoredBorderBoxBlockSize,
                     borderBoxInlineOffset: inFlowInlineOffset,
                     borderBoxBlockOffset: blockOffset);
 
@@ -3015,12 +3072,41 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // gets the same wiring in cycle 5c.)
             if (IsGridContainer(child))
             {
+                // Per Phase 3 Task 17 cycle 5c.3 — when the paginatable-
+                // grid clamp fired, compute BOTH the clamped geometry
+                // (= page budget) AND the authored geometry (= row
+                // sizing input). The clamped geometry's
+                // ContentBlockSize feeds <c>DispatchGridInner</c>'s
+                // <c>pageBlockBudget</c>; the authored geometry's
+                // ContentBlockSize feeds the standard
+                // <c>contentBlockSize</c> parameter that
+                // <see cref="GridSizing.Resolve"/> uses for fr /
+                // definite-height row distribution. When the clamp
+                // didn't fire (= auto-height grid that fits, OR
+                // pagination disabled at this site), authored == clamped
+                // and the dual-input mechanism degenerates to legacy
+                // single-input behavior with <c>pageBlockBudget</c>
+                // passed as null.
                 var gridGeom = GridGeometryHelper.ComputeContentGeometry(
                     gridBox: child,
                     borderBoxInlineSize: borderBoxInlineSize,
                     borderBoxBlockSize: borderBoxBlockSize,
                     borderBoxInlineOffset: inFlowInlineOffset,
                     borderBoxBlockOffset: blockOffset);
+                double? gridPageBlockBudget = null;
+                double gridSizingContentBlockSize = gridGeom.ContentBlockSize;
+                if (paginateGridForOuterChild
+                    && authoredBorderBoxBlockSize > borderBoxBlockSize)
+                {
+                    var authoredGridGeom = GridGeometryHelper.ComputeContentGeometry(
+                        gridBox: child,
+                        borderBoxInlineSize: borderBoxInlineSize,
+                        borderBoxBlockSize: authoredBorderBoxBlockSize,
+                        borderBoxInlineOffset: inFlowInlineOffset,
+                        borderBoxBlockOffset: blockOffset);
+                    gridSizingContentBlockSize = authoredGridGeom.ContentBlockSize;
+                    gridPageBlockBudget = gridGeom.ContentBlockSize;
+                }
 
                 // Resume contract: extract the incoming GridContinuation
                 // if the BlockLayouter was invoked with a chained
@@ -3041,13 +3127,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     contentInlineOffset: gridGeom.ContentInlineOffset,
                     contentBlockOffset: gridGeom.ContentBlockOffset,
                     contentInlineSize: gridGeom.ContentInlineSize,
-                    contentBlockSize: gridGeom.ContentBlockSize,
+                    contentBlockSize: gridSizingContentBlockSize,
                     fragmentainer: fragmentainer,
                     layout: ref layout,
                     cancellationToken: cancellationToken,
                     lastEmittedBlockExtent: out var gridLastEmittedBlockExtent,
                     allowPagination: paginateGridForOuterChild,
-                    incomingContinuation: incomingGridContinuation);
+                    incomingContinuation: incomingGridContinuation,
+                    pageBlockBudget: gridPageBlockBudget);
 
                 // Per Phase 3 Task 17 cycle 5c.2b F2 — wrapper-resize
                 // + cursor-advance consumer for grids in a multi-page
@@ -4114,23 +4201,22 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 }
             }
 
-            // Per Phase 3 Task 17 cycle 5c.2d — recursive-site
-            // paginatable-grid extent clamp + gate-flip. Mirrors
-            // the outer-site clamp at line ~1796 + the recursive
-            // paginatable-flex clamp at line ~4054. When the grid
-            // is paginatable, auto-height (per cycle-5c.2c post-
-            // PR-#101 review P1#1 — explicit-height pagination
-            // waits for <c>grid-fragment-plan-shared-sizing-
-            // deferral</c>), + the grown natural extent would
-            // overflow the page-remaining (= captured
-            // fragmentainer's BlockSize minus the child's block
-            // offset), clamp <c>childBorderBoxBlockSize</c> to
-            // page-remaining + flip the gate so the dispatch
-            // below passes <c>allowPagination: true</c>.
+            // Per Phase 3 Task 17 cycle 5c.2d + cycle 5c.3 — recursive-
+            // site paginatable-grid extent clamp + gate-flip. Mirrors
+            // the outer-site clamp at line ~1796. Per cycle 5c.3 the
+            // <c>IsHeightAuto(child)</c> gate is REMOVED — the dispatch
+            // below passes the AUTHORED <c>childBorderBoxBlockSize</c>
+            // captured here as the grid sizing input + the CLAMPED
+            // value as the page budget, so explicit-height grids
+            // resolve row geometry against authored height (= fr /
+            // definite rows distribute correctly) while paginating
+            // against the page-remaining budget. Auto-height grids
+            // see authored == clamped + the dual-input mechanism
+            // degenerates to legacy behavior.
+            var recursiveAuthoredBorderBoxBlockSize = childBorderBoxBlockSize;
             if (IsPaginatableGrid(child)
                 && !_disableGridPagination
-                && _capturedFragmentainer is not null
-                && IsHeightAuto(child))
+                && _capturedFragmentainer is not null)
             {
                 var pageRemainingForGrid =
                     _capturedFragmentainer.BlockSize - childBlockOffset;
@@ -4216,14 +4302,19 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
 
                 if (recursivePageRemainingForGridContent > 0)
                 {
-                    // Per cycle 5c.2a P1#2 — the probe uses the
-                    // actual grid content geometry; mirrors the
-                    // outer site.
+                    // Per cycle 5c.2a P1#2 + cycle 5c.3 — the probe
+                    // uses the actual grid content geometry the
+                    // dispatch will use as its ROW-SIZING input;
+                    // mirrors the outer site. For explicit-height
+                    // grids the AUTHORED (= pre-clamp) borderBox
+                    // feeds the probe so row geometry matches what
+                    // the dispatch sees. Auto-height grids see
+                    // authored == clamped.
                     var recursiveProbeGridGeom =
                         GridGeometryHelper.ComputeContentGeometry(
                             gridBox: child,
                             borderBoxInlineSize: childBorderBoxInlineSize,
-                            borderBoxBlockSize: childBorderBoxBlockSize,
+                            borderBoxBlockSize: recursiveAuthoredBorderBoxBlockSize,
                             borderBoxInlineOffset: childInlineOffset,
                             borderBoxBlockOffset: childBlockOffset);
                     var recursiveFirstRowExtent = PreMeasureGridRowExtentAt(
@@ -4557,12 +4648,36 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // optimization is needed inside nested grids.</para>
             if (IsGridContainer(child) && _capturedFragmentainer is not null)
             {
+                // Per Phase 3 Task 17 cycle 5c.3 — same dual-input
+                // pattern as the outer site (line ~3039): when the
+                // recursive clamp fired AND the authored size is
+                // larger than the clamped size, dispatch with the
+                // AUTHORED geometry as the row-sizing input + the
+                // CLAMPED geometry as the page budget. Auto-height
+                // grids (= authored == clamped) get
+                // <c>pageBlockBudget</c> = null + dispatch behaves
+                // identically to the pre-5c.3 path.
                 var nestedGridGeom = GridGeometryHelper.ComputeContentGeometry(
                     gridBox: child,
                     borderBoxInlineSize: childBorderBoxInlineSize,
                     borderBoxBlockSize: childBorderBoxBlockSize,
                     borderBoxInlineOffset: childInlineOffset,
                     borderBoxBlockOffset: childBlockOffset);
+                double? nestedGridPageBlockBudget = null;
+                double nestedGridSizingContentBlockSize = nestedGridGeom.ContentBlockSize;
+                if (paginateGridForChild
+                    && recursiveAuthoredBorderBoxBlockSize > childBorderBoxBlockSize)
+                {
+                    var nestedAuthoredGridGeom = GridGeometryHelper.ComputeContentGeometry(
+                        gridBox: child,
+                        borderBoxInlineSize: childBorderBoxInlineSize,
+                        borderBoxBlockSize: recursiveAuthoredBorderBoxBlockSize,
+                        borderBoxInlineOffset: childInlineOffset,
+                        borderBoxBlockOffset: childBlockOffset);
+                    nestedGridSizingContentBlockSize = nestedAuthoredGridGeom.ContentBlockSize;
+                    nestedGridPageBlockBudget = nestedGridGeom.ContentBlockSize;
+                }
+
                 var nestedGridLayoutCtx = new LayoutContext(_capturedFragmentainer)
                 {
                     Diagnostics = _diagnostics,
@@ -4590,13 +4705,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     contentInlineOffset: nestedGridGeom.ContentInlineOffset,
                     contentBlockOffset: nestedGridGeom.ContentBlockOffset,
                     contentInlineSize: nestedGridGeom.ContentInlineSize,
-                    contentBlockSize: nestedGridGeom.ContentBlockSize,
+                    contentBlockSize: nestedGridSizingContentBlockSize,
                     fragmentainer: _capturedFragmentainer,
                     layout: ref nestedGridLayoutCtx,
                     cancellationToken: cancellationToken,
                     lastEmittedBlockExtent: out var nestedGridLastEmittedBlockExtent,
                     allowPagination: paginateGridForChild,
-                    incomingContinuation: incomingGridForChild);
+                    incomingContinuation: incomingGridForChild,
+                    pageBlockBudget: nestedGridPageBlockBudget);
 
                 // F2 wrapper-resize + cursor-advance recomputation.
                 // Same trigger semantics as the outer site: fire
@@ -6278,6 +6394,47 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             return Math.Max(parentBorderBoxBlockSize, tableDriven);
         }
 
+        // Per Phase 3 Task 17 cycle 5c.3 post-PR-#110 review P1#2 —
+        // paginatable grid descendants project to the fragment budget
+        // for the break-check measure. Pre-fix the body's subtree-
+        // extent walk got back the grid's AUTHORED extent (= the
+        // wrapper's own border-box from style — e.g., 200 for
+        // <c>height: 200</c>) which exceeded page-remaining (= 150
+        // on a 150px page) → body's outer break-check fired
+        // BreakHere → forced-overflow path emitted
+        // <see cref="PaginateDiagnosticCodes.PaginationForcedOverflow001"/>
+        // + advanced the body's cursor by the full authored extent,
+        // producing an empty trailing page (= ResumeAtChild past
+        // the last child + a stale diagnostic) even though the
+        // recursive grid dispatch actually paginated cleanly via
+        // F3.
+        //
+        // <para>Projection: <c>min(authoredExtent, pageBlockSize)</c>
+        // — the grid contributes at most one page's worth of extent
+        // to the ancestor's break-check measure. The recursive grid
+        // dispatch site computes its own pageRemaining based on
+        // <c>childBlockOffset</c> + handles the row-by-row
+        // pagination separately, so the over-projection here doesn't
+        // affect emission; only the ancestor's break-check decision.</para>
+        //
+        // <para>Side effect: the ancestor's <c>marginBoxBlockSizeForCursor</c>
+        // also reads <c>subtreeBlockExtent</c>, so the cursor
+        // advance after the ancestor emit is bounded by
+        // pageBlockSize too. F2 wrapper-resize at the recursive
+        // grid dispatch site sets the actual grid wrapper extent
+        // to the emitted-rows extent; any over-advance at the
+        // ancestor level is bounded by the projection (= page
+        // budget) instead of the unbounded authored extent —
+        // ancestor's emit returns AllDone instead of spurious
+        // PageComplete.</para>
+        if (IsPaginatableGrid(parent)
+            && !_disableGridPagination
+            && _capturedFragmentainer is not null)
+        {
+            return Math.Min(parentBorderBoxBlockSize,
+                _capturedFragmentainer.BlockSize);
+        }
+
         // Non-flow block kinds (Flex/Grid/Replaced) are atomic to the
         // BlockLayouter — their inner geometry belongs to a dedicated
         // layouter. Return own size. (Tables were special-cased above
@@ -7296,8 +7453,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// clamped budget). The property is populated by
     /// <see cref="GridLayouter.AttemptLayout"/> on EVERY outcome
     /// (PageComplete, AllDone, Strict-defer, early-return). Callers
-    /// that don't consume the value (= forced-overflow + recursive
-    /// sites in 5c.2b's dormant scope) pass <c>out _</c>.</para></summary>
+    /// that don't consume the value (= the forced-overflow re-route
+    /// site, which dispatches atomically without
+    /// <c>allowPagination</c>) pass <c>out _</c>. The outer + recursive
+    /// dispatch sites consume the value for F2 wrapper-resize.</para>
+    ///
+    /// <para>Per Phase 3 Task 17 cycle 5c.3 — the optional
+    /// <paramref name="pageBlockBudget"/> separates row-sizing input
+    /// from pagination cut-off. The outer + recursive dispatch sites
+    /// pass it when their clamp fired (= explicit-height grid + the
+    /// authored extent exceeds page-remaining); the forced-overflow
+    /// site passes <see langword="null"/> (= legacy single-input
+    /// behavior where contentBlockSize doubles as the budget).</para></summary>
     private LayoutAttemptResult DispatchGridInner(
         Box gridBox,
         double contentInlineOffset,
@@ -7309,7 +7476,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         CancellationToken cancellationToken,
         out double lastEmittedBlockExtent,
         bool allowPagination = false,
-        GridContinuation? incomingContinuation = null)
+        GridContinuation? incomingContinuation = null,
+        double? pageBlockBudget = null)
     {
         using var gridLayouter = new GridLayouter(
             rootBox: gridBox,
@@ -7317,12 +7485,24 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             incomingContinuation: incomingContinuation,
             diagnostics: _diagnostics,
             shaperResolver: _shaperResolver);
+        // Per Phase 3 Task 17 cycle 5c.3 — pass the page-budget through
+        // to ConfigureEmission so explicit-height grids resolve rows
+        // against the authored content-block-size while paginating
+        // against the page-remaining budget. Auto-height callers + the
+        // forced-overflow + recursive sites pass null which falls back
+        // to using contentBlockSize as the budget (= pre-5c.3
+        // behavior). Per the grid-explicit-height-paginate-deferral the
+        // separation here is the minimum viable F3 — the full shared
+        // GridFragmentPlan refactor (= grid-fragment-plan-shared-sizing-
+        // deferral) is a future optimization that consolidates the
+        // §11 sizing work; this cycle only fixes the correctness gap.
         gridLayouter.ConfigureEmission(
             contentInlineOffset: contentInlineOffset,
             contentBlockOffset: contentBlockOffset,
             contentInlineSize: contentInlineSize,
             contentBlockSize: contentBlockSize,
-            allowPagination: allowPagination);
+            allowPagination: allowPagination,
+            pageBlockBudget: pageBlockBudget);
         using var gridResolver = new BreakResolver();
         var result = gridLayouter.AttemptLayout(
             fragmentainer,

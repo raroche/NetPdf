@@ -592,6 +592,227 @@ public sealed class GridShorthandProductionTests
         Assert.Equal("none", item.Style.ReadGridColumnEnd().NamedLine);
     }
 
+    // =====================================================================
+    //  Phase 3 Task 18 cycle 8 — the `grid` shorthand (§7.4), through
+    //  the full cascade. Verifies longhand VALUES (not just fragment
+    //  geometry) so the cascade-level expansion + atomic invalidation
+    //  is provable.
+    // =====================================================================
+
+    [Fact]
+    public async Task Grid_shorthand_rows_columns_lands_template_longhands()
+    {
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid { display: grid; grid: 100px 200px / 50px 150px; }
+            </style></head><body>
+            <div class="grid"></div>
+            </body></html>
+            """;
+
+        var grid = await FindBoxByClassAsync(html, "grid");
+        AssertSingleLengthTracks(grid.Style.ReadGridTemplateRows(), 100.0, 200.0);
+        AssertSingleLengthTracks(grid.Style.ReadGridTemplateColumns(), 50.0, 150.0);
+        // §7.4 reset: auto-flow back to row, areas/auto-* to initial.
+        Assert.Equal(GridAutoFlowValue.Row, grid.Style.ReadGridAutoFlow());
+        Assert.Equal(GridTemplateAreas.None, grid.Style.ReadGridTemplateAreas());
+    }
+
+    [Fact]
+    public async Task Grid_shorthand_column_dense_lands_auto_flow_and_auto_columns()
+    {
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid { display: grid; grid: 100px / auto-flow dense 50px; }
+            </style></head><body>
+            <div class="grid"></div>
+            </body></html>
+            """;
+
+        var grid = await FindBoxByClassAsync(html, "grid");
+        // grid-auto-flow: column dense.
+        Assert.Equal(GridAutoFlowValue.ColumnDense, grid.Style.ReadGridAutoFlow());
+        // grid-template-rows = 100px; grid-template-columns reset to none.
+        AssertSingleLengthTracks(grid.Style.ReadGridTemplateRows(), 100.0);
+        Assert.True(grid.Style.ReadGridTemplateColumns().Items.IsDefaultOrEmpty);
+        // grid-auto-columns = 50px.
+        AssertSingleLengthTracks(grid.Style.ReadGridAutoColumns(), 50.0);
+    }
+
+    [Fact]
+    public async Task Grid_shorthand_none_resets_template_longhands()
+    {
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid { display: grid; grid: none; }
+            </style></head><body>
+            <div class="grid"></div>
+            </body></html>
+            """;
+
+        var grid = await FindBoxByClassAsync(html, "grid");
+        Assert.True(grid.Style.ReadGridTemplateRows().Items.IsDefaultOrEmpty);
+        Assert.True(grid.Style.ReadGridTemplateColumns().Items.IsDefaultOrEmpty);
+        Assert.Equal(GridTemplateAreas.None, grid.Style.ReadGridTemplateAreas());
+        Assert.Equal(GridAutoFlowValue.Row, grid.Style.ReadGridAutoFlow());
+    }
+
+    // ---- Atomic invalidation (post-PR-#111 review P1#1/P1#2/P1#3) ----
+
+    [Fact]
+    public async Task Invalid_grid_no_slash_does_not_leak_raw_value_to_track_list()
+    {
+        // Per post-PR-#111 review P1#2 — `grid: 100px 100px` has no
+        // slash, so it's an invalid `grid` shorthand. The raw value
+        // `100px 100px` IS a valid grid-template-rows track list, so a
+        // naive raw-value sentinel would have wrongly applied it. The
+        // guaranteed-invalid sentinel keeps grid-template-rows at its
+        // initial value (none).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid { display: grid; grid: 100px 100px; }
+            </style></head><body>
+            <div class="grid"></div>
+            </body></html>
+            """;
+
+        var grid = await FindBoxByClassAsync(html, "grid");
+        Assert.True(grid.Style.ReadGridTemplateRows().Items.IsDefaultOrEmpty);
+        Assert.True(grid.Style.ReadGridTemplateColumns().Items.IsDefaultOrEmpty);
+    }
+
+    [Fact]
+    public async Task Invalid_grid_bogus_rows_does_not_partially_apply_columns()
+    {
+        // Per post-PR-#111 review P1#1 — `grid: bogus / 100px` has a
+        // valid columns side but an invalid rows side. §4.2 atomicity:
+        // the whole shorthand contributes nothing → grid-template-columns
+        // must NOT get 100px.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid { display: grid; grid: bogus / 100px; }
+            </style></head><body>
+            <div class="grid"></div>
+            </body></html>
+            """;
+
+        var grid = await FindBoxByClassAsync(html, "grid");
+        Assert.True(grid.Style.ReadGridTemplateRows().Items.IsDefaultOrEmpty);
+        Assert.True(grid.Style.ReadGridTemplateColumns().Items.IsDefaultOrEmpty);
+    }
+
+    [Fact]
+    public async Task Invalid_grid_dense_in_auto_tracks_tail_does_not_apply()
+    {
+        // Per post-PR-#111 review P1#3 — `dense` after the auto-tracks
+        // tail (`auto-flow 200px dense`) is invalid per §7.4. The whole
+        // shorthand drops; grid-auto-flow stays at initial (row).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid { display: grid; grid: 100px / auto-flow 200px dense; }
+            </style></head><body>
+            <div class="grid"></div>
+            </body></html>
+            """;
+
+        var grid = await FindBoxByClassAsync(html, "grid");
+        // grid-auto-flow stays at initial `row` (= the column-flow the
+        // shorthand would have set never landed) — the decisive proof
+        // the dense-in-tail shorthand was rejected.
+        Assert.Equal(GridAutoFlowValue.Row, grid.Style.ReadGridAutoFlow());
+        Assert.True(grid.Style.ReadGridTemplateRows().Items.IsDefaultOrEmpty);
+        // grid-auto-columns initial is a single `auto` track (NOT the
+        // empty `none` list — that's grid-template-*'s default). Assert
+        // the 200px tail did NOT land.
+        AssertSingleAutoTrack(grid.Style.ReadGridAutoColumns());
+    }
+
+    [Fact]
+    public async Task Inline_template_string_form_does_not_partially_apply()
+    {
+        // The deferred inline template-areas form
+        // (`grid: "a a" 50px / 1fr 100px`) is rejected atomically. The
+        // trailing `/ 1fr 100px` must NOT leak into
+        // grid-template-columns.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid { display: grid; grid: "a a" 50px / 1fr 100px; }
+            </style></head><body>
+            <div class="grid"></div>
+            </body></html>
+            """;
+
+        var grid = await FindBoxByClassAsync(html, "grid");
+        Assert.True(grid.Style.ReadGridTemplateRows().Items.IsDefaultOrEmpty);
+        Assert.True(grid.Style.ReadGridTemplateColumns().Items.IsDefaultOrEmpty);
+        Assert.Equal(GridTemplateAreas.None, grid.Style.ReadGridTemplateAreas());
+    }
+
+    [Fact]
+    public async Task Invalid_grid_after_explicit_longhands_in_same_rule_known_gap()
+    {
+        // Per post-PR-#111 review P2#1 + the existing
+        // `Invalid_shorthand_within_rule_known_gap_drops_to_initial`
+        // deferral. SPEC-CORRECT (CSS Cascade L4 §4.2): an invalid
+        // `grid` shorthand contributes nothing, so the earlier valid
+        // `grid-template-rows: 100px; grid-template-columns: 100px`
+        // should SURVIVE. CURRENT behavior: AngleSharp.Css's per-rule
+        // property dedup discards the earlier explicit longhands BEFORE
+        // our recovery layer runs, and the guaranteed-invalid sentinel
+        // override resets all six longhands to initial. This is the
+        // SAME known-gap that affects grid-row / grid-column / grid-area
+        // (= ExplicitLonghandRef carries only ordinal+importance, not
+        // the value; preserving the earlier in-rule value needs the
+        // merge rewrite tracked as a cycle-0c+ deferral). Pin the
+        // current behavior so the eventual fix is noticed.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 100px;
+                    grid-template-columns: 100px;
+                    grid: 100px 100px;
+                }
+            </style></head><body>
+            <div class="grid"></div>
+            </body></html>
+            """;
+
+        var grid = await FindBoxByClassAsync(html, "grid");
+        // KNOWN-GAP: both reset to none. Spec-correct would keep 100px
+        // each. Flip when the ExplicitLonghandRef value-carrying
+        // deferral lands.
+        Assert.True(grid.Style.ReadGridTemplateRows().Items.IsDefaultOrEmpty);
+        Assert.True(grid.Style.ReadGridTemplateColumns().Items.IsDefaultOrEmpty);
+    }
+
+    /// <summary>Assert a <see cref="TrackList"/> is exactly
+    /// <paramref name="expectedPx"/>.Length inline length tracks with
+    /// the given pixel sizes (= the common shape produced by the
+    /// `grid` shorthand's template + auto-track segments).</summary>
+    private static void AssertSingleLengthTracks(TrackList list, params double[] expectedPx)
+    {
+        Assert.Equal(expectedPx.Length, list.Items.Length);
+        for (var i = 0; i < expectedPx.Length; i++)
+        {
+            var entry = Assert.IsType<TrackListEntry>(list.Items[i]);
+            Assert.Equal(GridTrackKind.Length, entry.Entry.Kind);
+            Assert.False(entry.Entry.IsPercentage);
+            Assert.Equal(expectedPx[i], entry.Entry.LengthPx, precision: 3);
+        }
+    }
+
+    /// <summary>Assert a <see cref="TrackList"/> is the grid-auto-*
+    /// initial value (= a single <c>auto</c> track per
+    /// <c>ReadGridAuto{Rows,Columns}</c>'s auto-default, NOT the empty
+    /// <c>none</c> list that grid-template-* defaults to).</summary>
+    private static void AssertSingleAutoTrack(TrackList list)
+    {
+        var item = Assert.Single(list.Items);
+        var entry = Assert.IsType<TrackListEntry>(item);
+        Assert.Equal(GridTrackKind.Auto, entry.Entry.Kind);
+    }
+
     // ================================================================
     //  Pipeline driver — mirrors GridParserProductionTests.
     // ================================================================

@@ -191,6 +191,15 @@ internal static class CssPreprocessor
         // treats every identifier as a <custom-ident> per the §8.4
         // fallback rule.
         "grid-area",
+        // Per Phase 3 Task 18 cycle 8 — the `grid` shorthand per §7.4.
+        // <see cref="GridShorthandExpander.TryExpand"/> emits SIX
+        // longhand recovery records (the three grid-template-* +
+        // the three grid-auto-* longhands). Covers the `none` reset,
+        // the `<rows> / <columns>` plain template form, and both
+        // auto-flow forms with optional `dense`. The inline
+        // template-areas string form (`grid: "a a" 50px / 100px`)
+        // is deferred to a follow-up cycle.
+        "grid",
     }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
@@ -844,6 +853,88 @@ internal static class CssPreprocessor
                             "grid-column-end", cleanValue, isImportant, ordinal);
                     }
                 }
+                // Per Phase 3 Task 18 cycle 8 — the `grid` shorthand
+                // per §7.4. Expands into all six grid-template-* +
+                // grid-auto-* longhands. The §7.4 reset rule applies
+                // (= longhands not set by the matched form reset to
+                // their initial values), so even the
+                // <c>&lt;rows&gt; / &lt;columns&gt;</c> form emits
+                // explicit `auto`/`row`/`none` for the unmentioned
+                // auto-* + template-areas longhands.
+                else if (normalizedName == "grid")
+                {
+                    if (GridShorthandExpander.TryExpand(
+                        cleanValue,
+                        out var gTemplateRows,
+                        out var gTemplateColumns,
+                        out var gTemplateAreas,
+                        out var gAutoRows,
+                        out var gAutoColumns,
+                        out var gAutoFlow))
+                    {
+                        output.Add(new CssDeclarationRecovery(
+                            "grid-template-rows", gTemplateRows, isImportant,
+                            IsFromShorthandExpansion: true,
+                            SourceOrdinal: ordinal));
+                        output.Add(new CssDeclarationRecovery(
+                            "grid-template-columns", gTemplateColumns, isImportant,
+                            IsFromShorthandExpansion: true,
+                            SourceOrdinal: ordinal));
+                        output.Add(new CssDeclarationRecovery(
+                            "grid-template-areas", gTemplateAreas, isImportant,
+                            IsFromShorthandExpansion: true,
+                            SourceOrdinal: ordinal));
+                        output.Add(new CssDeclarationRecovery(
+                            "grid-auto-rows", gAutoRows, isImportant,
+                            IsFromShorthandExpansion: true,
+                            SourceOrdinal: ordinal));
+                        output.Add(new CssDeclarationRecovery(
+                            "grid-auto-columns", gAutoColumns, isImportant,
+                            IsFromShorthandExpansion: true,
+                            SourceOrdinal: ordinal));
+                        output.Add(new CssDeclarationRecovery(
+                            "grid-auto-flow", gAutoFlow, isImportant,
+                            IsFromShorthandExpansion: true,
+                            SourceOrdinal: ordinal));
+                    }
+                    else
+                    {
+                        // Atomic invalidation per CSS Cascade L4 §4.2 +
+                        // post-PR-#111 review P1#2 — emit a GUARANTEED-
+                        // INVALID sentinel (NOT the raw shorthand value)
+                        // for all six longhands so each longhand's
+                        // resolver rejects them + the cascade falls
+                        // back to initial values.
+                        //
+                        // Why not the raw value (as grid-row/grid-area
+                        // do): those grid-line shorthands only fail
+                        // TryExpand when the raw contains '/' or invalid
+                        // grid-line tokens — values which are reliably
+                        // invalid for the grid-line longhands. The
+                        // `grid` shorthand fails TryExpand for shapes
+                        // like `grid: 100px 100px` (no slash) whose raw
+                        // value IS a valid `grid-template-rows` track
+                        // list — emitting it would partially apply the
+                        // invalid shorthand. The sentinel
+                        // (<see cref="GridInvalidShorthandSentinel"/>) is
+                        // rejected by every grid longhand resolver
+                        // (GridTemplateList tokenizer errors on it,
+                        // grid-auto-flow keyword table has no entry,
+                        // grid-template-areas needs a quoted string).
+                        EmitInvalidGridShorthandRecovery(output,
+                            "grid-template-rows", GridInvalidShorthandSentinel, isImportant, ordinal);
+                        EmitInvalidGridShorthandRecovery(output,
+                            "grid-template-columns", GridInvalidShorthandSentinel, isImportant, ordinal);
+                        EmitInvalidGridShorthandRecovery(output,
+                            "grid-template-areas", GridInvalidShorthandSentinel, isImportant, ordinal);
+                        EmitInvalidGridShorthandRecovery(output,
+                            "grid-auto-rows", GridInvalidShorthandSentinel, isImportant, ordinal);
+                        EmitInvalidGridShorthandRecovery(output,
+                            "grid-auto-columns", GridInvalidShorthandSentinel, isImportant, ordinal);
+                        EmitInvalidGridShorthandRecovery(output,
+                            "grid-auto-flow", GridInvalidShorthandSentinel, isImportant, ordinal);
+                    }
+                }
                 else
                 {
                     // Non-shorthand recovery (modern colors,
@@ -932,6 +1023,27 @@ internal static class CssPreprocessor
     /// Spec says the invalid shorthand should drop + the earlier 3 win;
     /// our cycle-0c implementation drops both to initial value (auto).
     /// Documented in deferrals.md.</para></summary>
+    /// <summary>Per post-PR-#111 review P1#2 — a sentinel value
+    /// guaranteed invalid for EVERY grid longhand resolver, used when
+    /// the <c>grid</c> shorthand fails to expand. A bare <c>/</c>:
+    /// <list type="bullet">
+    ///   <item><b>GridTemplateList</b> (grid-template-rows/columns,
+    ///   grid-auto-rows/columns): the tokenizer errors on <c>/</c>
+    ///   ("unexpected character") → Invalid.</item>
+    ///   <item><b>Keyword</b> (grid-auto-flow): <c>/</c> is not an
+    ///   admitted keyword → Invalid.</item>
+    ///   <item><b>GridTemplateAreas</b>: requires quoted strings; a
+    ///   bare <c>/</c> has none → Invalid.</item>
+    /// </list>
+    /// Unlike the raw shorthand value (which the grid-line / grid-area
+    /// expanders reuse safely because their failure modes always carry
+    /// a <c>/</c> or invalid grid-line token), the <c>grid</c>
+    /// shorthand's no-slash failure shapes (e.g. <c>grid: 100px 100px</c>)
+    /// carry a raw value that IS valid for a track-list longhand — so
+    /// the sentinel is required to keep invalidation atomic. Pinned by
+    /// <c>GridShorthandSentinelTests</c>.</summary>
+    internal const string GridInvalidShorthandSentinel = "/";
+
     private static void EmitInvalidGridShorthandRecovery(
         ImmutableArray<CssDeclarationRecovery>.Builder output,
         string longhandName,

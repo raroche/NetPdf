@@ -584,6 +584,21 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         ArgumentNullException.ThrowIfNull(resolver);
         cancellationToken.ThrowIfCancellationRequested();
 
+        // Per Phase 3 Task 19 cycle 2a post-PR-#113 review P2#2 — clear
+        // the positioned-box geometry map at the start of EACH in-flow
+        // pass. A rewind returns NeedsRewind to the coordinator, which
+        // rolls the sink back + RE-CALLS AttemptLayout — so each
+        // AttemptLayoutInFlow invocation is a single forward pass with
+        // no internal rollback loop. Rebuilding the map from scratch
+        // each call means the COMMITTED pass's map reflects exactly the
+        // boxes that pass emitted (no stale geometry from a rolled-back
+        // speculative attempt). The abspos pass (in the AttemptLayout
+        // wrapper) reads the map immediately after the committed core
+        // returns. This is simpler + more robust than threading the map
+        // through LayoutCheckpoint (which only snapshots cursor state,
+        // not side-table maps).
+        _positionedBoxGeometry?.Clear();
+
         // Per PR #23 review fix #1 — resume point. After a rewind,
         // the coordinator restores state + re-calls AttemptLayout; the
         // retry must resume from the rewind-target's
@@ -2314,6 +2329,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         BlockOffset: forcedOverflowChildBlockOffset,
                         InlineSize: borderBoxInlineSize,
                         BlockSize: borderBoxBlockSize));
+                    // Per Phase 3 Task 19 cycle 2a post-PR-#113 review
+                    // P1#1 — record positioned-CB establishers emitted
+                    // via the forced-overflow path too, so abspos
+                    // descendants anchored to a force-emitted positioned
+                    // box resolve correctly instead of deferring.
+                    RecordPositionedBoxGeometry(
+                        child, forcedOverflowInlineOffset, forcedOverflowChildBlockOffset,
+                        borderBoxInlineSize, borderBoxBlockSize);
 
                     // Per Phase 3 Task 16 cycle 4b post-PR-#83 review
                     // P1 #2 — flex container forced-overflow re-route.
@@ -3583,24 +3606,55 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             _rootBox, icb, diagnostics, ref layout, cancellationToken);
     }
 
-    /// <summary>Per Phase 3 Task 19 cycle 2a — resolve the containing
-    /// block for <paramref name="absBox"/> per CSS Positioned Layout L3
-    /// §6: the nearest ancestor with <c>position</c> != <c>static</c>
-    /// (walked via <see cref="Box.Parent"/>), using that ancestor's
-    /// PADDING box (= its recorded border box inset by its border
-    /// widths). Falls back to <paramref name="icb"/> (the initial
-    /// containing block) when there's no positioned ancestor OR the
-    /// ancestor's geometry wasn't recorded (e.g., it was laid out via a
-    /// path that doesn't record — table cell / grid item / forced-
-    /// overflow; those fall back to the ICB in cycle 2a).</summary>
-    private AbsoluteContainingBlock ResolveContainingBlock(
+    /// <summary>Per Phase 3 Task 19 cycle 2a (+ post-PR-#113 review
+    /// P1#1 / P2#1) — resolve the containing block for
+    /// <paramref name="absBox"/> per CSS Positioned Layout L3 §6: the
+    /// nearest ancestor with <c>position</c> != <c>static</c> (walked
+    /// via <see cref="Box.Parent"/>), using that ancestor's PADDING box
+    /// (= its recorded border box inset by its border widths).
+    ///
+    /// <para><b>Return contract</b>: a non-null
+    /// <see cref="AbsoluteContainingBlock"/> on success;
+    /// <see langword="null"/> = DEFERRED (the caller drops the box with
+    /// <c>LAYOUT-ABSOLUTE-FEATURE-UNSUPPORTED-001</c> rather than
+    /// misplacing it). Cases:</para>
+    /// <list type="bullet">
+    ///   <item>No positioned ancestor → the <paramref name="icb"/>
+    ///   (initial containing block) IS the correct CB per §6.</item>
+    ///   <item>Positioned ancestor found + geometry recorded + (if
+    ///   <c>relative</c>) no explicit inset offsets → its padding
+    ///   box.</item>
+    ///   <item>Per P1#1 — positioned ancestor found but geometry NOT
+    ///   recorded (laid out on a later page that page-1 didn't reach,
+    ///   OR via the table-cell / grid-item / forced-overflow paths that
+    ///   don't record) → DEFER. Falling back to the ICB here would
+    ///   silently MISPLACE the box at the wrong origin.</item>
+    ///   <item>Per P2#1 — a <c>position: relative</c> ancestor with an
+    ///   explicit inset (<c>top</c>/<c>right</c>/<c>bottom</c>/<c>left</c>)
+    ///   → DEFER. Relative-offset application (shifting the ancestor's
+    ///   visual box + therefore its abspos descendants' CB origin) is
+    ///   unimplemented; using the unshifted flow position would place
+    ///   the descendant against the wrong origin.</item>
+    /// </list></summary>
+    private AbsoluteContainingBlock? ResolveContainingBlock(
         Box absBox, AbsoluteContainingBlock icb)
     {
         for (var ancestor = absBox.Parent; ancestor is not null; ancestor = ancestor.Parent)
         {
             if (!ancestor.Style.EstablishesAbsoluteContainingBlock()) continue;
+
+            // P2#1 — a relative ancestor with explicit inset offsets
+            // can't have its (unimplemented) relative shift applied to
+            // the CB origin → defer rather than anchor to the unshifted
+            // flow position.
+            if (ancestor.Style.ReadPosition() == PositionValue.Relative
+                && HasExplicitInset(ancestor.Style))
+            {
+                return null;
+            }
+
             // Found the nearest positioned ancestor. Use its padding
-            // box if we recorded its geometry; else fall back to ICB.
+            // box IFF its geometry was recorded during in-flow emit.
             if (_positionedBoxGeometry is not null
                 && _positionedBoxGeometry.TryGetValue(ancestor, out var borderBox))
             {
@@ -3614,12 +3668,32 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                     InlineSize: System.Math.Max(0, borderBox.InlineSize - bl - br),
                     BlockSize: System.Math.Max(0, borderBox.BlockSize - bt - bb));
             }
-            // Positioned ancestor found but geometry not recorded —
-            // ICB fallback (cycle 2a limitation; documented).
-            return icb;
+            // P1#1 — positioned ancestor found but geometry NOT recorded.
+            // Defer (drop + diagnose) instead of misplacing at the ICB.
+            return null;
         }
-        // No positioned ancestor → ICB.
+        // No positioned ancestor → the ICB IS the containing block.
         return icb;
+    }
+
+    /// <summary>Per post-PR-#113 review P2#1 — true when any physical
+    /// inset (<c>top</c>/<c>right</c>/<c>bottom</c>/<c>left</c>) is
+    /// explicitly specified (a length or percentage, not the
+    /// <c>auto</c> default). Used to detect a <c>position: relative</c>
+    /// ancestor whose unimplemented relative shift would otherwise
+    /// corrupt an abspos descendant's containing-block origin.</summary>
+    private static bool HasExplicitInset(ComputedStyle style)
+    {
+        return IsExplicitInset(style, PropertyId.Top)
+            || IsExplicitInset(style, PropertyId.Right)
+            || IsExplicitInset(style, PropertyId.Bottom)
+            || IsExplicitInset(style, PropertyId.Left);
+
+        static bool IsExplicitInset(ComputedStyle s, PropertyId id)
+        {
+            var tag = s.Get(id).Tag;
+            return tag is ComputedSlotTag.LengthPx or ComputedSlotTag.Percentage;
+        }
     }
 
     /// <summary>Per Phase 3 Task 19 cycle 1 — recursively walk
@@ -3662,9 +3736,28 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         CancellationToken cancellationToken)
     {
         // Per Phase 3 Task 19 cycle 2a — anchor to the nearest
-        // positioned ancestor's padding box (ICB fallback).
+        // positioned ancestor's padding box. Per post-PR-#113 review
+        // P1#1/P2#1 — a null CB means the ancestor's geometry isn't
+        // resolvable this page (unrecorded, or relative-with-offsets):
+        // DROP + diagnose rather than misplace at the ICB.
         var containingBlock = ResolveContainingBlock(child, icb);
-        var placement = AbsoluteLayouter.ResolvePlacement(child, containingBlock);
+        if (containingBlock is null)
+        {
+            OptimizingBreakResolver.SafeEmit(
+                diagnostics,
+                new PaginateDiagnostic(
+                    PaginateDiagnosticCodes.LayoutAbsoluteFeatureUnsupported001,
+                    "position:absolute box dropped (cycle-2a): its containing block "
+                    + "(nearest positioned ancestor) could not be resolved on this "
+                    + "page — the ancestor was laid out via an unrecorded path "
+                    + "(later page / table-cell / grid-item / forced-overflow) OR is "
+                    + "`position: relative` with explicit inset offsets (relative-"
+                    + "offset application is a later cycle).",
+                    PaginateDiagnosticSeverity.Warning));
+            return;
+        }
+
+        var placement = AbsoluteLayouter.ResolvePlacement(child, containingBlock.Value);
         if (!placement.IsResolved)
         {
             OptimizingBreakResolver.SafeEmit(

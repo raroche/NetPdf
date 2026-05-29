@@ -2512,14 +2512,30 @@ flags the categories):
   collected by the top-level post-flow pass + anchored to this ICB.
 - **Missing** —
   - ~~**Nearest-positioned-ancestor CB + ancestor walk**~~ — SHIPPED
-    in cycle 2a. An abspos box inside a `position: relative` (or any
-    non-`static`) ancestor now anchors to that ancestor's PADDING box
-    (`Box.Parent` walk + per-box geometry recorded during in-flow
-    emit; padding box = recorded border box inset by border widths).
-    ICB remains the fallback when there's no positioned ancestor.
-    Remaining gap: positioned ancestors laid out via the
-    forced-overflow / table-cell / grid-item paths aren't recorded yet
-    (those still fall back to the ICB) — cycle 2b.
+    in cycle 2a (+ post-PR-#113 review). An abspos box inside a
+    `position: relative` (or any non-`static`) ancestor now anchors to
+    that ancestor's PADDING box (`Box.Parent` walk + per-box geometry
+    recorded during in-flow emit at the block-flow + recursive +
+    forced-overflow emit sites; padding box = recorded border box
+    inset by border widths). ICB remains the fallback when there's NO
+    positioned ancestor. Per PR-#113 review P1#1: when a positioned
+    ancestor IS found but its geometry wasn't recorded, the box is
+    DROPPED + diagnosed (`LAYOUT-ABSOLUTE-FEATURE-UNSUPPORTED-001`)
+    rather than misplaced at the ICB.
+    Remaining gap: **positioned GRID / FLEX / TABLE containers as CB
+    establishers** — their wrapper geometry isn't recorded on a path
+    the abspos pass can read (+ the grid/flex item collectors now
+    EXCLUDE abspos children per P1#2 so they aren't double-emitted),
+    so an abspos child of a positioned grid/flex anchors to the ICB or
+    a higher recorded ancestor. Cycle 2b.
+  - **`position: relative` offset application** — per PR-#113 review
+    P2#1, a `position: relative` ancestor with explicit inset offsets
+    (`top`/`right`/`bottom`/`left`) would visually shift, moving its
+    abspos descendants' CB origin; relative-offset application is
+    unimplemented, so such abspos descendants are DROPPED + diagnosed
+    (not anchored to the unshifted flow position). Cycle 2b ships
+    relative-offset application (to both the relative box + its abspos
+    descendants' CB).
   - **`auto` offset resolution (static position)** — `top`/`left` auto
     should resolve to the box's static-flow position per §6. Cycle 2b.
   - **`right`/`bottom` anchoring + over-constrained resolution** — §6

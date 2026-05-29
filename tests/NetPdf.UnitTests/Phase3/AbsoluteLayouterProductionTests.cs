@@ -196,6 +196,103 @@ public sealed class AbsoluteLayouterProductionTests
         Assert.Equal(30.0, abs.Value.BlockSize, precision: 3);
     }
 
+    [Fact]
+    public async Task Cycle2a_production_abspos_in_grid_emits_once_no_displacement()
+    {
+        // Per post-PR-#113 review P1#2 — an abspos child of a grid
+        // container is out-of-flow: it must NOT occupy a grid cell or
+        // be emitted by the grid (it's emitted ONCE by the abspos
+        // pass). The two real grid items (.a, .b) fill cols 1+2 of row
+        // 1 undisplaced; the abspos box anchors to the ICB.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 100px;
+                    grid-template-columns: 100px 100px;
+                    width: 200px;
+                }
+                .abs {
+                    position: absolute;
+                    top: 5px; left: 5px; width: 30px; height: 30px;
+                }
+            </style></head><body>
+            <div class="grid">
+              <div class="a"></div>
+              <div class="abs"></div>
+              <div class="b"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _) = await RenderAsync(html);
+        var a = FindByClass(sink, "a");
+        var b = FindByClass(sink, "b");
+        // .a + .b are the only two grid items → cols 0 and 1. The
+        // abspos box did NOT take a cell (else .b would be at row 2).
+        Assert.NotNull(a);
+        Assert.NotNull(b);
+        Assert.Equal(0.0, a!.Value.InlineOffset, precision: 3);
+        Assert.Equal(0.0, a.Value.BlockOffset, precision: 3);
+        Assert.Equal(100.0, b!.Value.InlineOffset, precision: 3);
+        Assert.Equal(0.0, b.Value.BlockOffset, precision: 3);
+        // The abspos box is emitted exactly once, at the ICB anchor.
+        var absFrags = sink.Fragments.Where(f =>
+            f.Box.SourceElement?.GetAttribute("class")?.Split(' ').Contains("abs") == true)
+            .ToList();
+        Assert.Single(absFrags);
+        Assert.Equal(5.0, absFrags[0].InlineOffset, precision: 3);
+        Assert.Equal(5.0, absFrags[0].BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public async Task Cycle2a_production_abspos_in_flex_emits_once_no_displacement()
+    {
+        // Per post-PR-#113 review P1#2 — abspos child of a flex
+        // container is out-of-flow: not a flex item, emitted once.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display: flex; width: 300px; }
+                .a { width: 100px; height: 50px; }
+                .b { width: 100px; height: 50px; }
+                .abs {
+                    position: absolute;
+                    top: 5px; left: 5px; width: 30px; height: 30px;
+                }
+            </style></head><body>
+            <div class="flex">
+              <div class="a"></div>
+              <div class="abs"></div>
+              <div class="b"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _) = await RenderAsync(html);
+        var a = FindByClass(sink, "a");
+        var b = FindByClass(sink, "b");
+        // .a at main-start 0; .b directly after at 100 (the abspos box
+        // didn't consume a flex slot, else .b would be at 200).
+        Assert.NotNull(a);
+        Assert.NotNull(b);
+        Assert.Equal(0.0, a!.Value.InlineOffset, precision: 3);
+        Assert.Equal(100.0, b!.Value.InlineOffset, precision: 3);
+        var absFrags = sink.Fragments.Where(f =>
+            f.Box.SourceElement?.GetAttribute("class")?.Split(' ').Contains("abs") == true)
+            .ToList();
+        Assert.Single(absFrags);
+    }
+
+    // NB: the PADDING-box border inset (CB = positioned ancestor's
+    // padding box, not border box) is proven deterministically by the
+    // BlockLayouterTests integration test
+    // `Cycle2a_abspos_anchors_to_positioned_ancestor_padding_box`
+    // (which sets BorderTopWidth/etc explicitly). A production-CSS
+    // version is entangled with `border` shorthand + border-style
+    // cascade interaction; positioned GRID/FLEX containers as CB
+    // establishers are a cycle-2b item (only block-flow positioned
+    // ancestors record their geometry today — see deferrals.md).
+
     // ================================================================
     //  Pipeline driver — mirrors GridLayouterProductionTests.
     // ================================================================

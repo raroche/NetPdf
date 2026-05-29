@@ -6274,6 +6274,84 @@ public sealed class BlockLayouterTests
         Assert.Equal(10.0, absFrag.BlockOffset, precision: 3);
     }
 
+    [Fact]
+    public void Cycle2a_abspos_under_relative_ancestor_with_offsets_dropped_with_diagnostic()
+    {
+        // Per post-PR-#113 review P2#1 — a `position: relative` ancestor
+        // with explicit inset offsets (top/left) would visually shift,
+        // moving its abspos descendants' CB origin. Relative-offset
+        // application is unimplemented, so the abspos child is DROPPED +
+        // LAYOUT-ABSOLUTE-FEATURE-UNSUPPORTED-001 emitted rather than
+        // anchored to the unshifted flow position.
+        var sink = new RecordingFragmentSink();
+        var diag = new RecordingDiagnosticsSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var relStyle = MakeStyle();
+        SetKeyword(relStyle, PropertyId.Position, 1); // relative
+        SetLengthPx(relStyle, PropertyId.Height, 200);
+        SetLengthPx(relStyle, PropertyId.Top, 50);   // relative offset
+        SetLengthPx(relStyle, PropertyId.Left, 10);
+        var rel = Box.ForElement(BoxKind.BlockContainer, relStyle, MakeElement());
+        root.AppendChild(rel);
+
+        var absStyle = MakeStyle();
+        SetKeyword(absStyle, PropertyId.Position, 2); // absolute
+        SetLengthPx(absStyle, PropertyId.Top, 0);
+        SetLengthPx(absStyle, PropertyId.Left, 0);
+        SetLengthPx(absStyle, PropertyId.Width, 30);
+        SetLengthPx(absStyle, PropertyId.Height, 30);
+        var abs = Box.ForElement(BoxKind.BlockContainer, absStyle, MakeElement());
+        rel.AppendChild(abs);
+
+        using var layouter = new BlockLayouter(root, sink, diagnostics: diag);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx) { Diagnostics = diag };
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.DoesNotContain(sink.Fragments, f => ReferenceEquals(f.Box, abs));
+        Assert.Contains(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutAbsoluteFeatureUnsupported001);
+    }
+
+    [Fact]
+    public void Cycle2a_abspos_relative_ancestor_no_offsets_still_anchors()
+    {
+        // Sanity: a `position: relative` ancestor WITHOUT offsets is the
+        // fully-supported case (the cycle-2a headline) — the abspos
+        // child still anchors to its padding box, not dropped.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var relStyle = MakeStyle();
+        SetKeyword(relStyle, PropertyId.Position, 1);
+        SetLengthPx(relStyle, PropertyId.Height, 200);
+        var rel = Box.ForElement(BoxKind.BlockContainer, relStyle, MakeElement());
+        root.AppendChild(rel);
+
+        var absStyle = MakeStyle();
+        SetKeyword(absStyle, PropertyId.Position, 2);
+        SetLengthPx(absStyle, PropertyId.Top, 10);
+        SetLengthPx(absStyle, PropertyId.Left, 20);
+        SetLengthPx(absStyle, PropertyId.Width, 30);
+        SetLengthPx(absStyle, PropertyId.Height, 30);
+        var abs = Box.ForElement(BoxKind.BlockContainer, absStyle, MakeElement());
+        rel.AppendChild(abs);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        var absFrag = sink.Fragments.First(f => ReferenceEquals(f.Box, abs));
+        Assert.Equal(20.0, absFrag.InlineOffset, precision: 3); // rel at (0,0), no border
+        Assert.Equal(10.0, absFrag.BlockOffset, precision: 3);
+    }
+
     private static ComputedStyle MakeStyle() => ComputedStyle.RentForExclusiveTesting();
 
     private static void SetLengthPx(ComputedStyle style, PropertyId id, double px) =>

@@ -2787,6 +2787,16 @@ internal static class GridSizing
     /// mirroring <c>GridLayouter.IsGridItem</c>.</summary>
     private static bool IsGridItem(Box box)
     {
+        // Per Phase 3 Task 19 cycle 2a post-PR-#113 review P1#2 — an
+        // absolutely-positioned child of a grid container is NOT a grid
+        // item (CSS Grid L1 §9 / CSS Positioned Layout L3 §3): it's
+        // out-of-flow. Excluding it here keeps it from occupying a grid
+        // cell + from being emitted by the grid; the establishing
+        // BlockLayouter's post-flow abspos pass owns its placement +
+        // emission (otherwise it would be emitted twice). The static
+        // position influence of the grid area on the abspos box is a
+        // later-cycle refinement.
+        if (box.Style.IsAbsolutelyPositioned()) return false;
         return box.Kind is BoxKind.BlockContainer
             or BoxKind.GridContainer or BoxKind.InlineGridContainer
             or BoxKind.FlexContainer or BoxKind.InlineFlexContainer

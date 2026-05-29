@@ -1054,6 +1054,15 @@ internal static class ComputedStyleLayoutExtensions
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (!flexContainer.Children[i].IsBlockLevel) continue;
+            // Per Phase 3 Task 19 cycle 2a post-PR-#113 review P1#2 — an
+            // absolutely-positioned child of a flex container is NOT a
+            // flex item (CSS Flexbox L1 §4 / CSS Positioned Layout L3
+            // §3): it's out-of-flow + doesn't participate in flex line
+            // packing. Excluding it keeps it from displacing real flex
+            // items + from being emitted by the FlexLayouter; the
+            // establishing BlockLayouter's post-flow abspos pass owns
+            // its placement (otherwise double emission).
+            if (flexContainer.Children[i].Style.IsAbsolutelyPositioned()) continue;
             var order = flexContainer.Children[i].Style.ReadOrder();
             if (order != 0) hasNonZeroOrder = true;
             indexedOrders.Add((i, order));

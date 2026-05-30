@@ -6355,10 +6355,58 @@ public sealed class BlockLayouterTests
         Assert.Equal(10.0, absFrag.BlockOffset, precision: 3);
     }
 
+    [Fact]
+    public void PostPr114_abspos_relative_ancestor_percent_offsets_resolve_per_axis()
+    {
+        // Per post-PR-#114 review P1#2 — a `position: relative` ancestor
+        // with PERCENTAGE inset offsets shifts per-axis: left/right
+        // resolve against the containing-block WIDTH, top/bottom against
+        // its HEIGHT. The ancestor fills the 600px content width and is
+        // 400px tall (distinct extents) with left:50% top:50%. inline
+        // shift = 50% × 600 = 300; block shift = 50% × 400 = 200 (NOT 50%
+        // × 600 = 300, the pre-fix wrong-axis result that resolved top
+        // against the inline extent). The abspos child (top:0 left:0)
+        // anchors to the shifted padding-box origin (300, 200) — the
+        // block offset (200 ≠ 300) is the proof the fix uses the HEIGHT.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var relStyle = MakeStyle();
+        SetKeyword(relStyle, PropertyId.Position, 1); // relative
+        SetLengthPx(relStyle, PropertyId.Height, 400);
+        SetPercentage(relStyle, PropertyId.Left, 50);
+        SetPercentage(relStyle, PropertyId.Top, 50);
+        var rel = Box.ForElement(BoxKind.BlockContainer, relStyle, MakeElement());
+        root.AppendChild(rel);
+
+        var absStyle = MakeStyle();
+        SetKeyword(absStyle, PropertyId.Position, 2); // absolute
+        SetLengthPx(absStyle, PropertyId.Top, 0);
+        SetLengthPx(absStyle, PropertyId.Left, 0);
+        SetLengthPx(absStyle, PropertyId.Width, 30);
+        SetLengthPx(absStyle, PropertyId.Height, 30);
+        var abs = Box.ForElement(BoxKind.BlockContainer, absStyle, MakeElement());
+        rel.AppendChild(abs);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        var absFrag = sink.Fragments.First(f => ReferenceEquals(f.Box, abs));
+        Assert.Equal(300.0, absFrag.InlineOffset, precision: 3);  // 50% × width 600
+        Assert.Equal(200.0, absFrag.BlockOffset, precision: 3);   // 50% × HEIGHT 400
+    }
+
     private static ComputedStyle MakeStyle() => ComputedStyle.RentForExclusiveTesting();
 
     private static void SetLengthPx(ComputedStyle style, PropertyId id, double px) =>
         style.Set(id, ComputedSlot.FromLengthPx(px));
+
+    private static void SetPercentage(ComputedStyle style, PropertyId id, double pct) =>
+        style.Set(id, ComputedSlot.FromPercentage(pct));
 
     private static void SetKeyword(ComputedStyle style, PropertyId id, int keywordIndex) =>
         style.Set(id, ComputedSlot.FromKeyword(keywordIndex));

@@ -312,6 +312,114 @@ public sealed class AbsoluteLayouterProductionTests
         Assert.Single(absFrags);
     }
 
+    [Fact]
+    public async Task PostPr114_abspos_in_positioned_grid_item_emits_once_anchored_to_item()
+    {
+        // Per post-PR-#114 review P2#4 — a POSITIONED grid item containing
+        // an absolute child. The item's content is laid out by a NESTED
+        // BlockLayouter (GridLayouter spawns one per item) whose abspos
+        // pass owns the child; the outer pass must NOT also emit it. The
+        // item is the second (row-2) grid cell → block origin 50, so the
+        // abspos (top:5 left:5) anchored to the ITEM lands at (5, 55) —
+        // proving it emitted ONCE and anchored to the positioned item
+        // (not the page origin, which would be (5, 5)).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 50px 100px;
+                    grid-template-columns: 100px;
+                    width: 100px;
+                }
+                .item { position: relative; }
+                .abs {
+                    position: absolute;
+                    top: 5px; left: 5px; width: 30px; height: 30px;
+                }
+            </style></head><body>
+            <div class="grid">
+              <div class="pad"></div>
+              <div class="item"><div class="abs"></div></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _) = await RenderAsync(html);
+        var absFrags = sink.Fragments.Where(f =>
+            f.Box.SourceElement?.GetAttribute("class")?.Split(' ').Contains("abs") == true)
+            .ToList();
+        Assert.Single(absFrags);
+        Assert.Equal(5.0, absFrags[0].InlineOffset, precision: 3);
+        Assert.Equal(55.0, absFrags[0].BlockOffset, precision: 3);  // item at block 50 + top 5
+    }
+
+    [Fact]
+    public async Task PostPr114_abspos_in_grid_item_content_emits_once_not_doubled()
+    {
+        // Per post-PR-#114 review P2#4 — the genuine double-emit case: an
+        // abspos box inside a (non-positioned) grid item's CONTENT with no
+        // positioned ancestor. Pre-fix BOTH the grid item's nested
+        // BlockLayouter AND the outer pass (which recursed into the item
+        // subtree) emitted it → two fragments. The delegation boundary
+        // stops the outer recursion at the grid item → exactly one.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 100px;
+                    grid-template-columns: 100px;
+                    width: 100px;
+                }
+                .abs {
+                    position: absolute;
+                    top: 5px; left: 5px; width: 30px; height: 30px;
+                }
+            </style></head><body>
+            <div class="grid">
+              <div class="item"><div class="abs"></div></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _) = await RenderAsync(html);
+        var absFrags = sink.Fragments.Where(f =>
+            f.Box.SourceElement?.GetAttribute("class")?.Split(' ').Contains("abs") == true)
+            .ToList();
+        Assert.Single(absFrags);
+    }
+
+    [Fact]
+    public async Task PostPr114_abspos_in_flex_item_content_emits_once_not_dropped()
+    {
+        // Per post-PR-#114 review P2#4 — flex is DELIBERATELY NOT a
+        // delegation boundary: FlexLayouter spawns no per-item nested
+        // BlockLayouter (it emits item border boxes only), so an abspos
+        // box inside a flex item's content is walked + emitted by the
+        // OUTER pass. This guards against regressing flex into the
+        // boundary (which would DROP the box → zero fragments). Exactly
+        // one fragment expected, anchored to the page ICB at (5, 5).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display: flex; width: 300px; }
+                .item { width: 100px; height: 50px; }
+                .abs {
+                    position: absolute;
+                    top: 5px; left: 5px; width: 30px; height: 30px;
+                }
+            </style></head><body>
+            <div class="flex">
+              <div class="item"><div class="abs"></div></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _) = await RenderAsync(html);
+        var absFrags = sink.Fragments.Where(f =>
+            f.Box.SourceElement?.GetAttribute("class")?.Split(' ').Contains("abs") == true)
+            .ToList();
+        Assert.Single(absFrags);
+    }
+
     // NB: the PADDING-box border inset (CB = positioned ancestor's
     // padding box, not border box) is proven deterministically by the
     // BlockLayouterTests integration test

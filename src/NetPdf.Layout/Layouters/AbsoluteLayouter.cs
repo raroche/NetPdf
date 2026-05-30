@@ -43,9 +43,14 @@ internal static class AbsoluteLayouter
 {
     /// <summary>Resolve a <c>position: absolute</c> box's border-box
     /// rectangle in the SAME coordinate space as
-    /// <paramref name="cb"/> (= the caller's sink coordinates). Returns
-    /// <see cref="AbsolutePlacement.Unresolved"/> only for the
-    /// genuinely-invalid case (negative resolved size).</summary>
+    /// <paramref name="cb"/> (= the caller's sink coordinates). The §6
+    /// solver always returns a <see cref="AbsolutePlacement.Resolved"/>
+    /// placement: a negative resolved content size is CLAMPED to 0 (CSS
+    /// used width/height are >= 0) rather than reported as unresolved.
+    /// <see cref="AbsolutePlacement.Unresolved"/> is retained for the
+    /// API contract (the caller's <c>IsResolved</c> check) but is no
+    /// longer produced here — the <c>BlockLayouter</c>'s null-containing-
+    /// block path is the drop site.</summary>
     public static AbsolutePlacement ResolvePlacement(
         Box box, AbsoluteContainingBlock cb)
     {
@@ -64,7 +69,8 @@ internal static class AbsoluteLayouter
             paddingStart: ReadPxOrPct(style, PropertyId.PaddingLeft, cb.InlineSize),
             paddingEnd: ReadPxOrPct(style, PropertyId.PaddingRight, cb.InlineSize),
             borderEnd: style.ReadLengthPxOrZero(PropertyId.BorderRightWidth),
-            cbExtent: cb.InlineSize);
+            cbExtent: cb.InlineSize,
+            isInlineAxis: true);
 
         // Block axis: top = inset-start, bottom = inset-end, height =
         // size. Per CSS 2.1 percentage top/bottom/height resolve against
@@ -82,7 +88,8 @@ internal static class AbsoluteLayouter
             paddingStart: ReadPxOrPct(style, PropertyId.PaddingTop, cb.InlineSize),
             paddingEnd: ReadPxOrPct(style, PropertyId.PaddingBottom, cb.InlineSize),
             borderEnd: style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth),
-            cbExtent: cb.BlockSize);
+            cbExtent: cb.BlockSize,
+            isInlineAxis: false);
 
         // SolveAxis already clamps a negative resolved content size to
         // 0 (CSS clamps used width/height to >= 0), so inlineSize /
@@ -107,7 +114,7 @@ internal static class AbsoluteLayouter
         double? insetStart, double? insetEnd, double? size,
         double? marginStart, double? marginEnd,
         double borderStart, double paddingStart, double paddingEnd, double borderEnd,
-        double cbExtent)
+        double cbExtent, bool isInlineAxis)
     {
         var chrome = borderStart + paddingStart + paddingEnd + borderEnd;
         var startAuto = insetStart is null;
@@ -124,9 +131,26 @@ internal static class AbsoluteLayouter
             double mS, mE;
             if (marginStart is null && marginEnd is null)
             {
-                // Both auto → center (split slack; may be negative).
-                mS = slack / 2.0;
-                mE = slack - mS;
+                if (isInlineAxis && slack < 0)
+                {
+                    // CSS 2.1 §10.3.7 (inline axis): equal centering may
+                    // NOT make the auto margins negative. For LTR, pin
+                    // margin-left (start) to 0 and let margin-right (end)
+                    // absorb the negative slack — the over-wide box stays
+                    // anchored at its `left` inset instead of shifting
+                    // left of it. (§10.6.4, the block axis, has NO such
+                    // clause: top/bottom auto margins split equally even
+                    // when negative — the else branch below.)
+                    mS = 0;
+                    mE = slack;
+                }
+                else
+                {
+                    // Both auto → center (split the slack equally). Block
+                    // axis (§10.6.4) reaches here even for negative slack.
+                    mS = slack / 2.0;
+                    mE = slack - mS;
+                }
             }
             else if (marginStart is null)
             {
@@ -157,6 +181,12 @@ internal static class AbsoluteLayouter
         // (not needed for the border-box offset, which keys off start).
         double usedStart;
         double usedSize;
+        // True for the END-anchored auto-size case (start auto, size
+        // auto, end given): usedStart is derived from the end inset
+        // AFTER the size clamp so a clamped-to-zero size still preserves
+        // the end inset (a negative start offset) rather than re-pinning
+        // to the static position.
+        var endAnchored = false;
 
         if (sizeAuto)
         {
@@ -178,10 +208,14 @@ internal static class AbsoluteLayouter
             }
             else if (!endAuto)
             {
-                // end given, start auto → fill from CB start to end inset,
-                // start anchored at CB origin (static-position = 0).
+                // end given, start auto → END-anchored. Size fills from
+                // the CB start to the end inset; the box's end edge stays
+                // pinned at the end inset. usedStart is recomputed from
+                // that anchor AFTER the clamp (below) so a clamped-to-
+                // zero size still honors the end inset.
                 usedSize = cbExtent - insetEnd!.Value - marS - marE - chrome;
-                usedStart = StaticPosition;
+                usedStart = StaticPosition;  // provisional; recomputed post-clamp
+                endAnchored = true;
             }
             else
             {
@@ -212,7 +246,16 @@ internal static class AbsoluteLayouter
             }
         }
 
-        if (usedSize < 0) usedSize = 0;  // clamp; caller treats <0 as drop via the border-box check
+        if (usedSize < 0) usedSize = 0;  // CSS used size >= 0.
+        if (endAnchored)
+        {
+            // Preserve the end inset after the clamp: place the (possibly
+            // zero-size) border box so its end edge stays at
+            // cbExtent - insetEnd - marE. For an un-clamped (positive)
+            // size this reproduces the static-position offset (0); for a
+            // clamped size it yields the correct negative start offset.
+            usedStart = cbExtent - insetEnd!.Value - marE - chrome - usedSize - marS;
+        }
         return (usedStart + marS, chrome + usedSize);
     }
 

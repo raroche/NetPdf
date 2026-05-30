@@ -2522,18 +2522,34 @@ flags the categories):
     ancestor IS found but its geometry wasn't recorded, the box is
     DROPPED + diagnosed (`LAYOUT-ABSOLUTE-FEATURE-UNSUPPORTED-001`)
     rather than misplaced at the ICB.
-    Remaining gap: **positioned GRID / FLEX / TABLE containers as CB
-    establishers** — their wrapper geometry isn't recorded on a path
-    the abspos pass can read (+ the grid/flex item collectors now
-    EXCLUDE abspos children per P1#2 so they aren't double-emitted),
-    so an abspos child of a positioned grid/flex anchors to the ICB or
-    a higher recorded ancestor. Cycle 2b.
+    Per post-PR-#114 review P2#4: a positioned GRID ITEM / TABLE CELL /
+    abspos box that is itself the root of a nested-BlockLayouter
+    formatting context now resolves its OWN abspos descendants against
+    that nested layouter's ICB (= the positioned root's content area),
+    rather than dropping them — the nested layouter owns + emits them
+    exactly once, and the top-level pass stops at that delegation
+    boundary (grid items + table cells/captions) so it doesn't
+    double-emit. (Flex is NOT a boundary — `FlexLayouter` spawns no
+    per-item nested BlockLayouter, so an abspos box inside a flex item's
+    content is emitted by the top-level pass; adding flex to the
+    boundary would DROP it.)
+    Remaining gap: **positioned GRID / FLEX / TABLE containers (the
+    WRAPPER) as CB establishers** — a positioned ancestor that sits
+    ABOVE a nested layouter's subtree (e.g., a positioned grid container
+    with a static item holding the abspos box) still isn't recorded on a
+    path the abspos pass can read, so such a box anchors to the ICB or a
+    higher recorded ancestor / is dropped + diagnosed. Later cycle.
   - ~~**`position: relative` offset application (to the CB)**~~ —
     SHIPPED in cycle 2b. A `position: relative` ancestor's §9.4.3 shift
     (`left`/`top`, or `-right`/`-bottom`) is now applied to the abspos
-    descendant's CB origin. (The relative box's OWN in-flow fragment is
-    still emitted unshifted — applying relative offsets to the relative
-    box's own rendering is a separate relative-positioning slice.)
+    descendant's CB origin. Per post-PR-#114 review P1#2: PERCENTAGE
+    relative offsets resolve PER-AXIS — `left`/`right` against the
+    ancestor's inline extent, `top`/`bottom` against its BLOCK extent
+    (pre-fix both used the inline extent, shifting the block axis along
+    the wrong dimension whenever the two differ). (The relative box's
+    OWN in-flow fragment is still emitted unshifted — applying relative
+    offsets to the relative box's own rendering is a separate
+    relative-positioning slice.)
   - ~~**`auto` offset resolution (static position)**~~ — SHIPPED in
     cycle 2b as an APPROXIMATION: `auto` insets resolve to the CB
     content origin (offset 0), exact when the box would have been the
@@ -2542,7 +2558,14 @@ flags the categories):
   - ~~**`right`/`bottom` anchoring + over-constrained resolution**~~ —
     SHIPPED in cycle 2b: the full CSS 2.1 §10.3.7 / §10.6.4 constraint
     solver (right/bottom anchoring, over-constrained "ignore the end
-    inset" LTR/ttb rule, auto-margin centering).
+    inset" LTR/ttb rule, auto-margin centering). Per post-PR-#114 review
+    P1#1: the auto-margin centering applies the §10.3.7 negative-slack
+    rule on the INLINE axis only — an over-constrained over-wide box
+    with both inline margins `auto` pins `margin-left` to 0 (LTR) and
+    lets `margin-right` absorb the negative slack (stays anchored at
+    `left`), rather than splitting the negative slack equally (which
+    would shift it left of `left`). The BLOCK axis (§10.6.4) has no such
+    clause and still centers even when the margins go negative.
   - ~~**Percentage** `top`/`left`/`width`/`height`~~ — SHIPPED in
     cycle 2b (resolve against the CB inline / block extent).
   - **`auto` width/height (true shrink-to-fit / content height)** —
@@ -2551,7 +2574,11 @@ flags the categories):
     The pinned-both-insets case (fill) is EXACT. True shrink-to-fit
     (inline) + content height (block) need intrinsic-size measurement
     (the speculative-measure machinery TableLayouter uses) — a later
-    refinement.
+    refinement. Per post-PR-#114 review P2#3: when the end inset
+    (`right`/`bottom`) exceeds the CB and the available size goes
+    negative, the size clamps to 0 but the END anchor is PRESERVED —
+    the box's start offset is recomputed from the end inset (a negative
+    offset) instead of being re-pinned to the static position 0.
   - **Padding-box CB** — uses the recorded border box inset by border
     widths = the padding box (correct). [Resolved cycle 2a.]
   - **z-index paint ordering** — paints in source order; no z-index.

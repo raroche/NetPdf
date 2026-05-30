@@ -32,7 +32,8 @@ public sealed class AbsoluteLayouterTests
         double? width = null, double? height = null,
         bool topPercent = false, bool widthAuto = false,
         double? right = null, double? bottom = null,
-        bool rightPercent = false, bool inlineMarginsAuto = false)
+        bool rightPercent = false, bool inlineMarginsAuto = false,
+        bool blockMarginsAuto = false)
     {
         var style = MakeStyle();
         // position: absolute = keyword id 2.
@@ -42,6 +43,12 @@ public sealed class AbsoluteLayouterTests
             // explicit `margin-left/right: auto` (Keyword slot).
             style.Set(PropertyId.MarginLeft, ComputedSlot.FromKeyword(0));
             style.Set(PropertyId.MarginRight, ComputedSlot.FromKeyword(0));
+        }
+        if (blockMarginsAuto)
+        {
+            // explicit `margin-top/bottom: auto` (Keyword slot).
+            style.Set(PropertyId.MarginTop, ComputedSlot.FromKeyword(0));
+            style.Set(PropertyId.MarginBottom, ComputedSlot.FromKeyword(0));
         }
         if (topPercent)
         {
@@ -258,5 +265,74 @@ public sealed class AbsoluteLayouterTests
         Assert.True(p.IsResolved);
         Assert.Equal(0.0, p.InlineOffset, precision: 3);
         Assert.Equal(0.0, p.BlockOffset, precision: 3);
+    }
+
+    // ============================================================
+    // Post-PR-#114 review — §10.3.7 negative-slack margin rule
+    // (inline-only) + end-anchored auto-size clamp.
+    // ============================================================
+
+    [Fact]
+    public void Over_wide_box_auto_inline_margins_stays_start_anchored_ltr()
+    {
+        // P1#1 — left:0; right:0; width:800 (> CB inline 600) with BOTH
+        // inline margins auto. Equal centering would set each margin to
+        // -100, shifting the box LEFT of its `left` inset (offset -100).
+        // CSS 2.1 §10.3.7 forbids negative auto margins via centering:
+        // for LTR pin margin-left to 0, margin-right absorbs the slack →
+        // the box stays anchored at left:0.
+        var box = BuildAbsoluteBox(
+            top: 10, left: 0, width: 800, height: 30, right: 0,
+            inlineMarginsAuto: true);
+        var p = AbsoluteLayouter.ResolvePlacement(box, OriginCb);
+        Assert.True(p.IsResolved);
+        Assert.Equal(0.0, p.InlineOffset, precision: 3);   // start-anchored, NOT -100
+        Assert.Equal(800.0, p.InlineSize, precision: 3);
+    }
+
+    [Fact]
+    public void Over_tall_box_auto_block_margins_center_even_when_negative()
+    {
+        // P1#1 asymmetry — the §10.3.7 negative-slack rule is INLINE-only.
+        // top:0; bottom:0; height:1000 (> CB block 800) with both block
+        // margins auto → CSS 2.1 §10.6.4 has NO "may not be negative"
+        // clause, so the margins split equally to -100 each and the box
+        // is centered: block offset -100 (NOT 0). Proves the block axis
+        // does NOT inherit the inline rule.
+        var box = BuildAbsoluteBox(
+            top: 0, left: 0, width: 50, height: 1000, bottom: 0,
+            blockMarginsAuto: true);
+        var p = AbsoluteLayouter.ResolvePlacement(box, OriginCb);
+        Assert.True(p.IsResolved);
+        Assert.Equal(-100.0, p.BlockOffset, precision: 3);  // centered, even negative
+        Assert.Equal(1000.0, p.BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public void Right_only_auto_width_preserves_right_inset_after_clamp()
+    {
+        // P2#3 — right:700 (> CB inline 600), width auto, left auto.
+        // Available width = 600 - 700 = -100 → clamps to 0, but the RIGHT
+        // inset must be preserved: the zero-width box's end edge stays at
+        // 600 - 700 = -100, so its left offset is -100 (NOT re-pinned to
+        // the static position 0).
+        var box = BuildAbsoluteBox(top: 10, height: 30, right: 700, widthAuto: true);
+        var p = AbsoluteLayouter.ResolvePlacement(box, OriginCb);
+        Assert.True(p.IsResolved);
+        Assert.Equal(0.0, p.InlineSize, precision: 3);
+        Assert.Equal(-100.0, p.InlineOffset, precision: 3);
+    }
+
+    [Fact]
+    public void Bottom_only_auto_height_preserves_bottom_inset_after_clamp()
+    {
+        // P2#3 (block axis) — bottom:900 (> CB block 800), height auto,
+        // top auto. Available height = 800 - 900 = -100 → clamps to 0;
+        // the bottom inset is preserved → block offset -100 (NOT 0).
+        var box = BuildAbsoluteBox(left: 20, width: 50, bottom: 900);
+        var p = AbsoluteLayouter.ResolvePlacement(box, OriginCb);
+        Assert.True(p.IsResolved);
+        Assert.Equal(0.0, p.BlockSize, precision: 3);
+        Assert.Equal(-100.0, p.BlockOffset, precision: 3);
     }
 }

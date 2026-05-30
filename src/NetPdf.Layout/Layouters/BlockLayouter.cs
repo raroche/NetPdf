@@ -3909,7 +3909,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         if (child.Children.Count > 0
             && placement.InlineSize > 0 && placement.BlockSize > 0)
         {
-            DispatchAbsoluteChildContents(
+            // Abspos content pagination (overflow past the box block-size)
+            // is a pre-existing behavior outside this cycle's scope — the
+            // result is intentionally discarded here.
+            _ = DispatchAbsoluteChildContents(
                 child,
                 placement.InlineOffset,
                 placement.BlockOffset,
@@ -3938,14 +3941,18 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// <see cref="AbsoluteLayouter.ResolvePlacement"/> §6 solver.</para>
     ///
     /// <para><b>Whole-subtree walk, no delegation boundary.</b> Fixed
-    /// boxes appear at any depth, including inside grid / flex / table
-    /// item subtrees. The nested item / cell / column sub-layouters have
-    /// a non-Root root box so they do NOT run a fixed pass — only the
-    /// page-root layouter does — therefore this walk descends THROUGH
-    /// those subtrees to find + emit every fixed box against the page
-    /// (there is no double-emit to guard against, unlike abspos P2#4).
-    /// Abspos subtrees are skipped (fixed-inside-abspos is a later
-    /// cycle); a fixed box's OWN subtree is dispatched, not re-walked.</para></summary>
+    /// boxes appear at any depth — inside grid / flex / table item
+    /// subtrees, inside <c>position: absolute</c> subtrees, even nested
+    /// inside another fixed box. The page-root layouter is the SOLE owner
+    /// of fixed emission: every nested item / cell / column /
+    /// abspos-content / fixed-content sub-layouter has a non-Root root
+    /// box, so none of them run a fixed pass. Therefore this walk
+    /// descends THROUGH all of those subtrees (post-PR-#115 review P2#1:
+    /// skipping any of them would silently DROP a fixed box nested
+    /// inside). It EMITS only fixed boxes, so re-walking a positioned
+    /// subtree never double-emits its normal content (owned by the box's
+    /// dispatch / the abspos pass). There is no double-emit to guard
+    /// against, unlike abspos P2#4.</para></summary>
     private void EmitFixedPositionedChildren(
         FragmentainerContext fragmentainer,
         ref LayoutContext layout,
@@ -3959,15 +3966,22 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         EmitFixedPositionedDescendants(_rootBox, pageCb, ref layout, cancellationToken);
     }
 
-    /// <summary>Per Phase 3 Task 20 cycle 1 — recursively walk
-    /// <paramref name="box"/>'s children, emitting each
-    /// <c>position: fixed</c> descendant against the page
-    /// <paramref name="pageCb"/>. Descends through ALL in-flow boxes
-    /// (including grid / flex / table containers + their items, since the
-    /// nested layouters don't emit fixed); does NOT descend into an
-    /// abspos box's subtree (fixed-inside-abspos deferred) nor into a
-    /// fixed box's own subtree (its content is dispatched in
-    /// <see cref="EmitOneFixedBox"/>).</summary>
+    /// <summary>Per Phase 3 Task 20 cycle 1 (+ post-PR-#115 review P2#1)
+    /// — recursively walk <paramref name="box"/>'s WHOLE subtree,
+    /// emitting each <c>position: fixed</c> descendant against the page
+    /// <paramref name="pageCb"/>. Descends through EVERY child — in-flow
+    /// boxes (incl. grid / flex / table containers + their items),
+    /// <c>position: absolute</c> subtrees, AND a fixed box's own subtree
+    /// — because the page-root layouter is the SOLE owner of fixed
+    /// emission: the nested item / cell / column / abspos-content /
+    /// fixed-content sub-layouters all have a non-Root root box, so none
+    /// of them run a fixed pass. Skipping any subtree would silently DROP
+    /// a fixed box nested inside it (review P2#1: fixed-inside-absolute,
+    /// nested fixed-inside-fixed). The walk EMITS only fixed boxes (each
+    /// page-anchored); abspos boxes + all normal in-flow content are
+    /// emitted by their own passes / dispatches, never here — so
+    /// descending into those subtrees finds deeper fixed boxes without
+    /// double-emitting anything else.</summary>
     private void EmitFixedPositionedDescendants(
         Box box,
         AbsoluteContainingBlock pageCb,
@@ -3979,29 +3993,39 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             cancellationToken.ThrowIfCancellationRequested();
             if (child.Style.IsFixedPositioned())
             {
+                // Emit + dispatch this fixed box's own content...
                 EmitOneFixedBox(child, pageCb, ref layout, cancellationToken);
-                // Do NOT descend into the fixed box — its descendants are
-                // laid out by the inner sub-BlockLayouter dispatched in
-                // EmitOneFixedBox.
-                continue;
             }
-            // An abspos subtree is owned by the abspos pass / its own
-            // nested layouter; cycle 1 defers fixed-inside-abspos.
-            if (child.Style.IsAbsolutelyPositioned())
-            {
-                continue;
-            }
+            // ...then descend into EVERY child (including this fixed box,
+            // and any abspos box — which we do NOT emit here) so a fixed
+            // box nested at any depth is still discovered + page-anchored
+            // by this single root-owned pass. We only ever EMIT fixed
+            // boxes, so re-walking a positioned subtree can't double-emit
+            // its normal content (that's owned by the box's dispatch /
+            // the abspos pass).
             EmitFixedPositionedDescendants(child, pageCb, ref layout, cancellationToken);
         }
     }
 
-    /// <summary>Per Phase 3 Task 20 cycle 1 — resolve a single
-    /// <c>position: fixed</c> box against the page CB via the §6 solver
-    /// and emit its border-box fragment + dispatch its inner content
-    /// (reusing the abspos translating-sub-layouter dispatch — the
-    /// dispatch logic is position-mode-agnostic). The §6 solver always
-    /// resolves (a negative size clamps to 0), so there is no drop
-    /// path.</summary>
+    /// <summary>Per Phase 3 Task 20 cycle 1 (+ post-PR-#115 review P2#2)
+    /// — resolve a single <c>position: fixed</c> box against the page CB
+    /// via the §6 solver and emit its border-box fragment + dispatch its
+    /// inner content (reusing the abspos translating-sub-layouter
+    /// dispatch — the dispatch logic is position-mode-agnostic). The §6
+    /// solver always resolves (a negative size clamps to 0), so there is
+    /// no drop path for the box itself.
+    ///
+    /// <para><b>Content overflow.</b> CSS Position L3 §6.3 says
+    /// fixed-positioned boxes are NOT paginated — overflowing content
+    /// cannot cascade to a later page. The inner dispatch sizes its
+    /// fragmentainer to the box content area, so content taller than the
+    /// box block-size returns <see cref="LayoutAttemptOutcome.PageComplete"/>
+    /// with a continuation that this dispatch does NOT consume — i.e.
+    /// the overflow is clipped. Cycle 1 surfaces that loudly via
+    /// <c>LAYOUT-FIXED-CONTENT-CLIPPED-001</c> rather than dropping
+    /// silently; proper overflow (emit at natural position) needs a
+    /// break-budget-vs-CB-height split and is deferred
+    /// (<c>fixed-cycle-1</c>).</para></summary>
     private void EmitOneFixedBox(
         Box child,
         AbsoluteContainingBlock pageCb,
@@ -4019,7 +4043,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         if (child.Children.Count > 0
             && placement.InlineSize > 0 && placement.BlockSize > 0)
         {
-            DispatchAbsoluteChildContents(
+            var contentResult = DispatchAbsoluteChildContents(
                 child,
                 placement.InlineOffset,
                 placement.BlockOffset,
@@ -4027,6 +4051,22 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 placement.BlockSize,
                 ref layout,
                 cancellationToken);
+            if (contentResult.Outcome is LayoutAttemptOutcome.PageComplete)
+            {
+                // The fixed box's content exceeded its block-size. Fixed
+                // boxes are not paginated (CSS Position L3 §6.3), so the
+                // overflow is clipped — surface it instead of dropping
+                // silently.
+                OptimizingBreakResolver.SafeEmit(
+                    layout.Diagnostics ?? _diagnostics,
+                    new PaginateDiagnostic(
+                        PaginateDiagnosticCodes.LayoutFixedContentClipped001,
+                        "position:fixed box content exceeded its block-size and was "
+                        + "clipped: fixed boxes are not paginated (CSS Position L3 "
+                        + "§6.3). Cycle 1 clips the overflow; proper overflow at the "
+                        + "natural position is deferred (docs/deferrals.md#fixed-cycle-1).",
+                        PaginateDiagnosticSeverity.Warning));
+            }
         }
     }
 
@@ -4037,7 +4077,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// maps inner box-relative offsets to outer sink coordinates; the
     /// inner fragmentainer is sized to the box (atomic LastResort emit;
     /// content overflow is cycle-1 behavior).</summary>
-    private void DispatchAbsoluteChildContents(
+    private LayoutAttemptResult DispatchAbsoluteChildContents(
         Box box,
         double inlineOrigin,
         double blockOrigin,
@@ -4066,7 +4106,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             diagnostics: _diagnostics,
             shaperResolver: _shaperResolver);
         using var innerResolver = new BreakResolver();
-        _ = innerLayouter.AttemptLayout(
+        // Returns the inner attempt's outcome so the caller can detect
+        // overflow: a PageComplete means the box's content exceeded its
+        // block-size (the inner fragmentainer = the box content area) and
+        // the continuation is NOT consumed here, so the overflow is
+        // clipped. EmitOneFixedBox surfaces that as a diagnostic (CSS
+        // fixed boxes are not paginated); the abspos caller currently
+        // ignores it (pre-existing abspos-content pagination behavior).
+        return innerLayouter.AttemptLayout(
             innerFragmentainer,
             ref innerLayout,
             innerResolver,

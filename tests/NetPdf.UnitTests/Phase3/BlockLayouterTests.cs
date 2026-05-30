@@ -6400,6 +6400,72 @@ public sealed class BlockLayouterTests
         Assert.Equal(200.0, absFrag.BlockOffset, precision: 3);   // 50% × HEIGHT 400
     }
 
+    [Fact]
+    public void Task20Cycle1_fixed_box_repeats_on_every_page_anchored_to_page()
+    {
+        // Per Phase 3 Task 20 cycle 1 — a `position: fixed` box repeats
+        // on EVERY page, anchored to the page (ICB). Three 250px in-flow
+        // blocks on a 300px page paginate to multiple pages; the fixed
+        // box (top:5 left:5, 40×40) is out-of-flow (doesn't affect the
+        // page count) and must emit exactly once per page, all at (5, 5).
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        Box MakeBlock(double h)
+        {
+            var s = MakeStyle();
+            SetLengthPx(s, PropertyId.Height, h);
+            return Box.ForElement(BoxKind.BlockContainer, s, MakeElement());
+        }
+        root.AppendChild(MakeBlock(250));
+        root.AppendChild(MakeBlock(250));
+        root.AppendChild(MakeBlock(250));
+
+        var fixedStyle = MakeStyle();
+        SetKeyword(fixedStyle, PropertyId.Position, 3); // fixed
+        SetLengthPx(fixedStyle, PropertyId.Top, 5);
+        SetLengthPx(fixedStyle, PropertyId.Left, 5);
+        SetLengthPx(fixedStyle, PropertyId.Width, 40);
+        SetLengthPx(fixedStyle, PropertyId.Height, 40);
+        var fixedBox = Box.ForElement(BoxKind.BlockContainer, fixedStyle, MakeElement());
+        root.AppendChild(fixedBox);
+
+        LayoutContinuation? incoming = null;
+        var pageCount = 0;
+        const int maxPages = 8;
+        LayoutAttemptOutcome lastOutcome;
+        do
+        {
+            using var pageLayouter = new BlockLayouter(root, sink, incoming);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 300);
+            var layoutCtx = new LayoutContext(ctx);
+            using var resolver = new BreakResolver();
+            using var coordinator = new RecordingCoordinator();
+            var result = coordinator.RunAndAssertNotNeedsRewind(
+                pageLayouter, ctx, ref layoutCtx, resolver);
+            lastOutcome = result.Outcome;
+            incoming = result.Continuation;
+            pageCount++;
+        }
+        while (lastOutcome != LayoutAttemptOutcome.AllDone
+            && incoming is not null
+            && pageCount < maxPages);
+
+        Assert.Equal(LayoutAttemptOutcome.AllDone, lastOutcome);
+        Assert.True(pageCount >= 2, $"expected multi-page, got {pageCount}");
+        // The fixed box emits exactly once per page, all at the same
+        // page-anchored position.
+        var fixedFrags = sink.Fragments.Where(f => ReferenceEquals(f.Box, fixedBox)).ToList();
+        Assert.Equal(pageCount, fixedFrags.Count);
+        Assert.All(fixedFrags, f =>
+        {
+            Assert.Equal(5.0, f.InlineOffset, precision: 3);
+            Assert.Equal(5.0, f.BlockOffset, precision: 3);
+            Assert.Equal(40.0, f.InlineSize, precision: 3);
+            Assert.Equal(40.0, f.BlockSize, precision: 3);
+        });
+    }
+
     private static ComputedStyle MakeStyle() => ComputedStyle.RentForExclusiveTesting();
 
     private static void SetLengthPx(ComputedStyle style, PropertyId id, double px) =>

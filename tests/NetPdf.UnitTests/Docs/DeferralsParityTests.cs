@@ -67,6 +67,7 @@ public sealed class DeferralsParityTests
         "grid-auto-fit-collapse-empty-tracks-deferral",
         "recursive-block-continuation-consumed-extent-accounting-deferral",
         "abspos-cycle-1-explicit-only",
+        "fixed-cycle-1",
     };
 
     [Fact]

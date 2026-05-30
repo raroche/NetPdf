@@ -420,6 +420,273 @@ public sealed class AbsoluteLayouterProductionTests
         Assert.Single(absFrags);
     }
 
+    // ================================================================
+    //  Phase 3 Task 20 cycle 1 — position: fixed (production pipeline).
+    // ================================================================
+
+    [Fact]
+    public async Task Task20Cycle1_production_fixed_anchors_to_page_and_removed_from_flow()
+    {
+        // A `position: fixed` box is out-of-flow (siblings stack
+        // contiguously, undisplaced) and anchored to the page / ICB
+        // (top:10 left:20 → (20, 10)), exactly like abspos-against-ICB
+        // but via the separate fixed pass.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flow1 { height: 100px; }
+                .flow2 { height: 100px; }
+                .fix {
+                    position: fixed;
+                    top: 10px; left: 20px; width: 50px; height: 30px;
+                }
+            </style></head><body>
+            <div class="flow1"></div>
+            <div class="fix"></div>
+            <div class="flow2"></div>
+            </body></html>
+            """;
+
+        var (sink, _) = await RenderAsync(html);
+        var flow1 = FindByClass(sink, "flow1");
+        var flow2 = FindByClass(sink, "flow2");
+        var fix = FindByClass(sink, "fix");
+        Assert.NotNull(flow1);
+        Assert.NotNull(flow2);
+        Assert.NotNull(fix);
+        // The fixed box doesn't push flow2 down (out-of-flow).
+        Assert.Equal(0.0, flow1!.Value.BlockOffset, precision: 3);
+        Assert.Equal(100.0, flow2!.Value.BlockOffset, precision: 3);
+        // Anchored to the page ICB.
+        Assert.Equal(20.0, fix!.Value.InlineOffset, precision: 3);
+        Assert.Equal(10.0, fix.Value.BlockOffset, precision: 3);
+        Assert.Equal(50.0, fix.Value.InlineSize, precision: 3);
+        Assert.Equal(30.0, fix.Value.BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public async Task Task20Cycle1_production_fixed_inside_grid_item_anchors_to_page_once()
+    {
+        // A `position: fixed` box nested inside a grid ITEM's content
+        // must anchor to the PAGE (ICB), NOT the grid item, and emit
+        // exactly once. The grid item sits in row 2 (block origin 100);
+        // a page-anchored fixed box (top:7 left:7) lands at (7, 7) — if
+        // it had wrongly anchored to the item it would be at (7, 107).
+        // The nested grid-item BlockLayouter (non-Root root) does NOT run
+        // the fixed pass; the page-root layouter walks into the item.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 100px 100px;
+                    grid-template-columns: 100px;
+                    width: 100px;
+                }
+                .fix {
+                    position: fixed;
+                    top: 7px; left: 7px; width: 20px; height: 20px;
+                }
+            </style></head><body>
+            <div class="grid">
+              <div class="pad"></div>
+              <div class="item"><div class="fix"></div></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _) = await RenderAsync(html);
+        var fixFrags = sink.Fragments.Where(f =>
+            f.Box.SourceElement?.GetAttribute("class")?.Split(' ').Contains("fix") == true)
+            .ToList();
+        Assert.Single(fixFrags);
+        Assert.Equal(7.0, fixFrags[0].InlineOffset, precision: 3);  // page-anchored
+        Assert.Equal(7.0, fixFrags[0].BlockOffset, precision: 3);   // NOT 107 (item)
+    }
+
+    // ----- post-PR-#115 review: collector exclusion + nested fixed -----
+
+    [Fact]
+    public async Task PostPr115_fixed_direct_child_of_grid_is_not_an_item_emits_once()
+    {
+        // P1 — a `position: fixed` direct child of a grid container is
+        // out-of-flow: NOT a grid item (must not occupy a cell or pollute
+        // track sizing) and emitted exactly ONCE by the fixed pass
+        // (page-anchored). Pre-fix it was placed as an item (pushing .b
+        // to the implicit row 2) AND emitted again by the fixed pass.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 100px;
+                    grid-template-columns: 100px 100px;
+                    width: 200px;
+                }
+                .fix {
+                    position: fixed;
+                    top: 5px; left: 5px; width: 30px; height: 30px;
+                }
+            </style></head><body>
+            <div class="grid">
+              <div class="a"></div>
+              <div class="fix"></div>
+              <div class="b"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _) = await RenderAsync(html);
+        var a = FindByClass(sink, "a");
+        var b = FindByClass(sink, "b");
+        Assert.NotNull(a);
+        Assert.NotNull(b);
+        // .a + .b are the ONLY grid items → row 1, cols 0 and 1 (the
+        // fixed box took no cell, else .b would be at row 2 / block 100).
+        Assert.Equal(0.0, a!.Value.InlineOffset, precision: 3);
+        Assert.Equal(0.0, a.Value.BlockOffset, precision: 3);
+        Assert.Equal(100.0, b!.Value.InlineOffset, precision: 3);
+        Assert.Equal(0.0, b.Value.BlockOffset, precision: 3);
+        var fixFrags = FragmentsByClass(sink, "fix");
+        Assert.Single(fixFrags);
+        Assert.Equal(5.0, fixFrags[0].InlineOffset, precision: 3);
+        Assert.Equal(5.0, fixFrags[0].BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public async Task PostPr115_fixed_direct_child_of_flex_is_not_an_item_emits_once()
+    {
+        // P1 — a `position: fixed` direct child of a flex container is
+        // out-of-flow: not a flex item (takes no main-axis slot) and
+        // emitted once. Pre-fix .b sat at main 200 (fixed consumed a
+        // slot at 100); post-fix .b is directly after .a at 100.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flex { display: flex; width: 300px; }
+                .a { width: 100px; height: 50px; }
+                .b { width: 100px; height: 50px; }
+                .fix {
+                    position: fixed;
+                    top: 5px; left: 5px; width: 30px; height: 30px;
+                }
+            </style></head><body>
+            <div class="flex">
+              <div class="a"></div>
+              <div class="fix"></div>
+              <div class="b"></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _) = await RenderAsync(html);
+        var a = FindByClass(sink, "a");
+        var b = FindByClass(sink, "b");
+        Assert.NotNull(a);
+        Assert.NotNull(b);
+        Assert.Equal(0.0, a!.Value.InlineOffset, precision: 3);
+        Assert.Equal(100.0, b!.Value.InlineOffset, precision: 3);  // not 200
+        Assert.Single(FragmentsByClass(sink, "fix"));
+    }
+
+    [Fact]
+    public async Task PostPr115_fixed_inside_absolute_anchors_to_page_once()
+    {
+        // P2#1 — a `position: fixed` box nested inside a
+        // `position: absolute` box must still be PAGE-anchored + emitted
+        // exactly once (not dropped). The abspos box is at (200, 200);
+        // the fixed box (top:5 left:5) anchors to the PAGE → (5, 5), NOT
+        // (205, 205).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .abs {
+                    position: absolute;
+                    top: 200px; left: 200px; width: 100px; height: 100px;
+                }
+                .fix {
+                    position: fixed;
+                    top: 5px; left: 5px; width: 30px; height: 30px;
+                }
+            </style></head><body>
+            <div class="abs"><div class="fix"></div></div>
+            </body></html>
+            """;
+
+        var (sink, _) = await RenderAsync(html);
+        var fixFrags = FragmentsByClass(sink, "fix");
+        Assert.Single(fixFrags);
+        Assert.Equal(5.0, fixFrags[0].InlineOffset, precision: 3);  // page, not 205
+        Assert.Equal(5.0, fixFrags[0].BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public async Task PostPr115_fixed_inside_fixed_both_emitted_page_anchored()
+    {
+        // P2#1 — a `position: fixed` box nested inside another fixed box
+        // must also be page-anchored + emitted (not dropped). The outer
+        // box is at (50, 50); the inner box (top:5 left:5) anchors to the
+        // PAGE → (5, 5), NOT (55, 55).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .outer {
+                    position: fixed;
+                    top: 50px; left: 50px; width: 200px; height: 200px;
+                }
+                .inner {
+                    position: fixed;
+                    top: 5px; left: 5px; width: 20px; height: 20px;
+                }
+            </style></head><body>
+            <div class="outer"><div class="inner"></div></div>
+            </body></html>
+            """;
+
+        var (sink, _) = await RenderAsync(html);
+        var outer = FragmentsByClass(sink, "outer");
+        var inner = FragmentsByClass(sink, "inner");
+        Assert.Single(outer);
+        Assert.Single(inner);
+        Assert.Equal(50.0, outer[0].InlineOffset, precision: 3);
+        Assert.Equal(5.0, inner[0].InlineOffset, precision: 3);   // page, not 55
+        Assert.Equal(5.0, inner[0].BlockOffset, precision: 3);
+    }
+
+    [Fact]
+    public async Task PostPr115_fixed_box_content_exceeding_height_clips_loudly_not_silently()
+    {
+        // P2#2 — CSS Position L3 §6.3: fixed-positioned boxes are NOT
+        // paginated, so overflow can't cascade to a later page. A fixed
+        // box (height 50) with two 40px children (80 > 50): the first
+        // child fits + emits; cycle 1 CLIPS the overflow (the second
+        // child is dropped) but surfaces it LOUDLY via
+        // LAYOUT-FIXED-CONTENT-CLIPPED-001 — never a silent drop (rule
+        // #7). Proper natural-position overflow is deferred (fixed-cycle-1).
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .fix {
+                    position: fixed;
+                    top: 0; left: 0; width: 100px; height: 50px;
+                }
+                .c1 { height: 40px; }
+                .c2 { height: 40px; }
+            </style></head><body>
+            <div class="fix"><div class="c1"></div><div class="c2"></div></div>
+            </body></html>
+            """;
+
+        var (sink, diag) = await RenderAsync(html);
+        var c1 = FindByClass(sink, "c1");
+        var c2 = FindByClass(sink, "c2");
+        Assert.NotNull(c1);                                    // first child fits + emits
+        Assert.Equal(0.0, c1!.Value.BlockOffset, precision: 3);
+        Assert.Null(c2);                                       // overflow clipped (cycle 1)
+        // ...but the clip is surfaced, not silent.
+        Assert.Contains(diag.Diagnostics, d =>
+            d.Code == PaginateDiagnosticCodes.LayoutFixedContentClipped001);
+    }
+
+    private static System.Collections.Generic.List<BoxFragment> FragmentsByClass(
+        RecordingFragmentSink sink, string className) =>
+        sink.Fragments.Where(f =>
+            f.Box.SourceElement?.GetAttribute("class")?.Split(' ').Contains(className) == true)
+            .ToList();
+
     // NB: the PADDING-box border inset (CB = positioned ancestor's
     // padding box, not border box) is proven deterministically by the
     // BlockLayouterTests integration test

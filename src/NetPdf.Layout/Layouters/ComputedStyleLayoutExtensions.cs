@@ -129,14 +129,36 @@ internal static class ComputedStyleLayoutExtensions
     }
 
     /// <summary>Per Phase 3 Task 19 cycle 1 — <see langword="true"/>
-    /// when the box is removed from normal flow + positioned against a
-    /// containing block per CSS Positioned Layout L3 §6.
-    /// <c>position: absolute</c> only in cycle 1; <c>position: fixed</c>
-    /// (= same out-of-flow model but the ICB / page is always the
-    /// containing block) lands in Task 20 + is NOT treated as
-    /// out-of-flow here yet.</summary>
+    /// when the box is <c>position: absolute</c> specifically (removed
+    /// from normal flow + positioned against its nearest positioned
+    /// ancestor / ICB per CSS Positioned Layout L3 §6). Distinct from
+    /// <see cref="IsFixedPositioned"/>: both are out-of-flow (see
+    /// <see cref="IsOutOfFlow"/>), but only this one keys the
+    /// nearest-positioned-ancestor containing-block walk; fixed always
+    /// anchors to the page / ICB.</summary>
     public static bool IsAbsolutelyPositioned(this ComputedStyle style)
         => style.ReadPosition() == PositionValue.Absolute;
+
+    /// <summary>Per Phase 3 Task 20 cycle 1 — <see langword="true"/> when
+    /// the box is <c>position: fixed</c>. Like <c>absolute</c> it's
+    /// out-of-flow (<see cref="IsOutOfFlow"/>), but its containing block
+    /// is ALWAYS the page / initial containing block (the viewport) and
+    /// it repeats on EVERY page. The fixed emission pass keys off this
+    /// predicate; the nearest-positioned-ancestor walk (used for
+    /// absolute) does not apply.</summary>
+    public static bool IsFixedPositioned(this ComputedStyle style)
+        => style.ReadPosition() == PositionValue.Fixed;
+
+    /// <summary>Per Phase 3 Task 20 cycle 1 — <see langword="true"/> when
+    /// the box is removed from normal flow by positioning:
+    /// <c>position: absolute</c> OR <c>position: fixed</c> (CSS
+    /// Positioned Layout L3 §6 / §4). Used at the in-flow emission sites
+    /// to skip the box from normal flow (it doesn't advance the cursor +
+    /// doesn't break margin adjacency); the actual placement happens in
+    /// the post-flow absolute / fixed passes. <c>relative</c> and
+    /// <c>sticky</c> stay in flow, so they are NOT out-of-flow.</summary>
+    public static bool IsOutOfFlow(this ComputedStyle style)
+        => style.ReadPosition() is PositionValue.Absolute or PositionValue.Fixed;
 
     /// <summary>Per Phase 3 Task 19 cycle 1 — does this box establish a
     /// containing block for absolutely-positioned descendants? Per CSS
@@ -1054,15 +1076,17 @@ internal static class ComputedStyleLayoutExtensions
         {
             cancellationToken.ThrowIfCancellationRequested();
             if (!flexContainer.Children[i].IsBlockLevel) continue;
-            // Per Phase 3 Task 19 cycle 2a post-PR-#113 review P1#2 — an
-            // absolutely-positioned child of a flex container is NOT a
-            // flex item (CSS Flexbox L1 §4 / CSS Positioned Layout L3
-            // §3): it's out-of-flow + doesn't participate in flex line
-            // packing. Excluding it keeps it from displacing real flex
-            // items + from being emitted by the FlexLayouter; the
-            // establishing BlockLayouter's post-flow abspos pass owns
-            // its placement (otherwise double emission).
-            if (flexContainer.Children[i].Style.IsAbsolutelyPositioned()) continue;
+            // Per Phase 3 Task 19 cycle 2a post-PR-#113 review P1#2 (+
+            // Task 20 cycle 1 post-PR-#115 review P1) — an OUT-OF-FLOW
+            // child of a flex container (`position: absolute` OR
+            // `position: fixed`) is NOT a flex item (CSS Flexbox L1 §4 /
+            // CSS Positioned Layout L3 §3): it's out-of-flow + doesn't
+            // participate in flex line packing. Excluding it keeps it
+            // from displacing/sizing real flex items + from being emitted
+            // by the FlexLayouter; the establishing BlockLayouter's
+            // post-flow abspos / fixed pass owns its placement (otherwise
+            // double emission).
+            if (flexContainer.Children[i].Style.IsOutOfFlow()) continue;
             var order = flexContainer.Children[i].Style.ReadOrder();
             if (order != 0) hasNonZeroOrder = true;
             indexedOrders.Add((i, order));

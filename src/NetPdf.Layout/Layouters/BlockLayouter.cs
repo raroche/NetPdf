@@ -3567,14 +3567,20 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     ///
     /// <para><b>Whole-subtree collection.</b> Abspos boxes appear at
     /// ANY depth (real HTML nests them inside <c>&lt;body&gt;</c> etc.),
-    /// so this walks <see cref="_rootBox"/>'s entire descendant tree.
-    /// The in-flow passes (top-level loop + EmitBlockSubtreeRecursive)
-    /// skip abspos boxes, so emitting them here is the single emission
-    /// site (no double-emit). The walk does NOT descend INTO an abspos
+    /// so this walks <see cref="_rootBox"/>'s descendant tree. The
+    /// in-flow passes (top-level loop + EmitBlockSubtreeRecursive) skip
+    /// abspos boxes, so for THIS formatting context emitting them here is
+    /// the single emission site. The walk does NOT descend INTO an abspos
     /// box's own subtree — that box's descendants are laid out by the
     /// inner sub-BlockLayouter (their own nested abspos boxes anchor to
     /// the inner box once it's a positioned CB; cycle-1 they'd anchor
-    /// to the inner box's content area via that recursion).</para>
+    /// to the inner box's content area via that recursion). Nor does it
+    /// cross a DELEGATION boundary into a grid item or table cell/caption
+    /// (post-PR-#114 review P2#4) — those subtrees are owned by a nested
+    /// BlockLayouter that runs its own abspos pass, so descending here
+    /// would double-emit. (Flex is NOT a boundary — FlexLayouter spawns
+    /// no per-item layouter; see
+    /// <see cref="EmitAbsolutelyPositionedDescendants"/>.)</para>
     ///
     /// <para>Each box's offsets/size are resolved by the pure
     /// <see cref="AbsoluteLayouter.ResolvePlacement"/>; unresolved
@@ -3629,12 +3635,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     ///   OR via the table-cell / grid-item / forced-overflow paths that
     ///   don't record) → DEFER. Falling back to the ICB here would
     ///   silently MISPLACE the box at the wrong origin.</item>
-    ///   <item>Per P2#1 — a <c>position: relative</c> ancestor with an
-    ///   explicit inset (<c>top</c>/<c>right</c>/<c>bottom</c>/<c>left</c>)
-    ///   → DEFER. Relative-offset application (shifting the ancestor's
-    ///   visual box + therefore its abspos descendants' CB origin) is
-    ///   unimplemented; using the unshifted flow position would place
-    ///   the descendant against the wrong origin.</item>
+    ///   <item>Per cycle 2b — a <c>position: relative</c> ancestor with
+    ///   explicit inset offsets has its relative shift APPLIED to the CB
+    ///   origin (CSS 2.1 §9.4.3): the abspos descendant anchors to the
+    ///   ancestor's VISUALLY-SHIFTED padding box. (Cycle 2a deferred
+    ///   this; cycle 2b applies it.)</item>
     /// </list></summary>
     private AbsoluteContainingBlock? ResolveContainingBlock(
         Box absBox, AbsoluteContainingBlock icb)
@@ -3642,16 +3647,6 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         for (var ancestor = absBox.Parent; ancestor is not null; ancestor = ancestor.Parent)
         {
             if (!ancestor.Style.EstablishesAbsoluteContainingBlock()) continue;
-
-            // P2#1 — a relative ancestor with explicit inset offsets
-            // can't have its (unimplemented) relative shift applied to
-            // the CB origin → defer rather than anchor to the unshifted
-            // flow position.
-            if (ancestor.Style.ReadPosition() == PositionValue.Relative
-                && HasExplicitInset(ancestor.Style))
-            {
-                return null;
-            }
 
             // Found the nearest positioned ancestor. Use its padding
             // box IFF its geometry was recorded during in-flow emit.
@@ -3662,47 +3657,120 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 var bt = ancestor.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
                 var br = ancestor.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
                 var bb = ancestor.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
+
+                // Cycle 2b — apply the ancestor's relative-position shift
+                // (CSS 2.1 §9.4.3) to the CB origin. The recorded
+                // geometry is the ancestor's UNSHIFTED flow position
+                // (in-flow emit doesn't apply relative offsets yet); for
+                // a `position: relative` ancestor we add the shift here
+                // so abspos descendants anchor to the visually-shifted
+                // box. inline shift = left (or -right); block shift =
+                // top (or -bottom). Non-relative ancestors (absolute /
+                // fixed / sticky) already have their final position
+                // baked into the recorded geometry → zero shift.
+                var (relInline, relBlock) =
+                    ancestor.Style.ReadPosition() == PositionValue.Relative
+                        ? ComputeRelativeShift(
+                            ancestor.Style, borderBox.InlineSize, borderBox.BlockSize)
+                        : (0.0, 0.0);
+
                 return new AbsoluteContainingBlock(
-                    InlineOrigin: borderBox.InlineOffset + bl,
-                    BlockOrigin: borderBox.BlockOffset + bt,
+                    InlineOrigin: borderBox.InlineOffset + bl + relInline,
+                    BlockOrigin: borderBox.BlockOffset + bt + relBlock,
                     InlineSize: System.Math.Max(0, borderBox.InlineSize - bl - br),
                     BlockSize: System.Math.Max(0, borderBox.BlockSize - bt - bb));
             }
-            // P1#1 — positioned ancestor found but geometry NOT recorded.
-            // Defer (drop + diagnose) instead of misplacing at the ICB.
+            // Per post-PR-#114 review P2#4 — the positioned ancestor is
+            // THIS formatting context's own root box. The ICB this
+            // layouter was handed already IS that root's content box: a
+            // grid item / table cell / abspos box is laid out by a nested
+            // BlockLayouter whose fragmentainer == the (positioned) root's
+            // content area. So anchor to the ICB rather than dropping —
+            // without this, an abspos descendant of a positioned grid
+            // item / cell would be dropped (its CB ancestor is the nested
+            // root, never recorded in this layouter's in-flow geometry
+            // map). NB this resolves to the content box; the padding-box
+            // inset is absorbed by the nested fragmentainer already.
+            if (ReferenceEquals(ancestor, _rootBox)) return icb;
+
+            // Per PR-#113 review P1#1 — positioned ancestor found but
+            // geometry NOT recorded AND it isn't this layouter's root
+            // (laid out via a path that doesn't record, e.g. a positioned
+            // ancestor ABOVE this layouter's subtree). Defer (drop +
+            // diagnose) instead of misplacing at the ICB.
             return null;
         }
         // No positioned ancestor → the ICB IS the containing block.
         return icb;
     }
 
-    /// <summary>Per post-PR-#113 review P2#1 — true when any physical
-    /// inset (<c>top</c>/<c>right</c>/<c>bottom</c>/<c>left</c>) is
-    /// explicitly specified (a length or percentage, not the
-    /// <c>auto</c> default). Used to detect a <c>position: relative</c>
-    /// ancestor whose unimplemented relative shift would otherwise
-    /// corrupt an abspos descendant's containing-block origin.</summary>
-    private static bool HasExplicitInset(ComputedStyle style)
+    /// <summary>Per Phase 3 Task 19 cycle 2b (+ post-PR-#114 review
+    /// P1#2) — compute the relative-positioning shift (CSS 2.1 §9.4.3)
+    /// for a <c>position: relative</c> box. LTR / horizontal: inline
+    /// shift = <c>left</c> if specified else <c>-right</c> else 0; block
+    /// shift = <c>top</c> if specified else <c>-bottom</c> else 0.
+    /// PERCENTAGES resolve per-axis against the containing-block
+    /// dimensions: <c>left</c>/<c>right</c> against
+    /// <paramref name="cbInlineSize"/> (width), <c>top</c>/<c>bottom</c>
+    /// against <paramref name="cbBlockSize"/> (HEIGHT) — using the
+    /// inline base for the block axis would shift along the wrong extent
+    /// whenever the two differ (the P1#2 fix). The ancestor's own
+    /// border-box extents approximate its containing block here.</summary>
+    private static (double inline, double block) ComputeRelativeShift(
+        ComputedStyle style, double cbInlineSize, double cbBlockSize)
     {
-        return IsExplicitInset(style, PropertyId.Top)
-            || IsExplicitInset(style, PropertyId.Right)
-            || IsExplicitInset(style, PropertyId.Bottom)
-            || IsExplicitInset(style, PropertyId.Left);
+        var left = ReadInsetPxOrNull(style, PropertyId.Left, cbInlineSize);
+        var right = ReadInsetPxOrNull(style, PropertyId.Right, cbInlineSize);
+        var top = ReadInsetPxOrNull(style, PropertyId.Top, cbBlockSize);
+        var bottom = ReadInsetPxOrNull(style, PropertyId.Bottom, cbBlockSize);
+        var inline = left ?? (right is { } r ? -r : 0.0);
+        var block = top ?? (bottom is { } b ? -b : 0.0);
+        return (inline, block);
 
-        static bool IsExplicitInset(ComputedStyle s, PropertyId id)
+        static double? ReadInsetPxOrNull(ComputedStyle s, PropertyId id, double pctBase)
         {
-            var tag = s.Get(id).Tag;
-            return tag is ComputedSlotTag.LengthPx or ComputedSlotTag.Percentage;
+            var slot = s.Get(id);
+            return slot.Tag switch
+            {
+                ComputedSlotTag.LengthPx => slot.AsLengthPx(),
+                ComputedSlotTag.Percentage => slot.AsPercentage() / 100.0 * pctBase,
+                _ => (double?)null,
+            };
         }
     }
 
-    /// <summary>Per Phase 3 Task 19 cycle 1 — recursively walk
-    /// <paramref name="box"/>'s children, emitting each
-    /// <c>position: absolute</c> descendant against
+    /// <summary>Per Phase 3 Task 19 cycle 1 (+ post-PR-#114 review
+    /// P2#4) — recursively walk <paramref name="box"/>'s children,
+    /// emitting each <c>position: absolute</c> descendant against
     /// <paramref name="containingBlock"/>. Does NOT recurse into an
     /// abspos box's own subtree (the inner sub-BlockLayouter owns
     /// that); DOES recurse through in-flow boxes to find abspos boxes
-    /// nested at any depth.</summary>
+    /// nested at any depth — EXCEPT across a delegation boundary.
+    ///
+    /// <para><b>Delegation boundary (P2#4 — emit exactly once):</b>
+    /// <see cref="GridLayouter"/> lays out each grid ITEM, and
+    /// <see cref="TableLayouter"/> each table CELL + CAPTION, via a
+    /// NESTED <c>BlockLayouter</c> (constructed with
+    /// <c>incomingContinuation: null</c>), so each of those runs its OWN
+    /// post-flow abspos pass over its subtree. Recursing into those
+    /// subtrees here too would emit the same abspos descendant a SECOND
+    /// time (at a different anchor). So this walk does NOT descend into a
+    /// grid container's in-flow children (= items), nor into a
+    /// <see cref="BoxKind.TableCell"/> / <see cref="BoxKind.TableCaption"/>.
+    /// It STILL emits abspos DIRECT children of a grid container
+    /// (out-of-flow → never items → no nested layouter sees them) and
+    /// STILL descends through table-internal boxes that aren't
+    /// cells/captions (rows / row-groups) so an abspos child of a row
+    /// isn't silently dropped.</para>
+    ///
+    /// <para><b>Why FLEX is NOT a boundary:</b> unlike grid/table,
+    /// <see cref="FlexLayouter"/> constructs NO per-item nested
+    /// BlockLayouter — it emits each flex item's border box only. A flex
+    /// item's subtree (including any abspos descendant) is walked +
+    /// emitted by THIS (outer) pass, so flex items must be recursed into
+    /// — skipping them would silently DROP their abspos descendants. Add
+    /// flex here only once FlexLayouter dispatches item content through a
+    /// nested BlockLayouter.</para></summary>
     private void EmitAbsolutelyPositionedDescendants(
         Box box,
         AbsoluteContainingBlock containingBlock,
@@ -3710,6 +3778,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         ref LayoutContext layout,
         CancellationToken cancellationToken)
     {
+        // A grid container delegates EVERY in-flow child to a nested item
+        // BlockLayouter (which owns that item's abspos emission). Table
+        // cells/captions (also nested-BlockLayouter-owned) are detected
+        // per-child below. Flex is deliberately excluded (see summary).
+        var delegatesItemsToNestedLayouter = IsGridContainer(box);
         foreach (var child in box.Children)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -3720,6 +3793,15 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // Do NOT descend into the abspos box here — its own
                 // descendants are laid out by the inner sub-BlockLayouter
                 // dispatched inside EmitOneAbsoluteBox.
+                continue;
+            }
+            // In-flow box. Stop at a delegation boundary: a grid item, or
+            // a table cell/caption — the nested BlockLayouter that lays
+            // out that subtree already emits its abspos descendants
+            // (recursing here would double-emit).
+            if (delegatesItemsToNestedLayouter
+                || child.Kind is BoxKind.TableCell or BoxKind.TableCaption)
+            {
                 continue;
             }
             // In-flow box: recurse to find deeper abspos descendants.
@@ -3747,12 +3829,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 diagnostics,
                 new PaginateDiagnostic(
                     PaginateDiagnosticCodes.LayoutAbsoluteFeatureUnsupported001,
-                    "position:absolute box dropped (cycle-2a): its containing block "
-                    + "(nearest positioned ancestor) could not be resolved on this "
-                    + "page — the ancestor was laid out via an unrecorded path "
-                    + "(later page / table-cell / grid-item / forced-overflow) OR is "
-                    + "`position: relative` with explicit inset offsets (relative-"
-                    + "offset application is a later cycle).",
+                    "position:absolute box dropped: its containing block (nearest "
+                    + "positioned ancestor) could not be resolved on this page — the "
+                    + "ancestor was laid out via a path that doesn't record geometry "
+                    + "(later page / table-cell / grid-item). Cycle 2b records the "
+                    + "block-flow / recursive / forced-overflow sites.",
                     PaginateDiagnosticSeverity.Warning));
             return;
         }

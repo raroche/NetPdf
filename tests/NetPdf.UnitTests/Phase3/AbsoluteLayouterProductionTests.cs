@@ -420,6 +420,88 @@ public sealed class AbsoluteLayouterProductionTests
         Assert.Single(absFrags);
     }
 
+    // ================================================================
+    //  Phase 3 Task 20 cycle 1 — position: fixed (production pipeline).
+    // ================================================================
+
+    [Fact]
+    public async Task Task20Cycle1_production_fixed_anchors_to_page_and_removed_from_flow()
+    {
+        // A `position: fixed` box is out-of-flow (siblings stack
+        // contiguously, undisplaced) and anchored to the page / ICB
+        // (top:10 left:20 → (20, 10)), exactly like abspos-against-ICB
+        // but via the separate fixed pass.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .flow1 { height: 100px; }
+                .flow2 { height: 100px; }
+                .fix {
+                    position: fixed;
+                    top: 10px; left: 20px; width: 50px; height: 30px;
+                }
+            </style></head><body>
+            <div class="flow1"></div>
+            <div class="fix"></div>
+            <div class="flow2"></div>
+            </body></html>
+            """;
+
+        var (sink, _) = await RenderAsync(html);
+        var flow1 = FindByClass(sink, "flow1");
+        var flow2 = FindByClass(sink, "flow2");
+        var fix = FindByClass(sink, "fix");
+        Assert.NotNull(flow1);
+        Assert.NotNull(flow2);
+        Assert.NotNull(fix);
+        // The fixed box doesn't push flow2 down (out-of-flow).
+        Assert.Equal(0.0, flow1!.Value.BlockOffset, precision: 3);
+        Assert.Equal(100.0, flow2!.Value.BlockOffset, precision: 3);
+        // Anchored to the page ICB.
+        Assert.Equal(20.0, fix!.Value.InlineOffset, precision: 3);
+        Assert.Equal(10.0, fix.Value.BlockOffset, precision: 3);
+        Assert.Equal(50.0, fix.Value.InlineSize, precision: 3);
+        Assert.Equal(30.0, fix.Value.BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public async Task Task20Cycle1_production_fixed_inside_grid_item_anchors_to_page_once()
+    {
+        // A `position: fixed` box nested inside a grid ITEM's content
+        // must anchor to the PAGE (ICB), NOT the grid item, and emit
+        // exactly once. The grid item sits in row 2 (block origin 100);
+        // a page-anchored fixed box (top:7 left:7) lands at (7, 7) — if
+        // it had wrongly anchored to the item it would be at (7, 107).
+        // The nested grid-item BlockLayouter (non-Root root) does NOT run
+        // the fixed pass; the page-root layouter walks into the item.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .grid {
+                    display: grid;
+                    grid-template-rows: 100px 100px;
+                    grid-template-columns: 100px;
+                    width: 100px;
+                }
+                .fix {
+                    position: fixed;
+                    top: 7px; left: 7px; width: 20px; height: 20px;
+                }
+            </style></head><body>
+            <div class="grid">
+              <div class="pad"></div>
+              <div class="item"><div class="fix"></div></div>
+            </div>
+            </body></html>
+            """;
+
+        var (sink, _) = await RenderAsync(html);
+        var fixFrags = sink.Fragments.Where(f =>
+            f.Box.SourceElement?.GetAttribute("class")?.Split(' ').Contains("fix") == true)
+            .ToList();
+        Assert.Single(fixFrags);
+        Assert.Equal(7.0, fixFrags[0].InlineOffset, precision: 3);  // page-anchored
+        Assert.Equal(7.0, fixFrags[0].BlockOffset, precision: 3);   // NOT 107 (item)
+    }
+
     // NB: the PADDING-box border inset (CB = positioned ancestor's
     // padding box, not border box) is proven deterministically by the
     // BlockLayouterTests integration test

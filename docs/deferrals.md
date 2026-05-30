@@ -2589,8 +2589,9 @@ flags the categories):
     content doesn't drop abspos fragments). Deciding which page an
     abspos box belongs on (e.g., anchored to content that paginates),
     + abspos boxes taller than a page, remain deferred.
-  - **`position: fixed`** — Task 20 (same out-of-flow model, ICB/page
-    always the CB).
+  - ~~**`position: fixed`**~~ — Task 20 cycle 1 SHIPPED (out-of-flow,
+    page/ICB CB, repeated on every page). See the `fixed-cycle-1`
+    deferral below for the cycle-1 scope + its deferred refinements.
 - **Trigger** — real corpus documents using positioned overlays /
   badges / watermarks beyond the explicit-offset MVP, OR a
   user-reported case.
@@ -2609,3 +2610,54 @@ flags the categories):
   resolved per §6 AND a production-pipeline test pins
   `position: absolute` inside `position: relative` anchoring to the
   relative ancestor (not the ICB).
+
+## fixed-cycle-1
+
+- **ID** — `fixed-cycle-1`
+- **Status** — partial (cycle-1 MVP shipped; refinements deferred)
+- **Spec** — CSS Positioned Layout L3 §4 / §6; CSS 2.1 §10.
+- **Behavior** — `position: fixed` boxes are removed from normal flow
+  (via `IsOutOfFlow`, like absolute) and emitted by a separate post-flow
+  pass (`BlockLayouter.EmitFixedPositionedChildren`) that runs on EVERY
+  page (NOT gated on the incoming continuation) and ONLY on the page-root
+  layouter (`_rootBox.Kind == BoxKind.Root`). The containing block is
+  ALWAYS the page / initial containing block (the fragmentainer content
+  area); placement reuses the §6 `AbsoluteLayouter.ResolvePlacement`
+  solver. The pass walks the whole subtree (no delegation boundary —
+  nested grid/flex/table/abspos sub-layouters have a non-Root root box so
+  they don't run the fixed pass) so a fixed box nested inside a grid /
+  flex / table item still anchors to the page + emits exactly once.
+- **Missing** —
+  - **Transform/filter/will-change ancestor as CB** — a `transform` (or
+    `filter`, `will-change`, `contain: paint`) ancestor captures fixed
+    positioning per CSS Transforms L1 §3 → the fixed box's CB becomes
+    that ancestor, not the page. Deferred: those properties aren't wired
+    into layout yet, so cycle 1 always uses the page (correct until they
+    land).
+  - **Fixed inside an abspos subtree** — the fixed pass skips abspos
+    subtrees; a `position: fixed` box nested inside a `position: absolute`
+    box is not yet emitted (the abspos box's nested sub-layouter has a
+    non-Root root, so it doesn't run the fixed pass either). Later cycle.
+  - **Fixed as a direct child of a grid / flex / table CONTAINER** — the
+    grid/flex item collectors + table fixup currently exclude only
+    abspos children (`IsAbsolutelyPositioned`), not fixed; a fixed box as
+    a direct child of such a container may still be mis-collected as an
+    item. Update the collectors to `IsOutOfFlow` in a later cycle
+    (mirrors the abspos cycle-2a P1#2 exclusion). Cycle-1 fixtures keep
+    fixed boxes in block-flow context.
+  - **Page-margin-box / `@page` interaction, z-index paint order,
+    fixed-box pagination subtleties** — out of scope for cycle 1
+    (z-index is shared with the abspos deferral; `@page` margin boxes are
+    Task 21+).
+- **Trigger** — corpus documents using fixed headers/footers/watermarks
+  beyond the block-flow MVP, transforms landing, OR a user-reported case.
+- **Owner files** —
+  - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` —
+    `EmitFixedPositionedChildren` / `EmitFixedPositionedDescendants` /
+    `EmitOneFixedBox`; the `_rootBox.Kind == Root` gate in `AttemptLayout`.
+  - `src/NetPdf.Layout/Layouters/ComputedStyleLayoutExtensions.cs` —
+    `IsFixedPositioned` / `IsOutOfFlow`.
+- **Added** — Phase 3 Task 20 cycle 1.
+- **Removal condition** — transform-ancestor CB capture lands AND fixed
+  inside abspos/grid-direct-child is handled AND z-index paint order is
+  resolved (shared with abspos).

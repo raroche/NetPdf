@@ -535,6 +535,27 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             _absoluteChildrenEmitted = true;
             EmitAbsolutelyPositionedChildren(fragmentainer, ref layout, cancellationToken);
         }
+
+        // Per Phase 3 Task 20 cycle 1 — `position: fixed` boxes anchor to
+        // the page (initial containing block) and repeat on EVERY page,
+        // so (UNLIKE the abspos pass above) this is NOT gated on
+        // `_incomingContinuation is null` — it fires on every page,
+        // including resume pages. It runs only on the PAGE-ROOT layouter
+        // (`_rootBox.Kind == BoxKind.Root`): nested item / cell / column /
+        // abspos-content sub-layouters have a non-Root root box, so they
+        // must NOT re-emit fixed boxes against their own (sub-page)
+        // fragmentainer. The per-instance `_fixedChildrenEmitted` guard
+        // only defends against a committed re-entry within ONE page; a
+        // fresh BlockLayouter is constructed per page, so the fixed box
+        // still emits once per page.
+        if (!_fixedChildrenEmitted
+            && _rootBox.Kind == BoxKind.Root
+            && result.Outcome is LayoutAttemptOutcome.AllDone
+                or LayoutAttemptOutcome.PageComplete)
+        {
+            _fixedChildrenEmitted = true;
+            EmitFixedPositionedChildren(fragmentainer, ref layout, cancellationToken);
+        }
         return result;
     }
 
@@ -543,6 +564,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// instance (defends against a committed re-entry after the
     /// coordinator's rewind/retry cycle).</summary>
     private bool _absoluteChildrenEmitted;
+
+    /// <summary>Per Phase 3 Task 20 cycle 1 — one-shot guard so the
+    /// fixed-positioning emission pass runs at most once per
+    /// BlockLayouter instance (= once per page, since a fresh layouter is
+    /// constructed per page). Defends against a committed re-entry after
+    /// the coordinator's rewind/retry cycle, mirroring
+    /// <see cref="_absoluteChildrenEmitted"/>.</summary>
+    private bool _fixedChildrenEmitted;
 
     /// <summary>Per Phase 3 Task 19 cycle 2a — border-box geometry (in
     /// fragmentainer/sink coordinates) of in-flow descendants that
@@ -927,15 +956,17 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             cancellationToken.ThrowIfCancellationRequested();
             var child = _rootBox.Children[childIdx];
 
-            // Per Phase 3 Task 19 cycle 1 — `position: absolute` boxes
-            // are removed from normal flow per CSS Positioned Layout L3
-            // §6: they don't advance the in-flow cursor + do NOT break
-            // margin adjacency (unlike inline content, which forms a
-            // line box). So the collapse chain is PRESERVED across them
-            // — skip without touching hasPriorAdjoiningBlock /
-            // prevBlockMarginEnd. The actual placement happens in the
-            // post-flow absolute pass (see EmitAbsolutelyPositionedChildren).
-            if (child.Style.IsAbsolutelyPositioned())
+            // Per Phase 3 Task 19 cycle 1 (+ Task 20 cycle 1) —
+            // out-of-flow positioned boxes (`position: absolute` AND
+            // `position: fixed`) are removed from normal flow per CSS
+            // Positioned Layout L3 §6: they don't advance the in-flow
+            // cursor + do NOT break margin adjacency (unlike inline
+            // content, which forms a line box). So the collapse chain is
+            // PRESERVED across them — skip without touching
+            // hasPriorAdjoiningBlock / prevBlockMarginEnd. The actual
+            // placement happens in the post-flow absolute / fixed passes
+            // (EmitAbsolutelyPositionedChildren / EmitFixedPositionedChildren).
+            if (child.Style.IsOutOfFlow())
             {
                 continue;
             }
@@ -3795,6 +3826,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 // dispatched inside EmitOneAbsoluteBox.
                 continue;
             }
+            // Per Phase 3 Task 20 cycle 1 — a `position: fixed` box is
+            // out-of-flow but owned by the SEPARATE fixed pass (anchored
+            // to the page / ICB, repeated per page). Skip it here: don't
+            // emit it as abspos, and don't recurse into its subtree (its
+            // content is dispatched by the fixed pass, whose nested
+            // layouter owns any abspos-inside-fixed).
+            if (child.Style.IsFixedPositioned())
+            {
+                continue;
+            }
             // In-flow box. Stop at a delegation boundary: a grid item, or
             // a table cell/caption — the nested BlockLayouter that lays
             // out that subtree already emits its abspos descendants
@@ -3865,6 +3906,116 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // the content origin/size as the border box (border/padding
         // inset for abspos content is a cycle-2 refinement alongside
         // the padding-box CB).
+        if (child.Children.Count > 0
+            && placement.InlineSize > 0 && placement.BlockSize > 0)
+        {
+            DispatchAbsoluteChildContents(
+                child,
+                placement.InlineOffset,
+                placement.BlockOffset,
+                placement.InlineSize,
+                placement.BlockSize,
+                ref layout,
+                cancellationToken);
+        }
+    }
+
+    /// <summary>Per Phase 3 Task 20 cycle 1 — lay out + emit the
+    /// <c>position: fixed</c> boxes anywhere in <see cref="_rootBox"/>'s
+    /// subtree. Runs AFTER the in-flow pass, on EVERY page (the
+    /// <see cref="AttemptLayout"/> wrapper does NOT gate this on the
+    /// incoming continuation, unlike the abspos pass) and ONLY on the
+    /// page-root layouter — so a fixed box repeats on each page anchored
+    /// to that page's content area.
+    ///
+    /// <para><b>Containing block.</b> A fixed box's CB is ALWAYS the page
+    /// / initial containing block (the viewport) — never a positioned
+    /// ancestor. (The <c>transform</c> / <c>filter</c> / <c>will-change</c>
+    /// ancestor that would capture fixed positioning is deferred — those
+    /// properties aren't wired yet.) So this anchors every fixed box to
+    /// the fragmentainer content area (the same ICB the abspos pass uses
+    /// as its fallback) via the shared
+    /// <see cref="AbsoluteLayouter.ResolvePlacement"/> §6 solver.</para>
+    ///
+    /// <para><b>Whole-subtree walk, no delegation boundary.</b> Fixed
+    /// boxes appear at any depth, including inside grid / flex / table
+    /// item subtrees. The nested item / cell / column sub-layouters have
+    /// a non-Root root box so they do NOT run a fixed pass — only the
+    /// page-root layouter does — therefore this walk descends THROUGH
+    /// those subtrees to find + emit every fixed box against the page
+    /// (there is no double-emit to guard against, unlike abspos P2#4).
+    /// Abspos subtrees are skipped (fixed-inside-abspos is a later
+    /// cycle); a fixed box's OWN subtree is dispatched, not re-walked.</para></summary>
+    private void EmitFixedPositionedChildren(
+        FragmentainerContext fragmentainer,
+        ref LayoutContext layout,
+        CancellationToken cancellationToken)
+    {
+        var pageCb = new AbsoluteContainingBlock(
+            InlineOrigin: 0,
+            BlockOrigin: 0,
+            InlineSize: fragmentainer.ContentInlineSize,
+            BlockSize: fragmentainer.BlockSize);
+        EmitFixedPositionedDescendants(_rootBox, pageCb, ref layout, cancellationToken);
+    }
+
+    /// <summary>Per Phase 3 Task 20 cycle 1 — recursively walk
+    /// <paramref name="box"/>'s children, emitting each
+    /// <c>position: fixed</c> descendant against the page
+    /// <paramref name="pageCb"/>. Descends through ALL in-flow boxes
+    /// (including grid / flex / table containers + their items, since the
+    /// nested layouters don't emit fixed); does NOT descend into an
+    /// abspos box's subtree (fixed-inside-abspos deferred) nor into a
+    /// fixed box's own subtree (its content is dispatched in
+    /// <see cref="EmitOneFixedBox"/>).</summary>
+    private void EmitFixedPositionedDescendants(
+        Box box,
+        AbsoluteContainingBlock pageCb,
+        ref LayoutContext layout,
+        CancellationToken cancellationToken)
+    {
+        foreach (var child in box.Children)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (child.Style.IsFixedPositioned())
+            {
+                EmitOneFixedBox(child, pageCb, ref layout, cancellationToken);
+                // Do NOT descend into the fixed box — its descendants are
+                // laid out by the inner sub-BlockLayouter dispatched in
+                // EmitOneFixedBox.
+                continue;
+            }
+            // An abspos subtree is owned by the abspos pass / its own
+            // nested layouter; cycle 1 defers fixed-inside-abspos.
+            if (child.Style.IsAbsolutelyPositioned())
+            {
+                continue;
+            }
+            EmitFixedPositionedDescendants(child, pageCb, ref layout, cancellationToken);
+        }
+    }
+
+    /// <summary>Per Phase 3 Task 20 cycle 1 — resolve a single
+    /// <c>position: fixed</c> box against the page CB via the §6 solver
+    /// and emit its border-box fragment + dispatch its inner content
+    /// (reusing the abspos translating-sub-layouter dispatch — the
+    /// dispatch logic is position-mode-agnostic). The §6 solver always
+    /// resolves (a negative size clamps to 0), so there is no drop
+    /// path.</summary>
+    private void EmitOneFixedBox(
+        Box child,
+        AbsoluteContainingBlock pageCb,
+        ref LayoutContext layout,
+        CancellationToken cancellationToken)
+    {
+        var placement = AbsoluteLayouter.ResolvePlacement(child, pageCb);
+        _sink.Emit(new BoxFragment(
+            Box: child,
+            InlineOffset: placement.InlineOffset,
+            BlockOffset: placement.BlockOffset,
+            InlineSize: placement.InlineSize,
+            BlockSize: placement.BlockSize));
+
         if (child.Children.Count > 0
             && placement.InlineSize > 0 && placement.BlockSize > 0)
         {
@@ -4135,15 +4286,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             var child = parent.Children[childIdx];
             cancellationToken.ThrowIfCancellationRequested();
 
-            // Per Phase 3 Task 19 cycle 1 — `position: absolute` boxes
-            // are out-of-flow at EVERY depth (not just top-level
-            // children): skip them from the in-flow recursion without
-            // touching the margin-collapse chain (out-of-flow boxes
-            // don't break adjacency). The top-level AttemptLayout's
-            // post-flow pass (EmitAbsolutelyPositionedChildren) walks
-            // the whole subtree + emits them, so skipping here just
+            // Per Phase 3 Task 19 cycle 1 (+ Task 20 cycle 1) —
+            // out-of-flow positioned boxes (`position: absolute` AND
+            // `position: fixed`) are out-of-flow at EVERY depth (not just
+            // top-level children): skip them from the in-flow recursion
+            // without touching the margin-collapse chain (out-of-flow
+            // boxes don't break adjacency). The post-flow passes
+            // (EmitAbsolutelyPositionedChildren / EmitFixedPositionedChildren)
+            // walk the whole subtree + emit them, so skipping here just
             // keeps them out of normal flow.
-            if (child.Style.IsAbsolutelyPositioned())
+            if (child.Style.IsOutOfFlow())
             {
                 continue;
             }

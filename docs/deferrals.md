@@ -2690,3 +2690,62 @@ flags the categories):
   `overflow: hidden` clipping is honored AND z-index paint order is
   resolved (shared with abspos). (Fixed-content natural-position overflow
   shipped in cycle 2.)
+
+## layout-to-pdf-pipeline
+
+- **ID** — `layout-to-pdf-pipeline`
+- **Status** — throws (the public `HtmlPdf.Convert` facade throws
+  `NotImplementedException` until the pipeline is wired)
+- **Spec** — N/A (internal integration of the layout + PDF subsystems
+  into the public facade).
+- **Behavior** — The layout engine (HTML → cascade → box tree →
+  `BlockLayouter` → `BoxFragment`s) AND the PDF byte writer
+  (`PdfDocument` / `IContentStream`) both work, but the public
+  `HtmlPdf.Convert` facade is a stub. Wiring them end-to-end (real text
+  documents → PDF bytes) needs a dependency CHAIN, discovered while
+  scoping: **CSS font-property resolution → production text shaper →
+  `BoxFragment`→PDF paint bridge → facade**. (The layout engine REQUIRES
+  an `IShaperResolver`; the shaper needs resolved font properties.)
+- **Done — cycle 1 (production text shaper)** —
+  `NetPdf.Shaping.HarfBuzzShaperResolver` implements the layout's
+  `IShaperResolver` over a real font: resolves a face via `IFontResolver`
+  / `SystemFontResolver` for a `ComputedStyle` + returns a cached
+  HarfBuzz `HbShaper`, replacing the synthetic test resolvers. It reads
+  `font-size` + `font-style` live (forward-compatible), so it honors real
+  CSS automatically once the resolvers in TODO 1 land.
+- **TODOs (remaining chain, in order)** —
+  1. **CSS font-property resolution** — wire `FontSizeResolver`
+     (em/rem/%/keyword relative to the parent), `FontFamilyListResolver`
+     (family stack + generics), `FontWeightResolver` (1..1000 +
+     bolder/lighter) into `PropertyResolverDispatch` (the documented
+     "cycle 2 backlog" there). NOTE: resolving `font-size` changes em/rem
+     unit resolution + every text-measuring layout/snapshot baseline — a
+     cross-cutting change to land carefully (with re-pinned snapshots).
+     Until then `HarfBuzzShaperResolver` uses default size (16px) +
+     default family (`sans-serif`) + normal weight.
+  2. **Paint bridge** — `BoxFragment` (+ its inline layout) → PDF
+     content-stream operators (`IContentStream`): background / border
+     rectangles + text runs (embedded font + glyph positioning), with the
+     CSS-px → PDF-pt (×0.75) + y-flip transform. The `NetPdf.Paint`
+     `DisplayCommand` IR exists but has no fragment→command or
+     command→PDF consumer yet.
+  3. **Facade** — wire `HtmlPdf.Convert` / `ConvertAsync`: pipeline →
+     per-page layout → paint → `PdfDocument` → bytes; page size/margins →
+     `MediaBox` + content area (from `@page` once Task 21 lands, else
+     `HtmlPdfOptions`); multi-page driver (loop AttemptLayout over
+     continuations).
+  4. **Deterministic default font** — `SystemFontResolver` reads platform
+     fonts (non-deterministic); a bundled last-resort font is needed for
+     the determinism contract (CLAUDE.md rule #4) once PDFs are emitted.
+- **Trigger** — end-to-end HTML→PDF output; the invoice corpus render
+  (Phase 3 Task 28).
+- **Owner files** —
+  - `src/NetPdf/HtmlPdf.cs` (facade stub) +
+    `src/NetPdf/Shaping/HarfBuzzShaperResolver.cs` (cycle 1, done).
+  - `src/NetPdf.Css/ComputedValues/PropertyResolvers/PropertyResolverDispatch.cs`
+    (font-property resolvers — TODO 1).
+  - `src/NetPdf.Paint/` (paint IR → PDF — TODO 2).
+  - `src/NetPdf.Pdf/` (the byte writer — already complete).
+- **Added** — Phase 5 layout→PDF wiring cycle 1.
+- **Removal condition** — `HtmlPdf.Convert` renders a real text document
+  to a valid PDF `byte[]` end-to-end.

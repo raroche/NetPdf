@@ -8,6 +8,7 @@ using NetPdf.Css.ComputedValues;
 using NetPdf.Css.Properties;
 using NetPdf.Layout.Inline;
 using NetPdf.Layout.Layouters;
+using NetPdf.Text.Fonts;
 using NetPdf.Text.Shaping;
 
 namespace NetPdf.Shaping;
@@ -45,7 +46,17 @@ namespace NetPdf.Shaping;
 /// contract).</b> The resolver OWNS every <see cref="HbShaper"/> it
 /// creates + disposes them all at <see cref="Dispose"/>; callers MUST
 /// NOT dispose. Shapers are cached by (resolved font key, size) so the
-/// same <see cref="ComputedStyle"/> yields the same instance.</para>
+/// same <see cref="ComputedStyle"/> yields the same instance. The cache
+/// + disposal are lock-guarded, so a single resolver is safe to share
+/// across parallel layout work (post-PR-#117 review P2).</para>
+///
+/// <para><b>Untrusted bytes.</b> An <see cref="IFontResolver"/> may be a
+/// custom / CDN source, so resolved bytes are gated through
+/// <c>FontSafetyValidator</c> (rejecting garbage / oversized / WOFF /
+/// WOFF2) BEFORE HarfBuzz, exactly as <c>FontFace.Load</c> does
+/// (post-PR-#117 review P1). And because shaping is synchronous, an
+/// async resolver that doesn't complete synchronously fails fast rather
+/// than blocking.</para>
 ///
 /// <para><b>Determinism note.</b> HarfBuzz shaping is deterministic for
 /// a given (font bytes, size). The non-deterministic part is WHICH font
@@ -69,6 +80,10 @@ internal sealed class HarfBuzzShaperResolver : IShaperResolver
     private readonly string _defaultFamily;
     private readonly double _defaultFontSizePx;
     private readonly Dictionary<ShaperKey, HbShaper> _cache = new();
+    // Per post-PR-#117 review P2 — guards the cache + disposal so a shared
+    // resolver is safe across parallel layout work (HbShaper.Shape itself
+    // is concurrency-safe).
+    private readonly object _gate = new();
     private bool _disposed;
 
     /// <summary>Construct a resolver over a font source.</summary>
@@ -99,8 +114,9 @@ internal sealed class HarfBuzzShaperResolver : IShaperResolver
     public HbShaper Resolve(ComputedStyle style)
     {
         ArgumentNullException.ThrowIfNull(style);
-        ObjectDisposedException.ThrowIf(_disposed, this);
 
+        // Pure style reads (no shared state) — done outside the lock.
+        //
         // font-size: honored live via the standard reader. Clamp a
         // non-positive / non-finite value to the default (HbShaper
         // requires a positive finite size).
@@ -123,22 +139,29 @@ internal sealed class HarfBuzzShaperResolver : IShaperResolver
         var weight = DefaultWeightCss;
 
         var key = new ShaperKey(family, weight, fontStyle, sizePx);
-        if (_cache.TryGetValue(key, out var cached)) return cached;
 
-        var shaper = new HbShaper(ResolveFontBytes(family, weight, fontStyle), sizePx);
-        _cache[key] = shaper;
-        return shaper;
+        // Per post-PR-#117 review P2 — serialize the get-or-create + the
+        // disposed check so concurrent Resolve calls (a shared resolver
+        // across parallel layout) can't corrupt the cache or race Dispose.
+        // Font resolution + HbShaper construction happen under the lock so
+        // each (font, size) shaper is created EXACTLY once + owned for
+        // disposal. The lock is brief for a synchronous IFontResolver.
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            if (_cache.TryGetValue(key, out var cached)) return cached;
+            var shaper = new HbShaper(ResolveFontBytes(family, weight, fontStyle), sizePx);
+            _cache[key] = shaper;
+            return shaper;
+        }
     }
 
-    /// <summary>Resolve a family (with a generic fallback) to font bytes.
-    /// The <see cref="IFontResolver"/> contract is async, but
-    /// <see cref="IShaperResolver.Resolve"/> is synchronous; the default
-    /// <see cref="SystemFontResolver"/> completes synchronously (sync file
-    /// I/O via its cache), so the bridge below only blocks for a genuinely
-    /// async resolver. A future async layout-prepass could pre-resolve
-    /// faces to avoid the block.</summary>
+    /// <summary>Resolve a family (with a generic fallback) to VALIDATED
+    /// font bytes ready for HarfBuzz.</summary>
     private ReadOnlyMemory<byte> ResolveFontBytes(string family, int weight, FontStyle style)
     {
+        // A family the resolver can't find at all → fall back to the
+        // default generic family (a not-found family is a fall-back case).
         var face = ResolveFace(family, weight, style);
         if (face is null && !string.Equals(family, _defaultFamily, StringComparison.OrdinalIgnoreCase))
             face = ResolveFace(_defaultFamily, weight, style);
@@ -148,9 +171,36 @@ internal sealed class HarfBuzzShaperResolver : IShaperResolver
                 + $"(weight {weight}, {style}) nor the fallback '{_defaultFamily}'. "
                 + "Supply an IFontResolver that resolves a face, or install system "
                 + "fonts. (A bundled deterministic last-resort font is a follow-up TODO.)");
+
+        // Per post-PR-#117 review P1 — gate the resolved bytes through the
+        // SAME pre-decode safety validator FontFace.Load uses, BEFORE
+        // handing them to HarfBuzz. A custom / CDN IFontResolver is
+        // untrusted: garbage, oversized, or WOFF/WOFF2-wrapped bytes would
+        // otherwise reach the native shaper. A resolved-but-unsafe/wrapped
+        // face is an ERROR (not a fall-back-to-another-font case) — mirror
+        // FontFace.Load + throw a clear message.
+        var verdict = FontSafetyValidator.Validate(face.Bytes.Span);
+        if (!verdict.IsSafe)
+            throw new InvalidOperationException(
+                $"HarfBuzzShaperResolver: the font resolved for '{family}' was rejected "
+                + $"by the pre-decode safety validator: {verdict.Reason}");
+        if (verdict.DetectedFormat is FontSafetyValidator.FontFormat.Woff
+            or FontSafetyValidator.FontFormat.Woff2)
+            throw new InvalidOperationException(
+                $"HarfBuzzShaperResolver: the font resolved for '{family}' is in "
+                + $"{verdict.DetectedFormat} format; NetPdf cannot decode the wrapped "
+                + "sfnt yet — supply an unwrapped TTF/OTF.");
         return face.Bytes;
     }
 
+    /// <summary>Resolve a single family to a face. Per post-PR-#117 review
+    /// P1, layout shaping is SYNCHRONOUS, so this must NOT block on an
+    /// arbitrary async resolver (a CDN-fetching <see cref="IFontResolver"/>
+    /// could hang/deadlock + ignore cancellation): it requires synchronous
+    /// completion + FAILS FAST otherwise. The default
+    /// <see cref="SystemFontResolver"/> completes synchronously (sync file
+    /// I/O via its cache). Async font pre-resolution (a layout pre-pass
+    /// that warms the cache off-thread) is a documented follow-up.</summary>
     private FontFaceData? ResolveFace(string family, int weight, FontStyle style)
     {
         var query = new FontQuery
@@ -160,22 +210,42 @@ internal sealed class HarfBuzzShaperResolver : IShaperResolver
             Style = style,
         };
         var pending = _fontResolver.ResolveAsync(query, CancellationToken.None);
-        return pending.IsCompleted
-            ? pending.GetAwaiter().GetResult()
-            : pending.AsTask().GetAwaiter().GetResult();
+        if (!pending.IsCompleted)
+            throw new NotSupportedException(
+                "HarfBuzzShaperResolver: the IFontResolver did not complete "
+                + "synchronously. Layout shaping is synchronous and must not block on "
+                + "an async (e.g. CDN-fetching) resolver. Use a resolver that completes "
+                + "synchronously (e.g. SystemFontResolver) or pre-warm fonts before "
+                + "layout. (Async font pre-resolution is a documented follow-up.)");
+        return pending.GetAwaiter().GetResult();
     }
 
     /// <inheritdoc />
     public void Dispose()
     {
-        if (_disposed) return;
-        _disposed = true;
-        foreach (var shaper in _cache.Values) shaper.Dispose();
-        _cache.Clear();
+        // Per post-PR-#117 review P2 — dispose under the same lock that
+        // guards Resolve, so a concurrent Resolve can't hand out (or add) a
+        // shaper while disposal is tearing the cache down.
+        lock (_gate)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            foreach (var shaper in _cache.Values) shaper.Dispose();
+            _cache.Clear();
+        }
     }
 
     /// <summary>Cache key: a resolved-font signature + size. Two styles
-    /// that map to the same (family, weight, style, size) share a shaper.</summary>
+    /// that map to the same (family, weight, style, size) share a shaper.
+    ///
+    /// <para>TODO (post-PR-#117 review P3 — perf follow-up): the key
+    /// includes size, and each <see cref="HbShaper"/> copies + pins the
+    /// full font bytes, so a document with many computed sizes duplicates
+    /// the same font payload. A future optimization is a blob cache keyed
+    /// by VALIDATED font identity (so the bytes are pinned once) plus
+    /// size-specific HarfBuzz Font objects over the shared blob. Not a
+    /// correctness issue — tracked in
+    /// <c>docs/deferrals.md#layout-to-pdf-pipeline</c>.</para></summary>
     private readonly record struct ShaperKey(
         string Family, int WeightCss, FontStyle Style, double FontSizePx);
 }

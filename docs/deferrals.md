@@ -2712,7 +2712,12 @@ flags the categories):
   / `SystemFontResolver` for a `ComputedStyle` + returns a cached
   HarfBuzz `HbShaper`, replacing the synthetic test resolvers. It reads
   `font-size` + `font-style` live (forward-compatible), so it honors real
-  CSS automatically once the resolvers in TODO 1 land.
+  CSS automatically once the resolvers in TODO 1 land. Post-PR-#117
+  review hardening: resolved bytes are validated through
+  `FontSafetyValidator` (rejecting garbage / oversized / WOFF / WOFF2)
+  BEFORE HarfBuzz, like `FontFace.Load`; the cache + disposal are
+  lock-guarded (a shared resolver is safe across parallel layout); and a
+  non-synchronous `IFontResolver` FAILS FAST instead of blocking.
 - **TODOs (remaining chain, in order)** —
   1. **CSS font-property resolution** — wire `FontSizeResolver`
      (em/rem/%/keyword relative to the parent), `FontFamilyListResolver`
@@ -2737,6 +2742,17 @@ flags the categories):
   4. **Deterministic default font** — `SystemFontResolver` reads platform
      fonts (non-deterministic); a bundled last-resort font is needed for
      the determinism contract (CLAUDE.md rule #4) once PDFs are emitted.
+  5. **Async font pre-resolution** (post-PR-#117 review P1) — shaping is
+     synchronous, so `HarfBuzzShaperResolver` fails fast on a
+     non-synchronous `IFontResolver` (e.g. a CDN fetch). A layout pre-pass
+     that resolves all needed faces async + warms the cache off-thread
+     would let async resolvers work without blocking layout.
+  6. **Per-size pinned-font memory** (post-PR-#117 review P3, perf
+     follow-up) — the shaper cache keys on size + each `HbShaper` copies +
+     pins the full font bytes, so a document with many computed sizes
+     duplicates the payload. Optimization: a blob cache keyed by validated
+     font identity (pin once) + size-specific HarfBuzz `Font` objects over
+     the shared blob.
 - **Trigger** — end-to-end HTML→PDF output; the invoice corpus render
   (Phase 3 Task 28).
 - **Owner files** —

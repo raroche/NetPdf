@@ -105,6 +105,74 @@ public sealed class HarfBuzzShaperResolverTests
         resolver.Dispose();                  // second dispose must not throw
     }
 
+    // --- post-PR-#117 review hardening ----------------------------------
+
+    [Fact]
+    public void Resolve_rejects_garbage_font_bytes_before_harfbuzz()
+    {
+        // P1 — resolved bytes are gated through FontSafetyValidator (as
+        // FontFace.Load does) BEFORE reaching native HarfBuzz: a custom
+        // resolver returning non-font garbage must be rejected, not shaped.
+        using var resolver = new HarfBuzzShaperResolver(
+            new FixedBytesFontResolver(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 }));
+
+        var ex = Assert.Throws<InvalidOperationException>(() => resolver.Resolve(MakeStyle()));
+        Assert.Contains("safety validator", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Resolve_rejects_woff_wrapped_font_bytes()
+    {
+        // P1 — WOFF/WOFF2 wrap an sfnt that HarfBuzz can't read directly;
+        // reject (mirroring FontFace.Load) rather than feed wrapped bytes
+        // to the shaper.
+        using var resolver = new HarfBuzzShaperResolver(
+            new FixedBytesFontResolver(MinimalValidWoffHeader()));
+
+        Assert.Throws<InvalidOperationException>(() => resolver.Resolve(MakeStyle()));
+    }
+
+    [Fact]
+    public void Resolve_fails_fast_on_a_non_synchronous_resolver()
+    {
+        // P1 — layout shaping is synchronous; an async resolver that doesn't
+        // complete synchronously (e.g. a CDN fetch) must FAIL FAST, never
+        // block/hang. A never-completing resolver must throw promptly (this
+        // test returning at all is the no-hang proof).
+        using var resolver = new HarfBuzzShaperResolver(new NeverCompletesFontResolver());
+
+        Assert.Throws<NotSupportedException>(() => resolver.Resolve(MakeStyle()));
+    }
+
+    [Fact]
+    public void Resolve_is_safe_under_concurrent_access()
+    {
+        // P2 — a single resolver shared across parallel layout work: the
+        // lock-guarded cache must not corrupt, and the same style must yield
+        // the same instance from every thread (created exactly once).
+        using var resolver = new HarfBuzzShaperResolver(new SyntheticFontResolver());
+        var style = MakeStyle();
+        var results = new HbShaper[64];
+
+        System.Threading.Tasks.Parallel.For(0, results.Length, i => results[i] = resolver.Resolve(style));
+
+        Assert.All(results, r => Assert.Same(results[0], r));
+    }
+
+    /// <summary>A minimal 44-byte WOFF 1.0 header (signature <c>wOFF</c>,
+    /// TTF flavor, length 44, 1 table) — enough for FontSafetyValidator to
+    /// recognize the wrapped format.</summary>
+    private static byte[] MinimalValidWoffHeader()
+    {
+        var b = new byte[44];
+        b[0] = 0x77; b[1] = 0x4F; b[2] = 0x46; b[3] = 0x46;   // "wOFF"
+        b[4] = 0x00; b[5] = 0x01; b[6] = 0x00; b[7] = 0x00;   // flavor 0x00010000 (TTF)
+        b[8] = 0x00; b[9] = 0x00; b[10] = 0x00; b[11] = 0x2C; // length = 44 (BE)
+        b[12] = 0x00; b[13] = 0x01;                           // numTables = 1 (BE)
+        // reserved (b[14..16]) + the rest stay zero.
+        return b;
+    }
+
     // --- test font resolvers --------------------------------------------
 
     /// <summary>Returns a fixed synthetic font for any query.</summary>
@@ -132,5 +200,21 @@ public sealed class HarfBuzzShaperResolverTests
     {
         public ValueTask<FontFaceData?> ResolveAsync(FontQuery query, CancellationToken ct)
             => new((FontFaceData?)null);
+    }
+
+    /// <summary>Returns caller-supplied bytes verbatim (exercises the
+    /// FontSafetyValidator gate with garbage / wrapped bytes).</summary>
+    private sealed class FixedBytesFontResolver(byte[] bytes) : IFontResolver
+    {
+        public ValueTask<FontFaceData?> ResolveAsync(FontQuery query, CancellationToken ct)
+            => new(new FontFaceData { Bytes = bytes, Family = query.Family });
+    }
+
+    /// <summary>Returns a ValueTask that never completes (exercises the
+    /// fail-fast-on-async path — must throw, not block).</summary>
+    private sealed class NeverCompletesFontResolver : IFontResolver
+    {
+        public ValueTask<FontFaceData?> ResolveAsync(FontQuery query, CancellationToken ct)
+            => new(new TaskCompletionSource<FontFaceData?>().Task);   // never set
     }
 }

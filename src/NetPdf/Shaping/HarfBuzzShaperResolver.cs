@@ -138,7 +138,13 @@ internal sealed class HarfBuzzShaperResolver : IShaperResolver
         var family = _defaultFamily;
         var weight = DefaultWeightCss;
 
-        var key = new ShaperKey(family, weight, fontStyle, sizePx);
+        // Per post-PR-#117 review — CSS family names match case-insensitively
+        // (CSS Fonts L4 §4.1), so normalize the cache key's family to avoid
+        // duplicate shapers (e.g. `Arial` vs `arial`) once real family names
+        // flow through. (The original-case `family` is still used for the
+        // resolver query + error messages.)
+        var key = new ShaperKey(
+            family.ToLowerInvariant(), weight, fontStyle, sizePx);
 
         // Per post-PR-#117 review P2 — serialize the get-or-create + the
         // disposed check so concurrent Resolve calls (a shared resolver
@@ -163,14 +169,23 @@ internal sealed class HarfBuzzShaperResolver : IShaperResolver
         // A family the resolver can't find at all → fall back to the
         // default generic family (a not-found family is a fall-back case).
         var face = ResolveFace(family, weight, style);
+        var triedFallback = false;
         if (face is null && !string.Equals(family, _defaultFamily, StringComparison.OrdinalIgnoreCase))
+        {
+            triedFallback = true;
             face = ResolveFace(_defaultFamily, weight, style);
+        }
         if (face is null)
+        {
+            // Per post-PR-#117 review — only mention the fallback when one
+            // was actually attempted (it isn't when family == the default).
+            var fallbackNote = triedFallback ? $" nor the fallback '{_defaultFamily}'" : string.Empty;
             throw new InvalidOperationException(
-                $"HarfBuzzShaperResolver: no font resolved for family '{family}' "
-                + $"(weight {weight}, {style}) nor the fallback '{_defaultFamily}'. "
-                + "Supply an IFontResolver that resolves a face, or install system "
-                + "fonts. (A bundled deterministic last-resort font is a follow-up TODO.)");
+                $"HarfBuzzShaperResolver: no font resolved for family '{family}'{fallbackNote} "
+                + $"(weight {weight}, {style}). Supply an IFontResolver that resolves a "
+                + "face, or install system fonts. (A bundled deterministic last-resort "
+                + "font is a follow-up TODO.)");
+        }
 
         // Per post-PR-#117 review P1 — gate the resolved bytes through the
         // SAME pre-decode safety validator FontFace.Load uses, BEFORE
@@ -237,6 +252,8 @@ internal sealed class HarfBuzzShaperResolver : IShaperResolver
 
     /// <summary>Cache key: a resolved-font signature + size. Two styles
     /// that map to the same (family, weight, style, size) share a shaper.
+    /// <c>Family</c> is stored case-normalized (CSS families match
+    /// case-insensitively) so `Arial` and `arial` share one entry.
     ///
     /// <para>TODO (post-PR-#117 review P3 — perf follow-up): the key
     /// includes size, and each <see cref="HbShaper"/> copies + pins the

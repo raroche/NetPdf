@@ -2641,20 +2641,27 @@ flags the categories):
     that ancestor, not the page. Deferred: those properties aren't wired
     into layout yet, so cycle 1 always uses the page (correct until they
     land).
-  - **Fixed-box content overflow (CLIPPED, not paginated)** — CSS
-    Position L3 §6.3 says fixed boxes are not paginated. Content taller
-    than the fixed box's block-size is currently CLIPPED (the inner
-    dispatch sizes its fragmentainer to the box; the overflow's
-    continuation is dropped) and surfaced via
-    `LAYOUT-FIXED-CONTENT-CLIPPED-001` rather than dropped silently.
-    Proper overflow (emit the overflow at its natural position,
-    `overflow: visible`) needs the inner dispatch to separate the BREAK
-    budget (unbounded for fixed content) from the containing-block height
-    (the box block-size, for percentage resolution) — `FragmentainerContext`
-    currently conflates them. Later cycle.
   - **Page-margin-box / `@page` interaction, z-index paint order** — out
     of scope for cycle 1 (z-index is shared with the abspos deferral;
     `@page` margin boxes are Task 21+).
+  - **`overflow: hidden` clipping** — cycle 2 emits overflow per
+    `overflow: visible` (the default). Honoring `overflow: hidden` /
+    `clip` on a fixed box (actually clipping the overflow) is a separate
+    `overflow`-property feature, not yet wired.
+  - ~~**Fixed-box content overflow (clipped, not paginated)**~~ —
+    RESOLVED in cycle 2 (final design per post-PR-#116 review P1): fixed
+    content is dispatched with `FragmentainerContext.SuppressBlockPagination`
+    — the break resolver returns `Continue` at every opportunity + float
+    deferral is skipped, so content lays out in ONE pass and OVERFLOWS the
+    box at its natural position (`overflow: visible`). Crucially the inner
+    fragmentainer's `BlockSize` stays the box content-area height (NOT an
+    inflated budget), so it remains the containing-block extent the §6
+    solver uses for descendant percentage / `bottom` resolution — an
+    abspos child with `bottom: 0` or `height: 100%` anchors to the box,
+    not to an artificial budget. (The initially-proposed inflated-budget
+    approach was rejected in review because the §6 solver DOES resolve
+    abspos `%`/`bottom` against the CB block extent, unlike normal-flow
+    `ReadLengthPxOrZero`.)
   - ~~**Fixed inside an abspos / fixed subtree**~~ — RESOLVED
     post-PR-#115 review P2#1: the root-owned walk now descends into
     `position: absolute` + fixed subtrees, so a fixed box nested inside
@@ -2670,13 +2677,16 @@ flags the categories):
   - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` —
     `EmitFixedPositionedChildren` / `EmitFixedPositionedDescendants` /
     `EmitOneFixedBox`; the `_rootBox.Kind == Root` gate in `AttemptLayout`;
-    `DispatchAbsoluteChildContents` (returns the inner result for the
-    overflow-clip diagnostic).
+    `DispatchAbsoluteChildContents` (cycle 2 `noPaginate` → suppress +
+    `disableGridPagination`); the float-defer gate (~line 1180).
+  - `src/NetPdf.Paginate/FragmentainerContext.cs` (`SuppressBlockPagination`)
+    + `src/NetPdf.Paginate/BreakResolver.cs` (`ConsiderBreakAt` honors it).
   - `src/NetPdf.Layout/Layouters/ComputedStyleLayoutExtensions.cs` —
     `IsFixedPositioned` / `IsOutOfFlow`.
   - `src/NetPdf.Layout/Layouters/GridSizing.cs` (`IsGridItem`) +
     `GetFlexChildrenInOrderSequence` — out-of-flow item exclusion.
 - **Added** — Phase 3 Task 20 cycle 1.
 - **Removal condition** — transform-ancestor CB capture lands AND
-  fixed-box content overflow emits at its natural position (no clip) AND
-  z-index paint order is resolved (shared with abspos).
+  `overflow: hidden` clipping is honored AND z-index paint order is
+  resolved (shared with abspos). (Fixed-content natural-position overflow
+  shipped in cycle 2.)

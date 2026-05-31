@@ -81,6 +81,17 @@ internal sealed class BreakResolver : IBreakResolver
             // (Task 4) plumbs lookahead into this argument.
             lineCountAfterBreak: WidowsRequired);
 
+        // Per Phase 3 Task 20 cycle 2 — pagination SUPPRESSED for this
+        // fragmentainer (e.g. `position: fixed` content, CSS Position L3
+        // §6.3): there is no next page to break to, so EVERY opportunity
+        // continues + the content overflows the fragmentainer at its
+        // natural position. This wins over even a forced break — a forced
+        // break inside an unpaginated box has nowhere to go.
+        if (ctx.SuppressBlockPagination)
+        {
+            return new BreakDecision(BreakAction.Continue, cost, RewindTo: null);
+        }
+
         // Per Phase 3 review fix #3 — author-forced break wins
         // regardless of whether the chunk would fit. The cost model
         // returns 0 for ForceBreak, but the action MUST be BreakHere

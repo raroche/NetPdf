@@ -573,6 +573,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// <see cref="_absoluteChildrenEmitted"/>.</summary>
     private bool _fixedChildrenEmitted;
 
+
     /// <summary>Per Phase 3 Task 19 cycle 2a — border-box geometry (in
     /// fragmentainer/sink coordinates) of in-flow descendants that
     /// establish an absolute containing block (<c>position</c> !=
@@ -1165,8 +1166,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 var pageHasPriorContent =
                     fragmentainer.UsedBlockSize > 0
                     || emittedThisAttempt > 0;
+                // Per Phase 3 Task 20 cycle 2 — when pagination is
+                // suppressed (fixed-box content), never defer a float to a
+                // next page (there is none): emit it so it overflows with
+                // the rest of the content instead of being dropped.
                 if (WouldFloatOverflow(child, floatSide.Value, fragmentainer)
-                    && pageHasPriorContent)
+                    && pageHasPriorContent
+                    && !fragmentainer.SuppressBlockPagination)
                 {
                     return LayoutAttemptResult.PageComplete(
                         new BlockContinuation(
@@ -3911,13 +3917,14 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         {
             // Abspos content pagination (overflow past the box block-size)
             // is a pre-existing behavior outside this cycle's scope — the
-            // result is intentionally discarded here.
-            _ = DispatchAbsoluteChildContents(
+            // box-sized fragmentainer paginates + the result is discarded.
+            DispatchAbsoluteChildContents(
                 child,
                 placement.InlineOffset,
                 placement.BlockOffset,
                 placement.InlineSize,
                 placement.BlockSize,
+                noPaginate: false,
                 ref layout,
                 cancellationToken);
         }
@@ -4007,25 +4014,26 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         }
     }
 
-    /// <summary>Per Phase 3 Task 20 cycle 1 (+ post-PR-#115 review P2#2)
-    /// — resolve a single <c>position: fixed</c> box against the page CB
-    /// via the §6 solver and emit its border-box fragment + dispatch its
-    /// inner content (reusing the abspos translating-sub-layouter
-    /// dispatch — the dispatch logic is position-mode-agnostic). The §6
-    /// solver always resolves (a negative size clamps to 0), so there is
-    /// no drop path for the box itself.
+    /// <summary>Per Phase 3 Task 20 cycle 1 / cycle 2 — resolve a single
+    /// <c>position: fixed</c> box against the page CB via the §6 solver
+    /// and emit its border-box fragment + dispatch its inner content
+    /// (reusing the abspos translating-sub-layouter dispatch — the
+    /// dispatch logic is position-mode-agnostic). The §6 solver always
+    /// resolves (a negative size clamps to 0), so there is no drop path
+    /// for the box itself.
     ///
-    /// <para><b>Content overflow.</b> CSS Position L3 §6.3 says
-    /// fixed-positioned boxes are NOT paginated — overflowing content
-    /// cannot cascade to a later page. The inner dispatch sizes its
-    /// fragmentainer to the box content area, so content taller than the
-    /// box block-size returns <see cref="LayoutAttemptOutcome.PageComplete"/>
-    /// with a continuation that this dispatch does NOT consume — i.e.
-    /// the overflow is clipped. Cycle 1 surfaces that loudly via
-    /// <c>LAYOUT-FIXED-CONTENT-CLIPPED-001</c> rather than dropping
-    /// silently; proper overflow (emit at natural position) needs a
-    /// break-budget-vs-CB-height split and is deferred
-    /// (<c>fixed-cycle-1</c>).</para></summary>
+    /// <para><b>Content overflow (cycle 2).</b> CSS Position L3 §6.3 says
+    /// fixed-positioned boxes are NOT paginated. The inner content is
+    /// dispatched with <c>noPaginate: true</c> — pagination is SUPPRESSED
+    /// (the inner fragmentainer's <c>SuppressBlockPagination</c>), so
+    /// content taller than the box OVERFLOWS at its natural position (CSS
+    /// <c>overflow: visible</c>) instead of being clipped. (Cycle 1
+    /// clipped + diagnosed; cycle 2 emits the overflow.) Crucially the
+    /// inner fragmentainer's <c>BlockSize</c> stays the box content-area
+    /// height (NOT inflated), so descendant percentage / <c>bottom</c>
+    /// resolution — which the §6 solver DOES compute against the CB block
+    /// extent — anchors to the box, not an artificial budget (post-PR-#116
+    /// review P1).</para></summary>
     private void EmitOneFixedBox(
         Box child,
         AbsoluteContainingBlock pageCb,
@@ -4040,49 +4048,62 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             InlineSize: placement.InlineSize,
             BlockSize: placement.BlockSize));
 
-        if (child.Children.Count > 0
-            && placement.InlineSize > 0 && placement.BlockSize > 0)
+        // Per Phase 3 Task 20 cycle 2 (+ post-PR-#116 review) — dispatch
+        // the content even when the box's resolved block-size is 0 (e.g.
+        // `height: 0` with visible overflow): pagination is suppressed, so
+        // the content overflows the box regardless, and dropping it would
+        // be exactly the clip cycle 2 removes. Only the INLINE extent
+        // gates (content needs a width to lay into). The inner
+        // fragmentainer requires a positive block extent (its ctor
+        // enforces it), so a 0/sub-px box is clamped to 1px — content
+        // still overflows from the top; the 1px CB only marginally affects
+        // a degenerate box's descendant percentage/`bottom` resolution.
+        if (child.Children.Count > 0 && placement.InlineSize > 0)
         {
-            var contentResult = DispatchAbsoluteChildContents(
+            // pagination suppressed (SuppressBlockPagination) so the fixed
+            // box's content lays out in one pass + OVERFLOWS at its natural
+            // position (CSS `overflow: visible`; CSS Position L3 §6.3). The
+            // inner fragmentainer keeps BlockSize = the box content height
+            // (clamped >0), so descendant percentage / `bottom` resolution
+            // is against the box, not an inflated budget.
+            DispatchAbsoluteChildContents(
                 child,
                 placement.InlineOffset,
                 placement.BlockOffset,
                 placement.InlineSize,
-                placement.BlockSize,
+                System.Math.Max(placement.BlockSize, 1.0),
+                noPaginate: true,
                 ref layout,
                 cancellationToken);
-            if (contentResult.Outcome is LayoutAttemptOutcome.PageComplete)
-            {
-                // The fixed box's content exceeded its block-size. Fixed
-                // boxes are not paginated (CSS Position L3 §6.3), so the
-                // overflow is clipped — surface it instead of dropping
-                // silently.
-                OptimizingBreakResolver.SafeEmit(
-                    layout.Diagnostics ?? _diagnostics,
-                    new PaginateDiagnostic(
-                        PaginateDiagnosticCodes.LayoutFixedContentClipped001,
-                        "position:fixed box content exceeded its block-size and was "
-                        + "clipped: fixed boxes are not paginated (CSS Position L3 "
-                        + "§6.3). Cycle 1 clips the overflow; proper overflow at the "
-                        + "natural position is deferred (docs/deferrals.md#fixed-cycle-1).",
-                        PaginateDiagnosticSeverity.Warning));
-            }
         }
     }
 
-    /// <summary>Per Phase 3 Task 19 cycle 1 — dispatch an abspos box's
-    /// inner content into its content area via a translating
-    /// sub-BlockLayouter. Mirrors
+    /// <summary>Per Phase 3 Task 19 cycle 1 (+ Task 20 cycle 2) —
+    /// dispatch a positioned box's inner content into its content area
+    /// via a translating sub-BlockLayouter. Mirrors
     /// <c>GridLayouter.DispatchGridItemContents</c>: a translating sink
     /// maps inner box-relative offsets to outer sink coordinates; the
-    /// inner fragmentainer is sized to the box (atomic LastResort emit;
-    /// content overflow is cycle-1 behavior).</summary>
-    private LayoutAttemptResult DispatchAbsoluteChildContents(
+    /// inner fragmentainer is sized to the box.
+    ///
+    /// <para><b><c>noPaginate</c> (fixed content, cycle 2).</b> The inner
+    /// fragmentainer's <c>BlockSize</c> stays the box content-area height
+    /// either way — it is the containing-block extent the nested abspos
+    /// pass hands the §6 solver for descendant percentage / <c>bottom</c>
+    /// resolution, so it must NOT be inflated. Instead
+    /// <c>SuppressBlockPagination</c> (+ <c>disableGridPagination</c>)
+    /// disables breaking, so a `position: fixed` box's content lays out
+    /// in one pass + OVERFLOWS the box at its natural position (CSS
+    /// `overflow: visible`; CSS Position L3 §6.3 — fixed boxes are not
+    /// paginated) rather than being clipped. The abspos caller passes
+    /// <c>noPaginate: false</c> (it paginates + discards the result —
+    /// a separate pre-existing item).</para></summary>
+    private void DispatchAbsoluteChildContents(
         Box box,
         double inlineOrigin,
         double blockOrigin,
         double inlineSize,
         double blockSize,
+        bool noPaginate,
         ref LayoutContext outerLayout,
         CancellationToken cancellationToken)
     {
@@ -4092,7 +4113,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             blockTranslation: blockOrigin);
         var innerFragmentainer = new FragmentainerContext(
             contentInlineSize: inlineSize,
-            blockSize: blockSize);
+            blockSize: blockSize)
+        {
+            SuppressBlockPagination = noPaginate,
+        };
         var innerLayout = new LayoutContext(innerFragmentainer)
         {
             Diagnostics = outerLayout.Diagnostics,
@@ -4104,16 +4128,15 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             sink: translatingSink,
             incomingContinuation: null,
             diagnostics: _diagnostics,
-            shaperResolver: _shaperResolver);
+            shaperResolver: _shaperResolver,
+            // Fixed content isn't paginated, so a nested grid mustn't
+            // paginate inside it either (it would drop rows past the box).
+            disableGridPagination: noPaginate);
         using var innerResolver = new BreakResolver();
-        // Returns the inner attempt's outcome so the caller can detect
-        // overflow: a PageComplete means the box's content exceeded its
-        // block-size (the inner fragmentainer = the box content area) and
-        // the continuation is NOT consumed here, so the overflow is
-        // clipped. EmitOneFixedBox surfaces that as a diagnostic (CSS
-        // fixed boxes are not paginated); the abspos caller currently
-        // ignores it (pre-existing abspos-content pagination behavior).
-        return innerLayouter.AttemptLayout(
+        // The result is intentionally not consumed: with pagination
+        // suppressed (fixed) the content fully overflows in one pass; the
+        // abspos path (noPaginate:false) discards it as before.
+        _ = innerLayouter.AttemptLayout(
             innerFragmentainer,
             ref innerLayout,
             innerResolver,

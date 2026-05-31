@@ -648,15 +648,16 @@ public sealed class AbsoluteLayouterProductionTests
     }
 
     [Fact]
-    public async Task PostPr115_fixed_box_content_exceeding_height_clips_loudly_not_silently()
+    public async Task Task20Cycle2_fixed_box_content_exceeding_height_overflows_at_natural_position()
     {
-        // P2#2 — CSS Position L3 §6.3: fixed-positioned boxes are NOT
-        // paginated, so overflow can't cascade to a later page. A fixed
-        // box (height 50) with two 40px children (80 > 50): the first
-        // child fits + emits; cycle 1 CLIPS the overflow (the second
-        // child is dropped) but surfaces it LOUDLY via
-        // LAYOUT-FIXED-CONTENT-CLIPPED-001 — never a silent drop (rule
-        // #7). Proper natural-position overflow is deferred (fixed-cycle-1).
+        // Task 20 cycle 2 — CSS Position L3 §6.3: fixed-positioned boxes
+        // are NOT paginated, so content taller than the box OVERFLOWS at
+        // its natural position (CSS overflow: visible), it is NOT clipped.
+        // A fixed box (height 50) with two 40px children (80 > 50): BOTH
+        // children emit — c1 at block 0, c2 at block 40 (overflowing the
+        // 50px box). No clip diagnostic fires (cycle 1's clip is now
+        // superseded by overflow; the diagnostic is only a rule-#7
+        // backstop for content far beyond any realistic page).
         const string html = """
             <!DOCTYPE html><html><head><style>
                 .fix {
@@ -673,11 +674,12 @@ public sealed class AbsoluteLayouterProductionTests
         var (sink, diag) = await RenderAsync(html);
         var c1 = FindByClass(sink, "c1");
         var c2 = FindByClass(sink, "c2");
-        Assert.NotNull(c1);                                    // first child fits + emits
+        Assert.NotNull(c1);
+        Assert.NotNull(c2);                                    // NOT dropped — overflows
         Assert.Equal(0.0, c1!.Value.BlockOffset, precision: 3);
-        Assert.Null(c2);                                       // overflow clipped (cycle 1)
-        // ...but the clip is surfaced, not silent.
-        Assert.Contains(diag.Diagnostics, d =>
+        Assert.Equal(40.0, c2!.Value.BlockOffset, precision: 3);  // overflows the 50px box
+        // No clip — the backstop diagnostic does not fire for realistic content.
+        Assert.DoesNotContain(diag.Diagnostics, d =>
             d.Code == PaginateDiagnosticCodes.LayoutFixedContentClipped001);
     }
 

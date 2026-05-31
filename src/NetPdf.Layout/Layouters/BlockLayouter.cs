@@ -4048,23 +4048,30 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             InlineSize: placement.InlineSize,
             BlockSize: placement.BlockSize));
 
-        if (child.Children.Count > 0
-            && placement.InlineSize > 0 && placement.BlockSize > 0)
+        // Per Phase 3 Task 20 cycle 2 (+ post-PR-#116 review) — dispatch
+        // the content even when the box's resolved block-size is 0 (e.g.
+        // `height: 0` with visible overflow): pagination is suppressed, so
+        // the content overflows the box regardless, and dropping it would
+        // be exactly the clip cycle 2 removes. Only the INLINE extent
+        // gates (content needs a width to lay into). The inner
+        // fragmentainer requires a positive block extent (its ctor
+        // enforces it), so a 0/sub-px box is clamped to 1px — content
+        // still overflows from the top; the 1px CB only marginally affects
+        // a degenerate box's descendant percentage/`bottom` resolution.
+        if (child.Children.Count > 0 && placement.InlineSize > 0)
         {
-            // Per Phase 3 Task 20 cycle 2 — dispatch with `noPaginate`:
-            // pagination is suppressed (SuppressBlockPagination) so the
-            // fixed box's content lays out in one pass + OVERFLOWS the box
-            // at its natural position (CSS `overflow: visible`) rather than
-            // being clipped. Fixed boxes are not paginated (CSS Position
-            // L3 §6.3). The inner fragmentainer keeps BlockSize = the box
-            // content height, so descendant percentage / `bottom`
-            // resolution is against the box (not an inflated budget).
+            // pagination suppressed (SuppressBlockPagination) so the fixed
+            // box's content lays out in one pass + OVERFLOWS at its natural
+            // position (CSS `overflow: visible`; CSS Position L3 §6.3). The
+            // inner fragmentainer keeps BlockSize = the box content height
+            // (clamped >0), so descendant percentage / `bottom` resolution
+            // is against the box, not an inflated budget.
             DispatchAbsoluteChildContents(
                 child,
                 placement.InlineOffset,
                 placement.BlockOffset,
                 placement.InlineSize,
-                placement.BlockSize,
+                System.Math.Max(placement.BlockSize, 1.0),
                 noPaginate: true,
                 ref layout,
                 cancellationToken);

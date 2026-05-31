@@ -740,6 +740,33 @@ public sealed class AbsoluteLayouterProductionTests
         Assert.Equal(0.0, abs.Value.BlockOffset, precision: 3);
     }
 
+    [Fact]
+    public async Task PostPr116_zero_height_fixed_box_still_emits_overflowing_content()
+    {
+        // Post-PR-#116 review — a `position: fixed` box with `height: 0`
+        // and visible overflow must STILL emit its content (the content
+        // overflows the 0-height box; pagination is suppressed). Pre-fix
+        // the `placement.BlockSize > 0` dispatch guard silently skipped
+        // all children of a 0-height fixed box — a clip cycle 2 removes.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .fix {
+                    position: fixed;
+                    top: 0; left: 0; width: 100px; height: 0;
+                }
+                .c { height: 30px; }
+            </style></head><body>
+            <div class="fix"><div class="c"></div></div>
+            </body></html>
+            """;
+
+        var (sink, _) = await RenderAsync(html);
+        var c = FindByClass(sink, "c");
+        Assert.NotNull(c);                                    // NOT dropped
+        Assert.Equal(0.0, c!.Value.BlockOffset, precision: 3);  // overflows from the box top
+        Assert.Equal(30.0, c.Value.BlockSize, precision: 3);
+    }
+
     private static System.Collections.Generic.List<BoxFragment> FragmentsByClass(
         RecordingFragmentSink sink, string className) =>
         sink.Fragments.Where(f =>

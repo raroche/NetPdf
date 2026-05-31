@@ -68,6 +68,7 @@ public sealed class DeferralsParityTests
         "recursive-block-continuation-consumed-extent-accounting-deferral",
         "abspos-cycle-1-explicit-only",
         "fixed-cycle-1",
+        "layout-to-pdf-pipeline",
     };
 
     [Fact]

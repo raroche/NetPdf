@@ -71,6 +71,19 @@ internal sealed class FragmentainerContext
     /// whether to break.</summary>
     public double RemainingBlockSize => BlockSize - UsedBlockSize;
 
+    /// <summary>Per Phase 3 Task 20 cycle 2 — when <see langword="true"/>,
+    /// block-axis pagination is SUPPRESSED: the break resolver always
+    /// returns <c>Continue</c> + float deferral is skipped, so content
+    /// lays out in ONE pass and OVERFLOWS this fragmentainer at its
+    /// natural position instead of breaking to a next page. Used for
+    /// <c>position: fixed</c> content (CSS Position L3 §6.3: fixed boxes
+    /// are not paginated). Critically, <see cref="BlockSize"/> stays the
+    /// box's REAL content-area height — it remains the containing-block
+    /// extent for percentage / <c>bottom</c> resolution of descendants
+    /// (the ICB the abspos pass hands to the §6 solver) — so suppressing
+    /// pagination does NOT distort descendant geometry.</summary>
+    public bool SuppressBlockPagination { get; init; }
+
     /// <summary>Per Phase 3 plan §"Page-margin boxes &amp; running
     /// elements" — named strings set by <c>string-set: name content</c>
     /// during element layout; pulled by <c>content: string(name)</c>
@@ -127,6 +140,7 @@ internal sealed class FragmentainerContext
             PageIndex = PageIndex + 1,
             TotalPages = TotalPages,
             UsedBlockSize = 0,
+            SuppressBlockPagination = SuppressBlockPagination,
         };
         foreach (var kvp in NamedStrings) next.NamedStrings[kvp.Key] = kvp.Value;
         return next;

@@ -2649,14 +2649,19 @@ flags the categories):
     `clip` on a fixed box (actually clipping the overflow) is a separate
     `overflow`-property feature, not yet wired.
   - ~~**Fixed-box content overflow (clipped, not paginated)**~~ —
-    RESOLVED in cycle 2: fixed content is laid out with an unbounded
-    no-paginate block budget (`NoPaginateBlockBudget`), so it OVERFLOWS
-    the box at its natural position (`overflow: visible`) instead of being
-    clipped. The percentage-height concern that motivated deferral
-    doesn't apply — `ReadLengthPxOrZero` never resolves `%` block-heights
-    against the fragmentainer, so inflating the budget is safe.
-    `LAYOUT-FIXED-CONTENT-CLIPPED-001` is retained as a rule-#7 backstop
-    for content exceeding the (very large) budget.
+    RESOLVED in cycle 2 (final design per post-PR-#116 review P1): fixed
+    content is dispatched with `FragmentainerContext.SuppressBlockPagination`
+    — the break resolver returns `Continue` at every opportunity + float
+    deferral is skipped, so content lays out in ONE pass and OVERFLOWS the
+    box at its natural position (`overflow: visible`). Crucially the inner
+    fragmentainer's `BlockSize` stays the box content-area height (NOT an
+    inflated budget), so it remains the containing-block extent the §6
+    solver uses for descendant percentage / `bottom` resolution — an
+    abspos child with `bottom: 0` or `height: 100%` anchors to the box,
+    not to an artificial budget. (The initially-proposed inflated-budget
+    approach was rejected in review because the §6 solver DOES resolve
+    abspos `%`/`bottom` against the CB block extent, unlike normal-flow
+    `ReadLengthPxOrZero`.)
   - ~~**Fixed inside an abspos / fixed subtree**~~ — RESOLVED
     post-PR-#115 review P2#1: the root-owned walk now descends into
     `position: absolute` + fixed subtrees, so a fixed box nested inside
@@ -2672,8 +2677,10 @@ flags the categories):
   - `src/NetPdf.Layout/Layouters/BlockLayouter.cs` —
     `EmitFixedPositionedChildren` / `EmitFixedPositionedDescendants` /
     `EmitOneFixedBox`; the `_rootBox.Kind == Root` gate in `AttemptLayout`;
-    `DispatchAbsoluteChildContents` + `NoPaginateBlockBudget` (cycle 2
-    fixed-content overflow + the rule-#7 clip backstop).
+    `DispatchAbsoluteChildContents` (cycle 2 `noPaginate` → suppress +
+    `disableGridPagination`); the float-defer gate (~line 1180).
+  - `src/NetPdf.Paginate/FragmentainerContext.cs` (`SuppressBlockPagination`)
+    + `src/NetPdf.Paginate/BreakResolver.cs` (`ConsiderBreakAt` honors it).
   - `src/NetPdf.Layout/Layouters/ComputedStyleLayoutExtensions.cs` —
     `IsFixedPositioned` / `IsOutOfFlow`.
   - `src/NetPdf.Layout/Layouters/GridSizing.cs` (`IsGridItem`) +

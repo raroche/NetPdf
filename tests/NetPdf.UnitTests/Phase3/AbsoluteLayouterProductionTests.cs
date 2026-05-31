@@ -655,9 +655,8 @@ public sealed class AbsoluteLayouterProductionTests
         // its natural position (CSS overflow: visible), it is NOT clipped.
         // A fixed box (height 50) with two 40px children (80 > 50): BOTH
         // children emit — c1 at block 0, c2 at block 40 (overflowing the
-        // 50px box). No clip diagnostic fires (cycle 1's clip is now
-        // superseded by overflow; the diagnostic is only a rule-#7
-        // backstop for content far beyond any realistic page).
+        // 50px box) — via SuppressBlockPagination (no break), not an
+        // inflated budget.
         const string html = """
             <!DOCTYPE html><html><head><style>
                 .fix {
@@ -671,16 +670,74 @@ public sealed class AbsoluteLayouterProductionTests
             </body></html>
             """;
 
-        var (sink, diag) = await RenderAsync(html);
+        var (sink, _) = await RenderAsync(html);
         var c1 = FindByClass(sink, "c1");
         var c2 = FindByClass(sink, "c2");
         Assert.NotNull(c1);
         Assert.NotNull(c2);                                    // NOT dropped — overflows
         Assert.Equal(0.0, c1!.Value.BlockOffset, precision: 3);
         Assert.Equal(40.0, c2!.Value.BlockOffset, precision: 3);  // overflows the 50px box
-        // No clip — the backstop diagnostic does not fire for realistic content.
-        Assert.DoesNotContain(diag.Diagnostics, d =>
-            d.Code == PaginateDiagnosticCodes.LayoutFixedContentClipped001);
+    }
+
+    [Fact]
+    public async Task PostPr116_abspos_child_of_fixed_box_resolves_against_box_not_budget()
+    {
+        // Post-PR-#116 review P1 — an absolutely-positioned child of a
+        // fixed box must resolve against the FIXED BOX's content height,
+        // NOT the (no-pagination) break budget. The fixed box is 50px
+        // tall; .abs has bottom:0; height:10px → it anchors to the box
+        // BOTTOM: block offset = 50 - 10 = 40. (With the rejected
+        // inflated-budget approach it would have resolved near 1e9.)
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .fix {
+                    position: fixed;
+                    top: 100px; left: 0; width: 100px; height: 50px;
+                }
+                .abs {
+                    position: absolute;
+                    bottom: 0; left: 0; width: 20px; height: 10px;
+                }
+            </style></head><body>
+            <div class="fix"><div class="abs"></div></div>
+            </body></html>
+            """;
+
+        var (sink, _) = await RenderAsync(html);
+        var abs = FindByClass(sink, "abs");
+        Assert.NotNull(abs);
+        // Fixed box at block 100; .abs bottom:0 height:10 → box-bottom -
+        // height = 100 + (50 - 10) = 140. NOT ~1e9.
+        Assert.Equal(140.0, abs!.Value.BlockOffset, precision: 3);
+        Assert.Equal(10.0, abs.Value.BlockSize, precision: 3);
+    }
+
+    [Fact]
+    public async Task PostPr116_abspos_child_of_fixed_box_height_percent_resolves_against_box()
+    {
+        // Post-PR-#116 review P1 — `height: 100%` on an abspos child of a
+        // fixed box resolves against the FIXED BOX's content height (50),
+        // not the no-pagination budget. So .abs height = 50, NOT ~1e9.
+        const string html = """
+            <!DOCTYPE html><html><head><style>
+                .fix {
+                    position: fixed;
+                    top: 0; left: 0; width: 100px; height: 50px;
+                }
+                .abs {
+                    position: absolute;
+                    top: 0; left: 0; width: 20px; height: 100%;
+                }
+            </style></head><body>
+            <div class="fix"><div class="abs"></div></div>
+            </body></html>
+            """;
+
+        var (sink, _) = await RenderAsync(html);
+        var abs = FindByClass(sink, "abs");
+        Assert.NotNull(abs);
+        Assert.Equal(50.0, abs!.Value.BlockSize, precision: 3);   // 100% of box height, NOT 1e9
+        Assert.Equal(0.0, abs.Value.BlockOffset, precision: 3);
     }
 
     private static System.Collections.Generic.List<BoxFragment> FragmentsByClass(

@@ -481,18 +481,4 @@ internal static class PaginateDiagnosticCodes
     /// deferred + surfaced" pattern. Severity: Warning.</summary>
     public const string LayoutAbsoluteFeatureUnsupported001 =
         "LAYOUT-ABSOLUTE-FEATURE-UNSUPPORTED-001";
-
-    /// <summary>Per Phase 3 Task 20 cycle 1 post-PR-#115 review P2#2 —
-    /// emitted by <c>BlockLayouter</c> when a <c>position: fixed</c> box's
-    /// inner content exceeds the box's block-size. CSS Position L3 §6.3
-    /// says fixed-positioned boxes are NOT paginated, so the overflowing
-    /// content cannot cascade to a later page; cycle 1 CLIPS it (the
-    /// content past the box block-size is dropped). Surfaced loudly so
-    /// the truncation isn't silent — proper overflow (emit the overflow
-    /// at its natural position, CSS <c>overflow: visible</c>) needs a
-    /// break-budget-vs-containing-block-height separation in the inner
-    /// dispatch and is deferred (see
-    /// <c>docs/deferrals.md#fixed-cycle-1</c>). Severity: Warning.</summary>
-    public const string LayoutFixedContentClipped001 =
-        "LAYOUT-FIXED-CONTENT-CLIPPED-001";
 }

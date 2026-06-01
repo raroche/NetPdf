@@ -13,8 +13,8 @@ namespace NetPdf.UnitTests.Rendering;
 /// <see cref="HtmlPdf.Convert(string, HtmlPdfOptions?)"/> through the real
 /// HTML → cascade → box tree → layout → paint → PDF-bytes pipeline and assert
 /// the produced PDF is valid, deterministic, and actually paints the box's
-/// <c>background-color</c> + <c>border-*</c> edges. (Page content is emitted
-/// uncompressed, so the operator bytes are directly inspectable.)
+/// <c>background-color</c> fill. (Page content is emitted uncompressed, so the
+/// operator bytes are directly inspectable.)
 /// </summary>
 public sealed class HtmlPdfConvertTests
 {
@@ -100,6 +100,52 @@ public sealed class HtmlPdfConvertTests
 
         Assert.Equal(1, result.PageCount);
         Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+    }
+
+    [Fact]
+    public void PrintBackgrounds_false_paints_no_background()
+    {
+        var options = new HtmlPdfOptions { PrintBackgrounds = false };
+        var text = Latin1(HtmlPdf.Convert(BackgroundHtml, options));
+
+        // The background fill is suppressed — no filled-rectangle operator at all.
+        Assert.DoesNotContain("re f", text);
+        // Sanity: with backgrounds on (the default), the same document DOES paint one.
+        Assert.Contains("re f", Latin1(HtmlPdf.Convert(BackgroundHtml)));
+    }
+
+    [Fact]
+    public void Fragment_outside_the_content_box_emits_the_overflow_diagnostic()
+    {
+        // An absolutely-positioned box with a negative offset lays out to completion
+        // (AllDone — no page break) but sits outside the content box, so it paints into
+        // the margin / off-page and would be clipped. The post-layout fragment-bounds
+        // check must surface it even though there's no continuation (PR #118 review P2).
+        const string html =
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"position:absolute;left:-40px;top:10px;width:30px;height:30px;" +
+            "background-color:#3366cc\"></div>" +
+            "</body></html>";
+
+        var result = HtmlPdf.ConvertDetailed(html);
+
+        Assert.Equal(1, result.PageCount);
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.PdfContentOverflowTruncated001);
+    }
+
+    [Fact]
+    public void Partial_alpha_background_paints_opaque_and_emits_the_approximation_diagnostic()
+    {
+        const string html =
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:60px;height:40px;background-color:rgba(255,0,0,0.5)\"></div>" +
+            "</body></html>";
+
+        var result = HtmlPdf.ConvertDetailed(html);
+
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.PaintBackgroundAlphaApproximated001);
+        // Painted fully opaque (alpha ignored) → rgb(1, 0, 0).
+        Assert.Contains("1 0 0 rg", Latin1(result.Pdf));
     }
 
     [Fact]

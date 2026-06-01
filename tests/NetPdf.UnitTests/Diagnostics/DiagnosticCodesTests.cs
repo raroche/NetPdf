@@ -909,7 +909,7 @@ public sealed class DiagnosticCodesTests
     }
 
     // ============================================================
-    // Phase 5 layout→PDF wiring cycle 2 — PDF-* facade code.
+    // Phase 5 layout→PDF wiring cycle 2 — PDF-* + PAINT-* facade/paint codes.
     // ============================================================
 
     [Fact]
@@ -923,6 +923,19 @@ public sealed class DiagnosticCodesTests
         Assert.True(match.Success, "PDF-CONTENT-OVERFLOW-TRUNCATED-001 row not found in docs/diagnostics-codes.md");
         Assert.Equal("PDF-CONTENT-OVERFLOW-TRUNCATED-001", DiagnosticCodes.PdfContentOverflowTruncated001);
         Assert.Equal("Warning", match.Groups[2].Value);
+    }
+
+    [Fact]
+    public void Paint_background_alpha_approximated_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(
+            registry,
+            @"\|\s*`?(PAINT-BACKGROUND-ALPHA-APPROXIMATED-001)`?\s*\|\s*(\w+)\s*\|");
+
+        Assert.True(match.Success, "PAINT-BACKGROUND-ALPHA-APPROXIMATED-001 row not found in docs/diagnostics-codes.md");
+        Assert.Equal("PAINT-BACKGROUND-ALPHA-APPROXIMATED-001", DiagnosticCodes.PaintBackgroundAlphaApproximated001);
+        Assert.Equal("Info", match.Groups[2].Value);
     }
 
     private static string LoadRegistry()

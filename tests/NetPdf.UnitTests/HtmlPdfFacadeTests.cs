@@ -11,7 +11,7 @@ namespace NetPdf.UnitTests;
 /// <summary>
 /// Public-surface contract tests for the <see cref="HtmlPdf"/> facade. As of the
 /// Phase 5 layout→PDF "Hello World" wiring the <c>Convert</c> family renders real
-/// PDF bytes (single page, backgrounds + borders); these tests pin the entry-point
+/// PDF bytes (single page, background fills); these tests pin the entry-point
 /// contract — argument validation, the byte/stream/detailed shapes, and the
 /// version surface. Rendering behavior (paint, determinism, diagnostics) is
 /// covered by <c>HtmlPdfConvertTests</c>.
@@ -113,5 +113,45 @@ public sealed class HtmlPdfFacadeTests
     public void ConvertDetailed_throws_ArgumentNullException_for_null_html()
     {
         Assert.Throws<ArgumentNullException>(() => HtmlPdf.ConvertDetailed(html: null!));
+    }
+
+    // ── HtmlPdfOptions.Timeout (PR #118 review P1) ───────────────────────────
+
+    [Fact]
+    public void Convert_with_zero_timeout_throws_TimeoutException()
+    {
+        var options = new HtmlPdfOptions { Timeout = TimeSpan.Zero };
+        Assert.Throws<TimeoutException>(() => HtmlPdf.Convert(SampleHtml, options));
+    }
+
+    [Fact]
+    public async Task ConvertAsync_with_zero_timeout_throws_TimeoutException()
+    {
+        var options = new HtmlPdfOptions { Timeout = TimeSpan.Zero };
+        await Assert.ThrowsAsync<TimeoutException>(async () => await HtmlPdf.ConvertAsync(SampleHtml, options));
+    }
+
+    [Fact]
+    public void ConvertDetailed_with_zero_timeout_throws_TimeoutException()
+    {
+        var options = new HtmlPdfOptions { Timeout = TimeSpan.Zero };
+        Assert.Throws<TimeoutException>(() => HtmlPdf.ConvertDetailed(SampleHtml, options));
+    }
+
+    [Fact]
+    public async Task ConvertAsync_honors_caller_cancellation()
+    {
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(async () =>
+            await HtmlPdf.ConvertAsync(SampleHtml, options: null, cts.Token));
+    }
+
+    [Fact]
+    public void Convert_with_a_generous_timeout_still_succeeds()
+    {
+        var options = new HtmlPdfOptions { Timeout = TimeSpan.FromSeconds(30) };
+        var bytes = HtmlPdf.Convert(SampleHtml, options);
+        Assert.StartsWith("%PDF-", Encoding.Latin1.GetString(bytes, 0, 5));
     }
 }

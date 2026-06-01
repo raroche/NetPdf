@@ -24,8 +24,9 @@ namespace NetPdf.Rendering;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Cycle-2 scope.</b> Single-page output painting backgrounds + borders (no
-/// text — that needs the CSS font-property resolvers, TODO 1 in
+/// <b>Cycle-2 scope.</b> Single-page output painting <c>background-color</c> fills
+/// only — no text (needs the CSS font-property resolvers) and no borders (need
+/// <c>border-*-width</c> / <c>LineWidth</c> resolution), both TODO 1 in
 /// <c>deferrals.md#layout-to-pdf-pipeline</c>). The shaper is constructed
 /// forward-compatibly so text lights up automatically once those land; for
 /// text-free content it is never invoked, which also keeps output deterministic
@@ -72,6 +73,7 @@ internal static class PdfRenderPipeline
         var contentBlockPx = Math.Max(0, pageSize.HeightPx - margins.TopPx - margins.BottomPx);
 
         var sink = new ListFragmentSink();
+        var overflowReported = false;
         using (var shaper = new HarfBuzzShaperResolver(options.FontResolver ?? new SystemFontResolver()))
         using (var layouter = new BlockLayouter(
             rootBox: phase2.BoxRoot,
@@ -89,13 +91,17 @@ internal static class PdfRenderPipeline
 
             if (result.Outcome == LayoutAttemptOutcome.PageComplete && result.Continuation is not null)
             {
-                diagnostics.Emit(new Diagnostic(
-                    DiagnosticCodes.PdfContentOverflowTruncated001,
-                    "Document content exceeds a single page; only the first page is emitted in this " +
-                    "build. Multi-page output is a tracked follow-up (deferrals.md#layout-to-pdf-pipeline).",
-                    DiagnosticSeverity.Warning));
+                EmitOverflowTruncated(diagnostics);
+                overflowReported = true;
             }
         }
+
+        // Overflow that didn't surface as a page break — a fragment wider/taller than the
+        // content box, a forced-overflow AllDone, or a negative/absolute offset — would paint
+        // outside the MediaBox and be clipped silently. Surface it with the same diagnostic
+        // (PR #118 review P2).
+        if (!overflowReported && FragmentsOverflowContentRect(sink.Fragments, contentInlinePx, contentBlockPx))
+            EmitOverflowTruncated(diagnostics);
 
         cancellationToken.ThrowIfCancellationRequested();
 
@@ -111,10 +117,38 @@ internal static class PdfRenderPipeline
         var page = document.AddPage(mediaBox);
 
         FragmentPainter.PaintFragments(
-            sink.Fragments, page, mediaBox.HeightPts, margins.LeftPx, margins.TopPx);
+            sink.Fragments, page, mediaBox.HeightPts, margins.LeftPx, margins.TopPx,
+            paintBackgrounds: options.PrintBackgrounds, diagnostics);
 
         var bytes = document.Save();
         return new RenderOutcome(bytes, document.Pages.Count, diagnostics.Items);
+    }
+
+    private static void EmitOverflowTruncated(IDiagnosticsSink diagnostics) =>
+        diagnostics.Emit(new Diagnostic(
+            DiagnosticCodes.PdfContentOverflowTruncated001,
+            "Document content does not fit the single page the cycle-2 renderer emits — it " +
+            "overflows the page content area (block and/or inline), and content beyond the " +
+            "first page / content box is not rendered. Multi-page output + overflow handling " +
+            "are tracked follow-ups (deferrals.md#layout-to-pdf-pipeline).",
+            DiagnosticSeverity.Warning));
+
+    // A fragment whose border box leaves the content rect [0,contentInline]×[0,contentBlock]
+    // (CSS px, content-area-relative) paints into the margins / off-page and may be clipped.
+    private static bool FragmentsOverflowContentRect(
+        IReadOnlyList<BoxFragment> fragments, double contentInlinePx, double contentBlockPx)
+    {
+        const double eps = 0.5; // px — edge-touching (e.g. a full-width block) is not overflow.
+        for (var i = 0; i < fragments.Count; i++)
+        {
+            var f = fragments[i];
+            if (f.InlineSize <= 0 || f.BlockSize <= 0) continue;
+            if (f.InlineOffset < -eps || f.BlockOffset < -eps
+                || f.InlineOffset + f.InlineSize > contentInlinePx + eps
+                || f.BlockOffset + f.BlockSize > contentBlockPx + eps)
+                return true;
+        }
+        return false;
     }
 
     private static string PdfVersionString(PdfVersion version) => version switch

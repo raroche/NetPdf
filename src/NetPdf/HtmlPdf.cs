@@ -75,8 +75,7 @@ public static class HtmlPdf
     {
         ArgumentNullException.ThrowIfNull(html);
         ct.ThrowIfCancellationRequested();
-        var outcome = await PdfRenderPipeline
-            .RenderAsync(html, options ?? new HtmlPdfOptions(), ct)
+        var outcome = await RenderWithTimeoutAsync(html, options ?? new HtmlPdfOptions(), ct)
             .ConfigureAwait(false);
         return outcome.Pdf;
     }
@@ -93,8 +92,7 @@ public static class HtmlPdf
         ArgumentNullException.ThrowIfNull(html);
         ArgumentNullException.ThrowIfNull(output);
         ct.ThrowIfCancellationRequested();
-        var outcome = await PdfRenderPipeline
-            .RenderAsync(html, options ?? new HtmlPdfOptions(), ct)
+        var outcome = await RenderWithTimeoutAsync(html, options ?? new HtmlPdfOptions(), ct)
             .ConfigureAwait(false);
         await output.WriteAsync(outcome.Pdf, ct).ConfigureAwait(false);
     }
@@ -105,9 +103,8 @@ public static class HtmlPdf
     public static PdfRenderResult ConvertDetailed(string html, HtmlPdfOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(html);
-        var outcome = PdfRenderPipeline
-            .RenderAsync(html, options ?? new HtmlPdfOptions(), CancellationToken.None)
-            .GetAwaiter().GetResult();
+        var outcome = RenderWithTimeoutAsync(html, options ?? new HtmlPdfOptions(), CancellationToken.None)
+            .AsTask().GetAwaiter().GetResult();
 
         // Cycle-2 surface: the bytes, page count, and the full diagnostic set are
         // real. Richer LayoutMetrics (block / inline / glyph counts, display-command
@@ -136,6 +133,38 @@ public static class HtmlPdf
             Timing = default,
             PageCount = outcome.PageCount,
         };
+    }
+
+    /// <summary>
+    /// Run the render pipeline, applying <see cref="HtmlPdfOptions.Timeout"/> as a hard cap.
+    /// A linked <see cref="CancellationTokenSource"/> combines the caller's <paramref name="ct"/>
+    /// with the timeout; when the timeout fires (and the caller did not itself cancel) the
+    /// resulting <see cref="OperationCanceledException"/> is surfaced as a
+    /// <see cref="TimeoutException"/>, while caller cancellation propagates as
+    /// <see cref="OperationCanceledException"/>. A non-positive timeout cancels immediately
+    /// (so <see cref="TimeSpan.Zero"/> fails fast). When the timeout is <see langword="null"/>
+    /// the caller token is used unchanged.
+    /// </summary>
+    private static async ValueTask<PdfRenderPipeline.RenderOutcome> RenderWithTimeoutAsync(
+        string html, HtmlPdfOptions options, CancellationToken ct)
+    {
+        if (options.Timeout is not { } timeout)
+            return await PdfRenderPipeline.RenderAsync(html, options, ct).ConfigureAwait(false);
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        if (timeout <= TimeSpan.Zero) timeoutCts.Cancel();
+        else timeoutCts.CancelAfter(timeout);
+
+        try
+        {
+            timeoutCts.Token.ThrowIfCancellationRequested();
+            return await PdfRenderPipeline.RenderAsync(html, options, timeoutCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"HTML-to-PDF conversion exceeded the configured timeout of {timeout}.");
+        }
     }
 
     /// <summary>

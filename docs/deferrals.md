@@ -2745,6 +2745,20 @@ flags the categories):
   `PdfPage.FillRectangle` unit + 8 `HtmlPdf.Convert` integration
   (well-formed PDF / background painted / determinism / MediaBox / async
   parity / page count / overflow diagnostic / blank-text doc).
+- **Done — cycle 2 review hardening (PR #118)** — `HtmlPdfOptions.Timeout`
+  is honored: the facade wraps the render in a linked
+  `CancellationTokenSource` (non-positive → immediate; timeout →
+  `TimeoutException`; caller cancel → `OperationCanceledException`).
+  `PrintBackgrounds: false` skips background painting. Partial-alpha
+  backgrounds (0 < α < 255) paint fully opaque + emit
+  `PAINT-BACKGROUND-ALPHA-APPROXIMATED-001` — proper PDF constant-alpha
+  compositing (ExtGState `/ca`) is a follow-up. The overflow diagnostic
+  also fires from a post-layout fragment-bounds check (inline overflow /
+  forced-overflow AllDone / negative offsets), not just the `PageComplete`
+  continuation path. The HarfBuzz resolver trust boundary
+  (`FontSafetyValidator` before HarfBuzz + synchronous-completion
+  fail-fast) was already in place from cycle 1 — unchanged, now reachable
+  through the facade.
 - **TODOs (remaining chain, in order)** —
   1. **CSS dimension-property resolution (font-size + line-width)** — wire
      `FontSizeResolver` (em/rem/%/keyword relative to the parent),

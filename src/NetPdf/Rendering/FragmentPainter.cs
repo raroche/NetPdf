@@ -34,7 +34,9 @@ namespace NetPdf.Rendering;
 /// changes border-box sizing + re-pins layout baselines), so border painting lands
 /// with that resolution work. Tracked in <c>deferrals.md#layout-to-pdf-pipeline</c>.
 /// Also deferred: background images / gradients, border-radius, and alpha
-/// compositing (colors paint fully opaque; fully transparent fills are skipped).
+/// compositing — partial-alpha colors paint fully opaque and emit
+/// <c>PAINT-BACKGROUND-ALPHA-APPROXIMATED-001</c>; fully transparent fills are
+/// skipped.
 /// </para>
 /// </remarks>
 internal static class FragmentPainter
@@ -52,13 +54,25 @@ internal static class FragmentPainter
     /// <param name="contentOriginLeftPx">Left page margin in CSS px (fragments are
     /// content-area-relative; this offsets them into page space).</param>
     /// <param name="contentOriginTopPx">Top page margin in CSS px.</param>
+    /// <param name="paintBackgrounds">Honors <c>HtmlPdfOptions.PrintBackgrounds</c> — when
+    /// <see langword="false"/>, no background is painted.</param>
+    /// <param name="diagnostics">Sink for paint diagnostics (partial-alpha approximation);
+    /// <see langword="null"/> drops them.</param>
     public static void PaintFragments(
         IReadOnlyList<BoxFragment> fragments,
         PdfPage page,
         double pageHeightPt,
         double contentOriginLeftPx,
-        double contentOriginTopPx)
+        double contentOriginTopPx,
+        bool paintBackgrounds,
+        IDiagnosticsSink? diagnostics)
     {
+        // Backgrounds are all this cycle paints, so HtmlPdfOptions.PrintBackgrounds=false
+        // skips everything (per PR #118 review P1). When borders / text land, this becomes
+        // a per-feature gate (borders + text are foreground, unaffected by PrintBackgrounds).
+        if (!paintBackgrounds) return;
+
+        var alphaApproximationReported = false;
         for (var i = 0; i < fragments.Count; i++)
         {
             var fragment = fragments[i];
@@ -72,17 +86,34 @@ internal static class FragmentPainter
             var heightPx = fragment.BlockSize;
             if (widthPx <= 0 || heightPx <= 0) continue;
 
-            PaintBackground(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx);
+            PaintBackground(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx,
+                diagnostics, ref alphaApproximationReported);
         }
     }
 
     private static void PaintBackground(
         PdfPage page, ComputedStyle style, double pageHeightPt,
-        double leftPx, double topPx, double widthPx, double heightPx)
+        double leftPx, double topPx, double widthPx, double heightPx,
+        IDiagnosticsSink? diagnostics, ref bool alphaApproximationReported)
     {
         if (!TryResolveColor(style.Get(PropertyId.BackgroundColor), ResolveCurrentColor(style), out var argb))
             return;
-        if (Alpha(argb) == 0) return; // transparent (the initial value) paints nothing.
+        var alpha = Alpha(argb);
+        if (alpha == 0) return; // transparent (the initial value) paints nothing.
+
+        // Partial alpha is painted fully opaque — PDF constant-alpha (ExtGState /ca)
+        // compositing isn't wired yet. Surface the approximation rather than silently
+        // mis-render a translucent overlay as solid (PR #118 review P2).
+        if (alpha < 255 && !alphaApproximationReported)
+        {
+            diagnostics?.Emit(new Diagnostic(
+                DiagnosticCodes.PaintBackgroundAlphaApproximated001,
+                "A background-color with partial alpha (0 < alpha < 255) was painted fully " +
+                "opaque — alpha compositing (PDF ExtGState /ca) is a tracked follow-up " +
+                "(deferrals.md#layout-to-pdf-pipeline).",
+                DiagnosticSeverity.Info));
+            alphaApproximationReported = true;
+        }
 
         ColorChannels(argb, out var r, out var g, out var b);
         ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var x, out var y, out var w, out var h);

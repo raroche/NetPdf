@@ -172,6 +172,7 @@ internal static class BoxBuilder
             ApplyDefaults(brStyle);
             ApplyInheritance(brStyle, parentStyle);
             ApplyResolvedDeclarations(brStyle, cascade.TryGetStylesFor(element), diagnostics);
+            ResolveDeferredFontProperties(brStyle, parentStyle);
             // BoxKind.LineBreak with the source element so diagnostics still
             // point back to the right DOM node. The kind is inline-level.
             return new[] { Box.ForElement(BoxKind.LineBreak, brStyle, element) };
@@ -346,6 +347,7 @@ internal static class BoxBuilder
         if (markerRules is not null)
         {
             ApplyMarkerApplicableDeclarations(markerStyle, markerRules, diagnostics);
+            ResolveDeferredFontProperties(markerStyle, hostStyle);
         }
 
         // Per PR #10 review Rec 2: read the EFFECTIVE list-style-type AFTER
@@ -713,6 +715,7 @@ internal static class BoxBuilder
             ApplyDefaults(s);
             ApplyInheritance(s, elementStyle);
             ApplyResolvedDeclarations(s, firstLineRules, diagnostics);
+            ResolveDeferredFontProperties(s, elementStyle);
             box.FirstLineStyle = s;
         }
 
@@ -723,6 +726,7 @@ internal static class BoxBuilder
             ApplyDefaults(s);
             ApplyInheritance(s, elementStyle);
             ApplyResolvedDeclarations(s, firstLetterRules, diagnostics);
+            ResolveDeferredFontProperties(s, elementStyle);
             box.FirstLetterStyle = s;
         }
     }
@@ -832,6 +836,7 @@ internal static class BoxBuilder
         ApplyDefaults(pseudoStyle);
         ApplyInheritance(pseudoStyle, hostStyle);
         ApplyResolvedDeclarations(pseudoStyle, ruleSet, diagnostics);
+        ResolveDeferredFontProperties(pseudoStyle, hostStyle);
 
         // Per CSS Pseudo L4 §3.1: ::before / ::after default to display:inline
         // unless the cascade explicitly sets otherwise. We must NOT fall back
@@ -1773,6 +1778,17 @@ internal static class BoxBuilder
                 if (!parentSlot.IsUnset)
                 {
                     style.Set(meta.Id, parentSlot);
+                    // A SideTableIndex slot is only a marker into the OWNER's side
+                    // table; an inherited side-table value (e.g. the font-family
+                    // list) must carry its payload too, or the child reads the
+                    // property default (Phase 5 cycle 4 — was dropping inherited
+                    // font-family to `serif`).
+                    if (parentSlot.Tag == ComputedSlotTag.SideTableIndex
+                        && parentStyle.TryGetSideTablePayloadRaw(meta.Id, out var payload)
+                        && payload is not null)
+                    {
+                        style.SetSideTablePayload(meta.Id, payload);
+                    }
                 }
                 else if (parentStyle.TryGetDeferred(meta.Id, out var raw) && raw is not null)
                 {

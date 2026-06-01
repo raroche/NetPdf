@@ -450,6 +450,21 @@ internal sealed class ComputedStyle : IDisposable
         return false;
     }
 
+    /// <summary>Per Phase 5 layout→PDF cycle 4 — read the side-table payload for
+    /// <paramref name="id"/> as the raw boxed object, regardless of type. Used by
+    /// inheritance to carry an inherited side-table value (e.g. a font-family list)
+    /// from the parent: the inherited slot is only a <see cref="ComputedSlotTag.SideTableIndex"/>
+    /// marker, so its payload must be copied alongside it or the child reads the
+    /// property's default.</summary>
+    public bool TryGetSideTablePayloadRaw(PropertyId id, out object? payload)
+    {
+        ThrowIfDisposed();
+        if (_sideTablePayloads is not null && _sideTablePayloads.TryGetValue(id, out payload))
+            return true;
+        payload = null;
+        return false;
+    }
+
     /// <summary>Per Phase 3 Task 17 cycle 0b — read the side-table payload as a
     /// value-type via the boxed-object stash. Mirrors the class-typed overload
     /// but unboxes the value type; <c>GridLineValue</c> is the cycle-0b consumer

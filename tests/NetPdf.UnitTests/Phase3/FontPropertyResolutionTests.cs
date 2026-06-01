@@ -32,6 +32,31 @@ public sealed class FontPropertyResolutionTests
         return null;
     }
 
+    private static Box? FindPseudo(Box box, BoxPseudo pseudo)
+    {
+        if (box.Pseudo == pseudo) return box;
+        foreach (var child in box.Children)
+        {
+            var found = FindPseudo(child, pseudo);
+            if (found is not null) return found;
+        }
+        return null;
+    }
+
+    [Fact]
+    public async Task Pseudo_element_font_size_em_resolves_against_the_host()
+    {
+        // ::before's font-size:2em must resolve against the host <p>'s 10px → 20px.
+        // (Covers ResolveDeferredFontProperties being wired into the pseudo path,
+        // not just the element path.)
+        var html = "<!DOCTYPE html><html><head><style>p::before{content:'x';font-size:2em}</style>" +
+            "</head><body><p style=\"font-size:10px\">y</p></body></html>";
+        var phase2 = await Phase2Pipeline.RunFromHtmlAsync(html, new HtmlPdfOptions());
+        var before = FindPseudo(phase2.BoxRoot, BoxPseudo.Before);
+        Assert.NotNull(before);
+        Assert.Equal(20.0, before!.Style.Get(PropertyId.FontSize).AsLengthPx(), 3);
+    }
+
     private static async Task<Box> ParentChildAsync(string parentDecl, string childDecl)
     {
         var html = "<!DOCTYPE html><html><body>" +
@@ -70,6 +95,19 @@ public sealed class FontPropertyResolutionTests
     {
         var p = await ParentChildAsync("", "font-family:Arial, sans-serif");
         Assert.Equal(new[] { "Arial", "sans-serif" }, p.Style.ReadFontFamily().Families.ToArray());
+    }
+
+    [Fact]
+    public async Task Inherited_font_family_propagates_to_descendants()
+    {
+        // body sets the family; the <p> doesn't redeclare it → it must INHERIT the
+        // list (the canonical `body { font-family: ... }` pattern).
+        var html = "<!DOCTYPE html><html><body style=\"font-family:Arial, sans-serif\">" +
+            "<p>x</p></body></html>";
+        var phase2 = await Phase2Pipeline.RunFromHtmlAsync(html, new HtmlPdfOptions());
+        var p = FindByTag(phase2.BoxRoot, "p");
+        Assert.NotNull(p);
+        Assert.Equal(new[] { "Arial", "sans-serif" }, p!.Style.ReadFontFamily().Families.ToArray());
     }
 
     [Fact]

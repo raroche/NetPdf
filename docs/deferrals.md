@@ -2794,6 +2794,31 @@ flags the categories):
   (need the root font-size threaded through the walk) and general font-relative
   lengths on non-font properties (`padding:1em`, `width:10em`) — both still
   return `Deferred` (= 0 / 16px default) as before.
+- **Post-PR-#120 review — deferred follow-ups** (Roland's review of cycle 4; the
+  inherited-font-family P1 + the pseudo/marker/first-line/`br` resolution P2 were
+  fixed IN the PR, `795f544`). STILL OPEN, for a follow-up cycle:
+  - **(P1) `font-size: 0`** — `HarfBuzzShaperResolver` clamps a resolved size
+    ≤ 0 back to the 16px default, so zero-size text would render at 16px once
+    text paints (CSS Fonts 4 allows `[0, ∞]`). Needs a zero-size strategy
+    (zero-advance shaping or suppress glyph emission) + a `font-size:0` test.
+    Not user-visible until the text-paint cycle, but fix it there or before.
+  - **(P2) `FontSizeResolver` over-defers invalid relative input** —
+    `IsParentRelative` accepts anything ending in `%`/`em`/`ex`/`ch` before
+    validating the numeric prefix, so `-50%`, `-1em`, or an identifier ending in
+    `em` defer + fall back to 16px instead of invalidating. Validate the prefix +
+    reject negative relative sizes with `CSS-PROPERTY-VALUE-INVALID-001` (fall
+    back to inherited). (Also fixes the cosmetic `rem`-matches-`em`-suffix routing.)
+  - **(P2) `FontFamilyListResolver` syntax strictness** — it sanitizes malformed
+    lists (trailing / double commas, unclosed quotes, numeric- or
+    punctuation-leading unquoted idents) instead of rejecting them as Invalid +
+    diagnostic per the CSS Fonts `<family-name>` grammar.
+  - **(P2) Font-family fallback stack** — `HarfBuzzShaperResolver` only tries
+    `FontFamilyList.Primary` then `_defaultFamily`, skipping the rest of the
+    author stack (`MissingFont, Arial, sans-serif` never tries Arial). Implement
+    stack-walking or add a known-gap skipped test.
+  - **(P3) Stale docs** — refresh "font-* not wired" comments in
+    `HarfBuzzShaperResolver` XML docs, the `ResolverResult` UnsupportedUnvalidated
+    backlog comment, and `HarfBuzzShaperResolverTests`.
 - **TODOs (remaining chain, in order)** —
   1. **CSS font-property resolution** — DONE (cycle 4): `font-size` /
      `font-family` / `font-weight` resolve (see the cycle-4 done note). A focused

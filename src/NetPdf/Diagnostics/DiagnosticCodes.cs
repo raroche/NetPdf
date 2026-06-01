@@ -639,4 +639,36 @@ internal static class DiagnosticCodes
         "LAYOUT-GRID-RESUME-CACHE-REJECTED-001";
 
     // endregion LAYOUT-*
+
+    // region PDF-*
+
+    /// <summary>
+    /// Per Phase 5 layout→PDF wiring cycle 2 — emitted by the public facade when a
+    /// document's laid-out content exceeds a single page but the cycle-2 renderer
+    /// emits only the first page. The first page renders correctly; content that
+    /// would flow onto subsequent pages is not yet emitted. The multi-page driver
+    /// (looping <c>BlockLayouter.AttemptLayout</c> over continuations, a page per
+    /// fragmentainer) is a tracked follow-up — see
+    /// <c>docs/deferrals.md#layout-to-pdf-pipeline</c>. Surfaced rather than
+    /// silently dropped per the diagnostics-not-silent-corruption rule. Fires at
+    /// most once per conversion. Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string PdfContentOverflowTruncated001 = "PDF-CONTENT-OVERFLOW-TRUNCATED-001";
+
+    // endregion PDF-*
+
+    // region PAINT-*
+
+    /// <summary>
+    /// Per Phase 5 layout→PDF wiring cycle 2 (PR #118 review) — emitted by the
+    /// <c>FragmentPainter</c> when a <c>background-color</c> with partial alpha
+    /// (0 &lt; alpha &lt; 255) is painted fully opaque, because PDF constant-alpha
+    /// compositing (ExtGState <c>/ca</c>) isn't implemented yet. Fully transparent
+    /// (alpha 0) backgrounds paint nothing and do NOT emit this. Fires at most once
+    /// per conversion. Tracked in <c>docs/deferrals.md#layout-to-pdf-pipeline</c>.
+    /// Severity: <see cref="DiagnosticSeverity.Info"/>.
+    /// </summary>
+    public const string PaintBackgroundAlphaApproximated001 = "PAINT-BACKGROUND-ALPHA-APPROXIMATED-001";
+
+    // endregion PAINT-*
 }

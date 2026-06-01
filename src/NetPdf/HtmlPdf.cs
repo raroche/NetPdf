@@ -3,6 +3,7 @@
 
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using NetPdf.Rendering;
 
 namespace NetPdf;
 
@@ -11,24 +12,23 @@ namespace NetPdf;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Phase 2 alpha (`0.3.0-alpha`) status — call sites still throw.</b> All
-/// <see cref="Convert(string, HtmlPdfOptions?)"/> /
-/// <see cref="ConvertAsync(string, HtmlPdfOptions?, CancellationToken)"/> /
-/// <see cref="ConvertDetailed(string, HtmlPdfOptions?)"/> overloads currently throw
-/// <see cref="NotImplementedException"/>. As of <c>0.3.0-alpha</c> the HTML parsing →
-/// CSS cascade → typed property resolve → box-tree generation → semantic-tree generation
-/// pipeline is complete and exercised by 3220 unit tests + 96 corpus integration tests
-/// + 30 layout snapshot tests; the deterministic PDF byte writer, OpenType subsetting,
-/// WOFF/WOFF2, image embedding, and full UAX #9/#14/#29 text shaping shipped in Phase 1.
-/// What's missing between "HTML in" and "PDF bytes out" is fragmentainer-aware layout
-/// + pagination (Phase 3) and paint (Phase 4); the public facade itself wires through
-/// in Phase 5.
+/// <b>Phase 5 layout→PDF wiring — early (cycle 2).</b> The facade now renders end
+/// to end: HTML → cascade → box tree → fragmentainer-aware layout → paint → PDF
+/// bytes. The cycle-2 paint bridge emits each box's <c>background-color</c> fill,
+/// on a single page. Deliberately not yet painted
+/// (tracked in <c>docs/deferrals.md#layout-to-pdf-pipeline</c>): <b>text runs</b>
+/// (waiting on the CSS font-property resolvers), <b>borders</b> (waiting on
+/// <c>border-*-width</c> / <c>LineWidth</c> resolution), background images /
+/// gradients, and multi-page output — content overflowing the first page is
+/// reported via <c>PDF-CONTENT-OVERFLOW-TRUNCATED-001</c> rather than dropped
+/// silently. Output is deterministic (text-free content shapes no glyphs, so the
+/// system-font dependency does not affect the bytes).
 /// </para>
 /// <para>
 /// <b>Pipeline status:</b>
 /// parse (AngleSharp) ✅ → style (AngleSharp.Css + custom cascade) ✅ → box gen ✅
-/// → fragmentainer-aware layout (Phase 3) → paint (Phase 4) → emit (✅ — internal,
-/// not yet bridged from layout). JavaScript in the input is ignored with a
+/// → fragmentainer-aware layout ✅ → paint (backgrounds ✅; borders + text pending)
+/// → emit ✅. JavaScript in the input is ignored with a
 /// <c>HTML-SCRIPT-IGNORED-001</c> diagnostic; see <c>docs/compatibility-matrix.md</c>.
 /// </para>
 /// <para>
@@ -68,25 +68,22 @@ public static class HtmlPdf
     /// <summary>
     /// Convert HTML to PDF asynchronously. Use this when external resources may be loaded.
     /// </summary>
-    public static ValueTask<byte[]> ConvertAsync(
+    public static async ValueTask<byte[]> ConvertAsync(
         string html,
         HtmlPdfOptions? options = null,
         CancellationToken ct = default)
     {
         ArgumentNullException.ThrowIfNull(html);
         ct.ThrowIfCancellationRequested();
-        throw new NotImplementedException(
-            "NetPdf 0.3.0-alpha — the public HtmlPdf.Convert facade is not yet wired. " +
-            "Phase 1 shipped the deterministic PDF byte writer; Phase 2 shipped HTML " +
-            "parsing + CSS cascade + box-tree generation. Phase 3 wires fragmentainer-" +
-            "aware layout + pagination, Phase 4 wires paint, Phase 5 bridges the public " +
-            "facade through to the byte writer. Track progress in CHANGELOG.md and PROGRESS.md.");
+        var outcome = await RenderWithTimeoutAsync(html, options ?? new HtmlPdfOptions(), ct)
+            .ConfigureAwait(false);
+        return outcome.Pdf;
     }
 
     /// <summary>
     /// Convert HTML to PDF, writing the bytes to <paramref name="output"/> as they're produced.
     /// </summary>
-    public static ValueTask ConvertAsync(
+    public static async ValueTask ConvertAsync(
         string html,
         Stream output,
         HtmlPdfOptions? options = null,
@@ -95,12 +92,9 @@ public static class HtmlPdf
         ArgumentNullException.ThrowIfNull(html);
         ArgumentNullException.ThrowIfNull(output);
         ct.ThrowIfCancellationRequested();
-        throw new NotImplementedException(
-            "NetPdf 0.3.0-alpha — the public HtmlPdf.Convert facade is not yet wired. " +
-            "Phase 1 shipped the deterministic PDF byte writer; Phase 2 shipped HTML " +
-            "parsing + CSS cascade + box-tree generation. Phase 3 wires fragmentainer-" +
-            "aware layout + pagination, Phase 4 wires paint, Phase 5 bridges the public " +
-            "facade through to the byte writer. Track progress in CHANGELOG.md and PROGRESS.md.");
+        var outcome = await RenderWithTimeoutAsync(html, options ?? new HtmlPdfOptions(), ct)
+            .ConfigureAwait(false);
+        await output.WriteAsync(outcome.Pdf, ct).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -109,12 +103,68 @@ public static class HtmlPdf
     public static PdfRenderResult ConvertDetailed(string html, HtmlPdfOptions? options = null)
     {
         ArgumentNullException.ThrowIfNull(html);
-        throw new NotImplementedException(
-            "NetPdf 0.3.0-alpha — the public HtmlPdf.Convert facade is not yet wired. " +
-            "Phase 1 shipped the deterministic PDF byte writer; Phase 2 shipped HTML " +
-            "parsing + CSS cascade + box-tree generation. Phase 3 wires fragmentainer-" +
-            "aware layout + pagination, Phase 4 wires paint, Phase 5 bridges the public " +
-            "facade through to the byte writer. Track progress in CHANGELOG.md and PROGRESS.md.");
+        var outcome = RenderWithTimeoutAsync(html, options ?? new HtmlPdfOptions(), CancellationToken.None)
+            .AsTask().GetAwaiter().GetResult();
+
+        // Cycle-2 surface: the bytes, page count, and the full diagnostic set are
+        // real. Richer LayoutMetrics (block / inline / glyph counts, display-command
+        // totals) and per-stage Timing are not yet wired — they're populated once
+        // the paint pipeline + multi-page driver land. See
+        // docs/deferrals.md#layout-to-pdf-pipeline.
+        return new PdfRenderResult
+        {
+            Pdf = outcome.Pdf,
+            Warnings = outcome.Diagnostics,
+            UnsupportedFeatures = Array.Empty<UnsupportedFeature>(),
+            ResourceFailures = Array.Empty<ResourceFailure>(),
+            LayoutMetrics = new LayoutMetrics
+            {
+                PageCount = outcome.PageCount,
+                BlockCount = 0,
+                InlineCount = 0,
+                TextRunCount = 0,
+                ImageCount = 0,
+                FontFaceCount = 0,
+                FontGlyphCount = 0,
+                TotalDisplayCommands = 0,
+                RasterFallbackCount = 0,
+                PaginationOptimizerStateCount = 0,
+            },
+            Timing = default,
+            PageCount = outcome.PageCount,
+        };
+    }
+
+    /// <summary>
+    /// Run the render pipeline, applying <see cref="HtmlPdfOptions.Timeout"/> as a hard cap.
+    /// A linked <see cref="CancellationTokenSource"/> combines the caller's <paramref name="ct"/>
+    /// with the timeout; when the timeout fires (and the caller did not itself cancel) the
+    /// resulting <see cref="OperationCanceledException"/> is surfaced as a
+    /// <see cref="TimeoutException"/>, while caller cancellation propagates as
+    /// <see cref="OperationCanceledException"/>. A non-positive timeout cancels immediately
+    /// (so <see cref="TimeSpan.Zero"/> fails fast). When the timeout is <see langword="null"/>
+    /// the caller token is used unchanged.
+    /// </summary>
+    private static async ValueTask<PdfRenderPipeline.RenderOutcome> RenderWithTimeoutAsync(
+        string html, HtmlPdfOptions options, CancellationToken ct)
+    {
+        if (options.Timeout is not { } timeout)
+            return await PdfRenderPipeline.RenderAsync(html, options, ct).ConfigureAwait(false);
+
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        if (timeout <= TimeSpan.Zero) timeoutCts.Cancel();
+        else timeoutCts.CancelAfter(timeout);
+
+        try
+        {
+            timeoutCts.Token.ThrowIfCancellationRequested();
+            return await PdfRenderPipeline.RenderAsync(html, options, timeoutCts.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            throw new TimeoutException(
+                $"HTML-to-PDF conversion exceeded the configured timeout of {timeout}.");
+        }
     }
 
     /// <summary>

@@ -140,6 +140,45 @@ internal sealed class PdfPage
         return resourceName;
     }
 
+    /// <summary>
+    /// Fill an axis-aligned rectangle with a solid RGB color. Coordinates are in
+    /// PDF points with the origin at the page's bottom-left (the <c>re</c>-operator
+    /// convention — callers apply any CSS-px → pt scale + y-flip first);
+    /// <paramref name="r"/> / <paramref name="g"/> / <paramref name="b"/> are in
+    /// [0, 1] and are clamped. A non-positive <paramref name="width"/> or
+    /// <paramref name="height"/> is a no-op — a degenerate rectangle paints
+    /// nothing. The fill is wrapped in its own <c>q</c> / <c>Q</c> graphics-state
+    /// pair so the color does not leak into subsequent operators. Used by the
+    /// layout → PDF paint bridge for backgrounds + solid border edges.
+    /// </summary>
+    public void FillRectangle(double x, double y, double width, double height, double r, double g, double b)
+    {
+        ThrowIfFinalized();
+        if (!double.IsFinite(x) || !double.IsFinite(y) || !double.IsFinite(width) || !double.IsFinite(height))
+        {
+            throw new ArgumentException(
+                $"FillRectangle coordinates must be finite; got x={x}, y={y}, width={width}, height={height}.");
+        }
+        if (width <= 0 || height <= 0) return;
+
+        r = Math.Clamp(r, 0.0, 1.0);
+        g = Math.Clamp(g, 0.0, 1.0);
+        b = Math.Clamp(b, 0.0, 1.0);
+
+        // q <r> <g> <b> rg <x> <y> <w> <h> re f Q — set fill color, append the
+        // rectangle path, fill (non-zero winding), restore graphics state.
+        var sb = new StringBuilder(64);
+        sb.Append("q ");
+        AppendNumber(sb, r); sb.Append(' ');
+        AppendNumber(sb, g); sb.Append(' ');
+        AppendNumber(sb, b); sb.Append(" rg ");
+        AppendNumber(sb, x); sb.Append(' ');
+        AppendNumber(sb, y); sb.Append(' ');
+        AppendNumber(sb, width); sb.Append(' ');
+        AppendNumber(sb, height); sb.Append(" re f Q\n");
+        AppendContent(sb.ToString());
+    }
+
     private static void AppendNumber(StringBuilder sb, double value)
     {
         // PDF numbers are written without exponent notation, finite, with a maximum

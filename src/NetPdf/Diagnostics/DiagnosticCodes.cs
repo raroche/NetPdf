@@ -682,5 +682,18 @@ internal static class DiagnosticCodes
     /// </summary>
     public const string PaintBorderStyleApproximated001 = "PAINT-BORDER-STYLE-APPROXIMATED-001";
 
+    /// <summary>
+    /// Per Phase 5 layout→PDF wiring cycle 3 (PR #119 review) — emitted by the
+    /// <c>FragmentPainter</c> when a border color with partial alpha
+    /// (0 &lt; alpha &lt; 255) is painted fully opaque, because PDF constant-alpha
+    /// compositing (ExtGState <c>/ca</c>) isn't implemented yet — the border
+    /// counterpart of <see cref="PaintBackgroundAlphaApproximated001"/>. A fully
+    /// transparent (alpha 0) border color paints nothing and does NOT emit this.
+    /// Fires at most once per conversion. Tracked in
+    /// <c>docs/deferrals.md#layout-to-pdf-pipeline</c>.
+    /// Severity: <see cref="DiagnosticSeverity.Info"/>.
+    /// </summary>
+    public const string PaintBorderAlphaApproximated001 = "PAINT-BORDER-ALPHA-APPROXIMATED-001";
+
     // endregion PAINT-*
 }

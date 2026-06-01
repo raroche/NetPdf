@@ -172,6 +172,7 @@ internal static class BoxBuilder
             ApplyDefaults(brStyle);
             ApplyInheritance(brStyle, parentStyle);
             ApplyResolvedDeclarations(brStyle, cascade.TryGetStylesFor(element), diagnostics);
+            ResolveDeferredFontProperties(brStyle, parentStyle);
             // BoxKind.LineBreak with the source element so diagnostics still
             // point back to the right DOM node. The kind is inline-level.
             return new[] { Box.ForElement(BoxKind.LineBreak, brStyle, element) };
@@ -181,6 +182,7 @@ internal static class BoxBuilder
         ApplyDefaults(style);
         ApplyInheritance(style, parentStyle);
         ApplyResolvedDeclarations(style, cascade.TryGetStylesFor(element), diagnostics);
+        ResolveDeferredFontProperties(style, parentStyle);
 
         var displayText = ReadDisplay(style, element);
         var mapResult = DisplayMapper.Map(displayText, element.LocalName, out var kind);
@@ -345,6 +347,7 @@ internal static class BoxBuilder
         if (markerRules is not null)
         {
             ApplyMarkerApplicableDeclarations(markerStyle, markerRules, diagnostics);
+            ResolveDeferredFontProperties(markerStyle, hostStyle);
         }
 
         // Per PR #10 review Rec 2: read the EFFECTIVE list-style-type AFTER
@@ -712,6 +715,7 @@ internal static class BoxBuilder
             ApplyDefaults(s);
             ApplyInheritance(s, elementStyle);
             ApplyResolvedDeclarations(s, firstLineRules, diagnostics);
+            ResolveDeferredFontProperties(s, elementStyle);
             box.FirstLineStyle = s;
         }
 
@@ -722,6 +726,7 @@ internal static class BoxBuilder
             ApplyDefaults(s);
             ApplyInheritance(s, elementStyle);
             ApplyResolvedDeclarations(s, firstLetterRules, diagnostics);
+            ResolveDeferredFontProperties(s, elementStyle);
             box.FirstLetterStyle = s;
         }
     }
@@ -831,6 +836,7 @@ internal static class BoxBuilder
         ApplyDefaults(pseudoStyle);
         ApplyInheritance(pseudoStyle, hostStyle);
         ApplyResolvedDeclarations(pseudoStyle, ruleSet, diagnostics);
+        ResolveDeferredFontProperties(pseudoStyle, hostStyle);
 
         // Per CSS Pseudo L4 §3.1: ::before / ::after default to display:inline
         // unless the cascade explicitly sets otherwise. We must NOT fall back
@@ -1772,6 +1778,17 @@ internal static class BoxBuilder
                 if (!parentSlot.IsUnset)
                 {
                     style.Set(meta.Id, parentSlot);
+                    // A SideTableIndex slot is only a marker into the OWNER's side
+                    // table; an inherited side-table value (e.g. the font-family
+                    // list) must carry its payload too, or the child reads the
+                    // property default (Phase 5 cycle 4 — was dropping inherited
+                    // font-family to `serif`).
+                    if (parentSlot.Tag == ComputedSlotTag.SideTableIndex
+                        && parentStyle.TryGetSideTablePayloadRaw(meta.Id, out var payload)
+                        && payload is not null)
+                    {
+                        style.SetSideTablePayload(meta.Id, payload);
+                    }
                 }
                 else if (parentStyle.TryGetDeferred(meta.Id, out var raw) && raw is not null)
                 {
@@ -1801,6 +1818,36 @@ internal static class BoxBuilder
             var location = winner.OriginalDeclaration.Location;
             var result = PropertyResolverDispatch.Resolve(id, winner.ResolvedValue, diagnostics, location);
             result.MaterializeInto(style, id);
+        }
+    }
+
+    /// <summary>Per Phase 5 layout→PDF cycle 4 — resolve the parent-relative font
+    /// properties that <see cref="FontSizeResolver"/> / <see cref="FontWeightResolver"/>
+    /// deferred (em/%/larger/smaller <c>font-size</c>, bolder/lighter
+    /// <c>font-weight</c>) against the parent's resolved values. Runs in the
+    /// top-down walk after defaults + inheritance + declarations, so the parent is
+    /// fully resolved. <c>rem</c> / viewport <c>font-size</c> + general font-relative
+    /// lengths on other properties stay deferred (a documented follow-up); the 16px
+    /// default reader applies until then.</summary>
+    private static void ResolveDeferredFontProperties(ComputedStyle style, ComputedStyle parentStyle)
+    {
+        if (style.TryGetDeferred(PropertyId.FontSize, out var rawSize) && rawSize is not null)
+        {
+            var parentSlot = parentStyle.Get(PropertyId.FontSize);
+            var parentFontSizePx = parentSlot.Tag == ComputedSlotTag.LengthPx
+                ? parentSlot.AsLengthPx()
+                : FontSizeResolver.MediumPx;
+            if (FontSizeResolver.TryResolveRelativeToParent(rawSize, parentFontSizePx, out var px)
+                && double.IsFinite(px) && px >= 0)
+            {
+                style.Set(PropertyId.FontSize, ComputedSlot.FromLengthPx(px));
+            }
+        }
+
+        if (style.TryGetDeferred(PropertyId.FontWeight, out var rawWeight) && rawWeight is not null
+            && FontWeightResolver.TryResolveRelativeToParent(rawWeight, parentStyle.ReadFontWeight(), out var weight))
+        {
+            style.Set(PropertyId.FontWeight, ComputedSlot.FromInteger(weight));
         }
     }
 }

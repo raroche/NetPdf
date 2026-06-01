@@ -94,15 +94,15 @@ public sealed class PropertyResolverDispatchTests
     [Fact]
     public void Unsupported_PropertyType_returns_UnsupportedUnvalidated_with_raw_text()
     {
-        // Per the hardening review: cycle-2 PropertyTypes (FontFamilyList here)
-        // surface as UnsupportedUnvalidated — distinct from Deferred which means
-        // "validated but needs context". The raw text rides along for the cycle-2
-        // resolver to pick up.
+        // Per the hardening review: still-unwired cycle-2 PropertyTypes (LineHeight
+        // here) surface as UnsupportedUnvalidated — distinct from Deferred which
+        // means "validated but needs context". The raw text rides along for the
+        // future resolver to pick up. (font-family resolved as of cycle 4.)
         var sink = new CapturingSink();
-        var result = PropertyResolverDispatch.Resolve(PropertyId.FontFamily, "Arial, sans-serif", sink);
+        var result = PropertyResolverDispatch.Resolve(PropertyId.LineHeight, "1.5", sink);
         Assert.True(result.IsUnsupportedUnvalidated);
         Assert.False(result.IsDeferred);
-        Assert.Equal("Arial, sans-serif", result.RawText);
+        Assert.Equal("1.5", result.RawText);
         Assert.Empty(sink.Diagnostics);
     }
 

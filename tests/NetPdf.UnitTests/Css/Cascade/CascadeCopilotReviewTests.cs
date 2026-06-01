@@ -241,11 +241,12 @@ public sealed class CascadeCopilotReviewTests
     [Fact]
     public async Task Copilot5_Supports_with_single_quoted_paren_does_not_truncate()
     {
-        // Same paren-tracking check for SINGLE-quoted strings. `font-family`
-        // is also UnsupportedUnvalidated under the tightened whitelist, so
-        // `(font-family: 'a)b')` evaluates false. `not(false)` = true →
-        // block applies → inner color rule found. Demonstrates the
-        // single-quoted string variant.
+        // Same paren-tracking check for SINGLE-quoted strings. `content`
+        // is UnsupportedUnvalidated, so `(content: 'a)b')` evaluates false.
+        // `not(false)` = true → block applies → inner color rule found.
+        // Demonstrates the single-quoted string variant. (Was `font-family`
+        // pre-cycle-4; that now resolves, so this uses a still-unwired property
+        // to keep exercising the paren-tracking parse.)
         var doc = await ParseHtml("<p>x</p>");
         var innerRule = new CssStyleRule(
             Selector: new CssSelector("p"),
@@ -254,7 +255,7 @@ public sealed class CascadeCopilotReviewTests
             Location: CssSourceLocation.Unknown);
         var supports = new CssAtRule(
             Name: "supports",
-            Prelude: "not (font-family: 'a)b')",
+            Prelude: "not (content: 'a)b')",
             Declarations: ImmutableArray<CssDeclaration>.Empty,
             ChildRules: ImmutableArray.Create<CssRule>(innerRule),
             Location: CssSourceLocation.Unknown);

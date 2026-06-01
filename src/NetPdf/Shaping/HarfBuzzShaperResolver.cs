@@ -131,12 +131,15 @@ internal sealed class HarfBuzzShaperResolver : IShaperResolver
             _ => FontStyle.Normal,
         };
 
-        // TODO(layout→pdf cycle): read the resolved font-family stack +
-        // font-weight once FontFamilyListResolver / FontWeightResolver are
-        // wired into PropertyResolverDispatch. Until then, the default
-        // family + normal weight (the cascade returns neither yet).
-        var family = _defaultFamily;
-        var weight = DefaultWeightCss;
+        // Per Phase 5 layout→PDF cycle 4 — read the resolved font-family + weight
+        // (FontFamilyListResolver / FontWeightResolver are now wired). The family
+        // resolver yields a prioritized list; we query the PRIMARY family and rely
+        // on ResolveFontBytes' fall-back to `_defaultFamily` when it can't be
+        // resolved. Walking the full font-stack (trying each list entry in order)
+        // is a follow-up. An element with no author font-family inherits the CSS
+        // initial (`serif`).
+        var family = style.ReadFontFamily().Primary;
+        var weight = style.ReadFontWeight();
 
         // Per post-PR-#117 review — CSS family names match case-insensitively
         // (CSS Fonts L4 §4.1), so normalize the cache key's family to avoid

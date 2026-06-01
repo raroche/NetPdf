@@ -156,6 +156,14 @@ public sealed class PropertyDefaultsParityTests
             // thin/medium/thick → 1/3/5px + <length>. The default `medium` now
             // resolves to LengthPx(3); pre-cycle-3 it returned UnsupportedUnvalidated.
             PropertyType.LineWidth,
+            // Per Phase 5 layout→PDF cycle 4 — the font-property family joined the
+            // resolved set: FontSize (keywords + absolute lengths; em/%/larger/
+            // smaller resolve in the box-builder walk), FontWeight (→ integer), and
+            // FontFamilyList (→ a side-table list). The defaults medium / normal /
+            // serif now resolve; pre-cycle-4 all three returned UnsupportedUnvalidated.
+            PropertyType.FontSize,
+            PropertyType.FontWeight,
+            PropertyType.FontFamilyList,
         };
 
         var failures = new List<string>();
@@ -229,6 +237,14 @@ public sealed class PropertyDefaultsParityTests
             // thin/medium/thick → 1/3/5px + <length>. The default `medium` now
             // resolves to LengthPx(3); pre-cycle-3 it returned UnsupportedUnvalidated.
             PropertyType.LineWidth,
+            // Per Phase 5 layout→PDF cycle 4 — the font-property family joined the
+            // resolved set: FontSize (keywords + absolute lengths; em/%/larger/
+            // smaller resolve in the box-builder walk), FontWeight (→ integer), and
+            // FontFamilyList (→ a side-table list). The defaults medium / normal /
+            // serif now resolve; pre-cycle-4 all three returned UnsupportedUnvalidated.
+            PropertyType.FontSize,
+            PropertyType.FontWeight,
+            PropertyType.FontFamilyList,
         };
 
         var failures = new List<string>();

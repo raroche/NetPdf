@@ -2777,25 +2777,38 @@ flags the categories):
   Tests: `LineWidthResolverTests`, `BorderWidthStyleGateTests`, + facade
   border integration. `column-rule-width` also resolves (same type) but is
   unconsumed by layout, so it's a harmless unused slot.
+- **Done — cycle 4 (font-property resolution)** — `font-size` (absolute-size
+  keywords + absolute lengths in the dispatch; `em`/`%`/`larger`/`smaller`
+  resolved against the parent in the box-builder walk via `FontSizeResolver` +
+  the new `ResolveDeferredFontProperties` step), `font-weight` (keyword/number
+  → integer; `bolder`/`lighter` against the parent) and `font-family` (a
+  side-table `FontFamilyList`, mirroring grid `TrackList`) now resolve;
+  `HarfBuzzShaperResolver` reads the resolved family + weight. **Ripple was
+  tiny:** `medium`→16px keeps default-font-size content unchanged, so only 4
+  expectation tests (which asserted these types were `UnsupportedUnvalidated`)
+  needed updating — LayoutSnapshots (30) + RealDocuments (97) + all
+  text-measurement geometry were UNAFFECTED. Tests: `FontSizeResolverTests`,
+  `FontWeightResolverTests`, `FontFamilyListResolverTests`,
+  `FontPropertyResolutionTests` (em/%/bolder against the parent through the
+  real pipeline). DEFERRED follow-ups: `rem`/`rlh` + viewport `font-size`
+  (need the root font-size threaded through the walk) and general font-relative
+  lengths on non-font properties (`padding:1em`, `width:10em`) — both still
+  return `Deferred` (= 0 / 16px default) as before.
 - **TODOs (remaining chain, in order)** —
-  1. **CSS font-property resolution (font-size / family / weight)** — wire
-     `FontSizeResolver` (em/rem/%/keyword relative to the parent),
-     `FontFamilyListResolver` (family stack + generics), `FontWeightResolver`
-     (1..1000 + bolder/lighter) into `PropertyResolverDispatch` (the
-     documented "cycle 2 backlog" there). NOTE: resolving `font-size` changes
-     em/rem unit resolution + every text-measuring baseline — a cross-cutting
-     change to land carefully (with re-pinned snapshots). Until then
-     `HarfBuzzShaperResolver` uses default size (16px) + family
-     (`sans-serif`) + normal weight, blocking text painting. (`LineWidth` /
-     `border-*-width` resolution shipped in cycle 3 — see the cycle-3 done note.)
+  1. **CSS font-property resolution** — DONE (cycle 4): `font-size` /
+     `font-family` / `font-weight` resolve (see the cycle-4 done note). A focused
+     follow-up remains for the deferred font-relative cases: `rem` / viewport
+     `font-size` (root-font-size threading) + general `em`/`rem` lengths on
+     non-font properties.
   2. **Paint bridge** — DONE for `background-color` fills (cycle 2) +
-     `border-*` edges (cycle 3). REMAINING: **text runs** (embedded font +
-     glyph positioning — blocked on the shaper + font-property resolution,
-     TODO 1), background images / gradients, border-radius, mitered corners,
-     and alpha compositing. The `NetPdf.Paint` `DisplayCommand` IR still has
-     no fragment→command or command→PDF consumer — the bridge emits straight
-     to `IContentStream`; routing through the IR arrives with the full paint
-     pipeline.
+     `border-*` edges (cycle 3). **Text runs are now UNBLOCKED** — font-size /
+     family / weight resolve (cycle 4) and the shaper reads them — so the
+     REMAINING work is the text PAINT itself (emit shaped glyph runs + embed /
+     subset the font + ToUnicode; needs the bundled deterministic fallback font
+     for the determinism contract, TODO 4). Also remaining: background images /
+     gradients, border-radius, mitered corners, alpha compositing. The
+     `NetPdf.Paint` `DisplayCommand` IR still has no fragment→command or
+     command→PDF consumer — the bridge emits straight to `IContentStream`.
   3. **Facade** — DONE for the single-page path (cycle 2:
      `HtmlPdf.Convert` / `ConvertAsync` / `ConvertDetailed` →
      `PdfRenderPipeline`; page size/margins → `MediaBox` + content area

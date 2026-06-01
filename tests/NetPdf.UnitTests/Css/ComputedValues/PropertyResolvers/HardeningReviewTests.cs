@@ -40,13 +40,14 @@ public sealed class HardeningReviewTests
     [Fact]
     public void Cycle_2_PropertyType_returns_UnsupportedUnvalidated_not_Deferred()
     {
-        // FontFamily's PropertyType (FontFamilyList) has no resolver in cycle 1.
-        // Per the hardening review, it must surface as UnsupportedUnvalidated —
-        // distinct from Deferred which means "validated but needs context".
-        var result = PropertyResolverDispatch.Resolve(PropertyId.FontFamily, "Arial, sans-serif");
+        // line-height's PropertyType (LineHeight) is still unwired. Per the
+        // hardening review, it must surface as UnsupportedUnvalidated — distinct
+        // from Deferred which means "validated but needs context". (font-family,
+        // used here pre-cycle-4, now resolves via FontFamilyListResolver.)
+        var result = PropertyResolverDispatch.Resolve(PropertyId.LineHeight, "1.5");
         Assert.True(result.IsUnsupportedUnvalidated);
         Assert.False(result.IsDeferred);
-        Assert.Equal("Arial, sans-serif", result.RawText);
+        Assert.Equal("1.5", result.RawText);
         Assert.True(result.HasRawText);
     }
 

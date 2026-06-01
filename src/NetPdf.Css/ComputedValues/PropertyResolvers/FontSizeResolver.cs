@@ -53,14 +53,31 @@ internal static class FontSizeResolver
         if (TryAbsoluteSizePx(value, out var absPx))
             return ResolverResult.Resolved(ComputedSlot.FromLengthPx(absPx));
 
-        // <relative-size> + parent-relative units need the parent font-size — defer.
-        if (IsParentRelative(value))
-            return ResolverResult.Deferred(value);
+        // <relative-size> keywords + parent-(font-size)-relative units (em/ex/ch/%).
+        // The numeric prefix is validated HERE (context-free), so a malformed or
+        // NEGATIVE relative size is rejected now rather than deferred + silently
+        // snapped to the 16px default in the box-builder walk. (`rem`/viewport are
+        // NOT em-relative — they fall through to LengthResolver, which defers them
+        // as a documented follow-up.)
+        switch (ClassifyParentRelative(value))
+        {
+            case ParentRelativeKind.Defer:
+                return ResolverResult.Deferred(value);
+            case ParentRelativeKind.Invalid:
+                diagnostics?.Emit(new CssDiagnostic(
+                    CssDiagnosticCodes.CssPropertyValueInvalid001,
+                    $"Could not parse '{propertyName}: {DiagnosticTextSanitizer.Sanitize(value)}' — " +
+                    "font-size must be a non-negative <length-percentage>, <absolute-size>, or <relative-size>.",
+                    CssDiagnosticSeverity.Warning,
+                    location));
+                return ResolverResult.Invalid();
+            // ParentRelativeKind.NotRelative → fall through to the length parser.
+        }
 
         // Everything else (absolute lengths px/pt/…, and rem/viewport which
         // LengthResolver itself defers) goes through the shared length parser.
         // PropertyType.Length + FontSize in NonNegativeProperties means a negative
-        // value is rejected; percentages were handled above (deferred).
+        // value is rejected; percentages + relative sizes were handled above.
         return LengthResolver.Resolve(
             value, PropertyType.Length, propertyId, propertyName, diagnostics, location);
     }
@@ -96,17 +113,57 @@ internal static class FontSizeResolver
         return false; // rem / viewport / unknown — leave deferred.
     }
 
-    /// <summary><see langword="true"/> when a font-size value needs the parent
-    /// font-size to resolve (so the dispatch defers it).</summary>
-    private static bool IsParentRelative(string value)
+    /// <summary>How the dispatch should treat a non-&lt;absolute-size&gt; font-size
+    /// value: <see cref="ParentRelativeKind.Defer"/> a well-formed parent-relative form,
+    /// <see cref="ParentRelativeKind.Invalid"/> a malformed / negative one, or leave
+    /// anything else (absolute length, rem/viewport) for <see cref="LengthResolver"/>.</summary>
+    private enum ParentRelativeKind { NotRelative, Defer, Invalid }
+
+    private static ParentRelativeKind ClassifyParentRelative(string value)
     {
         var v = value.Trim();
+
+        // <relative-size> keywords.
         if (v.Equals("larger", StringComparison.OrdinalIgnoreCase)
             || v.Equals("smaller", StringComparison.OrdinalIgnoreCase))
-            return true;
-        if (v.EndsWith("%", StringComparison.Ordinal)) return true;
-        return EndsWithUnit(v, "em") || EndsWithUnit(v, "ex") || EndsWithUnit(v, "ch");
+            return ParentRelativeKind.Defer;
+
+        // Percentages resolve against the parent font-size.
+        if (v.EndsWith("%", StringComparison.Ordinal))
+            return ClassifyRelativeNumber(v[..^1]);
+
+        // Dimensions: split the numeric prefix from the EXACT unit. em/ex/ch are
+        // parent-(font-size)-relative; rem/rlh/viewport/absolute units are not, so
+        // they fall through (and `rem` is never mistaken for an `em` suffix).
+        if (TrySplitDimension(v, out var numberText, out var unit)
+            && unit is "em" or "ex" or "ch")
+            return ClassifyRelativeNumber(numberText);
+
+        return ParentRelativeKind.NotRelative;
     }
+
+    /// <summary>A parent-relative numeric prefix is <see cref="ParentRelativeKind.Defer"/>
+    /// when it is a finite, non-negative number; <see cref="ParentRelativeKind.Invalid"/>
+    /// when it is malformed or negative (a negative font-size is invalid).</summary>
+    private static ParentRelativeKind ClassifyRelativeNumber(string numberText) =>
+        !TryParseNumber(numberText, out var n) || n < 0
+            ? ParentRelativeKind.Invalid
+            : ParentRelativeKind.Defer;
+
+    /// <summary>Split a CSS dimension into its numeric part + lower-cased unit by
+    /// taking the trailing run of ASCII letters as the unit (<c>1.5rem</c> →
+    /// <c>"1.5"</c>/<c>"rem"</c>; <c>2em</c> → <c>"2"</c>/<c>"em"</c>). Returns
+    /// <see langword="false"/> when there is no trailing unit.</summary>
+    private static bool TrySplitDimension(string v, out string number, out string unit)
+    {
+        var i = v.Length;
+        while (i > 0 && IsAsciiLetter(v[i - 1])) i--;
+        number = v[..i];
+        unit = v[i..].ToLowerInvariant();
+        return unit.Length > 0;
+    }
+
+    private static bool IsAsciiLetter(char c) => (uint)((c | 0x20) - 'a') <= 'z' - 'a';
 
     private static bool TryAbsoluteSizePx(string value, out double px)
     {

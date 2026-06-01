@@ -18,12 +18,13 @@ namespace NetPdf.Css.ComputedValues.PropertyResolvers;
 ///     layout time where the missing context is available. The text IS known
 ///     well-formed.</item>
 ///   <item><see cref="UnsupportedUnvalidated"/> — the property's
-///     <see cref="NetPdf.Css.Properties.PropertyType"/> has no resolver wired
-///     yet (cycle-2 backlog: <c>FontFamilyList</c>, <c>FontWeight</c>,
-///     <c>FontSize</c>, etc.). The dispatch carries the raw text forward but
-///     <b>has not validated it</b> — a typo could pass through. Distinguished
-///     from <see cref="Deferred"/> so downstream stages and audits know which
-///     values still need a real resolver. Consumer keeps
+///     <see cref="NetPdf.Css.Properties.PropertyType"/> has no leaf resolver
+///     wired yet (a <c>PropertyType</c> still on the backlog; the font properties
+///     — <c>FontSize</c> / <c>FontFamilyList</c> / <c>FontWeight</c> — now resolve,
+///     see <c>PropertyResolverDispatch</c>). The dispatch carries the raw text
+///     forward but <b>has not validated it</b> — a typo could pass through.
+///     Distinguished from <see cref="Deferred"/> so downstream stages and audits
+///     know which values still need a real resolver. Consumer keeps
 ///     <see cref="ResolverResult.RawText"/>.</item>
 ///   <item><see cref="Invalid"/> — value text could not be parsed. The cascade's
 ///     "invalid at computed value time" rule applies — the property's initial
@@ -43,10 +44,10 @@ internal enum ResolutionState : byte
     /// <see cref="ComputedSlot.Unset"/>; RawText is null; a diagnostic was emitted.</summary>
     Invalid = 2,
     /// <summary>The property's <see cref="NetPdf.Css.Properties.PropertyType"/>
-    /// has no resolver wired yet (cycle-2 backlog). The dispatch carries the
-    /// raw text forward but has <b>not validated it</b>. Slot is
-    /// <see cref="ComputedSlot.Unset"/>; RawText carries the original.
-    /// Distinguished from <see cref="Deferred"/> so audits + future cycle-2
+    /// has no leaf resolver wired yet (still on the backlog — the font properties
+    /// now resolve). The dispatch carries the raw text forward but has <b>not
+    /// validated it</b>. Slot is <see cref="ComputedSlot.Unset"/>; RawText carries
+    /// the original. Distinguished from <see cref="Deferred"/> so audits + future
     /// resolvers can find the "still needs validation" surface.</summary>
     UnsupportedUnvalidated = 3,
 }

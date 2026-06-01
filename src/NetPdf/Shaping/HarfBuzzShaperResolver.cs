@@ -3,6 +3,8 @@
 
 using System;
 using System.Collections.Generic;
+using System.Collections.Immutable;
+using System.Text;
 using System.Threading;
 using NetPdf.Css.ComputedValues;
 using NetPdf.Css.Properties;
@@ -23,23 +25,23 @@ namespace NetPdf.Shaping;
 /// lay out + render: <c>CSS font resolution → THIS shaper → paint
 /// bridge → HtmlPdf.Convert facade</c>.
 ///
-/// <para><b>Forward-compatible by design.</b> It reads font-size +
-/// font-style through the normal style readers, so it honors whatever
-/// the CSS cascade resolves. TODAY the cascade does not yet resolve
-/// <c>font-size</c>, <c>font-family</c>, or <c>font-weight</c> (those
-/// property resolvers are the documented "cycle 2 backlog"
-/// in <c>PropertyResolverDispatch</c> — only <c>font-style</c>
-/// resolves), so:</para>
+/// <para><b>Reads the resolved cascade.</b> As of Phase 5 layout→PDF
+/// cycle 4 the CSS font properties resolve in the cascade, so this
+/// resolver reads them live through the normal style readers:</para>
 /// <list type="bullet">
 ///   <item><b>font-size</b> — read via
-///   <see cref="ComputedStyleLayoutExtensions.ReadLengthPxOrDefault"/>;
-///   returns the configured default until <c>FontSizeResolver</c> lands,
-///   then real sizes flow through automatically (no code change here).</item>
+///   <see cref="ComputedStyleLayoutExtensions.ReadLengthPxOrDefault"/>
+///   (<c>FontSizeResolver</c>). A resolved <c>0</c> is honored as
+///   zero-advance text; the configured default applies only when the
+///   cascade left no usable value.</item>
+///   <item><b>font-family</b> — read via
+///   <see cref="FontReaders.ReadFontFamily"/> as a prioritized stack
+///   (<c>FontFamilyListResolver</c>); <see cref="ResolveFontBytes"/>
+///   walks it in author order, then the configured generic default as a
+///   last resort.</item>
+///   <item><b>font-weight</b> — read via
+///   <see cref="FontReaders.ReadFontWeight"/> (<c>FontWeightResolver</c>).</item>
 ///   <item><b>font-style</b> — read live (normal / italic / oblique).</item>
-///   <item><b>font-family</b> / <b>font-weight</b> — TODO: use the
-///   configured default family + normal weight until
-///   <c>FontFamilyListResolver</c> / <c>FontWeightResolver</c> are wired;
-///   then read the resolved family stack + weight here.</item>
 /// </list>
 ///
 /// <para><b>Ownership + caching (per the <see cref="IShaperResolver"/>
@@ -69,12 +71,10 @@ namespace NetPdf.Shaping;
 internal sealed class HarfBuzzShaperResolver : IShaperResolver
 {
     /// <summary>CSS initial <c>font-size</c> (<c>medium</c>) in px — the
-    /// fallback until <c>FontSizeResolver</c> resolves real sizes.</summary>
+    /// fallback applied only when the cascade leaves <c>font-size</c>
+    /// unresolved (<c>FontSizeResolver</c> resolves real sizes, including
+    /// a deliberate <c>0</c>).</summary>
     public const double DefaultFontSizePx = 16.0;
-
-    /// <summary>CSS <c>normal</c> font-weight — the fallback until
-    /// <c>FontWeightResolver</c> is wired.</summary>
-    private const int DefaultWeightCss = 400;
 
     private readonly IFontResolver _fontResolver;
     private readonly string _defaultFamily;
@@ -90,9 +90,9 @@ internal sealed class HarfBuzzShaperResolver : IShaperResolver
     /// <param name="fontResolver">Resolves a <see cref="FontQuery"/> to
     /// font bytes; e.g. <see cref="SystemFontResolver"/> or a caller's
     /// <see cref="HtmlPdfOptions.FontResolver"/>.</param>
-    /// <param name="defaultFamily">The family used until the CSS
-    /// font-family resolver lands (a generic like <c>sans-serif</c> the
-    /// resolver maps to a real face).</param>
+    /// <param name="defaultFamily">The last-resort family tried after the
+    /// author <c>font-family</c> stack is exhausted (a generic like
+    /// <c>sans-serif</c> the resolver maps to a real face).</param>
     /// <param name="defaultFontSizePx">Fallback size when the cascade
     /// hasn't resolved <c>font-size</c>.</param>
     public HarfBuzzShaperResolver(
@@ -117,11 +117,12 @@ internal sealed class HarfBuzzShaperResolver : IShaperResolver
 
         // Pure style reads (no shared state) — done outside the lock.
         //
-        // font-size: honored live via the standard reader. Clamp a
-        // non-positive / non-finite value to the default (HbShaper
-        // requires a positive finite size).
+        // font-size: honored live via the standard reader. CSS Fonts 4 §3.4 allows
+        // font-size in [0, ∞], so a resolved 0 stays 0 — HbShaper shapes it to
+        // zero-advance (invisible) glyphs. Only a NEGATIVE or non-finite size (which
+        // the cascade should already have rejected) falls back to the default.
         var sizePx = style.ReadLengthPxOrDefault(PropertyId.FontSize, _defaultFontSizePx);
-        if (!(sizePx > 0) || !double.IsFinite(sizePx)) sizePx = _defaultFontSizePx;
+        if (sizePx < 0 || !double.IsFinite(sizePx)) sizePx = _defaultFontSizePx;
 
         // font-style: live keyword (0 normal / 1 italic / 2 oblique).
         var fontStyle = style.ReadKeywordOrDefault(PropertyId.FontStyle, defaultIndex: 0) switch
@@ -131,23 +132,20 @@ internal sealed class HarfBuzzShaperResolver : IShaperResolver
             _ => FontStyle.Normal,
         };
 
-        // Per Phase 5 layout→PDF cycle 4 — read the resolved font-family + weight
-        // (FontFamilyListResolver / FontWeightResolver are now wired). The family
-        // resolver yields a prioritized list; we query the PRIMARY family and rely
-        // on ResolveFontBytes' fall-back to `_defaultFamily` when it can't be
-        // resolved. Walking the full font-stack (trying each list entry in order)
-        // is a follow-up. An element with no author font-family inherits the CSS
-        // initial (`serif`).
-        var family = style.ReadFontFamily().Primary;
+        // Per Phase 5 layout→PDF cycle 4 — read the resolved font-family STACK +
+        // weight (FontFamilyListResolver / FontWeightResolver are wired). The family
+        // resolver yields a prioritized list; ResolveFontBytes walks it in author
+        // order (CSS Fonts 4 §2.1) and falls back to `_defaultFamily` last. An
+        // element with no author font-family inherits the CSS initial (`serif`).
+        var families = style.ReadFontFamily().Families;
         var weight = style.ReadFontWeight();
 
         // Per post-PR-#117 review — CSS family names match case-insensitively
-        // (CSS Fonts L4 §4.1), so normalize the cache key's family to avoid
-        // duplicate shapers (e.g. `Arial` vs `arial`) once real family names
-        // flow through. (The original-case `family` is still used for the
-        // resolver query + error messages.)
+        // (CSS Fonts L4 §4.1), so the cache key normalizes the stack to lower case
+        // to avoid duplicate shapers (e.g. `Arial` vs `arial`). The original-case
+        // entries are still used for the resolver query + error messages.
         var key = new ShaperKey(
-            family.ToLowerInvariant(), weight, fontStyle, sizePx);
+            FamilyStackKey(families), weight, fontStyle, sizePx);
 
         // Per post-PR-#117 review P2 — serialize the get-or-create + the
         // disposed check so concurrent Resolve calls (a shared resolver
@@ -159,32 +157,50 @@ internal sealed class HarfBuzzShaperResolver : IShaperResolver
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             if (_cache.TryGetValue(key, out var cached)) return cached;
-            var shaper = new HbShaper(ResolveFontBytes(family, weight, fontStyle), sizePx);
+            var shaper = new HbShaper(ResolveFontBytes(families, weight, fontStyle), sizePx);
             _cache[key] = shaper;
             return shaper;
         }
     }
 
-    /// <summary>Resolve a family (with a generic fallback) to VALIDATED
-    /// font bytes ready for HarfBuzz.</summary>
-    private ReadOnlyMemory<byte> ResolveFontBytes(string family, int weight, FontStyle style)
+    /// <summary>Walk the resolved font-family stack (author order, CSS Fonts 4
+    /// §2.1) to VALIDATED font bytes ready for HarfBuzz: the first entry that
+    /// resolves to a face wins; the configured generic default is tried last.</summary>
+    private ReadOnlyMemory<byte> ResolveFontBytes(ImmutableArray<string> families, int weight, FontStyle style)
     {
-        // A family the resolver can't find at all → fall back to the
-        // default generic family (a not-found family is a fall-back case).
-        var face = ResolveFace(family, weight, style);
-        var triedFallback = false;
-        if (face is null && !string.Equals(family, _defaultFamily, StringComparison.OrdinalIgnoreCase))
+        // Walk the author stack in priority order — the first family that resolves
+        // to a face wins (e.g. `MissingFont, Arial, sans-serif` falls through to
+        // Arial). A not-found family is a fall-back case, not an error.
+        FontFaceData? face = null;
+        string? resolvedFrom = null;
+        if (!families.IsDefaultOrEmpty)
         {
-            triedFallback = true;
-            face = ResolveFace(_defaultFamily, weight, style);
+            for (var i = 0; i < families.Length && face is null; i++)
+            {
+                face = ResolveFace(families[i], weight, style);
+                if (face is not null) resolvedFrom = families[i];
+            }
         }
+
+        // Last resort: the configured generic default, unless the stack already tried it.
+        var triedDefault = false;
+        if (face is null && !StackContainsDefault(families))
+        {
+            triedDefault = true;
+            face = ResolveFace(_defaultFamily, weight, style);
+            if (face is not null) resolvedFrom = _defaultFamily;
+        }
+
         if (face is null)
         {
-            // Per post-PR-#117 review — only mention the fallback when one
-            // was actually attempted (it isn't when family == the default).
-            var fallbackNote = triedFallback ? $" nor the fallback '{_defaultFamily}'" : string.Empty;
+            // Per post-PR-#117 review — only mention the fallback when one was
+            // actually attempted (it isn't when the stack already includes the default).
+            var requested = families.IsDefaultOrEmpty
+                ? $"'{_defaultFamily}'"
+                : $"the font-family stack [{string.Join(", ", families)}]";
+            var fallbackNote = triedDefault ? $" nor the fallback '{_defaultFamily}'" : string.Empty;
             throw new InvalidOperationException(
-                $"HarfBuzzShaperResolver: no font resolved for family '{family}'{fallbackNote} "
+                $"HarfBuzzShaperResolver: no font resolved for {requested}{fallbackNote} "
                 + $"(weight {weight}, {style}). Supply an IFontResolver that resolves a "
                 + "face, or install system fonts. (A bundled deterministic last-resort "
                 + "font is a follow-up TODO.)");
@@ -200,15 +216,43 @@ internal sealed class HarfBuzzShaperResolver : IShaperResolver
         var verdict = FontSafetyValidator.Validate(face.Bytes.Span);
         if (!verdict.IsSafe)
             throw new InvalidOperationException(
-                $"HarfBuzzShaperResolver: the font resolved for '{family}' was rejected "
+                $"HarfBuzzShaperResolver: the font resolved for '{resolvedFrom}' was rejected "
                 + $"by the pre-decode safety validator: {verdict.Reason}");
         if (verdict.DetectedFormat is FontSafetyValidator.FontFormat.Woff
             or FontSafetyValidator.FontFormat.Woff2)
             throw new InvalidOperationException(
-                $"HarfBuzzShaperResolver: the font resolved for '{family}' is in "
+                $"HarfBuzzShaperResolver: the font resolved for '{resolvedFrom}' is in "
                 + $"{verdict.DetectedFormat} format; NetPdf cannot decode the wrapped "
                 + "sfnt yet — supply an unwrapped TTF/OTF.");
         return face.Bytes;
+    }
+
+    /// <summary>Case-insensitive membership test for the generic default in the
+    /// resolved stack (so it isn't queried twice).</summary>
+    private bool StackContainsDefault(ImmutableArray<string> families)
+    {
+        if (families.IsDefaultOrEmpty) return false;
+        for (var i = 0; i < families.Length; i++)
+            if (string.Equals(families[i], _defaultFamily, StringComparison.OrdinalIgnoreCase))
+                return true;
+        return false;
+    }
+
+    /// <summary>Cache-key signature for a resolved family stack: the entries
+    /// lower-cased (CSS families match case-insensitively, CSS Fonts 4 §4.1) and
+    /// joined. Identical author stacks share one shaper; the newline separator
+    /// can't appear in a family name, so the join is unambiguous.</summary>
+    private static string FamilyStackKey(ImmutableArray<string> families)
+    {
+        if (families.IsDefaultOrEmpty) return "serif";
+        if (families.Length == 1) return families[0].ToLowerInvariant();
+        var sb = new StringBuilder();
+        for (var i = 0; i < families.Length; i++)
+        {
+            if (i > 0) sb.Append('\n');
+            sb.Append(families[i].ToLowerInvariant());
+        }
+        return sb.ToString();
     }
 
     /// <summary>Resolve a single family to a face. Per post-PR-#117 review
@@ -254,9 +298,10 @@ internal sealed class HarfBuzzShaperResolver : IShaperResolver
     }
 
     /// <summary>Cache key: a resolved-font signature + size. Two styles
-    /// that map to the same (family, weight, style, size) share a shaper.
-    /// <c>Family</c> is stored case-normalized (CSS families match
-    /// case-insensitively) so `Arial` and `arial` share one entry.
+    /// that map to the same (family stack, weight, style, size) share a shaper.
+    /// <c>Family</c> holds the whole resolved family stack, case-normalized +
+    /// joined by <see cref="FamilyStackKey"/> (CSS families match
+    /// case-insensitively), so `Arial` and `arial` share one entry.
     ///
     /// <para>TODO (post-PR-#117 review P3 — perf follow-up): the key
     /// includes size, and each <see cref="HbShaper"/> copies + pins the

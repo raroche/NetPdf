@@ -1,8 +1,10 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System.Collections.Generic;
 using NetPdf.Css.ComputedValues;
 using NetPdf.Css.ComputedValues.PropertyResolvers;
+using NetPdf.Css.Diagnostics;
 using NetPdf.Css.Properties;
 using Xunit;
 
@@ -65,6 +67,38 @@ public sealed class FontSizeResolverTests
     }
 
     [Theory]
+    [InlineData("-50%")]
+    [InlineData("-1em")]
+    [InlineData("-0.5ex")]
+    [InlineData("-2ch")]
+    public void Negative_relative_sizes_are_invalid(string value)
+    {
+        // Post-PR-#120 review (P2): a negative parent-relative font-size is invalid at
+        // computed-value time — it must NOT defer + silently snap to the 16px default.
+        Assert.True(Resolve(value).IsInvalid);
+    }
+
+    [Fact]
+    public void Invalid_relative_size_emits_a_diagnostic()
+    {
+        var sink = new CapturingSink();
+        var result = FontSizeResolver.Resolve("-50%", PropertyId.FontSize, "font-size", sink, default);
+
+        Assert.True(result.IsInvalid);
+        Assert.Contains(sink.Diagnostics, d => d.Code == CssDiagnosticCodes.CssPropertyValueInvalid001);
+    }
+
+    [Fact]
+    public void Rem_is_not_misrouted_as_an_em_relative_size()
+    {
+        // Post-PR-#120 review (P2): `rem` ends in "em" but is root-relative, not
+        // parent-relative — it must DEFER (a follow-up), never invalidate.
+        var result = Resolve("2rem");
+        Assert.True(result.IsDeferred);
+        Assert.Equal("2rem", result.RawText);
+    }
+
+    [Theory]
     [InlineData("2em", 20.0, 40.0)]
     [InlineData("150%", 20.0, 30.0)]
     [InlineData("larger", 20.0, 24.0)]      // × 1.2
@@ -90,5 +124,11 @@ public sealed class FontSizeResolverTests
         Assert.Equal(16.0, resolved.Slot.AsLengthPx(), 3);
 
         Assert.True(PropertyResolverDispatch.Resolve(PropertyId.FontSize, "1.5em").IsDeferred);
+    }
+
+    private sealed class CapturingSink : ICssDiagnosticsSink
+    {
+        public List<CssDiagnostic> Diagnostics { get; } = new();
+        public void Emit(CssDiagnostic d) => Diagnostics.Add(d);
     }
 }

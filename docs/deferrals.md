@@ -2796,29 +2796,34 @@ flags the categories):
   return `Deferred` (= 0 / 16px default) as before.
 - **Post-PR-#120 review — deferred follow-ups** (Roland's review of cycle 4; the
   inherited-font-family P1 + the pseudo/marker/first-line/`br` resolution P2 were
-  fixed IN the PR, `795f544`). STILL OPEN, for a follow-up cycle:
-  - **(P1) `font-size: 0`** — `HarfBuzzShaperResolver` clamps a resolved size
-    ≤ 0 back to the 16px default, so zero-size text would render at 16px once
-    text paints (CSS Fonts 4 allows `[0, ∞]`). Needs a zero-size strategy
-    (zero-advance shaping or suppress glyph emission) + a `font-size:0` test.
-    Not user-visible until the text-paint cycle, but fix it there or before.
-  - **(P2) `FontSizeResolver` over-defers invalid relative input** —
-    `IsParentRelative` accepts anything ending in `%`/`em`/`ex`/`ch` before
-    validating the numeric prefix, so `-50%`, `-1em`, or an identifier ending in
-    `em` defer + fall back to 16px instead of invalidating. Validate the prefix +
-    reject negative relative sizes with `CSS-PROPERTY-VALUE-INVALID-001` (fall
-    back to inherited). (Also fixes the cosmetic `rem`-matches-`em`-suffix routing.)
-  - **(P2) `FontFamilyListResolver` syntax strictness** — it sanitizes malformed
-    lists (trailing / double commas, unclosed quotes, numeric- or
-    punctuation-leading unquoted idents) instead of rejecting them as Invalid +
-    diagnostic per the CSS Fonts `<family-name>` grammar.
-  - **(P2) Font-family fallback stack** — `HarfBuzzShaperResolver` only tries
-    `FontFamilyList.Primary` then `_defaultFamily`, skipping the rest of the
-    author stack (`MissingFont, Arial, sans-serif` never tries Arial). Implement
-    stack-walking or add a known-gap skipped test.
-  - **(P3) Stale docs** — refresh "font-* not wired" comments in
-    `HarfBuzzShaperResolver` XML docs, the `ResolverResult` UnsupportedUnvalidated
-    backlog comment, and `HarfBuzzShaperResolverTests`.
+  fixed IN the PR, `795f544`). **DONE** — all five fixed in the cycle-4 review
+  follow-ups (PR #121):
+  - **(P1) `font-size: 0`** — FIXED via zero-advance shaping. `HbShaper` now accepts
+    `fontSizePx == 0` (CSS Fonts 4 allows `[0, ∞]`); every advance/offset converts to
+    0, so a `font-size: 0` run shapes to invisible, zero-width glyphs.
+    `HarfBuzzShaperResolver` no longer snaps 0 → 16px (only a negative / non-finite
+    size falls back). Tests: `HbShaper` zero-advance accept + resolver `font-size:0`
+    honored.
+  - **(P2) `FontSizeResolver` over-defers invalid relative input** — FIXED. The new
+    `ClassifyParentRelative` splits the numeric prefix from the EXACT unit before
+    deferring: `-50%` / `-1em` / `-0.5ex` / `-2ch` (and malformed prefixes) emit
+    `CSS-PROPERTY-VALUE-INVALID-001` + return `Invalid` (→ falls back to inherited),
+    while `rem` is no longer mistaken for an `em` suffix (it stays deferred via
+    `LengthResolver`).
+  - **(P2) `FontFamilyListResolver` syntax strictness** — FIXED. The list is now
+    parsed AND validated against the CSS Fonts `<family-name>` grammar: leading /
+    trailing / doubled commas, unclosed quotes, junk after a quoted string, and
+    digit- / punctuation-leading unquoted idents are `Invalid` + diagnostic (no longer
+    silently sanitized). Quoted names + valid unquoted multi-ident names (incl.
+    `-`/`_`-leading, e.g. `-apple-system`) still parse.
+  - **(P2) Font-family fallback stack** — FIXED. `HarfBuzzShaperResolver.ResolveFontBytes`
+    walks the whole resolved stack in author order (`MissingFont, Arial, sans-serif`
+    falls through to Arial), then the configured generic default last; the cache key
+    keys on the full lower-cased stack. Test: stack-walk past a missing family.
+  - **(P3) Stale docs** — DONE. Refreshed the `HarfBuzzShaperResolver` class XML +
+    `ShaperKey`/field docs, the `ResolverResult` UnsupportedUnvalidated backlog
+    comment, the `FontFamilyListResolver` remarks, and a stale
+    `HarfBuzzShaperResolverTests` comment; removed the now-dead `DefaultWeightCss` const.
 - **TODOs (remaining chain, in order)** —
   1. **CSS font-property resolution** — DONE (cycle 4): `font-size` /
      `font-family` / `font-weight` resolve (see the cycle-4 done note). A focused

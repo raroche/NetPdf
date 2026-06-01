@@ -45,6 +45,13 @@ namespace NetPdf.Text.Shaping;
 /// Phase 4 when size-sensitive features land.
 /// </para>
 /// <para>
+/// <b>Zero size.</b> A <c>fontSizePx</c> of <c>0</c> is permitted — CSS
+/// Fonts 4 §3.4 allows <c>font-size</c> in <c>[0, ∞]</c>. Every advance / offset then
+/// converts to <c>0</c> (zero-advance shaping), so a <c>font-size: 0</c> run shapes to
+/// invisible, zero-width glyphs instead of snapping up to a default size. Only a
+/// negative or non-finite size is rejected.
+/// </para>
+/// <para>
 /// <b>Phase 1 scope</b> covers a single isolated text span with default OpenType
 /// features. Three things are explicitly out of scope:
 /// </para>
@@ -69,11 +76,11 @@ internal sealed class HbShaper : IDisposable
         {
             throw new ArgumentException("HbShaper: font bytes must not be empty.", nameof(fontBytes));
         }
-        if (!double.IsFinite(fontSizePx) || fontSizePx <= 0)
+        if (!double.IsFinite(fontSizePx) || fontSizePx < 0)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(fontSizePx), fontSizePx,
-                "HbShaper: fontSizePx must be a positive finite number.");
+                "HbShaper: fontSizePx must be a non-negative finite number.");
         }
 
         _fontSizePx = fontSizePx;

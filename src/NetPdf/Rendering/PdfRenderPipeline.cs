@@ -24,10 +24,9 @@ namespace NetPdf.Rendering;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Cycle-2 scope.</b> Single-page output painting <c>background-color</c> fills
-/// only — no text (needs the CSS font-property resolvers) and no borders (need
-/// <c>border-*-width</c> / <c>LineWidth</c> resolution), both TODO 1 in
-/// <c>deferrals.md#layout-to-pdf-pipeline</c>). The shaper is constructed
+/// <b>Cycle-3 scope.</b> Single-page output painting <c>background-color</c> fills
+/// + <c>border-*</c> edges — no text yet (needs the CSS font-property resolvers,
+/// TODO 1 in <c>deferrals.md#layout-to-pdf-pipeline</c>). The shaper is constructed
 /// forward-compatibly so text lights up automatically once those land; for
 /// text-free content it is never invoked, which also keeps output deterministic
 /// (no system-font dependency until a bundled fallback font ships).

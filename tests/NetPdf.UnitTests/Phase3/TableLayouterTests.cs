@@ -4014,6 +4014,9 @@ public sealed class TableLayouterTests
         captionStyle.Set(PropertyId.CaptionSide, ComputedSlot.FromKeyword(0));
         SetLengthPx(captionStyle, PropertyId.BorderTopWidth, 2);
         SetLengthPx(captionStyle, PropertyId.BorderBottomWidth, 2);
+        // Per CSS B&B 3 §4.3 a used border-width needs a visible style (solid = keyword 4).
+        captionStyle.Set(PropertyId.BorderTopStyle, ComputedSlot.FromKeyword(4));
+        captionStyle.Set(PropertyId.BorderBottomStyle, ComputedSlot.FromKeyword(4));
         var caption = Box.ForElement(BoxKind.TableCaption, captionStyle, MakeElement());
         var captionInner = Box.Anonymous(BoxKind.AnonymousBlock, MakeStyle());
         var captionInnerStyle = MakeStyle();

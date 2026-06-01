@@ -12,14 +12,13 @@ namespace NetPdf;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Phase 5 layout→PDF wiring — early (cycle 2).</b> The facade now renders end
+/// <b>Phase 5 layout→PDF wiring — early (cycle 3).</b> The facade now renders end
 /// to end: HTML → cascade → box tree → fragmentainer-aware layout → paint → PDF
-/// bytes. The cycle-2 paint bridge emits each box's <c>background-color</c> fill,
-/// on a single page. Deliberately not yet painted
+/// bytes. The paint bridge emits each box's <c>background-color</c> fill +
+/// <c>border-*</c> edges, on a single page. Deliberately not yet painted
 /// (tracked in <c>docs/deferrals.md#layout-to-pdf-pipeline</c>): <b>text runs</b>
-/// (waiting on the CSS font-property resolvers), <b>borders</b> (waiting on
-/// <c>border-*-width</c> / <c>LineWidth</c> resolution), background images /
-/// gradients, and multi-page output — content overflowing the first page is
+/// (waiting on the CSS font-property resolvers), background images / gradients,
+/// border-radius, and multi-page output — content overflowing the first page is
 /// reported via <c>PDF-CONTENT-OVERFLOW-TRUNCATED-001</c> rather than dropped
 /// silently. Output is deterministic (text-free content shapes no glyphs, so the
 /// system-font dependency does not affect the bytes).
@@ -27,7 +26,7 @@ namespace NetPdf;
 /// <para>
 /// <b>Pipeline status:</b>
 /// parse (AngleSharp) ✅ → style (AngleSharp.Css + custom cascade) ✅ → box gen ✅
-/// → fragmentainer-aware layout ✅ → paint (backgrounds ✅; borders + text pending)
+/// → fragmentainer-aware layout ✅ → paint (backgrounds + borders ✅; text pending)
 /// → emit ✅. JavaScript in the input is ignored with a
 /// <c>HTML-SCRIPT-IGNORED-001</c> diagnostic; see <c>docs/compatibility-matrix.md</c>.
 /// </para>

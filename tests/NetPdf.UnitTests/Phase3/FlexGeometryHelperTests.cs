@@ -45,6 +45,7 @@ public sealed class FlexGeometryHelperTests
         // borders 10/10/10/10 + padding 5/5/5/5 on a 600×400
         // border box → content = 570×370 at offset +15/+15.
         var box = BuildFlexContainer();
+        SolidBorders(box.Style);
         SetLengthPx(box.Style, PropertyId.BorderTopWidth, 10);
         SetLengthPx(box.Style, PropertyId.BorderBottomWidth, 10);
         SetLengthPx(box.Style, PropertyId.BorderLeftWidth, 10);
@@ -80,6 +81,7 @@ public sealed class FlexGeometryHelperTests
         // ArgumentOutOfRangeException. The content offset still
         // honors the chrome (offset = start_border + start_padding).
         var box = BuildFlexContainer();
+        SolidBorders(box.Style);
         SetLengthPx(box.Style, PropertyId.BorderLeftWidth, 50);
         SetLengthPx(box.Style, PropertyId.BorderRightWidth, 50);
 
@@ -106,6 +108,7 @@ public sealed class FlexGeometryHelperTests
         // border-left: 3, border-right: 7. padding-top: 2,
         // padding-bottom: 4, padding-left: 1, padding-right: 6.
         var box = BuildFlexContainer();
+        SolidBorders(box.Style);
         SetLengthPx(box.Style, PropertyId.BorderTopWidth, 5);
         SetLengthPx(box.Style, PropertyId.BorderBottomWidth, 10);
         SetLengthPx(box.Style, PropertyId.BorderLeftWidth, 3);
@@ -146,6 +149,17 @@ public sealed class FlexGeometryHelperTests
 
     private static void SetLengthPx(ComputedStyle style, PropertyId id, double px) =>
         style.Set(id, ComputedSlot.FromLengthPx(px));
+
+    // Per CSS Backgrounds & Borders 3 §4.3 the used border-width is 0 unless the
+    // matching border-style is a visible value, so box-model tests that set a
+    // synthetic border-*-width must also declare a style for it to contribute.
+    private static void SolidBorders(ComputedStyle style)
+    {
+        style.Set(PropertyId.BorderTopStyle, ComputedSlot.FromKeyword(4));    // 4 = solid
+        style.Set(PropertyId.BorderRightStyle, ComputedSlot.FromKeyword(4));
+        style.Set(PropertyId.BorderBottomStyle, ComputedSlot.FromKeyword(4));
+        style.Set(PropertyId.BorderLeftStyle, ComputedSlot.FromKeyword(4));
+    }
 
     private static AngleSharp.Dom.IElement MakeElement()
     {

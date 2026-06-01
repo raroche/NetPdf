@@ -151,6 +151,11 @@ public sealed class PropertyDefaultsParityTests
             // default value lands the parsed 2-D map in the
             // side-table.
             PropertyType.GridTemplateAreas,
+            // Per Phase 5 layout→PDF cycle 3 — LineWidth (border-*-width,
+            // column-rule-width) joined the resolved family via LineWidthResolver:
+            // thin/medium/thick → 1/3/5px + <length>. The default `medium` now
+            // resolves to LengthPx(3); pre-cycle-3 it returned UnsupportedUnvalidated.
+            PropertyType.LineWidth,
         };
 
         var failures = new List<string>();
@@ -219,6 +224,11 @@ public sealed class PropertyDefaultsParityTests
             // default value lands the parsed 2-D map in the
             // side-table.
             PropertyType.GridTemplateAreas,
+            // Per Phase 5 layout→PDF cycle 3 — LineWidth (border-*-width,
+            // column-rule-width) joined the resolved family via LineWidthResolver:
+            // thin/medium/thick → 1/3/5px + <length>. The default `medium` now
+            // resolves to LengthPx(3); pre-cycle-3 it returned UnsupportedUnvalidated.
+            PropertyType.LineWidth,
         };
 
         var failures = new List<string>();

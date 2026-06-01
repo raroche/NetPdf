@@ -31,7 +31,7 @@ namespace NetPdf.Css.ComputedValues.PropertyResolvers;
 /// "no resolver wired yet — raw text passed through unchecked, cycle-2 work
 /// surface". Treating them identically would silently let typos through for
 /// cycle-2 PropertyTypes. Cycle 2 wires: <c>FontFamilyList</c>, <c>FontWeight</c>,
-/// <c>FontSize</c>, <c>LineHeight</c>, <c>LineWidth</c>, <c>FlexBasis</c>,
+/// <c>FontSize</c>, <c>LineHeight</c>, <c>FlexBasis</c>,
 /// <c>VerticalAlign</c>, <c>Content</c>, <c>Url</c>, <c>String</c>, <c>Time</c>,
 /// <c>Angle</c>, <c>Resolution</c>.
 /// </para>
@@ -122,6 +122,13 @@ internal static class PropertyResolverDispatch
             PropertyType.GridLine => GridLineResolver.Resolve(
                 trimmed, propertyId, meta.Name, diagnostics, location),
             PropertyType.GridTemplateAreas => GridTemplateAreasResolver.Resolve(
+                trimmed, propertyId, meta.Name, diagnostics, location),
+
+            // Per Phase 5 layout→PDF cycle 3 — <line-width> (border-*-width,
+            // column-rule-width): thin/medium/thick keywords + <length>, resolved
+            // to a LengthPx slot. The used-value style gate (width 0 when
+            // border-style is none/hidden) is applied downstream in layout/paint.
+            PropertyType.LineWidth => LineWidthResolver.Resolve(
                 trimmed, propertyId, meta.Name, diagnostics, location),
 
             // Cycle-2 PropertyTypes — return UnsupportedUnvalidated (NOT Deferred)

@@ -938,6 +938,32 @@ public sealed class DiagnosticCodesTests
         Assert.Equal("Info", match.Groups[2].Value);
     }
 
+    [Fact]
+    public void Paint_border_style_approximated_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(
+            registry,
+            @"\|\s*`?(PAINT-BORDER-STYLE-APPROXIMATED-001)`?\s*\|\s*(\w+)\s*\|");
+
+        Assert.True(match.Success, "PAINT-BORDER-STYLE-APPROXIMATED-001 row not found in docs/diagnostics-codes.md");
+        Assert.Equal("PAINT-BORDER-STYLE-APPROXIMATED-001", DiagnosticCodes.PaintBorderStyleApproximated001);
+        Assert.Equal("Info", match.Groups[2].Value);
+    }
+
+    [Fact]
+    public void Paint_border_alpha_approximated_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(
+            registry,
+            @"\|\s*`?(PAINT-BORDER-ALPHA-APPROXIMATED-001)`?\s*\|\s*(\w+)\s*\|");
+
+        Assert.True(match.Success, "PAINT-BORDER-ALPHA-APPROXIMATED-001 row not found in docs/diagnostics-codes.md");
+        Assert.Equal("PAINT-BORDER-ALPHA-APPROXIMATED-001", DiagnosticCodes.PaintBorderAlphaApproximated001);
+        Assert.Equal("Info", match.Groups[2].Value);
+    }
+
     private static string LoadRegistry()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

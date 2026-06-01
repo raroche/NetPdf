@@ -49,9 +49,41 @@ internal static class ComputedStyleLayoutExtensions
     /// 0 when the slot is Unset / Auto / non-length. Most box-model
     /// margin/padding/border properties default to 0 per the CSS
     /// initial-value table; this is the convenience overload for that
-    /// case.</summary>
-    public static double ReadLengthPxOrZero(this ComputedStyle style, PropertyId id) =>
-        style.ReadLengthPxOrDefault(id, defaultPx: 0);
+    /// case.
+    ///
+    /// <para><b>Border-width used-value gate.</b> For the four
+    /// <c>border-*-width</c> properties this applies CSS Backgrounds &amp;
+    /// Borders 3 §4.3: the USED border width is 0 when the corresponding
+    /// <c>border-*-style</c> is <c>none</c> or <c>hidden</c>, regardless of
+    /// the declared (computed) width. <c>border-*-width</c> resolves to its
+    /// nominal px (initial <c>medium</c> = 3px) in the cascade; gating here —
+    /// the single reader every layout border-width call site funnels through —
+    /// means an unbordered box (the default <c>border-style: none</c>) reserves
+    /// no border space, so resolving border-width doesn't grow every box.</para></summary>
+    public static double ReadLengthPxOrZero(this ComputedStyle style, PropertyId id)
+    {
+        if (TryBorderStyleFor(id, out var styleId)
+            && style.ReadKeywordOrDefault(styleId, defaultIndex: 0) <= 1) // 0=none, 1=hidden
+        {
+            return 0;
+        }
+        return style.ReadLengthPxOrDefault(id, defaultPx: 0);
+    }
+
+    /// <summary>Maps a <c>border-*-width</c> PropertyId to its sibling
+    /// <c>border-*-style</c> PropertyId for the §4.3 used-width style gate;
+    /// returns <see langword="false"/> for any other property.</summary>
+    private static bool TryBorderStyleFor(PropertyId widthId, out PropertyId styleId)
+    {
+        switch (widthId)
+        {
+            case PropertyId.BorderTopWidth: styleId = PropertyId.BorderTopStyle; return true;
+            case PropertyId.BorderRightWidth: styleId = PropertyId.BorderRightStyle; return true;
+            case PropertyId.BorderBottomWidth: styleId = PropertyId.BorderBottomStyle; return true;
+            case PropertyId.BorderLeftWidth: styleId = PropertyId.BorderLeftStyle; return true;
+            default: styleId = default; return false;
+        }
+    }
 
     /// <summary>Per Phase 3 Task 8 — read a keyword-typed property as
     /// its keyword index. Returns <paramref name="defaultIndex"/> when

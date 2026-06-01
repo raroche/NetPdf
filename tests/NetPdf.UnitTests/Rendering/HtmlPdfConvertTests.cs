@@ -49,6 +49,96 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Convert_paints_a_solid_border_edge()
+    {
+        const string html =
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:80px;height:40px;" +
+            "border-top-width:5px;border-top-style:solid;border-top-color:#ff0000\"></div>" +
+            "</body></html>";
+
+        var text = Latin1(HtmlPdf.Convert(html));
+
+        // #ff0000 → rgb(1, 0, 0) + a filled rectangle for the top border edge.
+        Assert.Contains("1 0 0 rg", text);
+        Assert.Contains("re f", text);
+    }
+
+    [Fact]
+    public void Non_solid_border_style_emits_the_approximation_diagnostic()
+    {
+        const string html =
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:80px;height:40px;" +
+            "border-top-width:3px;border-top-style:dashed;border-top-color:#000000\"></div>" +
+            "</body></html>";
+
+        var result = HtmlPdf.ConvertDetailed(html);
+
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.PaintBorderStyleApproximated001);
+    }
+
+    [Fact]
+    public void Convert_paints_border_from_the_border_shorthand()
+    {
+        const string html =
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:80px;height:40px;border:5px solid red\"></div>" +
+            "</body></html>";
+
+        var text = Latin1(HtmlPdf.Convert(html));
+
+        Assert.Contains("1 0 0 rg", text);   // red, expanded from the `border` shorthand
+        Assert.Contains("re f", text);
+    }
+
+    [Fact]
+    public void Convert_paints_border_from_the_per_side_shorthand()
+    {
+        const string html =
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:80px;height:40px;border-top:5px solid red\"></div>" +
+            "</body></html>";
+
+        var text = Latin1(HtmlPdf.Convert(html));
+
+        Assert.Contains("1 0 0 rg", text);
+        Assert.Contains("re f", text);
+    }
+
+    [Fact]
+    public void Convert_paints_the_initial_medium_width_when_only_style_and_color_are_set()
+    {
+        // No width declared → border-top-width is its initial `medium` (3px). Proves the
+        // medium-default path paints — invoices commonly rely on it (PR #119 review P2).
+        const string html =
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:80px;height:40px;border-top-style:solid;border-top-color:red\"></div>" +
+            "</body></html>";
+
+        var text = Latin1(HtmlPdf.Convert(html));
+
+        Assert.Contains("1 0 0 rg", text);
+        Assert.Contains("re f", text);
+    }
+
+    [Fact]
+    public void Partial_alpha_border_color_emits_the_approximation_diagnostic()
+    {
+        const string html =
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:80px;height:40px;border-top-width:5px;border-top-style:solid;" +
+            "border-top-color:rgba(255,0,0,0.5)\"></div>" +
+            "</body></html>";
+
+        var result = HtmlPdf.ConvertDetailed(html);
+
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.PaintBorderAlphaApproximated001);
+        // Painted fully opaque (alpha ignored) → rgb(1, 0, 0).
+        Assert.Contains("1 0 0 rg", Latin1(result.Pdf));
+    }
+
+    [Fact]
     public void Convert_is_deterministic_across_runs()
     {
         var first = HtmlPdf.Convert(BackgroundHtml);

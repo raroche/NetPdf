@@ -436,6 +436,11 @@ public sealed class BlockInlineIntegrationTests
         blockStyle.Set(PropertyId.BorderBottomWidth, ComputedSlot.FromLengthPx(2));
         blockStyle.Set(PropertyId.BorderLeftWidth, ComputedSlot.FromLengthPx(2));
         blockStyle.Set(PropertyId.BorderRightWidth, ComputedSlot.FromLengthPx(2));
+        // Per CSS B&B 3 §4.3 a used border-width needs a visible style (solid = keyword 4).
+        blockStyle.Set(PropertyId.BorderTopStyle, ComputedSlot.FromKeyword(4));
+        blockStyle.Set(PropertyId.BorderBottomStyle, ComputedSlot.FromKeyword(4));
+        blockStyle.Set(PropertyId.BorderLeftStyle, ComputedSlot.FromKeyword(4));
+        blockStyle.Set(PropertyId.BorderRightStyle, ComputedSlot.FromKeyword(4));
         blockStyle.Set(PropertyId.Width, ComputedSlot.FromLengthPx(200));
 
         var root = Box.CreateRoot(MakeStyle());

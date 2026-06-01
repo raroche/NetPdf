@@ -2694,10 +2694,11 @@ flags the categories):
 ## layout-to-pdf-pipeline
 
 - **ID** — `layout-to-pdf-pipeline`
-- **Status** — approximated (as of cycle 2 the public `HtmlPdf.Convert`
-  facade renders end-to-end — HTML → layout → paint → PDF bytes — but
-  paints BACKGROUNDS only on a single page; borders + text are not yet
-  painted, so it's a partial approximation, not yet the full contract)
+- **Status** — approximated (the public `HtmlPdf.Convert` facade renders
+  end-to-end — HTML → layout → paint → PDF bytes — painting
+  `background-color` fills + `border-*` edges on a single page as of cycle 3;
+  TEXT is not yet painted, so it's a partial approximation, not yet the full
+  contract)
 - **Spec** — N/A (internal integration of the layout + PDF subsystems
   into the public facade).
 - **Behavior** — The layout engine (HTML → cascade → box tree →
@@ -2759,28 +2760,41 @@ flags the categories):
   (`FontSafetyValidator` before HarfBuzz + synchronous-completion
   fail-fast) was already in place from cycle 1 — unchanged, now reachable
   through the facade.
+- **Done — cycle 3 (border painting)** — `border-*-width`
+  (`PropertyType.LineWidth`: thin/medium/thick → 1/3/5px + `<length>`) now
+  resolves in the cascade via the new `LineWidthResolver` (+ the line-width
+  properties joined `NonNegativeProperties`). The CSS B&B 3 §4.3 used-value
+  rule — width 0 when `border-style` is none/hidden — is applied as a style
+  gate in `ComputedStyleLayoutExtensions.ReadLengthPxOrZero` (the single
+  reader every layout border-width site funnels through), so unbordered boxes
+  (default `border-style: none`) reserve no border space and resolving the
+  initial `medium` (3px) doesn't grow every box. `FragmentPainter` paints the
+  four border edges (full-span overlapping rects); non-`solid` painted styles
+  render as solid + emit `PAINT-BORDER-STYLE-APPROXIMATED-001`. Ripple was
+  contained to 12 box-model unit tests that set synthetic `border-*-width`
+  without a style (now declare `solid`) + the cycle-2 parity test (LineWidth
+  moved to the resolved set); LayoutSnapshots + RealDocuments unaffected.
+  Tests: `LineWidthResolverTests`, `BorderWidthStyleGateTests`, + facade
+  border integration. `column-rule-width` also resolves (same type) but is
+  unconsumed by layout, so it's a harmless unused slot.
 - **TODOs (remaining chain, in order)** —
-  1. **CSS dimension-property resolution (font-size + line-width)** — wire
+  1. **CSS font-property resolution (font-size / family / weight)** — wire
      `FontSizeResolver` (em/rem/%/keyword relative to the parent),
      `FontFamilyListResolver` (family stack + generics), `FontWeightResolver`
-     (1..1000 + bolder/lighter), AND the `LineWidth` type (`border-*-width`:
-     thin/medium/thick + lengths) into `PropertyResolverDispatch` (the
+     (1..1000 + bolder/lighter) into `PropertyResolverDispatch` (the
      documented "cycle 2 backlog" there). NOTE: resolving `font-size` changes
-     em/rem unit resolution + every text-measuring baseline, and resolving
-     `border-*-width` changes border-box sizing — both cross-cutting changes
-     to land carefully (with re-pinned snapshots). Until then
+     em/rem unit resolution + every text-measuring baseline — a cross-cutting
+     change to land carefully (with re-pinned snapshots). Until then
      `HarfBuzzShaperResolver` uses default size (16px) + family
-     (`sans-serif`) + normal weight, and the paint bridge cannot size
-     borders (background painting is unaffected — `background-color` resolves).
-  2. **Paint bridge** — DONE for `background-color` fills (cycle 2:
-     `FragmentPainter` → `PdfPage.FillRectangle`, ×0.75 + y-flip).
-     REMAINING: **border** rectangles (blocked on `border-*-width`
-     resolution — TODO 1), **text runs** (embedded font + glyph
-     positioning — blocked on the shaper + font-property resolution),
-     background images / gradients, border-radius, and alpha compositing.
-     The `NetPdf.Paint` `DisplayCommand` IR still has no fragment→command
-     or command→PDF consumer — the cycle-2 bridge emits straight to
-     `IContentStream`; routing through the IR arrives with the full paint
+     (`sans-serif`) + normal weight, blocking text painting. (`LineWidth` /
+     `border-*-width` resolution shipped in cycle 3 — see the cycle-3 done note.)
+  2. **Paint bridge** — DONE for `background-color` fills (cycle 2) +
+     `border-*` edges (cycle 3). REMAINING: **text runs** (embedded font +
+     glyph positioning — blocked on the shaper + font-property resolution,
+     TODO 1), background images / gradients, border-radius, mitered corners,
+     and alpha compositing. The `NetPdf.Paint` `DisplayCommand` IR still has
+     no fragment→command or command→PDF consumer — the bridge emits straight
+     to `IContentStream`; routing through the IR arrives with the full paint
      pipeline.
   3. **Facade** — DONE for the single-page path (cycle 2:
      `HtmlPdf.Convert` / `ConvertAsync` / `ConvertDetailed` →

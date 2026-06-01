@@ -40,6 +40,7 @@ public sealed class BlockLayouterTests
         var sink = new RecordingFragmentSink();
         var style = MakeStyle();
         SetLengthPx(style, PropertyId.MarginTop, 10);
+        SolidBorders(style);
         SetLengthPx(style, PropertyId.BorderTopWidth, 5);
         SetLengthPx(style, PropertyId.PaddingTop, 8);
         SetLengthPx(style, PropertyId.Height, 100);
@@ -1337,6 +1338,7 @@ public sealed class BlockLayouterTests
         SetLengthPx(divStyle, PropertyId.Height, 200);
         SetLengthPx(divStyle, PropertyId.PaddingTop, 10);
         SetLengthPx(divStyle, PropertyId.PaddingBottom, 10);
+        SolidBorders(divStyle);
         SetLengthPx(divStyle, PropertyId.BorderTopWidth, 5);
         SetLengthPx(divStyle, PropertyId.BorderBottomWidth, 5);
         var div = Box.ForElement(BoxKind.BlockContainer, divStyle, MakeElement());
@@ -1432,6 +1434,7 @@ public sealed class BlockLayouterTests
         var divStyle = MakeStyle();
         SetLengthPx(divStyle, PropertyId.Height, 200);
         SetLengthPx(divStyle, PropertyId.PaddingLeft, 25);
+        SolidBorders(divStyle);
         SetLengthPx(divStyle, PropertyId.BorderLeftWidth, 5);
         var div = Box.ForElement(BoxKind.BlockContainer, divStyle, MakeElement());
         root.AppendChild(div);
@@ -3730,6 +3733,7 @@ public sealed class BlockLayouterTests
         SetLengthPx(floatStyle, PropertyId.Height, 200);
         SetLengthPx(floatStyle, PropertyId.MarginLeft, 10);
         SetLengthPx(floatStyle, PropertyId.MarginRight, 10);
+        SolidBorders(floatStyle);
         SetLengthPx(floatStyle, PropertyId.BorderLeftWidth, 5);
         SetLengthPx(floatStyle, PropertyId.BorderRightWidth, 5);
         SetLengthPx(floatStyle, PropertyId.PaddingLeft, 15);
@@ -3936,6 +3940,7 @@ public sealed class BlockLayouterTests
         var parentStyle = MakeStyle();
         // height=auto (= 0); add padding-bottom + border-bottom.
         SetLengthPx(parentStyle, PropertyId.PaddingBottom, 20);
+        SolidBorders(parentStyle);
         SetLengthPx(parentStyle, PropertyId.BorderBottomWidth, 5);
         var parent = Box.ForElement(BoxKind.BlockContainer, parentStyle, MakeElement());
         root.AppendChild(parent);
@@ -6207,6 +6212,7 @@ public sealed class BlockLayouterTests
         var relStyle = MakeStyle();
         SetKeyword(relStyle, PropertyId.Position, 1); // relative
         SetLengthPx(relStyle, PropertyId.Height, 200);
+        SolidBorders(relStyle);
         SetLengthPx(relStyle, PropertyId.BorderTopWidth, 10);
         SetLengthPx(relStyle, PropertyId.BorderLeftWidth, 10);
         SetLengthPx(relStyle, PropertyId.BorderRightWidth, 10);
@@ -6476,6 +6482,18 @@ public sealed class BlockLayouterTests
 
     private static void SetKeyword(ComputedStyle style, PropertyId id, int keywordIndex) =>
         style.Set(id, ComputedSlot.FromKeyword(keywordIndex));
+
+    // Per CSS Backgrounds & Borders 3 §4.3 the used border-width is 0 unless the
+    // matching border-style is a visible value, so box-model tests that set a
+    // synthetic border-*-width must also declare a style (solid = keyword 4) for it
+    // to contribute to box sizing / offsets.
+    private static void SolidBorders(ComputedStyle style)
+    {
+        SetKeyword(style, PropertyId.BorderTopStyle, 4);
+        SetKeyword(style, PropertyId.BorderRightStyle, 4);
+        SetKeyword(style, PropertyId.BorderBottomStyle, 4);
+        SetKeyword(style, PropertyId.BorderLeftStyle, 4);
+    }
 
     private static AngleSharp.Dom.IElement MakeElement()
     {

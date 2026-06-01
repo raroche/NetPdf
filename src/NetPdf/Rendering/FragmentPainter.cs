@@ -11,42 +11,54 @@ namespace NetPdf.Rendering;
 
 /// <summary>
 /// The <see cref="BoxFragment"/> → PDF paint bridge. Walks the laid-out fragments
-/// for one page and emits each box's background fill as a PDF content-stream
-/// rectangle, applying the CSS-px → PDF-pt scale (<see cref="PdfUnits.PointsPerPixel"/>)
-/// and the y-axis flip (CSS y-down / page-top origin → PDF y-up / page-bottom
-/// origin).
+/// for one page and emits each box's background fill + border edges as PDF
+/// content-stream rectangles, applying the CSS-px → PDF-pt scale
+/// (<see cref="PdfUnits.PointsPerPixel"/>) and the y-axis flip (CSS y-down /
+/// page-top origin → PDF y-up / page-bottom origin).
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Cycle-2 scope (the "Hello World" paint bridge).</b> This stage paints
-/// <c>background-color</c> fills only — the minimum that proves the
-/// HTML → layout → paint → PDF pipeline end-to-end without depending on text
-/// shaping / font-property resolution. The bridge emits straight to
-/// <c>IContentStream</c> operators (via <see cref="PdfPage.FillRectangle"/>); the
-/// <c>NetPdf.Paint</c> <c>DisplayCommand</c> IR consumer arrives with the full
-/// paint pipeline.
+/// <b>Cycle-2/3 scope.</b> Paints <c>background-color</c> fills + the four
+/// <c>border-*</c> edges — no text yet (that needs the CSS font-property
+/// resolvers). The bridge emits straight to <c>IContentStream</c> operators (via
+/// <see cref="PdfPage.FillRectangle"/>); the <c>NetPdf.Paint</c>
+/// <c>DisplayCommand</c> IR consumer arrives with the full paint pipeline.
 /// </para>
 /// <para>
-/// <b>Borders are deferred.</b> Painting <c>border-*</c> edges needs the used
-/// <c>border-*-width</c>, but that property (<c>PropertyType.LineWidth</c>) is not
-/// resolved by the cascade yet — it sits in <c>PropertyResolverDispatch</c>'s
-/// "cycle 2 backlog" alongside <c>font-size</c>. Wiring it is cross-cutting (it
-/// changes border-box sizing + re-pins layout baselines), so border painting lands
-/// with that resolution work. Tracked in <c>deferrals.md#layout-to-pdf-pipeline</c>.
-/// Also deferred: background images / gradients, border-radius, and alpha
-/// compositing — partial-alpha colors paint fully opaque and emit
+/// <b>Borders.</b> Only <c>solid</c> is rendered faithfully; the other painted
+/// styles (<c>dotted</c> / <c>dashed</c> / <c>double</c> / <c>groove</c> /
+/// <c>ridge</c> / <c>inset</c> / <c>outset</c>) are approximated as a solid fill of
+/// the border color and surfaced via <c>PAINT-BORDER-STYLE-APPROXIMATED-001</c>.
+/// <c>none</c> and <c>hidden</c> paint nothing (CSS Backgrounds &amp; Borders 3
+/// §4.3 — the used border width is 0 for those styles; layout reserves no space and
+/// the painter skips them). Edges span the full box extent on their long axis, so
+/// corners overlap — exact for uniform borders; mitered / per-corner joins are a
+/// refinement. Border <c>border-radius</c> and per-edge alpha compositing are
+/// deferred (deferrals.md#layout-to-pdf-pipeline).
+/// </para>
+/// <para>
+/// <b>Background alpha.</b> Partial-alpha colors paint fully opaque and emit
 /// <c>PAINT-BACKGROUND-ALPHA-APPROXIMATED-001</c>; fully transparent fills are
-/// skipped.
+/// skipped. Background images / gradients are deferred.
 /// </para>
 /// </remarks>
 internal static class FragmentPainter
 {
+    // border-style keyword ids — the stable zero-based ordering the cascade's
+    // KeywordResolver assigns from CSS Backgrounds & Borders 3 §4.3:
+    // none, hidden, dotted, dashed, solid, double, groove, ridge, inset, outset.
+    private const int BorderStyleNone = 0;
+    private const int BorderStyleHidden = 1;
+    private const int BorderStyleSolid = 4;
+
     /// <summary>Fallback when <c>currentcolor</c> can't be resolved — opaque
     /// black, the canvas default text color.</summary>
     private const uint DefaultColorArgb = 0xFF000000;
 
+    private enum BorderEdge { Top, Right, Bottom, Left }
+
     /// <summary>
-    /// Paint every fragment's background onto <paramref name="page"/>.
+    /// Paint every fragment's background + borders onto <paramref name="page"/>.
     /// </summary>
     /// <param name="fragments">The page's fragments in paint order (back to front).</param>
     /// <param name="page">The destination PDF page.</param>
@@ -55,9 +67,9 @@ internal static class FragmentPainter
     /// content-area-relative; this offsets them into page space).</param>
     /// <param name="contentOriginTopPx">Top page margin in CSS px.</param>
     /// <param name="paintBackgrounds">Honors <c>HtmlPdfOptions.PrintBackgrounds</c> — when
-    /// <see langword="false"/>, no background is painted.</param>
-    /// <param name="diagnostics">Sink for paint diagnostics (partial-alpha approximation);
-    /// <see langword="null"/> drops them.</param>
+    /// <see langword="false"/>, no background is painted (borders, being foreground, still are).</param>
+    /// <param name="diagnostics">Sink for paint diagnostics (alpha / border-style
+    /// approximation); <see langword="null"/> drops them.</param>
     public static void PaintFragments(
         IReadOnlyList<BoxFragment> fragments,
         PdfPage page,
@@ -67,12 +79,9 @@ internal static class FragmentPainter
         bool paintBackgrounds,
         IDiagnosticsSink? diagnostics)
     {
-        // Backgrounds are all this cycle paints, so HtmlPdfOptions.PrintBackgrounds=false
-        // skips everything (per PR #118 review P1). When borders / text land, this becomes
-        // a per-feature gate (borders + text are foreground, unaffected by PrintBackgrounds).
-        if (!paintBackgrounds) return;
-
         var alphaApproximationReported = false;
+        var borderApproximationReported = false;
+
         for (var i = 0; i < fragments.Count; i++)
         {
             var fragment = fragments[i];
@@ -86,17 +95,31 @@ internal static class FragmentPainter
             var heightPx = fragment.BlockSize;
             if (widthPx <= 0 || heightPx <= 0) continue;
 
-            PaintBackground(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx,
-                diagnostics, ref alphaApproximationReported);
+            var currentColorArgb = ResolveCurrentColor(style);
+
+            // Background first (behind borders), gated by PrintBackgrounds.
+            if (paintBackgrounds)
+                PaintBackground(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx,
+                    currentColorArgb, diagnostics, ref alphaApproximationReported);
+
+            // Borders (foreground — always painted regardless of PrintBackgrounds).
+            PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Top, leftPx, topPx, widthPx, heightPx,
+                currentColorArgb, diagnostics, ref borderApproximationReported);
+            PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Right, leftPx, topPx, widthPx, heightPx,
+                currentColorArgb, diagnostics, ref borderApproximationReported);
+            PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Bottom, leftPx, topPx, widthPx, heightPx,
+                currentColorArgb, diagnostics, ref borderApproximationReported);
+            PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Left, leftPx, topPx, widthPx, heightPx,
+                currentColorArgb, diagnostics, ref borderApproximationReported);
         }
     }
 
     private static void PaintBackground(
         PdfPage page, ComputedStyle style, double pageHeightPt,
         double leftPx, double topPx, double widthPx, double heightPx,
-        IDiagnosticsSink? diagnostics, ref bool alphaApproximationReported)
+        uint currentColorArgb, IDiagnosticsSink? diagnostics, ref bool alphaApproximationReported)
     {
-        if (!TryResolveColor(style.Get(PropertyId.BackgroundColor), ResolveCurrentColor(style), out var argb))
+        if (!TryResolveColor(style.Get(PropertyId.BackgroundColor), currentColorArgb, out var argb))
             return;
         var alpha = Alpha(argb);
         if (alpha == 0) return; // transparent (the initial value) paints nothing.
@@ -117,6 +140,73 @@ internal static class FragmentPainter
 
         ColorChannels(argb, out var r, out var g, out var b);
         ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var x, out var y, out var w, out var h);
+        page.FillRectangle(x, y, w, h, r, g, b);
+    }
+
+    private static void PaintBorderEdge(
+        PdfPage page, ComputedStyle style, double pageHeightPt, BorderEdge edge,
+        double boxLeftPx, double boxTopPx, double boxWidthPx, double boxHeightPx,
+        uint currentColorArgb, IDiagnosticsSink? diagnostics, ref bool approximationReported)
+    {
+        (PropertyId styleId, PropertyId widthId, PropertyId colorId) = edge switch
+        {
+            BorderEdge.Top => (PropertyId.BorderTopStyle, PropertyId.BorderTopWidth, PropertyId.BorderTopColor),
+            BorderEdge.Right => (PropertyId.BorderRightStyle, PropertyId.BorderRightWidth, PropertyId.BorderRightColor),
+            BorderEdge.Bottom => (PropertyId.BorderBottomStyle, PropertyId.BorderBottomWidth, PropertyId.BorderBottomColor),
+            _ => (PropertyId.BorderLeftStyle, PropertyId.BorderLeftWidth, PropertyId.BorderLeftColor),
+        };
+
+        var styleSlot = style.Get(styleId);
+        if (styleSlot.Tag != ComputedSlotTag.Keyword) return; // unset → initial `none`.
+        var styleKeyword = styleSlot.AsKeyword();
+        if (styleKeyword is BorderStyleNone or BorderStyleHidden) return;
+
+        var widthSlot = style.Get(widthId);
+        var edgeWidthPx = widthSlot.Tag == ComputedSlotTag.LengthPx ? widthSlot.AsLengthPx() : 0;
+        if (edgeWidthPx <= 0) return;
+
+        if (!TryResolveColor(style.Get(colorId), currentColorArgb, out var argb))
+            argb = currentColorArgb; // border-color initial is currentcolor.
+        if (Alpha(argb) == 0) return;
+
+        if (styleKeyword != BorderStyleSolid && !approximationReported)
+        {
+            diagnostics?.Emit(new Diagnostic(
+                DiagnosticCodes.PaintBorderStyleApproximated001,
+                "A non-solid border-style (dotted / dashed / double / groove / ridge / inset / outset) " +
+                "was painted as a solid line. Styled border rendering is a tracked follow-up " +
+                "(deferrals.md#layout-to-pdf-pipeline).",
+                DiagnosticSeverity.Info));
+            approximationReported = true;
+        }
+
+        // Edge sub-rect within the border box (CSS px, page-top-relative). Edges span
+        // the full box extent on their long axis; corners overlap, which is exact for
+        // uniform borders (mitered / per-corner joins are a refinement).
+        double edgeLeftPx, edgeTopPx, edgeBoxWidthPx, edgeBoxHeightPx;
+        switch (edge)
+        {
+            case BorderEdge.Top:
+                edgeLeftPx = boxLeftPx; edgeTopPx = boxTopPx;
+                edgeBoxWidthPx = boxWidthPx; edgeBoxHeightPx = edgeWidthPx;
+                break;
+            case BorderEdge.Bottom:
+                edgeLeftPx = boxLeftPx; edgeTopPx = boxTopPx + boxHeightPx - edgeWidthPx;
+                edgeBoxWidthPx = boxWidthPx; edgeBoxHeightPx = edgeWidthPx;
+                break;
+            case BorderEdge.Left:
+                edgeLeftPx = boxLeftPx; edgeTopPx = boxTopPx;
+                edgeBoxWidthPx = edgeWidthPx; edgeBoxHeightPx = boxHeightPx;
+                break;
+            default: // Right
+                edgeLeftPx = boxLeftPx + boxWidthPx - edgeWidthPx; edgeTopPx = boxTopPx;
+                edgeBoxWidthPx = edgeWidthPx; edgeBoxHeightPx = boxHeightPx;
+                break;
+        }
+
+        ColorChannels(argb, out var r, out var g, out var b);
+        ToPdfRect(edgeLeftPx, edgeTopPx, edgeBoxWidthPx, edgeBoxHeightPx, pageHeightPt,
+            out var x, out var y, out var w, out var h);
         page.FillRectangle(x, y, w, h, r, g, b);
     }
 

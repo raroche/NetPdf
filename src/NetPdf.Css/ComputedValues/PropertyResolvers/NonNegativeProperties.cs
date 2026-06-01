@@ -71,5 +71,12 @@ internal static class NonNegativeProperties
         // back to the property's initial value (auto / normal) + emits
         // CSS-PROPERTY-VALUE-INVALID-001.
         PropertyId.ColumnWidth, PropertyId.ColumnGap,
+        // Per Phase 5 layout→PDF cycle 3 — <line-width> is non-negative (CSS
+        // Backgrounds & Borders 3 §4.2). border-*-width + column-rule-width join
+        // the resolver dispatch (LineWidthResolver) + this set together so a
+        // negative width invalidates cleanly + falls back to the initial value.
+        PropertyId.BorderTopWidth, PropertyId.BorderRightWidth,
+        PropertyId.BorderBottomWidth, PropertyId.BorderLeftWidth,
+        PropertyId.ColumnRuleWidth,
     }.ToFrozenSet();
 }

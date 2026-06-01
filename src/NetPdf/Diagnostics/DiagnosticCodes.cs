@@ -670,5 +670,17 @@ internal static class DiagnosticCodes
     /// </summary>
     public const string PaintBackgroundAlphaApproximated001 = "PAINT-BACKGROUND-ALPHA-APPROXIMATED-001";
 
+    /// <summary>
+    /// Per Phase 5 layout→PDF wiring cycle 3 — emitted by the <c>FragmentPainter</c>
+    /// when a border edge uses a painted <c>border-style</c> other than <c>solid</c>
+    /// (<c>dotted</c> / <c>dashed</c> / <c>double</c> / <c>groove</c> / <c>ridge</c> /
+    /// <c>inset</c> / <c>outset</c>). Cycle 3 paints all painted styles as a solid fill
+    /// of the border color; the dash / double / bevel rendering is a tracked follow-up
+    /// (<c>docs/deferrals.md#layout-to-pdf-pipeline</c>). <c>none</c> and <c>hidden</c>
+    /// paint nothing and do NOT emit this. Fires at most once per conversion.
+    /// Severity: <see cref="DiagnosticSeverity.Info"/>.
+    /// </summary>
+    public const string PaintBorderStyleApproximated001 = "PAINT-BORDER-STYLE-APPROXIMATED-001";
+
     // endregion PAINT-*
 }

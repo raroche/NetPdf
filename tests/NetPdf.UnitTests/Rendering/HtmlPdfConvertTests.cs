@@ -49,6 +49,36 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Convert_paints_a_solid_border_edge()
+    {
+        const string html =
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:80px;height:40px;" +
+            "border-top-width:5px;border-top-style:solid;border-top-color:#ff0000\"></div>" +
+            "</body></html>";
+
+        var text = Latin1(HtmlPdf.Convert(html));
+
+        // #ff0000 → rgb(1, 0, 0) + a filled rectangle for the top border edge.
+        Assert.Contains("1 0 0 rg", text);
+        Assert.Contains("re f", text);
+    }
+
+    [Fact]
+    public void Non_solid_border_style_emits_the_approximation_diagnostic()
+    {
+        const string html =
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:80px;height:40px;" +
+            "border-top-width:3px;border-top-style:dashed;border-top-color:#000000\"></div>" +
+            "</body></html>";
+
+        var result = HtmlPdf.ConvertDetailed(html);
+
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.PaintBorderStyleApproximated001);
+    }
+
+    [Fact]
     public void Convert_is_deterministic_across_runs()
     {
         var first = HtmlPdf.Convert(BackgroundHtml);

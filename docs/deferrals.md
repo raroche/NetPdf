@@ -2694,8 +2694,10 @@ flags the categories):
 ## layout-to-pdf-pipeline
 
 - **ID** — `layout-to-pdf-pipeline`
-- **Status** — throws (the public `HtmlPdf.Convert` facade throws
-  `NotImplementedException` until the pipeline is wired)
+- **Status** — approximated (as of cycle 2 the public `HtmlPdf.Convert`
+  facade renders end-to-end — HTML → layout → paint → PDF bytes — but
+  paints BACKGROUNDS only on a single page; borders + text are not yet
+  painted, so it's a partial approximation, not yet the full contract)
 - **Spec** — N/A (internal integration of the layout + PDF subsystems
   into the public facade).
 - **Behavior** — The layout engine (HTML → cascade → box tree →
@@ -2718,27 +2720,62 @@ flags the categories):
   BEFORE HarfBuzz, like `FontFace.Load`; the cache + disposal are
   lock-guarded (a shared resolver is safe across parallel layout); and a
   non-synchronous `IFontResolver` FAILS FAST instead of blocking.
+- **Done — cycle 2 (background paint bridge + facade end-to-end)** —
+  `HtmlPdf.Convert` / `ConvertAsync` / `ConvertDetailed` now render real
+  PDF bytes (no longer throw): `Phase2Pipeline` → single-page
+  `BlockLayouter.AttemptLayout` → `FragmentPainter` (the new
+  `BoxFragment`→`IContentStream` bridge) → `PdfDocument`. The painter
+  emits `background-color` fills with the CSS-px→PDF-pt (×0.75) + y-flip
+  transform via the new `PdfPage.FillRectangle`; page size → `/MediaBox`.
+  Diagnostics from every stage funnel through one public sink (HTML/CSS
+  via `PublicDiagnosticsSinkAdapter`, layout via the new
+  `PaginateToPublicDiagnosticsAdapter`, facade direct). Output is
+  deterministic — text-free content shapes no glyphs, so the system-font
+  dependency (TODO 4) does not affect the bytes. **BORDERS were in the
+  cycle-2 scope but were DEFERRED on discovery**: `border-*-width`
+  (`PropertyType.LineWidth`) isn't resolved by `PropertyResolverDispatch`
+  yet (its documented "cycle 2 backlog", the same gap as `font-size`), so
+  border edges can't be sized — wiring `LineWidth` is cross-cutting
+  (changes border-box sizing + re-pins snapshots), so borders fold into
+  TODO 1. The painter's border-edge design (style keyword ids
+  none=0/hidden=1/solid=4…, edge-rect math) was removed as dead code
+  pending that. **Single page only**: content overflowing page 1 emits
+  `PDF-CONTENT-OVERFLOW-TRUNCATED-001` (surfaced, not dropped); the
+  multi-page driver is TODO 3. Tests: 7 `FragmentPainter` unit + 5
+  `PdfPage.FillRectangle` unit + 8 `HtmlPdf.Convert` integration
+  (well-formed PDF / background painted / determinism / MediaBox / async
+  parity / page count / overflow diagnostic / blank-text doc).
 - **TODOs (remaining chain, in order)** —
-  1. **CSS font-property resolution** — wire `FontSizeResolver`
-     (em/rem/%/keyword relative to the parent), `FontFamilyListResolver`
-     (family stack + generics), `FontWeightResolver` (1..1000 +
-     bolder/lighter) into `PropertyResolverDispatch` (the documented
-     "cycle 2 backlog" there). NOTE: resolving `font-size` changes em/rem
-     unit resolution + every text-measuring layout/snapshot baseline — a
-     cross-cutting change to land carefully (with re-pinned snapshots).
-     Until then `HarfBuzzShaperResolver` uses default size (16px) +
-     default family (`sans-serif`) + normal weight.
-  2. **Paint bridge** — `BoxFragment` (+ its inline layout) → PDF
-     content-stream operators (`IContentStream`): background / border
-     rectangles + text runs (embedded font + glyph positioning), with the
-     CSS-px → PDF-pt (×0.75) + y-flip transform. The `NetPdf.Paint`
-     `DisplayCommand` IR exists but has no fragment→command or
-     command→PDF consumer yet.
-  3. **Facade** — wire `HtmlPdf.Convert` / `ConvertAsync`: pipeline →
-     per-page layout → paint → `PdfDocument` → bytes; page size/margins →
-     `MediaBox` + content area (from `@page` once Task 21 lands, else
-     `HtmlPdfOptions`); multi-page driver (loop AttemptLayout over
-     continuations).
+  1. **CSS dimension-property resolution (font-size + line-width)** — wire
+     `FontSizeResolver` (em/rem/%/keyword relative to the parent),
+     `FontFamilyListResolver` (family stack + generics), `FontWeightResolver`
+     (1..1000 + bolder/lighter), AND the `LineWidth` type (`border-*-width`:
+     thin/medium/thick + lengths) into `PropertyResolverDispatch` (the
+     documented "cycle 2 backlog" there). NOTE: resolving `font-size` changes
+     em/rem unit resolution + every text-measuring baseline, and resolving
+     `border-*-width` changes border-box sizing — both cross-cutting changes
+     to land carefully (with re-pinned snapshots). Until then
+     `HarfBuzzShaperResolver` uses default size (16px) + family
+     (`sans-serif`) + normal weight, and the paint bridge cannot size
+     borders (background painting is unaffected — `background-color` resolves).
+  2. **Paint bridge** — DONE for `background-color` fills (cycle 2:
+     `FragmentPainter` → `PdfPage.FillRectangle`, ×0.75 + y-flip).
+     REMAINING: **border** rectangles (blocked on `border-*-width`
+     resolution — TODO 1), **text runs** (embedded font + glyph
+     positioning — blocked on the shaper + font-property resolution),
+     background images / gradients, border-radius, and alpha compositing.
+     The `NetPdf.Paint` `DisplayCommand` IR still has no fragment→command
+     or command→PDF consumer — the cycle-2 bridge emits straight to
+     `IContentStream`; routing through the IR arrives with the full paint
+     pipeline.
+  3. **Facade** — DONE for the single-page path (cycle 2:
+     `HtmlPdf.Convert` / `ConvertAsync` / `ConvertDetailed` →
+     `PdfRenderPipeline`; page size/margins → `MediaBox` + content area
+     from `HtmlPdfOptions`). REMAINING: the **multi-page driver** (loop
+     `AttemptLayout` over continuations, a `PdfPage` per fragmentainer) —
+     content past page 1 currently emits
+     `PDF-CONTENT-OVERFLOW-TRUNCATED-001`; and `@page` size/margins (once
+     Task 21 lands).
   4. **Deterministic default font** — `SystemFontResolver` reads platform
      fonts (non-deterministic); a bundled last-resort font is needed for
      the determinism contract (CLAUDE.md rule #4) once PDFs are emitted.
@@ -2756,12 +2793,18 @@ flags the categories):
 - **Trigger** — end-to-end HTML→PDF output; the invoice corpus render
   (Phase 3 Task 28).
 - **Owner files** —
-  - `src/NetPdf/HtmlPdf.cs` (facade stub) +
-    `src/NetPdf/Shaping/HarfBuzzShaperResolver.cs` (cycle 1, done).
+  - `src/NetPdf/HtmlPdf.cs` (facade — wired cycle 2) +
+    `src/NetPdf/Rendering/` (`PdfRenderPipeline`, `FragmentPainter`,
+    `ListFragmentSink`, `PdfUnits` — cycle 2) +
+    `src/NetPdf/Shaping/HarfBuzzShaperResolver.cs` (cycle 1).
+  - `src/NetPdf/Diagnostics/` (`CollectingDiagnosticsSink`,
+    `PaginateToPublicDiagnosticsAdapter` — cycle 2).
   - `src/NetPdf.Css/ComputedValues/PropertyResolvers/PropertyResolverDispatch.cs`
-    (font-property resolvers — TODO 1).
-  - `src/NetPdf.Paint/` (paint IR → PDF — TODO 2).
-  - `src/NetPdf.Pdf/` (the byte writer — already complete).
-- **Added** — Phase 5 layout→PDF wiring cycle 1.
+    (font-size + line-width resolvers — TODO 1).
+  - `src/NetPdf.Pdf/PdfPage.cs` (`FillRectangle` — cycle 2) +
+    `src/NetPdf.Pdf/` (the byte writer — complete).
+  - `src/NetPdf.Paint/` (`DisplayCommand` IR → PDF consumer — future TODO 2).
+- **Added** — Phase 5 layout→PDF wiring cycle 1; cycle 2 wired the facade
+  + background paint bridge.
 - **Removal condition** — `HtmlPdf.Convert` renders a real text document
   to a valid PDF `byte[]` end-to-end.

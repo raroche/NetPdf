@@ -908,6 +908,23 @@ public sealed class DiagnosticCodesTests
             NetPdf.Paginate.Diagnostics.PaginateDiagnosticCodes.LayoutGridResumeCacheRejected001);
     }
 
+    // ============================================================
+    // Phase 5 layout→PDF wiring cycle 2 — PDF-* facade code.
+    // ============================================================
+
+    [Fact]
+    public void Pdf_content_overflow_truncated_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(
+            registry,
+            @"\|\s*`?(PDF-CONTENT-OVERFLOW-TRUNCATED-001)`?\s*\|\s*(\w+)\s*\|");
+
+        Assert.True(match.Success, "PDF-CONTENT-OVERFLOW-TRUNCATED-001 row not found in docs/diagnostics-codes.md");
+        Assert.Equal("PDF-CONTENT-OVERFLOW-TRUNCATED-001", DiagnosticCodes.PdfContentOverflowTruncated001);
+        Assert.Equal("Warning", match.Groups[2].Value);
+    }
+
     private static string LoadRegistry()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

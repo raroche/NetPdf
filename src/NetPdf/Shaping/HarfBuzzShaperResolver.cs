@@ -163,6 +163,44 @@ internal sealed class HarfBuzzShaperResolver : IShaperResolver
         }
     }
 
+    /// <summary>
+    /// Resolve the VALIDATED font-program bytes for a style — the SAME bytes
+    /// <see cref="Resolve"/> hands HarfBuzz — together with a stable identity
+    /// (<see cref="ResolvedFontProgram.Key"/>) for that program: family stack + weight +
+    /// style, deliberately size-INDEPENDENT (a font program is identical at every size; the
+    /// subset / embedded font is shared across sizes and the size is applied via the content
+    /// stream's <c>Tf</c> operand). The text painter calls this AFTER layout to subset the
+    /// EXACT program layout shaped, so the shaped (original) glyph ids index the same font.
+    /// Throws — exactly like the shaping path (<see cref="ResolveFontBytes"/>) — when no font
+    /// resolves or the bytes are unsafe / WOFF-wrapped; the painter catches it and skips +
+    /// diagnoses that run rather than failing the whole render.
+    /// </summary>
+    internal ResolvedFontProgram ResolveFontProgram(ComputedStyle style)
+    {
+        ArgumentNullException.ThrowIfNull(style);
+
+        // Mirror Resolve's family / weight / style reads. font-size is deliberately NOT read:
+        // it doesn't affect the font program or its glyph ids, only the Tf scale at emit.
+        var fontStyle = style.ReadKeywordOrDefault(PropertyId.FontStyle, defaultIndex: 0) switch
+        {
+            1 => FontStyle.Italic,
+            2 => FontStyle.Oblique,
+            _ => FontStyle.Normal,
+        };
+        var families = style.ReadFontFamily().Families;
+        var weight = style.ReadFontWeight();
+
+        // Resolve under the same gate as Resolve (the disposed check + a synchronous
+        // IFontResolver call), even though the painter is single-threaded post-layout.
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            var bytes = ResolveFontBytes(families, weight, fontStyle);
+            var key = $"{FamilyStackKey(families)}|{weight}|{(int)fontStyle}";
+            return new ResolvedFontProgram(key, bytes);
+        }
+    }
+
     /// <summary>Walk the resolved font-family stack (author order, CSS Fonts 4
     /// §2.1) to VALIDATED font bytes ready for HarfBuzz: the first entry that
     /// resolves to a face wins; the configured generic default is tried last.</summary>
@@ -315,4 +353,10 @@ internal sealed class HarfBuzzShaperResolver : IShaperResolver
     /// <c>docs/deferrals.md#layout-to-pdf-pipeline</c>.</para></summary>
     private readonly record struct ShaperKey(
         string Family, int WeightCss, FontStyle Style, double FontSizePx);
+
+    /// <summary>A resolved font program for the text painter: a stable identity
+    /// <paramref name="Key"/> (family stack + weight + style, size-independent) plus the
+    /// VALIDATED sfnt <paramref name="Bytes"/> layout shaped. Same <paramref name="Key"/> ⇒
+    /// same program ⇒ one shared subset + embedded font across every run that uses it.</summary>
+    internal readonly record struct ResolvedFontProgram(string Key, ReadOnlyMemory<byte> Bytes);
 }

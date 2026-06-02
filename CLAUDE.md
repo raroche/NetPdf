@@ -109,8 +109,9 @@ For anything not covered above, ask Roland before guessing.
 ## Last verified
 
 Phase 5 layout→PDF production wiring in progress (interleaved with Phase 3 per Roland's
-sequencing). Latest merged: Phase 4 — constant-alpha (`/ca`) compositing for background +
-border fills, incl. its review follow-ups (PR #125, `c24ed8c`). Next: cycle 5a-2-ii — the
-`TextPainter` bridge (real glyphs end-to-end through `HtmlPdf.Convert`).
+sequencing). Latest: cycle 5a-2-ii — the `TextPainter` bridge (real glyphs end-to-end through
+`HtmlPdf.Convert`: collect used glyphs per resolved font → subset/embed → `ShowGlyphs` at
+baselines; builds on Phase 4 `/ca` compositing, PR #125). Next: cycle 5b — the bundled
+DejaVu Sans deterministic fallback font (makes the DEFAULT facade path deterministic-for-text).
 For the live state, read the **current-state pointer at the top of [PROGRESS.md](PROGRESS.md)**
 (or run `/phase-status`); `git log --oneline -1` shows the exact commit.

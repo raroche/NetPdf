@@ -964,6 +964,29 @@ public sealed class DiagnosticCodesTests
         Assert.Equal("Info", match.Groups[2].Value);
     }
 
+    // ============================================================
+    // Phase 5 layout→PDF cycle 5a-2-ii — the TextPainter bridge.
+    // ============================================================
+
+    [Fact]
+    public void Paint_text_font_unresolved_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(
+            registry,
+            @"\|\s*`?(PAINT-TEXT-FONT-UNRESOLVED-001)`?\s*\|\s*(\w+)\s*\|");
+
+        Assert.True(match.Success, "PAINT-TEXT-FONT-UNRESOLVED-001 row not found in docs/diagnostics-codes.md");
+        Assert.Equal("PAINT-TEXT-FONT-UNRESOLVED-001", DiagnosticCodes.PaintTextFontUnresolved001);
+        Assert.Equal("Warning", match.Groups[2].Value);
+    }
+
+    [Fact]
+    public void Paint_text_font_unresolved_001_constant_value_is_stable()
+    {
+        Assert.Equal("PAINT-TEXT-FONT-UNRESOLVED-001", DiagnosticCodes.PaintTextFontUnresolved001);
+    }
+
     private static string LoadRegistry()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

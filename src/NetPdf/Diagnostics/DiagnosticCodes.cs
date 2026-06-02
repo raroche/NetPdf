@@ -693,5 +693,18 @@ internal static class DiagnosticCodes
     /// </summary>
     public const string PaintBorderAlphaApproximated001 = "PAINT-BORDER-ALPHA-APPROXIMATED-001";
 
+    /// <summary>
+    /// Per Phase 5 layout→PDF cycle 5a-2-ii — emitted by the <c>TextPainter</c> when a text
+    /// run's font program cannot be resolved (no face matched its <c>font-family</c> stack,
+    /// or the resolved bytes were rejected as unsafe / WOFF-wrapped), so that run's glyphs are
+    /// NOT painted. The rest of the page still renders; only the affected run's text is
+    /// skipped. Surfaced rather than dropped silently per the diagnostics-not-silent-corruption
+    /// rule. Deduplicated per distinct font query within a conversion. A bundled deterministic
+    /// last-resort font (so the default path always resolves) is a tracked follow-up —
+    /// <c>docs/deferrals.md#layout-to-pdf-pipeline</c>.
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string PaintTextFontUnresolved001 = "PAINT-TEXT-FONT-UNRESOLVED-001";
+
     // endregion PAINT-*
 }

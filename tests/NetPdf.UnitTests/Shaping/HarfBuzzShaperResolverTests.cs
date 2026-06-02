@@ -88,6 +88,60 @@ public sealed class HarfBuzzShaperResolverTests
     }
 
     [Fact]
+    public void ResolveFontProgram_returns_the_validated_font_bytes()
+    {
+        using var resolver = new HarfBuzzShaperResolver(new SyntheticFontResolver());
+
+        // The text painter subsets THESE bytes after layout — they must be the exact program
+        // the resolver hands HarfBuzz (the validated face bytes, here the synthetic font).
+        var program = resolver.ResolveFontProgram(MakeStyle());
+
+        Assert.Equal(SyntheticFont.Build(), program.Bytes.ToArray());
+        Assert.False(string.IsNullOrEmpty(program.Key));
+    }
+
+    [Fact]
+    public void ResolveFontProgram_key_is_font_size_independent()
+    {
+        using var resolver = new HarfBuzzShaperResolver(new SyntheticFontResolver());
+
+        // A font program is identical at every size (the size is applied at emit via Tf), so
+        // runs of the same family/weight/style at different sizes share ONE subset/embedded
+        // font — the program key must NOT vary with font-size.
+        var small = MakeStyle();
+        small.Set(PropertyId.FontSize, ComputedSlot.FromLengthPx(12));
+        var large = MakeStyle();
+        large.Set(PropertyId.FontSize, ComputedSlot.FromLengthPx(48));
+
+        Assert.Equal(
+            resolver.ResolveFontProgram(small).Key,
+            resolver.ResolveFontProgram(large).Key);
+    }
+
+    [Fact]
+    public void ResolveFontProgram_key_distinguishes_font_style()
+    {
+        using var resolver = new HarfBuzzShaperResolver(new SyntheticFontResolver());
+
+        var normal = MakeStyle();
+        var italic = MakeStyle();
+        italic.Set(PropertyId.FontStyle, ComputedSlot.FromKeyword(1)); // 1 = italic.
+
+        Assert.NotEqual(
+            resolver.ResolveFontProgram(normal).Key,
+            resolver.ResolveFontProgram(italic).Key);
+    }
+
+    [Fact]
+    public void ResolveFontProgram_throws_when_no_font_resolves()
+    {
+        using var resolver = new HarfBuzzShaperResolver(new NullFontResolver());
+
+        // Mirrors the shaping path: the painter catches this + skips/diagnoses the run.
+        Assert.Throws<InvalidOperationException>(() => resolver.ResolveFontProgram(MakeStyle()));
+    }
+
+    [Fact]
     public void Resolve_after_dispose_throws_object_disposed()
     {
         var resolver = new HarfBuzzShaperResolver(new SyntheticFontResolver());

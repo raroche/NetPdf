@@ -24,12 +24,14 @@ namespace NetPdf.Rendering;
 /// </summary>
 /// <remarks>
 /// <para>
-/// <b>Cycle-3 scope.</b> Single-page output painting <c>background-color</c> fills
-/// + <c>border-*</c> edges — no text yet (needs the CSS font-property resolvers,
-/// TODO 1 in <c>deferrals.md#layout-to-pdf-pipeline</c>). The shaper is constructed
-/// forward-compatibly so text lights up automatically once those land; for
-/// text-free content it is never invoked, which also keeps output deterministic
-/// (no system-font dependency until a bundled fallback font ships).
+/// <b>Scope.</b> Single-page output painting <c>background-color</c> fills +
+/// <c>border-*</c> edges (<see cref="FragmentPainter"/>) and shaped text glyphs
+/// (<see cref="TextPainter"/>, cycle 5a-2-ii). Text subsets + embeds the exact font
+/// program layout shaped — the shaper is kept alive past paint so glyph ids match.
+/// Text-free content stays byte-deterministic; the default <see cref="SystemFontResolver"/>
+/// text path is not deterministic-for-text until a bundled fallback font ships (TODO in
+/// <c>deferrals.md#layout-to-pdf-pipeline</c>), but a fixed <c>IFontResolver</c> is fully
+/// reproducible.
 /// </para>
 /// <para>
 /// <b>Single page.</b> The multi-page driver (looping <see cref="BlockLayouter.AttemptLayout"/>
@@ -73,7 +75,11 @@ internal static class PdfRenderPipeline
 
         var sink = new ListFragmentSink();
         var overflowReported = false;
-        using (var shaper = new HarfBuzzShaperResolver(options.FontResolver ?? new SystemFontResolver()))
+        // Keep the shaper alive PAST paint (method-scoped using): the TextPainter subsets the
+        // SAME font program layout shaped, so the shaped glyph ids index the same font. The
+        // layouter + break resolver are layout-only and stay in their own scope below,
+        // disposed as soon as layout finishes.
+        using var shaper = new HarfBuzzShaperResolver(options.FontResolver ?? new SystemFontResolver());
         using (var layouter = new BlockLayouter(
             rootBox: phase2.BoxRoot,
             sink: sink,
@@ -118,6 +124,15 @@ internal static class PdfRenderPipeline
         FragmentPainter.PaintFragments(
             sink.Fragments, page, mediaBox.HeightPts, margins.LeftPx, margins.TopPx,
             paintBackgrounds: options.PrintBackgrounds, diagnostics);
+
+        // Text paints OVER backgrounds + borders. The shaper (kept alive above) lets the
+        // painter subset + embed the exact font program layout shaped, then emit glyph runs
+        // at their baselines. With the default SystemFontResolver this is not yet
+        // deterministic-for-text (a bundled fallback font is the next cycle); a fixed
+        // IFontResolver makes it fully reproducible.
+        TextPainter.PaintText(
+            sink.Fragments, page, document, shaper, mediaBox.HeightPts,
+            margins.LeftPx, margins.TopPx, diagnostics);
 
         var bytes = document.Save();
         return new RenderOutcome(bytes, document.Pages.Count, diagnostics.Items);

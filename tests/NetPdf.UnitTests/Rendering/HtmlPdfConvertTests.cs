@@ -2,8 +2,10 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using NetPdf;
+using NetPdf.UnitTests.Text.Fonts.OpenType;
 using Xunit;
 
 namespace NetPdf.UnitTests.Rendering;
@@ -253,11 +255,63 @@ public sealed class HtmlPdfConvertTests
     [Fact]
     public void Plain_text_only_document_still_produces_a_valid_pdf()
     {
-        // No background / border to paint, and text painting is not yet wired —
-        // the pipeline must still emit a valid (effectively blank) page, not throw.
+        // Text now paints via the default SystemFontResolver (cycle 5a-2-ii). The default
+        // path is robust: whether or not a system font resolves + subsets, the pipeline must
+        // emit a valid PDF and never throw. (Determinism-for-text on the default path waits on
+        // a bundled fallback font; the fixed-font tests below cover the deterministic path.)
         var bytes = HtmlPdf.Convert("<!DOCTYPE html><html><body><p>Hello world</p></body></html>");
 
         Assert.StartsWith("%PDF-", Latin1(bytes));
         Assert.Contains("%%EOF", Latin1(bytes));
+    }
+
+    [Fact]
+    public void Text_with_a_fixed_font_emits_real_glyph_operators_and_embeds_the_font()
+    {
+        var options = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        // SyntheticFont only carries glyphs for 'A' (U+0041) and 'B' (U+0042).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body><p>AB</p></body></html>", options);
+        var pdf = Latin1(result.Pdf);
+
+        // Real text-show operators (the content stream is uncompressed, so these are
+        // directly inspectable): open a text object, select the font + size, position the
+        // line origin, show the glyphs, close.
+        Assert.Contains("BT", pdf);
+        Assert.Contains(" Tf", pdf);
+        Assert.Contains(" Td", pdf);
+        Assert.Contains(" Tj", pdf);
+        Assert.Contains("ET", pdf);
+
+        // The font was subset + embedded as a composite Type0 / CIDFontType2 program.
+        Assert.Contains("/Type0", pdf);
+        Assert.Contains("/CIDFontType2", pdf);
+        Assert.Contains("/FontFile2", pdf);
+
+        // Every run's font resolved — no skipped-text diagnostic on the fixed-font path.
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PaintTextFontUnresolved001);
+    }
+
+    [Fact]
+    public void Text_with_a_fixed_font_is_deterministic_across_runs()
+    {
+        var options = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        const string html = "<!DOCTYPE html><html><body><p>AB</p></body></html>";
+
+        // The whole text path — shape → collect → subset → embed → emit — must be byte-stable
+        // for stable input (CLAUDE.md #4); a fixed font removes the system-font dependency.
+        var first = HtmlPdf.Convert(html, options);
+        var second = HtmlPdf.Convert(html, options);
+
+        Assert.Equal(first, second);
+    }
+
+    /// <summary>A deterministic <see cref="IFontResolver"/> that resolves every query to the
+    /// in-repo <see cref="SyntheticFont"/> (a minimal valid TTF with glyphs for 'A'/'B').
+    /// Completes synchronously, as the synchronous layout shaping path requires.</summary>
+    private sealed class SyntheticFontResolver : IFontResolver
+    {
+        public ValueTask<FontFaceData?> ResolveAsync(FontQuery query, CancellationToken ct)
+            => new(new FontFaceData { Bytes = SyntheticFont.Build(), Family = query.Family });
     }
 }

@@ -109,11 +109,13 @@ For anything not covered above, ask Roland before guessing.
 ## Last verified
 
 Phase 5 layout→PDF production wiring + Phase 3 in progress (interleaved per Roland's
-sequencing). Latest: Phase 3 Task 21 — the `@page` rule, cycle 1 (page margins): a bare
-`@page { margin… }` overrides the page margins via `AtPageMarginResolver` (`src/NetPdf.Css/PagedMedia/`)
-→ `PdfRenderPipeline`. Built atop cycle 5a-2-ii (the `TextPainter` bridge, PR #127). Next: `@page`
-cycle 2 — `size` (AngleSharp drops the `size` descriptor, so it needs pre-pass `size`-descriptor
-recovery, then resolve → `MediaBox` honoring `PreferCssPageSize`). Blocked (see `deferrals.md`):
+sequencing). Latest: Phase 3 Task 21 — the `@page` rule. Cycle 1 (page margins, PR #130) +
+cycle 2 (page size): a bare `@page { margin… }` / `{ size: … }` overrides the page margins +
+size via `AtPageMarginResolver` / `AtPageSizeResolver` (`src/NetPdf.Css/PagedMedia/`, sharing
+`AtPageRules` cascade-style applicability) → `PdfRenderPipeline` (`MediaBox` + content area,
+honoring `PreferCssPageSize`). The `size` descriptor is recovered in the pre-pass (AngleSharp
+drops it). Next: `@page` selectors (`:first`/`:left`/`:right`/`:blank`) + named pages, OR the
+page-margin boxes (the keystone for headers/footers) — Roland's pick. Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).
 For the live state, read the **current-state pointer at the top of [PROGRESS.md](PROGRESS.md)**

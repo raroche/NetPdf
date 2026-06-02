@@ -287,6 +287,68 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void At_page_size_keyword_sets_the_media_box()
+    {
+        // @page { size: A5 } → MediaBox = A5 (148 × 210mm → 419.5 × 595.3pt).
+        var mb = MediaBox(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { size: A5 }</style></head><body></body></html>")));
+        Assert.Equal(419.5, mb.W, 1);
+        Assert.Equal(595.3, mb.H, 1);
+    }
+
+    [Fact]
+    public void At_page_size_landscape_swaps_the_media_box_dimensions()
+    {
+        var mb = MediaBox(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { size: A4 landscape }</style></head><body></body></html>")));
+        Assert.True(mb.W > mb.H, $"expected landscape (W > H); got {mb.W} × {mb.H}");
+        Assert.Equal(841.9, mb.W, 1);   // A4's 297mm dimension becomes the width
+    }
+
+    [Fact]
+    public void At_page_size_is_ignored_when_PreferCssPageSize_is_false()
+    {
+        var mb = MediaBox(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { size: A5 }</style></head><body></body></html>",
+            new HtmlPdfOptions { PreferCssPageSize = false })));
+        Assert.Equal(595.5, mb.W, 1);   // the A4 option default wins; A5 (419.5) is ignored
+    }
+
+    [Fact]
+    public void At_page_size_with_percentage_margins_resolves_them_against_the_css_page_size()
+    {
+        // @page { size: A5; margin: 10% } — the page becomes A5 AND the 10% margins resolve
+        // against A5 (the resolved page box), not the configured A4 default (review P2).
+        //   A5 = 559.4 × 793.7px → MediaBox 419.5 × 595.3pt.
+        //   left margin = 10% × 559.4px = 55.9px → 41.95pt; content width = 559.4 − 2×55.9
+        //   = 447.5px → 335.6pt. Resolving % against A4's 793.7px width would instead give a
+        //   59.5pt left / 300.5pt width — the bug this guards against.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { size: A5; margin: 10% }</style></head>" +
+            "<body><div style=\"height:50px;background-color:#3366cc\"></div></body></html>"));
+
+        var mb = MediaBox(pdf);
+        Assert.Equal(419.5, mb.W, 1);   // A5 width
+        Assert.Equal(595.3, mb.H, 1);   // A5 height
+
+        var r = FirstRect(pdf);
+        Assert.Equal(335.6, r.W, 1);    // content width = A5 − 10% margins (NOT 300.5 from A4)
+        Assert.Equal(42.0, r.X, 1);     // left margin = 10% × A5 width = 41.95pt (NOT 59.5)
+    }
+
+    /// <summary>The (width, height) of the page's <c>/MediaBox [0 0 W H]</c>, in pt.</summary>
+    private static (double W, double H) MediaBox(string pdf)
+    {
+        var i = pdf.IndexOf("/MediaBox", StringComparison.Ordinal);
+        Assert.True(i >= 0, "MediaBox not found");
+        var open = pdf.IndexOf('[', i);
+        var close = pdf.IndexOf(']', open);
+        var nums = pdf[(open + 1)..close].Split(' ', StringSplitOptions.RemoveEmptyEntries);  // 0 0 W H
+        return (double.Parse(nums[2], CultureInfo.InvariantCulture),
+            double.Parse(nums[3], CultureInfo.InvariantCulture));
+    }
+
+    [Fact]
     public void Fragment_outside_the_content_box_emits_the_overflow_diagnostic()
     {
         // An absolutely-positioned box with a negative offset lays out to completion

@@ -2922,15 +2922,23 @@ flags the categories):
        disabled sheets, honors `sheet.MediaQuery` against the print `CssMediaContext`, recurses
        matching `@media`), percentage margins resolve per-axis (left/right→width, top/bottom→
        height, CSS Page 3), and `!important` wins per side (importance then source order).
+       **Cycle 2 — size — DONE:** a bare `@page { size }` overrides the page size when
+       `PreferCssPageSize`. The pre-pass (`CssPreprocessor.ParsePageRule`) recovers the `size`
+       descriptor AngleSharp drops (`CssPageRuleRecovery.SizeText`) + the adapter re-attaches it
+       as a synthetic declaration; `AtPageSizeResolver` resolves named sizes + `portrait`/
+       `landscape` + `<length>{1,2}` + `auto` (sharing `AtPageRules` applicability with the
+       margin resolver); `PdfRenderPipeline` applies it to the `MediaBox` + content area.
+       Post-PR-#131 review hardened it: `size !important` is honored across `@page` rules (the
+       pre-pass strips + records importance; the adapter stamps the synthetic declaration);
+       percentage margins resolve against the RESOLVED page box (so `@page { size: A5; margin: 10% }`
+       is relative to A5); invalid duplicate `size` grammar (`A4 letter`, `portrait landscape`)
+       is rejected; and a `size` qualified by a paper-size `@media`/sheet media query
+       (`width`/`height`/`aspect-ratio`/`orientation`/device-*) is ignored per CSS Page 3 §3.3.
        **REMAINING:**
-       - **`@page { size }` (cycle 2)** — `HtmlPdfOptions.PreferCssPageSize` is declared
-         (default `true`) but still UNCONSUMED because AngleSharp.Css DROPS the `size`
-         descriptor (same gap class as the @page selector + margin boxes — `ICssPageRule.Style`
-         doesn't expose it). Needs the pre-pass (`CssPreprocessor.ParsePageRule`) extended to
-         RECOVER the `size` descriptor (it already recovers the selector + margin boxes from raw
-         text), threaded through as a synthetic declaration, then resolved (keyword A4/A5/letter/…
-         + `landscape`/`portrait` + explicit `<length>{1,2}` + `auto`) → `MediaBox`, honoring
-         `PreferCssPageSize`.
+       - **Conditional-group traversal:** `AtPageRules` walks only sheet media + `@media`; a bare
+         `@page` nested in a matching `@supports` / `@layer` / `@container` does not yet contribute
+         (the cascade honors those). Recursing needs the cascade's `@supports` evaluator lifted out
+         of `CascadeResolver` into a shared helper.
        - **Later cycles:** `@page :first`/`:left`/`:right`/`:blank` selectors + named pages;
          `calc()` / font-relative margin units (absolute lengths + percentages are done);
          the 16 page-margin boxes; and `string()`/`element()`/`counter(page)` generated content.

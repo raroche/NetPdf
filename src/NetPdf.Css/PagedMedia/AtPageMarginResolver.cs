@@ -3,7 +3,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Collections.Immutable;
 using System.Globalization;
 using NetPdf.Css.Cascade;
 using NetPdf.Css.ComputedValues.PropertyResolvers;
@@ -31,7 +30,8 @@ namespace NetPdf.Css.PagedMedia;
 /// expands the <c>margin</c> shorthand into. Each side resolves an ABSOLUTE length (CSS Values
 /// L4 §6.1, via <see cref="LengthResolver.TryAbsoluteUnitToPx"/>) or a PERCENTAGE — per CSS Page
 /// 3, left/right percentages are relative to the page-box WIDTH and top/bottom to its HEIGHT
-/// (taken from the media context's viewport, which the pipeline sets to the page size). Other
+/// (the pipeline passes the RESOLVED page box — after any <c>@page { size }</c> override — so
+/// percentages track the final page size, not the configured one). Other
 /// units (<c>calc()</c>, <c>em</c>, …) leave the side unspecified. The cascade winner per side
 /// is chosen by importance then source order: an <c>!important</c> declaration beats a normal
 /// one, and among equal importance the later declaration wins. A side with no winner stays
@@ -56,55 +56,47 @@ internal static class AtPageMarginResolver
 
     /// <summary>Walk the document's stylesheets — filtered + recursed exactly like the cascade
     /// for the given <paramref name="media"/> context — and resolve the effective bare-<c>@page</c>
-    /// margins. Returns all-null when no contributing bare <c>@page</c> declares a resolvable
+    /// margins. Percentage margins resolve against the media context's viewport (the configured
+    /// page size). Returns all-null when no contributing bare <c>@page</c> declares a resolvable
     /// margin.</summary>
     public static ResolvedPageMargins Resolve(IEnumerable<CssStylesheet> sheets, CssMediaContext media)
+    {
+        ArgumentNullException.ThrowIfNull(media);
+        return Resolve(sheets, media, media.ViewportWidthPx, media.ViewportHeightPx);
+    }
+
+    /// <summary>As <see cref="Resolve(IEnumerable{CssStylesheet}, CssMediaContext)"/>, but resolves
+    /// percentage margins against an explicit page box (<paramref name="pageWidthPx"/> ×
+    /// <paramref name="pageHeightPx"/>) instead of the media viewport. Media applicability still
+    /// uses <paramref name="media"/>; the page box is purely the percentage reference. The
+    /// pipeline passes the RESOLVED page size here so <c>@page { size: A5; margin: 10% }</c>
+    /// computes percentages against A5 (the final page box), not the configured size — per CSS
+    /// Page 3, page-margin percentages are relative to the page box.</summary>
+    public static ResolvedPageMargins Resolve(
+        IEnumerable<CssStylesheet> sheets, CssMediaContext media,
+        double pageWidthPx, double pageHeightPx)
     {
         ArgumentNullException.ThrowIfNull(sheets);
         ArgumentNullException.ThrowIfNull(media);
 
         Candidate top = default, right = default, bottom = default, left = default;
-        foreach (var sheet in sheets)
+        foreach (var at in AtPageRules.EnumerateBarePageRules(sheets, media))
         {
-            if (sheet.IsDisabled) continue;                 // disabled sheets don't contribute
-            if (!media.Matches(sheet.MediaQuery)) continue; // sheet media must match (e.g. print)
-            CollectRules(sheet.Rules, media, ref top, ref right, ref bottom, ref left);
-        }
-        return new ResolvedPageMargins(
-            top.Set ? top.Px : null, right.Set ? right.Px : null,
-            bottom.Set ? bottom.Px : null, left.Set ? left.Px : null);
-    }
-
-    private static void CollectRules(
-        ImmutableArray<CssRule> rules, CssMediaContext media,
-        ref Candidate top, ref Candidate right, ref Candidate bottom, ref Candidate left)
-    {
-        foreach (var rule in rules)
-        {
-            if (rule is not CssAtRule at) continue;
-
-            if (string.Equals(at.Name, "media", StringComparison.OrdinalIgnoreCase))
-            {
-                if (media.Matches(at.Prelude)) // recurse only when the @media condition matches
-                    CollectRules(at.ChildRules, media, ref top, ref right, ref bottom, ref left);
-                continue;
-            }
-
-            if (!string.Equals(at.Name, "page", StringComparison.OrdinalIgnoreCase)) continue;
-            if (!string.IsNullOrWhiteSpace(at.Prelude)) continue; // bare @page only this cycle.
-
             foreach (var decl in at.Declarations)
             {
                 // CSS Page 3: left/right % relative to page WIDTH, top/bottom % to page HEIGHT.
                 switch (decl.Property.ToLowerInvariant())
                 {
-                    case "margin-top": Apply(ref top, decl, media.ViewportHeightPx); break;
-                    case "margin-bottom": Apply(ref bottom, decl, media.ViewportHeightPx); break;
-                    case "margin-left": Apply(ref left, decl, media.ViewportWidthPx); break;
-                    case "margin-right": Apply(ref right, decl, media.ViewportWidthPx); break;
+                    case "margin-top": Apply(ref top, decl, pageHeightPx); break;
+                    case "margin-bottom": Apply(ref bottom, decl, pageHeightPx); break;
+                    case "margin-left": Apply(ref left, decl, pageWidthPx); break;
+                    case "margin-right": Apply(ref right, decl, pageWidthPx); break;
                 }
             }
         }
+        return new ResolvedPageMargins(
+            top.Set ? top.Px : null, right.Set ? right.Px : null,
+            bottom.Set ? bottom.Px : null, left.Set ? left.Px : null);
     }
 
     /// <summary>Resolve a declaration's value and, if it wins the per-side cascade (importance

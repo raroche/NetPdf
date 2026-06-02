@@ -73,10 +73,13 @@ internal static class PdfRenderPipeline
         var margins = options.Margins;
 
         // CSS Paged Media: a bare `@page { margin… }` overrides the option's page margins, per
-        // side (Phase 3 Task 21 cycle 1). `@page { size }` is a follow-up — AngleSharp.Css drops
+        // side (Phase 3 Task 21 cycle 1). Applicability is filtered with the SAME media context
+        // the cascade used (PDF output is print), so a `media="screen"` sheet or `@media screen`
+        // block never affects the page. `@page { size }` is a follow-up — AngleSharp.Css drops
         // the `size` descriptor, so it needs pre-pass recovery (see deferrals.md). Selectors
         // (`:first`/`:left`/`:right`) + page-margin boxes are also later cycles.
-        var pageMargins = AtPageMarginResolver.Resolve(phase2.Sheets);
+        var pageMargins = AtPageMarginResolver.Resolve(
+            phase2.Sheets, Phase2Pipeline.BuildMediaContext(options));
         if (pageMargins.HasAny)
         {
             margins = new PageMargins(

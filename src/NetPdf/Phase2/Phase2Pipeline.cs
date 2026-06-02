@@ -156,7 +156,9 @@ internal static class Phase2Pipeline
     /// <see cref="CssMediaContext.DevicePixelRatio"/> + <see cref="CssMediaContext.PreferredColorScheme"/>
     /// stay at their defaults until <see cref="HtmlPdfOptions"/> grows
     /// matching options (post-v1).</summary>
-    private static CssMediaContext BuildMediaContext(HtmlPdfOptions options)
+    /// <summary><see langword="internal"/> so the render pipeline can build the SAME media
+    /// context the cascade used (e.g. for <c>@page</c> applicability filtering).</summary>
+    internal static CssMediaContext BuildMediaContext(HtmlPdfOptions options)
     {
         var mediaTypeString = options.MediaType switch
         {

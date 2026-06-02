@@ -223,21 +223,67 @@ public sealed class HtmlPdfConvertTests
         // (2 × 96px = 144pt) — independent of any UA body margin (constant in both renders), so
         // this proves @page { margin } reaches the page geometry without depending on exact coords.
         const string body = "<body><div style=\"height:50px;background-color:#3366cc\"></div></body>";
-        var zero = FirstRectWidthPt(Latin1(HtmlPdf.Convert(
+        var zero = FirstRect(Latin1(HtmlPdf.Convert(
             "<!DOCTYPE html><html><head><style>@page { margin: 0 }</style></head>" + body + "</html>")));
-        var dflt = FirstRectWidthPt(Latin1(HtmlPdf.Convert("<!DOCTYPE html><html>" + body + "</html>")));
+        var dflt = FirstRect(Latin1(HtmlPdf.Convert("<!DOCTYPE html><html>" + body + "</html>")));
 
-        Assert.True(zero > dflt, $"@page margin:0 content ({zero}pt) should be wider than default ({dflt}pt)");
-        Assert.Equal(144.0, zero - dflt, 1);   // 2 × 96px default margins removed = 144pt
+        Assert.True(zero.W > dflt.W, $"@page margin:0 content ({zero.W}pt) should be wider than default ({dflt.W}pt)");
+        Assert.Equal(144.0, zero.W - dflt.W, 1);   // 2 × 96px default margins removed = 144pt
     }
 
-    /// <summary>Width operand (3rd of x/y/w/h) of the first <c>… re f</c> rectangle-fill op.</summary>
-    private static double FirstRectWidthPt(string pdf)
+    // A4 is 794 × 1123 px → 595.5 × 842.25 pt; NetPdf applies no UA body margin, so a full-width
+    // 50px (= 37.5pt) block's painted rect has exact, body-margin-free coordinates. These pin the
+    // x/y offsets + height (not just the width delta) for @page margins (review P3).
+
+    [Fact]
+    public void At_page_margin_zero_positions_the_full_width_rect_at_the_page_origin()
+    {
+        var r = FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { margin: 0 }</style></head>" +
+            "<body><div style=\"height:50px;background-color:#3366cc\"></div></body></html>")));
+        Assert.Equal(0.0, r.X, 1);        // left margin 0
+        Assert.Equal(595.5, r.W, 1);      // full A4 content width (794px)
+        Assert.Equal(37.5, r.H, 1);       // 50px block height — independent of @page margins
+        Assert.Equal(804.75, r.Y, 1);     // 842.25 (page top) − 37.5 (height); top margin 0
+    }
+
+    [Fact]
+    public void At_page_mixed_longhand_margins_offset_the_rect()
+    {
+        // top 40px, right 0, bottom 0, left 80px.
+        var r = FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { margin: 40px 0 0 80px }</style></head>" +
+            "<body><div style=\"height:50px;background-color:#3366cc\"></div></body></html>")));
+        Assert.Equal(60.0, r.X, 1);       // left 80px → 60pt
+        Assert.Equal(535.5, r.W, 1);      // (794 − 80 − 0)px → 535.5pt
+        Assert.Equal(37.5, r.H, 1);
+        Assert.Equal(774.75, r.Y, 1);     // 842.25 − 30 (top 40px) − 37.5
+    }
+
+    [Fact]
+    public void At_page_partial_margin_merges_per_side_with_option_margins()
+    {
+        // Only margin-left is set by @page → it overrides the left; top/right/bottom keep the
+        // default 96px option margins.
+        var r = FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { margin-left: 0 }</style></head>" +
+            "<body><div style=\"height:50px;background-color:#3366cc\"></div></body></html>")));
+        Assert.Equal(0.0, r.X, 1);        // left overridden to 0
+        Assert.Equal(523.5, r.W, 1);      // (794 − 0 left − 96 right)px → 523.5pt
+        Assert.Equal(732.75, r.Y, 1);     // 842.25 − 72 (default top 96px) − 37.5
+    }
+
+    /// <summary>The (x, y, width, height) operands of the first <c>… re f</c> rectangle-fill op.</summary>
+    private static (double X, double Y, double W, double H) FirstRect(string pdf)
     {
         var idx = pdf.IndexOf(" re", StringComparison.Ordinal);
         Assert.True(idx > 0, "expected a rectangle-fill operator in the content stream");
         var nums = pdf[..idx].TrimEnd().Split(' ');   // … <x> <y> <w> <h>
-        return double.Parse(nums[^2], CultureInfo.InvariantCulture);
+        return (
+            double.Parse(nums[^4], CultureInfo.InvariantCulture),
+            double.Parse(nums[^3], CultureInfo.InvariantCulture),
+            double.Parse(nums[^2], CultureInfo.InvariantCulture),
+            double.Parse(nums[^1], CultureInfo.InvariantCulture));
     }
 
     [Fact]

@@ -2917,8 +2917,12 @@ flags the categories):
      - **`@page` rule** (Phase 3 Task 21). **Cycle 1 — margins — DONE:** a bare
        `@page { margin… }` overrides the page margins per side (`AtPageMarginResolver` in
        `src/NetPdf.Css/PagedMedia/` walks `Phase2Result.Sheets` → resolves the `margin-*`
-       longhands AngleSharp expands → absolute px via `LengthResolver.TryAbsoluteUnitToPx`;
-       `PdfRenderPipeline` applies them, CSS winning by default). **REMAINING:**
+       longhands AngleSharp expands → px; `PdfRenderPipeline` applies them, CSS winning by
+       default). Post-PR-#130 review hardened it: applicability mirrors the cascade (skips
+       disabled sheets, honors `sheet.MediaQuery` against the print `CssMediaContext`, recurses
+       matching `@media`), percentage margins resolve per-axis (left/right→width, top/bottom→
+       height, CSS Page 3), and `!important` wins per side (importance then source order).
+       **REMAINING:**
        - **`@page { size }` (cycle 2)** — `HtmlPdfOptions.PreferCssPageSize` is declared
          (default `true`) but still UNCONSUMED because AngleSharp.Css DROPS the `size`
          descriptor (same gap class as the @page selector + margin boxes — `ICssPageRule.Style`
@@ -2928,8 +2932,8 @@ flags the categories):
          + `landscape`/`portrait` + explicit `<length>{1,2}` + `auto`) → `MediaBox`, honoring
          `PreferCssPageSize`.
        - **Later cycles:** `@page :first`/`:left`/`:right`/`:blank` selectors + named pages;
-         non-absolute margin units (`%`, `calc()`); the 16 page-margin boxes; and
-         `string()`/`element()`/`counter(page)` generated content.
+         `calc()` / font-relative margin units (absolute lengths + percentages are done);
+         the 16 page-margin boxes; and `string()`/`element()`/`counter(page)` generated content.
   4. **Deterministic default font** — `SystemFontResolver` reads platform
      fonts (non-deterministic); a bundled last-resort font is needed for
      the determinism contract (CLAUDE.md rule #4) once PDFs are emitted.

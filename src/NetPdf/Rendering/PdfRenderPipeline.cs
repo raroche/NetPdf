@@ -72,14 +72,23 @@ internal static class PdfRenderPipeline
         var pageSize = options.PageSize;
         var margins = options.Margins;
 
-        // CSS Paged Media: a bare `@page { margin… }` overrides the option's page margins, per
-        // side (Phase 3 Task 21 cycle 1). Applicability is filtered with the SAME media context
-        // the cascade used (PDF output is print), so a `media="screen"` sheet or `@media screen`
-        // block never affects the page. `@page { size }` is a follow-up — AngleSharp.Css drops
-        // the `size` descriptor, so it needs pre-pass recovery (see deferrals.md). Selectors
-        // (`:first`/`:left`/`:right`) + page-margin boxes are also later cycles.
-        var pageMargins = AtPageMarginResolver.Resolve(
-            phase2.Sheets, Phase2Pipeline.BuildMediaContext(options));
+        // CSS Paged Media (Phase 3 Task 21). Applicability is filtered with the SAME media
+        // context the cascade used (PDF output is print), so a `media="screen"` sheet or
+        // `@media screen` block never affects the page. Selectors (`:first`/`:left`/`:right`)
+        // + page-margin boxes are later cycles.
+        var media = Phase2Pipeline.BuildMediaContext(options);
+
+        // `@page { size }` (cycle 2) overrides the page size when PreferCssPageSize (default on).
+        if (options.PreferCssPageSize
+            && AtPageSizeResolver.Resolve(phase2.Sheets, media) is { } cssSize)
+        {
+            pageSize = new PageSize(cssSize.WidthPx, cssSize.HeightPx);
+        }
+
+        // `@page { margin… }` (cycle 1) overrides the option's page margins, per side. (Percentage
+        // margins resolve against the media-context viewport = the CONFIGURED page size; combining
+        // them with a `@page { size }` override is a tracked refinement — deferrals.md.)
+        var pageMargins = AtPageMarginResolver.Resolve(phase2.Sheets, media);
         if (pageMargins.HasAny)
         {
             margins = new PageMargins(

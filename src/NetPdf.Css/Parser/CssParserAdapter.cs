@@ -839,11 +839,24 @@ internal static class CssParserAdapter
             ? ImmutableArray<CssRule>.Empty
             : BuildMarginBoxRules(recovery.MarginBoxes);
 
+        var declarations = AdaptDeclarations(rule.Style);
+        if (!string.IsNullOrEmpty(recovery?.SizeText))
+        {
+            // AngleSharp.Css drops the `size` descriptor (it's a page descriptor, not a regular
+            // property), so re-attach the pre-pass-recovered value as a synthetic declaration —
+            // downstream @page resolution then reads it like any other declaration.
+            declarations = declarations.Insert(0, new CssDeclaration(
+                Property: "size",
+                Value: new CssValue(recovery!.SizeText!),
+                IsImportant: false,
+                Location: CssSourceLocation.Unknown));
+        }
+
         var ruleLocation = recovery?.Location ?? location;
         return new CssAtRule(
             Name: "page",
             Prelude: prelude,
-            Declarations: AdaptDeclarations(rule.Style),
+            Declarations: declarations,
             ChildRules: marginBoxes,
             Location: ruleLocation);
     }

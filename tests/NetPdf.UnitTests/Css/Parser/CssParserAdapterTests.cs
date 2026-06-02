@@ -10,6 +10,7 @@ using AngleSharp.Dom;
 using AngleSharp.Html.Parser;
 using AngleSharp.Io;
 using NetPdf.Css.Parser;
+using NetPdf.Css.Parser.Preprocessing;
 using Xunit;
 
 namespace NetPdf.UnitTests.Css.Parser;
@@ -288,6 +289,24 @@ public sealed class CssParserAdapterTests
         Assert.Equal("page", atRule.Name);
         Assert.Empty(atRule.ChildRules);
         Assert.NotEmpty(atRule.Declarations);
+    }
+
+    [Fact]
+    public async Task Adapt_page_rule_recovers_the_dropped_size_descriptor()
+    {
+        // AngleSharp.Css drops the `size` descriptor (it's a page descriptor, not a property);
+        // the pre-pass recovers it + the adapter re-attaches it as a synthetic declaration so
+        // downstream @page resolution can read it (Phase 3 Task 21 cycle 2).
+        const string css = "@page { size: A4 landscape; margin: 1in }";
+        var sheet = await ParseSheet(css);
+        var stylesheet = CssParserAdapter.Adapt(sheet, CssPreprocessor.Process(css), href: null,
+            origin: CssStylesheetOrigin.Author, ownerKind: CssStylesheetOwnerKind.Unknown,
+            mediaQuery: null, isDisabled: false, order: 0);
+
+        var atRule = Assert.IsType<CssAtRule>(Assert.Single(stylesheet.Rules));
+        var size = atRule.Declarations.SingleOrDefault(d => d.Property == "size");
+        Assert.NotNull(size);
+        Assert.Equal("A4 landscape", size!.Value.RawText);
     }
 
     [Fact]

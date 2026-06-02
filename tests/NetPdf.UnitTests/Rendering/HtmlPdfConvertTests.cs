@@ -287,6 +287,46 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void At_page_size_keyword_sets_the_media_box()
+    {
+        // @page { size: A5 } → MediaBox = A5 (148 × 210mm → 419.5 × 595.3pt).
+        var mb = MediaBox(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { size: A5 }</style></head><body></body></html>")));
+        Assert.Equal(419.5, mb.W, 1);
+        Assert.Equal(595.3, mb.H, 1);
+    }
+
+    [Fact]
+    public void At_page_size_landscape_swaps_the_media_box_dimensions()
+    {
+        var mb = MediaBox(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { size: A4 landscape }</style></head><body></body></html>")));
+        Assert.True(mb.W > mb.H, $"expected landscape (W > H); got {mb.W} × {mb.H}");
+        Assert.Equal(841.9, mb.W, 1);   // A4's 297mm dimension becomes the width
+    }
+
+    [Fact]
+    public void At_page_size_is_ignored_when_PreferCssPageSize_is_false()
+    {
+        var mb = MediaBox(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { size: A5 }</style></head><body></body></html>",
+            new HtmlPdfOptions { PreferCssPageSize = false })));
+        Assert.Equal(595.5, mb.W, 1);   // the A4 option default wins; A5 (419.5) is ignored
+    }
+
+    /// <summary>The (width, height) of the page's <c>/MediaBox [0 0 W H]</c>, in pt.</summary>
+    private static (double W, double H) MediaBox(string pdf)
+    {
+        var i = pdf.IndexOf("/MediaBox", StringComparison.Ordinal);
+        Assert.True(i >= 0, "MediaBox not found");
+        var open = pdf.IndexOf('[', i);
+        var close = pdf.IndexOf(']', open);
+        var nums = pdf[(open + 1)..close].Split(' ', StringSplitOptions.RemoveEmptyEntries);  // 0 0 W H
+        return (double.Parse(nums[2], CultureInfo.InvariantCulture),
+            double.Parse(nums[3], CultureInfo.InvariantCulture));
+    }
+
+    [Fact]
     public void Fragment_outside_the_content_box_emits_the_overflow_diagnostic()
     {
         // An absolutely-positioned box with a negative offset lays out to completion

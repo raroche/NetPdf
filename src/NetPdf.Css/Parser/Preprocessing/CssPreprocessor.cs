@@ -435,6 +435,7 @@ internal static class CssPreprocessor
         var selectorText = selectorSpan.ToString().Trim();
 
         var marginBoxes = ImmutableArray.CreateBuilder<CssMarginBoxRecovery>();
+        string? sizeText = null;
         if (tok.PeekChar() == '{')
         {
             tok.ReadChar();
@@ -465,7 +466,9 @@ internal static class CssPreprocessor
                 }
                 else
                 {
-                    tok.ReadUntilAnyTopLevel(";}");
+                    // Recover the `size` descriptor AngleSharp.Css drops (other declarations —
+                    // e.g. `margin` — reach the CSSOM, so they're left to the adapter).
+                    CaptureSizeDescriptor(tok.ReadUntilAnyTopLevel(";}"), ref sizeText);
                     if (tok.PeekChar() == ';') tok.ReadChar();
                 }
                 tok.SkipWhitespaceAndComments();
@@ -481,7 +484,19 @@ internal static class CssPreprocessor
             ordinal,
             selectorText,
             marginBoxes.Count == 0 ? ImmutableArray<CssMarginBoxRecovery>.Empty : marginBoxes.ToImmutable(),
-            location);
+            location,
+            sizeText);
+    }
+
+    /// <summary>If <paramref name="declaration"/> is a <c>size: …</c> descriptor, capture its
+    /// trimmed value into <paramref name="sizeText"/> (last one wins).</summary>
+    private static void CaptureSizeDescriptor(ReadOnlySpan<char> declaration, ref string? sizeText)
+    {
+        var colon = declaration.IndexOf(':');
+        if (colon < 0) return;
+        if (!declaration[..colon].Trim().Equals("size", StringComparison.OrdinalIgnoreCase)) return;
+        var value = declaration[(colon + 1)..].Trim();
+        if (!value.IsEmpty) sizeText = value.ToString();
     }
 
     /// <summary>

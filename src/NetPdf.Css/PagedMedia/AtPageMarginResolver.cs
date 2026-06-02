@@ -3,7 +3,6 @@
 
 using System;
 using System.Collections.Generic;
-using System.Collections.Immutable;
 using System.Globalization;
 using NetPdf.Css.Cascade;
 using NetPdf.Css.ComputedValues.PropertyResolvers;
@@ -64,35 +63,8 @@ internal static class AtPageMarginResolver
         ArgumentNullException.ThrowIfNull(media);
 
         Candidate top = default, right = default, bottom = default, left = default;
-        foreach (var sheet in sheets)
+        foreach (var at in AtPageRules.EnumerateBarePageRules(sheets, media))
         {
-            if (sheet.IsDisabled) continue;                 // disabled sheets don't contribute
-            if (!media.Matches(sheet.MediaQuery)) continue; // sheet media must match (e.g. print)
-            CollectRules(sheet.Rules, media, ref top, ref right, ref bottom, ref left);
-        }
-        return new ResolvedPageMargins(
-            top.Set ? top.Px : null, right.Set ? right.Px : null,
-            bottom.Set ? bottom.Px : null, left.Set ? left.Px : null);
-    }
-
-    private static void CollectRules(
-        ImmutableArray<CssRule> rules, CssMediaContext media,
-        ref Candidate top, ref Candidate right, ref Candidate bottom, ref Candidate left)
-    {
-        foreach (var rule in rules)
-        {
-            if (rule is not CssAtRule at) continue;
-
-            if (string.Equals(at.Name, "media", StringComparison.OrdinalIgnoreCase))
-            {
-                if (media.Matches(at.Prelude)) // recurse only when the @media condition matches
-                    CollectRules(at.ChildRules, media, ref top, ref right, ref bottom, ref left);
-                continue;
-            }
-
-            if (!string.Equals(at.Name, "page", StringComparison.OrdinalIgnoreCase)) continue;
-            if (!string.IsNullOrWhiteSpace(at.Prelude)) continue; // bare @page only this cycle.
-
             foreach (var decl in at.Declarations)
             {
                 // CSS Page 3: left/right % relative to page WIDTH, top/bottom % to page HEIGHT.
@@ -105,6 +77,9 @@ internal static class AtPageMarginResolver
                 }
             }
         }
+        return new ResolvedPageMargins(
+            top.Set ? top.Px : null, right.Set ? right.Px : null,
+            bottom.Set ? bottom.Px : null, left.Set ? left.Px : null);
     }
 
     /// <summary>Resolve a declaration's value and, if it wins the per-side cascade (importance

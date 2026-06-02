@@ -20,8 +20,14 @@ namespace NetPdf.Css.Parser.Preprocessing;
 /// AngleSharp drops this entirely; the pre-pass recovers it.</param>
 /// <param name="MarginBoxes">Page margin-box at-rules inside this <c>@page</c>'s body.</param>
 /// <param name="Location">Source position of the <c>@page</c> at-keyword.</param>
+/// <param name="SizeText">The raw value of the <c>size</c> descriptor (e.g. <c>"A4 landscape"</c>,
+/// <c>"210mm 297mm"</c>), or <see langword="null"/> when none. AngleSharp.Css drops the
+/// <c>size</c> descriptor (it isn't a regular property), so the pre-pass recovers it from the raw
+/// body and the adapter re-attaches it as a synthetic declaration. Last <c>size</c> in the body
+/// wins.</param>
 internal sealed record CssPageRuleRecovery(
     int OrdinalIndex,
     string SelectorText,
     ImmutableArray<CssMarginBoxRecovery> MarginBoxes,
-    CssSourceLocation Location);
+    CssSourceLocation Location,
+    string? SizeText = null);

@@ -108,4 +108,7 @@ For anything not covered above, ask Roland before guessing.
 
 ## Last verified
 
-Phase 0 commit: see `git log --oneline -1`.
+Phase 5 layout→PDF production wiring in progress (interleaved with Phase 3 per Roland's
+sequencing). Latest merged: cycle 5a-1 — the PDF font-registration API (PR #122, `cdc1db0`).
+For the live state, read the **current-state pointer at the top of [PROGRESS.md](PROGRESS.md)**
+(or run `/phase-status`); `git log --oneline -1` shows the exact commit.

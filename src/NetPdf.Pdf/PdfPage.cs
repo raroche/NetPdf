@@ -141,6 +141,37 @@ internal sealed class PdfPage
     }
 
     /// <summary>
+    /// Register a font in this page's <c>/Font</c> resource and return the resource name a
+    /// content-stream <c>Tf</c> operator references (e.g. <c>F1</c>). The font must already
+    /// be registered with the parent document via
+    /// <see cref="PdfDocument.RegisterFont(Fonts.EmbeddedFont)"/> — its returned Type 0
+    /// indirect ref is what you pass here. Idempotent per referenced object: adding the same
+    /// font twice yields one <c>/Font</c> entry and the same name.
+    /// </summary>
+    public PdfName AddFont(PdfIndirectRef fontRef)
+    {
+        ArgumentNullException.ThrowIfNull(fontRef);
+        ThrowIfFinalized();
+
+        // Dedup by the referenced object so a page using one font across many runs gets a
+        // single /Font entry (the painter can also cache the name itself).
+        foreach (var entry in _fontsResource)
+        {
+            if (entry.Value is PdfIndirectRef existing
+                && existing.ObjectNumber == fontRef.ObjectNumber
+                && existing.Generation == fontRef.Generation)
+            {
+                return entry.Key;
+            }
+        }
+
+        // Per-page resource name. The "F1, F2, …" pattern mirrors the image "Im1, Im2, …".
+        var name = new PdfName($"F{_fontsResource.Count + 1}");
+        _fontsResource.Set(name, fontRef);
+        return name;
+    }
+
+    /// <summary>
     /// Fill an axis-aligned rectangle with a solid RGB color. Coordinates are in
     /// PDF points with the origin at the page's bottom-left (the <c>re</c>-operator
     /// convention — callers apply any CSS-px → pt scale + y-flip first);

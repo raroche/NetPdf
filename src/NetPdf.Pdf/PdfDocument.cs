@@ -4,6 +4,7 @@
 using System.Buffers;
 using System.Globalization;
 using System.Security.Cryptography;
+using NetPdf.Pdf.Fonts;
 using NetPdf.Pdf.Images;
 using NetPdf.Pdf.Objects;
 
@@ -46,6 +47,7 @@ internal sealed class PdfDocument
     private readonly PdfIndirectRef _pagesRef;
     private readonly List<PdfPage> _pages = [];
     private readonly Dictionary<string, PdfIndirectRef> _imageCache = [];
+    private readonly Dictionary<string, PdfIndirectRef> _fontCache = [];
     private bool _saved;
 
     public PdfDocument(string version = "1.7")
@@ -200,6 +202,87 @@ internal sealed class PdfDocument
     /// entries — their emitted XObject graphs differ.)
     /// </summary>
     public int RegisteredImageCount => _imageCache.Count;
+
+    // ───── Embedded font registration (the deferred Phase 1 Task 22) ─────────
+
+    /// <summary>
+    /// Register an embedded subset font and return an indirect ref to its Type 0 font
+    /// dictionary — the value a page's <c>/Font</c> resource points at (see
+    /// <see cref="PdfPage.AddFont(PdfIndirectRef)"/>). The font's five objects (Type 0 +
+    /// CIDFontType2 + FontDescriptor + FontFile2 + ToUnicode) each get their own
+    /// indirect-object slot, and the structural cross-references — <c>/DescendantFonts[0]</c>,
+    /// <c>/FontDescriptor</c>, <c>/FontFile2</c>, <c>/ToUnicode</c> — are rewritten from the
+    /// <see cref="EmbeddedFont"/>'s direct nesting to those refs. If a byte-identical subset
+    /// (same FontFile2 + ToUnicode) was already registered, the existing Type 0 ref is
+    /// returned — N references to one subset produce a single font graph.
+    /// </summary>
+    /// <remarks>
+    /// Objects are allocated + assigned BOTTOM-UP (leaf streams first) so every
+    /// cross-reference points at an already-allocated slot; a dictionary carrying a forward
+    /// ref to an unallocated slot would be rejected by save-time preflight. Each child
+    /// dictionary is CLONED before its cross-ref key is swapped to an indirect ref, so the
+    /// caller's <see cref="EmbeddedFont"/> (and any other document reusing it) is never
+    /// mutated — the same correctness rule as <see cref="CloneWithSMaskWired"/>.
+    /// </remarks>
+    public PdfIndirectRef RegisterFont(EmbeddedFont font)
+    {
+        ArgumentNullException.ThrowIfNull(font);
+        ThrowIfSaved();
+
+        var key = ComputeFontContentKey(font);
+        if (_fontCache.TryGetValue(key, out var existing))
+        {
+            return existing;
+        }
+
+        // FontFile2 (leaf) → FontDescriptor (/FontFile2 → ref).
+        var fontFile2Ref = _writer.Objects.Allocate();
+        _writer.Objects.Assign(fontFile2Ref, font.FontFile2Stream);
+        var descriptorRef = _writer.Objects.Allocate();
+        _writer.Objects.Assign(descriptorRef,
+            CloneReplacing(font.FontDescriptorDictionary, PdfNames.FontFile2, fontFile2Ref));
+
+        // CIDFontType2 (/FontDescriptor → ref).
+        var cidRef = _writer.Objects.Allocate();
+        _writer.Objects.Assign(cidRef,
+            CloneReplacing(font.CidFontDictionary, PdfNames.FontDescriptor, descriptorRef));
+
+        // ToUnicode (leaf) → Type 0 (/ToUnicode → ref, /DescendantFonts[0] → cidRef).
+        var toUnicodeRef = _writer.Objects.Allocate();
+        _writer.Objects.Assign(toUnicodeRef, font.ToUnicodeStream);
+        var type0Dict = CloneReplacing(font.Type0FontDictionary, PdfNames.ToUnicode, toUnicodeRef);
+        type0Dict.Set(PdfNames.DescendantFonts, new PdfArray().Add(cidRef));
+        var type0Ref = _writer.Objects.Allocate();
+        _writer.Objects.Assign(type0Ref, type0Dict);
+
+        _fontCache[key] = type0Ref;
+        return type0Ref;
+    }
+
+    /// <summary>Number of unique embedded-font subsets registered (each distinct subset
+    /// counts once, regardless of how many pages reference it).</summary>
+    public int RegisteredFontCount => _fontCache.Count;
+
+    /// <summary>Shallow-clone a dictionary's entries into a fresh one, replacing one key's
+    /// value — used to swap a directly-nested child for its indirect ref without mutating
+    /// the source (the structural-rewire pattern shared with <see cref="CloneWithSMaskWired"/>).</summary>
+    private static PdfDictionary CloneReplacing(PdfDictionary source, PdfName key, PdfObject value)
+    {
+        var clone = new PdfDictionary();
+        foreach (var entry in source)
+        {
+            clone.Set(entry.Key, entry.Value);
+        }
+        clone.Set(key, value);
+        return clone;
+    }
+
+    /// <summary>Dedup key for an embedded font: the subset SFNT program (FontFile2) plus the
+    /// ToUnicode CMap fully identify it, so two registrations of the same subset collapse to
+    /// one object graph. Hashes the streams the same way the image cache does.</summary>
+    private static string ComputeFontContentKey(EmbeddedFont font) =>
+        $"font:{Convert.ToHexString(HashStream(font.FontFile2Stream))}"
+        + $"|{Convert.ToHexString(HashStream(font.ToUnicodeStream))}";
 
     private static void ValidateImageXObjectShape(PdfStream stream, string parameterName, bool isSMask)
     {

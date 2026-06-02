@@ -211,9 +211,11 @@ internal sealed class PdfPage
     }
 
     /// <summary>
-    /// Show a run of glyphs at a baseline origin, in a solid RGB fill color. The font must
-    /// be a Type 0 / Identity-H font added to this page via <see cref="AddFont(PdfIndirectRef)"/>
-    /// (so each <paramref name="glyphIds"/> entry is a 2-byte big-endian CID = glyph id);
+    /// Show a run of glyphs at a baseline origin, in a solid RGB fill color. The font MUST
+    /// already be added to this page via <see cref="AddFont(PdfIndirectRef)"/> — passing a
+    /// name not in the page's <c>/Font</c> resource throws (a font selected in the content
+    /// stream with no matching resource entry is a malformed PDF). The font is a Type 0 /
+    /// Identity-H font, so each <paramref name="glyphIds"/> entry is a 2-byte big-endian CID = glyph id;
     /// <paramref name="glyphIds"/> are the SUBSET glyph ids the embedded font program uses.
     /// Coordinates are in PDF points with the origin at the page's bottom-left (callers apply
     /// any CSS-px → pt scale + y-flip first); <paramref name="xPt"/>/<paramref name="yPt"/>
@@ -229,6 +231,21 @@ internal sealed class PdfPage
     {
         ArgumentNullException.ThrowIfNull(fontResourceName);
         ThrowIfFinalized();
+        // ShowGlyphs may only reference a font already registered on this page via AddFont.
+        // This guard closes two holes (post-PR-#123 review, 2× P2): (a) Save does NOT parse
+        // content streams, so an unregistered name would emit `/Fn Tf` with no matching
+        // /Resources /Font /Fn — a malformed PDF; (b) the only keys in _fontsResource are the
+        // ones AddFont generates ("F1", "F2", …), which are escaping-safe simple names — so
+        // requiring registration also makes the resource name injection-safe (no `/X Do`
+        // sneaking through) WITHOUT a separate escape step. The text painter always AddFont()s
+        // before ShowGlyphs, passing the returned name.
+        if (!_fontsResource.ContainsKey(fontResourceName))
+        {
+            throw new ArgumentException(
+                $"ShowGlyphs: font resource '/{fontResourceName.Value}' is not registered on this page — " +
+                "call PdfPage.AddFont(...) first (its returned name is the one you pass here).",
+                nameof(fontResourceName));
+        }
         if (!double.IsFinite(fontSizePt) || fontSizePt < 0)
         {
             throw new ArgumentException(

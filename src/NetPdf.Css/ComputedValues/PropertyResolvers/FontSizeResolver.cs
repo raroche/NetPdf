@@ -194,7 +194,18 @@ internal static class FontSizeResolver
         return false;
     }
 
-    private static bool TryParseNumber(string s, out double n) =>
-        double.TryParse(s.Trim(), NumberStyles.Float, CultureInfo.InvariantCulture, out n)
-        && double.IsFinite(n);
+    private static bool TryParseNumber(string s, out double n)
+    {
+        n = 0;
+        // A CSS dimension's number has NO internal/surrounding whitespace, so reject any
+        // whitespace here. Without this, a spaced form like `2 em` / `50 %` splits into a
+        // number part `"2 "` / `"50 "` that `double.TryParse` would otherwise accept
+        // (NumberStyles.Float allows surrounding whitespace), wrongly resolving as a
+        // dimension (post-PR-#121 review P3). The value reaching the resolver is already
+        // trimmed, so any whitespace left in the number is internal — and invalid.
+        foreach (var c in s)
+            if (c is ' ' or '\t' or '\n' or '\r' or '\f') return false;
+        return double.TryParse(s, NumberStyles.Float, CultureInfo.InvariantCulture, out n)
+            && double.IsFinite(n);
+    }
 }

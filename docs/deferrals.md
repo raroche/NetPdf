@@ -2824,6 +2824,36 @@ flags the categories):
     `ShaperKey`/field docs, the `ResolverResult` UnsupportedUnvalidated backlog
     comment, the `FontFamilyListResolver` remarks, and a stale
     `HarfBuzzShaperResolverTests` comment; removed the now-dead `DefaultWeightCss` const.
+- **Post-PR-#121 review — font-property hardening follow-ups** (Roland's review of the
+  cycle-4 follow-ups). FIXED in the same PR:
+  - **(P2) CSS-wide keywords** — `FontFamilyListResolver` now rejects an UNQUOTED
+    `inherit` / `initial` / `unset` / `revert` / `revert-layer` (via the new shared
+    `CssWideKeyword.Is`, which `GridLineResolver` also delegates to) so it can't be
+    stored as a literal family; a QUOTED `"inherit"` stays a valid family. `font-size` /
+    `font-weight` already reject CSS-wide keywords (verified by tests).
+  - **(P2) CSS escapes** — `FontFamilyListResolver` decodes CSS Syntax 3 §4.3.7 escapes
+    inside QUOTED strings (`"a\"b"`, `"\41 rial"`); the cache-key join in
+    `HarfBuzzShaperResolver.FamilyStackKey` is now length-prefixed so a decoded name
+    containing the separator can't alias.
+  - **(P3) Spaced dimensions** — `FontSizeResolver.TryParseNumber` rejects any
+    whitespace, so `2 em` / `50 %` are `Invalid` instead of slipping past the unit split.
+  - **STILL-OPEN known gaps** (defense-in-depth + documented, not yet fully correct):
+    - **CSS-wide on INHERITED font props** — `font-size`/`-family`/`-weight` are
+      inherited, so the cascade's invalid-fallback yields the INHERITED value. Correct for
+      `inherit` / `unset`; a gap for `initial` / `revert` (should reset to the property
+      initial, e.g. `medium` / `serif`). The proper fix is a CENTRAL CSS-wide interceptor
+      in the cascade (substituting initial / inherited / previous-layer before dispatch) —
+      a separate cycle's scope, shared with the grid resolvers' identical limitation.
+    - **Unquoted-identifier escapes** — `FontFamilyListResolver`'s unquoted path does NOT
+      decode escapes (e.g. `\32 Chains`); such names are rejected (safe — falls back to
+      inherited, never mis-stored), consistent with `CssTokenizer`, which also defers
+      escape decoding. A unified CSS-escape pass (tokenizer + string + ident decoders) is
+      the right home.
+    - **`font-size: 0` text-paint guard** — zero-advance shaping is correct for LAYOUT,
+      but the text-paint cycle (TODO 2) MUST NOT emit visible glyphs or an invalid PDF
+      text state for a zero-sized run: skip glyph emission (or emit a zero-`Tf` run with
+      no painted glyphs) for `font-size: 0`. Pin with a painter-level test when text
+      emission lands.
 - **TODOs (remaining chain, in order)** —
   1. **CSS font-property resolution** — DONE (cycle 4): `font-size` /
      `font-family` / `font-weight` resolve (see the cycle-4 done note). A focused

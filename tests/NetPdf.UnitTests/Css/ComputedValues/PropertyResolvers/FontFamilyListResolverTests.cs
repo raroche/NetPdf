@@ -111,6 +111,49 @@ public sealed class FontFamilyListResolverTests
             Read("-apple-system, BlinkMacSystemFont, sans-serif").Families.ToArray());
     }
 
+    // --- post-PR-#121 review (P2): CSS-wide keywords + escapes ----------
+
+    [Theory]
+    [InlineData("inherit")]
+    [InlineData("initial")]
+    [InlineData("unset")]
+    [InlineData("revert")]
+    [InlineData("revert-layer")]
+    [InlineData("INHERIT")]            // case-insensitive
+    [InlineData("inherit, serif")]    // a CSS-wide keyword as any unquoted entry is invalid
+    public void Unquoted_css_wide_keywords_are_invalid(string value)
+    {
+        // CSS-wide keywords are resolved by the cascade, never stored as a literal
+        // family (a font-family named "inherit" would mis-drive the shaper).
+        Assert.True(ResolveLeaf(value).IsInvalid);
+    }
+
+    [Fact]
+    public void Quoted_css_wide_keyword_is_a_valid_family_name()
+    {
+        // Quoting escapes the keyword meaning — "inherit" is then a real family name.
+        Assert.Equal(new[] { "inherit" }, Read("\"inherit\"").Families.ToArray());
+    }
+
+    [Fact]
+    public void Quoted_family_name_decodes_css_escapes()
+    {
+        // CSS Syntax 3 §4.3.7 escapes inside a quoted <string> family name:
+        Assert.Equal(new[] { "a\"b" }, Read("\"a\\\"b\"").Families.ToArray());   // CSS: "a\"b"   → a"b
+        Assert.Equal(new[] { "a\\b" }, Read("\"a\\\\b\"").Families.ToArray());   // CSS: "a\\b"   → a\b
+        Assert.Equal(new[] { "Arial" }, Read("\"\\41 rial\"").Families.ToArray()); // CSS: "\41 rial" → Arial
+    }
+
+    [Fact]
+    public void Unquoted_identifier_escapes_are_a_known_gap()
+    {
+        // CSS Syntax 3 §4.3.7 lets an escape start an unquoted ident (`\32 Chains` =
+        // "2Chains"), but — consistent with CssTokenizer, which also defers escape
+        // decoding — the unquoted path doesn't decode them yet, so it's rejected (SAFE:
+        // falls back to inherited, never mis-stored). Tracked in deferrals.md.
+        Assert.True(ResolveLeaf("\\32 Chains").IsInvalid);
+    }
+
     private sealed class CapturingSink : ICssDiagnosticsSink
     {
         public List<CssDiagnostic> Diagnostics { get; } = new();

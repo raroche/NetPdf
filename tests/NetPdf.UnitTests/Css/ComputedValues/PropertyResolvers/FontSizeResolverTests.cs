@@ -126,6 +126,32 @@ public sealed class FontSizeResolverTests
         Assert.True(PropertyResolverDispatch.Resolve(PropertyId.FontSize, "1.5em").IsDeferred);
     }
 
+    // --- post-PR-#121 review (P3): spaced dimensions + CSS-wide ----------
+
+    [Theory]
+    [InlineData("2 em")]
+    [InlineData("50 %")]
+    public void Whitespace_separated_relative_dimensions_are_invalid(string value)
+    {
+        // A space between the number and unit isn't a valid CSS dimension — `2 em` /
+        // `50 %` must NOT slip past the unit split and resolve as `2em` / `50%`.
+        Assert.True(Resolve(value).IsInvalid);
+    }
+
+    [Theory]
+    [InlineData("initial")]
+    [InlineData("inherit")]
+    [InlineData("unset")]
+    public void Css_wide_keywords_are_invalid_here(string value)
+    {
+        // font-size rejects CSS-wide keywords (via the length parser), so they're never
+        // stored as a literal length. NOTE: font-size is INHERITED, so the cascade's
+        // invalid-fallback yields the inherited value — correct for inherit/unset, but a
+        // known gap for `initial` (should reset to medium); tracked in deferrals.md
+        // pending central CSS-wide handling.
+        Assert.True(Resolve(value).IsInvalid);
+    }
+
     private sealed class CapturingSink : ICssDiagnosticsSink
     {
         public List<CssDiagnostic> Diagnostics { get; } = new();

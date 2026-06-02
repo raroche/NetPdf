@@ -139,15 +139,7 @@ internal static class GridLineResolver
     /// every property accepts. The cascade should intercept these BEFORE
     /// per-property resolvers run; this method exists for defense-in-depth
     /// rejection at the grid resolvers per PR-#90 review F3.</summary>
-    internal static bool IsCssWideKeyword(string value)
-    {
-        var trimmed = value.AsSpan().Trim();
-        return trimmed.Equals("initial", StringComparison.OrdinalIgnoreCase)
-            || trimmed.Equals("inherit", StringComparison.OrdinalIgnoreCase)
-            || trimmed.Equals("unset", StringComparison.OrdinalIgnoreCase)
-            || trimmed.Equals("revert", StringComparison.OrdinalIgnoreCase)
-            || trimmed.Equals("revert-layer", StringComparison.OrdinalIgnoreCase);
-    }
+    internal static bool IsCssWideKeyword(string value) => CssWideKeyword.Is(value);
 
     /// <summary>Per PR-#91 review F1 — side-effect-free validation of a
     /// single <c>&lt;grid-line&gt;</c> value. Used by the grid shorthand

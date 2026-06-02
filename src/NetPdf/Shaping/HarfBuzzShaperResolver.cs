@@ -240,8 +240,10 @@ internal sealed class HarfBuzzShaperResolver : IShaperResolver
 
     /// <summary>Cache-key signature for a resolved family stack: the entries
     /// lower-cased (CSS families match case-insensitively, CSS Fonts 4 §4.1) and
-    /// joined. Identical author stacks share one shaper; the newline separator
-    /// can't appear in a family name, so the join is unambiguous.</summary>
+    /// joined. Identical author stacks share one shaper. Each entry is LENGTH-PREFIXED
+    /// so the join stays unambiguous even when a decoded family name contains the
+    /// separator — a CSS escape can put any char (incl. a newline) in a name
+    /// (post-PR-#121 review P2).</summary>
     private static string FamilyStackKey(ImmutableArray<string> families)
     {
         if (families.IsDefaultOrEmpty) return "serif";
@@ -249,8 +251,8 @@ internal sealed class HarfBuzzShaperResolver : IShaperResolver
         var sb = new StringBuilder();
         for (var i = 0; i < families.Length; i++)
         {
-            if (i > 0) sb.Append('\n');
-            sb.Append(families[i].ToLowerInvariant());
+            var f = families[i].ToLowerInvariant();
+            sb.Append(f.Length).Append(':').Append(f);
         }
         return sb.ToString();
     }

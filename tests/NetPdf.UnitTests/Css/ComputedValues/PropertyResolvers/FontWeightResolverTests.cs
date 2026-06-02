@@ -73,4 +73,17 @@ public sealed class FontWeightResolverTests
         Assert.True(result.IsResolved);
         Assert.Equal(700, result.Slot.AsInteger());
     }
+
+    [Theory]
+    [InlineData("initial")]
+    [InlineData("inherit")]
+    [InlineData("unset")]
+    public void Css_wide_keywords_are_invalid_here(string value)
+    {
+        // Post-PR-#121 review (P2) verify: font-weight rejects CSS-wide keywords (they're
+        // not normal/bold/bolder/lighter/<number>), so they're never stored as a literal
+        // weight. The cascade handles them; the inherited-`initial` gap is documented in
+        // deferrals.md (pending central CSS-wide handling).
+        Assert.True(Resolve(value).IsInvalid);
+    }
 }

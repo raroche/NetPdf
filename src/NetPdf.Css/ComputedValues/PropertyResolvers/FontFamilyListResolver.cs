@@ -17,11 +17,18 @@ namespace NetPdf.Css.ComputedValues.PropertyResolvers;
 /// stored in the side table (a <see cref="ResolverResult.ResolvedSideTable"/>).
 /// </summary>
 /// <remarks>
-/// Scope is the family LIST itself: it is parsed AND validated against the grammar
-/// (a malformed list is <see cref="ResolverResult.Invalid"/> + a diagnostic, not
-/// silently sanitized). Per-entry case folding / generic classification + the
+/// <para>Scope is the family LIST itself: it is parsed AND validated against the
+/// grammar (a malformed list is <see cref="ResolverResult.Invalid"/> + a diagnostic,
+/// not silently sanitized). Per-entry case folding / generic classification + the
 /// font-stack fallback walk live in the shaper (<c>HarfBuzzShaperResolver</c>). Quoted
-/// names keep their case + spaces; unquoted multi-word names are whitespace-collapsed.
+/// names keep their case + spaces; unquoted multi-word names are whitespace-collapsed.</para>
+/// <para>An unquoted CSS-wide keyword (<c>inherit</c> / <c>initial</c> / <c>unset</c> /
+/// <c>revert</c> / <c>revert-layer</c>) is rejected here so it can't be stored as a
+/// literal family — the cascade owns those (a central interceptor is a separate cycle's
+/// scope; this is defense-in-depth, mirroring the grid resolvers). CSS Syntax 3 §4.3.7
+/// escapes are decoded inside QUOTED strings (<c>"a\"b"</c>, <c>"\41 rial"</c>);
+/// unquoted-identifier escapes stay a tracked follow-up, consistent with
+/// <c>CssTokenizer</c>.</para>
 /// </remarks>
 internal static class FontFamilyListResolver
 {
@@ -78,7 +85,12 @@ internal static class FontFamilyListResolver
                 var closed = false;
                 while (i < n)
                 {
-                    var c = value[i++];
+                    var c = value[i];
+                    // CSS Syntax 3 §4.3.7 escapes: a backslash escapes the next char(s),
+                    // so `\"` is a literal quote (not the terminator), `\\` a backslash,
+                    // and `\41` the code point U+0041 (post-PR-#121 review P2).
+                    if (c == '\\') { i++; DecodeEscape(value, ref i, sb); continue; }
+                    i++;
                     if (c == quote) { closed = true; break; }
                     sb.Append(c);
                 }
@@ -100,6 +112,11 @@ internal static class FontFamilyListResolver
                 }
                 entry = CollapseWhitespace(value.AsSpan(start, i - start));
                 if (!IsValidUnquotedFamily(entry)) return false;
+                // An UNQUOTED CSS-wide keyword (inherit / initial / unset / revert /
+                // revert-layer) is not a family name — the cascade handles it. Reject so
+                // it can't be stored as a literal family (post-PR-#121 review P2); a
+                // QUOTED "inherit" stays a valid family name.
+                if (CssWideKeyword.Is(entry)) return false;
             }
 
             builder.Add(entry);
@@ -169,9 +186,35 @@ internal static class FontFamilyListResolver
         return sb.ToString();
     }
 
+    /// <summary>Decode a CSS escape (CSS Syntax 3 §4.3.7) whose backslash was already
+    /// consumed; <paramref name="i"/> points at the char AFTER the backslash. Used inside
+    /// quoted family strings. (Unquoted-identifier escapes stay a tracked follow-up,
+    /// consistent with <c>CssTokenizer</c>, which also defers escape decoding.)</summary>
+    private static void DecodeEscape(string s, ref int i, StringBuilder sb)
+    {
+        var n = s.Length;
+        if (i >= n) { sb.Append('�'); return; }   // EOF right after a backslash → U+FFFD.
+        var c = s[i];
+        if (IsHexDigit(c))
+        {
+            var cp = 0;
+            var digits = 0;
+            while (i < n && digits < 6 && IsHexDigit(s[i])) { cp = (cp << 4) + HexValue(s[i]); i++; digits++; }
+            if (i < n && IsWhitespace(s[i])) i++;       // one trailing whitespace is part of the escape.
+            sb.Append(cp == 0 || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF)
+                ? "�"                              // null / surrogate / out-of-range → U+FFFD.
+                : char.ConvertFromUtf32(cp));
+            return;
+        }
+        if (c == '\n') { i++; return; }                 // escaped newline (line continuation) → removed.
+        sb.Append(c); i++;                              // any other char → itself (`\"` → `"`, `\\` → `\`).
+    }
+
     private static bool IsWhitespace(char c) => c is ' ' or '\t' or '\n' or '\r' or '\f';
     private static bool IsIdentStart(char c) => c == '_' || c >= 0x80 || IsAsciiLetter(c);
     private static bool IsIdentChar(char c) => c == '_' || c == '-' || c >= 0x80 || IsAsciiLetter(c) || IsDigit(c);
     private static bool IsAsciiLetter(char c) => (uint)((c | 0x20) - 'a') <= 'z' - 'a';
     private static bool IsDigit(char c) => (uint)(c - '0') <= 9;
+    private static bool IsHexDigit(char c) => (uint)(c - '0') <= 9 || (uint)((c | 0x20) - 'a') <= 'f' - 'a';
+    private static int HexValue(char c) => c <= '9' ? c - '0' : (c | 0x20) - 'a' + 10;
 }

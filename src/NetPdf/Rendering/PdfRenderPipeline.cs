@@ -80,13 +80,15 @@ internal static class PdfRenderPipeline
         // layouter + break resolver are layout-only and stay in their own scope below,
         // disposed as soon as layout finishes.
         using var shaper = new HarfBuzzShaperResolver(options.FontResolver ?? new SystemFontResolver());
-        using (var layouter = new BlockLayouter(
-            rootBox: phase2.BoxRoot,
-            sink: sink,
-            incomingContinuation: null,
-            diagnostics: new PaginateToPublicDiagnosticsAdapter(diagnostics),
-            shaperResolver: shaper))
+        var fontResolutionFailed = false;
+        try
         {
+            using var layouter = new BlockLayouter(
+                rootBox: phase2.BoxRoot,
+                sink: sink,
+                incomingContinuation: null,
+                diagnostics: new PaginateToPublicDiagnosticsAdapter(diagnostics),
+                shaperResolver: shaper);
             var fragmentainer = new FragmentainerContext(contentInlinePx, contentBlockPx);
             var layout = new LayoutContext(fragmentainer);
             using var breaks = new BreakResolver();
@@ -100,12 +102,26 @@ internal static class PdfRenderPipeline
                 overflowReported = true;
             }
         }
+        catch (FontResolutionException ex)
+        {
+            // Text shaping runs DURING layout, so a font that can't be resolved (no matching
+            // face) or whose bytes are unsafe / WOFF-wrapped surfaces here — not at paint time
+            // (the async-resolver case is a separate NotSupportedException already handled at the
+            // inline-layout seam). Degrade to a valid PDF — painting whatever fragments laid out
+            // before the failure — plus a diagnostic, rather than failing the whole conversion
+            // (CLAUDE.md #7, post-PR-#127 review P1). Per-block continuation past the failing run
+            // is a tracked follow-up. A bundled fallback font (cycle 5b) makes the default path
+            // never reach this.
+            EmitTextFontUnresolved(diagnostics, ex.Message);
+            fontResolutionFailed = true;
+        }
 
         // Overflow that didn't surface as a page break — a fragment wider/taller than the
         // content box, a forced-overflow AllDone, or a negative/absolute offset — would paint
         // outside the MediaBox and be clipped silently. Surface it with the same diagnostic
         // (PR #118 review P2).
-        if (!overflowReported && FragmentsOverflowContentRect(sink.Fragments, contentInlinePx, contentBlockPx))
+        if (!fontResolutionFailed && !overflowReported
+            && FragmentsOverflowContentRect(sink.Fragments, contentInlinePx, contentBlockPx))
             EmitOverflowTruncated(diagnostics);
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -137,6 +153,15 @@ internal static class PdfRenderPipeline
         var bytes = document.Save();
         return new RenderOutcome(bytes, document.Pages.Count, diagnostics.Items);
     }
+
+    private static void EmitTextFontUnresolved(IDiagnosticsSink diagnostics, string detail) =>
+        diagnostics.Emit(new Diagnostic(
+            DiagnosticCodes.PaintTextFontUnresolved001,
+            "A font could not be resolved during layout, so the affected text was not painted: " +
+            detail + " The rest of the document still renders. A bundled deterministic last-resort " +
+            "font (so the default path always resolves) is a tracked follow-up " +
+            "(deferrals.md#layout-to-pdf-pipeline).",
+            DiagnosticSeverity.Warning));
 
     private static void EmitOverflowTruncated(IDiagnosticsSink diagnostics) =>
         diagnostics.Emit(new Diagnostic(

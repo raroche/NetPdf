@@ -72,6 +72,50 @@ public sealed class PdfPageShowGlyphsTests
     }
 
     [Fact]
+    public void ShowGlyphs_partial_alpha_uses_a_constant_alpha_ExtGState()
+    {
+        var (page, font) = PageWithFont();
+        page.ShowGlyphs(font, 12, 72, 700, new ushort[] { 0x0041 }, 1, 0, 0, alpha: 0.5);
+
+        var (pageDict, contentBytes) = page.Finalize();
+        var content = Encoding.ASCII.GetString(contentBytes);
+
+        Assert.Contains(" gs ", content);          // a /GSn gs selects the constant alpha
+        Assert.Contains("BT /F1 12 Tf", content);   // ... and the glyph run still emits
+        var resources = Assert.IsType<PdfDictionary>(pageDict.Get(PdfNames.Resources));
+        var extGState = Assert.IsType<PdfDictionary>(resources.Get(PdfNames.ExtGState));
+        Assert.Equal(1, extGState.Count);
+        foreach (var entry in extGState)
+        {
+            var gs = Assert.IsType<PdfDictionary>(entry.Value);
+            Assert.Equal(0.5, Assert.IsType<PdfReal>(gs.Get(PdfNames.ca)).Value);
+        }
+    }
+
+    [Fact]
+    public void ShowGlyphs_opaque_emits_no_ExtGState()
+    {
+        var (page, font) = PageWithFont();
+        page.ShowGlyphs(font, 12, 72, 700, new ushort[] { 0x0041 }, 1, 0, 0);   // default alpha = 1.0
+
+        var (pageDict, contentBytes) = page.Finalize();
+        Assert.DoesNotContain(" gs ", Encoding.ASCII.GetString(contentBytes));
+        var resources = Assert.IsType<PdfDictionary>(pageDict.Get(PdfNames.Resources));
+        Assert.Null(resources.Get(PdfNames.ExtGState));
+    }
+
+    [Theory]
+    [InlineData(double.NaN)]
+    [InlineData(double.PositiveInfinity)]
+    [InlineData(double.NegativeInfinity)]
+    public void ShowGlyphs_rejects_non_finite_alpha(double badAlpha)
+    {
+        var (page, font) = PageWithFont();
+        Assert.Throws<ArgumentException>(
+            () => page.ShowGlyphs(font, 12, 0, 0, new ushort[] { 0x0041 }, 0, 0, 0, alpha: badAlpha));
+    }
+
+    [Fact]
     public void ShowGlyphs_sets_and_clamps_the_fill_color()
     {
         var (page, font) = PageWithFont();

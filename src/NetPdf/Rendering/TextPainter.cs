@@ -27,8 +27,9 @@ namespace NetPdf.Rendering;
 /// <para>
 /// <b>Two passes.</b> (1) <i>Collect</i> — walk every fragment's lines → slices →
 /// shaped runs, gathering the ORIGINAL glyph ids used per RESOLVED font program (keyed by
-/// the shaper's <see cref="HarfBuzzShaperResolver.ResolvedFontProgram.Key"/>) and recording
-/// one draw command per slice with its baseline geometry + fill color. (2) <i>Build</i> —
+/// the shaper's <see cref="HarfBuzzShaperResolver.ResolvedFontProgram.Identity"/> — a content
+/// hash, so distinct family stacks that fall back to the same face share one subset) and
+/// recording one draw command per slice with its baseline geometry + fill color. (2) <i>Build</i> —
 /// per font, subset + embed exactly the used glyphs
 /// (<see cref="OpenTypeFont.Parse"/> → <see cref="GlyphSubsetPlan.Build"/> →
 /// <see cref="TtfSubsetter.Subset"/> → <see cref="ToUnicodeCMap.FromSubset"/> →
@@ -52,9 +53,10 @@ namespace NetPdf.Rendering;
 /// from the embedded font's <c>/W</c> advances ("simple Td + Tj" — Roland's pick).
 /// Baselines are derived from the block's line-height (mirroring
 /// <c>BlockLayouter</c>'s inline-only block model) + the run font's ascent; there is no
-/// explicit per-line baseline in the IR. DEFERRED to a later cycle: GPOS-adjusted per-glyph
-/// positioning, RTL visual-order line reversal, per-run baseline alignment on mixed-size
-/// lines, and text-fill alpha (<see cref="PdfPage.ShowGlyphs"/> paints opaque).
+/// explicit per-line baseline in the IR. Partial text-fill alpha IS composited (via the same
+/// <c>/ca</c> ExtGState the fills use). DEFERRED to a later cycle: GPOS-adjusted per-glyph
+/// positioning, RTL visual-order line reversal, and per-run baseline alignment on
+/// mixed-size lines.
 /// </para>
 /// </remarks>
 internal static class TextPainter
@@ -152,7 +154,10 @@ internal static class TextPainter
                 subsetIds[g] = (ushort)emit.OldToNew[cmd.OriginalGlyphIds[g]];
 
             FragmentPainter.ColorChannels(cmd.ColorArgb, out var r, out var g2, out var b);
-            page.ShowGlyphs(emit.Name, cmd.SizePt, cmd.XPt, cmd.YPt, subsetIds, r, g2, b);
+            // Partial text alpha composites via ExtGState /ca, like fills (review P2) — fully
+            // transparent runs were already dropped at collect time.
+            var alpha = FragmentPainter.Alpha(cmd.ColorArgb) / 255.0;
+            page.ShowGlyphs(emit.Name, cmd.SizePt, cmd.XPt, cmd.YPt, subsetIds, r, g2, b, alpha);
         }
     }
 
@@ -270,7 +275,7 @@ internal static class TextPainter
             return false;
         }
 
-        key = program.Key;
+        key = program.Identity;
         if (failed.Contains(key)) return false;
         if (collects.TryGetValue(key, out var existing)) { collect = existing; return true; }
 

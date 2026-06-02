@@ -2876,13 +2876,19 @@ flags the categories):
      `PAINT-TEXT-FONT-UNRESOLVED-001` (never a throw). Tested via the facade with a
      fixed `SyntheticFont` resolver (deterministic real glyphs). The bundled
      deterministic fallback font (TODO 4 / cycle 5b) is still needed for the DEFAULT
-     facade path's determinism-for-text. **Deferred text refinements (a later cycle,
-     e.g. 5c):** GPOS-adjusted per-glyph positioning (the first cut uses the embedded
-     font's `/W` advances for inter-glyph spacing — "simple Td + Tj", Roland's pick);
-     RTL visual-order line reversal; per-run baseline alignment on mixed-size /
-     mixed-font lines (baseline is per-line, from the block line-height + the run
-     font's ascent, mirroring `BlockLayouter`'s inline-only block model — there is no
-     explicit baseline-Y in the IR); and text-fill alpha (`ShowGlyphs` paints opaque).
+     facade path's determinism-for-text. **Post-PR-#127 review (folded in):** the shaper
+     caches the resolved program size-independently so paint subsets the EXACT bytes
+     layout shaped (no drift on a stateful resolver); font-resolution failures throw a
+     dedicated `FontResolutionException` caught as a pipeline backstop (valid PDF +
+     `PAINT-TEXT-FONT-UNRESOLVED-001`, never a throw); partial-alpha text is composited
+     via `/ca` (`ShowGlyphs` gained an `alpha` param); and the program identity is a
+     content hash so fallback stacks hitting the same face share one subset.
+     **Deferred text refinements (a later cycle, e.g. 5c):** GPOS-adjusted per-glyph
+     positioning (the first cut uses the embedded font's `/W` advances for inter-glyph
+     spacing — "simple Td + Tj", Roland's pick); RTL visual-order line reversal; and
+     per-run baseline alignment on mixed-size / mixed-font lines (baseline is per-line,
+     from the block line-height + the run font's ascent, mirroring `BlockLayouter`'s
+     inline-only block model — there is no explicit baseline-Y in the IR).
      Constant-alpha compositing is DONE (the Phase 4 paint-alpha pass:
      partial-alpha background + border colors composite via PDF ExtGState `/ca` —
      `PdfPage.FillRectangle` gained an `alpha` param + a per-page `/ExtGState` resource;

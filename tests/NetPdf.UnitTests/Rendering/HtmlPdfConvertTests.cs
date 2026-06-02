@@ -306,6 +306,92 @@ public sealed class HtmlPdfConvertTests
         Assert.Equal(first, second);
     }
 
+    [Fact]
+    public void Unresolvable_font_skips_text_with_a_diagnostic_and_a_valid_pdf()
+    {
+        // The resolver resolves NOTHING. Text shaping happens during layout, so this surfaces
+        // there — the pipeline must degrade to a valid PDF + PAINT-TEXT-FONT-UNRESOLVED-001 and
+        // NEVER throw (post-PR-#127 review P1).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body><p>AB</p></body></html>",
+            new HtmlPdfOptions { FontResolver = new NullResolver() });
+        var pdf = Latin1(result.Pdf);
+
+        Assert.StartsWith("%PDF-", pdf);
+        Assert.Contains("%%EOF", pdf);
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.PaintTextFontUnresolved001);
+        Assert.DoesNotContain("BT", pdf);   // no glyphs were painted
+    }
+
+    [Theory]
+    [InlineData(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 })]              // garbage — not an sfnt
+    [InlineData(new byte[] { 0x77, 0x4F, 0x46, 0x46, 0, 0, 0, 0 })]  // "wOFF…" — a WOFF wrapper
+    public void Unsafe_or_wrapped_font_bytes_skip_text_with_a_diagnostic_and_a_valid_pdf(byte[] fontBytes)
+    {
+        // Resolved-but-rejected bytes (garbage / WOFF) throw the same recoverable
+        // FontResolutionException as no-font, caught as the pipeline backstop (review P1).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body><p>AB</p></body></html>",
+            new HtmlPdfOptions { FontResolver = new FixedBytesResolver(fontBytes) });
+
+        Assert.StartsWith("%PDF-", Latin1(result.Pdf));
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.PaintTextFontUnresolved001);
+    }
+
+    [Fact]
+    public void Async_font_resolver_does_not_throw_and_produces_a_valid_pdf()
+    {
+        // A non-synchronous resolver trips the synchronous-shaping guard (NotSupportedException),
+        // already degraded at the inline-layout seam — the conversion must still produce a valid
+        // PDF and not throw (review P1).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body><p>AB</p></body></html>",
+            new HtmlPdfOptions { FontResolver = new NeverCompletesResolver() });
+
+        Assert.StartsWith("%PDF-", Latin1(result.Pdf));
+        Assert.Contains("%%EOF", Latin1(result.Pdf));
+    }
+
+    [Fact]
+    public void Partial_alpha_text_is_composited_via_constant_alpha()
+    {
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body><p style=\"color:rgba(255,0,0,0.5)\">AB</p></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        var pdf = Latin1(result.Pdf);
+
+        Assert.Contains("BT", pdf);                 // text IS painted (not silently dropped)
+        Assert.Contains(" gs", pdf);                // ... behind a constant-alpha ExtGState
+        Assert.Contains("/ca 0.501961 ", pdf);      // rgba(...,0.5) → 128/255 = 0.501961 (exact)
+        Assert.Contains("1 0 0 rg", pdf);           // opaque fill color; the alpha is separate
+    }
+
+    [Fact]
+    public void Transparent_text_paints_no_glyphs()
+    {
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body><p style=\"color:transparent\">AB</p></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.StartsWith("%PDF-", Latin1(result.Pdf));
+        Assert.DoesNotContain("BT", Latin1(result.Pdf));   // fully transparent → no text object
+    }
+
+    [Fact]
+    public void Distinct_font_family_stacks_resolving_to_the_same_face_embed_one_font()
+    {
+        // Two different font-family stacks both fall back to the synthetic face. Because the
+        // program identity is the resolved CONTENT (not the requested query), they share ONE
+        // subset + embedded font — not one per stack (post-PR-#127 review P3).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><body>" +
+            "<p style=\"font-family:Foo\">A</p><p style=\"font-family:Bar\">B</p>" +
+            "</body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.Equal(1, Latin1(result.Pdf).Split("/FontFile2").Length - 1);   // ONE embedded program
+    }
+
     /// <summary>A deterministic <see cref="IFontResolver"/> that resolves every query to the
     /// in-repo <see cref="SyntheticFont"/> (a minimal valid TTF with glyphs for 'A'/'B').
     /// Completes synchronously, as the synchronous layout shaping path requires.</summary>
@@ -313,5 +399,26 @@ public sealed class HtmlPdfConvertTests
     {
         public ValueTask<FontFaceData?> ResolveAsync(FontQuery query, CancellationToken ct)
             => new(new FontFaceData { Bytes = SyntheticFont.Build(), Family = query.Family });
+    }
+
+    /// <summary>Resolves nothing — exercises the no-font-resolved degradation path.</summary>
+    private sealed class NullResolver : IFontResolver
+    {
+        public ValueTask<FontFaceData?> ResolveAsync(FontQuery query, CancellationToken ct)
+            => new((FontFaceData?)null);
+    }
+
+    /// <summary>Returns fixed bytes for any query — for garbage / WOFF rejection paths.</summary>
+    private sealed class FixedBytesResolver(byte[] bytes) : IFontResolver
+    {
+        public ValueTask<FontFaceData?> ResolveAsync(FontQuery query, CancellationToken ct)
+            => new(new FontFaceData { Bytes = bytes, Family = query.Family });
+    }
+
+    /// <summary>Never completes synchronously — trips the synchronous-shaping guard.</summary>
+    private sealed class NeverCompletesResolver : IFontResolver
+    {
+        public ValueTask<FontFaceData?> ResolveAsync(FontQuery query, CancellationToken ct)
+            => new(new TaskCompletionSource<FontFaceData?>().Task);   // never set
     }
 }

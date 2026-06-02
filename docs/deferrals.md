@@ -2862,13 +2862,20 @@ flags the categories):
      non-font properties.
   2. **Paint bridge** — DONE for `background-color` fills (cycle 2) +
      `border-*` edges (cycle 3). **Text runs are now UNBLOCKED** — font-size /
-     family / weight resolve (cycle 4) and the shaper reads them — so the
-     REMAINING work is the text PAINT itself (emit shaped glyph runs + embed /
-     subset the font + ToUnicode; needs the bundled deterministic fallback font
-     for the determinism contract, TODO 4). Also remaining: background images /
-     gradients, border-radius, mitered corners, alpha compositing. The
-     `NetPdf.Paint` `DisplayCommand` IR still has no fragment→command or
-     command→PDF consumer — the bridge emits straight to `IContentStream`.
+     family / weight resolve (cycle 4) and the shaper reads them; the PDF
+     font-registration API (`PdfDocument.RegisterFont` + `PdfPage.AddFont`, the
+     deferred Phase 1 Task 22) landed in **cycle 5a-1**, so the PDF side of
+     embedding a subset + referencing it from a page now exists. REMAINING work is
+     the text PAINT bridge itself, **cycle 5a-2** (`FragmentPainter` collects used
+     glyph ids per resolved font from `BoxFragment.InlineLayout` → subset via
+     `TtfSubsetter` + `EmbeddedTtfFont.Build` → `RegisterFont` → emit
+     `BT`/`Tf`/`Td`/`TJ` with the subset glyph ids at baselines). The bundled
+     deterministic fallback font (TODO 4 / cycle 5b) is needed for the DEFAULT
+     facade path's determinism once glyphs paint; 5a-2 is tested with a fixed
+     `SyntheticFont`. Also remaining: background images / gradients, border-radius,
+     mitered corners, alpha compositing. The `NetPdf.Paint` `DisplayCommand` IR
+     still has no fragment→command or command→PDF consumer — the bridge emits
+     straight to `IContentStream`.
   3. **Facade** — DONE for the single-page path (cycle 2:
      `HtmlPdf.Convert` / `ConvertAsync` / `ConvertDetailed` →
      `PdfRenderPipeline`; page size/margins → `MediaBox` + content area

@@ -2899,11 +2899,29 @@ flags the categories):
   3. **Facade** — DONE for the single-page path (cycle 2:
      `HtmlPdf.Convert` / `ConvertAsync` / `ConvertDetailed` →
      `PdfRenderPipeline`; page size/margins → `MediaBox` + content area
-     from `HtmlPdfOptions`). REMAINING: the **multi-page driver** (loop
-     `AttemptLayout` over continuations, a `PdfPage` per fragmentainer) —
-     content past page 1 currently emits
-     `PDF-CONTENT-OVERFLOW-TRUNCATED-001`; and `@page` size/margins (once
-     Task 21 lands).
+     from `HtmlPdfOptions`). REMAINING:
+     - **Multi-page driver** (loop `AttemptLayout` over continuations, a `PdfPage`
+       per fragmentainer). The pipeline-level driver is straightforward — a working
+       prototype is preserved on the local `wip-multi-page-driver-blocked` branch
+       (loops via `LayoutRetryCoordinator`, fresh sink per page, shaper + document
+       shared, narrows `PDF-CONTENT-OVERFLOW-TRUNCATED-001`). **BUT it is BLOCKED on a
+       layout-engine prerequisite discovered while wiring it: `BlockLayouter` fragments
+       only the layout ROOT's DIRECT children across pages; a NESTED block container
+       lays out ALL its children on the current page.** Direct-layouter probe
+       (`root → wrapper → 6×200px` on a 500px page, Strict): page 0 = `PageComplete`
+       with all 7 fragments (1200px, overflowing), page 1 = `AllDone` with 0 fragments.
+       Since every facade document nests content under `html → body`, real content can't
+       paginate until **nested-container fragmentation** lands in `BlockLayouter` (a
+       substantial Phase 3 layout task — NOT a pipeline change). Until then, content past
+       the first fragmentainer is clipped + surfaced via `PDF-CONTENT-OVERFLOW-TRUNCATED-001`.
+     - **`@page` size / margins** (Phase 3 Task 21). `HtmlPdfOptions.PreferCssPageSize`
+       is declared (default `true`) but NOT yet consumed — `@page { size }` / `{ margin }`
+       are parsed/recovered (`CssPageRuleRecovery` / `CssMarginBoxRecovery`) but never
+       applied to page geometry. **Cycle 1 scope:** resolve the `@page` `size` (keyword
+       A4/A5/letter/… + `landscape`/`portrait` + explicit `<length>{1,2}`) + `margin`
+       descriptors and feed them into the pipeline's `MediaBox` + content area, honoring
+       `PreferCssPageSize`. Defer `@page :first`/`:left`/`:right`/`:blank` + named pages,
+       the 16 page-margin boxes, and `string()`/`element()`/`counter(page)` to later cycles.
   4. **Deterministic default font** — `SystemFontResolver` reads platform
      fonts (non-deterministic); a bundled last-resort font is needed for
      the determinism contract (CLAUDE.md rule #4) once PDFs are emitted.

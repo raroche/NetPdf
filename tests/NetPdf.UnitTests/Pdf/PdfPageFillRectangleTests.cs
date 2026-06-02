@@ -4,6 +4,7 @@
 using System;
 using System.Text;
 using NetPdf.Pdf;
+using NetPdf.Pdf.Objects;
 using Xunit;
 
 namespace NetPdf.UnitTests.Pdf;
@@ -84,5 +85,49 @@ public sealed class PdfPageFillRectangleTests
         var bytes = doc.Save();
 
         Assert.StartsWith("%PDF-", Encoding.Latin1.GetString(bytes, 0, 5));
+    }
+
+    [Fact]
+    public void FillRectangle_partial_alpha_uses_a_constant_alpha_ExtGState()
+    {
+        var doc = new PdfDocument();
+        var page = doc.AddPage(MediaBoxSize.A4);
+        page.FillRectangle(10, 20, 30, 40, 1, 0, 0, alpha: 0.5);
+
+        var (pageDict, contentBytes) = page.Finalize();
+        var content = Encoding.ASCII.GetString(contentBytes);
+
+        Assert.Contains("1 0 0 rg", content);
+        Assert.Contains(" gs ", content);   // a /GSn gs selects the constant alpha
+        var resources = Assert.IsType<PdfDictionary>(pageDict.Get(PdfNames.Resources));
+        var extGState = Assert.IsType<PdfDictionary>(resources.Get(PdfNames.ExtGState));
+        Assert.Equal(1, extGState.Count);    // one /ca 0.5 ExtGState
+    }
+
+    [Fact]
+    public void FillRectangle_opaque_emits_no_ExtGState()
+    {
+        var doc = new PdfDocument();
+        var page = doc.AddPage(MediaBoxSize.A4);
+        page.FillRectangle(10, 20, 30, 40, 1, 0, 0);   // default alpha = 1.0 (opaque)
+
+        var (pageDict, contentBytes) = page.Finalize();
+        Assert.DoesNotContain(" gs ", Encoding.ASCII.GetString(contentBytes));
+        var resources = Assert.IsType<PdfDictionary>(pageDict.Get(PdfNames.Resources));
+        Assert.Null(resources.Get(PdfNames.ExtGState));
+    }
+
+    [Fact]
+    public void FillRectangle_dedups_the_constant_alpha_ExtGState_by_value()
+    {
+        var doc = new PdfDocument();
+        var page = doc.AddPage(MediaBoxSize.A4);
+        page.FillRectangle(0, 0, 10, 10, 1, 0, 0, alpha: 0.5);
+        page.FillRectangle(0, 0, 10, 10, 0, 1, 0, alpha: 0.5);   // same alpha → shares the ExtGState
+
+        var (pageDict, _) = page.Finalize();
+        var resources = Assert.IsType<PdfDictionary>(pageDict.Get(PdfNames.Resources));
+        var extGState = Assert.IsType<PdfDictionary>(resources.Get(PdfNames.ExtGState));
+        Assert.Equal(1, extGState.Count);
     }
 }

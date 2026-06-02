@@ -262,13 +262,17 @@ internal sealed class PdfPage
     /// any CSS-px → pt scale + y-flip first); <paramref name="xPt"/>/<paramref name="yPt"/>
     /// is the text-line origin (the baseline left edge). Inter-glyph spacing comes from the
     /// font's <c>/W</c> advances (cycle 5a-2 "simple Td + Tj" first cut — GPOS-adjusted
-    /// per-glyph positioning is a follow-up). The run is wrapped in its own <c>q</c> /
-    /// <c>Q</c> pair so the color + text state don't leak. Empty input is a no-op; a
+    /// per-glyph positioning is a follow-up). A partial <paramref name="alpha"/> (&lt; 1) is
+    /// composited via the same per-page constant-alpha (<c>/ca</c>) ExtGState the fills use
+    /// (selected with <c>gs</c>); opaque (<paramref name="alpha"/> = 1) emits no ExtGState.
+    /// <paramref name="r"/>/<paramref name="g"/>/<paramref name="b"/>/<paramref name="alpha"/>
+    /// are in [0, 1] and clamped. The run is wrapped in its own <c>q</c> / <c>Q</c> pair so the
+    /// color + alpha + text state don't leak. Empty input is a no-op; a
     /// <paramref name="fontSizePt"/> of 0 emits an (invisible) zero-size run.
     /// </summary>
     public void ShowGlyphs(
         PdfName fontResourceName, double fontSizePt, double xPt, double yPt,
-        ReadOnlySpan<ushort> glyphIds, double r, double g, double b)
+        ReadOnlySpan<ushort> glyphIds, double r, double g, double b, double alpha = 1.0)
     {
         ArgumentNullException.ThrowIfNull(fontResourceName);
         ThrowIfFinalized();
@@ -296,17 +300,29 @@ internal sealed class PdfPage
         {
             throw new ArgumentException($"ShowGlyphs position must be finite; got x={xPt}, y={yPt}.");
         }
+        // Reject non-finite alpha before clamping (Math.Clamp(NaN,0,1) is NaN, which would fail
+        // the `alpha < 1.0` test and silently paint opaque — same hole closed in FillRectangle).
+        if (!double.IsFinite(alpha))
+        {
+            throw new ArgumentException($"ShowGlyphs alpha must be finite; got {alpha}.", nameof(alpha));
+        }
         if (glyphIds.IsEmpty) return;
 
         r = Math.Clamp(r, 0.0, 1.0);
         g = Math.Clamp(g, 0.0, 1.0);
         b = Math.Clamp(b, 0.0, 1.0);
+        alpha = Math.Clamp(alpha, 0.0, 1.0);
 
-        // q <r> <g> <b> rg BT /Fn <size> Tf <x> <y> Td <glyph-hex> Tj ET Q — set the fill
-        // color, open a text object, select the font + size, set the line origin, show the
-        // glyph ids as a hex string (2 bytes / glyph, Identity-H), close.
+        // q [/GSn gs] <r> <g> <b> rg BT /Fn <size> Tf <x> <y> Td <glyph-hex> Tj ET Q —
+        // optionally select a constant fill alpha, set the fill color, open a text object,
+        // select the font + size, set the line origin, show the glyph ids as a hex string
+        // (2 bytes / glyph, Identity-H), close.
         var sb = new StringBuilder(48 + (glyphIds.Length * 4));
         sb.Append("q ");
+        if (alpha < 1.0)
+        {
+            sb.Append('/').Append(GetOrAddConstantAlpha(alpha).Value).Append(" gs ");
+        }
         AppendNumber(sb, r); sb.Append(' ');
         AppendNumber(sb, g); sb.Append(' ');
         AppendNumber(sb, b); sb.Append(" rg BT /");

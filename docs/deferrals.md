@@ -2849,11 +2849,10 @@ flags the categories):
       inherited, never mis-stored), consistent with `CssTokenizer`, which also defers
       escape decoding. A unified CSS-escape pass (tokenizer + string + ident decoders) is
       the right home.
-    - **`font-size: 0` text-paint guard** — zero-advance shaping is correct for LAYOUT,
-      but the text-paint cycle (TODO 2) MUST NOT emit visible glyphs or an invalid PDF
-      text state for a zero-sized run: skip glyph emission (or emit a zero-`Tf` run with
-      no painted glyphs) for `font-size: 0`. Pin with a painter-level test when text
-      emission lands.
+    - **`font-size: 0` text-paint guard** — DONE (cycle 5a-2-ii): zero-advance shaping is
+      correct for LAYOUT, and the `TextPainter` now skips glyph emission for any run whose
+      resolved `font-size` is `≤ 0`, so a zero-sized run emits nothing (no invalid PDF text
+      state). (`PdfPage.ShowGlyphs` independently tolerates a `0` `Tf` as an invisible run.)
 - **TODOs (remaining chain, in order)** —
   1. **CSS font-property resolution** — DONE (cycle 4): `font-size` /
      `font-family` / `font-weight` resolve (see the cycle-4 done note). A focused
@@ -2865,14 +2864,32 @@ flags the categories):
      family / weight resolve (cycle 4) and the shaper reads them; the PDF
      font-registration API (`PdfDocument.RegisterFont` + `PdfPage.AddFont`, the
      deferred Phase 1 Task 22) landed in **cycle 5a-1**, so the PDF side of
-     embedding a subset + referencing it from a page now exists. REMAINING work is
-     the text PAINT bridge itself, **cycle 5a-2** (`FragmentPainter` collects used
-     glyph ids per resolved font from `BoxFragment.InlineLayout` → subset via
-     `TtfSubsetter` + `EmbeddedTtfFont.Build` → `RegisterFont` → emit
-     `BT`/`Tf`/`Td`/`TJ` with the subset glyph ids at baselines). The bundled
-     deterministic fallback font (TODO 4 / cycle 5b) is needed for the DEFAULT
-     facade path's determinism once glyphs paint; 5a-2 is tested with a fixed
-     `SyntheticFont`. Constant-alpha compositing is DONE (the Phase 4 paint-alpha pass:
+     embedding a subset + referencing it from a page now exists. The text PAINT
+     bridge itself is **DONE — cycle 5a-2** (`5a-2-i` = the `PdfPage.ShowGlyphs`
+     primitive; `5a-2-ii` = the `TextPainter`): it collects used glyph ids per
+     resolved font from `BoxFragment.InlineLayout` → subsets via `TtfSubsetter` +
+     `EmbeddedTtfFont.Build` → `RegisterFont` → `PdfPage.AddFont` → emits
+     `BT`/`Tf`/`Td`/`Tj` at baselines. The shaper is kept ALIVE past paint
+     (`PdfRenderPipeline` made it method-scoped) so the painter subsets the EXACT
+     bytes layout shaped (`HarfBuzzShaperResolver.ResolveFontProgram`) — glyph ids
+     match. A run whose font can't be resolved/subset is skipped with
+     `PAINT-TEXT-FONT-UNRESOLVED-001` (never a throw). Tested via the facade with a
+     fixed `SyntheticFont` resolver (deterministic real glyphs). The bundled
+     deterministic fallback font (TODO 4 / cycle 5b) is still needed for the DEFAULT
+     facade path's determinism-for-text. **Post-PR-#127 review (folded in):** the shaper
+     caches the resolved program size-independently so paint subsets the EXACT bytes
+     layout shaped (no drift on a stateful resolver); font-resolution failures throw a
+     dedicated `FontResolutionException` caught as a pipeline backstop (valid PDF +
+     `PAINT-TEXT-FONT-UNRESOLVED-001`, never a throw); partial-alpha text is composited
+     via `/ca` (`ShowGlyphs` gained an `alpha` param); and the program identity is a
+     content hash so fallback stacks hitting the same face share one subset.
+     **Deferred text refinements (a later cycle, e.g. 5c):** GPOS-adjusted per-glyph
+     positioning (the first cut uses the embedded font's `/W` advances for inter-glyph
+     spacing — "simple Td + Tj", Roland's pick); RTL visual-order line reversal; and
+     per-run baseline alignment on mixed-size / mixed-font lines (baseline is per-line,
+     from the block line-height + the run font's ascent, mirroring `BlockLayouter`'s
+     inline-only block model — there is no explicit baseline-Y in the IR).
+     Constant-alpha compositing is DONE (the Phase 4 paint-alpha pass:
      partial-alpha background + border colors composite via PDF ExtGState `/ca` —
      `PdfPage.FillRectangle` gained an `alpha` param + a per-page `/ExtGState` resource;
      the `PAINT-*-ALPHA-APPROXIMATED-001` diagnostics are retired). Also remaining:
@@ -2916,6 +2933,11 @@ flags the categories):
     `src/NetPdf.Pdf/` (the byte writer — complete).
   - `src/NetPdf.Paint/` (`DisplayCommand` IR → PDF consumer — future TODO 2).
 - **Added** — Phase 5 layout→PDF wiring cycle 1; cycle 2 wired the facade
-  + background paint bridge.
+  + background paint bridge. Cycle 5a-2-ii added the `TextPainter` (real glyphs
+  end-to-end) + `HarfBuzzShaperResolver.ResolveFontProgram` + owner file
+  `src/NetPdf/Rendering/TextPainter.cs`.
 - **Removal condition** — `HtmlPdf.Convert` renders a real text document
-  to a valid PDF `byte[]` end-to-end.
+  to a valid PDF `byte[]` end-to-end. **Substantially met** (cycle 5a-2-ii:
+  real glyphs paint + embed deterministically with a fixed font); the DEFAULT
+  facade path still depends on platform fonts until the bundled fallback (5b),
+  so the determinism contract for the default path remains open.

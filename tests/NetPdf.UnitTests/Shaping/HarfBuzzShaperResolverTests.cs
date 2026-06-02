@@ -83,8 +83,84 @@ public sealed class HarfBuzzShaperResolverTests
     {
         using var resolver = new HarfBuzzShaperResolver(new NullFontResolver());
 
-        var ex = Assert.Throws<InvalidOperationException>(() => resolver.Resolve(MakeStyle()));
+        var ex = Assert.Throws<FontResolutionException>(() => resolver.Resolve(MakeStyle()));
         Assert.Contains("no font resolved", ex.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void ResolveFontProgram_returns_the_validated_font_bytes()
+    {
+        using var resolver = new HarfBuzzShaperResolver(new SyntheticFontResolver());
+
+        // The text painter subsets THESE bytes after layout — they must be the exact program
+        // the resolver hands HarfBuzz (the validated face bytes, here the synthetic font).
+        var program = resolver.ResolveFontProgram(MakeStyle());
+
+        Assert.Equal(SyntheticFont.Build(), program.Bytes.ToArray());
+        Assert.False(string.IsNullOrEmpty(program.Identity));
+    }
+
+    [Fact]
+    public void ResolveFontProgram_identity_is_font_size_independent()
+    {
+        using var resolver = new HarfBuzzShaperResolver(new SyntheticFontResolver());
+
+        // A font program is identical at every size (the size is applied at emit via Tf), so
+        // runs of the same face at different sizes share ONE subset/embedded font — the program
+        // identity must NOT vary with font-size.
+        var small = MakeStyle();
+        small.Set(PropertyId.FontSize, ComputedSlot.FromLengthPx(12));
+        var large = MakeStyle();
+        large.Set(PropertyId.FontSize, ComputedSlot.FromLengthPx(48));
+
+        Assert.Equal(
+            resolver.ResolveFontProgram(small).Identity,
+            resolver.ResolveFontProgram(large).Identity);
+    }
+
+    [Fact]
+    public void ResolveFontProgram_identity_is_content_based_not_query_based()
+    {
+        using var resolver = new HarfBuzzShaperResolver(new SyntheticFontResolver());
+
+        // Identity hashes the RESOLVED bytes, not the requested query (post-PR-#127 review P3).
+        // The synthetic resolver returns the same face regardless of style, so normal + italic
+        // (DISTINCT queries) share ONE identity ⇒ one subset/embedded font — the dedup that
+        // collapses different font-family stacks that fall back to the same face.
+        var normal = MakeStyle();
+        var italic = MakeStyle();
+        italic.Set(PropertyId.FontStyle, ComputedSlot.FromKeyword(1)); // 1 = italic.
+
+        Assert.Equal(
+            resolver.ResolveFontProgram(normal).Identity,
+            resolver.ResolveFontProgram(italic).Identity);
+    }
+
+    [Fact]
+    public void ResolveFontProgram_reuses_the_program_resolved_by_Resolve()
+    {
+        var counting = new CountingFontResolver();
+        using var resolver = new HarfBuzzShaperResolver(counting);
+        var style = MakeStyle();
+
+        // Layout shapes via Resolve (one resolution); paint then calls ResolveFontProgram. It
+        // MUST reuse the cached program, not re-query — otherwise a stateful / CDN resolver that
+        // returns different bytes on a later call would make the painter subset a different
+        // program than layout shaped (post-PR-#127 review P1).
+        resolver.Resolve(style);
+        var program = resolver.ResolveFontProgram(style);
+
+        Assert.Equal(1, counting.ResolveCount);
+        Assert.Equal(SyntheticFont.Build(), program.Bytes.ToArray());
+    }
+
+    [Fact]
+    public void ResolveFontProgram_throws_when_no_font_resolves()
+    {
+        using var resolver = new HarfBuzzShaperResolver(new NullFontResolver());
+
+        // Mirrors the shaping path: the painter / pipeline catches this + skips/diagnoses.
+        Assert.Throws<FontResolutionException>(() => resolver.ResolveFontProgram(MakeStyle()));
     }
 
     [Fact]
@@ -151,7 +227,7 @@ public sealed class HarfBuzzShaperResolverTests
         using var resolver = new HarfBuzzShaperResolver(
             new FixedBytesFontResolver(new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 }));
 
-        var ex = Assert.Throws<InvalidOperationException>(() => resolver.Resolve(MakeStyle()));
+        var ex = Assert.Throws<FontResolutionException>(() => resolver.Resolve(MakeStyle()));
         Assert.Contains("safety validator", ex.Message, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -164,7 +240,7 @@ public sealed class HarfBuzzShaperResolverTests
         using var resolver = new HarfBuzzShaperResolver(
             new FixedBytesFontResolver(MinimalValidWoffHeader()));
 
-        Assert.Throws<InvalidOperationException>(() => resolver.Resolve(MakeStyle()));
+        Assert.Throws<FontResolutionException>(() => resolver.Resolve(MakeStyle()));
     }
 
     [Fact]
@@ -215,6 +291,18 @@ public sealed class HarfBuzzShaperResolverTests
     {
         public ValueTask<FontFaceData?> ResolveAsync(FontQuery query, CancellationToken ct)
             => new(new FontFaceData { Bytes = SyntheticFont.Build(), Family = query.Family });
+    }
+
+    /// <summary>Counts ResolveAsync calls (to prove the program cache prevents re-resolution).</summary>
+    private sealed class CountingFontResolver : IFontResolver
+    {
+        public int ResolveCount { get; private set; }
+
+        public ValueTask<FontFaceData?> ResolveAsync(FontQuery query, CancellationToken ct)
+        {
+            ResolveCount++;
+            return new(new FontFaceData { Bytes = SyntheticFont.Build(), Family = query.Family });
+        }
     }
 
     /// <summary>Records the last query (to assert style mapping) + returns

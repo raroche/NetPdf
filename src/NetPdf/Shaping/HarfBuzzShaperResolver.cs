@@ -4,6 +4,7 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using NetPdf.Css.ComputedValues;
@@ -80,6 +81,14 @@ internal sealed class HarfBuzzShaperResolver : IShaperResolver
     private readonly string _defaultFamily;
     private readonly double _defaultFontSizePx;
     private readonly Dictionary<ShaperKey, HbShaper> _cache = new();
+    // Resolved font PROGRAM cache, keyed size-independently (family stack + weight + style).
+    // Shared by Resolve (layout shaping) AND ResolveFontProgram (paint subsetting) so a
+    // stateful / CDN IFontResolver that returns DIFFERENT bytes on a later call can't make the
+    // painter subset a different program than layout shaped — the program is resolved ONCE per
+    // query and reused (post-PR-#127 review P1). The program identity is a content hash of the
+    // validated bytes, so distinct family stacks that fall back to the SAME face share one
+    // embedded subset (review P3).
+    private readonly Dictionary<ProgramKey, ResolvedFontProgram> _programCache = new();
     // Per post-PR-#117 review P2 — guards the cache + disposal so a shared
     // resolver is safe across parallel layout work (HbShaper.Shape itself
     // is concurrency-safe).
@@ -157,10 +166,68 @@ internal sealed class HarfBuzzShaperResolver : IShaperResolver
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             if (_cache.TryGetValue(key, out var cached)) return cached;
-            var shaper = new HbShaper(ResolveFontBytes(families, weight, fontStyle), sizePx);
+            // Resolve the program bytes through the shared cache so the painter later subsets
+            // the EXACT bytes this HbShaper shaped (post-PR-#127 review P1).
+            var program = ResolveProgramCachedLocked(families, weight, fontStyle);
+            var shaper = new HbShaper(program.Bytes, sizePx);
             _cache[key] = shaper;
             return shaper;
         }
+    }
+
+    /// <summary>
+    /// Resolve the VALIDATED font-program bytes for a style — the SAME bytes
+    /// <see cref="Resolve"/> hands HarfBuzz (both read the shared program cache) — together with
+    /// a stable content <see cref="ResolvedFontProgram.Identity"/> for that program. The result
+    /// is cached size-INDEPENDENTLY (a font program is identical at every size; the subset /
+    /// embedded font is shared across sizes and the size is applied via the content stream's
+    /// <c>Tf</c> operand). The text painter calls this AFTER layout to subset the EXACT program
+    /// layout shaped, so the shaped (original) glyph ids index the same font.
+    /// Throws — exactly like the shaping path (<see cref="ResolveFontBytes"/>) — when no font
+    /// resolves or the bytes are unsafe / WOFF-wrapped; the painter catches it and skips +
+    /// diagnoses that run rather than failing the whole render.
+    /// </summary>
+    internal ResolvedFontProgram ResolveFontProgram(ComputedStyle style)
+    {
+        ArgumentNullException.ThrowIfNull(style);
+
+        // Mirror Resolve's family / weight / style reads. font-size is deliberately NOT read:
+        // it doesn't affect the font program or its glyph ids, only the Tf scale at emit.
+        var fontStyle = style.ReadKeywordOrDefault(PropertyId.FontStyle, defaultIndex: 0) switch
+        {
+            1 => FontStyle.Italic,
+            2 => FontStyle.Oblique,
+            _ => FontStyle.Normal,
+        };
+        var families = style.ReadFontFamily().Families;
+        var weight = style.ReadFontWeight();
+
+        // Read through the SAME program cache Resolve populates, under the same gate. If
+        // layout already shaped this query, this returns the cached bytes (no second resolver
+        // call) — so the painter can't drift to a different program than layout used.
+        lock (_gate)
+        {
+            ObjectDisposedException.ThrowIf(_disposed, this);
+            return ResolveProgramCachedLocked(families, weight, fontStyle);
+        }
+    }
+
+    /// <summary>Get-or-resolve the font program (validated bytes + content-hash identity) for a
+    /// query, cached size-independently. MUST be called holding <see cref="_gate"/>. The single
+    /// resolution point shared by <see cref="Resolve"/> and <see cref="ResolveFontProgram"/>.</summary>
+    private ResolvedFontProgram ResolveProgramCachedLocked(
+        ImmutableArray<string> families, int weight, FontStyle style)
+    {
+        var key = new ProgramKey(FamilyStackKey(families), weight, style);
+        if (_programCache.TryGetValue(key, out var existing)) return existing;
+
+        var bytes = ResolveFontBytes(families, weight, style);
+        // Identity = content hash of the validated program. Distinct family stacks that resolve
+        // to the SAME face share one identity ⇒ one subset/embedded font (review P3).
+        var identity = Convert.ToHexString(SHA256.HashData(bytes.Span));
+        var program = new ResolvedFontProgram(identity, bytes);
+        _programCache[key] = program;
+        return program;
     }
 
     /// <summary>Walk the resolved font-family stack (author order, CSS Fonts 4
@@ -199,7 +266,7 @@ internal sealed class HarfBuzzShaperResolver : IShaperResolver
                 ? $"'{_defaultFamily}'"
                 : $"the font-family stack [{string.Join(", ", families)}]";
             var fallbackNote = triedDefault ? $" nor the fallback '{_defaultFamily}'" : string.Empty;
-            throw new InvalidOperationException(
+            throw new FontResolutionException(
                 $"HarfBuzzShaperResolver: no font resolved for {requested}{fallbackNote} "
                 + $"(weight {weight}, {style}). Supply an IFontResolver that resolves a "
                 + "face, or install system fonts. (A bundled deterministic last-resort "
@@ -215,12 +282,12 @@ internal sealed class HarfBuzzShaperResolver : IShaperResolver
         // FontFace.Load + throw a clear message.
         var verdict = FontSafetyValidator.Validate(face.Bytes.Span);
         if (!verdict.IsSafe)
-            throw new InvalidOperationException(
+            throw new FontResolutionException(
                 $"HarfBuzzShaperResolver: the font resolved for '{resolvedFrom}' was rejected "
                 + $"by the pre-decode safety validator: {verdict.Reason}");
         if (verdict.DetectedFormat is FontSafetyValidator.FontFormat.Woff
             or FontSafetyValidator.FontFormat.Woff2)
-            throw new InvalidOperationException(
+            throw new FontResolutionException(
                 $"HarfBuzzShaperResolver: the font resolved for '{resolvedFrom}' is in "
                 + $"{verdict.DetectedFormat} format; NetPdf cannot decode the wrapped "
                 + "sfnt yet — supply an unwrapped TTF/OTF.");
@@ -296,6 +363,7 @@ internal sealed class HarfBuzzShaperResolver : IShaperResolver
             _disposed = true;
             foreach (var shaper in _cache.Values) shaper.Dispose();
             _cache.Clear();
+            _programCache.Clear();
         }
     }
 
@@ -315,4 +383,16 @@ internal sealed class HarfBuzzShaperResolver : IShaperResolver
     /// <c>docs/deferrals.md#layout-to-pdf-pipeline</c>.</para></summary>
     private readonly record struct ShaperKey(
         string Family, int WeightCss, FontStyle Style, double FontSizePx);
+
+    /// <summary>Size-independent key for the resolved-program cache: the family stack
+    /// (case-normalized join via <see cref="FamilyStackKey"/>) + weight + style. A font program
+    /// is identical at every size, so size is deliberately excluded.</summary>
+    private readonly record struct ProgramKey(string Family, int WeightCss, FontStyle Style);
+
+    /// <summary>A resolved font program for the text painter: a stable content
+    /// <paramref name="Identity"/> (a hash of the validated bytes) plus the VALIDATED sfnt
+    /// <paramref name="Bytes"/> layout shaped. Same <paramref name="Identity"/> ⇒ same program ⇒
+    /// one shared subset + embedded font across every run that uses it — even across distinct
+    /// family stacks that fall back to the same face.</summary>
+    internal readonly record struct ResolvedFontProgram(string Identity, ReadOnlyMemory<byte> Bytes);
 }

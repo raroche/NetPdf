@@ -1,6 +1,8 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System;
+using System.Globalization;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -210,6 +212,32 @@ public sealed class HtmlPdfConvertTests
         Assert.DoesNotContain("re f", text);
         // Sanity: with backgrounds on (the default), the same document DOES paint one.
         Assert.Contains("re f", Latin1(HtmlPdf.Convert(BackgroundHtml)));
+    }
+
+    [Fact]
+    public void At_page_margin_overrides_the_content_area_width()
+    {
+        // A full-width (auto) block paints a background rect spanning the content width. With
+        // @page { margin: 0 } the content area is the full page; with the default 96px margins
+        // it is narrower. The rect-WIDTH difference equals the removed horizontal margins
+        // (2 × 96px = 144pt) — independent of any UA body margin (constant in both renders), so
+        // this proves @page { margin } reaches the page geometry without depending on exact coords.
+        const string body = "<body><div style=\"height:50px;background-color:#3366cc\"></div></body>";
+        var zero = FirstRectWidthPt(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { margin: 0 }</style></head>" + body + "</html>")));
+        var dflt = FirstRectWidthPt(Latin1(HtmlPdf.Convert("<!DOCTYPE html><html>" + body + "</html>")));
+
+        Assert.True(zero > dflt, $"@page margin:0 content ({zero}pt) should be wider than default ({dflt}pt)");
+        Assert.Equal(144.0, zero - dflt, 1);   // 2 × 96px default margins removed = 144pt
+    }
+
+    /// <summary>Width operand (3rd of x/y/w/h) of the first <c>… re f</c> rectangle-fill op.</summary>
+    private static double FirstRectWidthPt(string pdf)
+    {
+        var idx = pdf.IndexOf(" re", StringComparison.Ordinal);
+        Assert.True(idx > 0, "expected a rectangle-fill operator in the content stream");
+        var nums = pdf[..idx].TrimEnd().Split(' ');   // … <x> <y> <w> <h>
+        return double.Parse(nums[^2], CultureInfo.InvariantCulture);
     }
 
     [Fact]

@@ -2914,14 +2914,22 @@ flags the categories):
        paginate until **nested-container fragmentation** lands in `BlockLayouter` (a
        substantial Phase 3 layout task — NOT a pipeline change). Until then, content past
        the first fragmentainer is clipped + surfaced via `PDF-CONTENT-OVERFLOW-TRUNCATED-001`.
-     - **`@page` size / margins** (Phase 3 Task 21). `HtmlPdfOptions.PreferCssPageSize`
-       is declared (default `true`) but NOT yet consumed — `@page { size }` / `{ margin }`
-       are parsed/recovered (`CssPageRuleRecovery` / `CssMarginBoxRecovery`) but never
-       applied to page geometry. **Cycle 1 scope:** resolve the `@page` `size` (keyword
-       A4/A5/letter/… + `landscape`/`portrait` + explicit `<length>{1,2}`) + `margin`
-       descriptors and feed them into the pipeline's `MediaBox` + content area, honoring
-       `PreferCssPageSize`. Defer `@page :first`/`:left`/`:right`/`:blank` + named pages,
-       the 16 page-margin boxes, and `string()`/`element()`/`counter(page)` to later cycles.
+     - **`@page` rule** (Phase 3 Task 21). **Cycle 1 — margins — DONE:** a bare
+       `@page { margin… }` overrides the page margins per side (`AtPageMarginResolver` in
+       `src/NetPdf.Css/PagedMedia/` walks `Phase2Result.Sheets` → resolves the `margin-*`
+       longhands AngleSharp expands → absolute px via `LengthResolver.TryAbsoluteUnitToPx`;
+       `PdfRenderPipeline` applies them, CSS winning by default). **REMAINING:**
+       - **`@page { size }` (cycle 2)** — `HtmlPdfOptions.PreferCssPageSize` is declared
+         (default `true`) but still UNCONSUMED because AngleSharp.Css DROPS the `size`
+         descriptor (same gap class as the @page selector + margin boxes — `ICssPageRule.Style`
+         doesn't expose it). Needs the pre-pass (`CssPreprocessor.ParsePageRule`) extended to
+         RECOVER the `size` descriptor (it already recovers the selector + margin boxes from raw
+         text), threaded through as a synthetic declaration, then resolved (keyword A4/A5/letter/…
+         + `landscape`/`portrait` + explicit `<length>{1,2}` + `auto`) → `MediaBox`, honoring
+         `PreferCssPageSize`.
+       - **Later cycles:** `@page :first`/`:left`/`:right`/`:blank` selectors + named pages;
+         non-absolute margin units (`%`, `calc()`); the 16 page-margin boxes; and
+         `string()`/`element()`/`counter(page)` generated content.
   4. **Deterministic default font** — `SystemFontResolver` reads platform
      fonts (non-deterministic); a bundled last-resort font is needed for
      the determinism contract (CLAUDE.md rule #4) once PDFs are emitted.

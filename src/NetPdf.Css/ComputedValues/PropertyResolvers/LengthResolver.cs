@@ -358,7 +358,11 @@ internal static class LengthResolver
         return true;
     }
 
-    private static bool TryAbsoluteUnitToPx(string unit, double number, out double px)
+    /// <summary>Fold an absolute CSS length (unit + number) to px per CSS Values L4 §6.1.
+    /// Returns <see langword="false"/> for non-absolute (font-/viewport-relative, %) units.
+    /// <see langword="internal"/> so paged-media descriptor resolution (e.g. <c>@page</c>
+    /// <c>margin</c>) can reuse the exact same conversion table.</summary>
+    internal static bool TryAbsoluteUnitToPx(string unit, double number, out double px)
     {
         // CSS Values L4 §6.1: absolute lengths.
         switch (unit)

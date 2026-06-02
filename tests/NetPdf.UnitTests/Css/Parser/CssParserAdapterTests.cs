@@ -310,6 +310,26 @@ public sealed class CssParserAdapterTests
     }
 
     [Fact]
+    public async Task Adapt_page_rule_size_descriptor_preserves_importance()
+    {
+        // The pre-pass strips `!important` from the recovered `size` value text + records the
+        // importance; the adapter stamps it onto the synthetic declaration so the @page size
+        // cascade honors it (Phase 3 Task 21 cycle 2, review P2). Pre-fix the value text kept
+        // "!important" (so the size resolver rejected it) and IsImportant was always false.
+        const string css = "@page { size: A5 !important }";
+        var sheet = await ParseSheet(css);
+        var stylesheet = CssParserAdapter.Adapt(sheet, CssPreprocessor.Process(css), href: null,
+            origin: CssStylesheetOrigin.Author, ownerKind: CssStylesheetOwnerKind.Unknown,
+            mediaQuery: null, isDisabled: false, order: 0);
+
+        var atRule = Assert.IsType<CssAtRule>(Assert.Single(stylesheet.Rules));
+        var size = atRule.Declarations.SingleOrDefault(d => d.Property == "size");
+        Assert.NotNull(size);
+        Assert.Equal("A5", size!.Value.RawText);   // "!important" stripped from the value text
+        Assert.True(size.IsImportant);
+    }
+
+    [Fact]
     public async Task Adapt_page_rule_pseudo_selector_loss_is_a_known_task_3_blocker()
     {
         // Tracks an AngleSharp.Css 1.0.0-beta.144 limitation: `:first` / `:left` / `:right`

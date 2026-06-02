@@ -21,13 +21,18 @@ namespace NetPdf.Css.Parser.Preprocessing;
 /// <param name="MarginBoxes">Page margin-box at-rules inside this <c>@page</c>'s body.</param>
 /// <param name="Location">Source position of the <c>@page</c> at-keyword.</param>
 /// <param name="SizeText">The raw value of the <c>size</c> descriptor (e.g. <c>"A4 landscape"</c>,
-/// <c>"210mm 297mm"</c>), or <see langword="null"/> when none. AngleSharp.Css drops the
-/// <c>size</c> descriptor (it isn't a regular property), so the pre-pass recovers it from the raw
-/// body and the adapter re-attaches it as a synthetic declaration. Last <c>size</c> in the body
-/// wins.</param>
+/// <c>"210mm 297mm"</c>) with any trailing <c>!important</c> stripped, or <see langword="null"/>
+/// when none. AngleSharp.Css drops the <c>size</c> descriptor (it isn't a regular property), so
+/// the pre-pass recovers it from the raw body and the adapter re-attaches it as a synthetic
+/// declaration. Among multiple <c>size</c> declarations in one body the cascade winner is kept
+/// (an <c>!important</c> is not overridden by a later normal one; otherwise the last wins).</param>
+/// <param name="SizeIsImportant">Whether the kept <see cref="SizeText"/> carried
+/// <c>!important</c>. The adapter stamps this onto the synthetic <c>size</c> declaration so
+/// <c>AtPageSizeResolver</c> applies CSS Cascade §5 importance across <c>@page</c> rules.</param>
 internal sealed record CssPageRuleRecovery(
     int OrdinalIndex,
     string SelectorText,
     ImmutableArray<CssMarginBoxRecovery> MarginBoxes,
     CssSourceLocation Location,
-    string? SizeText = null);
+    string? SizeText = null,
+    bool SizeIsImportant = false);

@@ -111,6 +111,103 @@ public sealed class AtPageSizeResolverTests
         Assert.Equal(559, s!.Value.WidthPx, 0);   // A5 width — the later rule
     }
 
+    // ---- Duplicate / invalid grammar (review P2) ----
+
+    [Theory]
+    [InlineData("A4 letter")]              // two page-size keywords
+    [InlineData("portrait landscape")]     // two orientations
+    [InlineData("landscape portrait")]
+    [InlineData("A4 portrait landscape")]  // keyword + two orientations
+    [InlineData("A4 A5 landscape")]        // two keywords + an orientation
+    public void TryResolveSize_rejects_duplicate_keyword_or_orientation(string text)
+    {
+        Assert.False(AtPageSizeResolver.TryResolveSize(text, 800, 1000, out _, out _, out _));
+    }
+
+    // ---- !important (review P2) ----
+
+    [Fact]
+    public async Task Resolve_important_size_beats_a_later_normal_rule()
+    {
+        // CSS Cascade §5 — an earlier !important is not overridden by a later normal declaration.
+        var s = await ResolveSize("@page { size: A5 !important } @page { size: A4 }");
+        Assert.Equal(559, s!.Value.WidthPx, 0);   // A5 wins despite the later A4
+    }
+
+    [Fact]
+    public async Task Resolve_later_important_size_wins_over_earlier_important()
+    {
+        var s = await ResolveSize("@page { size: A5 !important } @page { size: A4 !important }");
+        Assert.Equal(794, s!.Value.WidthPx, 0);   // A4 width — later, equal importance
+    }
+
+    [Fact]
+    public async Task Resolve_important_size_alone_is_honored_not_rejected()
+    {
+        // Pre-fix the "!important" token leaked into the value text + TryResolveSize rejected it.
+        var s = await ResolveSize("@page { size: A5 !important }");
+        Assert.Equal(559, s!.Value.WidthPx, 0);
+    }
+
+    // ---- Paper-size-conditioned @media is ignored, CSS Page 3 §3.3 (review P1) ----
+
+    [Theory]
+    [InlineData("@media print and (min-width: 1px) { @page { size: A4 } }")]
+    [InlineData("@media print and (max-width: 9999px) { @page { size: A4 } }")]
+    [InlineData("@media print and (min-height: 1px) { @page { size: A4 } }")]
+    [InlineData("@media print and (orientation: portrait) { @page { size: A4 } }")]
+    [InlineData("@media (aspect-ratio: 4/3) { @page { size: A4 } }")]
+    public async Task Resolve_ignores_size_qualified_by_a_paper_size_media_query(string css)
+    {
+        // The query MATCHES the print context (800 × 1000), but the `size` must still be ignored
+        // because it's conditioned on a paper-size feature (circular page-size dependency).
+        Assert.Null(await ResolveSize(css));
+    }
+
+    [Fact]
+    public async Task Resolve_applies_size_under_a_non_paper_size_media_query()
+    {
+        // Positive control — a matching @media NOT conditioned on a paper-size feature still
+        // applies the size. (min-resolution matches: DPR 1.0 ≥ 1dppx.)
+        var s = await ResolveSize("@media print and (min-resolution: 1dppx) { @page { size: A5 } }");
+        Assert.Equal(559, s!.Value.WidthPx, 0);
+    }
+
+    [Fact]
+    public async Task Resolve_ignores_size_qualified_by_a_paper_size_sheet_media_query()
+    {
+        // The conditioning also applies at the sheet level (a `<style media="…">` / `<link>`).
+        Assert.Null(await ResolveSize("@page { size: A4 }", sheetMedia: "print and (min-width: 1px)"));
+    }
+
+    [Fact]
+    public async Task Resolve_size_inside_supports_is_not_yet_applied_tracked_followup()
+    {
+        // Task 21 traverses only sheet media + @media (see AtPageRules remarks) — a bare @page
+        // nested in a matching @supports does not yet contribute. Tracked follow-up
+        // (deferrals.md#layout-to-pdf-pipeline); this pins the current documented scope.
+        Assert.Null(await ResolveSize("@supports (display: grid) { @page { size: A5 } }"));
+    }
+
+    [Theory]
+    [InlineData("print and (min-width: 1px)", true)]
+    [InlineData("(max-width: 40em)", true)]
+    [InlineData("screen and (min-height: 1px)", true)]
+    [InlineData("(orientation: landscape)", true)]
+    [InlineData("(aspect-ratio: 4/3)", true)]
+    [InlineData("(device-width: 800px)", true)]
+    [InlineData("(min-device-height: 1px)", true)]
+    [InlineData("print", false)]
+    [InlineData("screen and (min-resolution: 2dppx)", false)]
+    [InlineData("(prefers-color-scheme: dark)", false)]
+    [InlineData("print and (color)", false)]
+    [InlineData("", false)]
+    [InlineData(null, false)]
+    public void IsPaperSizeConditioned_flags_size_dependent_media_features(string? query, bool expected)
+    {
+        Assert.Equal(expected, AtPageRules.IsPaperSizeConditioned(query));
+    }
+
     private static readonly CssMediaContext PrintContext = new(
         MediaType: "print", ViewportWidthPx: 800, ViewportHeightPx: 1000,
         DevicePixelRatio: 1.0, PreferredColorScheme: "light");

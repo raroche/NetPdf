@@ -85,10 +85,13 @@ internal static class PdfRenderPipeline
             pageSize = new PageSize(cssSize.WidthPx, cssSize.HeightPx);
         }
 
-        // `@page { margin… }` (cycle 1) overrides the option's page margins, per side. (Percentage
-        // margins resolve against the media-context viewport = the CONFIGURED page size; combining
-        // them with a `@page { size }` override is a tracked refinement — deferrals.md.)
-        var pageMargins = AtPageMarginResolver.Resolve(phase2.Sheets, media);
+        // `@page { margin… }` (cycle 1) overrides the option's page margins, per side. Percentage
+        // margins resolve against the RESOLVED page box — `pageSize` already reflects any
+        // `@page { size }` override above — so `@page { size: A5; margin: 10% }` computes its
+        // percentages against A5, not the configured page size (CSS Page 3). Media applicability
+        // still uses the original context.
+        var pageMargins = AtPageMarginResolver.Resolve(
+            phase2.Sheets, media, pageSize.WidthPx, pageSize.HeightPx);
         if (pageMargins.HasAny)
         {
             margins = new PageMargins(

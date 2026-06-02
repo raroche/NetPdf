@@ -844,11 +844,13 @@ internal static class CssParserAdapter
         {
             // AngleSharp.Css drops the `size` descriptor (it's a page descriptor, not a regular
             // property), so re-attach the pre-pass-recovered value as a synthetic declaration —
-            // downstream @page resolution then reads it like any other declaration.
+            // downstream @page resolution then reads it like any other declaration. The pre-pass
+            // already stripped `!important` from the value text and recorded it, so stamp the
+            // importance here for AtPageSizeResolver's cross-rule cascade.
             declarations = declarations.Insert(0, new CssDeclaration(
                 Property: "size",
                 Value: new CssValue(recovery!.SizeText!),
-                IsImportant: false,
+                IsImportant: recovery.SizeIsImportant,
                 Location: CssSourceLocation.Unknown));
         }
 

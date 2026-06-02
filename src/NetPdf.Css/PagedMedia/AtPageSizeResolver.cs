@@ -17,10 +17,13 @@ namespace NetPdf.Css.PagedMedia;
 /// The <c>size</c> descriptor is dropped by AngleSharp.Css; the pre-pass
 /// (<c>CssPreprocessor.ParsePageRule</c>) recovers it and the adapter re-attaches it as a
 /// synthetic <c>size</c> declaration, which this resolver reads. Applicability + ordering use the
-/// shared <see cref="AtPageRules.EnumerateBarePageRules"/> (cascade-style media / disabled
-/// filtering, bare <c>@page</c> only). Among contributing declarations the LAST wins (source
-/// order). <c>!important</c> on <c>size</c> is not yet honored (the synthetic declaration carries
-/// no importance — a tracked follow-up).
+/// shared <see cref="AtPageRules.EnumerateBarePageRulesWithMediaInfo"/> (cascade-style media /
+/// disabled filtering, bare <c>@page</c> only). Among contributing declarations the cascade
+/// winner is chosen by importance then source order: an <c>!important</c> <c>size</c> beats a
+/// normal one, and among equal importance the LAST wins. Per CSS Page 3 §3.3 a <c>size</c>
+/// qualified by a paper-size <c>@media</c> (or sheet media query) — <c>width</c> / <c>height</c>
+/// / <c>aspect-ratio</c> / <c>orientation</c> / device-* — is IGNORED (it would be a circular
+/// page-size dependency); such rules are skipped here.
 /// </para>
 /// <para>
 /// Supported value forms: a named size (<c>A5</c>/<c>A4</c>/<c>A3</c>/<c>B5</c>/<c>B4</c>/
@@ -48,9 +51,13 @@ internal static class AtPageSizeResolver
         var seen = false;
         var important = false;
         ResolvedPageSize? dims = null;
-        foreach (var at in AtPageRules.EnumerateBarePageRules(sheets, media))
+        foreach (var bare in AtPageRules.EnumerateBarePageRulesWithMediaInfo(sheets, media))
         {
-            foreach (var decl in at.Declarations)
+            // CSS Page 3 §3.3 — a `size` qualified by a paper-size @media (or sheet media query)
+            // is ignored to avoid a circular page-size dependency. Margins from the same rule
+            // still apply (the margin resolver doesn't consult this flag).
+            if (bare.PaperSizeConditioned) continue;
+            foreach (var decl in bare.Rule.Declarations)
             {
                 if (!string.Equals(decl.Property, "size", StringComparison.OrdinalIgnoreCase)) continue;
                 if (!TryResolveSize(decl.Value.RawText, media.ViewportWidthPx, media.ViewportHeightPx,
@@ -80,15 +87,20 @@ internal static class AtPageSizeResolver
 
         if (tokens.Length == 1 && tokens[0] == "auto") { isAuto = true; return true; }
 
-        // Classify tokens: a named size, an orientation, and/or length(s).
+        // Classify tokens: a named size, an orientation, and/or length(s). A repeated page-size
+        // keyword (`A4 letter`) or orientation (`portrait landscape`) is invalid grammar per CSS
+        // Page 3 §3.3 — reject it rather than silently letting the last token win.
         string? keyword = null, orientation = null;
         var lengths = new List<string>(2);
+        var keywordCount = 0;
+        var orientationCount = 0;
         foreach (var t in tokens)
         {
-            if (t is "portrait" or "landscape") orientation = t;
-            else if (NamedSizePx(t) is not null) keyword = t;
+            if (t is "portrait" or "landscape") { orientation = t; orientationCount++; }
+            else if (NamedSizePx(t) is not null) { keyword = t; keywordCount++; }
             else lengths.Add(t);
         }
+        if (keywordCount > 1 || orientationCount > 1) return false;
 
         // Named size, optionally re-oriented.
         if (keyword is not null && lengths.Count == 0)

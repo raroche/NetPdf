@@ -436,6 +436,7 @@ internal static class CssPreprocessor
 
         var marginBoxes = ImmutableArray.CreateBuilder<CssMarginBoxRecovery>();
         string? sizeText = null;
+        var sizeImportant = false;
         if (tok.PeekChar() == '{')
         {
             tok.ReadChar();
@@ -468,7 +469,7 @@ internal static class CssPreprocessor
                 {
                     // Recover the `size` descriptor AngleSharp.Css drops (other declarations —
                     // e.g. `margin` — reach the CSSOM, so they're left to the adapter).
-                    CaptureSizeDescriptor(tok.ReadUntilAnyTopLevel(";}"), ref sizeText);
+                    CaptureSizeDescriptor(tok.ReadUntilAnyTopLevel(";}"), ref sizeText, ref sizeImportant);
                     if (tok.PeekChar() == ';') tok.ReadChar();
                 }
                 tok.SkipWhitespaceAndComments();
@@ -485,18 +486,29 @@ internal static class CssPreprocessor
             selectorText,
             marginBoxes.Count == 0 ? ImmutableArray<CssMarginBoxRecovery>.Empty : marginBoxes.ToImmutable(),
             location,
-            sizeText);
+            sizeText,
+            sizeImportant);
     }
 
-    /// <summary>If <paramref name="declaration"/> is a <c>size: …</c> descriptor, capture its
-    /// trimmed value into <paramref name="sizeText"/> (last one wins).</summary>
-    private static void CaptureSizeDescriptor(ReadOnlySpan<char> declaration, ref string? sizeText)
+    /// <summary>If <paramref name="declaration"/> is a <c>size: …</c> descriptor, strip any
+    /// trailing <c>!important</c> and capture the clean value + importance into
+    /// <paramref name="sizeText"/> / <paramref name="sizeImportant"/>. The cascade winner is
+    /// kept across multiple <c>size</c> declarations in one body: an earlier <c>!important</c>
+    /// is not overridden by a later normal one (CSS Cascade §5 / §7.4); otherwise the last wins
+    /// — mirroring <c>AtPageSizeResolver</c>'s cross-rule arbitration.</summary>
+    private static void CaptureSizeDescriptor(
+        ReadOnlySpan<char> declaration, ref string? sizeText, ref bool sizeImportant)
     {
         var colon = declaration.IndexOf(':');
         if (colon < 0) return;
         if (!declaration[..colon].Trim().Equals("size", StringComparison.OrdinalIgnoreCase)) return;
         var value = declaration[(colon + 1)..].Trim();
-        if (!value.IsEmpty) sizeText = value.ToString();
+        if (value.IsEmpty) return;
+        var (clean, important) = ImportantParser.Strip(value.ToString());
+        if (string.IsNullOrEmpty(clean)) return; // e.g. a bare `size: !important` — no value to keep
+        if (sizeText is not null && sizeImportant && !important) return; // earlier !important wins
+        sizeText = clean;
+        sizeImportant = important;
     }
 
     /// <summary>

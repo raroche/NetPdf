@@ -144,9 +144,9 @@ Severity levels:
 
 | Code | Severity | Meaning |
 |---|---|---|
-| `PAINT-BACKGROUND-ALPHA-APPROXIMATED-001` | Info | A `background-color` with partial alpha (0 < alpha < 255) was painted fully opaque, because PDF constant-alpha compositing (ExtGState `/ca`) isn't implemented yet. Fully transparent (alpha 0) backgrounds paint nothing and do NOT emit this. Fires at most once per conversion. Per Phase 5 layout→PDF wiring cycle 2 (PR #118 review). |
+| `PAINT-BACKGROUND-ALPHA-APPROXIMATED-001` | Info | **Reserved — no longer emitted.** Was emitted (Phase 5 layout→PDF cycle 2, PR #118 review) when a partial-alpha `background-color` was painted fully opaque. The Phase 4 paint-alpha pass wired PDF constant-alpha compositing (ExtGState `/ca`), so partial alpha is now composited faithfully and this approximation no longer occurs. Constant retained for code-registry stability. |
 | `PAINT-BORDER-STYLE-APPROXIMATED-001` | Info | A border edge used a painted `border-style` other than `solid` (`dotted` / `dashed` / `double` / `groove` / `ridge` / `inset` / `outset`). The paint bridge renders all painted styles as a solid fill of the border color; the dash / double / bevel rendering is a tracked follow-up (`docs/deferrals.md#layout-to-pdf-pipeline`). `none` and `hidden` paint nothing and do NOT emit this. Fires at most once per conversion. Per Phase 5 layout→PDF wiring cycle 3. |
-| `PAINT-BORDER-ALPHA-APPROXIMATED-001` | Info | A border color with partial alpha (0 < alpha < 255) was painted fully opaque, because PDF constant-alpha compositing (ExtGState `/ca`) isn't implemented yet — the border counterpart of `PAINT-BACKGROUND-ALPHA-APPROXIMATED-001`. A fully transparent (alpha 0) border color paints nothing and does NOT emit this. Fires at most once per conversion. Per Phase 5 layout→PDF wiring cycle 3 (PR #119 review). |
+| `PAINT-BORDER-ALPHA-APPROXIMATED-001` | Info | **Reserved — no longer emitted.** Was emitted (Phase 5 layout→PDF cycle 3, PR #119 review) when a partial-alpha border color was painted fully opaque — the border counterpart of `PAINT-BACKGROUND-ALPHA-APPROXIMATED-001`. The Phase 4 paint-alpha pass wired ExtGState `/ca` constant-alpha compositing, so it's now composited faithfully and this approximation no longer occurs. Constant retained for code-registry stability. |
 
 ---
 

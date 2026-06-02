@@ -2872,10 +2872,13 @@ flags the categories):
      `BT`/`Tf`/`Td`/`TJ` with the subset glyph ids at baselines). The bundled
      deterministic fallback font (TODO 4 / cycle 5b) is needed for the DEFAULT
      facade path's determinism once glyphs paint; 5a-2 is tested with a fixed
-     `SyntheticFont`. Also remaining: background images / gradients, border-radius,
-     mitered corners, alpha compositing. The `NetPdf.Paint` `DisplayCommand` IR
-     still has no fragment→command or command→PDF consumer — the bridge emits
-     straight to `IContentStream`.
+     `SyntheticFont`. Constant-alpha compositing is DONE (the Phase 4 paint-alpha pass:
+     partial-alpha background + border colors composite via PDF ExtGState `/ca` —
+     `PdfPage.FillRectangle` gained an `alpha` param + a per-page `/ExtGState` resource;
+     the `PAINT-*-ALPHA-APPROXIMATED-001` diagnostics are retired). Also remaining:
+     background images / gradients, border-radius, mitered corners. The `NetPdf.Paint`
+     `DisplayCommand` IR still has no fragment→command or command→PDF consumer — the
+     bridge emits straight to `IContentStream`.
   3. **Facade** — DONE for the single-page path (cycle 2:
      `HtmlPdf.Convert` / `ConvertAsync` / `ConvertDetailed` →
      `PdfRenderPipeline`; page size/margins → `MediaBox` + content area

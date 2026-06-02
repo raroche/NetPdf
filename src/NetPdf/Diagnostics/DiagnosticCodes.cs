@@ -660,12 +660,12 @@ internal static class DiagnosticCodes
     // region PAINT-*
 
     /// <summary>
-    /// Per Phase 5 layout→PDF wiring cycle 2 (PR #118 review) — emitted by the
-    /// <c>FragmentPainter</c> when a <c>background-color</c> with partial alpha
-    /// (0 &lt; alpha &lt; 255) is painted fully opaque, because PDF constant-alpha
-    /// compositing (ExtGState <c>/ca</c>) isn't implemented yet. Fully transparent
-    /// (alpha 0) backgrounds paint nothing and do NOT emit this. Fires at most once
-    /// per conversion. Tracked in <c>docs/deferrals.md#layout-to-pdf-pipeline</c>.
+    /// <b>Reserved — no longer emitted.</b> Was emitted (Phase 5 layout→PDF cycle 2,
+    /// PR #118 review) when a partial-alpha <c>background-color</c> was painted fully
+    /// opaque. The Phase 4 paint-alpha pass wired PDF constant-alpha compositing
+    /// (ExtGState <c>/ca</c>) into <c>FragmentPainter</c> / <c>PdfPage.FillRectangle</c>,
+    /// so partial alpha is now composited faithfully and this approximation no longer
+    /// occurs. The constant is retained for code-registry stability.
     /// Severity: <see cref="DiagnosticSeverity.Info"/>.
     /// </summary>
     public const string PaintBackgroundAlphaApproximated001 = "PAINT-BACKGROUND-ALPHA-APPROXIMATED-001";
@@ -683,14 +683,12 @@ internal static class DiagnosticCodes
     public const string PaintBorderStyleApproximated001 = "PAINT-BORDER-STYLE-APPROXIMATED-001";
 
     /// <summary>
-    /// Per Phase 5 layout→PDF wiring cycle 3 (PR #119 review) — emitted by the
-    /// <c>FragmentPainter</c> when a border color with partial alpha
-    /// (0 &lt; alpha &lt; 255) is painted fully opaque, because PDF constant-alpha
-    /// compositing (ExtGState <c>/ca</c>) isn't implemented yet — the border
-    /// counterpart of <see cref="PaintBackgroundAlphaApproximated001"/>. A fully
-    /// transparent (alpha 0) border color paints nothing and does NOT emit this.
-    /// Fires at most once per conversion. Tracked in
-    /// <c>docs/deferrals.md#layout-to-pdf-pipeline</c>.
+    /// <b>Reserved — no longer emitted.</b> Was emitted (Phase 5 layout→PDF cycle 3,
+    /// PR #119 review) when a partial-alpha border color was painted fully opaque — the
+    /// border counterpart of <see cref="PaintBackgroundAlphaApproximated001"/>. The
+    /// Phase 4 paint-alpha pass wired ExtGState <c>/ca</c> constant-alpha compositing, so
+    /// it's now composited faithfully and this approximation no longer occurs. The
+    /// constant is retained for code-registry stability.
     /// Severity: <see cref="DiagnosticSeverity.Info"/>.
     /// </summary>
     public const string PaintBorderAlphaApproximated001 = "PAINT-BORDER-ALPHA-APPROXIMATED-001";

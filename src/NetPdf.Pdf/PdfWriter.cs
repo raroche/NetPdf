@@ -20,6 +20,15 @@ namespace NetPdf.Pdf;
 /// </summary>
 internal sealed class PdfWriter
 {
+    /// <summary>
+    /// Canonical PDF real serialization format: fixed-point, up to 6 fraction digits, no
+    /// exponent, trailing zeros trimmed (ISO 32000-2 §7.3.3). Centralized so any code that
+    /// must reproduce a real's exact emitted bytes (e.g. an ExtGState dedup key keyed on the
+    /// serialized alpha) stays in lock-step with <see cref="WriteReal(double)"/> — the two
+    /// drifting apart was the root of a /ca de-dupe collision (PR-#125 review P2).
+    /// </summary>
+    internal const string CanonicalRealFormat = "0.######";
+
     private readonly IBufferWriter<byte> _output;
     private IncrementalHash? _hashSink;
 
@@ -116,7 +125,7 @@ internal sealed class PdfWriter
         }
 
         Span<char> chars = stackalloc char[32];
-        if (!value.TryFormat(chars, out int written, "0.######", CultureInfo.InvariantCulture))
+        if (!value.TryFormat(chars, out int written, CanonicalRealFormat, CultureInfo.InvariantCulture))
         {
             throw new InvalidOperationException("Real formatting failed; this should never happen.");
         }

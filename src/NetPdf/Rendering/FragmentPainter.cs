@@ -33,14 +33,14 @@ namespace NetPdf.Rendering;
 /// §4.3 — the used border width is 0 for those styles; layout reserves no space and
 /// the painter skips them). Edges span the full box extent on their long axis, so
 /// corners overlap — exact for uniform borders; mitered / per-corner joins are a
-/// refinement. Border <c>border-radius</c> and alpha compositing are deferred —
-/// a partial-alpha border color paints fully opaque and emits
-/// <c>PAINT-BORDER-ALPHA-APPROXIMATED-001</c> (deferrals.md#layout-to-pdf-pipeline).
+/// refinement. Border <c>border-radius</c> is deferred.
 /// </para>
 /// <para>
-/// <b>Background alpha.</b> Partial-alpha colors paint fully opaque and emit
-/// <c>PAINT-BACKGROUND-ALPHA-APPROXIMATED-001</c>; fully transparent fills are
-/// skipped. Background images / gradients are deferred.
+/// <b>Alpha.</b> A partial-alpha background or border color is composited faithfully
+/// via the page's ExtGState constant-alpha (<c>/ca</c>, see
+/// <see cref="PdfPage.FillRectangle"/>) — no longer painted fully opaque. A fully
+/// transparent fill is skipped. Background images / gradients are deferred. (The old
+/// <c>PAINT-*-ALPHA-APPROXIMATED-001</c> diagnostics are no longer emitted.)
 /// </para>
 /// </remarks>
 internal static class FragmentPainter
@@ -80,9 +80,7 @@ internal static class FragmentPainter
         bool paintBackgrounds,
         IDiagnosticsSink? diagnostics)
     {
-        var alphaApproximationReported = false;
         var borderStyleApproximationReported = false;
-        var borderAlphaApproximationReported = false;
 
         for (var i = 0; i < fragments.Count; i++)
         {
@@ -101,55 +99,42 @@ internal static class FragmentPainter
 
             // Background first (behind borders), gated by PrintBackgrounds.
             if (paintBackgrounds)
-                PaintBackground(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx,
-                    currentColorArgb, diagnostics, ref alphaApproximationReported);
+                PaintBackground(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx, currentColorArgb);
 
             // Borders (foreground — always painted regardless of PrintBackgrounds).
             PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Top, leftPx, topPx, widthPx, heightPx,
-                currentColorArgb, diagnostics, ref borderStyleApproximationReported, ref borderAlphaApproximationReported);
+                currentColorArgb, diagnostics, ref borderStyleApproximationReported);
             PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Right, leftPx, topPx, widthPx, heightPx,
-                currentColorArgb, diagnostics, ref borderStyleApproximationReported, ref borderAlphaApproximationReported);
+                currentColorArgb, diagnostics, ref borderStyleApproximationReported);
             PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Bottom, leftPx, topPx, widthPx, heightPx,
-                currentColorArgb, diagnostics, ref borderStyleApproximationReported, ref borderAlphaApproximationReported);
+                currentColorArgb, diagnostics, ref borderStyleApproximationReported);
             PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Left, leftPx, topPx, widthPx, heightPx,
-                currentColorArgb, diagnostics, ref borderStyleApproximationReported, ref borderAlphaApproximationReported);
+                currentColorArgb, diagnostics, ref borderStyleApproximationReported);
         }
     }
 
     private static void PaintBackground(
         PdfPage page, ComputedStyle style, double pageHeightPt,
         double leftPx, double topPx, double widthPx, double heightPx,
-        uint currentColorArgb, IDiagnosticsSink? diagnostics, ref bool alphaApproximationReported)
+        uint currentColorArgb)
     {
         if (!TryResolveColor(style.Get(PropertyId.BackgroundColor), currentColorArgb, out var argb))
             return;
         var alpha = Alpha(argb);
         if (alpha == 0) return; // transparent (the initial value) paints nothing.
 
-        // Partial alpha is painted fully opaque — PDF constant-alpha (ExtGState /ca)
-        // compositing isn't wired yet. Surface the approximation rather than silently
-        // mis-render a translucent overlay as solid (PR #118 review P2).
-        if (alpha < 255 && !alphaApproximationReported)
-        {
-            diagnostics?.Emit(new Diagnostic(
-                DiagnosticCodes.PaintBackgroundAlphaApproximated001,
-                "A background-color with partial alpha (0 < alpha < 255) was painted fully " +
-                "opaque — alpha compositing (PDF ExtGState /ca) is a tracked follow-up " +
-                "(deferrals.md#layout-to-pdf-pipeline).",
-                DiagnosticSeverity.Info));
-            alphaApproximationReported = true;
-        }
-
         ColorChannels(argb, out var r, out var g, out var b);
         ToPdfRect(leftPx, topPx, widthPx, heightPx, pageHeightPt, out var x, out var y, out var w, out var h);
-        page.FillRectangle(x, y, w, h, r, g, b);
+        // A partial alpha (0 < alpha < 255) is composited faithfully via the page's ExtGState
+        // constant-alpha (/ca) — no longer painted fully opaque.
+        page.FillRectangle(x, y, w, h, r, g, b, alpha / 255.0);
     }
 
     private static void PaintBorderEdge(
         PdfPage page, ComputedStyle style, double pageHeightPt, BorderEdge edge,
         double boxLeftPx, double boxTopPx, double boxWidthPx, double boxHeightPx,
         uint currentColorArgb, IDiagnosticsSink? diagnostics,
-        ref bool styleApproximationReported, ref bool alphaApproximationReported)
+        ref bool styleApproximationReported)
     {
         (PropertyId styleId, PropertyId widthId, PropertyId colorId) = edge switch
         {
@@ -172,20 +157,6 @@ internal static class FragmentPainter
             argb = currentColorArgb; // border-color initial is currentcolor.
         var alpha = Alpha(argb);
         if (alpha == 0) return;
-
-        // Partial alpha is painted fully opaque (no PDF constant-alpha compositing yet) —
-        // surface it like the background path rather than silently misrepresent a
-        // translucent border (PR #119 review P2).
-        if (alpha < 255 && !alphaApproximationReported)
-        {
-            diagnostics?.Emit(new Diagnostic(
-                DiagnosticCodes.PaintBorderAlphaApproximated001,
-                "A border color with partial alpha (0 < alpha < 255) was painted fully " +
-                "opaque — alpha compositing (PDF ExtGState /ca) is a tracked follow-up " +
-                "(deferrals.md#layout-to-pdf-pipeline).",
-                DiagnosticSeverity.Info));
-            alphaApproximationReported = true;
-        }
 
         if (styleKeyword != BorderStyleSolid && !styleApproximationReported)
         {
@@ -225,7 +196,8 @@ internal static class FragmentPainter
         ColorChannels(argb, out var r, out var g, out var b);
         ToPdfRect(edgeLeftPx, edgeTopPx, edgeBoxWidthPx, edgeBoxHeightPx, pageHeightPt,
             out var x, out var y, out var w, out var h);
-        page.FillRectangle(x, y, w, h, r, g, b);
+        // A partial border-color alpha is composited via the page's ExtGState constant-alpha (/ca).
+        page.FillRectangle(x, y, w, h, r, g, b, alpha / 255.0);
     }
 
     /// <summary>

@@ -123,7 +123,7 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
-    public void Partial_alpha_border_color_emits_the_approximation_diagnostic()
+    public void Partial_alpha_border_color_is_composited_via_constant_alpha()
     {
         const string html =
             "<!DOCTYPE html><html><body>" +
@@ -132,10 +132,16 @@ public sealed class HtmlPdfConvertTests
             "</body></html>";
 
         var result = HtmlPdf.ConvertDetailed(html);
+        var pdf = Latin1(result.Pdf);
 
-        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.PaintBorderAlphaApproximated001);
-        // Painted fully opaque (alpha ignored) → rgb(1, 0, 0).
-        Assert.Contains("1 0 0 rg", Latin1(result.Pdf));
+        // No longer an approximation — the alpha is carried by an ExtGState /ca.
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PaintBorderAlphaApproximated001);
+        Assert.Contains("1 0 0 rg", pdf);          // the color (rgb is unchanged; alpha is separate)
+        // Exact /ca value with a trailing delimiter: rgba(...,0.5) quantizes to the 8-bit color
+        // model as round(0.5*255)=128, so /ca is 128/255 = 0.501961, NOT 0.5. A bare "/ca 0.5"
+        // is a prefix of "/ca 0.501961" and would mask the real value (review P3).
+        Assert.Contains("/ca 0.501961 ", pdf);     // the constant-alpha ExtGState (exact value)
+        Assert.Contains(" gs", pdf);               // selected via the gs operator
     }
 
     [Fact]
@@ -224,7 +230,7 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
-    public void Partial_alpha_background_paints_opaque_and_emits_the_approximation_diagnostic()
+    public void Partial_alpha_background_is_composited_via_constant_alpha()
     {
         const string html =
             "<!DOCTYPE html><html><body>" +
@@ -232,10 +238,16 @@ public sealed class HtmlPdfConvertTests
             "</body></html>";
 
         var result = HtmlPdf.ConvertDetailed(html);
+        var pdf = Latin1(result.Pdf);
 
-        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.PaintBackgroundAlphaApproximated001);
-        // Painted fully opaque (alpha ignored) → rgb(1, 0, 0).
-        Assert.Contains("1 0 0 rg", Latin1(result.Pdf));
+        // No longer an approximation — the alpha is carried by an ExtGState /ca.
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PaintBackgroundAlphaApproximated001);
+        Assert.Contains("1 0 0 rg", pdf);          // the color (rgb is unchanged; alpha is separate)
+        // Exact /ca value with a trailing delimiter: rgba(...,0.5) quantizes to the 8-bit color
+        // model as round(0.5*255)=128, so /ca is 128/255 = 0.501961, NOT 0.5. A bare "/ca 0.5"
+        // is a prefix of "/ca 0.501961" and would mask the real value (review P3).
+        Assert.Contains("/ca 0.501961 ", pdf);     // the constant-alpha ExtGState (exact value)
+        Assert.Contains(" gs", pdf);               // selected via the gs operator
     }
 
     [Fact]

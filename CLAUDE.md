@@ -108,13 +108,13 @@ For anything not covered above, ask Roland before guessing.
 
 ## Last verified
 
-Phase 5 layout→PDF production wiring in progress (interleaved with Phase 3 per Roland's
-sequencing). Latest merged: cycle 5a-2-ii — the `TextPainter` bridge (real glyphs end-to-end
-through `HtmlPdf.Convert`: collect used glyphs per resolved font → subset/embed → `ShowGlyphs`
-at baselines; incl. review follow-ups — program-byte cache, layout-time font-failure backstop,
-text `/ca` alpha, content-hash font identity; PR #127, `5c65a06`). Next: cycle 5b — the bundled
-DejaVu Sans deterministic fallback font (makes the DEFAULT facade path deterministic-for-text)
-— NOTE it needs the font binary asset + a dependency-dossier / THIRD-PARTY-NOTICES legal entry
-(CLAUDE.md #2). The multi-page driver + `@page` (Phase 3 Task 21) are unblocked alternatives.
+Phase 5 layout→PDF production wiring + Phase 3 in progress (interleaved per Roland's
+sequencing). Latest: Phase 3 Task 21 — the `@page` rule, cycle 1 (page margins): a bare
+`@page { margin… }` overrides the page margins via `AtPageMarginResolver` (`src/NetPdf.Css/PagedMedia/`)
+→ `PdfRenderPipeline`. Built atop cycle 5a-2-ii (the `TextPainter` bridge, PR #127). Next: `@page`
+cycle 2 — `size` (AngleSharp drops the `size` descriptor, so it needs pre-pass `size`-descriptor
+recovery, then resolve → `MediaBox` honoring `PreferCssPageSize`). Blocked (see `deferrals.md`):
+cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
+legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).
 For the live state, read the **current-state pointer at the top of [PROGRESS.md](PROGRESS.md)**
 (or run `/phase-status`); `git log --oneline -1` shows the exact commit.

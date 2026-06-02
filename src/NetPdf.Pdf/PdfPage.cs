@@ -194,6 +194,15 @@ internal sealed class PdfPage
             throw new ArgumentException(
                 $"FillRectangle coordinates must be finite; got x={x}, y={y}, width={width}, height={height}.");
         }
+        // Validate alpha BEFORE the Math.Clamp below: Math.Clamp(NaN, 0, 1) returns NaN, the
+        // `alpha < 1.0` transparency test is then false, and the fill silently paints fully
+        // opaque — a silent-corruption hole (post-PR-#125 review P2). Reject non-finite alpha
+        // outright; finite out-of-range alpha still clamps into [0, 1] per the contract.
+        if (!double.IsFinite(alpha))
+        {
+            throw new ArgumentException(
+                $"FillRectangle alpha must be finite; got {alpha}.", nameof(alpha));
+        }
         if (width <= 0 || height <= 0) return;
 
         r = Math.Clamp(r, 0.0, 1.0);
@@ -225,7 +234,14 @@ internal sealed class PdfPage
     /// ExtGState). The name is derived from the value, so it's deterministic.</summary>
     private PdfName GetOrAddConstantAlpha(double alpha)
     {
-        var name = new PdfName("GSca" + alpha.ToString("0.#####", CultureInfo.InvariantCulture).Replace('.', '_'));
+        // Dedup by the EXACT serialized /ca value. The name must encode alpha at the same
+        // precision PdfReal/PdfWriter.WriteReal emits (PdfWriter.CanonicalRealFormat — 6
+        // fraction digits) — otherwise a coarser name lets two distinct alphas (e.g. 0.123456
+        // and 0.123457) collide on one /GSca… name and silently reuse the wrong /ca value
+        // (post-PR-#125 review P2). Sharing the canonical format makes the name 1:1 with the
+        // serialized value: equal /ca bytes share one ExtGState, distinct /ca bytes never do.
+        var canonical = alpha.ToString(PdfWriter.CanonicalRealFormat, CultureInfo.InvariantCulture);
+        var name = new PdfName("GSca" + canonical.Replace('.', '_'));
         if (!_extGStateResource.ContainsKey(name))
         {
             _extGStateResource.Set(name, new PdfDictionary()

@@ -210,6 +210,65 @@ internal sealed class PdfPage
         AppendContent(sb.ToString());
     }
 
+    /// <summary>
+    /// Show a run of glyphs at a baseline origin, in a solid RGB fill color. The font must
+    /// be a Type 0 / Identity-H font added to this page via <see cref="AddFont(PdfIndirectRef)"/>
+    /// (so each <paramref name="glyphIds"/> entry is a 2-byte big-endian CID = glyph id);
+    /// <paramref name="glyphIds"/> are the SUBSET glyph ids the embedded font program uses.
+    /// Coordinates are in PDF points with the origin at the page's bottom-left (callers apply
+    /// any CSS-px → pt scale + y-flip first); <paramref name="xPt"/>/<paramref name="yPt"/>
+    /// is the text-line origin (the baseline left edge). Inter-glyph spacing comes from the
+    /// font's <c>/W</c> advances (cycle 5a-2 "simple Td + Tj" first cut — GPOS-adjusted
+    /// per-glyph positioning is a follow-up). The run is wrapped in its own <c>q</c> /
+    /// <c>Q</c> pair so the color + text state don't leak. Empty input is a no-op; a
+    /// <paramref name="fontSizePt"/> of 0 emits an (invisible) zero-size run.
+    /// </summary>
+    public void ShowGlyphs(
+        PdfName fontResourceName, double fontSizePt, double xPt, double yPt,
+        ReadOnlySpan<ushort> glyphIds, double r, double g, double b)
+    {
+        ArgumentNullException.ThrowIfNull(fontResourceName);
+        ThrowIfFinalized();
+        if (!double.IsFinite(fontSizePt) || fontSizePt < 0)
+        {
+            throw new ArgumentException(
+                $"ShowGlyphs fontSizePt must be finite + non-negative; got {fontSizePt}.", nameof(fontSizePt));
+        }
+        if (!double.IsFinite(xPt) || !double.IsFinite(yPt))
+        {
+            throw new ArgumentException($"ShowGlyphs position must be finite; got x={xPt}, y={yPt}.");
+        }
+        if (glyphIds.IsEmpty) return;
+
+        r = Math.Clamp(r, 0.0, 1.0);
+        g = Math.Clamp(g, 0.0, 1.0);
+        b = Math.Clamp(b, 0.0, 1.0);
+
+        // q <r> <g> <b> rg BT /Fn <size> Tf <x> <y> Td <glyph-hex> Tj ET Q — set the fill
+        // color, open a text object, select the font + size, set the line origin, show the
+        // glyph ids as a hex string (2 bytes / glyph, Identity-H), close.
+        var sb = new StringBuilder(48 + (glyphIds.Length * 4));
+        sb.Append("q ");
+        AppendNumber(sb, r); sb.Append(' ');
+        AppendNumber(sb, g); sb.Append(' ');
+        AppendNumber(sb, b); sb.Append(" rg BT /");
+        sb.Append(fontResourceName.Value); sb.Append(' ');
+        AppendNumber(sb, fontSizePt); sb.Append(" Tf ");
+        AppendNumber(sb, xPt); sb.Append(' ');
+        AppendNumber(sb, yPt); sb.Append(" Td <");
+        foreach (var glyph in glyphIds)
+        {
+            sb.Append(HexNibble(glyph >> 12));
+            sb.Append(HexNibble(glyph >> 8));
+            sb.Append(HexNibble(glyph >> 4));
+            sb.Append(HexNibble(glyph));
+        }
+        sb.Append("> Tj ET Q\n");
+        AppendContent(sb.ToString());
+    }
+
+    private static char HexNibble(int value) => "0123456789ABCDEF"[value & 0xF];
+
     private static void AppendNumber(StringBuilder sb, double value)
     {
         // PDF numbers are written without exponent notation, finite, with a maximum

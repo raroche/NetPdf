@@ -111,6 +111,26 @@ public sealed class FontPropertyResolutionTests
     }
 
     [Fact]
+    public async Task Invalid_relative_font_size_falls_back_to_the_inherited_value()
+    {
+        // Post-PR-#120 review (P2): a negative parent-relative font-size is invalid at
+        // computed-value time → the cascade falls back to the INHERITED parent size
+        // (20px), NOT the 16px default and NOT a negative size.
+        var p = await ParentChildAsync("font-size:20px", "font-size:-50%");
+        Assert.Equal(20.0, p.Style.Get(PropertyId.FontSize).AsLengthPx(), 3);
+    }
+
+    [Fact]
+    public async Task Malformed_font_family_falls_back_to_the_inherited_value()
+    {
+        // Post-PR-#120 review (P2): a malformed font-family list is invalid → the child
+        // inherits the parent's resolved family instead of being sanitized into a
+        // surprise list.
+        var p = await ParentChildAsync("font-family:Arial, sans-serif", "font-family:Arial,,serif");
+        Assert.Equal(new[] { "Arial", "sans-serif" }, p.Style.ReadFontFamily().Families.ToArray());
+    }
+
+    [Fact]
     public async Task Default_font_size_stays_16px()
     {
         // The medium→16 mapping keeps default-font-size elements unchanged — this is

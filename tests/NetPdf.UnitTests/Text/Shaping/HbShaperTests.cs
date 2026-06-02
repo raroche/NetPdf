@@ -24,13 +24,32 @@ public sealed class HbShaperTests
     }
 
     [Theory]
-    [InlineData(0)]
     [InlineData(-1)]
     [InlineData(double.NaN)]
     [InlineData(double.PositiveInfinity)]
+    [InlineData(double.NegativeInfinity)]
     public void Constructor_throws_on_invalid_font_size(double bad)
     {
         Assert.Throws<ArgumentOutOfRangeException>(() => new HbShaper(SyntheticFont.Build(), bad));
+    }
+
+    [Fact]
+    public void Constructor_accepts_zero_font_size_and_shapes_to_zero_advances()
+    {
+        // CSS Fonts 4 §3.4 allows font-size in [0, ∞]; a 0-size shaper produces
+        // zero-advance glyphs (invisible text) rather than throwing or snapping up.
+        using var shaper = new HbShaper(SyntheticFont.Build(), fontSizePx: 0);
+
+        var glyphs = shaper.Shape("Hi", ShapingDirection.LeftToRight, Latin, English);
+
+        Assert.NotEmpty(glyphs);   // glyphs are still produced…
+        Assert.All(glyphs, g =>    // …but every metric converts to zero.
+        {
+            Assert.Equal(0f, g.XAdvance);
+            Assert.Equal(0f, g.YAdvance);
+            Assert.Equal(0f, g.XOffset);
+            Assert.Equal(0f, g.YOffset);
+        });
     }
 
     [Fact]

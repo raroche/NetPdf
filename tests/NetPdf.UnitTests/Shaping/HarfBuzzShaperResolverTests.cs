@@ -6,6 +6,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using NetPdf;
 using NetPdf.Css.ComputedValues;
+using NetPdf.Css.ComputedValues.PropertyResolvers;
 using NetPdf.Css.Properties;
 using NetPdf.Shaping;
 using NetPdf.Text.Shaping;
@@ -53,9 +54,8 @@ public sealed class HarfBuzzShaperResolverTests
     {
         using var resolver = new HarfBuzzShaperResolver(new SyntheticFontResolver());
 
-        // The resolver honors a resolved font-size slot (forward-compatible:
-        // the CSS FontSizeResolver isn't wired yet, but the reader picks up
-        // a LengthPx slot — which a resolved cascade will produce).
+        // The resolver honors the resolved font-size slot (FontSizeResolver writes a
+        // LengthPx slot the reader picks up); distinct sizes → distinct shapers.
         var small = MakeStyle();
         small.Set(PropertyId.FontSize, ComputedSlot.FromLengthPx(12));
         var large = MakeStyle();
@@ -103,6 +103,41 @@ public sealed class HarfBuzzShaperResolverTests
         _ = resolver.Resolve(MakeStyle());   // create a cached shaper
         resolver.Dispose();
         resolver.Dispose();                  // second dispose must not throw
+    }
+
+    // --- post-PR-#120 review follow-ups ---------------------------------
+
+    [Fact]
+    public void Resolve_honors_font_size_zero_as_zero_advance_text()
+    {
+        // P1 — a resolved font-size of 0 must NOT snap back to the 16px default; it
+        // shapes to zero-advance (invisible) glyphs (CSS Fonts 4 §3.4 allows [0, ∞]).
+        using var resolver = new HarfBuzzShaperResolver(new SyntheticFontResolver());
+        var style = MakeStyle();
+        style.Set(PropertyId.FontSize, ComputedSlot.FromLengthPx(0));
+
+        var glyphs = resolver.Resolve(style)
+            .Shape("Hi".AsSpan(), ShapingDirection.LeftToRight, "Latn", "en");
+
+        Assert.NotEmpty(glyphs);                       // glyphs are produced…
+        Assert.All(glyphs, g => Assert.Equal(0f, g.XAdvance));   // …with zero advance.
+    }
+
+    [Fact]
+    public void Resolve_walks_the_font_family_stack_past_missing_families()
+    {
+        // P2 — the shaper tries each author family in order, not just the primary:
+        // `MissingFont, Arial, sans-serif` resolves via Arial instead of throwing.
+        var fonts = new SelectiveFontResolver("Arial");
+        using var resolver = new HarfBuzzShaperResolver(fonts);
+        var style = MakeStyle();
+        PropertyResolverDispatch.Resolve(PropertyId.FontFamily, "MissingFont, Arial, sans-serif")
+            .MaterializeInto(style, PropertyId.FontFamily);
+
+        var shaper = resolver.Resolve(style);   // must NOT throw — falls through to Arial.
+
+        Assert.NotNull(shaper);
+        Assert.Equal("Arial", fonts.LastResolvedFamily);
     }
 
     // --- post-PR-#117 review hardening ----------------------------------
@@ -200,6 +235,24 @@ public sealed class HarfBuzzShaperResolverTests
     {
         public ValueTask<FontFaceData?> ResolveAsync(FontQuery query, CancellationToken ct)
             => new((FontFaceData?)null);
+    }
+
+    /// <summary>Resolves a synthetic font ONLY for one whitelisted family
+    /// (case-insensitive) + records it; returns null for any other family — exercises
+    /// the font-family fallback-stack walk.</summary>
+    private sealed class SelectiveFontResolver(string resolvable) : IFontResolver
+    {
+        public string? LastResolvedFamily { get; private set; }
+
+        public ValueTask<FontFaceData?> ResolveAsync(FontQuery query, CancellationToken ct)
+        {
+            if (string.Equals(query.Family, resolvable, StringComparison.OrdinalIgnoreCase))
+            {
+                LastResolvedFamily = query.Family;
+                return new(new FontFaceData { Bytes = SyntheticFont.Build(), Family = query.Family });
+            }
+            return new((FontFaceData?)null);
+        }
     }
 
     /// <summary>Returns caller-supplied bytes verbatim (exercises the

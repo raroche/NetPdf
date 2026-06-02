@@ -1,8 +1,10 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System.Collections.Generic;
 using NetPdf.Css.ComputedValues;
 using NetPdf.Css.ComputedValues.PropertyResolvers;
+using NetPdf.Css.Diagnostics;
 using NetPdf.Css.Properties;
 using Xunit;
 
@@ -65,6 +67,38 @@ public sealed class FontSizeResolverTests
     }
 
     [Theory]
+    [InlineData("-50%")]
+    [InlineData("-1em")]
+    [InlineData("-0.5ex")]
+    [InlineData("-2ch")]
+    public void Negative_relative_sizes_are_invalid(string value)
+    {
+        // Post-PR-#120 review (P2): a negative parent-relative font-size is invalid at
+        // computed-value time — it must NOT defer + silently snap to the 16px default.
+        Assert.True(Resolve(value).IsInvalid);
+    }
+
+    [Fact]
+    public void Invalid_relative_size_emits_a_diagnostic()
+    {
+        var sink = new CapturingSink();
+        var result = FontSizeResolver.Resolve("-50%", PropertyId.FontSize, "font-size", sink, default);
+
+        Assert.True(result.IsInvalid);
+        Assert.Contains(sink.Diagnostics, d => d.Code == CssDiagnosticCodes.CssPropertyValueInvalid001);
+    }
+
+    [Fact]
+    public void Rem_is_not_misrouted_as_an_em_relative_size()
+    {
+        // Post-PR-#120 review (P2): `rem` ends in "em" but is root-relative, not
+        // parent-relative — it must DEFER (a follow-up), never invalidate.
+        var result = Resolve("2rem");
+        Assert.True(result.IsDeferred);
+        Assert.Equal("2rem", result.RawText);
+    }
+
+    [Theory]
     [InlineData("2em", 20.0, 40.0)]
     [InlineData("150%", 20.0, 30.0)]
     [InlineData("larger", 20.0, 24.0)]      // × 1.2
@@ -90,5 +124,37 @@ public sealed class FontSizeResolverTests
         Assert.Equal(16.0, resolved.Slot.AsLengthPx(), 3);
 
         Assert.True(PropertyResolverDispatch.Resolve(PropertyId.FontSize, "1.5em").IsDeferred);
+    }
+
+    // --- post-PR-#121 review (P3): spaced dimensions + CSS-wide ----------
+
+    [Theory]
+    [InlineData("2 em")]
+    [InlineData("50 %")]
+    public void Whitespace_separated_relative_dimensions_are_invalid(string value)
+    {
+        // A space between the number and unit isn't a valid CSS dimension — `2 em` /
+        // `50 %` must NOT slip past the unit split and resolve as `2em` / `50%`.
+        Assert.True(Resolve(value).IsInvalid);
+    }
+
+    [Theory]
+    [InlineData("initial")]
+    [InlineData("inherit")]
+    [InlineData("unset")]
+    public void Css_wide_keywords_are_invalid_here(string value)
+    {
+        // font-size rejects CSS-wide keywords (via the length parser), so they're never
+        // stored as a literal length. NOTE: font-size is INHERITED, so the cascade's
+        // invalid-fallback yields the inherited value — correct for inherit/unset, but a
+        // known gap for `initial` (should reset to medium); tracked in deferrals.md
+        // pending central CSS-wide handling.
+        Assert.True(Resolve(value).IsInvalid);
+    }
+
+    private sealed class CapturingSink : ICssDiagnosticsSink
+    {
+        public List<CssDiagnostic> Diagnostics { get; } = new();
+        public void Emit(CssDiagnostic d) => Diagnostics.Add(d);
     }
 }

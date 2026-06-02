@@ -157,9 +157,9 @@ internal sealed class PdfPage
         // single /Font entry (the painter can also cache the name itself).
         foreach (var entry in _fontsResource)
         {
-            if (entry.Value is PdfIndirectRef existing
-                && existing.ObjectNumber == fontRef.ObjectNumber
-                && existing.Generation == fontRef.Generation)
+            // Full-identity match (incl. StoreId) — a foreign ref that happens to share a
+            // local font's object number must NOT be conflated (post-PR-#122 review P2).
+            if (entry.Value is PdfIndirectRef existing && existing.HasSameTarget(fontRef))
             {
                 return entry.Key;
             }

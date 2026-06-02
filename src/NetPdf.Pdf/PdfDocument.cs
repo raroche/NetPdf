@@ -277,12 +277,49 @@ internal sealed class PdfDocument
         return clone;
     }
 
-    /// <summary>Dedup key for an embedded font: the subset SFNT program (FontFile2) plus the
-    /// ToUnicode CMap fully identify it, so two registrations of the same subset collapse to
-    /// one object graph. Hashes the streams the same way the image cache does.</summary>
-    private static string ComputeFontContentKey(EmbeddedFont font) =>
-        $"font:{Convert.ToHexString(HashStream(font.FontFile2Stream))}"
-        + $"|{Convert.ToHexString(HashStream(font.ToUnicodeStream))}";
+    /// <summary>Dedup key for an embedded font. The subset SFNT program (FontFile2) + the
+    /// ToUnicode CMap are the bulk of it, but the Type0 / CID / FontDescriptor dictionaries
+    /// also carry render-affecting metadata — <c>/W</c> advance widths, <c>/BaseFont</c>,
+    /// <c>/CIDToGIDMap</c>, <c>/Encoding</c>, descriptor metrics — that an
+    /// <see cref="EmbeddedFont"/> could in principle differ on while sharing the streams. So
+    /// every dictionary is folded in too (minus its structural child cross-refs, which the
+    /// stream hashes / the sibling dict hashes already cover), so two graphs that differ
+    /// only in a dictionary can't collide (post-PR-#122 review P2).</summary>
+    private static string ComputeFontContentKey(EmbeddedFont font)
+    {
+        using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        hasher.AppendData(HashStream(font.FontFile2Stream));
+        hasher.AppendData(HashStream(font.ToUnicodeStream));
+        hasher.AppendData(HashDictExcludingKeys(font.Type0FontDictionary, PdfNames.DescendantFonts, PdfNames.ToUnicode));
+        hasher.AppendData(HashDictExcludingKeys(font.CidFontDictionary, PdfNames.FontDescriptor));
+        hasher.AppendData(HashDictExcludingKeys(font.FontDescriptorDictionary, PdfNames.FontFile2));
+        return $"font:{Convert.ToHexString(hasher.GetHashAndReset())}";
+    }
+
+    /// <summary>SHA-256 of a dictionary's canonical bytes with <paramref name="excludedKeys"/>
+    /// removed — folds a font sub-dictionary's render-affecting metadata into the dedup key
+    /// while skipping the structural child cross-refs (the nested stream / child dict) that
+    /// other hashes already cover. With those keys removed the dictionary holds no direct
+    /// stream value, so it serializes cleanly.</summary>
+    private static byte[] HashDictExcludingKeys(PdfDictionary dict, params PdfName[] excludedKeys)
+    {
+        var filtered = new PdfDictionary();
+        foreach (var entry in dict)
+        {
+            var skip = false;
+            foreach (var excluded in excludedKeys)
+            {
+                if (entry.Key.Equals(excluded)) { skip = true; break; }
+            }
+            if (!skip) filtered.Set(entry.Key, entry.Value);
+        }
+        var buffer = new ArrayBufferWriter<byte>();
+        var writer = new PdfWriter(buffer);
+        filtered.WriteTo(writer);
+        using var hasher = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        hasher.AppendData(buffer.WrittenSpan);
+        return hasher.GetHashAndReset();
+    }
 
     private static void ValidateImageXObjectShape(PdfStream stream, string parameterName, bool isSMask)
     {

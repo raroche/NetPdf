@@ -41,6 +41,21 @@ internal sealed class PdfIndirectRef : PdfObject
         StoreId = storeId;
     }
 
+    /// <summary>
+    /// Identity comparison for two indirect references: same object number, generation,
+    /// AND originating store. The <see cref="StoreId"/> is essential — two
+    /// <see cref="IndirectObjectStore"/>s (e.g. two <see cref="PdfDocument"/>s) number
+    /// objects deterministically, so a FOREIGN ref can share this ref's object number
+    /// while pointing at an entirely different object. Used by resource dedup
+    /// (<see cref="PdfPage.AddFont"/>) where conflating a foreign ref with a local one
+    /// would silently substitute the wrong object and skip preflight's foreign-ref rejection.
+    /// </summary>
+    internal bool HasSameTarget(PdfIndirectRef other) =>
+        other is not null
+        && ObjectNumber == other.ObjectNumber
+        && Generation == other.Generation
+        && StoreId == other.StoreId;
+
     public override void WriteTo(PdfWriter writer)
     {
         writer.WriteInteger(ObjectNumber);

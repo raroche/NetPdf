@@ -2973,6 +2973,13 @@ flags the categories):
        inherited, `revert` approximated as inherited) instead of being treated as invalid leaf
        values; invalid-value diagnostics carry the declaration's source location; the page-context
        style is returned to the pool (`ReleaseFromBox`) instead of leaking.
+       **Cycle 6 — `font` shorthand — DONE:** the `font` shorthand is expanded into longhands for
+       margin-box bodies (new `FontShorthandExpander` → `CssParserAdapter.ParseRawDeclarations`),
+       so `@bottom-center { font: italic 9pt Georgia }` sets font-style/weight/size/family.
+       AngleSharp never sees margin-box bodies, so this closes the gap (regular style rules already
+       get `font` expanded by AngleSharp). A system-font keyword (`caption`/…) or malformed value is
+       dropped; a whole-value CSS-wide keyword maps to every longhand. (`font-variant` /
+       `font-stretch` / `line-height` are parsed but not surfaced — the style path doesn't read them.)
        **REMAINING:**
        - **Conditional-group traversal:** `AtPageRules` walks only sheet media + `@media`; a bare
          `@page` nested in a matching `@supports` / `@layer` / `@container` does not yet contribute
@@ -2980,10 +2987,9 @@ flags the categories):
          of `CascadeResolver` into a shared helper.
        - **Margin boxes — later cycles:** `counter(page)`/`counter(pages)` page numbers,
          `string()` running headers (needs `string-set` collection), and `element()` running
-         elements; remaining per-box style refinements — the `font` SHORTHAND (longhands only —
-         `ParseRawDeclarations` doesn't expand it) and relative font-size (`em`/`%`/`larger`/`bolder`
-         — needs the box-builder's `ResolveDeferredFontProperties`; an inherited deferred font-size
-         is copied but not re-resolved against the parent); the CSS Page 3 §5.3 three-box-per-edge
+         elements; relative font-size (`em`/`%`/`larger`/`bolder` — needs the box-builder's
+         `ResolveDeferredFontProperties`; an inherited deferred font-size is copied but not
+         re-resolved against the parent); the CSS Page 3 §5.3 three-box-per-edge
          sizing (each box gets the full edge band + aligns within it, so long sibling boxes on one
          edge can overlap, and content overflowing a band isn't clipped); box backgrounds/borders.
          The per-box / page-context `ComputedStyle.Rent()` is box-owned (not returned to the pool) —

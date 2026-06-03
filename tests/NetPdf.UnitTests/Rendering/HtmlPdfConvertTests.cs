@@ -829,6 +829,19 @@ public sealed class HtmlPdfConvertTests
         Assert.Equal(12.0, FirstTf(pdf), 1);   // 16px default × 0.75
     }
 
+    [Fact]
+    public void Page_margin_box_font_shorthand_sets_the_size(/* Task 21 cycle 6 */)
+    {
+        // The `font` shorthand is expanded into longhands for margin-box bodies (AngleSharp never
+        // sees them). `font: italic 24px serif` → font-size 24px → 18pt Tf.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content: \"AB\"; font: italic 24px serif } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Contains("BT", pdf);
+        Assert.Equal(18.0, FirstTf(pdf), 1);   // 24px × 0.75 — the shorthand's size was applied
+    }
+
     /// <summary>The font size (pt) of the first <c>… &lt;size&gt; Tf</c> operator.</summary>
     private static double FirstTf(string pdf)
     {

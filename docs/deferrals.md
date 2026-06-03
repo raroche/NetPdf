@@ -2938,12 +2938,16 @@ flags the categories):
        (running headers/footers). The pre-pass already recovered them as `@page` child rules;
        `AtPageMarginBoxResolver` (`src/NetPdf.Css/PagedMedia/`) resolves the content-bearing ones
        to (name, raw `content`); `PageMarginBoxGeometry` computes each box's page-px region from
-       the resolved size + margins; `PageMarginBoxPainter` resolves `content` (literal strings +
-       `attr()` via `CssContentList`), lays the text out as one line via `InlineLayouter`, and
-       paints it through the shared `TextPainter` (a second pass with a (0,0) content origin so the
-       margin-box fragments carry absolute page-px). Text is name-aligned within the box
-       (`-left`/`-top`→start, `-center`/`-middle`→center, `-right`/`-bottom`→end; corners centered).
-       Unsupported content (`counter()`/`string()`/`element()`) emits
+       the resolved size + margins (clamped to >= 0 so margins exceeding the page can't make a band
+       negative); `PageMarginBoxPainter` resolves `content` (literal strings + `attr()` via
+       `CssContentList`) + lays the text out as one line via `InlineLayouter`. Body + margin-box
+       text paint through ONE shared `TextPainter` pass (margin fragments offset relative to the
+       body's content origin), so a font shared by both is subset + embedded ONCE. Text is
+       name-aligned within the box (`-left`/`-top`→start, `-center`/`-middle`→center,
+       `-right`/`-bottom`→end; corners centered). `content` honors `!important` (cascade by
+       importance then source order — within a box body AND across `@page` rules); a winning
+       `none`/`normal` suppresses the box SILENTLY (no diagnostic). Unsupported content
+       (`counter()`/`string()`/`element()`) emits a length-capped, control-char-sanitized
        `CSS-CONTENT-FUNCTION-UNSUPPORTED-001` + skips the box.
        **REMAINING:**
        - **Conditional-group traversal:** `AtPageRules` walks only sheet media + `@media`; a bare

@@ -570,6 +570,86 @@ public sealed class HtmlPdfConvertTests
         Assert.DoesNotContain("BT", pdf);   // nothing painted
     }
 
+    [Fact]
+    public void Body_text_and_a_margin_box_share_one_embedded_font()
+    {
+        // Body "A" + a footer "B" both resolve to SyntheticFont. They now paint through ONE
+        // TextPainter pass, so the program is subset + embedded ONCE — not once per pass
+        // (post-PR-#132 review P3). Both glyphs present → neither run was dropped.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content: \"B\" } }</style></head>" +
+            "<body><p>A</p></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        var pdf = Latin1(result.Pdf);
+
+        Assert.Equal(1, pdf.Split("/FontFile2").Length - 1);   // exactly ONE embedded font program
+        Assert.Contains("BT", pdf);
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PaintTextFontUnresolved001);
+    }
+
+    [Fact]
+    public void Page_margin_box_inside_at_media_print_is_painted()
+    {
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@media print { @page { @top-center { content: \"AB\" } } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        Assert.Contains("BT", Latin1(result.Pdf));   // the print-media branch matches → painted
+    }
+
+    [Fact]
+    public void Page_margin_box_in_a_screen_media_sheet_is_ignored_in_print()
+    {
+        // A media="screen" sheet never contributes to the print render → no footer text.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style media=\"screen\">@page { @bottom-center { content: \"AB\" } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        Assert.DoesNotContain("BT", Latin1(result.Pdf));
+    }
+
+    [Fact]
+    public void Page_margin_box_content_none_is_suppressed_without_a_diagnostic()
+    {
+        // content: none → "no box", NOT unsupported content: no warning, no text (review P2).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content: none } }</style></head>" +
+            "<body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        Assert.DoesNotContain("BT", Latin1(result.Pdf));
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssContentFunctionUnsupported001);
+    }
+
+    [Fact]
+    public void Page_margin_box_attr_content_resolves_against_the_host_element()
+    {
+        // attr() reads the box tree's host element (the document root); SyntheticFont covers 'A'/'B',
+        // so attr(data-title)="AB" actually renders glyphs.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html data-title=\"AB\"><head>" +
+            "<style>@page { @top-center { content: attr(data-title) } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        Assert.Contains("BT", Latin1(result.Pdf));
+    }
+
+    [Fact]
+    public void Page_margin_box_unsupported_content_diagnostic_is_length_capped()
+    {
+        // The raw author value is sanitized (control chars stripped, length capped at 120 + a
+        // U+2026 marker) before landing in a host-visible diagnostic (review P2 —
+        // DiagnosticTextSanitizer). A 300-char unsupported value must not leak verbatim.
+        var longArg = new string('A', 300);
+        var result = HtmlPdf.ConvertDetailed(
+            $"<!DOCTYPE html><html><head><style>@page {{ @bottom-center {{ content: counter({longArg}) }} }}</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        var warning = Assert.Single(
+            result.Warnings, d => d.Code == DiagnosticCodes.CssContentFunctionUnsupported001);
+        Assert.Contains("…", warning.Message);        // truncation marker → the value was capped
+        Assert.DoesNotContain(longArg, warning.Message);   // the full 300-char value did not leak
+    }
+
     /// <summary>The (x, y) operands of the first <c>… Td</c> text-position operator, in pt.</summary>
     private static (double X, double Y) FirstTd(string pdf)
     {

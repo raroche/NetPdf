@@ -79,6 +79,56 @@ public sealed class AtPageMarginBoxResolverTests
         Assert.Empty(await Resolve("@page { @middle-center { content: \"x\" } }"));
     }
 
+    // ---- !important cascade (review P1) ----
+
+    [Fact]
+    public async Task Resolve_important_content_beats_a_later_normal()
+    {
+        var boxes = await Resolve("@page { @top-center { content: \"A\" !important; content: \"B\" } }");
+        Assert.Equal("\"A\"", Assert.Single(boxes).ContentRawValue);
+    }
+
+    [Fact]
+    public async Task Resolve_later_important_content_wins()
+    {
+        var boxes = await Resolve("@page { @top-center { content: \"A\" !important; content: \"B\" !important } }");
+        Assert.Equal("\"B\"", Assert.Single(boxes).ContentRawValue);
+    }
+
+    [Fact]
+    public async Task Resolve_important_content_beats_a_later_normal_across_page_rules()
+    {
+        var boxes = await Resolve(
+            "@page { @top-center { content: \"A\" !important } } @page { @top-center { content: \"B\" } }");
+        Assert.Equal("\"A\"", Assert.Single(boxes).ContentRawValue);
+    }
+
+    // ---- none / normal suppression, no diagnostic (review P2) ----
+
+    [Theory]
+    [InlineData("@page { @top-center { content: none } }")]
+    [InlineData("@page { @top-center { content: normal } }")]
+    [InlineData("@page { @top-center { content: NONE } }")]   // keyword is case-insensitive
+    public async Task Resolve_none_or_normal_suppresses_the_box(string css) =>
+        Assert.Empty(await Resolve(css));
+
+    [Fact]
+    public async Task Resolve_later_none_suppresses_an_earlier_string() =>
+        Assert.Empty(await Resolve("@page { @top-center { content: \"A\"; content: none } }"));
+
+    [Fact]
+    public async Task Resolve_important_none_suppresses_a_later_normal_string() =>
+        Assert.Empty(await Resolve(
+            "@page { @top-center { content: none !important } } @page { @top-center { content: \"B\" } }"));
+
+    [Fact]
+    public async Task Resolve_quoted_none_is_a_literal_string_not_suppression()
+    {
+        // Only the BARE keyword suppresses; "none" (quoted) is the literal text "none".
+        var boxes = await Resolve("@page { @top-center { content: \"none\" } }");
+        Assert.Equal("\"none\"", Assert.Single(boxes).ContentRawValue);
+    }
+
     private static readonly CssMediaContext PrintContext = new(
         MediaType: "print", ViewportWidthPx: 800, ViewportHeightPx: 1000,
         DevicePixelRatio: 1.0, PreferredColorScheme: "light");

@@ -29,7 +29,12 @@ public sealed class PageMarginBoxGeometryTests
     [InlineData("bottom-right-corner", 950, 1920, 50, 80, 0.5, 0.5)]
     [InlineData("left-top", 0, 100, 40, 1820, 0.5, 0.0)]
     [InlineData("left-middle", 0, 100, 40, 1820, 0.5, 0.5)]
+    [InlineData("left-bottom", 0, 100, 40, 1820, 0.5, 1.0)]
+    [InlineData("right-top", 950, 100, 50, 1820, 0.5, 0.0)]
+    [InlineData("right-middle", 950, 100, 50, 1820, 0.5, 0.5)]
     [InlineData("right-bottom", 950, 100, 50, 1820, 0.5, 1.0)]
+    [InlineData("bottom-right", 40, 1920, 910, 80, 1.0, 0.5)]
+    [InlineData("bottom-left-corner", 0, 1920, 40, 80, 0.5, 0.5)]
     public void TryGetRegion_maps_names_to_rects_and_alignment(
         string name, double x, double y, double w, double h, double hAlign, double vAlign)
     {
@@ -49,5 +54,17 @@ public sealed class PageMarginBoxGeometryTests
     public void TryGetRegion_rejects_unknown_names(string name)
     {
         Assert.False(PageMarginBoxGeometry.TryGetRegion(name, PageW, PageH, MTop, MRight, MBottom, MLeft, out _));
+    }
+
+    [Fact]
+    public void TryGetRegion_clamps_bands_to_non_negative_when_margins_exceed_the_page()
+    {
+        // Margins exceeding the page would make a content band negative; it clamps to 0 so no
+        // negative region size reaches the painter (→ non-finite PDF coords). Mirrors the body
+        // content-box clamp (review thread on PageMarginBoxGeometry).
+        Assert.True(PageMarginBoxGeometry.TryGetRegion("top-center", 100, 100, 30, 60, 30, 60, out var top));
+        Assert.Equal(0, top.Width, 3);    // contentWidth = max(0, 100 − 60 − 60) = 0
+        Assert.True(PageMarginBoxGeometry.TryGetRegion("left-middle", 100, 100, 60, 30, 60, 30, out var left));
+        Assert.Equal(0, left.Height, 3);  // contentHeight = max(0, 100 − 60 − 60) = 0
     }
 }

@@ -1,6 +1,8 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System;
+
 namespace NetPdf.Rendering;
 
 /// <summary>
@@ -44,9 +46,12 @@ internal static class PageMarginBoxGeometry
         double marginTopPx, double marginRightPx, double marginBottomPx, double marginLeftPx,
         out MarginBoxRegion region)
     {
-        // Edge bands span the content extent between the perpendicular margins.
-        var contentWidth = pageWidthPx - marginLeftPx - marginRightPx;
-        var contentHeight = pageHeightPx - marginTopPx - marginBottomPx;
+        // Edge bands span the content extent between the perpendicular margins. Clamp to >= 0 so
+        // margins exceeding the page size can't produce negative band widths/heights → negative
+        // region sizes + non-finite PDF coords downstream (post-PR-#132 review; mirrors the
+        // pipeline's body content-box clamp).
+        var contentWidth = Math.Max(0, pageWidthPx - marginLeftPx - marginRightPx);
+        var contentHeight = Math.Max(0, pageHeightPx - marginTopPx - marginBottomPx);
         var rightX = pageWidthPx - marginRightPx;
         var bottomY = pageHeightPx - marginBottomPx;
 

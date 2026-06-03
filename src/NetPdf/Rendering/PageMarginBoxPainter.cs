@@ -6,47 +6,50 @@ using System.Collections.Generic;
 using System.Collections.Immutable;
 using AngleSharp.Dom;
 using NetPdf.Css.ComputedValues;
+using NetPdf.Css.Diagnostics;
 using NetPdf.Css.PagedMedia;
 using NetPdf.Css.Properties;
 using NetPdf.Diagnostics;
 using NetPdf.Layout.Boxes;
 using NetPdf.Layout.Inline;
 using NetPdf.Layout.Layouters;
-using NetPdf.Pdf;
 using NetPdf.Shaping;
 using NetPdf.Text.Bidi;
 
 namespace NetPdf.Rendering;
 
 /// <summary>
-/// Lays out + paints CSS Paged Media L3 §6.4 page margin boxes (running headers/footers). Phase 3
-/// Task 21 cycle 3 — the keystone for headers/footers.
+/// Lays out CSS Paged Media L3 §6.4 page margin boxes (running headers/footers) into
+/// <see cref="BoxFragment"/>s the shared <see cref="TextPainter"/> pass paints. Phase 3 Task 21
+/// cycle 3 — the keystone for headers/footers.
 /// </summary>
 /// <remarks>
 /// <para>
 /// Takes the margin boxes <see cref="AtPageMarginBoxResolver"/> resolved (name + raw <c>content</c>),
 /// resolves each <c>content</c> to text (literal strings + <c>attr()</c> via
 /// <see cref="CssContentList"/>), computes its page-box region via
-/// <see cref="PageMarginBoxGeometry"/>, lays the text out as one line with
-/// <see cref="InlineLayouter"/>, and paints it through the same <see cref="TextPainter"/>
-/// machinery the body text uses — so font subsetting/embedding is shared. Margin-box fragments are
-/// positioned in ABSOLUTE page px, so the painter is invoked with a (0,0) content origin (the body
-/// pass uses the page margins as its origin).
+/// <see cref="PageMarginBoxGeometry"/>, and lays the text out as one line with
+/// <see cref="InlineLayouter"/> — returning the fragments rather than painting them. The pipeline
+/// appends these to the body fragments and runs ONE <see cref="TextPainter.PaintText"/> over both,
+/// so a font used by body text AND a header/footer is subset + embedded ONCE (post-PR-#132 review
+/// P3). Fragment offsets are made relative to the shared content origin the painter uses.
 /// </para>
 /// <para>
-/// <b>Cycle 3 scope.</b> Literal-string + <c>attr()</c> content only; <c>counter()</c> /
-/// <c>string()</c> / <c>element()</c> emit <c>CSS-CONTENT-FUNCTION-UNSUPPORTED-001</c> and the box
-/// is skipped. Default typography (a fresh initial <see cref="ComputedStyle"/> — 16px, the
-/// resolver's default family, black); per-box font/color/alignment declarations + the §5.3
-/// three-box-per-edge sizing are later cycles (deferrals.md#layout-to-pdf-pipeline).
+/// <b>Cycle 3 scope.</b> Literal-string + <c>attr()</c> content only. A winning <c>none</c> /
+/// <c>normal</c> suppresses the box upstream (the resolver omits it). Unsupported functions
+/// (<c>counter()</c> / <c>string()</c> / <c>element()</c>) emit
+/// <c>CSS-CONTENT-FUNCTION-UNSUPPORTED-001</c> and the box is skipped. Default typography (a fresh
+/// initial <see cref="ComputedStyle"/> — 16px, the resolver's default family, black); per-box
+/// font/color/alignment declarations + the §5.3 three-box-per-edge sizing are later cycles
+/// (deferrals.md#layout-to-pdf-pipeline).
 /// </para>
 /// </remarks>
 internal static class PageMarginBoxPainter
 {
     private const double NormalLineHeightFactor = 1.2; // mirrors TextPainter's line-height: normal.
 
-    /// <summary>Paint every resolved margin box's content onto <paramref name="page"/>. A no-op
-    /// when <paramref name="boxes"/> is empty.</summary>
+    /// <summary>Lay out every resolved margin box's content into a fragment positioned for the
+    /// shared text pass. Returns an empty list when nothing paints.</summary>
     /// <param name="boxes">Margin boxes resolved by <see cref="AtPageMarginBoxResolver"/>.</param>
     /// <param name="pageWidthPx">Resolved page width (CSS px).</param>
     /// <param name="pageHeightPx">Resolved page height (CSS px).</param>
@@ -54,27 +57,24 @@ internal static class PageMarginBoxPainter
     /// <param name="marginRightPx">Resolved right page margin (CSS px).</param>
     /// <param name="marginBottomPx">Resolved bottom page margin (CSS px).</param>
     /// <param name="marginLeftPx">Resolved left page margin (CSS px).</param>
+    /// <param name="contentOriginLeftPx">The left content origin the shared <see cref="TextPainter"/>
+    /// pass uses (the body's left margin). Fragment <c>InlineOffset</c>s are made relative to it.</param>
+    /// <param name="contentOriginTopPx">The top content origin (the body's top margin).</param>
     /// <param name="host">A document element for <c>attr()</c> resolution (the box tree's root
     /// element). <c>attr()</c> against page furniture has no real element, so this is an
     /// approximation; literal content ignores it.</param>
-    /// <param name="page">Destination page (painted over the body text).</param>
-    /// <param name="document">Owns embedded-font objects.</param>
     /// <param name="shaper">The SAME resolver the body shaped with, kept alive past layout.</param>
-    /// <param name="pageHeightPt">Full page height in PDF points — the y-flip pivot.</param>
     /// <param name="diagnostics">Sink for unsupported-content / unresolved-font diagnostics.</param>
-    public static void Paint(
+    public static IReadOnlyList<BoxFragment> Layout(
         ImmutableArray<AtPageMarginBoxResolver.ResolvedMarginBox> boxes,
         double pageWidthPx, double pageHeightPx,
         double marginTopPx, double marginRightPx, double marginBottomPx, double marginLeftPx,
-        IElement host,
-        PdfPage page, PdfDocument document, HarfBuzzShaperResolver shaper,
-        double pageHeightPt, IDiagnosticsSink diagnostics)
+        double contentOriginLeftPx, double contentOriginTopPx,
+        IElement host, HarfBuzzShaperResolver shaper, IDiagnosticsSink diagnostics)
     {
         ArgumentNullException.ThrowIfNull(host);
-        ArgumentNullException.ThrowIfNull(page);
-        ArgumentNullException.ThrowIfNull(document);
         ArgumentNullException.ThrowIfNull(shaper);
-        if (boxes.IsDefaultOrEmpty) return;
+        if (boxes.IsDefaultOrEmpty) return Array.Empty<BoxFragment>();
 
         // One default-typography style + Box, shared across boxes (cycle 3 doesn't read per-box
         // style). No border/padding set → the painter's content-origin math collapses to the
@@ -122,42 +122,42 @@ internal static class PageMarginBoxPainter
             }
             if (inline.Lines.Length == 0) continue;
 
+            // Absolute page-px placement, then make it relative to the shared text pass's content
+            // origin (so the painter's `origin + offset` lands at the absolute position).
             var lineWidthPx = inline.Lines[0].TotalAdvance;
-            var inlineOffset = region.X + (region.Width - lineWidthPx) * region.HAlign;
-            var blockOffset = region.Y + (region.Height - lineHeightPx) * region.VAlign;
+            var absLeftPx = region.X + (region.Width - lineWidthPx) * region.HAlign;
+            var absTopPx = region.Y + (region.Height - lineHeightPx) * region.VAlign;
 
             fragments.Add(new BoxFragment(
                 Box: box,
-                InlineOffset: inlineOffset,
-                BlockOffset: blockOffset,
+                InlineOffset: absLeftPx - contentOriginLeftPx,
+                BlockOffset: absTopPx - contentOriginTopPx,
                 InlineSize: region.Width,
                 BlockSize: lineHeightPx * inline.Lines.Length,
                 InlineLayout: inline));
         }
 
-        if (fragments.Count == 0) return;
-
-        // Absolute page-px coordinates → paint with a (0,0) content origin (the painter adds the
-        // origin + does the y-flip). Same shaper instance that laid the text out.
-        TextPainter.PaintText(
-            fragments, page, document, shaper, pageHeightPt,
-            contentOriginLeftPx: 0, contentOriginTopPx: 0, diagnostics);
+        return fragments;
     }
 
     private static void EmitContentUnsupported(IDiagnosticsSink diagnostics, string boxName, string raw) =>
         diagnostics.Emit(new Diagnostic(
             DiagnosticCodes.CssContentFunctionUnsupported001,
+            // Sanitize the author-supplied value (strip control chars + cap length) before
+            // interpolating it into a host-visible message — same hardening as the CSS pipeline's
+            // diagnostic path (post-PR-#132 review P2; DiagnosticTextSanitizer).
             $"The page margin box @{boxName} uses a `content` value that is not yet supported " +
-            $"(\"{raw}\"). Cycle 3 renders literal strings + attr() only; counter()/string()/" +
-            "element() generated content is a tracked follow-up (deferrals.md#layout-to-pdf-pipeline). " +
-            "The box was not painted.",
+            $"(\"{DiagnosticTextSanitizer.Sanitize(raw)}\"). Cycle 3 renders literal strings + attr() " +
+            "only; counter()/string()/element() generated content is a tracked follow-up " +
+            "(deferrals.md#layout-to-pdf-pipeline). The box was not painted.",
             DiagnosticSeverity.Warning));
 
     private static void EmitFontUnresolved(IDiagnosticsSink diagnostics, string boxName, string detail) =>
         diagnostics.Emit(new Diagnostic(
             DiagnosticCodes.PaintTextFontUnresolved001,
             $"The page margin box @{boxName} was not painted because its font could not be " +
-            "resolved during layout: " + detail + " A bundled deterministic last-resort font (so " +
-            "the default path always resolves) is a tracked follow-up (deferrals.md#layout-to-pdf-pipeline).",
+            "resolved during layout: " + DiagnosticTextSanitizer.Sanitize(detail) + " A bundled " +
+            "deterministic last-resort font (so the default path always resolves) is a tracked " +
+            "follow-up (deferrals.md#layout-to-pdf-pipeline).",
             DiagnosticSeverity.Warning));
 }

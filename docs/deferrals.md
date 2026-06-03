@@ -2966,7 +2966,13 @@ flags the categories):
        side-table payload, then own declarations override); `AtPageMarginBoxResolver.PageContextDeclarations`
        exposes the `@page` rules' own declarations; the pipeline sources the root element box's style
        via `FindRootElementBox`. So `@page { color: gray; @top-center {…} }` tints the box and
-       `html { font-family:… }` flows into headers/footers. (`vertical-align` is not inherited.)
+       `html { font-family:… }` flows into headers/footers. Post-PR-#134 review hardened it:
+       `text-align` is NOT inherited (alignment is read from the box's OWN declarations) so the
+       page/root's UA-default `text-align: start` can't override the name-derived centering;
+       CSS-wide keywords are handled at the cascade level (`initial` resets, `inherit`/`unset` keep
+       inherited, `revert` approximated as inherited) instead of being treated as invalid leaf
+       values; invalid-value diagnostics carry the declaration's source location; the page-context
+       style is returned to the pool (`ReleaseFromBox`) instead of leaking.
        **REMAINING:**
        - **Conditional-group traversal:** `AtPageRules` walks only sheet media + `@media`; a bare
          `@page` nested in a matching `@supports` / `@layer` / `@container` does not yet contribute

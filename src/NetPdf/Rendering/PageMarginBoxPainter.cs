@@ -144,9 +144,11 @@ internal static class PageMarginBoxPainter
             }
             if (inline.Lines.Length == 0) continue;
 
-            // Alignment within the region: a DECLARED text-align / vertical-align overrides the
-            // box's name-derived default (e.g. top-left → start); otherwise keep the default.
-            var hAlign = MarginBoxStyle.HorizontalAlignFactor(style) ?? region.HAlign;
+            // Alignment within the region: a text-align / vertical-align DECLARED ON THE BOX
+            // overrides the box's name-derived default (e.g. top-left → start); otherwise keep the
+            // default. Read from the box's own declarations (not the inherited style) so the
+            // page/root's UA-default text-align can't override the name-derived alignment (review).
+            var hAlign = MarginBoxStyle.HorizontalAlignFactor(mb.Declarations) ?? region.HAlign;
             var vAlign = MarginBoxStyle.VerticalAlignFactor(mb.Declarations) ?? region.VAlign;
 
             // Absolute page-px placement, then make it relative to the shared text pass's content
@@ -164,6 +166,10 @@ internal static class PageMarginBoxPainter
                 InlineLayout: inline));
         }
 
+        // The page-context style is only a parent — each box copied the slots it needs — so return
+        // it to the pool now instead of leaking it (post-PR-#134 review; the per-box styles stay
+        // box-owned with their synthetic Box).
+        pageContextStyle.ReleaseFromBox();
         return fragments;
     }
 

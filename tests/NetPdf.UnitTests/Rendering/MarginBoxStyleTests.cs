@@ -38,8 +38,8 @@ public sealed class MarginBoxStyleTests
         var style = MarginBoxStyle.Build(ImmutableArray<CssDeclaration>.Empty);
 
         Assert.False(style.IsSet(PropertyId.FontSize));
-        Assert.False(style.IsSet(PropertyId.TextAlign));
-        Assert.Null(MarginBoxStyle.HorizontalAlignFactor(style));
+        Assert.False(style.IsSet(PropertyId.Color));
+        Assert.Null(MarginBoxStyle.HorizontalAlignFactor(ImmutableArray<CssDeclaration>.Empty));
     }
 
     [Theory]
@@ -52,8 +52,7 @@ public sealed class MarginBoxStyleTests
     [InlineData("justify-all", 0.0)]   // single-line margin box → justify-all behaves as start (review P3)
     public void HorizontalAlignFactor_maps_declared_text_align(string value, double expected)
     {
-        var style = MarginBoxStyle.Build(ImmutableArray.Create(Decl("text-align", value)));
-        Assert.Equal(expected, MarginBoxStyle.HorizontalAlignFactor(style));
+        Assert.Equal(expected, MarginBoxStyle.HorizontalAlignFactor(ImmutableArray.Create(Decl("text-align", value))));
     }
 
     [Theory]
@@ -101,9 +100,9 @@ public sealed class MarginBoxStyleTests
     public void HorizontalAlignFactor_honors_important_text_align()
     {
         // text-align: right !important must beat a later normal text-align: left.
-        var style = MarginBoxStyle.Build(ImmutableArray.Create(
-            Decl("text-align", "right", important: true), Decl("text-align", "left")));
-        Assert.Equal(1.0, MarginBoxStyle.HorizontalAlignFactor(style));
+        var decls = ImmutableArray.Create(
+            Decl("text-align", "right", important: true), Decl("text-align", "left"));
+        Assert.Equal(1.0, MarginBoxStyle.HorizontalAlignFactor(decls));
     }
 
     [Fact]
@@ -172,5 +171,35 @@ public sealed class MarginBoxStyleTests
         var parent = MarginBoxStyle.Build(ImmutableArray.Create(Decl("vertical-align", "top")));
         var child = MarginBoxStyle.Build(ImmutableArray<CssDeclaration>.Empty, parent);
         Assert.False(child.IsSet(PropertyId.VerticalAlign));
+    }
+
+    // ---- CSS-wide keywords, cycle-5 review P2 ----
+
+    [Fact]
+    public void Build_css_wide_initial_resets_an_inherited_value()
+    {
+        // color: initial clears the inherited red → the slot is unset → the reader falls back to
+        // the property's initial/default (NOT the inherited value).
+        var parent = MarginBoxStyle.Build(ImmutableArray.Create(Decl("color", "#ff0000")));
+        var child = MarginBoxStyle.Build(ImmutableArray.Create(Decl("color", "initial")), parent);
+        Assert.False(child.IsSet(PropertyId.Color));
+    }
+
+    [Fact]
+    public void Build_css_wide_inherit_keeps_the_parent_value()
+    {
+        var parent = MarginBoxStyle.Build(ImmutableArray.Create(Decl("color", "#ff0000")));
+        var child = MarginBoxStyle.Build(ImmutableArray.Create(Decl("color", "inherit")), parent);
+        Assert.True(FragmentPainter.TryResolveColor(child.Get(PropertyId.Color), 0xFF000000u, out var argb));
+        Assert.Equal(0xFFFF0000u, argb);   // inherit keeps the parent's red
+    }
+
+    [Fact]
+    public void HorizontalAlignFactor_initial_is_start_others_keep_name_derived()
+    {
+        // text-align: initial → start (0); inherit/unset/revert aren't modeled for alignment → null
+        // (keep the name-derived default).
+        Assert.Equal(0.0, MarginBoxStyle.HorizontalAlignFactor(ImmutableArray.Create(Decl("text-align", "initial"))));
+        Assert.Null(MarginBoxStyle.HorizontalAlignFactor(ImmutableArray.Create(Decl("text-align", "inherit"))));
     }
 }

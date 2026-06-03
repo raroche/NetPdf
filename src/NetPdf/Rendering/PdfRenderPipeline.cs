@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using AngleSharp.Dom;
 using NetPdf.Css.PagedMedia;
 using NetPdf.Diagnostics;
 using NetPdf.Layout.Boxes;
@@ -172,17 +173,54 @@ internal static class PdfRenderPipeline
             sink.Fragments, page, mediaBox.HeightPts, margins.LeftPx, margins.TopPx,
             paintBackgrounds: options.PrintBackgrounds, diagnostics);
 
-        // Text paints OVER backgrounds + borders. The shaper (kept alive above) lets the
-        // painter subset + embed the exact font program layout shaped, then emit glyph runs
-        // at their baselines. With the default SystemFontResolver this is not yet
-        // deterministic-for-text (a bundled fallback font is the next cycle); a fixed
+        // Page margin boxes (running headers/footers, Task 21 cycle 3): resolved from the same
+        // bare @page rules, laid out into fragments in the page margins. They paint through the
+        // SAME TextPainter pass as the body (post-PR-#132 review P3) so a font shared by body +
+        // header/footer is subset + embedded ONCE, not per-pass. Their fragments are offset
+        // relative to the body's content origin (the margins), exactly like body fragments.
+        // Literal + attr() content only this cycle; needs a host element (for attr()) —
+        // element-free documents skip them.
+        var textFragments = sink.Fragments;
+        var marginBoxes = AtPageMarginBoxResolver.Resolve(phase2.Sheets, media);
+        if (!marginBoxes.IsDefaultOrEmpty && FindHostElement(phase2.BoxRoot) is { } host)
+        {
+            var marginFragments = PageMarginBoxPainter.Layout(
+                marginBoxes, pageSize.WidthPx, pageSize.HeightPx,
+                margins.TopPx, margins.RightPx, margins.BottomPx, margins.LeftPx,
+                margins.LeftPx, margins.TopPx, host, shaper, diagnostics);
+            if (marginFragments.Count > 0)
+            {
+                var combined = new List<BoxFragment>(sink.Fragments.Count + marginFragments.Count);
+                combined.AddRange(sink.Fragments);
+                combined.AddRange(marginFragments);
+                textFragments = combined;
+            }
+        }
+
+        // Text paints OVER backgrounds + borders, ONE pass over body + margin-box fragments. The
+        // shaper (kept alive above) lets the painter subset + embed the exact font program layout
+        // shaped, then emit glyph runs at their baselines. With the default SystemFontResolver this
+        // is not yet deterministic-for-text (a bundled fallback font is the next cycle); a fixed
         // IFontResolver makes it fully reproducible.
         TextPainter.PaintText(
-            sink.Fragments, page, document, shaper, mediaBox.HeightPts,
+            textFragments, page, document, shaper, mediaBox.HeightPts,
             margins.LeftPx, margins.TopPx, diagnostics);
 
         var bytes = document.Save();
         return new RenderOutcome(bytes, document.Pages.Count, diagnostics.Items);
+    }
+
+    /// <summary>The first DOM element backing any box in the tree (depth-first) — the attr() host
+    /// for page margin-box content. Page furniture has no element of its own, so the document's
+    /// root element is a reasonable stand-in; <see langword="null"/> only for an element-free
+    /// document (then margin boxes are skipped).</summary>
+    private static IElement? FindHostElement(Box? root)
+    {
+        if (root is null) return null;
+        if (root.SourceElement is { } el) return el;
+        foreach (var child in root.Children)
+            if (FindHostElement(child) is { } found) return found;
+        return null;
     }
 
     private static void EmitTextFontUnresolved(IDiagnosticsSink diagnostics, string detail) =>

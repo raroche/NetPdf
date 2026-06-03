@@ -716,16 +716,38 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
-    public void Page_margin_box_does_not_inherit_page_context_style_this_cycle()
+    public void Page_margin_box_inherits_color_from_the_page_context()
     {
-        // Pins cycle-4 own-declarations-only: @page { color: red } does NOT tint the margin box
-        // (page-context inheritance is a tracked follow-up, review P2). The footer paints black.
+        // Cycle 5: a margin box inherits from the @page context — @page { color: red } tints the
+        // footer even though the box declares no color of its own.
         var pdf = Latin1(HtmlPdf.Convert(
             "<!DOCTYPE html><html><head><style>@page { color: red; @bottom-center { content: \"AB\" } }</style>" +
             "</head><body></body></html>",
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
-        Assert.Contains("BT", pdf);                 // the footer IS painted
-        Assert.DoesNotContain("1 0 0 rg", pdf);     // ... but NOT in the inherited red (own-decls only)
+        Assert.Contains("1 0 0 rg", pdf);   // inherited red from @page
+    }
+
+    [Fact]
+    public void Page_margin_box_own_color_overrides_inherited_page_context()
+    {
+        // The box's own declaration wins over the inherited @page value.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { color: red; @bottom-center { content: \"AB\"; color: #0000ff } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Contains("0 0 1 rg", pdf);        // the box's own blue
+        Assert.DoesNotContain("1 0 0 rg", pdf);  // not the inherited red
+    }
+
+    [Fact]
+    public void Page_margin_box_inherits_color_from_the_document_root()
+    {
+        // The chain reaches the document root: html { color } flows root → page context → margin box.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>html { color: #00ff00 } @page { @bottom-center { content: \"AB\" } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Contains("0 1 0 rg", pdf);   // inherited lime from the root element
     }
 
     [Fact]
@@ -738,6 +760,73 @@ public sealed class HtmlPdfConvertTests
             "</head><body></body></html>",
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
         Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
+    }
+
+    // ---- post-PR-#134 review ----
+
+    [Fact]
+    public void Page_margin_box_without_declared_text_align_keeps_name_derived_centering()
+    {
+        // REGRESSION (review thread 1): @top-center with no text-align must stay CENTERED — the
+        // page/root's UA-default text-align:start must NOT be inherited as an override. Body empty
+        // → the footer is the only text. Centered in the top band (centre ≈ 290pt) sits well right
+        // of the 72pt left content edge that a spuriously-inherited start alignment would produce.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"AB\" } }</style></head>" +
+            "<body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.True(FirstTd(pdf).X > 150, $"expected centered (~290pt), got {FirstTd(pdf).X}pt — start was wrongly inherited");
+    }
+
+    [Fact]
+    public void Page_margin_box_page_text_align_does_not_override_name_derived()
+    {
+        // @page text-align:left does NOT override @top-center's name-derived centering — only a
+        // text-align declared ON THE BOX does (review P3). The footer stays centered.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { text-align: left; @top-center { content: \"AB\" } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.True(FirstTd(pdf).X > 150);   // still centered, not left-aligned by the @page rule
+    }
+
+    [Fact]
+    public void Page_margin_box_text_align_initial_is_start()
+    {
+        // text-align: initial → start (the property's initial value), overriding @top-center's
+        // name-derived centering → the line sits at the left content edge.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"AB\"; text-align: initial } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.InRange(FirstTd(pdf).X, 71.0, 73.0);   // start → 72pt left edge
+    }
+
+    [Fact]
+    public void Page_margin_box_color_initial_resets_inherited_color_without_a_diagnostic()
+    {
+        // @page color red + box color:initial → resets to the initial (black), NOT the inherited
+        // red, and emits NO invalid-value diagnostic (initial is a valid CSS-wide keyword, review P2).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { color: red; @bottom-center { content:\"AB\"; color: initial } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        var pdf = Latin1(result.Pdf);
+        Assert.Contains("BT", pdf);
+        Assert.DoesNotContain("1 0 0 rg", pdf);   // reset to initial, not inherited red
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
+    }
+
+    [Fact]
+    public void Page_margin_box_relative_font_size_falls_back_to_default_for_now()
+    {
+        // PIN (review P2): font-size: 2em isn't resolved against the page-context font yet — it
+        // falls back to the 16px default → 12pt Tf (not 32px/24pt). Documents the deferral.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content:\"AB\"; font-size: 2em } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(12.0, FirstTf(pdf), 1);   // 16px default × 0.75
     }
 
     /// <summary>The font size (pt) of the first <c>… &lt;size&gt; Tf</c> operator.</summary>

@@ -110,6 +110,27 @@ internal static class AtPageMarginBoxResolver
         return output.Count == 0 ? ImmutableArray<ResolvedMarginBox>.Empty : output.ToImmutable();
     }
 
+    /// <summary>The bare <c>@page</c> rules' OWN declarations (<c>color</c> / <c>font-*</c> / …) in
+    /// source order across occurrences — the page-context style the margin boxes inherit from (CSS
+    /// Page 3, Task 21 cycle 5). The margin boxes are in each rule's <see cref="CssAtRule.ChildRules"/>,
+    /// not here. The orchestrator builds the page-context <c>ComputedStyle</c> from these (its
+    /// whitelist ignores <c>margin</c> / <c>size</c> / non-inherited declarations).</summary>
+    public static ImmutableArray<CssDeclaration> PageContextDeclarations(
+        IEnumerable<CssStylesheet> sheets, CssMediaContext media)
+    {
+        ArgumentNullException.ThrowIfNull(sheets);
+        ArgumentNullException.ThrowIfNull(media);
+
+        ImmutableArray<CssDeclaration>.Builder? decls = null;
+        foreach (var at in AtPageRules.EnumerateBarePageRules(sheets, media))
+        {
+            if (at.Declarations.IsDefaultOrEmpty) continue;
+            decls ??= ImmutableArray.CreateBuilder<CssDeclaration>();
+            decls.AddRange(at.Declarations);
+        }
+        return decls is null ? ImmutableArray<CssDeclaration>.Empty : decls.ToImmutable();
+    }
+
     /// <summary>Record <paramref name="raw"/> as the per-box cascade winner if it wins per CSS
     /// Cascade §5 (importance) + §7.4 (source order): an <c>!important</c> beats a normal
     /// declaration regardless of order; among equal importance the later (this one, visited in

@@ -650,6 +650,51 @@ public sealed class HtmlPdfConvertTests
         Assert.DoesNotContain(longArg, warning.Message);   // the full 300-char value did not leak
     }
 
+    // ---- Per-box style (Task 21 cycle 4) ----
+
+    [Fact]
+    public void Page_margin_box_honors_declared_color()
+    {
+        // @bottom-center { color: #ff0000 } → the footer glyphs paint with a red fill.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content: \"AB\"; color: #ff0000 } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Contains("1 0 0 rg", pdf);   // rgb(255,0,0) text fill
+    }
+
+    [Fact]
+    public void Page_margin_box_honors_declared_font_size()
+    {
+        // font-size: 24px → 18pt in the Tf operator (× 0.75), vs the default 16px → 12pt.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content: \"AB\"; font-size: 24px } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(18.0, FirstTf(pdf), 1);
+    }
+
+    [Fact]
+    public void Page_margin_box_declared_text_align_overrides_the_name_default()
+    {
+        // @top-center defaults to centered; text-align: left pins the line to the band's left edge
+        // (the left margin = 96px → 72pt on A4), distinctly left of the centered position.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"AB\"; text-align: left } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.InRange(FirstTd(pdf).X, 71.0, 73.0);   // ≈ 72pt left content edge, not centered
+    }
+
+    /// <summary>The font size (pt) of the first <c>… &lt;size&gt; Tf</c> operator.</summary>
+    private static double FirstTf(string pdf)
+    {
+        var idx = pdf.IndexOf(" Tf", StringComparison.Ordinal);
+        Assert.True(idx > 0, "expected a font-select (Tf) operator in the content stream");
+        var nums = pdf[..idx].TrimEnd().Split(' ');   // … /Fn <size>
+        return double.Parse(nums[^1], CultureInfo.InvariantCulture);
+    }
+
     /// <summary>The (x, y) operands of the first <c>… Td</c> text-position operator, in pt.</summary>
     private static (double X, double Y) FirstTd(string pdf)
     {

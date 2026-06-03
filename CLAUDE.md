@@ -116,12 +116,16 @@ cycle 2 (page size + post-PR-#131 review hardening, PR #131): a bare `@page { ma
 `PdfRenderPipeline` (`MediaBox` + content area, honoring `PreferCssPageSize`). The `size`
 descriptor is recovered in the pre-pass (AngleSharp drops it); `size !important` + paper-size-`@media`
 ignore (§3.3) + duplicate-grammar reject + percent-margins-against-the-resolved-size all landed in
-the #131 review. **Cycle 3 — page-margin boxes (in progress, branch
-`phase-3-task-21-page-margin-boxes`):** the 16 §6.4 boxes paint literal + `attr()` content —
-`AtPageMarginBoxResolver` → `PageMarginBoxGeometry` (regions/alignment) → `PageMarginBoxPainter`
-(`CssContentList` → `InlineLayouter` → a second `TextPainter` pass at a (0,0) origin). Next: cycle 4
-(per-box style / `counter(page)` page numbers / §5.3 sizing), OR `@page` selectors
-(`:first`/`:left`/`:right`/`:blank`) + named pages — Roland's pick. Blocked (see `deferrals.md`):
+the #131 review. **Cycle 3 — page-margin boxes (content) — merged (PR #132):** the 16 §6.4 boxes
+paint literal + `attr()` content — `AtPageMarginBoxResolver` → `PageMarginBoxGeometry`
+(regions/alignment) → `PageMarginBoxPainter` (`CssContentList` → `InlineLayouter` → the shared
+`TextPainter` pass; `!important` cascade + `none`/`normal` suppression + sanitized diagnostics +
+one-font-embed landed in the #132 review). **Cycle 4 — per-box style (in progress, branch
+`phase-3-task-21-margin-box-style`):** a margin box's declared `font-*`/`color` flow through the
+shaper + painter; declared `text-align`/`vertical-align` override the name-derived alignment, via
+new `MarginBoxStyle` (per-box `ComputedStyle` from the declared longhands). Next: cycle 5
+(page/root inheritance / the `font` shorthand / `counter(page)` page numbers / §5.3 sizing), OR
+`@page` selectors (`:first`/`:left`/`:right`/`:blank`) + named pages — Roland's pick. Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).
 For the live state, read the **current-state pointer at the top of [PROGRESS.md](PROGRESS.md)**

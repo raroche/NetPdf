@@ -21,27 +21,34 @@ namespace NetPdf.Rendering;
 /// <summary>
 /// Lays out CSS Paged Media L3 §6.4 page margin boxes (running headers/footers) into
 /// <see cref="BoxFragment"/>s the shared <see cref="TextPainter"/> pass paints. Phase 3 Task 21
-/// cycle 3 — the keystone for headers/footers.
+/// cycle 3 (content) + cycle 4 (per-box style) — the keystone for headers/footers.
 /// </summary>
 /// <remarks>
 /// <para>
-/// Takes the margin boxes <see cref="AtPageMarginBoxResolver"/> resolved (name + raw <c>content</c>),
-/// resolves each <c>content</c> to text (literal strings + <c>attr()</c> via
-/// <see cref="CssContentList"/>), computes its page-box region via
+/// Takes the margin boxes <see cref="AtPageMarginBoxResolver"/> resolved (name + raw <c>content</c>
+/// + declarations), resolves each <c>content</c> to text (literal strings + <c>attr()</c> via
+/// <see cref="CssContentList"/>), builds the box's <see cref="ComputedStyle"/> from its declared
+/// longhands (<see cref="MarginBoxStyle"/>), computes its page-box region via
 /// <see cref="PageMarginBoxGeometry"/>, and lays the text out as one line with
-/// <see cref="InlineLayouter"/> — returning the fragments rather than painting them. The pipeline
-/// appends these to the body fragments and runs ONE <see cref="TextPainter.PaintText"/> over both,
-/// so a font used by body text AND a header/footer is subset + embedded ONCE (post-PR-#132 review
-/// P3). Fragment offsets are made relative to the shared content origin the painter uses.
+/// <see cref="InlineLayouter"/> in that style — returning the fragments rather than painting them.
+/// The pipeline appends these to the body fragments and runs ONE <see cref="TextPainter.PaintText"/>
+/// over both, so a font used by body text AND a header/footer is subset + embedded ONCE
+/// (post-PR-#132 review P3). Fragment offsets are made relative to the shared content origin.
 /// </para>
 /// <para>
-/// <b>Cycle 3 scope.</b> Literal-string + <c>attr()</c> content only. A winning <c>none</c> /
+/// <b>Style (cycle 4).</b> The box's declared <c>font-family</c> / <c>font-size</c> /
+/// <c>font-weight</c> / <c>font-style</c> / <c>color</c> flow through the shaper + painter; a
+/// declared <c>text-align</c> / <c>vertical-align</c> overrides the box's name-derived alignment.
+/// Unspecified properties fall back to the reader defaults (16px / default family / black /
+/// name-derived alignment). Page/root inheritance, the <c>font</c> shorthand, and relative font
+/// sizes are tracked follow-ups (deferrals.md#layout-to-pdf-pipeline).
+/// </para>
+/// <para>
+/// <b>Content scope.</b> Literal-string + <c>attr()</c> content only. A winning <c>none</c> /
 /// <c>normal</c> suppresses the box upstream (the resolver omits it). Unsupported functions
 /// (<c>counter()</c> / <c>string()</c> / <c>element()</c>) emit
-/// <c>CSS-CONTENT-FUNCTION-UNSUPPORTED-001</c> and the box is skipped. Default typography (a fresh
-/// initial <see cref="ComputedStyle"/> — 16px, the resolver's default family, black); per-box
-/// font/color/alignment declarations + the §5.3 three-box-per-edge sizing are later cycles
-/// (deferrals.md#layout-to-pdf-pipeline).
+/// <c>CSS-CONTENT-FUNCTION-UNSUPPORTED-001</c> and the box is skipped. The §5.3 three-box-per-edge
+/// sizing is a later cycle.
 /// </para>
 /// </remarks>
 internal static class PageMarginBoxPainter
@@ -76,13 +83,6 @@ internal static class PageMarginBoxPainter
         ArgumentNullException.ThrowIfNull(shaper);
         if (boxes.IsDefaultOrEmpty) return Array.Empty<BoxFragment>();
 
-        // One default-typography style + Box, shared across boxes (cycle 3 doesn't read per-box
-        // style). No border/padding set → the painter's content-origin math collapses to the
-        // fragment offset. ComputedStyle.Rent() is box-owned once wrapped (Dispose is a no-op),
-        // so it isn't returned to the pool — a negligible per-render miss, not a leak.
-        var style = ComputedStyle.Rent();
-        var box = Box.TextRun(string.Empty, style);
-        var lineHeightPx = style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16) * NormalLineHeightFactor;
         var availableInlinePx = Math.Max(pageWidthPx, 1.0); // positive + finite; NoWrap keeps one line.
 
         var fragments = new List<BoxFragment>(boxes.Length);
@@ -99,6 +99,14 @@ internal static class PageMarginBoxPainter
                     mb.Name, pageWidthPx, pageHeightPx,
                     marginTopPx, marginRightPx, marginBottomPx, marginLeftPx, out var region))
                 continue; // unknown name (resolver filters these out already).
+
+            // Per-box style from the box's declared longhands (font-* / color → shaping + fill).
+            // No border/padding is set, so the painter's content-origin math collapses to the
+            // fragment offset. The style is box-owned, so the rented instance isn't pooled — a
+            // negligible per-render miss, not a leak.
+            var style = MarginBoxStyle.Build(mb.Declarations);
+            var box = Box.TextRun(string.Empty, style);
+            var lineHeightPx = style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16) * NormalLineHeightFactor;
 
             InlineLayoutResult inline;
             try
@@ -122,11 +130,16 @@ internal static class PageMarginBoxPainter
             }
             if (inline.Lines.Length == 0) continue;
 
+            // Alignment within the region: a DECLARED text-align / vertical-align overrides the
+            // box's name-derived default (e.g. top-left → start); otherwise keep the default.
+            var hAlign = MarginBoxStyle.HorizontalAlignFactor(style) ?? region.HAlign;
+            var vAlign = MarginBoxStyle.VerticalAlignFactor(mb.Declarations) ?? region.VAlign;
+
             // Absolute page-px placement, then make it relative to the shared text pass's content
             // origin (so the painter's `origin + offset` lands at the absolute position).
             var lineWidthPx = inline.Lines[0].TotalAdvance;
-            var absLeftPx = region.X + (region.Width - lineWidthPx) * region.HAlign;
-            var absTopPx = region.Y + (region.Height - lineHeightPx) * region.VAlign;
+            var absLeftPx = region.X + (region.Width - lineWidthPx) * hAlign;
+            var absTopPx = region.Y + (region.Height - lineHeightPx) * vAlign;
 
             fragments.Add(new BoxFragment(
                 Box: box,

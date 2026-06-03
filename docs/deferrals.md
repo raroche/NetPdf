@@ -2934,14 +2934,32 @@ flags the categories):
        is relative to A5); invalid duplicate `size` grammar (`A4 letter`, `portrait landscape`)
        is rejected; and a `size` qualified by a paper-size `@media`/sheet media query
        (`width`/`height`/`aspect-ratio`/`orientation`/device-*) is ignored per CSS Page 3 §3.3.
+       **Cycle 3 — margin boxes — DONE (literal + `attr()`):** the 16 CSS Page 3 §6.4 margin boxes
+       (running headers/footers). The pre-pass already recovered them as `@page` child rules;
+       `AtPageMarginBoxResolver` (`src/NetPdf.Css/PagedMedia/`) resolves the content-bearing ones
+       to (name, raw `content`); `PageMarginBoxGeometry` computes each box's page-px region from
+       the resolved size + margins; `PageMarginBoxPainter` resolves `content` (literal strings +
+       `attr()` via `CssContentList`), lays the text out as one line via `InlineLayouter`, and
+       paints it through the shared `TextPainter` (a second pass with a (0,0) content origin so the
+       margin-box fragments carry absolute page-px). Text is name-aligned within the box
+       (`-left`/`-top`→start, `-center`/`-middle`→center, `-right`/`-bottom`→end; corners centered).
+       Unsupported content (`counter()`/`string()`/`element()`) emits
+       `CSS-CONTENT-FUNCTION-UNSUPPORTED-001` + skips the box.
        **REMAINING:**
        - **Conditional-group traversal:** `AtPageRules` walks only sheet media + `@media`; a bare
          `@page` nested in a matching `@supports` / `@layer` / `@container` does not yet contribute
          (the cascade honors those). Recursing needs the cascade's `@supports` evaluator lifted out
          of `CascadeResolver` into a shared helper.
+       - **Margin boxes — later cycles:** `counter(page)`/`counter(pages)` page numbers,
+         `string()` running headers (needs `string-set` collection), and `element()` running
+         elements; per-box style (font / color / `text-align` / `vertical-align` — cycle 3 uses
+         default typography + name-derived alignment + a fresh initial style); the CSS Page 3 §5.3
+         three-box-per-edge sizing (cycle 3 gives each box the full edge band + aligns within it, so
+         long sibling boxes on one edge can overlap, and content overflowing a band isn't clipped);
+         box backgrounds/borders. A fresh `ComputedStyle.Rent()` per render isn't returned to the
+         pool (box-owned) — a negligible miss to fix when per-box style lands.
        - **Later cycles:** `@page :first`/`:left`/`:right`/`:blank` selectors + named pages;
-         `calc()` / font-relative margin units (absolute lengths + percentages are done);
-         the 16 page-margin boxes; and `string()`/`element()`/`counter(page)` generated content.
+         `calc()` / font-relative margin units (absolute lengths + percentages are done).
   4. **Deterministic default font** — `SystemFontResolver` reads platform
      fonts (non-deterministic); a bundled last-resort font is needed for
      the determinism contract (CLAUDE.md rule #4) once PDFs are emitted.

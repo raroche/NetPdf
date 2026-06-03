@@ -528,6 +528,58 @@ public sealed class HtmlPdfConvertTests
         Assert.Equal(1, Latin1(result.Pdf).Split("/FontFile2").Length - 1);   // ONE embedded program
     }
 
+    // ---- Page margin boxes (Task 21 cycle 3) ----
+
+    [Fact]
+    public void Page_margin_box_paints_its_literal_content_in_the_bottom_margin()
+    {
+        // @bottom-center { content: "AB" } → a footer painted (BT…Tj…ET) in the bottom page
+        // margin. SyntheticFont carries 'A'/'B', so the glyphs actually render. The body is empty,
+        // so the ONLY text object is the footer — its Td y lands in the bottom-margin band.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content: \"AB\" } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        var pdf = Latin1(result.Pdf);
+
+        Assert.Contains("BT", pdf);           // a text object was painted
+        Assert.Contains(" Tj", pdf);          // glyphs shown
+        Assert.Contains("/FontFile2", pdf);   // the font was subset + embedded
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PaintTextFontUnresolved001);
+
+        // The footer sits in the bottom margin: with the default 96px (= 72pt) margins on A4
+        // (842.25pt tall), its baseline is within the bottom band (small PDF-y), NOT up in the
+        // content area (y > 700pt) where body text would be.
+        var td = FirstTd(pdf);
+        Assert.InRange(td.Y, 0.0, 72.0);
+    }
+
+    [Fact]
+    public void Page_margin_box_with_unsupported_content_function_is_skipped_with_a_diagnostic()
+    {
+        // counter(page) generated content is a later cycle — it must emit a diagnostic and paint
+        // nothing (not crash, not silently drop). The body is empty, so no text at all is painted.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content: counter(page) } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        var pdf = Latin1(result.Pdf);
+
+        Assert.StartsWith("%PDF-", pdf);
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssContentFunctionUnsupported001);
+        Assert.DoesNotContain("BT", pdf);   // nothing painted
+    }
+
+    /// <summary>The (x, y) operands of the first <c>… Td</c> text-position operator, in pt.</summary>
+    private static (double X, double Y) FirstTd(string pdf)
+    {
+        var idx = pdf.IndexOf(" Td", StringComparison.Ordinal);
+        Assert.True(idx > 0, "expected a text-position (Td) operator in the content stream");
+        var nums = pdf[..idx].TrimEnd().Split(' ');   // … <x> <y>
+        return (double.Parse(nums[^2], CultureInfo.InvariantCulture),
+            double.Parse(nums[^1], CultureInfo.InvariantCulture));
+    }
+
     /// <summary>A deterministic <see cref="IFontResolver"/> that resolves every query to the
     /// in-repo <see cref="SyntheticFont"/> (a minimal valid TTF with glyphs for 'A'/'B').
     /// Completes synchronously, as the synchronous layout shaping path requires.</summary>

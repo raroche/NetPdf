@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
+using AngleSharp.Dom;
 using NetPdf.Css.PagedMedia;
 using NetPdf.Diagnostics;
 using NetPdf.Layout.Boxes;
@@ -181,8 +182,34 @@ internal static class PdfRenderPipeline
             sink.Fragments, page, document, shaper, mediaBox.HeightPts,
             margins.LeftPx, margins.TopPx, diagnostics);
 
+        // Page margin boxes (running headers/footers, Task 21 cycle 3): resolved from the same
+        // bare @page rules, laid out + painted in the page margins. Their fragments are absolute
+        // page-px, so the painter inside takes a (0,0) content origin. Literal + attr() content
+        // only this cycle. Needs a host element (for attr()); element-free documents skip them.
+        var marginBoxes = AtPageMarginBoxResolver.Resolve(phase2.Sheets, media);
+        if (!marginBoxes.IsDefaultOrEmpty && FindHostElement(phase2.BoxRoot) is { } host)
+        {
+            PageMarginBoxPainter.Paint(
+                marginBoxes, pageSize.WidthPx, pageSize.HeightPx,
+                margins.TopPx, margins.RightPx, margins.BottomPx, margins.LeftPx,
+                host, page, document, shaper, mediaBox.HeightPts, diagnostics);
+        }
+
         var bytes = document.Save();
         return new RenderOutcome(bytes, document.Pages.Count, diagnostics.Items);
+    }
+
+    /// <summary>The first DOM element backing any box in the tree (depth-first) — the attr() host
+    /// for page margin-box content. Page furniture has no element of its own, so the document's
+    /// root element is a reasonable stand-in; <see langword="null"/> only for an element-free
+    /// document (then margin boxes are skipped).</summary>
+    private static IElement? FindHostElement(Box? root)
+    {
+        if (root is null) return null;
+        if (root.SourceElement is { } el) return el;
+        foreach (var child in root.Children)
+            if (FindHostElement(child) is { } found) return found;
+        return null;
     }
 
     private static void EmitTextFontUnresolved(IDiagnosticsSink diagnostics, string detail) =>

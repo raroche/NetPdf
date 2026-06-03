@@ -110,12 +110,18 @@ For anything not covered above, ask Roland before guessing.
 
 Phase 5 layout→PDF production wiring + Phase 3 in progress (interleaved per Roland's
 sequencing). Latest: Phase 3 Task 21 — the `@page` rule. Cycle 1 (page margins, PR #130) +
-cycle 2 (page size): a bare `@page { margin… }` / `{ size: … }` overrides the page margins +
-size via `AtPageMarginResolver` / `AtPageSizeResolver` (`src/NetPdf.Css/PagedMedia/`, sharing
-`AtPageRules` cascade-style applicability) → `PdfRenderPipeline` (`MediaBox` + content area,
-honoring `PreferCssPageSize`). The `size` descriptor is recovered in the pre-pass (AngleSharp
-drops it). Next: `@page` selectors (`:first`/`:left`/`:right`/`:blank`) + named pages, OR the
-page-margin boxes (the keystone for headers/footers) — Roland's pick. Blocked (see `deferrals.md`):
+cycle 2 (page size + post-PR-#131 review hardening, PR #131): a bare `@page { margin… }` /
+`{ size: … }` overrides the page margins + size via `AtPageMarginResolver` / `AtPageSizeResolver`
+(`src/NetPdf.Css/PagedMedia/`, sharing `AtPageRules` cascade-style applicability) →
+`PdfRenderPipeline` (`MediaBox` + content area, honoring `PreferCssPageSize`). The `size`
+descriptor is recovered in the pre-pass (AngleSharp drops it); `size !important` + paper-size-`@media`
+ignore (§3.3) + duplicate-grammar reject + percent-margins-against-the-resolved-size all landed in
+the #131 review. **Cycle 3 — page-margin boxes (in progress, branch
+`phase-3-task-21-page-margin-boxes`):** the 16 §6.4 boxes paint literal + `attr()` content —
+`AtPageMarginBoxResolver` → `PageMarginBoxGeometry` (regions/alignment) → `PageMarginBoxPainter`
+(`CssContentList` → `InlineLayouter` → a second `TextPainter` pass at a (0,0) origin). Next: cycle 4
+(per-box style / `counter(page)` page numbers / §5.3 sizing), OR `@page` selectors
+(`:first`/`:left`/`:right`/`:blank`) + named pages — Roland's pick. Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).
 For the live state, read the **current-state pointer at the top of [PROGRESS.md](PROGRESS.md)**

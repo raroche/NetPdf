@@ -650,6 +650,105 @@ public sealed class HtmlPdfConvertTests
         Assert.DoesNotContain(longArg, warning.Message);   // the full 300-char value did not leak
     }
 
+    // ---- Per-box style (Task 21 cycle 4) ----
+
+    [Fact]
+    public void Page_margin_box_honors_declared_color()
+    {
+        // @bottom-center { color: #ff0000 } → the footer glyphs paint with a red fill.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content: \"AB\"; color: #ff0000 } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Contains("1 0 0 rg", pdf);   // rgb(255,0,0) text fill
+    }
+
+    [Fact]
+    public void Page_margin_box_honors_declared_font_size()
+    {
+        // font-size: 24px → 18pt in the Tf operator (× 0.75), vs the default 16px → 12pt.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content: \"AB\"; font-size: 24px } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(18.0, FirstTf(pdf), 1);
+    }
+
+    [Fact]
+    public void Page_margin_box_declared_text_align_overrides_the_name_default()
+    {
+        // @top-center defaults to centered; text-align: left pins the line to the band's left edge
+        // (the left margin = 96px → 72pt on A4), distinctly left of the centered position.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"AB\"; text-align: left } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.InRange(FirstTd(pdf).X, 71.0, 73.0);   // ≈ 72pt left content edge, not centered
+    }
+
+    [Fact]
+    public void Page_margin_box_color_important_wins_across_page_rules()
+    {
+        // color: #ff0000 !important in one @page beats a later normal color: #0000ff in another
+        // (per-property cascade across @page occurrences — post-PR-#133 review P2).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>" +
+            "@page { @bottom-center { content: \"AB\"; color: #ff0000 !important } }" +
+            "@page { @bottom-center { color: #0000ff } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Contains("1 0 0 rg", pdf);        // red (the !important) won
+        Assert.DoesNotContain("0 0 1 rg", pdf);  // not the later normal blue
+    }
+
+    [Fact]
+    public void Page_margin_box_ignores_unsupported_padding_declaration()
+    {
+        // padding-left would shift the text if materialized (the painter reads padding from the
+        // style); the cycle-4 whitelist excludes it, so the line stays at the same X (review P2).
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var withPad = FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"AB\"; padding-left: 50px } }</style>" +
+            "</head><body></body></html>", opts)));
+        var without = FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"AB\" } }</style>" +
+            "</head><body></body></html>", opts)));
+        Assert.Equal(without.X, withPad.X, 3);   // padding-left was ignored → no horizontal shift
+    }
+
+    [Fact]
+    public void Page_margin_box_does_not_inherit_page_context_style_this_cycle()
+    {
+        // Pins cycle-4 own-declarations-only: @page { color: red } does NOT tint the margin box
+        // (page-context inheritance is a tracked follow-up, review P2). The footer paints black.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { color: red; @bottom-center { content: \"AB\" } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Contains("BT", pdf);                 // the footer IS painted
+        Assert.DoesNotContain("1 0 0 rg", pdf);     // ... but NOT in the inherited red (own-decls only)
+    }
+
+    [Fact]
+    public void Page_margin_box_invalid_style_value_is_surfaced()
+    {
+        // color: bogus is invalid → the box still paints (default color), but the invalid value is
+        // surfaced via the CSS diagnostic path rather than silently swallowed (review P3).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content: \"AB\"; color: bogus } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
+    }
+
+    /// <summary>The font size (pt) of the first <c>… &lt;size&gt; Tf</c> operator.</summary>
+    private static double FirstTf(string pdf)
+    {
+        var idx = pdf.IndexOf(" Tf", StringComparison.Ordinal);
+        Assert.True(idx > 0, "expected a font-select (Tf) operator in the content stream");
+        var nums = pdf[..idx].TrimEnd().Split(' ');   // … /Fn <size>
+        return double.Parse(nums[^1], CultureInfo.InvariantCulture);
+    }
+
     /// <summary>The (x, y) operands of the first <c>… Td</c> text-position operator, in pt.</summary>
     private static (double X, double Y) FirstTd(string pdf)
     {

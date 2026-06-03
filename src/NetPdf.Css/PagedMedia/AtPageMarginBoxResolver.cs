@@ -41,10 +41,14 @@ namespace NetPdf.Css.PagedMedia;
 /// </remarks>
 internal static class AtPageMarginBoxResolver
 {
-    /// <summary>A margin box resolved to its name + the raw value of its winning <c>content</c>
+    /// <summary>A margin box resolved to its name, the raw value of its winning <c>content</c>
     /// declaration (importance/quoting intact — the orchestrator resolves it via
-    /// <c>CssContentList</c>).</summary>
-    internal readonly record struct ResolvedMarginBox(string Name, string ContentRawValue);
+    /// <c>CssContentList</c>), and the box's declarations (all of them, in source order across
+    /// <c>@page</c> occurrences) from which the orchestrator builds the box's
+    /// <c>ComputedStyle</c> (font / color / <c>text-align</c> / <c>vertical-align</c>, Task 21
+    /// cycle 4).</summary>
+    internal readonly record struct ResolvedMarginBox(
+        string Name, string ContentRawValue, ImmutableArray<CssDeclaration> Declarations);
 
     /// <summary>The 16 CSS Paged Media L3 §6.4 margin-box names, in canonical paint order
     /// (corners + edges, top → bottom). The resolver emits present boxes in this order so the
@@ -68,10 +72,11 @@ internal static class AtPageMarginBoxResolver
         ArgumentNullException.ThrowIfNull(sheets);
         ArgumentNullException.ThrowIfNull(media);
 
-        // Per box name, the cascade-winning `content`: importance then source order. A later
-        // normal declaration can't override an earlier `!important` one — within a box body AND
-        // across @page rules (post-PR-#132 review P1).
-        Dictionary<string, Candidate>? candidates = null;
+        // Per box name accumulate: the cascade-winning `content` (importance then source order —
+        // a later normal can't override an earlier `!important`, within a box body AND across
+        // @page rules, post-PR-#132 review P1) + ALL declarations in source order (the orchestrator
+        // builds the box's ComputedStyle from these — Task 21 cycle 4).
+        Dictionary<string, Acc>? accs = null;
         foreach (var at in AtPageRules.EnumerateBarePageRules(sheets, media))
         {
             foreach (var child in at.ChildRules)
@@ -79,28 +84,28 @@ internal static class AtPageMarginBoxResolver
                 if (child is not CssAtRule box) continue;
                 var name = box.Name.ToLowerInvariant();
                 if (!KnownNames.Contains(name)) continue;
+                accs ??= new Dictionary<string, Acc>(StringComparer.Ordinal);
+                if (!accs.TryGetValue(name, out var acc)) accs[name] = acc = new Acc();
+                acc.Declarations.AddRange(box.Declarations);
                 foreach (var decl in box.Declarations)
                 {
                     if (!string.Equals(decl.Property, "content", StringComparison.OrdinalIgnoreCase)) continue;
                     var raw = decl.Value.RawText;
                     if (string.IsNullOrWhiteSpace(raw)) continue;
-                    candidates ??= new Dictionary<string, Candidate>(StringComparer.Ordinal);
-                    var c = candidates.TryGetValue(name, out var existing) ? existing : default;
-                    Apply(ref c, raw, decl.IsImportant);
-                    candidates[name] = c;
+                    Apply(ref acc.Content, raw, decl.IsImportant);
                 }
             }
         }
 
-        if (candidates is null) return ImmutableArray<ResolvedMarginBox>.Empty;
+        if (accs is null) return ImmutableArray<ResolvedMarginBox>.Empty;
 
-        var output = ImmutableArray.CreateBuilder<ResolvedMarginBox>(candidates.Count);
+        var output = ImmutableArray.CreateBuilder<ResolvedMarginBox>(accs.Count);
         foreach (var name in CanonicalNames) // emit in canonical order for determinism
         {
             // A winning `none` / `normal` means "no box" (suppression), not unsupported content —
             // omit it WITHOUT a diagnostic (post-PR-#132 review P2).
-            if (candidates.TryGetValue(name, out var c) && c.Set && !IsSuppression(c.RawValue))
-                output.Add(new ResolvedMarginBox(name, c.RawValue));
+            if (accs.TryGetValue(name, out var acc) && acc.Content.Set && !IsSuppression(acc.Content.RawValue))
+                output.Add(new ResolvedMarginBox(name, acc.Content.RawValue, acc.Declarations.ToImmutable()));
         }
         return output.Count == 0 ? ImmutableArray<ResolvedMarginBox>.Empty : output.ToImmutable();
     }
@@ -133,5 +138,16 @@ internal static class AtPageMarginBoxResolver
         public bool Set;
         public string RawValue;
         public bool Important;
+    }
+
+    /// <summary>Per-box-name accumulator: the cascade-winning <c>content</c> + every declaration
+    /// seen for the box (source order, across <c>@page</c> occurrences) for the style build. A
+    /// class so the <see cref="Content"/> field can be passed by <c>ref</c> + the builder mutated
+    /// in place via the dictionary.</summary>
+    private sealed class Acc
+    {
+        public Candidate Content;
+        public readonly ImmutableArray<CssDeclaration>.Builder Declarations =
+            ImmutableArray.CreateBuilder<CssDeclaration>();
     }
 }

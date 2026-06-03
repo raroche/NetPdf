@@ -8,6 +8,7 @@ using AngleSharp.Dom;
 using NetPdf.Css.ComputedValues;
 using NetPdf.Css.Diagnostics;
 using NetPdf.Css.PagedMedia;
+using NetPdf.Css.Parser;
 using NetPdf.Css.Properties;
 using NetPdf.Diagnostics;
 using NetPdf.Layout.Boxes;
@@ -70,6 +71,12 @@ internal static class PageMarginBoxPainter
     /// <param name="host">A document element for <c>attr()</c> resolution (the box tree's root
     /// element). <c>attr()</c> against page furniture has no real element, so this is an
     /// approximation; literal content ignores it.</param>
+    /// <param name="rootElementStyle">The document root element's resolved style — the top of the
+    /// CSS Page 3 inheritance chain (root → page context → margin box). <see langword="null"/> for
+    /// an element-free document.</param>
+    /// <param name="pageDeclarations">The bare <c>@page</c> rules' own declarations
+    /// (<see cref="AtPageMarginBoxResolver.PageContextDeclarations"/>) — the page-context style the
+    /// margin boxes inherit from.</param>
     /// <param name="shaper">The SAME resolver the body shaped with, kept alive past layout.</param>
     /// <param name="diagnostics">Sink for unsupported-content / unresolved-font diagnostics.</param>
     public static IReadOnlyList<BoxFragment> Layout(
@@ -77,7 +84,8 @@ internal static class PageMarginBoxPainter
         double pageWidthPx, double pageHeightPx,
         double marginTopPx, double marginRightPx, double marginBottomPx, double marginLeftPx,
         double contentOriginLeftPx, double contentOriginTopPx,
-        IElement host, HarfBuzzShaperResolver shaper, IDiagnosticsSink diagnostics)
+        IElement host, ComputedStyle? rootElementStyle, ImmutableArray<CssDeclaration> pageDeclarations,
+        HarfBuzzShaperResolver shaper, IDiagnosticsSink diagnostics)
     {
         ArgumentNullException.ThrowIfNull(host);
         ArgumentNullException.ThrowIfNull(shaper);
@@ -87,6 +95,9 @@ internal static class PageMarginBoxPainter
         // Surface invalid margin-box style values (e.g. `color: bogus`) via the CSS diagnostic path
         // (post-PR-#133 review P3) instead of silently defaulting.
         var styleDiagnostics = new PublicDiagnosticsSinkAdapter(diagnostics);
+        // CSS Page 3 inheritance chain (cycle 5): root element → page context (@page declarations) →
+        // each margin box. Build the page-context style once; every box inherits from it.
+        var pageContextStyle = MarginBoxStyle.Build(pageDeclarations, rootElementStyle, styleDiagnostics);
 
         var fragments = new List<BoxFragment>(boxes.Length);
         foreach (var mb in boxes)
@@ -107,7 +118,7 @@ internal static class PageMarginBoxPainter
             // No border/padding is set, so the painter's content-origin math collapses to the
             // fragment offset. The style is box-owned, so the rented instance isn't pooled — a
             // negligible per-render miss, not a leak.
-            var style = MarginBoxStyle.Build(mb.Declarations, styleDiagnostics);
+            var style = MarginBoxStyle.Build(mb.Declarations, pageContextStyle, styleDiagnostics);
             var box = Box.TextRun(string.Empty, style);
             var lineHeightPx = style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16) * NormalLineHeightFactor;
 

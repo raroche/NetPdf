@@ -15,34 +15,36 @@ using NetPdf.Layout.Layouters;
 namespace NetPdf.Rendering;
 
 /// <summary>
-/// Builds a <see cref="ComputedStyle"/> for a CSS Paged Media §6.4 margin box from its declared
-/// longhands, and reads the alignment a declared <c>text-align</c> / <c>vertical-align</c> implies.
-/// Phase 3 Task 21 cycle 4 — per-box style for running headers/footers.
+/// Builds a <see cref="ComputedStyle"/> for a CSS Paged Media §6.4 margin box (or the page context)
+/// from declared longhands + inherited values, and reads the alignment a declared <c>text-align</c>
+/// / <c>vertical-align</c> implies. Phase 3 Task 21 cycle 4 (per-box style) + cycle 5 (inheritance)
+/// — running headers/footers.
 /// </summary>
 /// <remarks>
 /// <para>
-/// The style is built from the box's OWN declarations only (no page/root inheritance this cycle —
-/// see below): each SUPPORTED longhand is cascaded by importance then source order (a later normal
-/// can't override an earlier <c>!important</c>) and the winners are resolved through
-/// <see cref="PropertyResolverDispatch"/> onto a rented style. Unspecified properties stay unset
-/// and the shaper/painter readers fall back to their CSS initial defaults (16px / the resolver's
-/// default family / 400 / black / <c>start</c>), so <see cref="ComputedStyle.IsSet"/> means "the
-/// box declared this".
+/// <b>Inheritance (cycle 5).</b> A style is built by INHERITING the supported properties from a
+/// parent then cascading this level's own declarations on top. The CSS Page 3 chain is built in two
+/// calls: <c>pageContext = Build(@page declarations, rootElementStyle)</c> then
+/// <c>marginBox = Build(box declarations, pageContext)</c> — so <c>@page { color: gray; @top-center
+/// { … } }</c> tints the box and <c>html { font-family: … }</c> flows into headers/footers. Own
+/// declarations cascade by importance then source order (a later normal can't override an earlier
+/// <c>!important</c>) and override the inherited value; unspecified properties keep the inherited
+/// one, or fall back to the reader defaults (16px / default family / 400 / black / <c>start</c>)
+/// when nothing up the chain set them.
 /// </para>
 /// <para>
-/// <b>Supported properties (cycle 4, post-PR-#133 review P2 — a WHITELIST).</b> Only
-/// <c>font-family</c> / <c>font-size</c> / <c>font-weight</c> / <c>font-style</c> / <c>color</c> /
-/// <c>text-align</c> are materialized, plus <c>vertical-align</c> read raw (it isn't cascade-
-/// resolved yet). Other declarations (<c>padding</c> / <c>border</c> / <c>background</c> / …) are
-/// deliberately IGNORED — the painter derives content origin from the box's border + padding, so
-/// materializing them would shift (or paint behind) the margin-box text before that's intended.
+/// <b>Supported properties (post-PR-#133 review P2 — a WHITELIST).</b> Only <c>font-family</c> /
+/// <c>font-size</c> / <c>font-weight</c> / <c>font-style</c> / <c>color</c> / <c>text-align</c> are
+/// materialized + inherited (all six are inherited properties), plus <c>vertical-align</c> read raw
+/// (it isn't cascade-resolved, and isn't an inherited property). Other declarations (<c>padding</c>
+/// / <c>border</c> / <c>background</c> / …) are deliberately IGNORED — the painter derives content
+/// origin from the box's border + padding, so materializing them would shift (or paint behind) the
+/// margin-box text before that's intended.
 /// </para>
 /// <para>
-/// <b>Deferred (later cycles, deferrals.md#layout-to-pdf-pipeline).</b> Page-context + root
-/// INHERITANCE (CSS Page 3: a margin box inherits from the page box, which inherits from the root —
-/// so <c>@page { color: red; @top-center { … } }</c> should tint the box; cycle 4 is own-
-/// declarations-only, pinned by a test), the <c>font</c> shorthand, and relative font sizes
-/// (<c>em</c> / <c>%</c> / <c>larger</c>).
+/// <b>Deferred (later cycles, deferrals.md#layout-to-pdf-pipeline).</b> The <c>font</c> shorthand,
+/// relative font sizes (<c>em</c> / <c>%</c> / <c>larger</c> — a deferred inherited font-size is
+/// copied but not re-resolved against the parent), and the §5.3 three-box-per-edge sizing.
 /// </para>
 /// </remarks>
 internal static class MarginBoxStyle
@@ -55,15 +57,45 @@ internal static class MarginBoxStyle
 
     private static readonly FrozenSet<PropertyId> SupportedStyleIdSet = SupportedStyleIds.ToFrozenSet();
 
-    /// <summary>Build the margin box's <see cref="ComputedStyle"/> from its declarations: each
-    /// supported longhand's cascade winner (importance then source order) is resolved + materialized;
-    /// unsupported properties are skipped. <paramref name="diagnostics"/> receives invalid-value
+    /// <summary>Build a margin-box (or page-context) <see cref="ComputedStyle"/>: first INHERIT the
+    /// supported properties (all are inherited) from <paramref name="parentStyle"/>, then resolve +
+    /// materialize this level's own declarations on top (each property's cascade winner — importance
+    /// then source order). Used twice for the CSS Page 3 chain: page-context = Build(@page decls,
+    /// rootStyle); margin box = Build(box decls, pageContext). <paramref name="parentStyle"/> null
+    /// at the top (own-declarations only). <paramref name="diagnostics"/> receives invalid-value
     /// diagnostics (e.g. <c>color: bogus</c>). The result is marked box-owned (its <c>Dispose</c>
     /// becomes a no-op) for the synthetic <c>Box</c> the painter wraps it in.</summary>
     public static ComputedStyle Build(
-        ImmutableArray<CssDeclaration> declarations, ICssDiagnosticsSink? diagnostics = null)
+        ImmutableArray<CssDeclaration> declarations,
+        ComputedStyle? parentStyle = null,
+        ICssDiagnosticsSink? diagnostics = null)
     {
         var style = ComputedStyle.Rent();
+
+        // Inheritance (cycle 5): copy each supported property's slot from the parent first, so an
+        // own-declaration below overwrites it but an unspecified one flows down (margin box ← @page
+        // ← root). All six supported properties are inherited (vertical-align isn't, and is read
+        // raw — never inherited). Mirrors BoxBuilder.ApplyInheritance (slot + side-table + deferred).
+        if (parentStyle is not null)
+        {
+            foreach (var id in SupportedStyleIds)
+            {
+                if (!parentStyle.IsSet(id)) continue;
+                var slot = parentStyle.Get(id);
+                if (!slot.IsUnset)
+                {
+                    style.Set(id, slot);
+                    if (slot.Tag == ComputedSlotTag.SideTableIndex
+                        && parentStyle.TryGetSideTablePayloadRaw(id, out var payload) && payload is not null)
+                        style.SetSideTablePayload(id, payload); // the font-family list
+                }
+                else if (parentStyle.TryGetDeferred(id, out var raw) && raw is not null)
+                {
+                    style.SetDeferred(id, raw);
+                }
+            }
+        }
+
         if (!declarations.IsDefaultOrEmpty)
         {
             // Cascade each supported longhand by importance then source order.

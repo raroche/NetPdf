@@ -120,12 +120,15 @@ the #131 review. **Cycle 3 — page-margin boxes (content) — merged (PR #132):
 paint literal + `attr()` content — `AtPageMarginBoxResolver` → `PageMarginBoxGeometry`
 (regions/alignment) → `PageMarginBoxPainter` (`CssContentList` → `InlineLayouter` → the shared
 `TextPainter` pass; `!important` cascade + `none`/`normal` suppression + sanitized diagnostics +
-one-font-embed landed in the #132 review). **Cycle 4 — per-box style (in progress, branch
-`phase-3-task-21-margin-box-style`):** a margin box's declared `font-*`/`color` flow through the
-shaper + painter; declared `text-align`/`vertical-align` override the name-derived alignment, via
-new `MarginBoxStyle` (per-box `ComputedStyle` from the declared longhands). Next: cycle 5
-(page/root inheritance / the `font` shorthand / `counter(page)` page numbers / §5.3 sizing), OR
-`@page` selectors (`:first`/`:left`/`:right`/`:blank`) + named pages — Roland's pick. Blocked (see `deferrals.md`):
+one-font-embed landed in the #132 review). **Cycle 4 — per-box style — merged (PR #133):** a margin
+box's declared `font-*`/`color` flow through the shaper + painter; declared `text-align`/
+`vertical-align` override the name-derived alignment, via new `MarginBoxStyle` (per-box
+`ComputedStyle` from the declared longhands; `!important` cascade + a property WHITELIST +
+invalid-value diagnostics landed in the #133 review). **Cycle 5 — style inheritance (in progress,
+branch `phase-3-task-21-margin-box-inheritance`):** margin boxes inherit along the CSS Page 3 chain
+root element → page context (`@page` declarations) → margin box (`MarginBoxStyle.Build` gained a
+`parentStyle` param). Next: cycle 6 (the `font` shorthand / `counter(page)` page numbers / §5.3
+sizing), OR `@page` selectors (`:first`/`:left`/`:right`/`:blank`) + named pages — Roland's pick. Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).
 For the live state, read the **current-state pointer at the top of [PROGRESS.md](PROGRESS.md)**

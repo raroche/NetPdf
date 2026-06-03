@@ -2960,6 +2960,13 @@ flags the categories):
        a WHITELIST (`font-*`/`color`/`text-align` materialized + `vertical-align` raw) so
        `padding`/`border`/`background` can't shift/paint the text; invalid values surface
        `CSS-PROPERTY-VALUE-INVALID-001` via a threaded sink; `justify-all` → start.
+       **Cycle 5 — inheritance — DONE:** margin boxes inherit the supported (all inherited)
+       properties along the CSS Page 3 chain root element → page context (`@page` declarations) →
+       margin box. `MarginBoxStyle.Build` gained a `parentStyle` param (copies the inherited slot +
+       side-table payload, then own declarations override); `AtPageMarginBoxResolver.PageContextDeclarations`
+       exposes the `@page` rules' own declarations; the pipeline sources the root element box's style
+       via `FindRootElementBox`. So `@page { color: gray; @top-center {…} }` tints the box and
+       `html { font-family:… }` flows into headers/footers. (`vertical-align` is not inherited.)
        **REMAINING:**
        - **Conditional-group traversal:** `AtPageRules` walks only sheet media + `@media`; a bare
          `@page` nested in a matching `@supports` / `@layer` / `@container` does not yet contribute
@@ -2967,14 +2974,14 @@ flags the categories):
          of `CascadeResolver` into a shared helper.
        - **Margin boxes — later cycles:** `counter(page)`/`counter(pages)` page numbers,
          `string()` running headers (needs `string-set` collection), and `element()` running
-         elements; per-box style refinements deferred from cycle 4 — page/root INHERITANCE (a box
-         without `font-family` uses the default family, not the document's), the `font` SHORTHAND
-         (longhands only — `ParseRawDeclarations` doesn't expand it), and relative font-size
-         (`em`/`%`/`larger`/`bolder` — needs the box-builder's `ResolveDeferredFontProperties`); the
-         CSS Page 3 §5.3 three-box-per-edge sizing (each box gets the full edge band + aligns within
-         it, so long sibling boxes on one edge can overlap, and content overflowing a band isn't
-         clipped); box backgrounds/borders. The per-box `ComputedStyle.Rent()` is box-owned (not
-         returned to the pool) — a negligible per-render miss.
+         elements; remaining per-box style refinements — the `font` SHORTHAND (longhands only —
+         `ParseRawDeclarations` doesn't expand it) and relative font-size (`em`/`%`/`larger`/`bolder`
+         — needs the box-builder's `ResolveDeferredFontProperties`; an inherited deferred font-size
+         is copied but not re-resolved against the parent); the CSS Page 3 §5.3 three-box-per-edge
+         sizing (each box gets the full edge band + aligns within it, so long sibling boxes on one
+         edge can overlap, and content overflowing a band isn't clipped); box backgrounds/borders.
+         The per-box / page-context `ComputedStyle.Rent()` is box-owned (not returned to the pool) —
+         a negligible per-render miss.
        - **Later cycles:** `@page :first`/`:left`/`:right`/`:blank` selectors + named pages;
          `calc()` / font-relative margin units (absolute lengths + percentages are done).
   4. **Deterministic default font** — `SystemFontResolver` reads platform

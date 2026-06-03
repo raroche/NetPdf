@@ -182,12 +182,16 @@ internal static class PdfRenderPipeline
         // element-free documents skip them.
         var textFragments = sink.Fragments;
         var marginBoxes = AtPageMarginBoxResolver.Resolve(phase2.Sheets, media);
-        if (!marginBoxes.IsDefaultOrEmpty && FindHostElement(phase2.BoxRoot) is { } host)
+        if (!marginBoxes.IsDefaultOrEmpty
+            && FindRootElementBox(phase2.BoxRoot) is { SourceElement: { } host } rootEl)
         {
+            // The root element box gives both the attr() host + the top of the inheritance chain;
+            // the @page rules' own declarations form the page context the boxes inherit from.
+            var pageDecls = AtPageMarginBoxResolver.PageContextDeclarations(phase2.Sheets, media);
             var marginFragments = PageMarginBoxPainter.Layout(
                 marginBoxes, pageSize.WidthPx, pageSize.HeightPx,
                 margins.TopPx, margins.RightPx, margins.BottomPx, margins.LeftPx,
-                margins.LeftPx, margins.TopPx, host, shaper, diagnostics);
+                margins.LeftPx, margins.TopPx, host, rootEl.Style, pageDecls, shaper, diagnostics);
             if (marginFragments.Count > 0)
             {
                 var combined = new List<BoxFragment>(sink.Fragments.Count + marginFragments.Count);
@@ -210,16 +214,17 @@ internal static class PdfRenderPipeline
         return new RenderOutcome(bytes, document.Pages.Count, diagnostics.Items);
     }
 
-    /// <summary>The first DOM element backing any box in the tree (depth-first) — the attr() host
-    /// for page margin-box content. Page furniture has no element of its own, so the document's
-    /// root element is a reasonable stand-in; <see langword="null"/> only for an element-free
-    /// document (then margin boxes are skipped).</summary>
-    private static IElement? FindHostElement(Box? root)
+    /// <summary>The first DOM-element-backed box in the tree (depth-first) — the document root
+    /// element's box. Its <see cref="Box.SourceElement"/> is the <c>attr()</c> host for page
+    /// margin-box content, and its <see cref="Box.Style"/> is the top of the margin-box style
+    /// inheritance chain (root → page context → margin box). <see langword="null"/> only for an
+    /// element-free document (then margin boxes are skipped).</summary>
+    private static Box? FindRootElementBox(Box? box)
     {
-        if (root is null) return null;
-        if (root.SourceElement is { } el) return el;
-        foreach (var child in root.Children)
-            if (FindHostElement(child) is { } found) return found;
+        if (box is null) return null;
+        if (box.SourceElement is not null) return box;
+        foreach (var child in box.Children)
+            if (FindRootElementBox(child) is { } found) return found;
         return null;
     }
 

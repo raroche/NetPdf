@@ -127,4 +127,50 @@ public sealed class MarginBoxStyleTests
         Assert.False(style.IsSet(PropertyId.BorderTopWidth));
         Assert.True(style.IsSet(PropertyId.Color));
     }
+
+    // ---- Inheritance from the parent (page context / root), cycle 5 ----
+
+    [Fact]
+    public void Build_inherits_a_supported_property_from_the_parent()
+    {
+        var parent = MarginBoxStyle.Build(ImmutableArray.Create(Decl("color", "#ff0000")));
+        var child = MarginBoxStyle.Build(ImmutableArray<CssDeclaration>.Empty, parent);
+
+        Assert.True(child.IsSet(PropertyId.Color));
+        Assert.True(FragmentPainter.TryResolveColor(child.Get(PropertyId.Color), 0xFF000000u, out var argb));
+        Assert.Equal(0xFFFF0000u, argb);   // inherited red
+    }
+
+    [Fact]
+    public void Build_own_declaration_overrides_the_inherited_value()
+    {
+        var parent = MarginBoxStyle.Build(ImmutableArray.Create(Decl("color", "#ff0000")));
+        var child = MarginBoxStyle.Build(ImmutableArray.Create(Decl("color", "#0000ff")), parent);
+
+        Assert.True(FragmentPainter.TryResolveColor(child.Get(PropertyId.Color), 0xFF000000u, out var argb));
+        Assert.Equal(0xFF0000FFu, argb);   // own blue overrides the inherited red
+    }
+
+    [Fact]
+    public void Build_inherits_the_font_family_side_table_payload()
+    {
+        // font-family resolves to a side-table slot; the payload (the family list), not just the
+        // index marker, must be copied on inheritance.
+        var parent = MarginBoxStyle.Build(ImmutableArray.Create(Decl("font-family", "Courier")));
+        var child = MarginBoxStyle.Build(ImmutableArray<CssDeclaration>.Empty, parent);
+
+        Assert.True(child.IsSet(PropertyId.FontFamily));
+        Assert.True(child.TryGetSideTablePayloadRaw(PropertyId.FontFamily, out var payload));
+        Assert.NotNull(payload);
+    }
+
+    [Fact]
+    public void Build_does_not_inherit_non_inherited_vertical_align()
+    {
+        // vertical-align is not an inherited property + isn't materialized — a parent's value
+        // doesn't flow to the child via the style (VerticalAlignFactor reads the box's own decls).
+        var parent = MarginBoxStyle.Build(ImmutableArray.Create(Decl("vertical-align", "top")));
+        var child = MarginBoxStyle.Build(ImmutableArray<CssDeclaration>.Empty, parent);
+        Assert.False(child.IsSet(PropertyId.VerticalAlign));
+    }
 }

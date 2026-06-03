@@ -716,16 +716,38 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
-    public void Page_margin_box_does_not_inherit_page_context_style_this_cycle()
+    public void Page_margin_box_inherits_color_from_the_page_context()
     {
-        // Pins cycle-4 own-declarations-only: @page { color: red } does NOT tint the margin box
-        // (page-context inheritance is a tracked follow-up, review P2). The footer paints black.
+        // Cycle 5: a margin box inherits from the @page context — @page { color: red } tints the
+        // footer even though the box declares no color of its own.
         var pdf = Latin1(HtmlPdf.Convert(
             "<!DOCTYPE html><html><head><style>@page { color: red; @bottom-center { content: \"AB\" } }</style>" +
             "</head><body></body></html>",
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
-        Assert.Contains("BT", pdf);                 // the footer IS painted
-        Assert.DoesNotContain("1 0 0 rg", pdf);     // ... but NOT in the inherited red (own-decls only)
+        Assert.Contains("1 0 0 rg", pdf);   // inherited red from @page
+    }
+
+    [Fact]
+    public void Page_margin_box_own_color_overrides_inherited_page_context()
+    {
+        // The box's own declaration wins over the inherited @page value.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { color: red; @bottom-center { content: \"AB\"; color: #0000ff } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Contains("0 0 1 rg", pdf);        // the box's own blue
+        Assert.DoesNotContain("1 0 0 rg", pdf);  // not the inherited red
+    }
+
+    [Fact]
+    public void Page_margin_box_inherits_color_from_the_document_root()
+    {
+        // The chain reaches the document root: html { color } flows root → page context → margin box.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>html { color: #00ff00 } @page { @bottom-center { content: \"AB\" } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Contains("0 1 0 rg", pdf);   // inherited lime from the root element
     }
 
     [Fact]

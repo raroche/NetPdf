@@ -84,6 +84,9 @@ internal static class PageMarginBoxPainter
         if (boxes.IsDefaultOrEmpty) return Array.Empty<BoxFragment>();
 
         var availableInlinePx = Math.Max(pageWidthPx, 1.0); // positive + finite; NoWrap keeps one line.
+        // Surface invalid margin-box style values (e.g. `color: bogus`) via the CSS diagnostic path
+        // (post-PR-#133 review P3) instead of silently defaulting.
+        var styleDiagnostics = new PublicDiagnosticsSinkAdapter(diagnostics);
 
         var fragments = new List<BoxFragment>(boxes.Length);
         foreach (var mb in boxes)
@@ -104,7 +107,7 @@ internal static class PageMarginBoxPainter
             // No border/padding is set, so the painter's content-origin math collapses to the
             // fragment offset. The style is box-owned, so the rented instance isn't pooled — a
             // negligible per-render miss, not a leak.
-            var style = MarginBoxStyle.Build(mb.Declarations);
+            var style = MarginBoxStyle.Build(mb.Declarations, styleDiagnostics);
             var box = Box.TextRun(string.Empty, style);
             var lineHeightPx = style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16) * NormalLineHeightFactor;
 

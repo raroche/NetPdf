@@ -2955,7 +2955,11 @@ flags the categories):
        `MarginBoxStyle.Build` resolves the box's longhands onto a rented `ComputedStyle`
        (`PropertyResolverDispatch` per longhand; unspecified → reader defaults, so `IsSet` means
        "declared"); `AtPageMarginBoxResolver` now carries each box's declarations on
-       `ResolvedMarginBox`.
+       `ResolvedMarginBox`. Post-PR-#133 review hardened it: per-property `!important` cascade
+       (importance then source order, within a box + across `@page` rules — incl. `vertical-align`);
+       a WHITELIST (`font-*`/`color`/`text-align` materialized + `vertical-align` raw) so
+       `padding`/`border`/`background` can't shift/paint the text; invalid values surface
+       `CSS-PROPERTY-VALUE-INVALID-001` via a threaded sink; `justify-all` → start.
        **REMAINING:**
        - **Conditional-group traversal:** `AtPageRules` walks only sheet media + `@media`; a bare
          `@page` nested in a matching `@supports` / `@layer` / `@container` does not yet contribute

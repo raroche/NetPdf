@@ -818,15 +818,50 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
-    public void Page_margin_box_relative_font_size_falls_back_to_default_for_now()
+    public void Page_margin_box_relative_font_size_resolves_against_the_inherited_font()
     {
-        // PIN (review P2): font-size: 2em isn't resolved against the page-context font yet — it
-        // falls back to the 16px default → 12pt Tf (not 32px/24pt). Documents the deferral.
+        // Cycle 7 (was the cycle-5/6 deferral pin): font-size: 2em now resolves against the
+        // inherited page-context font (16px default) → 32px → 24pt Tf, not the old 12pt fallback.
         var pdf = Latin1(HtmlPdf.Convert(
             "<!DOCTYPE html><html><head><style>@page { @bottom-center { content:\"AB\"; font-size: 2em } }</style>" +
             "</head><body></body></html>",
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
-        Assert.Equal(12.0, FirstTf(pdf), 1);   // 16px default × 0.75
+        Assert.Equal(24.0, FirstTf(pdf), 1);   // 2em × 16px = 32px → 24pt
+    }
+
+    [Fact]
+    public void Page_margin_box_em_resolves_against_the_page_context_font_size()
+    {
+        // The CSS Page 3 chain: @page { font-size: 20px } sets the page-context font, and the box's
+        // 1.5em resolves against THAT (not the 16px root) → 30px → 22.5pt Tf.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { font-size: 20px; @bottom-center " +
+            "{ content:\"AB\"; font-size: 1.5em } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(22.5, FirstTf(pdf), 1);   // 1.5em × 20px = 30px → 22.5pt
+    }
+
+    [Fact]
+    public void Page_margin_box_larger_keyword_resolves_against_the_inherited_font()
+    {
+        // larger = parent font-size × 1.2 (16px → 19.2px → 14.4pt).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; font-size: larger } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(14.4, FirstTf(pdf), 1);   // 16px × 1.2 = 19.2px → 14.4pt
+    }
+
+    [Fact]
+    public void Page_margin_box_rem_font_size_stays_deferred_and_falls_back()
+    {
+        // PIN: rem isn't parent-relative (it needs the root font-size threaded through) → it stays
+        // deferred and falls back to the 16px reader default → 12pt Tf. Documents the remaining gap.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content:\"AB\"; font-size: 2rem } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(12.0, FirstTf(pdf), 1);   // 16px default × 0.75 (2rem not resolved)
     }
 
     [Fact]

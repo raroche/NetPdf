@@ -1829,25 +1829,6 @@ internal static class BoxBuilder
     /// fully resolved. <c>rem</c> / viewport <c>font-size</c> + general font-relative
     /// lengths on other properties stay deferred (a documented follow-up); the 16px
     /// default reader applies until then.</summary>
-    private static void ResolveDeferredFontProperties(ComputedStyle style, ComputedStyle parentStyle)
-    {
-        if (style.TryGetDeferred(PropertyId.FontSize, out var rawSize) && rawSize is not null)
-        {
-            var parentSlot = parentStyle.Get(PropertyId.FontSize);
-            var parentFontSizePx = parentSlot.Tag == ComputedSlotTag.LengthPx
-                ? parentSlot.AsLengthPx()
-                : FontSizeResolver.MediumPx;
-            if (FontSizeResolver.TryResolveRelativeToParent(rawSize, parentFontSizePx, out var px)
-                && double.IsFinite(px) && px >= 0)
-            {
-                style.Set(PropertyId.FontSize, ComputedSlot.FromLengthPx(px));
-            }
-        }
-
-        if (style.TryGetDeferred(PropertyId.FontWeight, out var rawWeight) && rawWeight is not null
-            && FontWeightResolver.TryResolveRelativeToParent(rawWeight, parentStyle.ReadFontWeight(), out var weight))
-        {
-            style.Set(PropertyId.FontWeight, ComputedSlot.FromInteger(weight));
-        }
-    }
+    private static void ResolveDeferredFontProperties(ComputedStyle style, ComputedStyle parentStyle) =>
+        DeferredFontResolver.ResolveAgainstParent(style, parentStyle);
 }

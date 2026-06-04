@@ -46,10 +46,17 @@ namespace NetPdf.Rendering;
 /// padding, so materializing them would shift (or paint behind) the margin-box text.
 /// </para>
 /// <para>
-/// <b>Deferred (later cycles, deferrals.md#layout-to-pdf-pipeline).</b> The <c>font</c> shorthand,
-/// relative font sizes (<c>em</c> / <c>%</c> / <c>larger</c> — a deferred inherited font-size is
-/// copied but not re-resolved against the parent), page-context inheritance of alignment, precise
-/// <c>revert</c>, and the §5.3 three-box-per-edge sizing.
+/// <b>Relative font (cycle 7).</b> A parent-relative <c>font-size</c> (<c>em</c> / <c>%</c> /
+/// <c>larger</c> / <c>smaller</c>) or <c>font-weight</c> (<c>bolder</c> / <c>lighter</c>) the dispatch
+/// leaves deferred is resolved against the inherited parent via <see cref="DeferredFontResolver"/>
+/// after the cascade — so <c>@page { font-size: 20px; @bottom-center { font-size: 1.5em } }</c> →
+/// 30px. (A non-parent-relative form — <c>rem</c> / viewport / container units — stays deferred and
+/// falls back to the reader default, a documented gap.)
+/// </para>
+/// <para>
+/// <b>Deferred (later cycles, deferrals.md#layout-to-pdf-pipeline).</b> <c>rem</c> / viewport-relative
+/// font-size, page-context inheritance of alignment, precise <c>revert</c>, and the §5.3
+/// three-box-per-edge sizing.
 /// </para>
 /// </remarks>
 internal static class MarginBoxStyle
@@ -161,6 +168,14 @@ internal static class MarginBoxStyle
                 }
             }
         }
+
+        // Resolve a parent-relative font-size/weight the dispatch left DEFERRED (em/%/larger/bolder)
+        // against the inherited parent — Task 21 cycle 7. Runs after the cascade (the deferred raw is
+        // on the style now) and after inheritance copied the parent's resolved px down, so `@page {
+        // font-size: 20px; @bottom-center { font-size: 1.5em } }` → 30px. A non-parent-relative form
+        // (rem/viewport) stays deferred → the reader default (still a documented gap, deferrals.md).
+        DeferredFontResolver.ResolveAgainstParent(style, parentStyle);
+
         style.MarkAsBoxOwned();
         return style;
     }

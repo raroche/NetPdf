@@ -137,7 +137,12 @@ post-PR-#135 review made expansion ATOMIC (each generated longhand validated thr
 `<line-height>` after a `/`, stripped CSS comments quote-aware, accepted the unitless zero, and made
 a system-font/malformed `font` surface a sanitized `CSS-PROPERTY-VALUE-INVALID-001` (kept as a raw
 marker `MarginBoxStyle` reports) instead of silently vanishing; `oblique <angle>` / `<font-stretch>`
-are pinned as a deliberate atomic-reject approximation. Next:
+are pinned as a deliberate atomic-reject approximation. **Cycle 7 — parent-relative font-size/weight
+in margin boxes (in progress, branch `phase-3-task-21-margin-box-relative-font-size`):** a margin
+box's `em`/`%`/`larger`/`smaller` font-size + `bolder`/`lighter` weight now resolve against the
+inherited parent (a left-behind cycles-4–6 deferral) — the box-builder's `ResolveDeferredFontProperties`
+was extracted into a shared `DeferredFontResolver` that `MarginBoxStyle.Build` also calls; `rem`/viewport
+font-size stays deferred (documented gap). Next:
 `counter(page)` page numbers / §5.3 three-box-per-edge sizing, OR `@page` selectors
 (`:first`/`:left`/`:right`/`:blank`) + named pages — Roland's pick. Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES

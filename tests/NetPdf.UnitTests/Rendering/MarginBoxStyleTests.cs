@@ -3,6 +3,7 @@
 
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using NetPdf.Css.ComputedValues;
 using NetPdf.Css.Diagnostics;
 using NetPdf.Css.Parser;
 using NetPdf.Css.Properties;
@@ -203,6 +204,52 @@ public sealed class MarginBoxStyleTests
         // (keep the name-derived default).
         Assert.Equal(0.0, MarginBoxStyle.HorizontalAlignFactor(ImmutableArray.Create(Decl("text-align", "initial"))));
         Assert.Null(MarginBoxStyle.HorizontalAlignFactor(ImmutableArray.Create(Decl("text-align", "inherit"))));
+    }
+
+    // ---- parent-relative font resolution (cycle 7) ----
+
+    [Fact]
+    public void Build_resolves_em_font_size_against_the_default_when_no_parent()
+    {
+        // No parent → the relative em resolves against the initial 16px → 2em = 32px.
+        var style = MarginBoxStyle.Build(ImmutableArray.Create(Decl("font-size", "2em")));
+        Assert.Equal(32, style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16), 3);
+    }
+
+    [Fact]
+    public void Build_resolves_em_font_size_against_the_parent_chain()
+    {
+        // The box's 1.5em resolves against the parent's resolved 20px → 30px (CSS Page 3 chain).
+        var parent = MarginBoxStyle.Build(ImmutableArray.Create(Decl("font-size", "20px")));
+        var child = MarginBoxStyle.Build(ImmutableArray.Create(Decl("font-size", "1.5em")), parent);
+        Assert.Equal(30, child.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16), 3);
+    }
+
+    [Theory]
+    [InlineData("larger", 19.2)]    // 16 × 1.2
+    [InlineData("smaller", 16.0 / 1.2)]
+    [InlineData("150%", 24.0)]      // 16 × 1.5
+    public void Build_resolves_relative_size_keywords_and_percent(string value, double expectedPx)
+    {
+        var style = MarginBoxStyle.Build(ImmutableArray.Create(Decl("font-size", value)));
+        Assert.Equal(expectedPx, style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16), 3);
+    }
+
+    [Fact]
+    public void Build_resolves_bolder_font_weight_against_the_parent()
+    {
+        // bolder against the default normal (400) → 700 (CSS Fonts 4 §2.2.1).
+        var style = MarginBoxStyle.Build(ImmutableArray.Create(Decl("font-weight", "bolder")));
+        Assert.Equal(700, style.ReadFontWeight());
+    }
+
+    [Fact]
+    public void Build_leaves_rem_font_size_deferred_and_unresolved()
+    {
+        // PIN: rem isn't parent-relative (needs the root font-size threaded) → it stays deferred and
+        // the reader falls back to the default (16px), NOT 2 × something.
+        var style = MarginBoxStyle.Build(ImmutableArray.Create(Decl("font-size", "2rem")));
+        Assert.Equal(16, style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16), 3);
     }
 
     // ---- rejected `font` shorthand marker (review #3) ----

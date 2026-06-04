@@ -2996,11 +2996,17 @@ flags the categories):
          `@page` nested in a matching `@supports` / `@layer` / `@container` does not yet contribute
          (the cascade honors those). Recursing needs the cascade's `@supports` evaluator lifted out
          of `CascadeResolver` into a shared helper.
+       - **Margin boxes — parent-relative font (cycle 7) — DONE:** a margin box's parent-relative
+         `font-size` (`em`/`%`/`larger`/`smaller`) and `font-weight` (`bolder`/`lighter`) now resolve
+         against the inherited parent via the shared `DeferredFontResolver` (extracted from the
+         box-builder's `ResolveDeferredFontProperties` so both consumers share it), called by
+         `MarginBoxStyle.Build` after the cascade. `@page { font-size: 20px; @bottom-center {
+         font-size: 1.5em } }` → 30px. STILL DEFERRED: `rem`/viewport/container-relative font-size
+         (`TryResolveRelativeToParent` returns false → stays deferred → reader default; `rem` needs
+         the root font-size threaded through).
        - **Margin boxes — later cycles:** `counter(page)`/`counter(pages)` page numbers,
          `string()` running headers (needs `string-set` collection), and `element()` running
-         elements; relative font-size (`em`/`%`/`larger`/`bolder` — needs the box-builder's
-         `ResolveDeferredFontProperties`; an inherited deferred font-size is copied but not
-         re-resolved against the parent); the CSS Page 3 §5.3 three-box-per-edge
+         elements; the CSS Page 3 §5.3 three-box-per-edge
          sizing (each box gets the full edge band + aligns within it, so long sibling boxes on one
          edge can overlap, and content overflowing a band isn't clipped); box backgrounds/borders.
          The per-box / page-context `ComputedStyle.Rent()` is box-owned (not returned to the pool) —

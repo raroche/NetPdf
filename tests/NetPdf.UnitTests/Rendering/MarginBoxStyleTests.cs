@@ -386,6 +386,39 @@ public sealed class MarginBoxStyleTests
         Assert.Empty(sink.Diagnostics);
     }
 
+    // ---- rejected `border` shorthand marker (review P2) ----
+
+    [Theory]
+    [InlineData("border", "1bananas solid red")]      // a malformed width → un-expandable
+    [InlineData("border-top", "1px solid red blue")]  // too many components → un-expandable
+    public void Build_surfaces_a_rejected_border_shorthand_and_applies_no_border(string property, string value)
+    {
+        // A `border` / `border-<side>` declaration reaching Build is one CssParserAdapter could NOT
+        // expand (it keeps the raw shorthand as a marker — a valid one becomes border-* longhands).
+        // Build surfaces it via the diagnostics sink instead of silently dropping, and materializes
+        // NONE of it (no border longhand is set).
+        var sink = new CapturingSink();
+        var style = MarginBoxStyle.Build(
+            ImmutableArray.Create(Decl(property, value)), parentStyle: null, diagnostics: sink);
+
+        Assert.Contains(sink.Diagnostics, d => d.Code == CssDiagnosticCodes.CssPropertyValueInvalid001);
+        Assert.False(style.IsSet(PropertyId.BorderTopStyle));
+        Assert.False(style.IsSet(PropertyId.BorderTopWidth));
+        Assert.False(style.IsSet(PropertyId.BorderTopColor));
+    }
+
+    [Fact]
+    public void Build_does_not_diagnose_expanded_border_longhands()
+    {
+        // The expanded longhands (what CssParserAdapter actually emits for a VALID `border`) resolve
+        // cleanly with NO invalid-value diagnostic — only an un-expandable raw shorthand is a marker.
+        var sink = new CapturingSink();
+        MarginBoxStyle.Build(ImmutableArray.Create(
+            Decl("border-top-style", "solid"), Decl("border-top-width", "2px"), Decl("border-top-color", "red")),
+            parentStyle: null, diagnostics: sink);
+        Assert.Empty(sink.Diagnostics);
+    }
+
     private sealed class CapturingSink : ICssDiagnosticsSink
     {
         public List<CssDiagnostic> Diagnostics { get; } = new();

@@ -22,8 +22,10 @@ namespace NetPdf.Css.Parser.Preprocessing;
 /// which AngleSharp.Css never sees — regular style rules get the shorthand expanded by AngleSharp.
 /// Each shorthand is <c>&lt;line-width&gt; || &lt;line-style&gt; || &lt;color&gt;</c> (any order,
 /// each at most once); omitted components reset to their initial value (<c>medium</c> / <c>none</c> /
-/// <c>currentcolor</c>) per §4.3. The value is tokenized PAREN-AWARE so a functional color
-/// (<c>rgb(255, 0, 0)</c>) stays one token.
+/// <c>currentcolor</c>) per §4.3. CSS comments are stripped first (they're whitespace), and the value
+/// is tokenized PAREN-AWARE so a functional color (<c>rgb(255, 0, 0)</c>) stays one token. A
+/// whole-value CSS-wide keyword (<c>inherit</c> / <c>initial</c> / <c>unset</c> / <c>revert</c> /
+/// <c>revert-layer</c>) maps to every longhand (resolved at the cascade level by <c>MarginBoxStyle</c>).
 /// </para>
 /// <para>
 /// <b>Atomic (mirrors <see cref="FontShorthandExpander"/>).</b> Every generated longhand is
@@ -73,7 +75,30 @@ internal static class BorderShorthandExpander
         if (!EdgePrefixes.TryGetValue(propertyName, out var prefixes)) return false;
         if (string.IsNullOrWhiteSpace(rawValue)) return false;
 
-        if (!Tokenize(rawValue, out var tokens) || tokens.Count == 0) return false;
+        // CSS comments are whitespace (CSS Syntax 3 §4.3.2) — strip them before tokenizing so
+        // `1px /* c */ solid red` doesn't reject atomically (quote-aware via the shared helper, the
+        // same pre-normalization the other shorthand expanders apply).
+        var stripped = CssShorthandHelpers.StripBlockComments(rawValue);
+
+        // A whole-value CSS-wide keyword (`inherit` / `initial` / `unset` / `revert` / `revert-layer`)
+        // applies to every generated longhand — mirrors FontShorthandExpander. MarginBoxStyle resolves
+        // each at the cascade level (the border-* longhands are non-inherited, so `inherit` copies the
+        // parent and `initial`/`unset` reset to `none`), so the leaf-validation loop is bypassed (these
+        // keywords aren't valid leaf values). A keyword mixed with other tokens (`1px inherit`) is NOT
+        // CSS-wide and falls through to tokenization, where it fails validation atomically.
+        var trimmed = stripped.Trim();
+        if (CssWideKeyword.Is(trimmed))
+        {
+            foreach (var prefix in prefixes)
+            {
+                longhands.Add(($"{prefix}-width", trimmed));
+                longhands.Add(($"{prefix}-style", trimmed));
+                longhands.Add(($"{prefix}-color", trimmed));
+            }
+            return true;
+        }
+
+        if (!Tokenize(stripped, out var tokens) || tokens.Count == 0) return false;
 
         // `<line-width> || <line-style> || <color>` — each component at most once, any order.
         string? width = null, style = null, color = null;

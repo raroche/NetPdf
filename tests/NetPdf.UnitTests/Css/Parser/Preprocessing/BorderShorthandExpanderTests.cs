@@ -78,6 +78,44 @@ public sealed class BorderShorthandExpanderTests
         Assert.Equal("rgb(0, 128, 0)", d["border-top-color"]);
     }
 
+    [Fact]
+    public void Border_strips_block_comments_before_tokenizing()
+    {
+        // CSS comments are whitespace (review P3) — an interleaved /* … */ must NOT make the value
+        // reject atomically. `1px /* w */ solid /* s */ red` → the same three longhands.
+        var d = Expand("border", "1px /* w */ solid /* s */ red");
+        Assert.Equal("1px", d["border-top-width"]);
+        Assert.Equal("solid", d["border-top-style"]);
+        Assert.Equal("red", d["border-top-color"]);
+    }
+
+    [Theory]
+    [InlineData("inherit")]
+    [InlineData("initial")]
+    [InlineData("unset")]
+    [InlineData("revert")]
+    public void Border_css_wide_keyword_applies_to_every_longhand(string keyword)
+    {
+        // A whole-value CSS-wide keyword maps to all 12 longhands (the cascade resolves it) — mirrors
+        // the `font` shorthand; it must NOT be misclassified as a <color> (Copilot review).
+        var d = Expand("border", keyword);
+        Assert.Equal(12, d.Count);
+        foreach (var edge in new[] { "top", "right", "bottom", "left" })
+        {
+            Assert.Equal(keyword, d[$"border-{edge}-width"]);
+            Assert.Equal(keyword, d[$"border-{edge}-style"]);
+            Assert.Equal(keyword, d[$"border-{edge}-color"]);
+        }
+    }
+
+    [Fact]
+    public void Border_css_wide_keyword_is_only_whole_value()
+    {
+        // `inherit` is CSS-wide ONLY as the sole value — `1px inherit` is invalid (the keyword reaches
+        // the color slot and fails leaf validation → atomic reject).
+        Assert.False(BorderShorthandExpander.TryExpand("border", "1px inherit", out _));
+    }
+
     [Theory]
     [InlineData("border", "1px 2px solid red")]    // two widths
     [InlineData("border", "solid red blue")]        // two colors

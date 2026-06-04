@@ -3026,11 +3026,15 @@ flags the categories):
          the 12 `border-*-width`/`-style`/`-color` longhands, added to `MarginBoxStyle.CascadedStyleIds`)
          strokes the box's full region via the shared `FragmentPainter.PaintBorders` (extracted from
          the body 4-edge loop), painted by the pipeline over the background band, before the text,
-         ungated by `PrintBackgrounds`. STILL DEFERRED: margin-box `padding`; the border CONTENT-ORIGIN
-         INSET (the text isn't pushed in by the border width yet — for a thin border + centered content
-         there's no overlap, but a thick border could overlap); the `border-width`/`-style`/`-color`
-         1–4-value box shorthands; `border-radius`; and a diagnostic for an invalid margin-box `border`
-         (it's silently dropped, unlike the `font` shorthand which is surfaced).
+         ungated by `PrintBackgrounds`. The post-PR-#140 review added: a zero-area/non-finite guard in
+         `FragmentPainter.PaintBorders` (a zero-height band from `@page { margin:0 }` paints no border);
+         a sanitized `CSS-PROPERTY-VALUE-INVALID-001` for an un-expandable margin-box `border` marker
+         (surfaced via `MarginBoxStyle`, mirroring the `font` shorthand, no longer silently dropped);
+         CSS-comment stripping + whole-value CSS-wide-keyword (`inherit`/`initial`/…) handling in the
+         expander. STILL DEFERRED: margin-box `padding`; the border CONTENT-ORIGIN INSET (the text isn't
+         pushed in by the border width yet — for a thin border + centered content there's no overlap,
+         but a thick border could overlap); the `border-width`/`-style`/`-color` 1–4-value box
+         shorthands; `border-radius`.
        - **Margin boxes — later cycles:**
          `string()` running headers (needs `string-set` collection), and `element()` running
          elements; the CSS Page 3 §5.3 three-box-per-edge

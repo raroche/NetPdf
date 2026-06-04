@@ -303,6 +303,37 @@ public sealed class MarginBoxStyleTests
         Assert.Equal(0xFFFF0000u, argb);   // red !important wins
     }
 
+    [Fact]
+    public void Build_background_color_inherit_copies_the_parent()
+    {
+        // background-color is normally non-inherited, but an explicit `inherit` copies the parent
+        // (post-PR-#137 review P2 — property-aware CSS-wide handling).
+        var parent = MarginBoxStyle.Build(ImmutableArray.Create(Decl("background-color", "#ff0000")));
+        var child = MarginBoxStyle.Build(ImmutableArray.Create(Decl("background-color", "inherit")), parent);
+        Assert.True(FragmentPainter.TryResolveColor(child.Get(PropertyId.BackgroundColor), 0xFF000000u, out var argb));
+        Assert.Equal(0xFFFF0000u, argb);
+    }
+
+    [Fact]
+    public void Build_background_color_unset_is_initial_for_the_non_inherited_property()
+    {
+        // `unset` = initial for a NON-inherited property → transparent (cleared), NOT the parent.
+        var parent = MarginBoxStyle.Build(ImmutableArray.Create(Decl("background-color", "#ff0000")));
+        var child = MarginBoxStyle.Build(ImmutableArray.Create(Decl("background-color", "unset")), parent);
+        Assert.False(child.IsSet(PropertyId.BackgroundColor));
+    }
+
+    [Fact]
+    public void Build_color_unset_inherits_for_the_inherited_property()
+    {
+        // REGRESSION (the property-aware refactor): `unset` on an INHERITED property (color) still
+        // keeps the parent's value (= inherit), unlike the non-inherited background-color above.
+        var parent = MarginBoxStyle.Build(ImmutableArray.Create(Decl("color", "#ff0000")));
+        var child = MarginBoxStyle.Build(ImmutableArray.Create(Decl("color", "unset")), parent);
+        Assert.True(FragmentPainter.TryResolveColor(child.Get(PropertyId.Color), 0xFF000000u, out var argb));
+        Assert.Equal(0xFFFF0000u, argb);
+    }
+
     // ---- rejected `font` shorthand marker (review #3) ----
 
     [Theory]

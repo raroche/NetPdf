@@ -954,6 +954,58 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Page_margin_box_background_suppressed_when_print_backgrounds_disabled()
+    {
+        // PrintBackgrounds=false suppresses the margin-box band, exactly like body backgrounds
+        // (post-PR-#137 review P1).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content:\"AB\"; background-color: red } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver(), PrintBackgrounds = false }));
+        Assert.DoesNotContain("1 0 0 rg", pdf);   // no red band
+        Assert.DoesNotContain(" re", pdf);
+    }
+
+    [Fact]
+    public void Page_margin_box_empty_content_still_paints_the_background_band()
+    {
+        // content:"" generates the box (CSS Page 3 §6.1 — content is not none/normal) → the band
+        // paints even with no text to lay out (post-PR-#137 review P2).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content:\"\"; background-color: red } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Contains("1 0 0 rg", pdf);   // red band painted
+        Assert.Contains(" re", pdf);
+        Assert.DoesNotContain(" Tj", pdf);  // …with no text glyphs shown
+    }
+
+    [Fact]
+    public void Page_margin_box_background_color_inherit_takes_the_page_context()
+    {
+        // @page { background-color: red } + box `background-color: inherit` → the box's band inherits
+        // red, even though background-color is non-inherited by default (post-PR-#137 review P2).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { background-color: red; @bottom-center " +
+            "{ content:\"AB\"; background-color: inherit } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Contains("1 0 0 rg", pdf);   // inherited red band
+    }
+
+    [Fact]
+    public void Page_margin_box_background_color_currentcolor_uses_the_box_color()
+    {
+        // background-color: currentcolor resolves against the box's own color (post-PR-#137 review P3).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center " +
+            "{ content:\"AB\"; color: #0000ff; background-color: currentcolor } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        // The band (the first `re`, painted before the text) is filled with the box's blue currentColor.
+        var beforeRect = pdf[..pdf.IndexOf(" re", StringComparison.Ordinal)];
+        Assert.Contains("0 0 1 rg", beforeRect);
+    }
+
+    [Fact]
     public void Page_margin_box_font_shorthand_sets_the_size(/* Task 21 cycle 6 */)
     {
         // The `font` shorthand is expanded into longhands for margin-box bodies (AngleSharp never

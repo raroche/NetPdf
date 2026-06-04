@@ -131,7 +131,6 @@ internal static class PageMarginBoxPainter
                 EmitContentUnsupported(diagnostics, mb.Name, mb.ContentRawValue);
                 continue;
             }
-            if (string.IsNullOrEmpty(text)) continue; // e.g. content: "" — nothing to paint.
 
             if (!PageMarginBoxGeometry.TryGetRegion(
                     mb.Name, pageWidthPx, pageHeightPx,
@@ -155,6 +154,11 @@ internal static class PageMarginBoxPainter
             {
                 backgrounds.Add(new MarginBoxBackgroundFill(region.X, region.Y, region.Width, region.Height, bgArgb));
             }
+
+            // `content: ""` generates the box (CSS Page 3 §6.1: content is not none/normal) — the
+            // band above still paints, but there is no text to lay out, so skip the text fragment
+            // (post-PR-#137 review P2).
+            if (string.IsNullOrEmpty(text)) continue;
 
             var box = Box.TextRun(string.Empty, style);
             var lineHeightPx = style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16) * NormalLineHeightFactor;

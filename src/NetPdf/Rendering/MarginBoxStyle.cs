@@ -74,6 +74,11 @@ internal static class MarginBoxStyle
         PropertyId.FontFamily, PropertyId.FontSize, PropertyId.FontWeight, PropertyId.FontStyle,
         PropertyId.Color);
 
+    /// <summary>The inherited subset of <see cref="CascadedStyleIds"/> — drives the inheritance copy
+    /// and the property-aware CSS-wide keyword handling (<c>unset</c>/<c>revert</c> behave as
+    /// <c>inherit</c> for these, and as <c>initial</c> for the non-inherited <c>background-color</c>).</summary>
+    private static readonly FrozenSet<PropertyId> InheritedStyleIdSet = SupportedStyleIds.ToFrozenSet();
+
     /// <summary>The longhands a margin box CASCADES from its OWN declarations: the inherited set plus
     /// the non-inherited <c>background-color</c> (cycle 8 — paints a band behind the box's content).
     /// <c>background-color</c> is materialized onto the style but deliberately left OUT of the
@@ -103,24 +108,8 @@ internal static class MarginBoxStyle
         // ← root). All five supported properties are inherited (vertical-align isn't, and is read
         // raw — never inherited). Mirrors BoxBuilder.ApplyInheritance (slot + side-table + deferred).
         if (parentStyle is not null)
-        {
             foreach (var id in SupportedStyleIds)
-            {
-                if (!parentStyle.IsSet(id)) continue;
-                var slot = parentStyle.Get(id);
-                if (!slot.IsUnset)
-                {
-                    style.Set(id, slot);
-                    if (slot.Tag == ComputedSlotTag.SideTableIndex
-                        && parentStyle.TryGetSideTablePayloadRaw(id, out var payload) && payload is not null)
-                        style.SetSideTablePayload(id, payload); // the font-family list
-                }
-                else if (parentStyle.TryGetDeferred(id, out var raw) && raw is not null)
-                {
-                    style.SetDeferred(id, raw);
-                }
-            }
-        }
+                InheritProperty(style, parentStyle, id);
 
         if (!declarations.IsDefaultOrEmpty)
         {
@@ -158,18 +147,20 @@ internal static class MarginBoxStyle
                 {
                     if (!winners.TryGetValue(id, out var w)) continue;
 
-                    // CSS-wide keywords are cascade-level, not leaf values (post-PR-#134 review P2):
-                    //   initial      → reset to the property's initial value (clear the slot → the
-                    //                  reader falls back to the initial/default);
-                    //   inherit/unset → keep the value already inherited from the parent above
-                    //                  (these are inherited properties) — a no-op here;
-                    //   revert/revert-layer → approximated as the inherited value (a precise
-                    //                  origin/layer rollback needs the cascade machinery — deferrals.md).
+                    // CSS-wide keywords are cascade-level, not leaf values (post-PR-#134 review P2) —
+                    // and PROPERTY-AWARE now that the non-inherited `background-color` is in the set
+                    // (post-PR-#137 review P2):
+                    //   inherit → take the parent's value (for `background-color: inherit` this is the
+                    //             explicit-inherit the non-inherited default would otherwise skip);
+                    //   initial → reset to the property's initial value (clear the slot → reader default);
+                    //   unset   → inherit for an INHERITED property, initial for a non-inherited one;
+                    //   revert/revert-layer → approximated the same way (inherited keeps the parent,
+                    //             non-inherited reverts to initial; a precise origin/layer rollback
+                    //             needs the cascade machinery — deferrals.md).
                     // Skipping the leaf resolve also avoids a spurious invalid-value diagnostic.
                     if (CssWideKeyword.Is(w.Value))
                     {
-                        if (w.Value.Trim().Equals("initial", StringComparison.OrdinalIgnoreCase))
-                            style.Unset(id);
+                        ApplyCssWideKeyword(style, parentStyle, id, w.Value, InheritedStyleIdSet.Contains(id));
                         continue;
                     }
 
@@ -188,6 +179,44 @@ internal static class MarginBoxStyle
 
         style.MarkAsBoxOwned();
         return style;
+    }
+
+    /// <summary>Copy <paramref name="parentStyle"/>'s value for <paramref name="id"/> onto
+    /// <paramref name="style"/> — the slot (+ the side-table payload for the font-family list, + a
+    /// deferred raw for an unresolved parent-relative value). A no-op when the parent doesn't have
+    /// <paramref name="id"/> set. Shared by the inheritance copy and the <c>inherit</c> keyword.</summary>
+    private static void InheritProperty(ComputedStyle style, ComputedStyle parentStyle, PropertyId id)
+    {
+        if (!parentStyle.IsSet(id)) return;
+        var slot = parentStyle.Get(id);
+        if (!slot.IsUnset)
+        {
+            style.Set(id, slot);
+            if (slot.Tag == ComputedSlotTag.SideTableIndex
+                && parentStyle.TryGetSideTablePayloadRaw(id, out var payload) && payload is not null)
+                style.SetSideTablePayload(id, payload); // the font-family list
+        }
+        else if (parentStyle.TryGetDeferred(id, out var raw) && raw is not null)
+        {
+            style.SetDeferred(id, raw);
+        }
+    }
+
+    /// <summary>Apply a CSS-wide keyword to <paramref name="id"/>, PROPERTY-AWARE (post-PR-#137 review
+    /// P2): <c>inherit</c> takes the parent's value; <c>initial</c> clears to the initial value;
+    /// <c>unset</c> / <c>revert</c> / <c>revert-layer</c> behave as <c>inherit</c> for an inherited
+    /// property (<paramref name="isInherited"/>) and as <c>initial</c> for a non-inherited one (e.g.
+    /// <c>background-color</c>). The slot is cleared first, then re-taken from the parent when the
+    /// keyword resolves to <c>inherit</c> — so a pre-inherited slot is overwritten correctly and a
+    /// null parent falls back to initial.</summary>
+    private static void ApplyCssWideKeyword(
+        ComputedStyle style, ComputedStyle? parentStyle, PropertyId id, string keyword, bool isInherited)
+    {
+        var kw = keyword.Trim();
+        var takeParent = kw.Equals("inherit", StringComparison.OrdinalIgnoreCase)
+            || (isInherited && !kw.Equals("initial", StringComparison.OrdinalIgnoreCase));
+        style.Unset(id);
+        if (takeParent && parentStyle is not null) InheritProperty(style, parentStyle, id);
     }
 
     /// <summary>The fraction of leftover inline space before the line (0 = start, 0.5 = center,

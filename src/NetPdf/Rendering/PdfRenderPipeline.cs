@@ -194,7 +194,8 @@ internal static class PdfRenderPipeline
                 margins.LeftPx, margins.TopPx, host, rootEl.Style, pageDecls, shaper, diagnostics);
             // Margin-box background bands (cycle 8) paint BEHIND the header/footer text: after the
             // body backgrounds above, before the shared text pass — same bg → text content order.
-            if (marginResult.Backgrounds.Count > 0)
+            // Gated by PrintBackgrounds, exactly like body backgrounds (post-PR-#137 review P1).
+            if (options.PrintBackgrounds && marginResult.Backgrounds.Count > 0)
                 PageMarginBoxPainter.PaintBackgrounds(page, marginResult.Backgrounds, mediaBox.HeightPts);
             if (marginResult.Fragments.Count > 0)
             {

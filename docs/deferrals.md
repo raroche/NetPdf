@@ -3030,8 +3030,14 @@ flags the categories):
          + background images.
          The per-box / page-context `ComputedStyle.Rent()` is box-owned (not returned to the pool) —
          a negligible per-render miss.
-       - **Later cycles:** `@page :first`/`:left`/`:right`/`:blank` selectors + named pages;
-         `calc()` / font-relative margin units (absolute lengths + percentages are done).
+       - **`@page :first` selector (cycle 10) — DONE:** `@page :first` rules apply on the single
+         (first) page, overriding the bare `@page` by cascade specificity — `AtPageRules.EnumeratePageRules`
+         yields bare-then-`:first` so the resolvers' last-wins cascade lets `:first` win (a bare
+         `!important` still beats a `:first` normal). STILL DEFERRED: `@page :left`/`:right`/`:blank`
+         + named-page selectors — recognized by `ClassifyPageSelector` (→ `Deferred`) but NOT applied,
+         because they need the multi-page driver's page context (which page is left/right/blank, or
+         what `page:` name a page was assigned). `calc()` / font-relative margin units also deferred
+         (absolute lengths + percentages are done).
   4. **Deterministic default font** — `SystemFontResolver` reads platform
      fonts (non-deterministic); a bundled last-resort font is needed for
      the determinism contract (CLAUDE.md rule #4) once PDFs are emitted.

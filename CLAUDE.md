@@ -154,9 +154,14 @@ copies the parent). **Cycle 9 — `counter(page)`/`counter(pages)` page numbers 
 `decimal` style) resolves to the page number/total via a new `CssContentList.PageCounters` context
 threaded through `PageMarginBoxPainter`; the pipeline passes `(1, 1)` for the single page (the blocked
 multi-page driver supplies real numbers later). Non-page counters / `counters()` / no-page-context
-stay unsupported. Next:
-margin-box `border`/`padding` (border-shorthand expander + content-origin inset) / §5.3 three-box-per-edge sizing, OR `@page` selectors
-(`:first`/`:left`/`:right`/`:blank`) + named pages — Roland's pick. Blocked (see `deferrals.md`):
+stay unsupported. **Cycle 10 — the `@page :first` selector (in progress, branch
+`phase-3-task-21-at-page-first-selector`):** selector-scoped `@page :first` rules apply on the single
+(first) page, overriding the bare `@page` (margin / size / margin boxes) by cascade specificity —
+`AtPageRules.EnumeratePageRules` yields bare-then-`:first` so the resolvers' last-wins cascade lets
+`:first` win (a bare `!important` still beats a `:first` normal); `:left`/`:right`/`:blank`/named stay
+deferred (multi-page-gated). Next (Task 21 remaining, in order):
+`@page :left`/`:right`/`:blank` + named pages (multi-page-gated) / margin-box `border`/`padding` / §5.3 three-box-per-edge sizing,
+then Task 22 (`string-set`/`string()` running headers). Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).
 For the live state, read the **current-state pointer at the top of [PROGRESS.md](PROGRESS.md)**

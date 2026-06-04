@@ -14,9 +14,12 @@ namespace NetPdf.Css.PagedMedia;
 /// to a given <see cref="CssMediaContext"/>, filtered + recursed like the cascade: skips
 /// <see cref="CssStylesheet.IsDisabled"/> sheets, honors <see cref="CssStylesheet.MediaQuery"/>,
 /// and recurses into <c>@media</c> blocks only when their condition matches — in source order
-/// (sheet order → rule order). Selector-scoped page rules (<c>@page :first</c> etc.) are excluded
-/// (deferred). The <c>@page</c> margin + size resolvers share this so applicability stays
-/// consistent between them.
+/// (sheet order → rule order). The <c>EnumerateBarePageRules*</c> view yields ONLY the bare
+/// <c>@page</c> rule; <c>EnumeratePageRules*</c> additionally yields the <c>@page :first</c> rules
+/// in cascade-specificity order (bare, then <c>:first</c>) so the resolvers' last-wins cascade lets
+/// <c>:first</c> override the bare page. <c>:left</c> / <c>:right</c> / <c>:blank</c> / named-page
+/// selectors stay deferred (multi-page-gated). The <c>@page</c> margin + size + margin-box resolvers
+/// share this so applicability stays consistent between them.
 /// </summary>
 /// <remarks>
 /// <b>Scope vs. the cascade (Task 21).</b> Only the sheet-level media query and nested
@@ -47,18 +50,7 @@ internal static class AtPageRules
     /// conditioning. The margin resolver ignores the flag; the size resolver honors it.</summary>
     public static IEnumerable<BarePageRule> EnumerateBarePageRulesWithMediaInfo(
         IEnumerable<CssStylesheet> sheets, CssMediaContext media)
-    {
-        ArgumentNullException.ThrowIfNull(sheets);
-        ArgumentNullException.ThrowIfNull(media);
-
-        foreach (var sheet in sheets)
-        {
-            if (sheet.IsDisabled) continue;                 // disabled sheets don't contribute
-            if (!media.Matches(sheet.MediaQuery)) continue; // sheet media must match (e.g. print)
-            var conditioned = IsPaperSizeConditioned(sheet.MediaQuery);
-            foreach (var page in FromRules(sheet.Rules, media, conditioned)) yield return page;
-        }
-    }
+        => Walk(sheets, media, PageSelectorKind.Bare);
 
     /// <summary>Yields just the applicable bare <c>@page</c> rules (paper-size conditioning
     /// dropped) — the margin resolver's view, which the flag does not affect.</summary>
@@ -69,8 +61,46 @@ internal static class AtPageRules
             yield return bare.Rule;
     }
 
+    /// <summary>Yields the <c>@page</c> rules applicable to the page being resolved, in CASCADE
+    /// SPECIFICITY ORDER (Task 21 — selectors): the bare <c>@page</c> rules first (specificity 0),
+    /// then the <c>@page :first</c> rules (a pseudo-class adds specificity). A resolver that applies
+    /// these in iteration order with a last-wins / importance-then-source-order cascade therefore
+    /// lets <c>:first</c> override the bare page — and a bare <c>!important</c> still beats a
+    /// <c>:first</c> normal (importance outranks specificity). The single page IS the first page, so
+    /// <c>:first</c> matches; <c>:left</c> / <c>:right</c> / <c>:blank</c> / named-page selectors need
+    /// the multi-page driver's page context and are NOT yet applied (deferrals.md).</summary>
+    public static IEnumerable<BarePageRule> EnumeratePageRulesWithMediaInfo(
+        IEnumerable<CssStylesheet> sheets, CssMediaContext media)
+    {
+        foreach (var r in Walk(sheets, media, PageSelectorKind.Bare)) yield return r;
+        foreach (var r in Walk(sheets, media, PageSelectorKind.First)) yield return r;
+    }
+
+    /// <summary>The rule-only view of <see cref="EnumeratePageRulesWithMediaInfo"/> — bare then
+    /// <c>:first</c>, in specificity order.</summary>
+    public static IEnumerable<CssAtRule> EnumeratePageRules(
+        IEnumerable<CssStylesheet> sheets, CssMediaContext media)
+    {
+        foreach (var r in EnumeratePageRulesWithMediaInfo(sheets, media)) yield return r.Rule;
+    }
+
+    private static IEnumerable<BarePageRule> Walk(
+        IEnumerable<CssStylesheet> sheets, CssMediaContext media, PageSelectorKind want)
+    {
+        ArgumentNullException.ThrowIfNull(sheets);
+        ArgumentNullException.ThrowIfNull(media);
+
+        foreach (var sheet in sheets)
+        {
+            if (sheet.IsDisabled) continue;                 // disabled sheets don't contribute
+            if (!media.Matches(sheet.MediaQuery)) continue; // sheet media must match (e.g. print)
+            var conditioned = IsPaperSizeConditioned(sheet.MediaQuery);
+            foreach (var page in FromRules(sheet.Rules, media, conditioned, want)) yield return page;
+        }
+    }
+
     private static IEnumerable<BarePageRule> FromRules(
-        ImmutableArray<CssRule> rules, CssMediaContext media, bool conditioned)
+        ImmutableArray<CssRule> rules, CssMediaContext media, bool conditioned, PageSelectorKind want)
     {
         foreach (var rule in rules)
         {
@@ -83,16 +113,33 @@ internal static class AtPageRules
                     // The conditioning is sticky down the tree: once a paper-size @media wraps
                     // the rule, nested rules stay conditioned even if their own @media isn't.
                     var nested = conditioned || IsPaperSizeConditioned(at.Prelude);
-                    foreach (var page in FromRules(at.ChildRules, media, nested)) yield return page;
+                    foreach (var page in FromRules(at.ChildRules, media, nested, want)) yield return page;
                 }
             }
             else if (string.Equals(at.Name, "page", StringComparison.OrdinalIgnoreCase)
-                     && string.IsNullOrWhiteSpace(at.Prelude)) // bare @page only this cycle
+                     && ClassifyPageSelector(at.Prelude) == want)
             {
                 yield return new BarePageRule(at, conditioned);
             }
         }
     }
+
+    /// <summary>Classify an <c>@page</c> rule's recovered selector (its <see cref="CssAtRule.Prelude"/>):
+    /// empty → <see cref="PageSelectorKind.Bare"/>; <c>:first</c> → <see cref="PageSelectorKind.First"/>;
+    /// anything else (<c>:left</c> / <c>:right</c> / <c>:blank</c> / a named page / combinations) →
+    /// <see cref="PageSelectorKind.Deferred"/> (recognized but not yet applied — they need the
+    /// multi-page driver's page context).</summary>
+    internal static PageSelectorKind ClassifyPageSelector(string? prelude)
+    {
+        if (string.IsNullOrWhiteSpace(prelude)) return PageSelectorKind.Bare;
+        return prelude.Trim().Equals(":first", StringComparison.OrdinalIgnoreCase)
+            ? PageSelectorKind.First
+            : PageSelectorKind.Deferred;
+    }
+
+    /// <summary>The <c>@page</c> selector kinds the resolvers handle: the bare page, the
+    /// <c>:first</c> page, and everything else (deferred — multi-page-gated).</summary>
+    internal enum PageSelectorKind { Bare, First, Deferred }
 
     /// <summary>Returns <see langword="true"/> when <paramref name="mediaQuery"/> references a
     /// paper-size media feature (CSS Page 3 §3.3) in feature position — i.e. as the identifier

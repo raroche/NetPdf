@@ -22,9 +22,10 @@ namespace NetPdf.Css.PagedMedia;
 /// adapter re-parents them under the owning <c>@page</c> rule's <see cref="CssAtRule.ChildRules"/>
 /// (each a <see cref="CssAtRule"/> whose <see cref="CssAtRule.Name"/> is the box name and whose
 /// <see cref="CssAtRule.Declarations"/> are parsed). This resolver reads them. Applicability +
-/// ordering reuse the shared <see cref="AtPageRules.EnumerateBarePageRules"/> (cascade-style
-/// media / disabled filtering, bare <c>@page</c> only) — the paper-size conditioning that gates
-/// <c>size</c> does NOT apply to margin boxes. The cascade winner per box name is chosen by
+/// ordering reuse the shared <see cref="AtPageRules.EnumeratePageRules"/> (cascade-style
+/// media / disabled filtering; bare <c>@page</c> then <c>@page :first</c> in specificity order, so
+/// a <c>:first</c> margin box overrides the bare one on the single/first page) — the paper-size
+/// conditioning that gates <c>size</c> does NOT apply to margin boxes. The cascade winner per box name is chosen by
 /// importance then source order (an <c>!important</c> <c>content</c> beats a normal one; among
 /// equal importance the last wins), within a box body AND across <c>@page</c> rules. A box whose
 /// winning <c>content</c> is the bare keyword <c>none</c> / <c>normal</c> (= "no generated
@@ -77,7 +78,7 @@ internal static class AtPageMarginBoxResolver
         // @page rules, post-PR-#132 review P1) + ALL declarations in source order (the orchestrator
         // builds the box's ComputedStyle from these — Task 21 cycle 4).
         Dictionary<string, Acc>? accs = null;
-        foreach (var at in AtPageRules.EnumerateBarePageRules(sheets, media))
+        foreach (var at in AtPageRules.EnumeratePageRules(sheets, media))
         {
             foreach (var child in at.ChildRules)
             {
@@ -122,7 +123,7 @@ internal static class AtPageMarginBoxResolver
         ArgumentNullException.ThrowIfNull(media);
 
         ImmutableArray<CssDeclaration>.Builder? decls = null;
-        foreach (var at in AtPageRules.EnumerateBarePageRules(sheets, media))
+        foreach (var at in AtPageRules.EnumeratePageRules(sheets, media))
         {
             if (at.Declarations.IsDefaultOrEmpty) continue;
             decls ??= ImmutableArray.CreateBuilder<CssDeclaration>();

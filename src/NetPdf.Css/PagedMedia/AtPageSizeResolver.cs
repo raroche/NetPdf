@@ -51,7 +51,7 @@ internal static class AtPageSizeResolver
         var seen = false;
         var important = false;
         ResolvedPageSize? dims = null;
-        foreach (var bare in AtPageRules.EnumerateBarePageRulesWithMediaInfo(sheets, media))
+        foreach (var bare in AtPageRules.EnumeratePageRulesWithMediaInfo(sheets, media))
         {
             // CSS Page 3 §3.3 — a `size` qualified by a paper-size @media (or sheet media query)
             // is ignored to avoid a circular page-size dependency. Margins from the same rule

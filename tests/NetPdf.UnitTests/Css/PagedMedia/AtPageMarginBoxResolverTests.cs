@@ -60,6 +60,16 @@ public sealed class AtPageMarginBoxResolverTests
     }
 
     [Fact]
+    public async Task Resolve_first_selector_box_overrides_the_bare_page()
+    {
+        // Task 21 selectors: a :first margin box overrides the bare one on the single (first) page,
+        // by specificity — even when sourced before the bare rule.
+        var boxes = await Resolve(
+            "@page :first { @top-center { content: \"B\" } } @page { @top-center { content: \"A\" } }");
+        Assert.Equal("\"B\"", Assert.Single(boxes).ContentRawValue);
+    }
+
+    [Fact]
     public async Task Resolve_ignores_a_screen_media_sheet_in_print() =>
         Assert.Empty(await Resolve("@page { @bottom-center { content: \"x\" } }", sheetMedia: "screen"));
 

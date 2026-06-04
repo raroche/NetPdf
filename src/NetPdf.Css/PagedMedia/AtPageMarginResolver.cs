@@ -80,7 +80,7 @@ internal static class AtPageMarginResolver
         ArgumentNullException.ThrowIfNull(media);
 
         Candidate top = default, right = default, bottom = default, left = default;
-        foreach (var at in AtPageRules.EnumerateBarePageRules(sheets, media))
+        foreach (var at in AtPageRules.EnumeratePageRules(sheets, media))
         {
             foreach (var decl in at.Declarations)
             {

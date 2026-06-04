@@ -168,9 +168,18 @@ background band, ungated by `PrintBackgrounds`. Post-PR-#140 review: a zero-area
 `FragmentPainter.PaintBorders` (a zero-height band paints nothing); a sanitized
 `CSS-PROPERTY-VALUE-INVALID-001` for an un-expandable margin-box `border` marker (via `MarginBoxStyle`,
 mirroring `font`); CSS-comment stripping + whole-value CSS-wide-keyword (`inherit`/…) handling in the
-expander. `padding` + the content-origin inset + `border-width`/`-style`/`-color` box shorthands stay
-deferred. Next (Task 21 remaining, in order):
-margin-box `padding` + border content-inset / §5.3 three-box-per-edge sizing / `@page :left`/`:right`/`:blank` + named pages (multi-page-gated),
+expander. **Cycle 12 — margin-box `padding` + the border content-inset (in progress, branch
+`phase-3-task-21-margin-box-padding`):** a declared `padding` (1–4-value box shorthand + per-side
+longhands) insets the box's text, AND the cycle-11-deferred border content-inset now works. New
+`PaddingShorthandExpander` (mirroring `BorderShorthandExpander`; a shared paren-aware
+`CssShorthandHelpers.SplitTopLevel` was extracted) → the 4 `padding-*` longhands (added to
+`MarginBoxStyle.CascadedStyleIds`, non-inherited) + a marker diagnostic for an un-expandable `padding`.
+`PageMarginBoxPainter` insets the text by the used border-width + padding per side via
+`ReadLengthPxOrZero` (§4.3 border-width gate) — placing the line at the BORDER-box origin and shrinking
+the alignment extent to the content box, since `TextPainter.CollectFragment` already adds the box's
+border+padding (else the inset would DOUBLE). `border-width`/`-style`/`-color` box shorthands +
+`border-radius` + background images stay deferred. Next (Task 21 remaining, in order):
+the `border-width`/`-style`/`-color` box shorthands + §5.3 three-box-per-edge sizing / `@page :left`/`:right`/`:blank` + named pages (multi-page-gated),
 then Task 22 (`string-set`/`string()` running headers). Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).

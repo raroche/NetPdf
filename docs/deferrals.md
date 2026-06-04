@@ -3031,16 +3031,26 @@ flags the categories):
          a sanitized `CSS-PROPERTY-VALUE-INVALID-001` for an un-expandable margin-box `border` marker
          (surfaced via `MarginBoxStyle`, mirroring the `font` shorthand, no longer silently dropped);
          CSS-comment stripping + whole-value CSS-wide-keyword (`inherit`/`initial`/…) handling in the
-         expander. STILL DEFERRED: margin-box `padding`; the border CONTENT-ORIGIN INSET (the text isn't
-         pushed in by the border width yet — for a thin border + centered content there's no overlap,
-         but a thick border could overlap); the `border-width`/`-style`/`-color` 1–4-value box
-         shorthands; `border-radius`.
+         expander. STILL DEFERRED: the `border-width`/`-style`/`-color` 1–4-value box shorthands;
+         `border-radius`.
+       - **Margin boxes — `padding` + the border content-inset (padding cycle) — DONE:** a margin box's
+         declared `padding` (new `PaddingShorthandExpander` for the 1–4-value box shorthand → the 4
+         `padding-*` longhands, added to `MarginBoxStyle.CascadedStyleIds`; per-side longhands pass
+         through) AND the cycle-11-deferred border-width inset now push the box's text in — `PageMarginBoxPainter`
+         insets by `ReadLengthPxOrZero(border-*-width) + ReadLengthPxOrZero(padding-*)` per side (the
+         §4.3 border-width used-value gate makes the reserved space match what the painter strokes),
+         shrinking the alignment extent to the content box while placing the line at the BORDER-box
+         origin — `TextPainter.CollectFragment` already adds the box's border+padding (the body's
+         border-box→content-box step), so applying the inset in both places would DOUBLE it (a bug
+         caught + fixed mid-cycle). The border/background still cover the FULL region. A shared paren-aware
+         `CssShorthandHelpers.SplitTopLevel` was extracted (border + padding share it). STILL DEFERRED:
+         `calc()`/`min()`/etc. padding values (unsupported by the resolver → atomic-reject + diagnosed).
        - **Margin boxes — later cycles:**
          `string()` running headers (needs `string-set` collection), and `element()` running
          elements; the CSS Page 3 §5.3 three-box-per-edge
          sizing (each box gets the full edge band + aligns within it, so long sibling boxes on one
-         edge can overlap, and content overflowing a band isn't clipped); margin-box `padding` (+ the
-         border content-inset above) + background images.
+         edge can overlap, and content overflowing a band isn't clipped); the `border-width`/`-style`/
+         `-color` 1–4-value box shorthands, `border-radius`, + background images.
          The per-box / page-context `ComputedStyle.Rent()` is box-owned (not returned to the pool) —
          a negligible per-render miss.
        - **`@page :first` selector (cycle 10) — DONE:** `@page :first` rules apply on the single

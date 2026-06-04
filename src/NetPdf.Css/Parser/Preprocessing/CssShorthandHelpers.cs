@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
 using System;
+using System.Collections.Generic;
 using System.Text;
 
 namespace NetPdf.Css.Parser.Preprocessing;
@@ -14,6 +15,32 @@ namespace NetPdf.Css.Parser.Preprocessing;
 /// </summary>
 internal static class CssShorthandHelpers
 {
+    /// <summary>Split <paramref name="value"/> into whitespace-separated tokens at paren depth 0, so a
+    /// functional value (<c>rgb(255, 0, 0)</c>, <c>calc(1px + 2px)</c>) stays a single token despite
+    /// its inner spaces/commas. Returns <see langword="false"/> on unbalanced parentheses. Shared by
+    /// the <c>border</c> / <c>padding</c> margin-box shorthand expanders.</summary>
+    public static bool SplitTopLevel(string value, out List<string> tokens)
+    {
+        tokens = new List<string>(4);
+        var sb = new StringBuilder();
+        var depth = 0;
+        foreach (var ch in value)
+        {
+            if (ch == '(') depth++;
+            else if (ch == ')') { if (--depth < 0) return false; }
+
+            if (char.IsWhiteSpace(ch) && depth == 0)
+            {
+                if (sb.Length > 0) { tokens.Add(sb.ToString()); sb.Clear(); }
+                continue;
+            }
+            sb.Append(ch);
+        }
+        if (depth != 0) return false;
+        if (sb.Length > 0) tokens.Add(sb.ToString());
+        return true;
+    }
+
     /// <summary>Replace CSS block comments (<c>/* ... */</c>) with a
     /// single space per CSS Syntax §4.3.2 — comments are syntactic
     /// whitespace + don't change the value's parsed meaning. Strings

@@ -801,18 +801,87 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
-    public void Page_margin_box_ignores_unsupported_padding_declaration()
+    public void Page_margin_box_padding_left_insets_the_text()
     {
-        // padding-left would shift the text if materialized (the painter reads padding from the
-        // style); the cycle-4 whitelist excludes it, so the line stays at the same X (review P2).
+        // padding-left now shifts the text inward (padding cycle) — @top-left is start-aligned, so a
+        // declared padding-left moves the line right by the padding amount (50px → 37.5pt).
         var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
         var withPad = FirstTd(Latin1(HtmlPdf.Convert(
-            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"AB\"; padding-left: 50px } }</style>" +
+            "<!DOCTYPE html><html><head><style>@page { @top-left { content: \"AB\"; padding-left: 50px } }</style>" +
             "</head><body></body></html>", opts)));
         var without = FirstTd(Latin1(HtmlPdf.Convert(
-            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"AB\" } }</style>" +
+            "<!DOCTYPE html><html><head><style>@page { @top-left { content: \"AB\" } }</style>" +
             "</head><body></body></html>", opts)));
-        Assert.Equal(without.X, withPad.X, 3);   // padding-left was ignored → no horizontal shift
+        Assert.InRange(withPad.X - without.X, 36.0, 39.0);   // 50px padding-left → ~37.5pt shift
+    }
+
+    [Fact]
+    public void Page_margin_box_padding_shorthand_insets_the_text()
+    {
+        // The `padding` 1-value box shorthand expands to all four longhands end-to-end — padding: 40px
+        // sets padding-left = 40px, shifting the start-aligned @top-left line right by ~30pt.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var withPad = FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-left { content: \"AB\"; padding: 40px } }</style>" +
+            "</head><body></body></html>", opts)));
+        var without = FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-left { content: \"AB\" } }</style>" +
+            "</head><body></body></html>", opts)));
+        Assert.InRange(withPad.X - without.X, 28.0, 32.0);   // 40px → ~30pt shift
+    }
+
+    [Fact]
+    public void Page_margin_box_border_left_width_insets_the_text()
+    {
+        // The cycle-11-deferred border content-inset now works: a border-left pushes the text right by
+        // its used width (20px → 15pt), independently of (and in addition to) padding.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var withBorder = FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-left { content: \"AB\"; border-left: 20px solid red } }</style>" +
+            "</head><body></body></html>", opts)));
+        var without = FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-left { content: \"AB\" } }</style>" +
+            "</head><body></body></html>", opts)));
+        Assert.InRange(withBorder.X - without.X, 13.0, 17.0);   // 20px border-left → ~15pt shift
+    }
+
+    [Fact]
+    public void Page_margin_box_padding_and_border_inset_add_up()
+    {
+        // The content-origin inset is border-width + padding per side (CSS box model): a 10px border-left
+        // + 20px padding-left → a 30px (→ ~22.5pt) total shift.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var withBoth = FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-left { content: \"AB\"; border-left: 10px solid red; padding-left: 20px } }</style>" +
+            "</head><body></body></html>", opts)));
+        var without = FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-left { content: \"AB\" } }</style>" +
+            "</head><body></body></html>", opts)));
+        Assert.InRange(withBoth.X - without.X, 21.0, 24.0);   // (10 + 20)px → ~22.5pt shift
+    }
+
+    [Fact]
+    public void Page_margin_box_oversized_padding_clamps_without_crashing()
+    {
+        // padding larger than the band clamps the content box to >= 0 — no negative-size / non-finite
+        // coords; the box still emits valid text output.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"AB\"; padding: 9999px } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Contains("BT", pdf);   // still produced a text run, no crash
+    }
+
+    [Fact]
+    public void Page_margin_box_malformed_padding_is_surfaced()
+    {
+        // An un-expandable padding value (`10xyz` isn't a length) is kept as a raw marker and surfaced
+        // via the CSS diagnostic path — not silently dropped.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content:\"AB\"; padding: 10xyz } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
     }
 
     [Fact]

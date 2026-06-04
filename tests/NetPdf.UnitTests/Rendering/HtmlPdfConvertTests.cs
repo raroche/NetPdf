@@ -865,6 +865,43 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Page_margin_box_em_resolves_through_the_root_to_page_context_chain()
+    {
+        // Full CSS Page 3 chain: html { font-size:20px } → the page context inherits 20px (no @page
+        // font-size) → the box's 1.5em resolves against THAT → 30px → 22.5pt.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>html { font-size: 20px } " +
+            "@page { @bottom-center { content:\"AB\"; font-size: 1.5em } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(22.5, FirstTf(pdf), 1);   // 1.5em × (inherited 20px) = 30px → 22.5pt
+    }
+
+    [Fact]
+    public void Page_margin_box_em_compounds_root_then_page_context_then_box()
+    {
+        // Each link resolves against the one above it: html 20px → @page 1.5em = 30px (root-relative)
+        // → @bottom-center 2em = 60px (page-context-relative) → 45pt.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>html { font-size: 20px } " +
+            "@page { font-size: 1.5em; @bottom-center { content:\"AB\"; font-size: 2em } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(45.0, FirstTf(pdf), 1);   // 2em × (1.5em × 20px = 30px) = 60px → 45pt
+    }
+
+    [Fact]
+    public void Page_margin_box_font_shorthand_with_relative_size_resolves()
+    {
+        // PR135 shorthand expansion + PR136 deferred resolution compose: font: bold italic 1.5em
+        // serif → font-size 1.5em → resolved against the 16px default → 24px → 18pt.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center " +
+            "{ content:\"AB\"; font: bold italic 1.5em serif } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(18.0, FirstTf(pdf), 1);   // 1.5em × 16px = 24px → 18pt
+    }
+
+    [Fact]
     public void Page_margin_box_font_shorthand_sets_the_size(/* Task 21 cycle 6 */)
     {
         // The `font` shorthand is expanded into longhands for margin-box bodies (AngleSharp never

@@ -91,7 +91,7 @@ internal static class MarginBoxStyle
 
         // Inheritance (cycle 5): copy each supported property's slot from the parent first, so an
         // own-declaration below overwrites it but an unspecified one flows down (margin box ← @page
-        // ← root). All six supported properties are inherited (vertical-align isn't, and is read
+        // ← root). All five supported properties are inherited (vertical-align isn't, and is read
         // raw — never inherited). Mirrors BoxBuilder.ApplyInheritance (slot + side-table + deferred).
         if (parentStyle is not null)
         {

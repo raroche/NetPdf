@@ -229,6 +229,8 @@ public sealed class MarginBoxStyleTests
     [InlineData("larger", 19.2)]    // 16 × 1.2
     [InlineData("smaller", 16.0 / 1.2)]
     [InlineData("150%", 24.0)]      // 16 × 1.5
+    [InlineData("4ex", 32.0)]       // ex ≈ 0.5em → 16 × 4 × 0.5 (CSS Values §6.1.2 approximation)
+    [InlineData("4ch", 32.0)]       // ch ≈ 0.5em → 16 × 4 × 0.5
     public void Build_resolves_relative_size_keywords_and_percent(string value, double expectedPx)
     {
         var style = MarginBoxStyle.Build(ImmutableArray.Create(Decl("font-size", value)));
@@ -241,6 +243,22 @@ public sealed class MarginBoxStyleTests
         // bolder against the default normal (400) → 700 (CSS Fonts 4 §2.2.1).
         var style = MarginBoxStyle.Build(ImmutableArray.Create(Decl("font-weight", "bolder")));
         Assert.Equal(700, style.ReadFontWeight());
+    }
+
+    [Theory]
+    // Pin the CSS Fonts 4 §2.2.1 relative-weight TABLE is exercised through the margin-box deferred
+    // path against NON-default parents (the resolver table itself is pinned in FontWeightResolverTests;
+    // this proves DeferredFontResolver threads the parent's weight correctly).
+    [InlineData("bolder", "300", 400)]   // < 350 → 400
+    [InlineData("bolder", "600", 900)]   // ≥ 550 → 900
+    [InlineData("lighter", "700", 400)]  // [550,750) → 400
+    [InlineData("lighter", "900", 700)]  // ≥ 750 → 700
+    public void Build_resolves_relative_font_weight_against_a_non_default_parent(
+        string relative, string parentWeight, int expected)
+    {
+        var parent = MarginBoxStyle.Build(ImmutableArray.Create(Decl("font-weight", parentWeight)));
+        var child = MarginBoxStyle.Build(ImmutableArray.Create(Decl("font-weight", relative)), parent);
+        Assert.Equal(expected, child.ReadFontWeight());
     }
 
     [Fact]

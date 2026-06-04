@@ -188,15 +188,20 @@ internal static class PdfRenderPipeline
             // The root element box gives both the attr() host + the top of the inheritance chain;
             // the @page rules' own declarations form the page context the boxes inherit from.
             var pageDecls = AtPageMarginBoxResolver.PageContextDeclarations(phase2.Sheets, media);
-            var marginFragments = PageMarginBoxPainter.Layout(
+            var marginResult = PageMarginBoxPainter.Layout(
                 marginBoxes, pageSize.WidthPx, pageSize.HeightPx,
                 margins.TopPx, margins.RightPx, margins.BottomPx, margins.LeftPx,
                 margins.LeftPx, margins.TopPx, host, rootEl.Style, pageDecls, shaper, diagnostics);
-            if (marginFragments.Count > 0)
+            // Margin-box background bands (cycle 8) paint BEHIND the header/footer text: after the
+            // body backgrounds above, before the shared text pass — same bg → text content order.
+            // Gated by PrintBackgrounds, exactly like body backgrounds (post-PR-#137 review P1).
+            if (options.PrintBackgrounds && marginResult.Backgrounds.Count > 0)
+                PageMarginBoxPainter.PaintBackgrounds(page, marginResult.Backgrounds, mediaBox.HeightPts);
+            if (marginResult.Fragments.Count > 0)
             {
-                var combined = new List<BoxFragment>(sink.Fragments.Count + marginFragments.Count);
+                var combined = new List<BoxFragment>(sink.Fragments.Count + marginResult.Fragments.Count);
                 combined.AddRange(sink.Fragments);
-                combined.AddRange(marginFragments);
+                combined.AddRange(marginResult.Fragments);
                 textFragments = combined;
             }
         }

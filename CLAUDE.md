@@ -138,12 +138,17 @@ post-PR-#135 review made expansion ATOMIC (each generated longhand validated thr
 a system-font/malformed `font` surface a sanitized `CSS-PROPERTY-VALUE-INVALID-001` (kept as a raw
 marker `MarginBoxStyle` reports) instead of silently vanishing; `oblique <angle>` / `<font-stretch>`
 are pinned as a deliberate atomic-reject approximation. **Cycle 7 — parent-relative font-size/weight
-in margin boxes (in progress, branch `phase-3-task-21-margin-box-relative-font-size`):** a margin
-box's `em`/`%`/`larger`/`smaller` font-size + `bolder`/`lighter` weight now resolve against the
-inherited parent (a left-behind cycles-4–6 deferral) — the box-builder's `ResolveDeferredFontProperties`
-was extracted into a shared `DeferredFontResolver` that `MarginBoxStyle.Build` also calls; `rem`/viewport
-font-size stays deferred (documented gap). Next:
-`counter(page)` page numbers / §5.3 three-box-per-edge sizing, OR `@page` selectors
+in margin boxes (merged in PR #136, incl. its review):** a margin box's `em`/`%`/`larger`/`smaller`
+font-size + `bolder`/`lighter` weight resolve against the inherited parent (a left-behind cycles-4–6
+deferral) — the box-builder's `ResolveDeferredFontProperties` was extracted into a shared
+`DeferredFontResolver` that `MarginBoxStyle.Build` also calls; `rem`/viewport font-size stays deferred
+(documented gap). **Cycle 8 — margin-box `background-color` (in progress, branch
+`phase-3-task-21-margin-box-background-color`):** a declared (non-inherited) `background-color` paints
+a band over the box's full region behind its content — materialized via a new `CascadedStyleIds`
+(kept out of the inheritance copy), resolved in `PageMarginBoxPainter` into a `MarginBoxBackgroundFill`
+and filled by the pipeline (reusing `FragmentPainter`'s rect/color helpers + `PdfPage.FillRectangle`)
+before the shared text pass; `border`/`padding`/bg-images stay deferred. Next:
+margin-box `border`/`padding` (content-origin inset) / `counter(page)` page numbers / §5.3 three-box-per-edge sizing, OR `@page` selectors
 (`:first`/`:left`/`:right`/`:blank`) + named pages — Roland's pick. Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).

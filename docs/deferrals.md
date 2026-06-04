@@ -3004,11 +3004,22 @@ flags the categories):
          font-size: 1.5em } }` → 30px. STILL DEFERRED: `rem`/viewport/container-relative font-size
          (`TryResolveRelativeToParent` returns false → stays deferred → reader default; `rem` needs
          the root font-size threaded through).
+       - **Margin boxes — `background-color` (cycle 8) — DONE:** a margin box's declared
+         (non-inherited) `background-color` paints a band over the box's full region behind its
+         content. `MarginBoxStyle.Build` materializes it from the box's own declarations (added to
+         `CascadedStyleIds`, kept OUT of the inheritance copy); `PageMarginBoxPainter` resolves it
+         (shared `FragmentPainter.TryResolveColor`, `currentcolor` = the box's own color) into a
+         `MarginBoxBackgroundFill` at the full region rect, and the pipeline fills it (reusing
+         `FragmentPainter.ToPdfRect`/`ColorChannels`/`Alpha` + `PdfPage.FillRectangle`) before the
+         shared text pass. rgba composites via `/ca`. STILL DEFERRED: `border` / `padding` (need the
+         content-origin inset the cycle-4 whitelist still avoids — they would shift the text) and
+         background images.
        - **Margin boxes — later cycles:** `counter(page)`/`counter(pages)` page numbers,
          `string()` running headers (needs `string-set` collection), and `element()` running
          elements; the CSS Page 3 §5.3 three-box-per-edge
          sizing (each box gets the full edge band + aligns within it, so long sibling boxes on one
-         edge can overlap, and content overflowing a band isn't clipped); box backgrounds/borders.
+         edge can overlap, and content overflowing a band isn't clipped); margin-box `border`/
+         `padding` + background images.
          The per-box / page-context `ComputedStyle.Rent()` is box-owned (not returned to the pool) —
          a negligible per-render miss.
        - **Later cycles:** `@page :first`/`:left`/`:right`/`:blank` selectors + named pages;

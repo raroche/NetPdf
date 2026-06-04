@@ -90,7 +90,7 @@ internal static class CssContentList
     /// <summary>Sink-less overload that also resolves <c>counter(page)</c> / <c>counter(pages)</c>
     /// against <paramref name="pageCounters"/> (Task 21 cycle 9 — page-margin-box content).</summary>
     public static bool TryParse(string raw, IElement host, PageCounters pageCounters, out string result)
-        => TryParse(raw, host, sink: null, CssSourceLocation.Unknown, out result, pageCounters);
+        => TryParse(raw, host, sink: null, location: CssSourceLocation.Unknown, out result, pageCounters);
 
     // Per Phase A security hardening A-5 — cap on the concatenated output of
     // one ::before / ::after / ::marker content-list parse. A pseudo-element's

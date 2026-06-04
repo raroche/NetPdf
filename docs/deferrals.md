@@ -3044,7 +3044,11 @@ flags the categories):
          border-box→content-box step), so applying the inset in both places would DOUBLE it (a bug
          caught + fixed mid-cycle). The border/background still cover the FULL region. A shared paren-aware
          `CssShorthandHelpers.SplitTopLevel` was extracted (border + padding share it). STILL DEFERRED:
-         `calc()`/`min()`/etc. padding values (unsupported by the resolver → atomic-reject + diagnosed).
+         `calc()`/`min()`/etc. padding values (unsupported by the resolver → atomic-reject + diagnosed);
+         and PERCENTAGE padding (post-PR-#141 review P2) — a `padding: 10%` is a valid value but can't be
+         resolved to used px here yet (it resolves against the containing block inline size, which needs
+         the §5.3 margin-box sizing above), so `MarginBoxStyle.Build` DIAGNOSES + drops it (unset → the
+         painter reads 0) rather than silently zeroing it.
        - **Margin boxes — later cycles:**
          `string()` running headers (needs `string-set` collection), and `element()` running
          elements; the CSS Page 3 §5.3 three-box-per-edge

@@ -42,7 +42,10 @@ namespace NetPdf.Rendering;
 /// <c>-color</c> longhands (border cycle), and the 4 <c>padding-*</c> longhands (padding cycle) are
 /// materialized from the box's OWN declarations — the painter fills a band behind the box's content,
 /// strokes the border around its full region, and insets the text content origin by the used
-/// border-width + padding on each side. <c>text-align</c> / <c>vertical-align</c> are NOT inherited
+/// border-width + padding on each side. (A <i>percentage</i> padding is accepted by the cascade but
+/// can't be resolved to used px here yet — it's diagnosed + dropped, not silently zeroed, since the
+/// §5.3 margin-box sizing it would resolve against is deferred.) <c>text-align</c> /
+/// <c>vertical-align</c> are NOT inherited
 /// here — alignment is read from the box's OWN declarations (<see cref="HorizontalAlignFactor"/> /
 /// <see cref="VerticalAlignFactor"/>) and overrides the box's name-derived default; inheriting the
 /// page/root's UA-default <c>text-align: start</c> would otherwise spuriously override the name-derived
@@ -205,6 +208,25 @@ internal static class MarginBoxStyle
                     }
 
                     PropertyResolverDispatch.Resolve(id, w.Value, diagnostics, w.Location).MaterializeInto(style, id);
+
+                    // Percentage padding (CSS B&B §8.4: padding % resolves against the containing
+                    // block inline size) isn't resolved to used px in margin boxes yet — the painter
+                    // reads padding via ReadLengthPxOrZero, which returns 0 for a non-LengthPx slot, so
+                    // a `padding: 10%` would silently vanish. Diagnose + unset it so it's an EXPLICIT
+                    // deferral, not silent corruption (CLAUDE.md #7, review P2); the §5.3 margin-box
+                    // sizing it would resolve against is itself deferred. (border-*-width can't be a %;
+                    // the other cascaded properties aren't lengths, so padding is the only % case here.)
+                    if (IsPaddingId(id) && style.Get(id).Tag == ComputedSlotTag.Percentage)
+                    {
+                        diagnostics?.Emit(new CssDiagnostic(
+                            CssDiagnosticCodes.CssPropertyValueInvalid001,
+                            $"Percentage padding '{DiagnosticTextSanitizer.Sanitize(w.Value)}' in an @page " +
+                            "margin box is not yet supported (it would resolve to 0); use an absolute " +
+                            "length (px/pt/cm/in). (deferrals.md)",
+                            CssDiagnosticSeverity.Warning,
+                            w.Location));
+                        style.Unset(id);
+                    }
                 }
             }
         }
@@ -220,6 +242,12 @@ internal static class MarginBoxStyle
         style.MarkAsBoxOwned();
         return style;
     }
+
+    /// <summary>Whether <paramref name="id"/> is one of the four <c>padding-*</c> longhands (which can
+    /// hold a percentage that the margin-box painter can't yet resolve to used px).</summary>
+    private static bool IsPaddingId(PropertyId id) =>
+        id is PropertyId.PaddingTop or PropertyId.PaddingRight
+            or PropertyId.PaddingBottom or PropertyId.PaddingLeft;
 
     /// <summary>Copy <paramref name="parentStyle"/>'s value for <paramref name="id"/> onto
     /// <paramref name="style"/> — the slot (+ the side-table payload for the font-family list, + a

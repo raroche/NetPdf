@@ -392,6 +392,33 @@ public sealed class MarginBoxStyleTests
         Assert.False(style.IsSet(PropertyId.PaddingTop));
     }
 
+    [Theory]
+    [InlineData("padding-left", "10%")]
+    [InlineData("padding-top", "25%")]
+    public void Build_diagnoses_and_drops_percentage_padding(string property, string value)
+    {
+        // A percentage padding is a VALID value (the cascade accepts it) but the margin-box painter
+        // can't resolve it to used px yet (the §5.3 box sizing it resolves against is deferred). It must
+        // be diagnosed + DROPPED (unset → the painter reads 0), not left as a misleading % slot that
+        // silently renders as 0 (review P2).
+        var sink = new CapturingSink();
+        var style = MarginBoxStyle.Build(
+            ImmutableArray.Create(Decl(property, value)), parentStyle: null, diagnostics: sink);
+        Assert.Contains(sink.Diagnostics, d => d.Code == CssDiagnosticCodes.CssPropertyValueInvalid001);
+        Assert.False(style.IsSet(PropertyMetadata.NameToId[property]));   // dropped, not a % slot
+    }
+
+    [Fact]
+    public void Build_keeps_absolute_padding_without_a_diagnostic()
+    {
+        // The percentage guard must NOT touch an absolute-length padding (no false positives).
+        var sink = new CapturingSink();
+        var style = MarginBoxStyle.Build(
+            ImmutableArray.Create(Decl("padding-left", "10px")), parentStyle: null, diagnostics: sink);
+        Assert.Empty(sink.Diagnostics);
+        Assert.True(style.IsSet(PropertyId.PaddingLeft));
+    }
+
     // ---- rejected `font` shorthand marker (review #3) ----
 
     [Theory]

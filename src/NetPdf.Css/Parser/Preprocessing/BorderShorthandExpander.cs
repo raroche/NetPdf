@@ -34,8 +34,9 @@ namespace NetPdf.Css.Parser.Preprocessing;
 /// </para>
 /// <para>
 /// <b>Deferred:</b> the <c>border-width</c> / <c>border-style</c> / <c>border-color</c> 1–4-value box
-/// shorthands, <c>border-radius</c>, and the content-origin inset (the margin-box text isn't pushed
-/// in by the border yet) — tracked follow-ups (deferrals.md).
+/// shorthands and <c>border-radius</c> — tracked follow-ups (deferrals.md). (The content-origin inset
+/// — the margin-box text pushed in by the border width — ships in the padding cycle via
+/// <c>PageMarginBoxPainter</c>.)
 /// </para>
 /// </remarks>
 internal static class BorderShorthandExpander

@@ -884,6 +884,68 @@ public sealed class HtmlPdfConvertTests
         Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
     }
 
+    [Theory]
+    [InlineData("padding-left: 10%")]   // per-side longhand
+    [InlineData("padding-top: 10%")]
+    [InlineData("padding: 10%")]        // the shorthand (expands to four % longhands)
+    public void Page_margin_box_percentage_padding_is_surfaced(string decls)
+    {
+        // CSS padding % resolves against the containing block inline size — not yet supported in margin
+        // boxes (the §5.3 box sizing is deferred). It must be DIAGNOSED, not silently rendered as 0
+        // (review P2).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-left { content:\"AB\"; " + decls + " } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
+    }
+
+    [Fact]
+    public void Page_margin_box_percentage_padding_does_not_shift_the_text()
+    {
+        // The deferred % padding resolves to no inset (it's dropped, not mis-rendered) — the line stays
+        // at the same X as a box with no padding.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var withPct = FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-left { content:\"AB\"; padding-left: 10% } }</style>" +
+            "</head><body></body></html>", opts)));
+        var without = FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-left { content:\"AB\" } }</style>" +
+            "</head><body></body></html>", opts)));
+        Assert.Equal(without.X, withPct.X, 1);   // % padding dropped → no horizontal shift
+    }
+
+    [Fact]
+    public void Page_margin_box_padding_top_insets_the_text_downward()
+    {
+        // The VERTICAL inset path (riskier — content-height shrink + TextPainter top inset + PDF y-flip):
+        // a top-aligned line is pushed DOWN by padding-top, which in PDF (y-up) is a SMALLER y. Guards
+        // against a double-applied or missing top inset (review P2).
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var withPad = FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-left { content:\"AB\"; vertical-align: top; padding-top: 40px } }</style>" +
+            "</head><body></body></html>", opts)));
+        var without = FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-left { content:\"AB\"; vertical-align: top } }</style>" +
+            "</head><body></body></html>", opts)));
+        Assert.InRange(without.Y - withPad.Y, 28.0, 32.0);   // 40px padding-top → ~30pt downward
+    }
+
+    [Fact]
+    public void Page_margin_box_border_top_width_insets_the_text_downward()
+    {
+        // The cycle-12 border content-inset, VERTICAL axis: a top-aligned line is pushed down by the
+        // border-top width (20px → ~15pt smaller y).
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var withBorder = FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-left { content:\"AB\"; vertical-align: top; border-top: 20px solid red } }</style>" +
+            "</head><body></body></html>", opts)));
+        var without = FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-left { content:\"AB\"; vertical-align: top } }</style>" +
+            "</head><body></body></html>", opts)));
+        Assert.InRange(without.Y - withBorder.Y, 13.0, 17.0);   // 20px border-top → ~15pt downward
+    }
+
     [Fact]
     public void Page_margin_box_inherits_color_from_the_page_context()
     {

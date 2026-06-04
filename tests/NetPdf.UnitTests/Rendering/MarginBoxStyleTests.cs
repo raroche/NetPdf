@@ -272,6 +272,37 @@ public sealed class MarginBoxStyleTests
         Assert.Equal(16, style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16), 3);
     }
 
+    // ---- background-color (cycle 8) ----
+
+    [Fact]
+    public void Build_resolves_declared_background_color()
+    {
+        var style = MarginBoxStyle.Build(ImmutableArray.Create(Decl("background-color", "#00ff00")));
+        Assert.True(style.IsSet(PropertyId.BackgroundColor));
+        Assert.True(FragmentPainter.TryResolveColor(style.Get(PropertyId.BackgroundColor), 0xFF000000u, out var argb));
+        Assert.Equal(0xFF00FF00u, argb);
+    }
+
+    [Fact]
+    public void Build_does_not_inherit_background_color()
+    {
+        // background-color is NOT a CSS inherited property — a box that declares none does not pick
+        // up the parent/page-context background (cycle 8; only the font-*/color whitelist inherits).
+        var parent = MarginBoxStyle.Build(ImmutableArray.Create(Decl("background-color", "#ff0000")));
+        var child = MarginBoxStyle.Build(ImmutableArray<CssDeclaration>.Empty, parent);
+        Assert.False(child.IsSet(PropertyId.BackgroundColor));
+    }
+
+    [Fact]
+    public void Build_background_color_important_beats_a_later_normal()
+    {
+        // background-color goes through the same per-property cascade (importance then source order).
+        var style = MarginBoxStyle.Build(ImmutableArray.Create(
+            Decl("background-color", "#ff0000", important: true), Decl("background-color", "#0000ff")));
+        Assert.True(FragmentPainter.TryResolveColor(style.Get(PropertyId.BackgroundColor), 0xFF000000u, out var argb));
+        Assert.Equal(0xFFFF0000u, argb);   // red !important wins
+    }
+
     // ---- rejected `font` shorthand marker (review #3) ----
 
     [Theory]

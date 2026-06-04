@@ -14,6 +14,7 @@ using NetPdf.Diagnostics;
 using NetPdf.Layout.Boxes;
 using NetPdf.Layout.Inline;
 using NetPdf.Layout.Layouters;
+using NetPdf.Pdf;
 using NetPdf.Shaping;
 using NetPdf.Text.Bidi;
 
@@ -21,8 +22,10 @@ namespace NetPdf.Rendering;
 
 /// <summary>
 /// Lays out CSS Paged Media L3 §6.4 page margin boxes (running headers/footers) into
-/// <see cref="BoxFragment"/>s the shared <see cref="TextPainter"/> pass paints. Phase 3 Task 21
-/// cycle 3 (content) + cycle 4 (per-box style) — the keystone for headers/footers.
+/// <see cref="BoxFragment"/>s the shared <see cref="TextPainter"/> pass paints, plus the background
+/// bands the pipeline fills behind them. Phase 3 Task 21 cycle 3 (content) … cycle 4–7 (per-box
+/// style: font/color, inheritance, the <c>font</c> shorthand, relative sizes) + cycle 8
+/// (<c>background-color</c>) — the keystone for headers/footers.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -37,12 +40,15 @@ namespace NetPdf.Rendering;
 /// (post-PR-#132 review P3). Fragment offsets are made relative to the shared content origin.
 /// </para>
 /// <para>
-/// <b>Style (cycle 4).</b> The box's declared <c>font-family</c> / <c>font-size</c> /
-/// <c>font-weight</c> / <c>font-style</c> / <c>color</c> flow through the shaper + painter; a
-/// declared <c>text-align</c> / <c>vertical-align</c> overrides the box's name-derived alignment.
-/// Unspecified properties fall back to the reader defaults (16px / default family / black /
-/// name-derived alignment). Page/root inheritance, the <c>font</c> shorthand, and relative font
-/// sizes are tracked follow-ups (deferrals.md#layout-to-pdf-pipeline).
+/// <b>Style (cycles 4–8).</b> The box's declared <c>font-family</c> / <c>font-size</c> /
+/// <c>font-weight</c> / <c>font-style</c> / <c>color</c> flow through the shaper + painter (inherited
+/// along root → page context → box; relative sizes + the <c>font</c> shorthand resolved); a declared
+/// <c>text-align</c> / <c>vertical-align</c> overrides the box's name-derived alignment. A declared
+/// <c>background-color</c> (cycle 8, non-inherited) fills a band over the box's full region behind
+/// the content — collected here as a <see cref="MarginBoxBackgroundFill"/>, painted by
+/// <see cref="PaintBackgrounds"/>. Unspecified properties fall back to the reader defaults (16px /
+/// default family / black / transparent / name-derived alignment). <c>border</c> / <c>padding</c> /
+/// background images are tracked follow-ups (deferrals.md#layout-to-pdf-pipeline).
 /// </para>
 /// <para>
 /// <b>Content scope.</b> Literal-string + <c>attr()</c> content only. A winning <c>none</c> /
@@ -55,6 +61,23 @@ namespace NetPdf.Rendering;
 internal static class PageMarginBoxPainter
 {
     private const double NormalLineHeightFactor = 1.2; // mirrors TextPainter's line-height: normal.
+    private const uint DefaultColorArgb = 0xFF000000;   // CSS initial `color` (opaque black) — currentColor fallback.
+
+    /// <summary>A background band to fill behind a margin box: its page-px region rect (CSS-px,
+    /// page-top origin) + the resolved packed 0xAARRGGBB color. Painted by
+    /// <see cref="PaintBackgrounds"/> before the shared text pass, so the text paints over it.</summary>
+    internal readonly record struct MarginBoxBackgroundFill(
+        double LeftPx, double TopPx, double WidthPx, double HeightPx, uint Argb);
+
+    /// <summary>The result of laying out the page margin boxes: the text fragments (for the shared
+    /// <see cref="TextPainter"/> pass) + the background bands (cycle 8, painted first behind the text).</summary>
+    internal sealed record MarginBoxLayoutResult(
+        IReadOnlyList<BoxFragment> Fragments,
+        IReadOnlyList<MarginBoxBackgroundFill> Backgrounds)
+    {
+        public static readonly MarginBoxLayoutResult Empty =
+            new(Array.Empty<BoxFragment>(), Array.Empty<MarginBoxBackgroundFill>());
+    }
 
     /// <summary>Lay out every resolved margin box's content into a fragment positioned for the
     /// shared text pass. Returns an empty list when nothing paints.</summary>
@@ -79,7 +102,7 @@ internal static class PageMarginBoxPainter
     /// margin boxes inherit from.</param>
     /// <param name="shaper">The SAME resolver the body shaped with, kept alive past layout.</param>
     /// <param name="diagnostics">Sink for unsupported-content / unresolved-font diagnostics.</param>
-    public static IReadOnlyList<BoxFragment> Layout(
+    public static MarginBoxLayoutResult Layout(
         ImmutableArray<AtPageMarginBoxResolver.ResolvedMarginBox> boxes,
         double pageWidthPx, double pageHeightPx,
         double marginTopPx, double marginRightPx, double marginBottomPx, double marginLeftPx,
@@ -89,7 +112,7 @@ internal static class PageMarginBoxPainter
     {
         ArgumentNullException.ThrowIfNull(host);
         ArgumentNullException.ThrowIfNull(shaper);
-        if (boxes.IsDefaultOrEmpty) return Array.Empty<BoxFragment>();
+        if (boxes.IsDefaultOrEmpty) return MarginBoxLayoutResult.Empty;
 
         var availableInlinePx = Math.Max(pageWidthPx, 1.0); // positive + finite; NoWrap keeps one line.
         // Surface invalid margin-box style values (e.g. `color: bogus`) via the CSS diagnostic path
@@ -100,6 +123,7 @@ internal static class PageMarginBoxPainter
         var pageContextStyle = MarginBoxStyle.Build(pageDeclarations, rootElementStyle, styleDiagnostics);
 
         var fragments = new List<BoxFragment>(boxes.Length);
+        var backgrounds = new List<MarginBoxBackgroundFill>();
         foreach (var mb in boxes)
         {
             if (!CssContentList.TryParse(mb.ContentRawValue, host, out var text))
@@ -119,6 +143,19 @@ internal static class PageMarginBoxPainter
             // fragment offset. The style is box-owned, so the rented instance isn't pooled — a
             // negligible per-render miss, not a leak.
             var style = MarginBoxStyle.Build(mb.Declarations, pageContextStyle, styleDiagnostics);
+
+            // Background-color (cycle 8): a declared (non-inherited) background-color fills a band over
+            // the box's FULL region, behind the content. `currentcolor` resolves against the box's own
+            // color; transparent (the initial value) or unset paints nothing. Collected BEFORE the text
+            // layout so the band still shows when the text is empty or its font fails to resolve.
+            var currentColor = FragmentPainter.TryResolveColor(style.Get(PropertyId.Color), DefaultColorArgb, out var fg)
+                ? fg : DefaultColorArgb;
+            if (FragmentPainter.TryResolveColor(style.Get(PropertyId.BackgroundColor), currentColor, out var bgArgb)
+                && FragmentPainter.Alpha(bgArgb) != 0)
+            {
+                backgrounds.Add(new MarginBoxBackgroundFill(region.X, region.Y, region.Width, region.Height, bgArgb));
+            }
+
             var box = Box.TextRun(string.Empty, style);
             var lineHeightPx = style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16) * NormalLineHeightFactor;
 
@@ -170,7 +207,25 @@ internal static class PageMarginBoxPainter
         // it to the pool now instead of leaking it (post-PR-#134 review; the per-box styles stay
         // box-owned with their synthetic Box).
         pageContextStyle.ReleaseFromBox();
-        return fragments;
+        return new MarginBoxLayoutResult(fragments, backgrounds);
+    }
+
+    /// <summary>Paint the resolved margin-box background bands (cycle 8) onto <paramref name="page"/>,
+    /// behind the shared text pass. Reuses <see cref="FragmentPainter"/>'s px→pt rect conversion +
+    /// constant-alpha (<c>/ca</c>) compositing, exactly like body backgrounds. Call AFTER the body
+    /// fragments are painted and BEFORE <see cref="TextPainter.PaintText"/>.</summary>
+    public static void PaintBackgrounds(
+        PdfPage page, IReadOnlyList<MarginBoxBackgroundFill> backgrounds, double pageHeightPt)
+    {
+        ArgumentNullException.ThrowIfNull(page);
+        if (backgrounds is null) return;
+        foreach (var bg in backgrounds)
+        {
+            FragmentPainter.ColorChannels(bg.Argb, out var r, out var g, out var b);
+            FragmentPainter.ToPdfRect(
+                bg.LeftPx, bg.TopPx, bg.WidthPx, bg.HeightPx, pageHeightPt, out var x, out var y, out var w, out var h);
+            page.FillRectangle(x, y, w, h, r, g, b, FragmentPainter.Alpha(bg.Argb) / 255.0);
+        }
     }
 
     private static void EmitContentUnsupported(IDiagnosticsSink diagnostics, string boxName, string raw) =>

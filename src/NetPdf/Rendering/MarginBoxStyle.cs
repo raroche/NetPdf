@@ -35,15 +35,17 @@ namespace NetPdf.Rendering;
 /// inherited value, <c>revert</c>/<c>revert-layer</c> are approximated as inherited.
 /// </para>
 /// <para>
-/// <b>Supported properties (a WHITELIST).</b> Only the inherited <c>font-family</c> /
-/// <c>font-size</c> / <c>font-weight</c> / <c>font-style</c> / <c>color</c> are materialized +
-/// inherited. <c>text-align</c> / <c>vertical-align</c> are NOT inherited here — alignment is read
-/// from the box's OWN declarations (<see cref="HorizontalAlignFactor"/> / <see cref="VerticalAlignFactor"/>)
-/// and overrides the box's name-derived default; inheriting the page/root's UA-default
-/// <c>text-align: start</c> would otherwise spuriously override the name-derived centering
-/// (post-PR-#134 review). Other declarations (<c>padding</c> / <c>border</c> / <c>background</c> /
-/// …) are deliberately IGNORED — the painter derives content origin from the box's border +
-/// padding, so materializing them would shift (or paint behind) the margin-box text.
+/// <b>Supported properties (a WHITELIST).</b> The inherited <c>font-family</c> / <c>font-size</c> /
+/// <c>font-weight</c> / <c>font-style</c> / <c>color</c> are materialized + inherited. The
+/// non-inherited <c>background-color</c> (cycle 8) is materialized from the box's OWN declarations
+/// (the painter fills a band behind the box's content). <c>text-align</c> / <c>vertical-align</c> are
+/// NOT inherited here — alignment is read from the box's OWN declarations
+/// (<see cref="HorizontalAlignFactor"/> / <see cref="VerticalAlignFactor"/>) and overrides the box's
+/// name-derived default; inheriting the page/root's UA-default <c>text-align: start</c> would
+/// otherwise spuriously override the name-derived centering (post-PR-#134 review). Other box-model
+/// declarations (<c>padding</c> / <c>border</c> / background <i>images</i> / …) are deliberately
+/// IGNORED — the painter derives content origin from the box's border + padding, so materializing
+/// them would shift (or paint behind) the margin-box text.
 /// </para>
 /// <para>
 /// <b>Relative font (cycle 7).</b> A parent-relative <c>font-size</c> (<c>em</c> / <c>ex</c> /
@@ -61,18 +63,25 @@ namespace NetPdf.Rendering;
 /// </remarks>
 internal static class MarginBoxStyle
 {
-    /// <summary>The materializable + inherited longhands, in a fixed order (deterministic
-    /// materialization). All are inherited properties that feed the shaper + text fill.
-    /// <c>text-align</c> / <c>vertical-align</c> are NOT here — alignment is read from the box's OWN
-    /// declarations (<see cref="HorizontalAlignFactor"/> / <see cref="VerticalAlignFactor"/>) and
-    /// overrides the box's name-derived default; it is NOT inherited from the page/root, whose
+    /// <summary>The INHERITED longhands, in a fixed order (deterministic materialization). All feed
+    /// the shaper + text fill and are CSS inherited properties, so they flow root → page context →
+    /// margin box. <c>text-align</c> / <c>vertical-align</c> are NOT here — alignment is read from the
+    /// box's OWN declarations (<see cref="HorizontalAlignFactor"/> / <see cref="VerticalAlignFactor"/>)
+    /// and overrides the box's name-derived default; it is NOT inherited from the page/root, whose
     /// (UA-default) <c>text-align: start</c> would otherwise spuriously override the name-derived
     /// centering (post-PR-#134 review).</summary>
     private static readonly ImmutableArray<PropertyId> SupportedStyleIds = ImmutableArray.Create(
         PropertyId.FontFamily, PropertyId.FontSize, PropertyId.FontWeight, PropertyId.FontStyle,
         PropertyId.Color);
 
-    private static readonly FrozenSet<PropertyId> SupportedStyleIdSet = SupportedStyleIds.ToFrozenSet();
+    /// <summary>The longhands a margin box CASCADES from its OWN declarations: the inherited set plus
+    /// the non-inherited <c>background-color</c> (cycle 8 — paints a band behind the box's content).
+    /// <c>background-color</c> is materialized onto the style but deliberately left OUT of the
+    /// inheritance copy above, since it is not a CSS inherited property.</summary>
+    private static readonly ImmutableArray<PropertyId> CascadedStyleIds =
+        SupportedStyleIds.Add(PropertyId.BackgroundColor);
+
+    private static readonly FrozenSet<PropertyId> CascadedStyleIdSet = CascadedStyleIds.ToFrozenSet();
 
     /// <summary>Build a margin-box (or page-context) <see cref="ComputedStyle"/>: first INHERIT the
     /// supported properties (all are inherited) from <paramref name="parentStyle"/>, then resolve +
@@ -135,7 +144,7 @@ internal static class MarginBoxStyle
                     continue;
                 }
                 if (!PropertyMetadata.NameToId.TryGetValue(decl.Property, out var id)) continue;
-                if (!SupportedStyleIdSet.Contains(id)) continue; // whitelist (review P2)
+                if (!CascadedStyleIdSet.Contains(id)) continue; // whitelist (review P2; + background-color, cycle 8)
                 winners ??= new Dictionary<PropertyId, Winner>();
                 if (winners.TryGetValue(id, out var w) && w.Important && !decl.IsImportant) continue;
                 winners[id] = new Winner(decl.Value.RawText, decl.IsImportant, decl.Location);
@@ -145,7 +154,7 @@ internal static class MarginBoxStyle
             {
                 // Materialize in the fixed whitelist order (deterministic; these longhands are
                 // independent so order doesn't change the result, but the walk is stable).
-                foreach (var id in SupportedStyleIds)
+                foreach (var id in CascadedStyleIds)
                 {
                     if (!winners.TryGetValue(id, out var w)) continue;
 

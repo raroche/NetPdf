@@ -901,6 +901,58 @@ public sealed class HtmlPdfConvertTests
         Assert.Equal(18.0, FirstTf(pdf), 1);   // 1.5em × 16px = 24px → 18pt
     }
 
+    // ---- background-color (Task 21 cycle 8) ----
+
+    [Fact]
+    public void Page_margin_box_background_color_fills_the_region_band()
+    {
+        // @bottom-center { background-color: red } → a red rectangle filling the FULL bottom-margin
+        // band (behind the footer text), not just the text's bounding box.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content:\"AB\"; background-color: red } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Contains("1 0 0 rg", pdf);     // red fill
+        var r = FirstRect(pdf);
+        Assert.Equal(0.0, r.Y, 0);            // the bottom band sits at the page-bottom (PDF y origin)
+        Assert.Equal(72.0, r.H, 0);           // full bottom-margin height (96px → 72pt), not the ~12pt text line
+    }
+
+    [Fact]
+    public void Page_margin_box_without_background_color_paints_no_band()
+    {
+        // No background-color → only the text paints; no rectangle-fill at all (empty body).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content:\"AB\" } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.DoesNotContain(" re", pdf);
+    }
+
+    [Fact]
+    public void Page_margin_box_transparent_background_paints_no_band()
+    {
+        // background-color: transparent (alpha 0) paints nothing.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content:\"AB\"; background-color: transparent } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.DoesNotContain(" re", pdf);
+    }
+
+    [Fact]
+    public void Page_margin_box_background_color_rgba_composites_partial_alpha()
+    {
+        // rgba(0,0,255,0.5) → a blue band composited via constant-alpha (/ca through an ExtGState),
+        // mirroring body backgrounds — not painted fully opaque.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content:\"AB\"; background-color: rgba(0,0,255,0.5) } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Contains("0 0 1 rg", pdf);     // blue fill
+        Assert.Contains(" gs", pdf);          // an ExtGState (/ca) → partial-alpha compositing
+    }
+
     [Fact]
     public void Page_margin_box_font_shorthand_sets_the_size(/* Task 21 cycle 6 */)
     {

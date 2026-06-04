@@ -842,6 +842,74 @@ public sealed class HtmlPdfConvertTests
         Assert.Equal(18.0, FirstTf(pdf), 1);   // 24px × 0.75 — the shorthand's size was applied
     }
 
+    [Fact]
+    public void Page_margin_box_font_shorthand_leading_tokens_still_apply_the_size()
+    {
+        // Leading <font-style> + <font-weight> tokens are parsed; the size is still applied (proves
+        // the leading-token scan doesn't swallow the size). font: bold italic 24px serif → 18pt Tf.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content: \"AB\"; font: bold italic 24px serif } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(18.0, FirstTf(pdf), 1);
+    }
+
+    [Fact]
+    public void Page_margin_box_font_shorthand_important_beats_a_later_normal_longhand()
+    {
+        // The shorthand's importance propagates to each expanded longhand: font: 24px serif
+        // !important sets font-size: 24px !important, which a later normal font-size: 10px can't
+        // override (review #5 — !important interaction). → 18pt Tf, not 7.5pt.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center " +
+            "{ content: \"AB\"; font: 24px serif !important; font-size: 10px } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(18.0, FirstTf(pdf), 1);
+    }
+
+    [Fact]
+    public void Page_margin_box_font_shorthand_css_wide_initial_resets_the_size()
+    {
+        // font: initial maps every longhand to `initial` → font-size resets to medium (16px → 12pt),
+        // not the 24px of any inherited/declared value (review #5 — CSS-wide keyword).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content: \"AB\"; font: initial } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(12.0, FirstTf(pdf), 1);   // medium = 16px → 12pt
+    }
+
+    [Theory]
+    [InlineData("caption")]                  // a valid-but-unsupported system-font keyword
+    [InlineData("italic 12bananas serif")]   // a malformed shorthand
+    public void Page_margin_box_unsupported_font_shorthand_is_surfaced(string fontValue)
+    {
+        // A `font` shorthand we can't apply is reported (review #3) rather than silently dropped: the
+        // box still paints (default font), and the value is surfaced via the CSS diagnostic path.
+        var result = HtmlPdf.ConvertDetailed(
+            $"<!DOCTYPE html><html><head><style>@page {{ @bottom-center {{ content: \"AB\"; font: {fontValue} }} }}</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
+    }
+
+    [Fact]
+    public void Page_margin_box_unsupported_font_shorthand_diagnostic_is_length_capped()
+    {
+        // The raw `font` value is sanitized (length-capped at 120 + a U+2026 marker) before landing
+        // in a host-visible diagnostic — a 300-char value must not leak verbatim (review #3).
+        var longValue = new string('A', 300);
+        var result = HtmlPdf.ConvertDetailed(
+            $"<!DOCTYPE html><html><head><style>@page {{ @bottom-center {{ content: \"AB\"; font: {longValue} }} }}</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        var warning = Assert.Single(
+            result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
+        Assert.Contains("…", warning.Message);            // truncation marker → the value was capped
+        Assert.DoesNotContain(longValue, warning.Message); // the full 300-char value did not leak
+    }
+
     /// <summary>The font size (pt) of the first <c>… &lt;size&gt; Tf</c> operator.</summary>
     private static double FirstTf(string pdf)
     {

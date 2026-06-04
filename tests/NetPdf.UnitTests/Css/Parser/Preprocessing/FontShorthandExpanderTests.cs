@@ -20,8 +20,12 @@ public sealed class FontShorthandExpanderTests
     [InlineData("700 1.2em Arial", "normal", "700", "1.2em", "Arial")]      // bare number = weight
     [InlineData("medium serif", "normal", "normal", "medium", "serif")]      // size keyword
     [InlineData("italic 9pt/1.4 serif", "italic", "normal", "9pt", "serif")] // line-height (attached) consumed
-    [InlineData("12pt / 1.5 serif", "normal", "normal", "12pt", "serif")]    // line-height (spaced) consumed
+    [InlineData("12pt / 1.5 serif", "normal", "normal", "12pt", "serif")]    // line-height (lone slash) consumed
+    [InlineData("12pt/ 1.4 serif", "normal", "normal", "12pt", "serif")]     // slash trails size, lh is next token (review P2)
+    [InlineData("12pt /1.5 serif", "normal", "normal", "12pt", "serif")]     // slash+lh detached from size (review P2)
     [InlineData("small-caps 11px monospace", "normal", "normal", "11px", "monospace")] // variant consumed
+    [InlineData("0 serif", "normal", "normal", "0", "serif")]                // unitless zero is a valid <length> (Copilot)
+    [InlineData("italic/*c*/12pt serif", "italic", "normal", "12pt", "serif")] // CSS comment is whitespace (Copilot)
     public void TryExpand_parses_valid_forms(
         string value, string style, string weight, string size, string family)
     {
@@ -62,8 +66,33 @@ public sealed class FontShorthandExpanderTests
     [InlineData("12pt")]         // no family
     [InlineData("bold serif")]   // no font-size token (serif is a family)
     [InlineData("")]
+    // Atomic validation (review P1): a bogus part rejects the WHOLE shorthand — no partial style.
+    [InlineData("italic 12bananas serif")]    // bogus size unit
+    [InlineData("12px 700 serif")]            // weight after size → invalid family
+    [InlineData("1e3 serif")]                 // exponent-only is not a <font-size>
+    // Duplicate leading category (each of style/variant/weight/stretch appears at most once).
+    [InlineData("italic oblique 12pt serif")] // two <font-style> tokens
+    [InlineData("bold 700 12pt serif")]       // two <font-weight> tokens
+    // A "/" REQUIRES a <line-height> token (review P2 / Copilot).
+    [InlineData("12pt/ serif")]
+    [InlineData("12pt / serif")]
+    // Deliberate approximation (review P4): the CSS Fonts 4 `oblique <angle>` form + an explicit
+    // <font-stretch> aren't surfaced by the margin-box subset → the shorthand is rejected atomically
+    // rather than silently mangled.
+    [InlineData("oblique 10deg 12pt serif")]
+    [InlineData("condensed oblique 25deg 753 12pt \"Helvetica Neue\", serif")]
     public void TryExpand_rejects_system_keywords_and_malformed(string value)
     {
         Assert.False(FontShorthandExpander.TryExpand(value, out _, out _, out _, out _));
+    }
+
+    [Fact]
+    public void TryExpand_strips_comments_but_not_inside_quoted_family_names()
+    {
+        // Quote-aware comment stripping: a `/*` inside a quoted family name is NOT a comment.
+        Assert.True(FontShorthandExpander.TryExpand("12pt \"A/*B\"", out var s, out _, out var sz, out var f));
+        Assert.Equal("normal", s);
+        Assert.Equal("12pt", sz);
+        Assert.Equal("\"A/*B\"", f);
     }
 }

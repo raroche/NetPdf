@@ -2973,13 +2973,24 @@ flags the categories):
        inherited, `revert` approximated as inherited) instead of being treated as invalid leaf
        values; invalid-value diagnostics carry the declaration's source location; the page-context
        style is returned to the pool (`ReleaseFromBox`) instead of leaking.
-       **Cycle 6 — `font` shorthand — DONE:** the `font` shorthand is expanded into longhands for
-       margin-box bodies (new `FontShorthandExpander` → `CssParserAdapter.ParseRawDeclarations`),
-       so `@bottom-center { font: italic 9pt Georgia }` sets font-style/weight/size/family.
-       AngleSharp never sees margin-box bodies, so this closes the gap (regular style rules already
-       get `font` expanded by AngleSharp). A system-font keyword (`caption`/…) or malformed value is
-       dropped; a whole-value CSS-wide keyword maps to every longhand. (`font-variant` /
-       `font-stretch` / `line-height` are parsed but not surfaced — the style path doesn't read them.)
+       **Cycle 6 — `font` shorthand — DONE (+ post-PR-#135 review hardening):** the `font` shorthand
+       is expanded into longhands for margin-box bodies (new `FontShorthandExpander` →
+       `CssParserAdapter.ParseRawDeclarations`), so `@bottom-center { font: italic 9pt Georgia }` sets
+       font-style/weight/size/family. AngleSharp never sees margin-box bodies, so this closes the gap
+       (regular style rules already get `font` expanded by AngleSharp). A whole-value CSS-wide keyword
+       maps to every longhand. The review made expansion ATOMIC — every generated longhand is
+       validated through the production `PropertyResolverDispatch` resolvers, so any invalid part
+       rejects the WHOLE shorthand (no partial style); a `/` requires a `<line-height>` (the value
+       itself isn't surfaced); CSS comments are stripped quote-aware before tokenizing; the unitless
+       zero is accepted. A system-font keyword (`caption`/…) or malformed value no longer silently
+       vanishes — `ParseRawDeclarations` keeps the raw `font` declaration as a marker and
+       `MarginBoxStyle.Build` surfaces a sanitized `CSS-PROPERTY-VALUE-INVALID-001`. **Deliberate
+       approximations (review P4, pinned by tests):** `font-variant` / `font-stretch` / `line-height`
+       are parsed but not surfaced (the margin-box style path doesn't read them); the CSS Fonts 4
+       `oblique <angle>` form and an explicit `<font-stretch>` percentage are NOT modeled — such a
+       shorthand is rejected atomically (its `<angle>`/percentage reaches the size slot and fails
+       validation) + diagnosed, rather than silently mangled. Surfacing `font-width`/oblique-angle
+       would need the shaper to consume them (out of the margin-box subset's scope).
        **REMAINING:**
        - **Conditional-group traversal:** `AtPageRules` walks only sheet media + `@media`; a bare
          `@page` nested in a matching `@supports` / `@layer` / `@container` does not yet contribute

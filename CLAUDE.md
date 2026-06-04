@@ -179,10 +179,16 @@ the BORDER-box origin and shrinking the alignment extent to the content box, sin
 `TextPainter.CollectFragment` already adds the box's border+padding (else the inset would DOUBLE).
 Post-PR-#141 review: NON-ABSOLUTE padding (a `%` or a font-/viewport-relative `1em`/`5vw`) is now
 diagnosed + dropped — `MarginBoxStyle` drops any declared padding that didn't materialize to a
-`LengthPx` slot (no silent zeroing) — plus vertical-axis inset regression tests. `border-width`/
-`-style`/`-color` box shorthands + `border-radius` + non-absolute/`calc()` padding + background images
-stay deferred. Next (Task 21 remaining, in order):
-the `border-width`/`-style`/`-color` box shorthands + §5.3 three-box-per-edge sizing / `@page :left`/`:right`/`:blank` + named pages (multi-page-gated),
+`LengthPx` slot (no silent zeroing) — plus vertical-axis inset regression tests. **Cycle 13 — the
+`border-width`/`-style`/`-color` box shorthands (in progress, branch
+`phase-3-task-21-margin-box-border-box-shorthands`):** the three 1–4-value border BOX shorthands
+distribute across the four edges. New `BorderBoxShorthandExpander` (`border-width`/`-style`/`-color` →
+the per-edge `border-{side}-{width,style,color}` longhands; the 1–4-value box→edge mapping extracted
+into the shared `CssShorthandHelpers.ExpandBoxEdges`, which `PaddingShorthandExpander` now also uses).
+The 12 longhands are already in `MarginBoxStyle.CascadedStyleIds`, so they paint (cycle 11) + inset the
+text (cycle 12) with NO painter change; a marker diagnostic surfaces an un-expandable one. `border-radius`
++ background images + the §5.3 sizing stay deferred. Next (Task 21 remaining, in order):
+the §5.3 three-box-per-edge sizing / `@page :left`/`:right`/`:blank` + named pages (multi-page-gated),
 then Task 22 (`string-set`/`string()` running headers). Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).

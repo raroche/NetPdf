@@ -163,6 +163,20 @@ internal static class MarginBoxStyle
                         decl.Location));
                     continue;
                 }
+                // A `border-width` / `border-style` / `border-color` box shorthand reaching here is an
+                // un-expandable one (a valid one becomes the four per-edge longhands upstream); surface
+                // it instead of silently dropping.
+                if (BorderBoxShorthandExpander.IsBorderBoxShorthand(decl.Property))
+                {
+                    diagnostics?.Emit(new CssDiagnostic(
+                        CssDiagnosticCodes.CssPropertyValueInvalid001,
+                        $"Could not apply '{decl.Property}: {DiagnosticTextSanitizer.Sanitize(decl.Value.RawText)}' in an " +
+                        "@page margin box — the value is an unsupported or malformed border box shorthand " +
+                        "(1–4 values); use the border-<side>-width/-style/-color longhands.",
+                        CssDiagnosticSeverity.Warning,
+                        decl.Location));
+                    continue;
+                }
                 // A `padding` shorthand reaching here is likewise an un-expandable one (a valid one
                 // becomes padding-* longhands upstream); surface it instead of silently dropping.
                 if (PaddingShorthandExpander.IsPaddingShorthand(decl.Property))

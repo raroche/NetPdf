@@ -487,6 +487,23 @@ public sealed class MarginBoxStyleTests
         Assert.Empty(sink.Diagnostics);
     }
 
+    [Theory]
+    [InlineData("border-width", "1bananas")]   // a bad width unit → un-expandable
+    [InlineData("border-style", "solid wavy")] // an unsupported style keyword
+    [InlineData("border-color", "red notacolor")]
+    public void Build_surfaces_a_rejected_border_box_shorthand(string property, string value)
+    {
+        // A `border-width`/`-style`/`-color` box shorthand reaching Build is one CssParserAdapter could
+        // NOT expand (a valid one becomes the four per-edge longhands upstream); surface it instead of
+        // silently dropping.
+        var sink = new CapturingSink();
+        var style = MarginBoxStyle.Build(
+            ImmutableArray.Create(Decl(property, value)), parentStyle: null, diagnostics: sink);
+        Assert.Contains(sink.Diagnostics, d => d.Code == CssDiagnosticCodes.CssPropertyValueInvalid001);
+        Assert.False(style.IsSet(PropertyId.BorderTopWidth));
+        Assert.False(style.IsSet(PropertyId.BorderTopStyle));
+    }
+
     private sealed class CapturingSink : ICssDiagnosticsSink
     {
         public List<CssDiagnostic> Diagnostics { get; } = new();

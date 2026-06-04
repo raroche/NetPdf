@@ -41,6 +41,20 @@ internal static class CssShorthandHelpers
         return true;
     }
 
+    /// <summary>Map a 1–4-value CSS box shorthand list to its (top, right, bottom, left) edges per the
+    /// CSS box convention: 1 = all four; 2 = vertical horizontal; 3 = top horizontal bottom; 4 = top
+    /// right bottom left. <paramref name="values"/> must have 1–4 entries (the caller validates the
+    /// count). Shared by the <c>padding</c> / <c>border-width</c> / <c>border-style</c> /
+    /// <c>border-color</c> margin-box box-shorthand expanders.</summary>
+    public static (string Top, string Right, string Bottom, string Left) ExpandBoxEdges(IReadOnlyList<string> values) =>
+        values.Count switch
+        {
+            1 => (values[0], values[0], values[0], values[0]),
+            2 => (values[0], values[1], values[0], values[1]),
+            3 => (values[0], values[1], values[2], values[1]),
+            _ => (values[0], values[1], values[2], values[3]),
+        };
+
     /// <summary>Replace CSS block comments (<c>/* ... */</c>) with a
     /// single space per CSS Syntax §4.3.2 — comments are syntactic
     /// whitespace + don't change the value's parsed meaning. Strings

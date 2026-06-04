@@ -1314,6 +1314,49 @@ public sealed class HtmlPdfConvertTests
         Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
     }
 
+    // ---- border box shorthands (Task 21 border-box cycle) ----
+
+    [Fact]
+    public void Page_margin_box_border_box_shorthands_paint_all_edges()
+    {
+        // The separate border-style / border-width / border-color box shorthands compose to a painted
+        // border, distributed across all four edges.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content:\"AB\"; border-style: solid; border-width: 2px; border-color: red } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Contains("1 0 0 rg", pdf);   // red edges
+        Assert.Contains(" re", pdf);        // filled rectangles
+    }
+
+    [Fact]
+    public void Page_margin_box_border_width_box_shorthand_insets_the_text()
+    {
+        // A border-width box shorthand sets border-left-width; with a style it paints AND insets the
+        // text (the cycle-12 content-inset) — @top-left is start-aligned, so the line shifts right by
+        // the left width (20px → ~15pt).
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var withBorder = FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-left { content:\"AB\"; border-style: solid; border-width: 0 0 0 20px } }</style>" +
+            "</head><body></body></html>", opts)));
+        var without = FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-left { content:\"AB\" } }</style>" +
+            "</head><body></body></html>", opts)));
+        Assert.InRange(withBorder.X - without.X, 13.0, 17.0);   // border-width:0 0 0 20px → left 20px → ~15pt
+    }
+
+    [Fact]
+    public void Page_margin_box_malformed_border_box_shorthand_is_surfaced()
+    {
+        // An un-expandable border box value (`1bananas` isn't a width) is kept as a raw marker and
+        // surfaced via the CSS diagnostic path — not silently dropped.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content:\"AB\"; border-width: 1bananas } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
+    }
+
     [Fact]
     public void Page_margin_box_font_shorthand_sets_the_size(/* Task 21 cycle 6 */)
     {

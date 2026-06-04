@@ -9,16 +9,17 @@ using NetPdf.Css.Parser;
 namespace NetPdf.Css.PagedMedia;
 
 /// <summary>
-/// Resolves the page size declared by a bare <c>@page { size: … }</c> descriptor into px, per
-/// CSS Paged Media L3 §3.3. Phase 3 Task 21 cycle 2.
+/// Resolves the page size declared by a <c>@page { size: … }</c> descriptor into px, per
+/// CSS Paged Media L3 §3.3. Phase 3 Task 21.
 /// </summary>
 /// <remarks>
 /// <para>
 /// The <c>size</c> descriptor is dropped by AngleSharp.Css; the pre-pass
 /// (<c>CssPreprocessor.ParsePageRule</c>) recovers it and the adapter re-attaches it as a
 /// synthetic <c>size</c> declaration, which this resolver reads. Applicability + ordering use the
-/// shared <see cref="AtPageRules.EnumerateBarePageRulesWithMediaInfo"/> (cascade-style media /
-/// disabled filtering, bare <c>@page</c> only). Among contributing declarations the cascade
+/// shared <see cref="AtPageRules.EnumeratePageRulesWithMediaInfo"/> (cascade-style media / disabled
+/// filtering; bare <c>@page</c> then <c>@page :first</c> in specificity order, so a <c>:first</c>
+/// <c>size</c> overrides the bare one on the first page). Among contributing declarations the cascade
 /// winner is chosen by importance then source order: an <c>!important</c> <c>size</c> beats a
 /// normal one, and among equal importance the LAST wins. Per CSS Page 3 §3.3 a <c>size</c>
 /// qualified by a paper-size <c>@media</c> (or sheet media query) — <c>width</c> / <c>height</c>
@@ -51,7 +52,7 @@ internal static class AtPageSizeResolver
         var seen = false;
         var important = false;
         ResolvedPageSize? dims = null;
-        foreach (var bare in AtPageRules.EnumerateBarePageRulesWithMediaInfo(sheets, media))
+        foreach (var bare in AtPageRules.EnumeratePageRulesWithMediaInfo(sheets, media))
         {
             // CSS Page 3 §3.3 — a `size` qualified by a paper-size @media (or sheet media query)
             // is ignored to avoid a circular page-size dependency. Margins from the same rule

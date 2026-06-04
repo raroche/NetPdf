@@ -11,8 +11,8 @@ using NetPdf.Css.Parser;
 namespace NetPdf.Css.PagedMedia;
 
 /// <summary>
-/// Resolves the page margins declared by bare <c>@page { margin… }</c> rules into absolute px,
-/// per CSS Paged Media L3 §3. Phase 3 Task 21 cycle 1 — <b>margins only</b>.
+/// Resolves the page margins declared by <c>@page { margin… }</c> rules into absolute px,
+/// per CSS Paged Media L3 §3. Phase 3 Task 21 — <b>margins only</b>.
 /// </summary>
 /// <remarks>
 /// <para>
@@ -24,9 +24,10 @@ namespace NetPdf.Css.PagedMedia;
 /// and an <c>@media print { @page { … } }</c> block does.
 /// </para>
 /// <para>
-/// Only the BARE <c>@page</c> rule (no <c>:first</c> / <c>:left</c> / <c>:right</c> / named
-/// selector) is honored in this cycle; selector-scoped page rules are a later cycle. Reads the
-/// <c>margin-top</c> / <c>-right</c> / <c>-bottom</c> / <c>-left</c> longhands AngleSharp.Css
+/// The bare <c>@page</c> rule + the <c>@page :first</c> rule (which overrides it on the first page
+/// by cascade specificity, via <see cref="AtPageRules.EnumeratePageRules"/>) are honored;
+/// <c>:left</c> / <c>:right</c> / <c>:blank</c> / named selectors stay deferred (multi-page-gated).
+/// Reads the <c>margin-top</c> / <c>-right</c> / <c>-bottom</c> / <c>-left</c> longhands AngleSharp.Css
 /// expands the <c>margin</c> shorthand into. Each side resolves an ABSOLUTE length (CSS Values
 /// L4 §6.1, via <see cref="LengthResolver.TryAbsoluteUnitToPx"/>) or a PERCENTAGE — per CSS Page
 /// 3, left/right percentages are relative to the page-box WIDTH and top/bottom to its HEIGHT
@@ -80,7 +81,7 @@ internal static class AtPageMarginResolver
         ArgumentNullException.ThrowIfNull(media);
 
         Candidate top = default, right = default, bottom = default, left = default;
-        foreach (var at in AtPageRules.EnumerateBarePageRules(sheets, media))
+        foreach (var at in AtPageRules.EnumeratePageRules(sheets, media))
         {
             foreach (var decl in at.Declarations)
             {

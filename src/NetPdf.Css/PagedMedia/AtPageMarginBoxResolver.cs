@@ -11,7 +11,7 @@ using NetPdf.Css.Parser;
 namespace NetPdf.Css.PagedMedia;
 
 /// <summary>
-/// Resolves the page margin boxes declared inside bare <c>@page</c> rules — the 16
+/// Resolves the page margin boxes declared inside <c>@page</c> rules — the 16
 /// <c>@top-center</c> / <c>@bottom-right-corner</c> / … at-rules of CSS Paged Media L3 §6.4 —
 /// down to (box name, raw <c>content</c> value) pairs. Phase 3 Task 21 cycle 3 — the
 /// keystone for running headers/footers.
@@ -22,9 +22,10 @@ namespace NetPdf.Css.PagedMedia;
 /// adapter re-parents them under the owning <c>@page</c> rule's <see cref="CssAtRule.ChildRules"/>
 /// (each a <see cref="CssAtRule"/> whose <see cref="CssAtRule.Name"/> is the box name and whose
 /// <see cref="CssAtRule.Declarations"/> are parsed). This resolver reads them. Applicability +
-/// ordering reuse the shared <see cref="AtPageRules.EnumerateBarePageRules"/> (cascade-style
-/// media / disabled filtering, bare <c>@page</c> only) — the paper-size conditioning that gates
-/// <c>size</c> does NOT apply to margin boxes. The cascade winner per box name is chosen by
+/// ordering reuse the shared <see cref="AtPageRules.EnumeratePageRules"/> (cascade-style
+/// media / disabled filtering; bare <c>@page</c> then <c>@page :first</c> in specificity order, so
+/// a <c>:first</c> margin box overrides the bare one on the single/first page) — the paper-size
+/// conditioning that gates <c>size</c> does NOT apply to margin boxes. The cascade winner per box name is chosen by
 /// importance then source order (an <c>!important</c> <c>content</c> beats a normal one; among
 /// equal importance the last wins), within a box body AND across <c>@page</c> rules. A box whose
 /// winning <c>content</c> is the bare keyword <c>none</c> / <c>normal</c> (= "no generated
@@ -62,8 +63,8 @@ internal static class AtPageMarginBoxResolver
     private static readonly FrozenSet<string> KnownNames =
         CanonicalNames.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>Walk the applicable bare <c>@page</c> rules and resolve each declared margin box's
-    /// cascade-winning <c>content</c> (importance then source order). Returns the renderable boxes
+    /// <summary>Walk the applicable <c>@page</c> rules (bare + <c>:first</c>) and resolve each declared
+    /// margin box's cascade-winning <c>content</c> (importance then source order). Returns the renderable boxes
     /// in canonical order — omitting boxes with no <c>content</c> and boxes whose winner is
     /// <c>none</c> / <c>normal</c> (suppression); empty when none render.</summary>
     public static ImmutableArray<ResolvedMarginBox> Resolve(
@@ -77,7 +78,7 @@ internal static class AtPageMarginBoxResolver
         // @page rules, post-PR-#132 review P1) + ALL declarations in source order (the orchestrator
         // builds the box's ComputedStyle from these — Task 21 cycle 4).
         Dictionary<string, Acc>? accs = null;
-        foreach (var at in AtPageRules.EnumerateBarePageRules(sheets, media))
+        foreach (var at in AtPageRules.EnumeratePageRules(sheets, media))
         {
             foreach (var child in at.ChildRules)
             {
@@ -110,9 +111,9 @@ internal static class AtPageMarginBoxResolver
         return output.Count == 0 ? ImmutableArray<ResolvedMarginBox>.Empty : output.ToImmutable();
     }
 
-    /// <summary>The bare <c>@page</c> rules' OWN declarations (<c>color</c> / <c>font-*</c> / …) in
-    /// source order across occurrences — the page-context style the margin boxes inherit from (CSS
-    /// Page 3, Task 21 cycle 5). The margin boxes are in each rule's <see cref="CssAtRule.ChildRules"/>,
+    /// <summary>The applicable <c>@page</c> rules' (bare + <c>:first</c>) OWN declarations
+    /// (<c>color</c> / <c>font-*</c> / …) in specificity-then-source order — the page-context style the
+    /// margin boxes inherit from (CSS Page 3, Task 21 cycle 5). The margin boxes are in each rule's <see cref="CssAtRule.ChildRules"/>,
     /// not here. The orchestrator builds the page-context <c>ComputedStyle</c> from these (its
     /// whitelist ignores <c>margin</c> / <c>size</c> / non-inherited declarations).</summary>
     public static ImmutableArray<CssDeclaration> PageContextDeclarations(
@@ -122,7 +123,7 @@ internal static class AtPageMarginBoxResolver
         ArgumentNullException.ThrowIfNull(media);
 
         ImmutableArray<CssDeclaration>.Builder? decls = null;
-        foreach (var at in AtPageRules.EnumerateBarePageRules(sheets, media))
+        foreach (var at in AtPageRules.EnumeratePageRules(sheets, media))
         {
             if (at.Declarations.IsDefaultOrEmpty) continue;
             decls ??= ImmutableArray.CreateBuilder<CssDeclaration>();

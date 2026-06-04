@@ -99,11 +99,71 @@ public sealed class AtPageMarginResolverTests
     }
 
     [Fact]
-    public async Task Resolve_ignores_selector_scoped_page_rules_this_cycle()
+    public async Task Resolve_applies_first_selector_on_the_single_page()
     {
-        // `@page :first` is bare-rule-only deferred — cycle 1 honors only the unnamed @page.
+        // Task 21 selectors: the single page IS the first page, so `@page :first` applies.
         var m = await ResolveCss("@page :first { margin: 5px }");
-        Assert.False(m.HasAny);
+        Assert.True(m.HasAny);
+        Assert.Equal(5.0, m.TopPx!.Value, 3);
+    }
+
+    [Fact]
+    public async Task Resolve_first_selector_overrides_the_bare_page()
+    {
+        // :first beats bare by specificity.
+        var m = await ResolveCss("@page { margin: 1px } @page :first { margin: 2px }");
+        Assert.Equal(2.0, m.TopPx!.Value, 3);
+    }
+
+    [Fact]
+    public async Task Resolve_first_selector_beats_bare_regardless_of_source_order()
+    {
+        // :first sourced BEFORE bare still wins (specificity, not source order).
+        var m = await ResolveCss("@page :first { margin: 2px } @page { margin: 1px }");
+        Assert.Equal(2.0, m.TopPx!.Value, 3);
+    }
+
+    [Fact]
+    public async Task Resolve_bare_important_beats_first_normal()
+    {
+        // Importance outranks specificity: a bare !important wins over a :first normal.
+        var m = await ResolveCss("@page { margin: 1px !important } @page :first { margin: 2px }");
+        Assert.Equal(1.0, m.TopPx!.Value, 3);
+    }
+
+    [Fact]
+    public async Task Resolve_defers_left_right_blank_and_named_selectors()
+    {
+        // :left/:right/:blank/named-page selectors are recognized but not applied (multi-page-gated).
+        Assert.False((await ResolveCss("@page :left { margin: 5px }")).HasAny);
+        Assert.False((await ResolveCss("@page :right { margin: 5px }")).HasAny);
+        Assert.False((await ResolveCss("@page :blank { margin: 5px }")).HasAny);
+        Assert.False((await ResolveCss("@page chapter { margin: 5px }")).HasAny);
+    }
+
+    [Fact]
+    public async Task Resolve_applies_a_selector_list_containing_first()
+    {
+        // CSS Page 3: a comma-separated page-selector list applies if ANY selector matches — so a list
+        // that includes :first wins on the first page (in either order). A list WITHOUT :first defers.
+        Assert.Equal(2.0, (await ResolveCss("@page { margin: 1px } @page :first, :left { margin: 2px }")).TopPx!.Value, 3);
+        Assert.Equal(2.0, (await ResolveCss("@page { margin: 1px } @page :left, :first { margin: 2px }")).TopPx!.Value, 3);
+        Assert.False((await ResolveCss("@page :left, :right { margin: 5px }")).HasAny);
+    }
+
+    [Fact]
+    public void ClassifyPageSelector_maps_the_recovered_prelude()
+    {
+        // Bare (empty / whitespace), :first (case + whitespace tolerant), everything else deferred.
+        Assert.Equal(AtPageRules.PageSelectorKind.Bare, AtPageRules.ClassifyPageSelector(""));
+        Assert.Equal(AtPageRules.PageSelectorKind.Bare, AtPageRules.ClassifyPageSelector("   "));
+        Assert.Equal(AtPageRules.PageSelectorKind.First, AtPageRules.ClassifyPageSelector(":first"));
+        Assert.Equal(AtPageRules.PageSelectorKind.First, AtPageRules.ClassifyPageSelector(" :FIRST "));
+        Assert.Equal(AtPageRules.PageSelectorKind.Deferred, AtPageRules.ClassifyPageSelector(":left"));
+        Assert.Equal(AtPageRules.PageSelectorKind.Deferred, AtPageRules.ClassifyPageSelector(":right"));
+        Assert.Equal(AtPageRules.PageSelectorKind.Deferred, AtPageRules.ClassifyPageSelector(":blank"));
+        Assert.Equal(AtPageRules.PageSelectorKind.Deferred, AtPageRules.ClassifyPageSelector("chapter"));
+        Assert.Equal(AtPageRules.PageSelectorKind.Deferred, AtPageRules.ClassifyPageSelector("chapter:first"));
     }
 
     [Fact]

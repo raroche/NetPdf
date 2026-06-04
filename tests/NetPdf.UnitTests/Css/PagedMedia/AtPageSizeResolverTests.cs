@@ -111,6 +111,45 @@ public sealed class AtPageSizeResolverTests
         Assert.Equal(559, s!.Value.WidthPx, 0);   // A5 width — the later rule
     }
 
+    // ---- @page :first selector cascade (Task 21 — selectors) ----
+
+    [Fact]
+    public async Task Resolve_first_selector_size_beats_bare_regardless_of_source_order()
+    {
+        // :first sourced BEFORE bare still wins on the first page (specificity, not source order).
+        var s = await ResolveSize("@page :first { size: A5 } @page { size: A4 }");
+        Assert.Equal(559, s!.Value.WidthPx, 0);   // A5
+    }
+
+    [Fact]
+    public async Task Resolve_bare_important_size_beats_first_normal()
+    {
+        var s = await ResolveSize("@page { size: A4 !important } @page :first { size: A5 }");
+        Assert.Equal(794, s!.Value.WidthPx, 0);   // A4 — importance outranks specificity
+    }
+
+    [Fact]
+    public async Task Resolve_first_important_size_beats_bare_important()
+    {
+        var s = await ResolveSize("@page { size: A4 !important } @page :first { size: A5 !important }");
+        Assert.Equal(559, s!.Value.WidthPx, 0);   // A5 — :first wins among equal importance
+    }
+
+    [Fact]
+    public async Task Resolve_first_selector_size_in_a_list_applies()
+    {
+        // A comma-separated selector list applies if ANY selector matches: `:first, :left` → :first.
+        var s = await ResolveSize("@page { size: A4 } @page :first, :left { size: A5 }");
+        Assert.Equal(559, s!.Value.WidthPx, 0);   // A5
+    }
+
+    [Fact]
+    public async Task Resolve_defers_non_first_size_selectors()
+    {
+        Assert.Null(await ResolveSize("@page :left { size: A5 }"));
+        Assert.Null(await ResolveSize("@page :left, :right { size: A5 }"));
+    }
+
     // ---- Duplicate / invalid grammar (review P2) ----
 
     [Theory]

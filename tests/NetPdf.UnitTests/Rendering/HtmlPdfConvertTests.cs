@@ -306,6 +306,41 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void At_page_first_selector_size_overrides_the_bare_page()
+    {
+        // Task 21 selectors: @page :first overrides the bare @page on the single (first) page.
+        // size A4 (bare) → A5 (:first) → MediaBox = A5 (148 × 210mm → 419.5 × 595.3pt).
+        var mb = MediaBox(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { size: A4 } @page :first { size: A5 }</style>" +
+            "</head><body></body></html>")));
+        Assert.Equal(419.5, mb.W, 1);
+        Assert.Equal(595.3, mb.H, 1);
+    }
+
+    [Fact]
+    public void At_page_first_selector_margin_overrides_the_bare_page()
+    {
+        // @page { margin: 0 } @page :first { margin: 1in } → the single page gets the :first 1in
+        // margin (96px → 72pt inset on each side), not the bare 0.
+        var body = "<head></head><body><div style=\"width:50px;height:50px;background:#000\"></div></body>";
+        var r = FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { margin: 0 } @page :first { margin: 1in }</style></head>" + body + "</html>")));
+        Assert.Equal(72.0, r.X, 1);   // left content edge inset by the :first 1in margin (not 0)
+    }
+
+    [Fact]
+    public void At_page_first_selector_margin_box_content_paints_end_to_end()
+    {
+        // The :first margin box wins through to the PDF: bare @bottom-center "A" (1 glyph) is
+        // overridden by :first "AB" (2 glyphs). The glyph count proves the :first box painted.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content: \"A\" } } " +
+            "@page :first { @bottom-center { content: \"AB\" } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(2, TotalGlyphCount(pdf));   // "AB" (the :first box), not "A" (the bare box)
+    }
+
+    [Fact]
     public void At_page_size_is_ignored_when_PreferCssPageSize_is_false()
     {
         var mb = MediaBox(Latin1(HtmlPdf.Convert(

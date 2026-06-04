@@ -4,7 +4,6 @@
 using System;
 using System.Collections.Frozen;
 using System.Collections.Generic;
-using System.Text;
 using NetPdf.Css.ComputedValues.PropertyResolvers;
 using NetPdf.Css.Properties;
 
@@ -35,8 +34,9 @@ namespace NetPdf.Css.Parser.Preprocessing;
 /// </para>
 /// <para>
 /// <b>Deferred:</b> the <c>border-width</c> / <c>border-style</c> / <c>border-color</c> 1–4-value box
-/// shorthands, <c>border-radius</c>, and the content-origin inset (the margin-box text isn't pushed
-/// in by the border yet) — tracked follow-ups (deferrals.md).
+/// shorthands and <c>border-radius</c> — tracked follow-ups (deferrals.md). (The content-origin inset
+/// — the margin-box text pushed in by the border width — ships in the padding cycle via
+/// <c>PageMarginBoxPainter</c>.)
 /// </para>
 /// </remarks>
 internal static class BorderShorthandExpander
@@ -98,7 +98,7 @@ internal static class BorderShorthandExpander
             return true;
         }
 
-        if (!Tokenize(stripped, out var tokens) || tokens.Count == 0) return false;
+        if (!CssShorthandHelpers.SplitTopLevel(stripped, out var tokens) || tokens.Count == 0) return false;
 
         // `<line-width> || <line-style> || <color>` — each component at most once, any order.
         string? width = null, style = null, color = null;
@@ -150,30 +150,5 @@ internal static class BorderShorthandExpander
         var c = token[0];
         if (char.IsAsciiDigit(c) || c is '.' or '+' or '-') return Component.Width;
         return Component.Color;
-    }
-
-    /// <summary>Split <paramref name="value"/> into whitespace-separated tokens at paren depth 0, so a
-    /// functional color (<c>rgb(255, 0, 0)</c>) stays a single token. Returns <see langword="false"/>
-    /// on unbalanced parentheses.</summary>
-    private static bool Tokenize(string value, out List<string> tokens)
-    {
-        tokens = new List<string>(4);
-        var sb = new StringBuilder();
-        var depth = 0;
-        foreach (var ch in value)
-        {
-            if (ch == '(') depth++;
-            else if (ch == ')') { if (--depth < 0) return false; }
-
-            if (char.IsWhiteSpace(ch) && depth == 0)
-            {
-                if (sb.Length > 0) { tokens.Add(sb.ToString()); sb.Clear(); }
-                continue;
-            }
-            sb.Append(ch);
-        }
-        if (depth != 0) return false;
-        if (sb.Length > 0) tokens.Add(sb.ToString());
-        return true;
     }
 }

@@ -121,13 +121,15 @@ public sealed class MarginBoxStyleTests
     [Fact]
     public void Build_ignores_unsupported_properties()
     {
-        // padding is NOT materialized yet (deferred — it would shift the painter's content origin),
-        // so it can't move margin-box text. Supported props — color, and now the border-* longhands
-        // (border cycle) — still resolve.
+        // margin is NOT in the whitelist (a margin box's own margin doesn't apply), so it's ignored.
+        // Supported props — color, the border-* longhands (border cycle), and now padding-* (padding
+        // cycle) — resolve.
         var style = MarginBoxStyle.Build(ImmutableArray.Create(
-            Decl("padding-left", "50px"), Decl("border-top-width", "5px"), Decl("color", "red")));
-        Assert.False(style.IsSet(PropertyId.PaddingLeft));    // padding still deferred
-        Assert.True(style.IsSet(PropertyId.BorderTopWidth));  // border now materialized
+            Decl("margin-left", "50px"), Decl("padding-left", "50px"),
+            Decl("border-top-width", "5px"), Decl("color", "red")));
+        Assert.False(style.IsSet(PropertyId.MarginLeft));     // margin still ignored
+        Assert.True(style.IsSet(PropertyId.PaddingLeft));     // padding now materialized
+        Assert.True(style.IsSet(PropertyId.BorderTopWidth));  // border materialized
         Assert.True(style.IsSet(PropertyId.Color));
     }
 
@@ -355,6 +357,72 @@ public sealed class MarginBoxStyleTests
         var parent = MarginBoxStyle.Build(ImmutableArray.Create(Decl("border-top-style", "solid")));
         var child = MarginBoxStyle.Build(ImmutableArray<CssDeclaration>.Empty, parent);
         Assert.False(child.IsSet(PropertyId.BorderTopStyle));
+    }
+
+    // ---- padding (padding cycle) ----
+
+    [Fact]
+    public void Build_resolves_declared_padding_longhands()
+    {
+        var style = MarginBoxStyle.Build(ImmutableArray.Create(
+            Decl("padding-top", "10px"), Decl("padding-left", "20px")));
+        Assert.True(style.IsSet(PropertyId.PaddingTop));
+        Assert.True(style.IsSet(PropertyId.PaddingLeft));
+    }
+
+    [Fact]
+    public void Build_does_not_inherit_padding()
+    {
+        // padding-* are NOT CSS inherited properties — a box that declares none doesn't pick up the
+        // parent's padding.
+        var parent = MarginBoxStyle.Build(ImmutableArray.Create(Decl("padding-top", "10px")));
+        var child = MarginBoxStyle.Build(ImmutableArray<CssDeclaration>.Empty, parent);
+        Assert.False(child.IsSet(PropertyId.PaddingTop));
+    }
+
+    [Fact]
+    public void Build_surfaces_a_rejected_padding_shorthand()
+    {
+        // A `padding` shorthand reaching Build is one CssParserAdapter could NOT expand (a valid one
+        // becomes padding-* longhands upstream); Build surfaces it instead of silently dropping.
+        var sink = new CapturingSink();
+        var style = MarginBoxStyle.Build(
+            ImmutableArray.Create(Decl("padding", "10xyz")), parentStyle: null, diagnostics: sink);
+        Assert.Contains(sink.Diagnostics, d => d.Code == CssDiagnosticCodes.CssPropertyValueInvalid001);
+        Assert.False(style.IsSet(PropertyId.PaddingTop));
+    }
+
+    [Theory]
+    [InlineData("padding-left", "10%")]    // a percentage (resolves against the containing block)
+    [InlineData("padding-top", "25%")]
+    [InlineData("padding-left", "1em")]     // a font-relative length (left deferred by the resolver)
+    [InlineData("padding-right", "1rem")]
+    [InlineData("padding-bottom", "5vw")]   // a viewport-relative length
+    public void Build_diagnoses_and_drops_non_absolute_padding(string property, string value)
+    {
+        // A percentage or a font-/viewport-relative padding is a VALID value (the cascade accepts it)
+        // but the margin-box painter can't resolve it to used px yet — it reads padding via
+        // ReadLengthPxOrZero, which honors only a LengthPx slot. So it must be diagnosed + DROPPED
+        // (unset → 0), not left as a slot the painter silently renders as 0 (review P2 + Copilot).
+        var sink = new CapturingSink();
+        var style = MarginBoxStyle.Build(
+            ImmutableArray.Create(Decl(property, value)), parentStyle: null, diagnostics: sink);
+        Assert.Contains(sink.Diagnostics, d => d.Code == CssDiagnosticCodes.CssPropertyValueInvalid001);
+        Assert.False(style.IsSet(PropertyMetadata.NameToId[property]));   // dropped, not a non-px slot
+    }
+
+    [Theory]
+    [InlineData("10px")]
+    [InlineData("0")]      // the unitless zero is a valid absolute length
+    public void Build_keeps_absolute_padding_without_a_diagnostic(string value)
+    {
+        // The non-absolute guard must NOT touch an absolute-length padding (no false positives) — and
+        // must NOT double-diagnose (the value resolves to a LengthPx slot, so it's applied as-is).
+        var sink = new CapturingSink();
+        var style = MarginBoxStyle.Build(
+            ImmutableArray.Create(Decl("padding-left", value)), parentStyle: null, diagnostics: sink);
+        Assert.Empty(sink.Diagnostics);
+        Assert.True(style.IsSet(PropertyId.PaddingLeft));
     }
 
     // ---- rejected `font` shorthand marker (review #3) ----

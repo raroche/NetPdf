@@ -38,17 +38,21 @@ namespace NetPdf.Rendering;
 /// <para>
 /// <b>Supported properties (a WHITELIST).</b> The inherited <c>font-family</c> / <c>font-size</c> /
 /// <c>font-weight</c> / <c>font-style</c> / <c>color</c> are materialized + inherited. The
-/// non-inherited <c>background-color</c> (cycle 8) and the 12 <c>border-*-width</c> / <c>-style</c> /
-/// <c>-color</c> longhands (border cycle) are materialized from the box's OWN declarations — the
-/// painter fills a band behind the box's content and strokes the border around its region.
-/// <c>text-align</c> / <c>vertical-align</c> are NOT inherited here — alignment is read from the
-/// box's OWN declarations (<see cref="HorizontalAlignFactor"/> / <see cref="VerticalAlignFactor"/>)
-/// and overrides the box's name-derived default; inheriting the page/root's UA-default
-/// <c>text-align: start</c> would otherwise spuriously override the name-derived centering
-/// (post-PR-#134 review). The remaining box-model declarations (<c>padding</c>, the
-/// <c>border-width</c>/<c>-style</c>/<c>-color</c> box shorthands, background <i>images</i>, …) stay
-/// deferred — materializing <c>padding</c> would shift the painter's content origin and move the
-/// margin-box text (the border content-origin inset is a tracked follow-up, deferrals.md).
+/// non-inherited <c>background-color</c> (cycle 8), the 12 <c>border-*-width</c> / <c>-style</c> /
+/// <c>-color</c> longhands (border cycle), and the 4 <c>padding-*</c> longhands (padding cycle) are
+/// materialized from the box's OWN declarations — the painter fills a band behind the box's content,
+/// strokes the border around its full region, and insets the text content origin by the used
+/// border-width + padding on each side. (A <i>non-absolute</i> padding — a percentage or a font-/
+/// viewport-relative length — is accepted by the cascade but can't be resolved to used px here yet, so
+/// it's diagnosed + dropped rather than silently zeroed; the §5.3 margin-box sizing / font context it
+/// would resolve against is deferred.) <c>text-align</c> /
+/// <c>vertical-align</c> are NOT inherited
+/// here — alignment is read from the box's OWN declarations (<see cref="HorizontalAlignFactor"/> /
+/// <see cref="VerticalAlignFactor"/>) and overrides the box's name-derived default; inheriting the
+/// page/root's UA-default <c>text-align: start</c> would otherwise spuriously override the name-derived
+/// centering (post-PR-#134 review). The remaining box-model declarations (the <c>border-width</c> /
+/// <c>border-style</c> / <c>border-color</c> 1–4-value box shorthands, <c>border-radius</c>,
+/// background <i>images</i>, …) stay deferred (deferrals.md).
 /// </para>
 /// <para>
 /// <b>Relative font (cycle 7).</b> A parent-relative <c>font-size</c> (<c>em</c> / <c>ex</c> /
@@ -83,17 +87,19 @@ internal static class MarginBoxStyle
     private static readonly FrozenSet<PropertyId> InheritedStyleIdSet = SupportedStyleIds.ToFrozenSet();
 
     /// <summary>The longhands a margin box CASCADES from its OWN declarations: the inherited set plus
-    /// the non-inherited <c>background-color</c> (cycle 8 — paints a band behind the box's content)
-    /// and the 12 <c>border-*-width</c> / <c>-style</c> / <c>-color</c> longhands (border cycle —
-    /// painted around the box region). These are materialized onto the style but deliberately left
-    /// OUT of the inheritance copy above, since they are not CSS inherited properties.</summary>
+    /// the non-inherited <c>background-color</c> (cycle 8 — paints a band behind the box's content),
+    /// the 12 <c>border-*-width</c> / <c>-style</c> / <c>-color</c> longhands (border cycle — painted
+    /// around the box region), and the 4 <c>padding-*</c> longhands (padding cycle — inset the box's
+    /// content origin). These are materialized onto the style but deliberately left OUT of the
+    /// inheritance copy above, since they are not CSS inherited properties.</summary>
     private static readonly ImmutableArray<PropertyId> CascadedStyleIds =
         SupportedStyleIds.AddRange(
             PropertyId.BackgroundColor,
             PropertyId.BorderTopWidth, PropertyId.BorderTopStyle, PropertyId.BorderTopColor,
             PropertyId.BorderRightWidth, PropertyId.BorderRightStyle, PropertyId.BorderRightColor,
             PropertyId.BorderBottomWidth, PropertyId.BorderBottomStyle, PropertyId.BorderBottomColor,
-            PropertyId.BorderLeftWidth, PropertyId.BorderLeftStyle, PropertyId.BorderLeftColor);
+            PropertyId.BorderLeftWidth, PropertyId.BorderLeftStyle, PropertyId.BorderLeftColor,
+            PropertyId.PaddingTop, PropertyId.PaddingRight, PropertyId.PaddingBottom, PropertyId.PaddingLeft);
 
     private static readonly FrozenSet<PropertyId> CascadedStyleIdSet = CascadedStyleIds.ToFrozenSet();
 
@@ -157,6 +163,19 @@ internal static class MarginBoxStyle
                         decl.Location));
                     continue;
                 }
+                // A `padding` shorthand reaching here is likewise an un-expandable one (a valid one
+                // becomes padding-* longhands upstream); surface it instead of silently dropping.
+                if (PaddingShorthandExpander.IsPaddingShorthand(decl.Property))
+                {
+                    diagnostics?.Emit(new CssDiagnostic(
+                        CssDiagnosticCodes.CssPropertyValueInvalid001,
+                        $"Could not apply 'padding: {DiagnosticTextSanitizer.Sanitize(decl.Value.RawText)}' in an " +
+                        "@page margin box — the value is an unsupported or malformed padding shorthand " +
+                        "(<length>{1,4}); use the padding-<side> longhands.",
+                        CssDiagnosticSeverity.Warning,
+                        decl.Location));
+                    continue;
+                }
                 if (!PropertyMetadata.NameToId.TryGetValue(decl.Property, out var id)) continue;
                 if (!CascadedStyleIdSet.Contains(id)) continue; // whitelist (review P2; + background-color, cycle 8)
                 winners ??= new Dictionary<PropertyId, Winner>();
@@ -189,7 +208,31 @@ internal static class MarginBoxStyle
                         continue;
                     }
 
-                    PropertyResolverDispatch.Resolve(id, w.Value, diagnostics, w.Location).MaterializeInto(style, id);
+                    var resolved = PropertyResolverDispatch.Resolve(id, w.Value, diagnostics, w.Location);
+                    resolved.MaterializeInto(style, id);
+
+                    // Non-absolute padding — a percentage (CSS B&B §8.4: resolves against the containing
+                    // block inline size) or a font-/viewport-relative length (`1em` / `5vw`, left
+                    // DEFERRED by the resolver) — is a VALID value, but the margin-box painter can't
+                    // resolve it to used px yet: it reads padding via ReadLengthPxOrZero, which honors
+                    // ONLY a LengthPx slot and otherwise reads 0, so such a padding would SILENTLY
+                    // vanish. Diagnose + drop it (an EXPLICIT deferral, not silent corruption — CLAUDE.md
+                    // #7, review P2 + Copilot), pending the §5.3 margin-box sizing / a font-context
+                    // resolve. `!resolved.IsInvalid` skips a genuinely-invalid value (Resolve already
+                    // diagnosed it); border-*-width can't be non-px and the other cascaded properties
+                    // aren't lengths, so padding is the only case here.
+                    if (IsPaddingId(id) && !resolved.IsInvalid && style.Get(id).Tag != ComputedSlotTag.LengthPx)
+                    {
+                        diagnostics?.Emit(new CssDiagnostic(
+                            CssDiagnosticCodes.CssPropertyValueInvalid001,
+                            $"Padding '{DiagnosticTextSanitizer.Sanitize(w.Value)}' in an @page margin box " +
+                            "isn't an absolute length — percentage and font-/viewport-relative padding " +
+                            "aren't resolved to used px here yet (they would resolve to 0); use an " +
+                            "absolute length (px/pt/cm/in). (deferrals.md)",
+                            CssDiagnosticSeverity.Warning,
+                            w.Location));
+                        style.Unset(id);
+                    }
                 }
             }
         }
@@ -205,6 +248,12 @@ internal static class MarginBoxStyle
         style.MarkAsBoxOwned();
         return style;
     }
+
+    /// <summary>Whether <paramref name="id"/> is one of the four <c>padding-*</c> longhands (which can
+    /// hold a non-absolute length the margin-box painter can't yet resolve to used px).</summary>
+    private static bool IsPaddingId(PropertyId id) =>
+        id is PropertyId.PaddingTop or PropertyId.PaddingRight
+            or PropertyId.PaddingBottom or PropertyId.PaddingLeft;
 
     /// <summary>Copy <paramref name="parentStyle"/>'s value for <paramref name="id"/> onto
     /// <paramref name="style"/> — the slot (+ the side-table payload for the font-family list, + a

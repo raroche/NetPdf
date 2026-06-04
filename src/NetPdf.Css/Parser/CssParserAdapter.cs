@@ -1011,13 +1011,19 @@ internal static class CssParserAdapter
             // malformed/invalid value) the raw `font` declaration is KEPT as a marker so
             // MarginBoxStyle — which has a diagnostics sink — can surface it (review #3) rather than
             // silently dropping it. (A `font` that survives here is, by construction, a rejected one.)
-            // Expand the `border` / `border-<side>` shorthands into longhands (Task 21) — same
-            // rationale as `font`: AngleSharp doesn't see margin-box bodies. Atomic; on failure the
-            // raw declaration is kept (and ignored downstream — a border diagnostic is a follow-up).
+            // Expand the `border` / `border-<side>` + `padding` shorthands into longhands (Task 21) —
+            // same rationale as `font`: AngleSharp doesn't see margin-box bodies. Atomic; on failure the
+            // raw declaration is KEPT as a marker so MarginBoxStyle surfaces it as a diagnostic.
             if (BorderShorthandExpander.IsBorderShorthand(propertyName)
                 && BorderShorthandExpander.TryExpand(propertyName, valueText, out var borderLonghands))
             {
                 foreach (var (prop, val) in borderLonghands)
+                    output.Add(new CssDeclaration(prop, new CssValue(val), isImportant, parentLocation));
+            }
+            else if (PaddingShorthandExpander.IsPaddingShorthand(propertyName)
+                && PaddingShorthandExpander.TryExpand(propertyName, valueText, out var paddingLonghands))
+            {
+                foreach (var (prop, val) in paddingLonghands)
                     output.Add(new CssDeclaration(prop, new CssValue(val), isImportant, parentLocation));
             }
             else if (propertyName == "font"

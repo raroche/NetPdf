@@ -190,7 +190,7 @@ internal static class PdfRenderPipeline
             var pageDecls = AtPageMarginBoxResolver.PageContextDeclarations(phase2.Sheets, media);
             // Page counters for counter(page)/counter(pages) (cycle 9). Single page → (1, 1); the
             // blocked multi-page driver will supply the real per-page number + total once it lands.
-            var pageCounters = new CssContentList.PageCounters(Page: 1, Pages: 1);
+            var pageCounters = new CssContentList.PageCounters(page: 1, pages: 1);
             var marginResult = PageMarginBoxPainter.Layout(
                 marginBoxes, pageSize.WidthPx, pageSize.HeightPx,
                 margins.TopPx, margins.RightPx, margins.BottomPx, margins.LeftPx,

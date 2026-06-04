@@ -56,11 +56,29 @@ namespace NetPdf.Layout.Boxes;
 internal static class CssContentList
 {
     /// <summary>The page counters available to <c>counter(page)</c> / <c>counter(pages)</c> when
-    /// resolving a CSS Paged Media §6.4 margin box's <c>content</c> (Task 21 cycle 9). <c>Page</c> is
-    /// the 1-based number of the page being painted; <c>Pages</c> is the total. Supplied only on the
-    /// page-margin-box path — body / pseudo-element content has no page context, so <c>counter(page)</c>
-    /// stays unsupported there.</summary>
-    public readonly record struct PageCounters(int Page, int Pages);
+    /// resolving a CSS Paged Media §6.4 margin box's <c>content</c> (Task 21 cycle 9). Supplied only on
+    /// the page-margin-box path — body / pseudo-element content has no page context, so
+    /// <c>counter(page)</c> stays unsupported there.</summary>
+    public readonly record struct PageCounters
+    {
+        /// <summary>The 1-based number of the page being painted.</summary>
+        public int Page { get; }
+
+        /// <summary>The total page count — the document total per CSS Page 3 §6.1.</summary>
+        public int Pages { get; }
+
+        /// <summary>Construct with the current page number + the total. Both are 1-based and
+        /// <c>Page ≤ Pages</c> — a contract guard before the multi-page driver starts passing dynamic
+        /// values (the single-page caller always passes <c>(1, 1)</c>).</summary>
+        public PageCounters(int page, int pages)
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThan(page, 1);
+            ArgumentOutOfRangeException.ThrowIfLessThan(pages, 1);
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(page, pages);
+            Page = page;
+            Pages = pages;
+        }
+    }
 
     /// <summary>Sink-less convenience overload — see the four-argument form
     /// for the diagnostic-emitting path. Returns <see langword="true"/> + the

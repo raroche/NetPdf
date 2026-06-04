@@ -1,6 +1,7 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System;
 using System.Threading.Tasks;
 using AngleSharp;
 using AngleSharp.Dom;
@@ -183,5 +184,23 @@ public sealed class CssContentListTests
         // No PageCounters supplied (e.g. body / pseudo-element content) → counter(page) is unsupported.
         var host = await MakeHost("<p id='h'>x</p>", "h");
         Assert.False(CssContentList.TryParse("counter(page)", host, out _));
+    }
+
+    [Theory]
+    [InlineData(0, 1)]   // page < 1
+    [InlineData(1, 0)]   // pages < 1
+    [InlineData(2, 1)]   // page > pages
+    public void PageCounters_rejects_out_of_range_values(int page, int pages)
+    {
+        // A contract guard before the multi-page driver passes dynamic values (review P3).
+        Assert.Throws<ArgumentOutOfRangeException>(() => new CssContentList.PageCounters(page, pages));
+    }
+
+    [Fact]
+    public void PageCounters_accepts_a_valid_page_of_total()
+    {
+        var pc = new CssContentList.PageCounters(3, 7);
+        Assert.Equal(3, pc.Page);
+        Assert.Equal(7, pc.Pages);
     }
 }

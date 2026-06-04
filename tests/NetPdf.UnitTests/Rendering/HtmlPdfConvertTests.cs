@@ -589,6 +589,53 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Page_margin_box_unsupported_counter_style_is_skipped_with_a_diagnostic()
+    {
+        // counter(page, lower-roman) IS a page counter, but only the default decimal style is
+        // supported → it must emit the unsupported-content diagnostic + paint nothing (review P3).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content: counter(page, lower-roman) } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssContentFunctionUnsupported001);
+        Assert.DoesNotContain("BT", Latin1(result.Pdf));   // nothing painted
+    }
+
+    [Fact]
+    public void Page_margin_box_mixed_string_and_counters_paints_the_full_value()
+    {
+        // "Page " counter(page) " of " counter(pages) → "Page 1 of 1" (11 chars). The SyntheticFont is
+        // A/B-only so the rendered glyphs aren't readable, but the glyph COUNT pins that the counters
+        // resolved + concatenated to the right LENGTH end-to-end (the exact value is asserted at the
+        // unit layer in CssContentListTests). No unsupported-content diagnostic.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center " +
+            "{ content: \"Page \" counter(page) \" of \" counter(pages) } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        var pdf = Latin1(result.Pdf);
+
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssContentFunctionUnsupported001);
+        Assert.Equal("Page 1 of 1".Length, TotalGlyphCount(pdf));   // 11 glyphs laid out + painted
+    }
+
+    /// <summary>Total glyph count across all <c>&lt;hex&gt; Tj</c> show operators (Identity-H 2-byte
+    /// glyph ids → 4 hex digits each).</summary>
+    private static int TotalGlyphCount(string pdf)
+    {
+        var total = 0;
+        var idx = 0;
+        while ((idx = pdf.IndexOf(" Tj", idx, StringComparison.Ordinal)) >= 0)
+        {
+            var close = pdf.LastIndexOf('>', idx);
+            var open = close > 0 ? pdf.LastIndexOf('<', close) : -1;
+            if (open >= 0 && close > open) total += (close - open - 1) / 4;
+            idx += 3;
+        }
+        return total;
+    }
+
+    [Fact]
     public void Body_text_and_a_margin_box_share_one_embedded_font()
     {
         // Body "A" + a footer "B" both resolve to SyntheticFont. They now paint through ONE

@@ -245,8 +245,9 @@ internal static class PageMarginBoxPainter
             // diagnostic path (post-PR-#132 review P2; DiagnosticTextSanitizer).
             $"The page margin box @{boxName} uses a `content` value that is not yet supported " +
             $"(\"{DiagnosticTextSanitizer.Sanitize(raw)}\"). Supported: literal strings, attr(name), " +
-            "and counter(page)/counter(pages); a non-page counter()/counters()/string()/element() is a " +
-            "tracked follow-up (deferrals.md#layout-to-pdf-pipeline). The box was not painted.",
+            "and counter(page)/counter(pages) with the default decimal style; a non-page counter() name, " +
+            "a non-decimal counter style (e.g. lower-roman), counters()/string()/element() is a tracked " +
+            "follow-up (deferrals.md#layout-to-pdf-pipeline). The box was not painted.",
             DiagnosticSeverity.Warning));
 
     private static void EmitFontUnresolved(IDiagnosticsSink diagnostics, string boxName, string detail) =>

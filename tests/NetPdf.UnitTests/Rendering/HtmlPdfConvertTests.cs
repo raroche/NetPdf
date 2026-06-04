@@ -1314,6 +1314,84 @@ public sealed class HtmlPdfConvertTests
         Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
     }
 
+    // ---- border box shorthands (Task 21 border-box cycle) ----
+
+    [Fact]
+    public void Page_margin_box_border_box_shorthands_paint_all_edges()
+    {
+        // The separate border-style / border-width / border-color box shorthands compose to a painted
+        // border, distributed across all four edges.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content:\"AB\"; border-style: solid; border-width: 2px; border-color: red } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Contains("1 0 0 rg", pdf);   // red edges
+        Assert.Contains(" re", pdf);        // filled rectangles
+    }
+
+    [Fact]
+    public void Page_margin_box_border_width_box_shorthand_insets_the_text()
+    {
+        // A border-width box shorthand sets border-left-width; with a style it paints AND insets the
+        // text (the cycle-12 content-inset) — @top-left is start-aligned, so the line shifts right by
+        // the left width (20px → ~15pt).
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var withBorder = FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-left { content:\"AB\"; border-style: solid; border-width: 0 0 0 20px } }</style>" +
+            "</head><body></body></html>", opts)));
+        var without = FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-left { content:\"AB\" } }</style>" +
+            "</head><body></body></html>", opts)));
+        Assert.InRange(withBorder.X - without.X, 13.0, 17.0);   // border-width:0 0 0 20px → left 20px → ~15pt
+    }
+
+    [Fact]
+    public void Page_margin_box_malformed_border_box_shorthand_is_surfaced()
+    {
+        // An un-expandable border box value (`1bananas` isn't a width) is kept as a raw marker and
+        // surfaced via the CSS diagnostic path — not silently dropped.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content:\"AB\"; border-width: 1bananas } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
+    }
+
+    [Fact]
+    public void Page_margin_box_border_width_box_shorthand_cascades_with_a_longhand()
+    {
+        // The box shorthand expands to per-edge longhands, so it cascades against an explicit
+        // border-left-width by importance then source order. Observed via the start-aligned text inset
+        // (border-left-width drives the @top-left content-origin shift): 4px → ~3pt, 40px → ~30pt.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double LeftX(string decls) => FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-left { content:\"AB\"; border-style: solid; " + decls +
+            " } }</style></head><body></body></html>", opts))).X;
+
+        var shorthandLast = LeftX("border-left-width: 40px; border-width: 4px");      // later shorthand wins → 4px
+        var longhandLast = LeftX("border-width: 4px; border-left-width: 40px");        // later longhand wins → 40px
+        var importantShorthand = LeftX("border-width: 4px !important; border-left-width: 40px"); // !important wins → 4px
+
+        Assert.True(longhandLast > shorthandLast + 20,
+            $"later longhand (40px) should beat the earlier shorthand (4px): short={shorthandLast} long={longhandLast}");
+        Assert.True(importantShorthand < longhandLast - 20,
+            $"an !important shorthand should beat a later normal longhand: imp={importantShorthand} long={longhandLast}");
+        Assert.InRange(importantShorthand - shorthandLast, -2.0, 2.0);   // both resolve left=4px
+    }
+
+    [Fact]
+    public void Page_margin_box_border_color_box_shorthand_cascades_with_a_longhand()
+    {
+        // border-color: red expands to all four edges, then a later border-left-color: blue overrides
+        // the left edge — so both colors paint (top/right/bottom red, left blue).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; border-style: solid; border-width: 2px; border-color: red; border-left-color: blue } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Contains("1 0 0 rg", pdf);   // red (top/right/bottom)
+        Assert.Contains("0 0 1 rg", pdf);   // blue (the left-edge longhand override)
+    }
+
     [Fact]
     public void Page_margin_box_font_shorthand_sets_the_size(/* Task 21 cycle 6 */)
     {

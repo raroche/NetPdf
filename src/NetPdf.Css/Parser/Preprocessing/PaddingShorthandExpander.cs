@@ -67,14 +67,7 @@ internal static class PaddingShorthandExpander
         if (!CssShorthandHelpers.SplitTopLevel(stripped, out var values) || values.Count is < 1 or > 4)
             return false;
 
-        // 1–4-value box mapping → (top, right, bottom, left).
-        var (top, right, bottom, left) = values.Count switch
-        {
-            1 => (values[0], values[0], values[0], values[0]),
-            2 => (values[0], values[1], values[0], values[1]),
-            3 => (values[0], values[1], values[2], values[1]),
-            _ => (values[0], values[1], values[2], values[3]),
-        };
+        var (top, right, bottom, left) = CssShorthandHelpers.ExpandBoxEdges(values);
         longhands.Add(("padding-top", top));
         longhands.Add(("padding-right", right));
         longhands.Add(("padding-bottom", bottom));

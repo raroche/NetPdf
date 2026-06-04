@@ -135,6 +135,6 @@ public sealed class BorderShorthandExpanderTests
         Assert.True(BorderShorthandExpander.IsBorderShorthand("border-top"));
         Assert.True(BorderShorthandExpander.IsBorderShorthand("BORDER-LEFT"));   // case-insensitive
         Assert.False(BorderShorthandExpander.IsBorderShorthand("border-top-width")); // a longhand
-        Assert.False(BorderShorthandExpander.IsBorderShorthand("border-width"));      // deferred box shorthand
+        Assert.False(BorderShorthandExpander.IsBorderShorthand("border-width"));      // a box shorthand (BorderBoxShorthandExpander)
     }
 }

@@ -3031,8 +3031,7 @@ flags the categories):
          a sanitized `CSS-PROPERTY-VALUE-INVALID-001` for an un-expandable margin-box `border` marker
          (surfaced via `MarginBoxStyle`, mirroring the `font` shorthand, no longer silently dropped);
          CSS-comment stripping + whole-value CSS-wide-keyword (`inherit`/`initial`/…) handling in the
-         expander. STILL DEFERRED: the `border-width`/`-style`/`-color` 1–4-value box shorthands;
-         `border-radius`.
+         expander. STILL DEFERRED: `border-radius`.
        - **Margin boxes — `padding` + the border content-inset (padding cycle) — DONE:** a margin box's
          declared `padding` (new `PaddingShorthandExpander` for the 1–4-value box shorthand → the 4
          `padding-*` longhands, added to `MarginBoxStyle.CascadedStyleIds`; per-side longhands pass
@@ -3052,12 +3051,19 @@ flags the categories):
          DIAGNOSES + drops any declared padding that didn't materialize to `LengthPx` (and that the
          resolver didn't already reject) rather than silently zeroing it. Absolute lengths (incl. the
          unitless `0`) apply as before.
+       - **Margin boxes — `border-width`/`-style`/`-color` box shorthands (border-box cycle) — DONE:**
+         the three 1–4-value border box shorthands (new `BorderBoxShorthandExpander` → the per-edge
+         `border-{side}-{width,style,color}` longhands; the 1–4-value box→edge mapping extracted into the
+         shared `CssShorthandHelpers.ExpandBoxEdges`, which `PaddingShorthandExpander` now also uses)
+         distribute across the four edges. The 12 longhands are already in `MarginBoxStyle.CascadedStyleIds`
+         (cycle 11), so they paint (cycle 11) + inset the text (cycle 12) with no painter change; an
+         un-expandable one surfaces a marker diagnostic. STILL DEFERRED: `border-radius`.
        - **Margin boxes — later cycles:**
          `string()` running headers (needs `string-set` collection), and `element()` running
          elements; the CSS Page 3 §5.3 three-box-per-edge
          sizing (each box gets the full edge band + aligns within it, so long sibling boxes on one
-         edge can overlap, and content overflowing a band isn't clipped); the `border-width`/`-style`/
-         `-color` 1–4-value box shorthands, `border-radius`, + background images.
+         edge can overlap, and content overflowing a band isn't clipped); `border-radius` + background
+         images.
          The per-box / page-context `ComputedStyle.Rent()` is box-owned (not returned to the pool) —
          a negligible per-render miss.
        - **`@page :first` selector (cycle 10) — DONE:** `@page :first` rules apply on the single

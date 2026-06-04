@@ -1136,10 +1136,11 @@ public sealed class HtmlPdfConvertTests
     // ---- background-color (Task 21 cycle 8) ----
 
     [Fact]
-    public void Page_margin_box_background_color_fills_the_region_band()
+    public void Page_margin_box_background_color_fills_the_band_height()
     {
-        // @bottom-center { background-color: red } → a red rectangle filling the FULL bottom-margin
-        // band (behind the footer text), not just the text's bounding box.
+        // @bottom-center { background-color: red } → a red rectangle spanning the bottom-margin band's
+        // full HEIGHT (the §5.3 FIXED axis for a bottom box) behind the footer text. The WIDTH is the
+        // §5.3 VARIABLE axis — content-sized (see the shrink-to-fit tests below), not asserted here.
         var pdf = Latin1(HtmlPdf.Convert(
             "<!DOCTYPE html><html><head><style>@page { @bottom-center { content:\"AB\"; background-color: red } }</style>" +
             "</head><body></body></html>",
@@ -1390,6 +1391,48 @@ public sealed class HtmlPdfConvertTests
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
         Assert.Contains("1 0 0 rg", pdf);   // red (top/right/bottom)
         Assert.Contains("0 0 1 rg", pdf);   // blue (the left-edge longhand override)
+    }
+
+    // ---- §5.3 three-box-per-edge sizing: shrink-to-fit (Task 21) ----
+
+    [Fact]
+    public void Page_margin_box_background_shrinks_to_fit_content_width()
+    {
+        // §5.3 (first cut): a top/bottom edge box's background covers its CONTENT width along the
+        // variable axis, not the whole band — so a wider content gives a wider band (was full-band in
+        // the cycle-8 model). The A/B-only SyntheticFont makes "ABABABABAB" ~5× the width of "AB".
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double BgWidth(string content) => FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"" + content + "\"; background-color: red } }</style>" +
+            "</head><body></body></html>", opts))).W;
+        var narrow = BgWidth("AB");
+        var wide = BgWidth("ABABABABAB");
+        Assert.True(wide > narrow + 20, $"wider content → wider background: narrow={narrow} wide={wide}");
+        Assert.True(narrow < 200, $"a 2-glyph background should be content-sized, not the ~468pt full band: {narrow}pt");
+    }
+
+    [Fact]
+    public void Page_margin_box_empty_content_keeps_the_full_band_background()
+    {
+        // An empty content:"" box has no content size → it keeps the FULL band (the cycle-8 decorative
+        // band is preserved; explicit width is a deferred follow-up).
+        var emptyWidth = FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"\"; background-color: red } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }))).W;
+        Assert.True(emptyWidth > 300, $"an empty box should span the full ~468pt band, got {emptyWidth}pt");
+    }
+
+    [Fact]
+    public void Page_margin_box_left_edge_background_shrinks_to_fit_height()
+    {
+        // A left/right edge box's VARIABLE axis is HEIGHT — its background shrinks to the line height,
+        // not the full margin column (~648pt for Letter minus 1in margins).
+        var h = FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @left-middle { content:\"AB\"; background-color: red } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }))).H;
+        Assert.True(h < 60, $"a single-line left box should shrink to ~line height, not the full column: {h}pt");
     }
 
     [Fact]

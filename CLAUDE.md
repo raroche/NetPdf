@@ -188,9 +188,18 @@ diagnosed + dropped — `MarginBoxStyle` drops any declared padding that didn't 
 `MarginBoxStyle.CascadedStyleIds`, so they paint (cycle 11) + inset the text (cycle 12) with NO painter
 change; a marker diagnostic surfaces an un-expandable one. The post-PR-#142 review (3 P3) cleaned stale
 "deferred" docs, added cascade-order regression tests (shorthand vs longhand by importance + source
-order), and broadened expander coverage (3-value color, CSS-wide across all three). `border-radius`
-+ background images + the §5.3 sizing stay deferred. Next (Task 21 remaining, in order):
-the §5.3 three-box-per-edge sizing / `@page :left`/`:right`/`:blank` + named pages (multi-page-gated),
+order), and broadened expander coverage (3-value color, CSS-wide across all three). **Cycle 14 — §5.3
+three-box-per-edge sizing, shrink-to-fit first cut (in progress, branch
+`phase-3-task-21-margin-box-shrink-to-fit`):** a content-bearing edge box now shrinks to its border-box
+content size along the §5.3 VARIABLE axis (new `PageMarginBoxGeometry.MarginBoxAxis` — top/bottom →
+width, left/right → height, corners neither), so its background/border cover the box, not the whole
+band; positioned in the band by the box alignment. `PageMarginBoxPainter` lays the line out first (to
+get the content size), then sizes + places the box — text positions are byte-identical to the old
+full-band model (all 91 existing margin-box tests pass unchanged). Empty `content:""` / failed-font
+boxes keep the full band. DEFERRED: the full §5.3 min/max-content DISTRIBUTION (long siblings can still
+overlap), explicit `width`/`height`, overflow clipping. `border-radius` + background images stay
+deferred. Next (Task 21 remaining, in order):
+the §5.3 min/max-content distribution + explicit width/height / `@page :left`/`:right`/`:blank` + named pages (multi-page-gated),
 then Task 22 (`string-set`/`string()` running headers). Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).

@@ -16,24 +16,32 @@ namespace NetPdf.Rendering;
 /// margin-width × margin-height rectangle) and, per edge, 3 boxes that share the edge band.
 /// </para>
 /// <para>
-/// <b>Cycle 3 placement.</b> The full CSS Page 3 §5.3 three-box-per-edge sizing (distributing the
-/// edge among left/center/right by their auto/content/fixed widths) is deferred. Instead each
-/// edge box is given the FULL edge band as its rectangle and the single content line is aligned
-/// within it by the box's name: the <c>-left</c>/<c>-top</c> boxes align to the start, <c>-center</c>/
-/// <c>-middle</c> to the center, <c>-right</c>/<c>-bottom</c> to the end; corner boxes center both
-/// axes. So <c>top-left</c> / <c>top-center</c> / <c>top-right</c> don't collide unless their text
-/// is wide enough to overlap (the §5.3 sizing that would prevent that is the deferred follow-up;
-/// no clipping is applied — deferrals.md#layout-to-pdf-pipeline).
+/// <b>Placement (§5.3 shrink-to-fit, first cut).</b> This type returns each box's full edge BAND +
+/// its name-derived alignment + the §5.3 <see cref="MarginBoxAxis"/> (the dimension that varies). The
+/// painter then SHRINKS a content-bearing box to its content size along that axis (top/bottom edges →
+/// width; left/right → height) so its background/border cover the box, and positions it in the band by
+/// the alignment (start / center / end by name). Corner boxes + empty boxes keep the full band. The
+/// FULL CSS §5.3 min/max-content DISTRIBUTION (resolving widths when sibling boxes would overlap),
+/// explicit <c>width</c>/<c>height</c>, and overflow clipping stay deferred — so two long boxes on one
+/// edge can still overlap and content overflowing a band isn't clipped (deferrals.md#layout-to-pdf-pipeline).
 /// </para>
 /// </remarks>
 internal static class PageMarginBoxGeometry
 {
-    /// <summary>A margin box's page-px rectangle plus the fraction of leftover space placed before
-    /// the content line on each axis (0 = start, 0.5 = center, 1 = end). The painter positions a
-    /// line of width <c>w</c> at <c>X + (Width - w) * HAlign</c> and a line box of height <c>h</c>
-    /// at <c>Y + (Height - h) * VAlign</c>.</summary>
+    /// <summary>Which dimension of an edge box is the §5.3 VARIABLE one (shrink-to-fit to content),
+    /// the perpendicular one being fixed to the margin: <see cref="Horizontal"/> for the top/bottom
+    /// edges (width varies, distributed among the 3 boxes along the edge), <see cref="Vertical"/> for
+    /// the left/right edges (height varies), <see cref="None"/> for the 4 corner boxes (both fixed to
+    /// the margin × margin rect).</summary>
+    internal enum MarginBoxAxis { None, Horizontal, Vertical }
+
+    /// <summary>A margin box's page-px BAND rectangle (the full edge extent) plus the fraction of
+    /// leftover space placed before the content on each axis (0 = start, 0.5 = center, 1 = end) and
+    /// its <see cref="MarginBoxAxis"/> (the dimension that shrinks to content). The painter sizes the
+    /// box to its content along <see cref="VariableAxis"/>, positions it in the band by
+    /// <see cref="HAlign"/> / <see cref="VAlign"/>, and aligns the line within it on the fixed axis.</summary>
     internal readonly record struct MarginBoxRegion(
-        double X, double Y, double Width, double Height, double HAlign, double VAlign);
+        double X, double Y, double Width, double Height, double HAlign, double VAlign, MarginBoxAxis VariableAxis);
 
     private const double Start = 0.0;
     private const double Center = 0.5;
@@ -57,31 +65,31 @@ internal static class PageMarginBoxGeometry
 
         MarginBoxRegion? r = name switch
         {
-            // Corners — center the line in the margin × margin rectangle.
-            "top-left-corner" => new(0, 0, marginLeftPx, marginTopPx, Center, Center),
-            "top-right-corner" => new(rightX, 0, marginRightPx, marginTopPx, Center, Center),
-            "bottom-left-corner" => new(0, bottomY, marginLeftPx, marginBottomPx, Center, Center),
-            "bottom-right-corner" => new(rightX, bottomY, marginRightPx, marginBottomPx, Center, Center),
+            // Corners — fixed both dimensions (the margin × margin rectangle); center the line.
+            "top-left-corner" => new(0, 0, marginLeftPx, marginTopPx, Center, Center, MarginBoxAxis.None),
+            "top-right-corner" => new(rightX, 0, marginRightPx, marginTopPx, Center, Center, MarginBoxAxis.None),
+            "bottom-left-corner" => new(0, bottomY, marginLeftPx, marginBottomPx, Center, Center, MarginBoxAxis.None),
+            "bottom-right-corner" => new(rightX, bottomY, marginRightPx, marginBottomPx, Center, Center, MarginBoxAxis.None),
 
-            // Top edge band — vary horizontal alignment by name.
-            "top-left" => new(marginLeftPx, 0, contentWidth, marginTopPx, Start, Center),
-            "top-center" => new(marginLeftPx, 0, contentWidth, marginTopPx, Center, Center),
-            "top-right" => new(marginLeftPx, 0, contentWidth, marginTopPx, End, Center),
+            // Top edge band — width varies (shrink-to-fit), positioned by name.
+            "top-left" => new(marginLeftPx, 0, contentWidth, marginTopPx, Start, Center, MarginBoxAxis.Horizontal),
+            "top-center" => new(marginLeftPx, 0, contentWidth, marginTopPx, Center, Center, MarginBoxAxis.Horizontal),
+            "top-right" => new(marginLeftPx, 0, contentWidth, marginTopPx, End, Center, MarginBoxAxis.Horizontal),
 
             // Bottom edge band.
-            "bottom-left" => new(marginLeftPx, bottomY, contentWidth, marginBottomPx, Start, Center),
-            "bottom-center" => new(marginLeftPx, bottomY, contentWidth, marginBottomPx, Center, Center),
-            "bottom-right" => new(marginLeftPx, bottomY, contentWidth, marginBottomPx, End, Center),
+            "bottom-left" => new(marginLeftPx, bottomY, contentWidth, marginBottomPx, Start, Center, MarginBoxAxis.Horizontal),
+            "bottom-center" => new(marginLeftPx, bottomY, contentWidth, marginBottomPx, Center, Center, MarginBoxAxis.Horizontal),
+            "bottom-right" => new(marginLeftPx, bottomY, contentWidth, marginBottomPx, End, Center, MarginBoxAxis.Horizontal),
 
-            // Left edge column — vary vertical placement by name; center horizontally in the margin.
-            "left-top" => new(0, marginTopPx, marginLeftPx, contentHeight, Center, Start),
-            "left-middle" => new(0, marginTopPx, marginLeftPx, contentHeight, Center, Center),
-            "left-bottom" => new(0, marginTopPx, marginLeftPx, contentHeight, Center, End),
+            // Left edge column — height varies (shrink-to-fit), positioned by name; center horizontally.
+            "left-top" => new(0, marginTopPx, marginLeftPx, contentHeight, Center, Start, MarginBoxAxis.Vertical),
+            "left-middle" => new(0, marginTopPx, marginLeftPx, contentHeight, Center, Center, MarginBoxAxis.Vertical),
+            "left-bottom" => new(0, marginTopPx, marginLeftPx, contentHeight, Center, End, MarginBoxAxis.Vertical),
 
             // Right edge column.
-            "right-top" => new(rightX, marginTopPx, marginRightPx, contentHeight, Center, Start),
-            "right-middle" => new(rightX, marginTopPx, marginRightPx, contentHeight, Center, Center),
-            "right-bottom" => new(rightX, marginTopPx, marginRightPx, contentHeight, Center, End),
+            "right-top" => new(rightX, marginTopPx, marginRightPx, contentHeight, Center, Start, MarginBoxAxis.Vertical),
+            "right-middle" => new(rightX, marginTopPx, marginRightPx, contentHeight, Center, Center, MarginBoxAxis.Vertical),
+            "right-bottom" => new(rightX, marginTopPx, marginRightPx, contentHeight, Center, End, MarginBoxAxis.Vertical),
 
             _ => null,
         };

@@ -3060,12 +3060,21 @@ flags the categories):
          un-expandable one surfaces a marker diagnostic. STILL DEFERRED: `border-radius`.
        - **Margin boxes — later cycles:**
          `string()` running headers (needs `string-set` collection), and `element()` running
-         elements; the CSS Page 3 §5.3 three-box-per-edge
-         sizing (each box gets the full edge band + aligns within it, so long sibling boxes on one
-         edge can overlap, and content overflowing a band isn't clipped); `border-radius` + background
-         images.
+         elements; `border-radius` + background images.
          The per-box / page-context `ComputedStyle.Rent()` is box-owned (not returned to the pool) —
          a negligible per-render miss.
+       - **Margin boxes — §5.3 three-box-per-edge sizing (shrink-to-fit cycle) — FIRST CUT DONE:** a
+         content-bearing edge box now SHRINKS to its border-box content size along the §5.3 variable
+         axis (`PageMarginBoxGeometry.MarginBoxAxis` — top/bottom → width, left/right → height; corners
+         neither), so its background/border cover the box (not the whole band), positioned in the band
+         by the box alignment (`PageMarginBoxPainter` lays the line out first to get the content size,
+         then sizes + places the box; text positions are byte-identical to the full-band model for zero
+         insets). Empty (`content:""`) / failed-font boxes keep the full band (preserving the cycle-8
+         decorative band). STILL DEFERRED: the full CSS §5.3 min/max-content DISTRIBUTION (resolving the
+         three boxes' widths so long siblings on one edge don't overlap — they still can), explicit
+         `width`/`height` on a margin box, and overflow clipping (content wider than its band isn't
+         clipped). No min/max-content intrinsic sizing yet — the box uses the single NoWrap line's
+         natural advance.
        - **`@page :first` selector (cycle 10) — DONE:** `@page :first` rules apply on the single
          (first) page, overriding the bare `@page` by cascade specificity — `AtPageRules.EnumeratePageRules`
          yields bare-then-`:first` so the resolvers' last-wins cascade lets `:first` win (a bare

@@ -1490,6 +1490,86 @@ public sealed class HtmlPdfConvertTests
         Assert.InRange(r.Y + r.H / 2.0, pageCenterY - 1, pageCenterY + 1);   // column-centered despite vertical-align: top
     }
 
+    // ---- §5.3 explicit width / height (Task 21) ----
+
+    [Fact]
+    public void Page_margin_box_explicit_width_sizes_the_background()
+    {
+        // An explicit `width` overrides shrink-to-fit on a top/bottom box's VARIABLE axis: the
+        // background rect is the declared content-box width (300px → 225pt), NOT shrink-to-content
+        // (~tens of pt) and NOT the full ~468pt band.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; width: 300px; background-color: red } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.InRange(FirstRect(pdf).W, 223.0, 227.0);   // 300px × 0.75 = 225pt
+    }
+
+    [Fact]
+    public void Page_margin_box_explicit_height_sizes_a_left_box()
+    {
+        // A left/right box's VARIABLE axis is HEIGHT — an explicit `height` sizes the band there
+        // (200px → 150pt), instead of shrinking to the single line height (~tens of pt).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @left-middle { content:\"AB\"; height: 200px; background-color: red } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.InRange(FirstRect(pdf).H, 148.0, 152.0);   // 200px × 0.75 = 150pt
+    }
+
+    [Fact]
+    public void Page_margin_box_explicit_width_clamps_to_the_band()
+    {
+        // An over-large explicit width is clamped to the edge band (overflow clipping is deferred).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; width: 10000px; background-color: red } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        var bandWidth = MediaBox(pdf).W - 144.0;   // content width = page − 2×1in margins (72pt each)
+        Assert.InRange(FirstRect(pdf).W, bandWidth - 1.0, bandWidth + 1.0);
+    }
+
+    [Fact]
+    public void Page_margin_box_explicit_percent_width_resolves_against_the_band()
+    {
+        // A percentage width resolves against the box's containing block on that axis — the edge band.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; width: 50%; background-color: red } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        var halfBand = (MediaBox(pdf).W - 144.0) / 2.0;
+        Assert.InRange(FirstRect(pdf).W, halfBand - 2.0, halfBand + 2.0);
+    }
+
+    [Fact]
+    public void Page_margin_box_explicit_width_makes_content_text_align_observable()
+    {
+        // With shrink-to-fit, text-align is a no-op (the box equals the line). An explicit width makes
+        // the content box WIDER than the line, so text-align positions the line within it: `right`
+        // pushes the line well to the right of `left`. (The box itself stays centered — §5.3.2.4.)
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double LineX(string align) => FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; width: 300px; text-align: " + align + " } }" +
+            "</style></head><body></body></html>", opts))).X;
+        var leftX = LineX("left");
+        var rightX = LineX("right");
+        Assert.True(rightX > leftX + 100.0,
+            $"text-align should position the line within the 300px box: left={leftX} right={rightX}");
+    }
+
+    [Fact]
+    public void Page_margin_box_empty_box_with_explicit_width_is_sized()
+    {
+        // An explicit width sizes even an empty `content:""` box (a sized decorative band), overriding
+        // the cycle-14 "empty boxes keep the full band" fallback — 200px → 150pt, with no text.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"\"; width: 200px; background-color: red } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.InRange(FirstRect(pdf).W, 148.0, 152.0);   // 200px × 0.75 = 150pt, not the full band
+        Assert.DoesNotContain(" Tj", pdf);                // …and no text painted
+    }
+
     [Fact]
     public void Page_margin_box_font_shorthand_sets_the_size(/* Task 21 cycle 6 */)
     {

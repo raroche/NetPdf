@@ -3063,18 +3063,24 @@ flags the categories):
          elements; `border-radius` + background images.
          The per-box / page-context `ComputedStyle.Rent()` is box-owned (not returned to the pool) —
          a negligible per-render miss.
-       - **Margin boxes — §5.3 three-box-per-edge sizing (shrink-to-fit cycle) — FIRST CUT DONE:** a
-         content-bearing edge box now SHRINKS to its border-box content size along the §5.3 variable
-         axis (`PageMarginBoxGeometry.MarginBoxAxis` — top/bottom → width, left/right → height; corners
-         neither), so its background/border cover the box (not the whole band), positioned in the band
-         by the box alignment (`PageMarginBoxPainter` lays the line out first to get the content size,
-         then sizes + places the box; text positions are byte-identical to the full-band model for zero
-         insets). Empty (`content:""`) / failed-font boxes keep the full band (preserving the cycle-8
-         decorative band). STILL DEFERRED: the full CSS §5.3 min/max-content DISTRIBUTION (resolving the
-         three boxes' widths so long siblings on one edge don't overlap — they still can), explicit
-         `width`/`height` on a margin box, and overflow clipping (content wider than its band isn't
-         clipped). No min/max-content intrinsic sizing yet — the box uses the single NoWrap line's
-         natural advance.
+       - **Margin boxes — §5.3 three-box-per-edge sizing (shrink-to-fit + explicit size) — DONE:** a
+         content-bearing edge box is sized along the §5.3 variable axis
+         (`PageMarginBoxGeometry.MarginBoxAxis` — top/bottom → width, left/right → height; corners
+         neither) either from an explicit `width` (top/bottom) / `height` (left/right) — explicit-size
+         cycle — or, when that's `auto`, by SHRINKING a content-bearing box to its border-box content
+         size (cycle 14 first cut), so its background/border cover the box (not the whole band). The box
+         is positioned in the band by its §5.3.2.4 NAME-DERIVED role (`region.HAlign/VAlign` —
+         start/center/end); the declared `text-align`/`vertical-align` aligns only the line within the
+         content box (observable now that an explicit size can make the content box wider than the line;
+         post-PR-#143 review). An explicit size is content-box (the box-sizing default — `box-sizing`
+         deferred); an absolute length or a percentage of the band resolves; `auto`/font-relative/`calc()`
+         falls back to shrink-to-fit, clamped to the band. Auto-sized empty (`content:""`) / failed-font
+         boxes keep the full band (preserving the cycle-8 decorative band; an explicit size sizes them).
+         STILL DEFERRED: the full CSS §5.3 min/max-content DISTRIBUTION (resolving the three boxes' widths
+         so long siblings on one edge don't overlap — they still can), `box-sizing` (explicit size is
+         content-box only), font-/viewport-relative + `calc()` `width`/`height` (fall back to
+         shrink-to-fit), and overflow clipping (content wider than its band isn't clipped). No
+         min/max-content intrinsic sizing yet — an auto box uses the single NoWrap line's natural advance.
        - **`@page :first` selector (cycle 10) — DONE:** `@page :first` rules apply on the single
          (first) page, overriding the bare `@page` by cascade specificity — `AtPageRules.EnumeratePageRules`
          yields bare-then-`:first` so the resolvers' last-wins cascade lets `:first` win (a bare

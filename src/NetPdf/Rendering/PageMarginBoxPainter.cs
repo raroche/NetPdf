@@ -40,7 +40,7 @@ namespace NetPdf.Rendering;
 /// (post-PR-#132 review P3). Fragment offsets are made relative to the shared content origin.
 /// </para>
 /// <para>
-/// <b>Style (cycles 4–8 + border + padding).</b> The box's declared <c>font-family</c> /
+/// <b>Style (cycles 4–8 + border + padding + explicit size).</b> The box's declared <c>font-family</c> /
 /// <c>font-size</c> / <c>font-weight</c> / <c>font-style</c> / <c>color</c> flow through the shaper +
 /// painter (inherited along root → page context → box; relative sizes + the <c>font</c> shorthand
 /// resolved); a declared <c>text-align</c> / <c>vertical-align</c> aligns the line WITHIN the box's
@@ -52,8 +52,10 @@ namespace NetPdf.Rendering;
 /// region — collected as a <see cref="MarginBoxBorder"/>, painted by <see cref="PaintBorders"/> via
 /// the shared <see cref="FragmentPainter.PaintBorders"/>; a declared <c>padding</c> (non-inherited,
 /// the 1–4-value box shorthand + per-side longhands) insets the text content origin, together with the
-/// used border-width per side (CSS box model). Unspecified properties fall back to the reader defaults
-/// (16px / default family / black / transparent / no border / no padding / name-derived alignment).
+/// used border-width per side (CSS box model); a declared <c>width</c> (top/bottom) / <c>height</c>
+/// (left/right) sizes the box along its §5.3 variable axis (explicit-size cycle — see <see cref="Layout"/>).
+/// Unspecified properties fall back to the reader defaults
+/// (16px / default family / black / transparent / no border / no padding / auto size / name-derived alignment).
 /// The <c>border-width</c>/<c>-style</c>/<c>-color</c> box shorthands distribute across the edges as
 /// well; <c>border-radius</c> + background images are tracked follow-ups
 /// (deferrals.md#layout-to-pdf-pipeline).
@@ -64,8 +66,9 @@ namespace NetPdf.Rendering;
 /// page renders <c>1</c> until the multi-page driver lands). A winning <c>none</c> / <c>normal</c>
 /// suppresses the box upstream (the resolver omits it). Still-unsupported content (a non-page
 /// <c>counter()</c> / <c>counters()</c> / <c>string()</c> / <c>element()</c>) emits
-/// <c>CSS-CONTENT-FUNCTION-UNSUPPORTED-001</c> and the box is skipped. The §5.3 three-box-per-edge
-/// sizing is a later cycle.
+/// <c>CSS-CONTENT-FUNCTION-UNSUPPORTED-001</c> and the box is skipped. §5.3 three-box-per-edge sizing
+/// is shrink-to-fit + explicit <c>width</c>/<c>height</c>; the min/max-content DISTRIBUTION for
+/// overlapping siblings is a later cycle.
 /// </para>
 /// </remarks>
 internal static class PageMarginBoxPainter
@@ -209,21 +212,31 @@ internal static class PageMarginBoxPainter
                 }
             }
 
-            // §5.3 three-box-per-edge sizing (first cut): a CONTENT-BEARING edge box SHRINKS to its
-            // border-box content size along the VARIABLE axis (top/bottom edges → width; left/right →
-            // height), so its background/border cover the box rather than the whole band; it's then
-            // positioned in the band by its §5.3.2.4 name-derived ROLE (start/center/end by name, NOT
-            // the declared content alignment). Corner boxes + empty/failed-font boxes keep
-            // the full band (explicit width is deferred — this preserves the cycle-8 decorative band).
-            // The full CSS min/max-content distribution for OVERLAPPING siblings, explicit width/height,
-            // and overflow clipping stay deferred (deferrals.md). Box size is clamped to the band.
+            // §5.3 three-box-per-edge sizing: a box's VARIABLE axis (top/bottom edges → width; left/right
+            // → height) is sized either from an EXPLICIT `width`/`height` (explicit-size cycle) or, when
+            // that's `auto`, by SHRINKING a content-bearing box to its border-box content size (cycle 14
+            // first cut) — so its background/border cover the box rather than the whole band. The box is
+            // then positioned in the band by its §5.3.2.4 name-derived ROLE (start/center/end by name,
+            // NOT the declared content alignment). An explicit size is the content-box size (box-sizing:
+            // content-box); the border-box adds the border+padding insets, and applies even to an
+            // empty/failed-font box (a sized decorative box). Corner boxes (no variable axis) + auto-sized
+            // empty/failed-font boxes keep the full band (the cycle-8 decorative band). Box size is
+            // clamped to the band; the full CSS min/max-content DISTRIBUTION for OVERLAPPING siblings +
+            // overflow clipping stay deferred (deferrals.md).
             var boxWidthPx = region.Width;
             var boxHeightPx = region.Height;
-            if (hasLine)
+            if (region.VariableAxis == PageMarginBoxGeometry.MarginBoxAxis.Horizontal)
             {
-                if (region.VariableAxis == PageMarginBoxGeometry.MarginBoxAxis.Horizontal)
+                if (TryReadExplicitSizePx(style, PropertyId.Width, region.Width) is double w)
+                    boxWidthPx = Math.Min(region.Width, w + insetLeftPx + insetRightPx);
+                else if (hasLine)
                     boxWidthPx = Math.Min(region.Width, inline.Lines[0].TotalAdvance + insetLeftPx + insetRightPx);
-                else if (region.VariableAxis == PageMarginBoxGeometry.MarginBoxAxis.Vertical)
+            }
+            else if (region.VariableAxis == PageMarginBoxGeometry.MarginBoxAxis.Vertical)
+            {
+                if (TryReadExplicitSizePx(style, PropertyId.Height, region.Height) is double h)
+                    boxHeightPx = Math.Min(region.Height, h + insetTopPx + insetBottomPx);
+                else if (hasLine)
                     boxHeightPx = Math.Min(region.Height, (lineHeightPx * inline.Lines.Length) + insetTopPx + insetBottomPx);
             }
             // Place the box in the band by its §5.3.2.4 ROLE (region.HAlign/VAlign — A flush start,
@@ -248,11 +261,12 @@ internal static class PageMarginBoxPainter
             if (!hasLine) continue; // empty / failed-font box: decoration only, no text fragment.
 
             // Place + align the line within the box's content box, at the BORDER-box origin (boxX/boxY);
-            // TextPainter adds the border+padding inset. On the box's VARIABLE axis it's content-sized,
-            // so the content-align term collapses to 0 (the line fills the box); on the FIXED axis the
-            // box spans the band, so the term aligns the line within it (e.g. a top box's line stays
-            // vertically centered). When the box doesn't redefine alignment (hAlign/vAlign equal the
-            // name-derived role), this yields the same line position as the full-band model.
+            // TextPainter adds the border+padding inset. On the box's VARIABLE axis a SHRINK-TO-FIT box is
+            // content-sized so the content-align term collapses to 0 (the line fills the box), but an
+            // EXPLICIT-width/height box can be wider/taller than the line, so text-align/vertical-align
+            // now positions the line within it; on the FIXED axis the box spans the band, so the term
+            // aligns the line within it (e.g. a top box's line stays vertically centered). For an
+            // auto-sized box that doesn't redefine alignment, this matches the full-band line position.
             var lineWidthPx = inline.Lines[0].TotalAdvance;
             var contentBoxWidthPx = Math.Max(0, boxWidthPx - insetLeftPx - insetRightPx);
             var contentBoxHeightPx = Math.Max(0, boxHeightPx - insetTopPx - insetBottomPx);
@@ -313,6 +327,27 @@ internal static class PageMarginBoxPainter
     private static bool HasBorder(ComputedStyle style) =>
         style.IsSet(PropertyId.BorderTopStyle) || style.IsSet(PropertyId.BorderRightStyle)
         || style.IsSet(PropertyId.BorderBottomStyle) || style.IsSet(PropertyId.BorderLeftStyle);
+
+    /// <summary>The explicit content-box size (CSS px) a margin box declares on its §5.3 VARIABLE axis
+    /// — <c>width</c> for top/bottom boxes, <c>height</c> for left/right — or <see langword="null"/>
+    /// when it's <c>auto</c>/unresolved (the caller shrink-to-fits). An absolute length is used as-is; a
+    /// percentage resolves against <paramref name="bandExtentPx"/> (the box's containing block on that
+    /// axis). box-sizing is content-box (the CSS default) — the caller adds the border+padding insets to
+    /// get the border-box. A font-/viewport-relative or <c>calc()</c> size stays unresolved here →
+    /// shrink-to-fit (a documented gap, deferrals.md). Negatives are rejected upstream (non-negative
+    /// property); the <c>Max(0, …)</c> is defensive.</summary>
+    private static double? TryReadExplicitSizePx(ComputedStyle style, PropertyId id, double bandExtentPx)
+    {
+        var slot = style.Get(id);
+        return slot.Tag switch
+        {
+            ComputedSlotTag.LengthPx => Math.Max(0, slot.AsLengthPx()),
+            // AsPercentage() returns the percentage number (50 for "50%"), per the codebase convention
+            // (e.g. AbsoluteLayouter / BlockLayouter use `AsPercentage() / 100.0 * base`).
+            ComputedSlotTag.Percentage => Math.Max(0, slot.AsPercentage() / 100.0 * bandExtentPx),
+            _ => null,
+        };
+    }
 
     private static void EmitContentUnsupported(IDiagnosticsSink diagnostics, string boxName, string raw) =>
         diagnostics.Emit(new Diagnostic(

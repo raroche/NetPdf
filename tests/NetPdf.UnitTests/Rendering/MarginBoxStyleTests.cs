@@ -133,6 +133,27 @@ public sealed class MarginBoxStyleTests
         Assert.True(style.IsSet(PropertyId.Color));
     }
 
+    [Fact]
+    public void Build_materializes_explicit_width_and_height()
+    {
+        // width/height join the cascade whitelist (explicit-size cycle) → resolved to LengthPx slots
+        // the painter reads to size the box along its §5.3 variable axis.
+        var style = MarginBoxStyle.Build(ImmutableArray.Create(
+            Decl("width", "120px"), Decl("height", "40px")));
+        Assert.Equal(120, style.ReadLengthPxOrDefault(PropertyId.Width, defaultPx: -1), 3);
+        Assert.Equal(40, style.ReadLengthPxOrDefault(PropertyId.Height, defaultPx: -1), 3);
+    }
+
+    [Fact]
+    public void Build_does_not_inherit_width_or_height()
+    {
+        // width/height are NOT CSS inherited properties — a parent (page-context) value must not flow
+        // down to the child margin box (mirrors background-color/border/padding).
+        var parent = MarginBoxStyle.Build(ImmutableArray.Create(Decl("width", "200px")));
+        var child = MarginBoxStyle.Build(ImmutableArray<CssDeclaration>.Empty, parent);
+        Assert.False(child.IsSet(PropertyId.Width));
+    }
+
     // ---- Inheritance from the parent (page context / root), cycle 5 ----
 
     [Fact]

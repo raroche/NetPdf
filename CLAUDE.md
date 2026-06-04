@@ -207,9 +207,19 @@ tightened two cycle-reference/future-tense doc comments (`PageMarginBoxPainter` 
 `BorderShorthandExpander` remarks) that could read as the `border-width`/`-style`/`-color` box
 shorthands being deferred (they shipped cycle 13). DEFERRED: the full §5.3 min/max-content
 DISTRIBUTION (long siblings can still overlap), explicit `width`/`height`, overflow clipping.
-`border-radius` + background images stay deferred. Next (Task 21 remaining, in order):
-the §5.3 min/max-content distribution + explicit width/height / `@page :left`/`:right`/`:blank` + named pages (multi-page-gated),
-then Task 22 (`string-set`/`string()` running headers). Blocked (see `deferrals.md`):
+`border-radius` + background images stay deferred. **Cycle 15 — margin-box explicit `width`/`height`
+(in progress, branch `phase-3-task-21-margin-box-explicit-size`):** a declared `width` (top/bottom) /
+`height` (left/right) sizes the box along its §5.3 VARIABLE axis, overriding shrink-to-fit (an absolute
+length or a percentage of the band; `auto`/font-relative/`calc()` → shrink-to-fit). `width`/`height`
+joined `MarginBoxStyle.CascadedStyleIds` (non-inherited); `PageMarginBoxPainter.TryReadExplicitSizePx`
+reads them. The explicit size is content-box (box-sizing deferred); the border-box adds the
+border+padding insets, and applies even to an empty `content:""` box. An explicit width can make the
+content box wider than the line, so the (content-only) `text-align`/`vertical-align` is now observable
+on edge boxes. Clamped to the band. DEFERRED: the §5.3 min/max-content DISTRIBUTION for overlapping
+siblings, `box-sizing`, font-/viewport-relative + `calc()` sizes, overflow clipping. Next (Task 21
+remaining, in order): the §5.3 min/max-content DISTRIBUTION (overlap resolution) / `@page
+:left`/`:right`/`:blank` + named pages (multi-page-gated), then Task 22 (`string-set`/`string()` running
+headers). Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).
 For the live state, read the **current-state pointer at the top of [PROGRESS.md](PROGRESS.md)**

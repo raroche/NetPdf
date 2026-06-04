@@ -1,7 +1,9 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System.Collections.Generic;
 using System.Collections.Immutable;
+using NetPdf.Css.Diagnostics;
 using NetPdf.Css.Parser;
 using NetPdf.Css.Properties;
 using NetPdf.Layout.Layouters;
@@ -201,5 +203,40 @@ public sealed class MarginBoxStyleTests
         // (keep the name-derived default).
         Assert.Equal(0.0, MarginBoxStyle.HorizontalAlignFactor(ImmutableArray.Create(Decl("text-align", "initial"))));
         Assert.Null(MarginBoxStyle.HorizontalAlignFactor(ImmutableArray.Create(Decl("text-align", "inherit"))));
+    }
+
+    // ---- rejected `font` shorthand marker (review #3) ----
+
+    [Theory]
+    [InlineData("caption")]                    // a system-font keyword
+    [InlineData("italic 12bananas serif")]     // a malformed/invalid shorthand
+    public void Build_surfaces_a_rejected_font_shorthand_and_applies_no_partial_style(string fontValue)
+    {
+        // A `font` declaration reaching Build is one CssParserAdapter could NOT expand (it keeps the
+        // raw declaration as a marker). Build surfaces it via the diagnostics sink instead of
+        // silently ignoring it, and applies NONE of it as a style (atomic — no partial survives).
+        var sink = new CapturingSink();
+        var style = MarginBoxStyle.Build(
+            ImmutableArray.Create(Decl("font", fontValue)), parentStyle: null, diagnostics: sink);
+
+        Assert.Contains(sink.Diagnostics, d => d.Code == CssDiagnosticCodes.CssPropertyValueInvalid001);
+        Assert.False(style.IsSet(PropertyId.FontSize));
+        Assert.False(style.IsSet(PropertyId.FontStyle));
+        Assert.False(style.IsSet(PropertyId.FontFamily));
+    }
+
+    [Fact]
+    public void Build_does_not_diagnose_when_no_font_marker_is_present()
+    {
+        // A normal supported declaration emits no font-shorthand diagnostic (no false positives).
+        var sink = new CapturingSink();
+        MarginBoxStyle.Build(ImmutableArray.Create(Decl("color", "#ff0000")), parentStyle: null, diagnostics: sink);
+        Assert.Empty(sink.Diagnostics);
+    }
+
+    private sealed class CapturingSink : ICssDiagnosticsSink
+    {
+        public List<CssDiagnostic> Diagnostics { get; } = new();
+        public void Emit(CssDiagnostic d) => Diagnostics.Add(d);
     }
 }

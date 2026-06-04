@@ -124,11 +124,22 @@ one-font-embed landed in the #132 review). **Cycle 4 — per-box style — merge
 box's declared `font-*`/`color` flow through the shaper + painter; declared `text-align`/
 `vertical-align` override the name-derived alignment, via new `MarginBoxStyle` (per-box
 `ComputedStyle` from the declared longhands; `!important` cascade + a property WHITELIST +
-invalid-value diagnostics landed in the #133 review). **Cycle 5 — style inheritance (in progress,
-branch `phase-3-task-21-margin-box-inheritance`):** margin boxes inherit along the CSS Page 3 chain
-root element → page context (`@page` declarations) → margin box (`MarginBoxStyle.Build` gained a
-`parentStyle` param). Next: cycle 6 (the `font` shorthand / `counter(page)` page numbers / §5.3
-sizing), OR `@page` selectors (`:first`/`:left`/`:right`/`:blank`) + named pages — Roland's pick. Blocked (see `deferrals.md`):
+invalid-value diagnostics landed in the #133 review). **Cycle 5 — style inheritance — merged (PR
+#134):** margin boxes inherit along the CSS Page 3 chain root element → page context (`@page`
+declarations) → margin box (`MarginBoxStyle.Build` gained a `parentStyle` param); the #134 review
+fixed a real bug (text-align/vertical-align are read from the box's OWN declarations, not inherited,
+so the root's UA-default `text-align: start` can't override the name-derived alignment) + added
+CSS-wide-keyword handling (`initial` resets, `inherit` keeps). **Cycle 6 — the `font` shorthand
+(merged in PR #135, incl. its review):** `font:` works in margin-box bodies via new
+`FontShorthandExpander` → `ParseRawDeclarations` (AngleSharp doesn't see margin-box bodies). The
+post-PR-#135 review made expansion ATOMIC (each generated longhand validated through the production
+`PropertyResolverDispatch` — any bad part rejects the whole shorthand, no partial style), required a
+`<line-height>` after a `/`, stripped CSS comments quote-aware, accepted the unitless zero, and made
+a system-font/malformed `font` surface a sanitized `CSS-PROPERTY-VALUE-INVALID-001` (kept as a raw
+marker `MarginBoxStyle` reports) instead of silently vanishing; `oblique <angle>` / `<font-stretch>`
+are pinned as a deliberate atomic-reject approximation. Next:
+`counter(page)` page numbers / §5.3 three-box-per-edge sizing, OR `@page` selectors
+(`:first`/`:left`/`:right`/`:blank`) + named pages — Roland's pick. Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).
 For the live state, read the **current-state pointer at the top of [PROGRESS.md](PROGRESS.md)**

@@ -112,6 +112,21 @@ internal static class MarginBoxStyle
             Dictionary<PropertyId, Winner>? winners = null;
             foreach (var decl in declarations)
             {
+                // A `font` shorthand that reached here means CssParserAdapter.ParseRawDeclarations
+                // couldn't expand it (a system-font keyword or a malformed/invalid value) — it keeps
+                // the raw declaration as a marker. Surface it (review #3) instead of silently
+                // ignoring, then skip (it's not a supported longhand).
+                if (string.Equals(decl.Property, "font", StringComparison.OrdinalIgnoreCase))
+                {
+                    diagnostics?.Emit(new CssDiagnostic(
+                        CssDiagnosticCodes.CssPropertyValueInvalid001,
+                        $"Could not apply 'font: {DiagnosticTextSanitizer.Sanitize(decl.Value.RawText)}' in an " +
+                        "@page margin box — the value is a system-font keyword or an unsupported/malformed " +
+                        "shorthand; use font-style/font-weight/font-size/font-family longhands.",
+                        CssDiagnosticSeverity.Warning,
+                        decl.Location));
+                    continue;
+                }
                 if (!PropertyMetadata.NameToId.TryGetValue(decl.Property, out var id)) continue;
                 if (!SupportedStyleIdSet.Contains(id)) continue; // whitelist (review P2)
                 winners ??= new Dictionary<PropertyId, Winner>();

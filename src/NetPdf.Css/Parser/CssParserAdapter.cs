@@ -996,17 +996,34 @@ internal static class CssParserAdapter
             var valueSpan = tok.ReadUntilAnyTopLevel(";");
             var (valueText, isImportant) = ImportantParser.Strip(valueSpan.ToString());
 
-            output.Add(new CssDeclaration(
-                // Normalize property name to lowercase to match the rest of the AST:
-                // AngleSharp emits property names lowercased, and CssDeclarationRecovery
-                // also normalizes via ToLowerInvariant. Preserving authored casing here
-                // would cause `@top-center { Color: red }` to emit `Property = "Color"`
-                // while a normal style rule's `Color: red` becomes `"color"` — breaking
-                // case-insensitive lookup in the cascade.
-                Property: name.ToString().ToLowerInvariant(),
-                Value: new CssValue(valueText),
-                IsImportant: isImportant,
-                Location: parentLocation));
+            // Normalize property name to lowercase to match the rest of the AST:
+            // AngleSharp emits property names lowercased, and CssDeclarationRecovery
+            // also normalizes via ToLowerInvariant. Preserving authored casing here
+            // would cause `@top-center { Color: red }` to emit `Property = "Color"`
+            // while a normal style rule's `Color: red` becomes `"color"` — breaking
+            // case-insensitive lookup in the cascade.
+            var propertyName = name.ToString().ToLowerInvariant();
+
+            // Expand the `font` shorthand into longhands (Task 21 cycle 6). AngleSharp.Css never
+            // sees margin-box bodies, so without this a `font: …` declaration would be dropped (no
+            // `font` longhand resolver exists). Expansion is ATOMIC — on success the four longhands
+            // are emitted and the `font` shorthand is consumed; on failure (a system-font keyword or
+            // malformed/invalid value) the raw `font` declaration is KEPT as a marker so
+            // MarginBoxStyle — which has a diagnostics sink — can surface it (review #3) rather than
+            // silently dropping it. (A `font` that survives here is, by construction, a rejected one.)
+            if (propertyName == "font"
+                && FontShorthandExpander.TryExpand(
+                    valueText, out var fStyle, out var fWeight, out var fSize, out var fFamily))
+            {
+                output.Add(new CssDeclaration("font-style", new CssValue(fStyle), isImportant, parentLocation));
+                output.Add(new CssDeclaration("font-weight", new CssValue(fWeight), isImportant, parentLocation));
+                output.Add(new CssDeclaration("font-size", new CssValue(fSize), isImportant, parentLocation));
+                output.Add(new CssDeclaration("font-family", new CssValue(fFamily), isImportant, parentLocation));
+            }
+            else
+            {
+                output.Add(new CssDeclaration(propertyName, new CssValue(valueText), isImportant, parentLocation));
+            }
 
             if (tok.PeekChar() == ';') tok.ReadChar();
             tok.SkipWhitespaceAndComments();

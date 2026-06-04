@@ -51,9 +51,11 @@ namespace NetPdf.Rendering;
 /// background images are tracked follow-ups (deferrals.md#layout-to-pdf-pipeline).
 /// </para>
 /// <para>
-/// <b>Content scope.</b> Literal-string + <c>attr()</c> content only. A winning <c>none</c> /
-/// <c>normal</c> suppresses the box upstream (the resolver omits it). Unsupported functions
-/// (<c>counter()</c> / <c>string()</c> / <c>element()</c>) emit
+/// <b>Content scope.</b> Literal-string + <c>attr()</c> content, plus <c>counter(page)</c> /
+/// <c>counter(pages)</c> page numbers (cycle 9 — resolved against the page being painted; a single
+/// page renders <c>1</c> until the multi-page driver lands). A winning <c>none</c> / <c>normal</c>
+/// suppresses the box upstream (the resolver omits it). Still-unsupported content (a non-page
+/// <c>counter()</c> / <c>counters()</c> / <c>string()</c> / <c>element()</c>) emits
 /// <c>CSS-CONTENT-FUNCTION-UNSUPPORTED-001</c> and the box is skipped. The §5.3 three-box-per-edge
 /// sizing is a later cycle.
 /// </para>
@@ -100,6 +102,8 @@ internal static class PageMarginBoxPainter
     /// <param name="pageDeclarations">The bare <c>@page</c> rules' own declarations
     /// (<see cref="AtPageMarginBoxResolver.PageContextDeclarations"/>) — the page-context style the
     /// margin boxes inherit from.</param>
+    /// <param name="pageCounters">Page counters for <c>counter(page)</c> / <c>counter(pages)</c>
+    /// content — the page being painted's number + the total (cycle 9; single page → (1, 1)).</param>
     /// <param name="shaper">The SAME resolver the body shaped with, kept alive past layout.</param>
     /// <param name="diagnostics">Sink for unsupported-content / unresolved-font diagnostics.</param>
     public static MarginBoxLayoutResult Layout(
@@ -108,6 +112,7 @@ internal static class PageMarginBoxPainter
         double marginTopPx, double marginRightPx, double marginBottomPx, double marginLeftPx,
         double contentOriginLeftPx, double contentOriginTopPx,
         IElement host, ComputedStyle? rootElementStyle, ImmutableArray<CssDeclaration> pageDeclarations,
+        CssContentList.PageCounters pageCounters,
         HarfBuzzShaperResolver shaper, IDiagnosticsSink diagnostics)
     {
         ArgumentNullException.ThrowIfNull(host);
@@ -126,7 +131,7 @@ internal static class PageMarginBoxPainter
         var backgrounds = new List<MarginBoxBackgroundFill>();
         foreach (var mb in boxes)
         {
-            if (!CssContentList.TryParse(mb.ContentRawValue, host, out var text))
+            if (!CssContentList.TryParse(mb.ContentRawValue, host, pageCounters, out var text))
             {
                 EmitContentUnsupported(diagnostics, mb.Name, mb.ContentRawValue);
                 continue;
@@ -239,8 +244,10 @@ internal static class PageMarginBoxPainter
             // interpolating it into a host-visible message — same hardening as the CSS pipeline's
             // diagnostic path (post-PR-#132 review P2; DiagnosticTextSanitizer).
             $"The page margin box @{boxName} uses a `content` value that is not yet supported " +
-            $"(\"{DiagnosticTextSanitizer.Sanitize(raw)}\"). Cycle 3 renders literal strings + attr() " +
-            "only; counter()/string()/element() generated content is a tracked follow-up " +
+            $"(\"{DiagnosticTextSanitizer.Sanitize(raw)}\"). Supported: literal strings, attr(name), " +
+            "and counter(page)/counter(pages) with the default decimal style. Any other generated content " +
+            "— a non-page counter() name, a non-decimal counter style (e.g. lower-roman), counters(), " +
+            "url()/image()/image-set(), string()/element(), open-quote/close-quote — is a tracked follow-up " +
             "(deferrals.md#layout-to-pdf-pipeline). The box was not painted.",
             DiagnosticSeverity.Warning));
 

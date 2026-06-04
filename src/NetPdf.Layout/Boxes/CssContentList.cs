@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
 using System;
+using System.Globalization;
 using System.Text;
 using AngleSharp.Dom;
 using NetPdf.Css.Diagnostics;
@@ -32,15 +33,17 @@ namespace NetPdf.Layout.Boxes;
 /// <para>
 /// Returns <see langword="false"/> when the value contains tokens this parser
 /// doesn't yet handle:
-/// <c>counter()</c> / <c>counters()</c> (needs counter-reset / counter-increment
-/// machinery — cycle 2), <c>url()</c> / <c>image()</c> / <c>image-set()</c>
+/// <c>counter(<i>name</i>)</c> for a non-page name + <c>counters()</c> (need the
+/// counter-reset / counter-increment machinery) — though <c>counter(page)</c> /
+/// <c>counter(pages)</c> ARE resolved when a <see cref="PageCounters"/> context is
+/// supplied (Task 21 cycle 9 — page-margin-box content), <c>url()</c> / <c>image()</c> / <c>image-set()</c>
 /// (needs the resource pipeline), <c>open-quote</c> / <c>close-quote</c> /
 /// <c>no-open-quote</c> / <c>no-close-quote</c> (needs the quotation stack with
 /// depth tracking + the <c>quotes</c> property).
 /// </para>
 /// <para>
 /// <b>Task 16 cycle 1 — diagnostic emission.</b> The
-/// <see cref="TryParse(string, IElement, ICssDiagnosticsSink?, CssSourceLocation, out string)"/>
+/// <see cref="TryParse(string, IElement, ICssDiagnosticsSink?, CssSourceLocation, out string, PageCounters?)"/>
 /// overload emits one of two diagnostic codes when the parse fails:
 /// <see cref="CssDiagnosticCodes.CssContentFunctionUnsupported001"/> for
 /// unsupported functions (<c>counter()</c> / <c>url()</c> / etc.) or unsupported
@@ -52,12 +55,42 @@ namespace NetPdf.Layout.Boxes;
 /// </remarks>
 internal static class CssContentList
 {
+    /// <summary>The page counters available to <c>counter(page)</c> / <c>counter(pages)</c> when
+    /// resolving a CSS Paged Media §6.4 margin box's <c>content</c> (Task 21 cycle 9). Supplied only on
+    /// the page-margin-box path — body / pseudo-element content has no page context, so
+    /// <c>counter(page)</c> stays unsupported there.</summary>
+    public readonly record struct PageCounters
+    {
+        /// <summary>The 1-based number of the page being painted.</summary>
+        public int Page { get; }
+
+        /// <summary>The total page count — the document total per CSS Page 3 §6.1.</summary>
+        public int Pages { get; }
+
+        /// <summary>Construct with the current page number + the total. Both are 1-based and
+        /// <c>Page ≤ Pages</c> — a contract guard before the multi-page driver starts passing dynamic
+        /// values (the single-page caller always passes <c>(1, 1)</c>).</summary>
+        public PageCounters(int page, int pages)
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThan(page, 1);
+            ArgumentOutOfRangeException.ThrowIfLessThan(pages, 1);
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(page, pages);
+            Page = page;
+            Pages = pages;
+        }
+    }
+
     /// <summary>Sink-less convenience overload — see the four-argument form
     /// for the diagnostic-emitting path. Returns <see langword="true"/> + the
     /// concatenated text on success; <see langword="false"/> when the value
     /// uses unsupported tokens (no diagnostic emitted).</summary>
     public static bool TryParse(string raw, IElement host, out string result)
         => TryParse(raw, host, sink: null, location: CssSourceLocation.Unknown, out result);
+
+    /// <summary>Sink-less overload that also resolves <c>counter(page)</c> / <c>counter(pages)</c>
+    /// against <paramref name="pageCounters"/> (Task 21 cycle 9 — page-margin-box content).</summary>
+    public static bool TryParse(string raw, IElement host, PageCounters pageCounters, out string result)
+        => TryParse(raw, host, sink: null, location: CssSourceLocation.Unknown, out result, pageCounters);
 
     // Per Phase A security hardening A-5 — cap on the concatenated output of
     // one ::before / ::after / ::marker content-list parse. A pseudo-element's
@@ -79,7 +112,8 @@ internal static class CssContentList
         IElement host,
         ICssDiagnosticsSink? sink,
         CssSourceLocation location,
-        out string result)
+        out string result,
+        PageCounters? pageCounters = null)
     {
         result = string.Empty;
         if (string.IsNullOrWhiteSpace(raw)) return false;
@@ -118,7 +152,22 @@ internal static class CssContentList
                 continue;
             }
 
-            // Anything else: counter()/counters()/url()/image()/image-set()/
+            // counter(page) / counter(pages) — only in a page context (Task 21 cycle 9). Other
+            // counter names / styles, or no page context, fall through to the unsupported path.
+            if (StartsWithCaseInsensitive(span, i, "counter("))
+            {
+                var counterTokenStart = i;
+                i += "counter(".Length;
+                if (pageCounters is { } pc && TryReadPageCounter(span, ref i, pc, out var counterText))
+                {
+                    if (!TryAppendBounded(sb, counterText, sink, raw, location)) return false;
+                    continue;
+                }
+                EmitContentFunctionUnsupported(sink, span, counterTokenStart, raw, location);
+                return false;
+            }
+
+            // Anything else: counters()/url()/image()/image-set()/
             // linear-gradient()/open-quote/close-quote/identifier — bail.
             EmitContentFunctionUnsupported(sink, span, i, raw, location);
             return false;
@@ -328,6 +377,57 @@ internal static class CssContentList
 
         var attr = host.GetAttribute(attrName);
         value = attr ?? string.Empty;
+        return true;
+    }
+
+    /// <summary>Parse a <c>counter(...)</c> call (the <c>counter(</c> already consumed) as a page
+    /// counter (Task 21 cycle 9). Supports ONLY <c>counter(page)</c> / <c>counter(pages)</c>, with an
+    /// optional <c>decimal</c> style (the default). Resolves <c>page</c> → the current page number and
+    /// <c>pages</c> → the total from <paramref name="pc"/>. Returns <see langword="false"/> (→ the
+    /// caller bails to the unsupported diagnostic) for any other counter name, a non-<c>decimal</c>
+    /// style, or malformed syntax. Other counter styles (<c>lower-roman</c> / …) and the
+    /// <c>counters()</c> form are tracked follow-ups.</summary>
+    private static bool TryReadPageCounter(ReadOnlySpan<char> span, ref int i, PageCounters pc, out string text)
+    {
+        text = string.Empty;
+        i = SkipWhitespace(span, i);
+
+        var nameStart = i;
+        while (i < span.Length)
+        {
+            var c = span[i];
+            if (IsCssWhitespace(c) || c == ',' || c == ')') break;
+            if (!IsCssIdentChar(c)) return false; // malformed punctuation
+            i++;
+        }
+        if (i == nameStart) return false; // empty name
+        var name = span[nameStart..i];
+        int value;
+        if (name.Equals("page", StringComparison.OrdinalIgnoreCase)) value = pc.Page;
+        else if (name.Equals("pages", StringComparison.OrdinalIgnoreCase)) value = pc.Pages;
+        else return false; // a non-page counter — not supported here.
+
+        i = SkipWhitespace(span, i);
+        // Optional `, <counter-style>` — only the default `decimal` is supported this cycle.
+        if (i < span.Length && span[i] == ',')
+        {
+            i++;
+            i = SkipWhitespace(span, i);
+            var styleStart = i;
+            while (i < span.Length)
+            {
+                var c = span[i];
+                if (IsCssWhitespace(c) || c == ')') break;
+                if (!IsCssIdentChar(c)) return false;
+                i++;
+            }
+            if (!span[styleStart..i].Equals("decimal", StringComparison.OrdinalIgnoreCase)) return false;
+            i = SkipWhitespace(span, i);
+        }
+
+        if (i >= span.Length || span[i] != ')') return false; // missing close-paren.
+        i++; // consume ')'
+        text = value.ToString(CultureInfo.InvariantCulture);
         return true;
     }
 

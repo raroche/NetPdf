@@ -557,10 +557,10 @@ public sealed class HtmlPdfConvertTests
     [Fact]
     public void Page_margin_box_with_unsupported_content_function_is_skipped_with_a_diagnostic()
     {
-        // counter(page) generated content is a later cycle — it must emit a diagnostic and paint
-        // nothing (not crash, not silently drop). The body is empty, so no text at all is painted.
+        // A non-page counter (counter(chapter)) is still a later cycle — it must emit a diagnostic
+        // and paint nothing (not crash, not silently drop). The body is empty, so no text is painted.
         var result = HtmlPdf.ConvertDetailed(
-            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content: counter(page) } }</style>" +
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content: counter(chapter) } }</style>" +
             "</head><body></body></html>",
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
         var pdf = Latin1(result.Pdf);
@@ -568,6 +568,71 @@ public sealed class HtmlPdfConvertTests
         Assert.StartsWith("%PDF-", pdf);
         Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssContentFunctionUnsupported001);
         Assert.DoesNotContain("BT", pdf);   // nothing painted
+    }
+
+    [Theory]
+    [InlineData("counter(page)")]
+    [InlineData("counter(pages)")]
+    [InlineData("counter(page, decimal)")]
+    public void Page_margin_box_page_counter_content_is_painted(string content)
+    {
+        // counter(page)/counter(pages) now resolve (Task 21 cycle 9) — the page number is laid out
+        // + painted (a text run), with NO unsupported-content diagnostic. Single page → "1".
+        var result = HtmlPdf.ConvertDetailed(
+            $"<!DOCTYPE html><html><head><style>@page {{ @bottom-center {{ content: {content} }} }}</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        var pdf = Latin1(result.Pdf);
+
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssContentFunctionUnsupported001);
+        Assert.Contains("BT", pdf);   // the page number was painted
+    }
+
+    [Fact]
+    public void Page_margin_box_unsupported_counter_style_is_skipped_with_a_diagnostic()
+    {
+        // counter(page, lower-roman) IS a page counter, but only the default decimal style is
+        // supported → it must emit the unsupported-content diagnostic + paint nothing (review P3).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content: counter(page, lower-roman) } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssContentFunctionUnsupported001);
+        Assert.DoesNotContain("BT", Latin1(result.Pdf));   // nothing painted
+    }
+
+    [Fact]
+    public void Page_margin_box_mixed_string_and_counters_paints_the_full_value()
+    {
+        // "Page " counter(page) " of " counter(pages) → "Page 1 of 1" (11 chars). The SyntheticFont is
+        // A/B-only so the rendered glyphs aren't readable, but the glyph COUNT pins that the counters
+        // resolved + concatenated to the right LENGTH end-to-end (the exact value is asserted at the
+        // unit layer in CssContentListTests). No unsupported-content diagnostic.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center " +
+            "{ content: \"Page \" counter(page) \" of \" counter(pages) } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        var pdf = Latin1(result.Pdf);
+
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssContentFunctionUnsupported001);
+        Assert.Equal("Page 1 of 1".Length, TotalGlyphCount(pdf));   // 11 glyphs laid out + painted
+    }
+
+    /// <summary>Total glyph count across all <c>&lt;hex&gt; Tj</c> show operators (Identity-H 2-byte
+    /// glyph ids → 4 hex digits each).</summary>
+    private static int TotalGlyphCount(string pdf)
+    {
+        var total = 0;
+        var idx = 0;
+        while ((idx = pdf.IndexOf(" Tj", idx, StringComparison.Ordinal)) >= 0)
+        {
+            var close = pdf.LastIndexOf('>', idx);
+            var open = close > 0 ? pdf.LastIndexOf('<', close) : -1;
+            if (open >= 0 && close > open) total += (close - open - 1) / 4;
+            idx += 3;
+        }
+        return total;
     }
 
     [Fact]

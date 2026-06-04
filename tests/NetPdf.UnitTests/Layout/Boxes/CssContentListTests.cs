@@ -1,6 +1,7 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System;
 using System.Threading.Tasks;
 using AngleSharp;
 using AngleSharp.Dom;
@@ -149,5 +150,57 @@ public sealed class CssContentListTests
         // \41 → 'A' per CSS Syntax §4.3.7.
         Assert.True(CssContentList.TryParse("\"\\41 BC\"", host, out var result));
         Assert.Equal("ABC", result);
+    }
+
+    // ---- page counters (Task 21 cycle 9) ----
+
+    [Theory]
+    [InlineData("counter(page)", "3")]
+    [InlineData("counter(pages)", "7")]
+    [InlineData("counter(page, decimal)", "3")]   // the default style, explicit
+    [InlineData("counter( page )", "3")]          // whitespace tolerance
+    [InlineData("\"Page \" counter(page)", "Page 3")]   // string + counter mix
+    [InlineData("counter(page) \" of \" counter(pages)", "3 of 7")]
+    public async Task TryParse_resolves_page_counters(string raw, string expected)
+    {
+        var host = await MakeHost("<p id='h'>x</p>", "h");
+        Assert.True(CssContentList.TryParse(raw, host, new CssContentList.PageCounters(3, 7), out var result));
+        Assert.Equal(expected, result);
+    }
+
+    [Theory]
+    [InlineData("counter(chapter)")]               // a non-page counter name
+    [InlineData("counter(page, lower-roman)")]      // an unsupported counter style
+    [InlineData("counters(page, \".\")")]           // counters() (plural) is unsupported
+    public async Task TryParse_rejects_unsupported_counters(string raw)
+    {
+        var host = await MakeHost("<p id='h'>x</p>", "h");
+        Assert.False(CssContentList.TryParse(raw, host, new CssContentList.PageCounters(3, 7), out _));
+    }
+
+    [Fact]
+    public async Task TryParse_counter_page_is_unsupported_without_a_page_context()
+    {
+        // No PageCounters supplied (e.g. body / pseudo-element content) → counter(page) is unsupported.
+        var host = await MakeHost("<p id='h'>x</p>", "h");
+        Assert.False(CssContentList.TryParse("counter(page)", host, out _));
+    }
+
+    [Theory]
+    [InlineData(0, 1)]   // page < 1
+    [InlineData(1, 0)]   // pages < 1
+    [InlineData(2, 1)]   // page > pages
+    public void PageCounters_rejects_out_of_range_values(int page, int pages)
+    {
+        // A contract guard before the multi-page driver passes dynamic values (review P3).
+        Assert.Throws<ArgumentOutOfRangeException>(() => new CssContentList.PageCounters(page, pages));
+    }
+
+    [Fact]
+    public void PageCounters_accepts_a_valid_page_of_total()
+    {
+        var pc = new CssContentList.PageCounters(3, 7);
+        Assert.Equal(3, pc.Page);
+        Assert.Equal(7, pc.Pages);
     }
 }

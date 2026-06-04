@@ -557,10 +557,10 @@ public sealed class HtmlPdfConvertTests
     [Fact]
     public void Page_margin_box_with_unsupported_content_function_is_skipped_with_a_diagnostic()
     {
-        // counter(page) generated content is a later cycle — it must emit a diagnostic and paint
-        // nothing (not crash, not silently drop). The body is empty, so no text at all is painted.
+        // A non-page counter (counter(chapter)) is still a later cycle — it must emit a diagnostic
+        // and paint nothing (not crash, not silently drop). The body is empty, so no text is painted.
         var result = HtmlPdf.ConvertDetailed(
-            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content: counter(page) } }</style>" +
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content: counter(chapter) } }</style>" +
             "</head><body></body></html>",
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
         var pdf = Latin1(result.Pdf);
@@ -568,6 +568,24 @@ public sealed class HtmlPdfConvertTests
         Assert.StartsWith("%PDF-", pdf);
         Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssContentFunctionUnsupported001);
         Assert.DoesNotContain("BT", pdf);   // nothing painted
+    }
+
+    [Theory]
+    [InlineData("counter(page)")]
+    [InlineData("counter(pages)")]
+    [InlineData("counter(page, decimal)")]
+    public void Page_margin_box_page_counter_content_is_painted(string content)
+    {
+        // counter(page)/counter(pages) now resolve (Task 21 cycle 9) — the page number is laid out
+        // + painted (a text run), with NO unsupported-content diagnostic. Single page → "1".
+        var result = HtmlPdf.ConvertDetailed(
+            $"<!DOCTYPE html><html><head><style>@page {{ @bottom-center {{ content: {content} }} }}</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        var pdf = Latin1(result.Pdf);
+
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssContentFunctionUnsupported001);
+        Assert.Contains("BT", pdf);   // the page number was painted
     }
 
     [Fact]

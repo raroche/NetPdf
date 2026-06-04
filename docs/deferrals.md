@@ -3014,12 +3014,20 @@ flags the categories):
          shared text pass. rgba composites via `/ca`. STILL DEFERRED: `border` / `padding` (need the
          content-origin inset the cycle-4 whitelist still avoids — they would shift the text) and
          background images.
-       - **Margin boxes — later cycles:** `counter(page)`/`counter(pages)` page numbers,
+       - **Margin boxes — `counter(page)`/`counter(pages)` (cycle 9) — DONE:** `content:
+         counter(page)` / `counter(pages)` (optional `decimal` style) resolves to the page number /
+         total via a new `CssContentList.PageCounters` context threaded through `PageMarginBoxPainter`;
+         `PdfRenderPipeline` passes `(1, 1)` (single page → "1"). STILL DEFERRED: the real multi-page
+         numbers (gated on the multi-page driver below), non-`decimal` counter styles
+         (`lower-roman`/…), non-page `counter()` names + `counters()` (need the counter-reset/increment
+         machinery), and `counter(page)` in body/pseudo content (no page context → unsupported).
+       - **Margin boxes — later cycles:**
          `string()` running headers (needs `string-set` collection), and `element()` running
          elements; the CSS Page 3 §5.3 three-box-per-edge
          sizing (each box gets the full edge band + aligns within it, so long sibling boxes on one
          edge can overlap, and content overflowing a band isn't clipped); margin-box `border`/
-         `padding` + background images.
+         `padding` (needs a border-shorthand expander for margin-box bodies + the content-origin inset)
+         + background images.
          The per-box / page-context `ComputedStyle.Rent()` is box-owned (not returned to the pool) —
          a negligible per-render miss.
        - **Later cycles:** `@page :first`/`:left`/`:right`/`:blank` selectors + named pages;

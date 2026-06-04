@@ -147,8 +147,15 @@ deferral) — the box-builder's `ResolveDeferredFontProperties` was extracted in
 a band over the box's full region behind its content — materialized via a new `CascadedStyleIds`
 (kept out of the inheritance copy), resolved in `PageMarginBoxPainter` into a `MarginBoxBackgroundFill`
 and filled by the pipeline (reusing `FragmentPainter`'s rect/color helpers + `PdfPage.FillRectangle`)
-before the shared text pass; `border`/`padding`/bg-images stay deferred. Next:
-margin-box `border`/`padding` (content-origin inset) / `counter(page)` page numbers / §5.3 three-box-per-edge sizing, OR `@page` selectors
+before the shared text pass; the post-PR-#137 review gated bands by `PrintBackgrounds`, painted
+`content:""` boxes' bands, and made CSS-wide handling property-aware (`background-color: inherit`
+copies the parent). **Cycle 9 — `counter(page)`/`counter(pages)` page numbers (in progress, branch
+`phase-3-task-21-margin-box-counter-page`):** `content: counter(page)`/`counter(pages)` (optional
+`decimal` style) resolves to the page number/total via a new `CssContentList.PageCounters` context
+threaded through `PageMarginBoxPainter`; the pipeline passes `(1, 1)` for the single page (the blocked
+multi-page driver supplies real numbers later). Non-page counters / `counters()` / no-page-context
+stay unsupported. Next:
+margin-box `border`/`padding` (border-shorthand expander + content-origin inset) / §5.3 three-box-per-edge sizing, OR `@page` selectors
 (`:first`/`:left`/`:right`/`:blank`) + named pages — Roland's pick. Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).

@@ -885,14 +885,15 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Theory]
-    [InlineData("padding-left: 10%")]   // per-side longhand
+    [InlineData("padding-left: 10%")]   // a percentage per-side longhand
     [InlineData("padding-top: 10%")]
     [InlineData("padding: 10%")]        // the shorthand (expands to four % longhands)
-    public void Page_margin_box_percentage_padding_is_surfaced(string decls)
+    [InlineData("padding-left: 1em")]   // a font-relative length (also can't resolve to px here)
+    public void Page_margin_box_non_absolute_padding_is_surfaced(string decls)
     {
-        // CSS padding % resolves against the containing block inline size — not yet supported in margin
-        // boxes (the §5.3 box sizing is deferred). It must be DIAGNOSED, not silently rendered as 0
-        // (review P2).
+        // A percentage (resolves against the containing block) or a font-/viewport-relative padding
+        // can't be resolved to used px in margin boxes yet (the §5.3 box sizing / font context is
+        // deferred). It must be DIAGNOSED, not silently rendered as 0 (review P2 + Copilot).
         var result = HtmlPdf.ConvertDetailed(
             "<!DOCTYPE html><html><head><style>@page { @top-left { content:\"AB\"; " + decls + " } }</style>" +
             "</head><body></body></html>",

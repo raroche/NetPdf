@@ -177,10 +177,11 @@ diagnostic for an un-expandable `padding`. `PageMarginBoxPainter` insets the tex
 border-width + padding per side via `ReadLengthPxOrZero` (§4.3 border-width gate) — placing the line at
 the BORDER-box origin and shrinking the alignment extent to the content box, since
 `TextPainter.CollectFragment` already adds the box's border+padding (else the inset would DOUBLE).
-Post-PR-#141 review: PERCENTAGE padding is now diagnosed + dropped (it can't resolve to used px until
-the §5.3 sizing lands — no silent zeroing) + vertical-axis inset regression tests. `border-width`/
-`-style`/`-color` box shorthands + `border-radius` + `%`/`calc()` padding + background images stay
-deferred. Next (Task 21 remaining, in order):
+Post-PR-#141 review: NON-ABSOLUTE padding (a `%` or a font-/viewport-relative `1em`/`5vw`) is now
+diagnosed + dropped — `MarginBoxStyle` drops any declared padding that didn't materialize to a
+`LengthPx` slot (no silent zeroing) — plus vertical-axis inset regression tests. `border-width`/
+`-style`/`-color` box shorthands + `border-radius` + non-absolute/`calc()` padding + background images
+stay deferred. Next (Task 21 remaining, in order):
 the `border-width`/`-style`/`-color` box shorthands + §5.3 three-box-per-edge sizing / `@page :left`/`:right`/`:blank` + named pages (multi-page-gated),
 then Task 22 (`string-set`/`string()` running headers). Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES

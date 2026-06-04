@@ -1105,6 +1105,83 @@ public sealed class HtmlPdfConvertTests
         Assert.Contains("0 0 1 rg", beforeRect);
     }
 
+    // ---- border (Task 21 border cycle) ----
+
+    [Fact]
+    public void Page_margin_box_border_strokes_the_region()
+    {
+        // @bottom-center { border: 2px solid red } → the box's border edges stroke around its region
+        // (filled rects in red), reusing the body border painter.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content:\"AB\"; border: 2px solid red } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Contains("1 0 0 rg", pdf);   // red border edges
+        Assert.Contains(" re", pdf);        // the edges are filled rectangles
+    }
+
+    [Fact]
+    public void Page_margin_box_border_top_rule_paints_for_a_footer()
+    {
+        // The common footer "rule line" — @bottom-center { border-top: 1px solid #333 }.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content:\"AB\"; border-top: 1px solid #333333 } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Contains(" re", pdf);        // a stroked top edge
+    }
+
+    [Fact]
+    public void Page_margin_box_border_paints_even_when_print_backgrounds_disabled()
+    {
+        // Borders are NOT background graphics — they paint regardless of PrintBackgrounds (like body
+        // borders), unlike the background band.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content:\"AB\"; border: 2px solid red } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver(), PrintBackgrounds = false }));
+        Assert.Contains("1 0 0 rg", pdf);   // the border still paints
+    }
+
+    [Fact]
+    public void Page_margin_box_border_is_not_painted_for_a_zero_height_band()
+    {
+        // @page { margin-top: 0 } collapses the @top-center band to zero height → no box → the border
+        // must NOT paint (geometry guard, review P2). Without the guard the top/bottom edges would
+        // stroke a full-width red rectangle around the zero-height band.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { margin-top: 0; @top-center { content:\"AB\"; border: 10px solid red } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.DoesNotContain("1 0 0 rg", pdf);   // no red border around the zero-height band
+    }
+
+    [Fact]
+    public void Page_margin_box_malformed_border_is_surfaced()
+    {
+        // An un-expandable border value (`1bananas` isn't a width) is kept as a raw marker by the
+        // parser and surfaced via the CSS diagnostic path (review P2) — not silently dropped — while
+        // the box still paints its text (default, no border).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content:\"AB\"; border: 1bananas solid red } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
+        Assert.DoesNotContain("1 0 0 rg", Latin1(result.Pdf));   // the malformed border paints nothing
+    }
+
+    [Fact]
+    public void Page_margin_box_border_inherit_is_not_diagnosed()
+    {
+        // `border: inherit` is a valid CSS-wide keyword (now expanded, Copilot review) — it must NOT
+        // surface the invalid-border diagnostic; it resolves to no border (the parent declares none).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content:\"AB\"; border: inherit } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
+    }
+
     [Fact]
     public void Page_margin_box_font_shorthand_sets_the_size(/* Task 21 cycle 6 */)
     {

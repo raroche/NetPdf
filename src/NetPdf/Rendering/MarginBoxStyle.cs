@@ -9,6 +9,7 @@ using NetPdf.Css.ComputedValues;
 using NetPdf.Css.ComputedValues.PropertyResolvers;
 using NetPdf.Css.Diagnostics;
 using NetPdf.Css.Parser;
+using NetPdf.Css.Parser.Preprocessing;
 using NetPdf.Css.Properties;
 using NetPdf.Layout.Layouters;
 
@@ -37,15 +38,17 @@ namespace NetPdf.Rendering;
 /// <para>
 /// <b>Supported properties (a WHITELIST).</b> The inherited <c>font-family</c> / <c>font-size</c> /
 /// <c>font-weight</c> / <c>font-style</c> / <c>color</c> are materialized + inherited. The
-/// non-inherited <c>background-color</c> (cycle 8) is materialized from the box's OWN declarations
-/// (the painter fills a band behind the box's content). <c>text-align</c> / <c>vertical-align</c> are
-/// NOT inherited here — alignment is read from the box's OWN declarations
-/// (<see cref="HorizontalAlignFactor"/> / <see cref="VerticalAlignFactor"/>) and overrides the box's
-/// name-derived default; inheriting the page/root's UA-default <c>text-align: start</c> would
-/// otherwise spuriously override the name-derived centering (post-PR-#134 review). Other box-model
-/// declarations (<c>padding</c> / <c>border</c> / background <i>images</i> / …) are deliberately
-/// IGNORED — the painter derives content origin from the box's border + padding, so materializing
-/// them would shift (or paint behind) the margin-box text.
+/// non-inherited <c>background-color</c> (cycle 8) and the 12 <c>border-*-width</c> / <c>-style</c> /
+/// <c>-color</c> longhands (border cycle) are materialized from the box's OWN declarations — the
+/// painter fills a band behind the box's content and strokes the border around its region.
+/// <c>text-align</c> / <c>vertical-align</c> are NOT inherited here — alignment is read from the
+/// box's OWN declarations (<see cref="HorizontalAlignFactor"/> / <see cref="VerticalAlignFactor"/>)
+/// and overrides the box's name-derived default; inheriting the page/root's UA-default
+/// <c>text-align: start</c> would otherwise spuriously override the name-derived centering
+/// (post-PR-#134 review). The remaining box-model declarations (<c>padding</c>, the
+/// <c>border-width</c>/<c>-style</c>/<c>-color</c> box shorthands, background <i>images</i>, …) stay
+/// deferred — materializing <c>padding</c> would shift the painter's content origin and move the
+/// margin-box text (the border content-origin inset is a tracked follow-up, deferrals.md).
 /// </para>
 /// <para>
 /// <b>Relative font (cycle 7).</b> A parent-relative <c>font-size</c> (<c>em</c> / <c>ex</c> /
@@ -80,11 +83,17 @@ internal static class MarginBoxStyle
     private static readonly FrozenSet<PropertyId> InheritedStyleIdSet = SupportedStyleIds.ToFrozenSet();
 
     /// <summary>The longhands a margin box CASCADES from its OWN declarations: the inherited set plus
-    /// the non-inherited <c>background-color</c> (cycle 8 — paints a band behind the box's content).
-    /// <c>background-color</c> is materialized onto the style but deliberately left OUT of the
-    /// inheritance copy above, since it is not a CSS inherited property.</summary>
+    /// the non-inherited <c>background-color</c> (cycle 8 — paints a band behind the box's content)
+    /// and the 12 <c>border-*-width</c> / <c>-style</c> / <c>-color</c> longhands (border cycle —
+    /// painted around the box region). These are materialized onto the style but deliberately left
+    /// OUT of the inheritance copy above, since they are not CSS inherited properties.</summary>
     private static readonly ImmutableArray<PropertyId> CascadedStyleIds =
-        SupportedStyleIds.Add(PropertyId.BackgroundColor);
+        SupportedStyleIds.AddRange(
+            PropertyId.BackgroundColor,
+            PropertyId.BorderTopWidth, PropertyId.BorderTopStyle, PropertyId.BorderTopColor,
+            PropertyId.BorderRightWidth, PropertyId.BorderRightStyle, PropertyId.BorderRightColor,
+            PropertyId.BorderBottomWidth, PropertyId.BorderBottomStyle, PropertyId.BorderBottomColor,
+            PropertyId.BorderLeftWidth, PropertyId.BorderLeftStyle, PropertyId.BorderLeftColor);
 
     private static readonly FrozenSet<PropertyId> CascadedStyleIdSet = CascadedStyleIds.ToFrozenSet();
 
@@ -128,6 +137,22 @@ internal static class MarginBoxStyle
                         $"Could not apply 'font: {DiagnosticTextSanitizer.Sanitize(decl.Value.RawText)}' in an " +
                         "@page margin box — the value is a system-font keyword or an unsupported/malformed " +
                         "shorthand; use font-style/font-weight/font-size/font-family longhands.",
+                        CssDiagnosticSeverity.Warning,
+                        decl.Location));
+                    continue;
+                }
+                // A `border` / `border-<side>` shorthand reaching here is likewise one
+                // CssParserAdapter.ParseRawDeclarations could NOT expand (a malformed/invalid value —
+                // a valid one is expanded to the border-* longhands upstream, and AngleSharp expands
+                // page-context borders, so a surviving shorthand is by construction rejected). Surface
+                // it (review P2) instead of silently dropping, then skip (a shorthand isn't a longhand).
+                if (BorderShorthandExpander.IsBorderShorthand(decl.Property))
+                {
+                    diagnostics?.Emit(new CssDiagnostic(
+                        CssDiagnosticCodes.CssPropertyValueInvalid001,
+                        $"Could not apply '{decl.Property}: {DiagnosticTextSanitizer.Sanitize(decl.Value.RawText)}' in an " +
+                        "@page margin box — the value is an unsupported or malformed border shorthand " +
+                        "(<line-width> || <line-style> || <color>); use the border-<side>-width/-style/-color longhands.",
                         CssDiagnosticSeverity.Warning,
                         decl.Location));
                     continue;

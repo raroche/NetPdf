@@ -121,12 +121,13 @@ public sealed class MarginBoxStyleTests
     [Fact]
     public void Build_ignores_unsupported_properties()
     {
-        // padding/border affect the painter's content origin; they must NOT be materialized this
-        // cycle, so they can't shift margin-box text. Supported props still resolve.
+        // padding is NOT materialized yet (deferred — it would shift the painter's content origin),
+        // so it can't move margin-box text. Supported props — color, and now the border-* longhands
+        // (border cycle) — still resolve.
         var style = MarginBoxStyle.Build(ImmutableArray.Create(
             Decl("padding-left", "50px"), Decl("border-top-width", "5px"), Decl("color", "red")));
-        Assert.False(style.IsSet(PropertyId.PaddingLeft));
-        Assert.False(style.IsSet(PropertyId.BorderTopWidth));
+        Assert.False(style.IsSet(PropertyId.PaddingLeft));    // padding still deferred
+        Assert.True(style.IsSet(PropertyId.BorderTopWidth));  // border now materialized
         Assert.True(style.IsSet(PropertyId.Color));
     }
 
@@ -334,6 +335,28 @@ public sealed class MarginBoxStyleTests
         Assert.Equal(0xFFFF0000u, argb);
     }
 
+    // ---- border (border cycle) ----
+
+    [Fact]
+    public void Build_resolves_declared_border_longhands()
+    {
+        var style = MarginBoxStyle.Build(ImmutableArray.Create(
+            Decl("border-top-style", "solid"), Decl("border-top-width", "2px"), Decl("border-top-color", "#ff0000")));
+        Assert.True(style.IsSet(PropertyId.BorderTopStyle));
+        Assert.True(style.IsSet(PropertyId.BorderTopWidth));
+        Assert.True(style.IsSet(PropertyId.BorderTopColor));
+    }
+
+    [Fact]
+    public void Build_does_not_inherit_border()
+    {
+        // border-* are NOT CSS inherited properties — a box that declares none doesn't pick up the
+        // parent's border (only the font-*/color whitelist inherits).
+        var parent = MarginBoxStyle.Build(ImmutableArray.Create(Decl("border-top-style", "solid")));
+        var child = MarginBoxStyle.Build(ImmutableArray<CssDeclaration>.Empty, parent);
+        Assert.False(child.IsSet(PropertyId.BorderTopStyle));
+    }
+
     // ---- rejected `font` shorthand marker (review #3) ----
 
     [Theory]
@@ -360,6 +383,39 @@ public sealed class MarginBoxStyleTests
         // A normal supported declaration emits no font-shorthand diagnostic (no false positives).
         var sink = new CapturingSink();
         MarginBoxStyle.Build(ImmutableArray.Create(Decl("color", "#ff0000")), parentStyle: null, diagnostics: sink);
+        Assert.Empty(sink.Diagnostics);
+    }
+
+    // ---- rejected `border` shorthand marker (review P2) ----
+
+    [Theory]
+    [InlineData("border", "1bananas solid red")]      // a malformed width → un-expandable
+    [InlineData("border-top", "1px solid red blue")]  // too many components → un-expandable
+    public void Build_surfaces_a_rejected_border_shorthand_and_applies_no_border(string property, string value)
+    {
+        // A `border` / `border-<side>` declaration reaching Build is one CssParserAdapter could NOT
+        // expand (it keeps the raw shorthand as a marker — a valid one becomes border-* longhands).
+        // Build surfaces it via the diagnostics sink instead of silently dropping, and materializes
+        // NONE of it (no border longhand is set).
+        var sink = new CapturingSink();
+        var style = MarginBoxStyle.Build(
+            ImmutableArray.Create(Decl(property, value)), parentStyle: null, diagnostics: sink);
+
+        Assert.Contains(sink.Diagnostics, d => d.Code == CssDiagnosticCodes.CssPropertyValueInvalid001);
+        Assert.False(style.IsSet(PropertyId.BorderTopStyle));
+        Assert.False(style.IsSet(PropertyId.BorderTopWidth));
+        Assert.False(style.IsSet(PropertyId.BorderTopColor));
+    }
+
+    [Fact]
+    public void Build_does_not_diagnose_expanded_border_longhands()
+    {
+        // The expanded longhands (what CssParserAdapter actually emits for a VALID `border`) resolve
+        // cleanly with NO invalid-value diagnostic — only an un-expandable raw shorthand is a marker.
+        var sink = new CapturingSink();
+        MarginBoxStyle.Build(ImmutableArray.Create(
+            Decl("border-top-style", "solid"), Decl("border-top-width", "2px"), Decl("border-top-color", "red")),
+            parentStyle: null, diagnostics: sink);
         Assert.Empty(sink.Diagnostics);
     }
 

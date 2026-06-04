@@ -102,15 +102,39 @@ internal static class FragmentPainter
                 PaintBackground(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx, currentColorArgb);
 
             // Borders (foreground — always painted regardless of PrintBackgrounds).
-            PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Top, leftPx, topPx, widthPx, heightPx,
-                currentColorArgb, diagnostics, ref borderStyleApproximationReported);
-            PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Right, leftPx, topPx, widthPx, heightPx,
-                currentColorArgb, diagnostics, ref borderStyleApproximationReported);
-            PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Bottom, leftPx, topPx, widthPx, heightPx,
-                currentColorArgb, diagnostics, ref borderStyleApproximationReported);
-            PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Left, leftPx, topPx, widthPx, heightPx,
+            PaintBorders(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx,
                 currentColorArgb, diagnostics, ref borderStyleApproximationReported);
         }
+    }
+
+    /// <summary>Paint all four border edges of a box (top / right / bottom / left) declared on
+    /// <paramref name="style"/>, around the box rect (<paramref name="leftPx"/> /
+    /// <paramref name="topPx"/> / <paramref name="widthPx"/> / <paramref name="heightPx"/>, CSS px,
+    /// page-top origin). Reused by the page-margin-box painter. <paramref name="styleApproximationReported"/>
+    /// is threaded so a non-solid-border-style approximation is diagnosed at most once per render.</summary>
+    internal static void PaintBorders(
+        PdfPage page, ComputedStyle style, double pageHeightPt,
+        double leftPx, double topPx, double widthPx, double heightPx,
+        uint currentColorArgb, IDiagnosticsSink? diagnostics, ref bool styleApproximationReported)
+    {
+        // A zero-area or non-finite border box has no edges to stroke. The body path guards this
+        // upstream (PaintFragments skips width/height <= 0), but the page-margin-box painter forwards
+        // region rects directly, and PageMarginBoxGeometry can yield a zero-width/height band (e.g.
+        // `@page { margin-top: 0 }` → a zero-height top edge, or margins exceeding the page). Without
+        // this, the top/bottom edges would still paint a full-width rectangle around a zero-height box.
+        if (!(widthPx > 0 && heightPx > 0)
+            || !double.IsFinite(leftPx) || !double.IsFinite(topPx)
+            || !double.IsFinite(widthPx) || !double.IsFinite(heightPx))
+            return;
+
+        PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Top, leftPx, topPx, widthPx, heightPx,
+            currentColorArgb, diagnostics, ref styleApproximationReported);
+        PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Right, leftPx, topPx, widthPx, heightPx,
+            currentColorArgb, diagnostics, ref styleApproximationReported);
+        PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Bottom, leftPx, topPx, widthPx, heightPx,
+            currentColorArgb, diagnostics, ref styleApproximationReported);
+        PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Left, leftPx, topPx, widthPx, heightPx,
+            currentColorArgb, diagnostics, ref styleApproximationReported);
     }
 
     private static void PaintBackground(

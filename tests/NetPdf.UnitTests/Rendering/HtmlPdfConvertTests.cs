@@ -325,7 +325,7 @@ public sealed class HtmlPdfConvertTests
         var body = "<head></head><body><div style=\"width:50px;height:50px;background:#000\"></div></body>";
         var r = FirstRect(Latin1(HtmlPdf.Convert(
             "<!DOCTYPE html><html><head><style>@page { margin: 0 } @page :first { margin: 1in }</style></head>" + body + "</html>")));
-        Assert.Equal(72.0, r.X, 0);   // left content edge inset by the :first 1in margin (not 0)
+        Assert.Equal(72.0, r.X, 1);   // left content edge inset by the :first 1in margin (not 0)
     }
 
     [Fact]

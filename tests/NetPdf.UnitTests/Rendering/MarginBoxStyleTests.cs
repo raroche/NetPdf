@@ -238,9 +238,10 @@ public sealed class MarginBoxStyleTests
     }
 
     [Fact]
-    public void Build_resolves_bolder_font_weight_against_the_parent()
+    public void Build_resolves_bolder_font_weight_against_the_default_when_no_parent()
     {
-        // bolder against the default normal (400) → 700 (CSS Fonts 4 §2.2.1).
+        // No parent → bolder resolves against the initial normal (400) → 700 (CSS Fonts 4 §2.2.1).
+        // (Resolution against a NON-default parent is covered by the theory below.)
         var style = MarginBoxStyle.Build(ImmutableArray.Create(Decl("font-weight", "bolder")));
         Assert.Equal(700, style.ReadFontWeight());
     }
@@ -264,9 +265,10 @@ public sealed class MarginBoxStyleTests
     [Fact]
     public void Build_leaves_rem_font_size_deferred_and_unresolved()
     {
-        // PIN: rem isn't parent-relative (needs the root font-size threaded) → it stays deferred and
-        // the reader falls back to the default (16px), NOT 2 × something.
+        // PIN: rem isn't parent-relative (needs the root font-size threaded) → it stays DEFERRED (the
+        // raw "2rem" is preserved, not unset) and the reader falls back to the default (16px).
         var style = MarginBoxStyle.Build(ImmutableArray.Create(Decl("font-size", "2rem")));
+        Assert.True(style.IsDeferred(PropertyId.FontSize));   // distinguishes "deferred" from "unset"
         Assert.Equal(16, style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16), 3);
     }
 

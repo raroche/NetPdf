@@ -46,12 +46,12 @@ namespace NetPdf.Rendering;
 /// padding, so materializing them would shift (or paint behind) the margin-box text.
 /// </para>
 /// <para>
-/// <b>Relative font (cycle 7).</b> A parent-relative <c>font-size</c> (<c>em</c> / <c>%</c> /
-/// <c>larger</c> / <c>smaller</c>) or <c>font-weight</c> (<c>bolder</c> / <c>lighter</c>) the dispatch
-/// leaves deferred is resolved against the inherited parent via <see cref="DeferredFontResolver"/>
-/// after the cascade — so <c>@page { font-size: 20px; @bottom-center { font-size: 1.5em } }</c> →
-/// 30px. (A non-parent-relative form — <c>rem</c> / viewport / container units — stays deferred and
-/// falls back to the reader default, a documented gap.)
+/// <b>Relative font (cycle 7).</b> A parent-relative <c>font-size</c> (<c>em</c> / <c>ex</c> /
+/// <c>ch</c> / <c>%</c> / <c>larger</c> / <c>smaller</c>) or <c>font-weight</c> (<c>bolder</c> /
+/// <c>lighter</c>) that the dispatch leaves deferred is resolved against the inherited parent via
+/// <see cref="DeferredFontResolver"/> after the cascade — so <c>@page { font-size: 20px;
+/// @bottom-center { font-size: 1.5em } }</c> → 30px. (A non-parent-relative form — <c>rem</c> /
+/// viewport / container units — stays deferred and falls back to the reader default, a documented gap.)
 /// </para>
 /// <para>
 /// <b>Deferred (later cycles, deferrals.md#layout-to-pdf-pipeline).</b> <c>rem</c> / viewport-relative
@@ -169,7 +169,8 @@ internal static class MarginBoxStyle
             }
         }
 
-        // Resolve a parent-relative font-size/weight the dispatch left DEFERRED (em/%/larger/bolder)
+        // Resolve a parent-relative font-size/weight the dispatch left DEFERRED (em/ex/ch/%/larger/
+        // smaller font-size, bolder/lighter weight; see DeferredFontResolver)
         // against the inherited parent — Task 21 cycle 7. Runs after the cascade (the deferred raw is
         // on the style now) and after inheritance copied the parent's resolved px down, so `@page {
         // font-size: 20px; @bottom-center { font-size: 1.5em } }` → 30px. A non-parent-relative form

@@ -180,13 +180,15 @@ the BORDER-box origin and shrinking the alignment extent to the content box, sin
 Post-PR-#141 review: NON-ABSOLUTE padding (a `%` or a font-/viewport-relative `1em`/`5vw`) is now
 diagnosed + dropped — `MarginBoxStyle` drops any declared padding that didn't materialize to a
 `LengthPx` slot (no silent zeroing) — plus vertical-axis inset regression tests. **Cycle 13 — the
-`border-width`/`-style`/`-color` box shorthands (in progress, branch
-`phase-3-task-21-margin-box-border-box-shorthands`):** the three 1–4-value border BOX shorthands
-distribute across the four edges. New `BorderBoxShorthandExpander` (`border-width`/`-style`/`-color` →
-the per-edge `border-{side}-{width,style,color}` longhands; the 1–4-value box→edge mapping extracted
-into the shared `CssShorthandHelpers.ExpandBoxEdges`, which `PaddingShorthandExpander` now also uses).
-The 12 longhands are already in `MarginBoxStyle.CascadedStyleIds`, so they paint (cycle 11) + inset the
-text (cycle 12) with NO painter change; a marker diagnostic surfaces an un-expandable one. `border-radius`
+`border-width`/`-style`/`-color` box shorthands (merged in PR #142, incl. its review):** the three
+1–4-value border BOX shorthands distribute across the four edges. New `BorderBoxShorthandExpander`
+(`border-width`/`-style`/`-color` → the per-edge `border-{side}-{width,style,color}` longhands; the
+1–4-value box→edge mapping extracted into the shared `CssShorthandHelpers.ExpandBoxEdges`, which
+`PaddingShorthandExpander` now also uses). The 12 longhands are already in
+`MarginBoxStyle.CascadedStyleIds`, so they paint (cycle 11) + inset the text (cycle 12) with NO painter
+change; a marker diagnostic surfaces an un-expandable one. The post-PR-#142 review (3 P3) cleaned stale
+"deferred" docs, added cascade-order regression tests (shorthand vs longhand by importance + source
+order), and broadened expander coverage (3-value color, CSS-wide across all three). `border-radius`
 + background images + the §5.3 sizing stay deferred. Next (Task 21 remaining, in order):
 the §5.3 three-box-per-edge sizing / `@page :left`/`:right`/`:blank` + named pages (multi-page-gated),
 then Task 22 (`string-set`/`string()` running headers). Blocked (see `deferrals.md`):

@@ -10,8 +10,12 @@ namespace NetPdf.Css.Parser.Preprocessing;
 /// <summary>
 /// Per Phase 3 Task 15 L17 — shared helpers used by the shorthand
 /// expanders (<see cref="FlexShorthandExpander"/>,
-/// <see cref="FlexFlowShorthandExpander"/>) for value pre-normalization
-/// per CSS Syntax §4.
+/// <see cref="FlexFlowShorthandExpander"/>, and the <c>@page</c> margin-box
+/// <see cref="BorderShorthandExpander"/> / <see cref="BorderBoxShorthandExpander"/> /
+/// <see cref="PaddingShorthandExpander"/>) for value pre-normalization
+/// per CSS Syntax §4: comment stripping (<see cref="StripBlockComments"/>),
+/// paren-aware top-level tokenization (<see cref="SplitTopLevel"/>), and the
+/// 1–4-value box→edge mapping (<see cref="ExpandBoxEdges"/>).
 /// </summary>
 internal static class CssShorthandHelpers
 {

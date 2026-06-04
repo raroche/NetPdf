@@ -33,10 +33,11 @@ namespace NetPdf.Css.Parser.Preprocessing;
 /// <c>MarginBoxStyle</c> to diagnose) — no partial border survives.
 /// </para>
 /// <para>
-/// <b>Deferred:</b> the <c>border-width</c> / <c>border-style</c> / <c>border-color</c> 1–4-value box
-/// shorthands and <c>border-radius</c> — tracked follow-ups (deferrals.md). (The content-origin inset
-/// — the margin-box text pushed in by the border width — ships in the padding cycle via
-/// <c>PageMarginBoxPainter</c>.)
+/// <b>Scope:</b> this expander handles only <c>border</c> / <c>border-&lt;side&gt;</c>. The
+/// <c>border-width</c> / <c>border-style</c> / <c>border-color</c> 1–4-value box shorthands are handled
+/// by <see cref="BorderBoxShorthandExpander"/> (border-box cycle), and the content-origin inset (the
+/// margin-box text pushed in by the border width) ships in the padding cycle via
+/// <c>PageMarginBoxPainter</c>. <c>border-radius</c> is a tracked follow-up (deferrals.md).
 /// </para>
 /// </remarks>
 internal static class BorderShorthandExpander

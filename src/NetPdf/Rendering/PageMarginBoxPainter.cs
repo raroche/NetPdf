@@ -53,8 +53,9 @@ namespace NetPdf.Rendering;
 /// the 1–4-value box shorthand + per-side longhands) insets the text content origin, together with the
 /// used border-width per side (CSS box model). Unspecified properties fall back to the reader defaults
 /// (16px / default family / black / transparent / no border / no padding / name-derived alignment).
-/// The <c>border-width</c>/<c>-style</c>/<c>-color</c> box shorthands, <c>border-radius</c>, and
-/// background images are tracked follow-ups (deferrals.md#layout-to-pdf-pipeline).
+/// The <c>border-width</c>/<c>-style</c>/<c>-color</c> box shorthands distribute across the edges too
+/// (border-box cycle); <c>border-radius</c> + background images are tracked follow-ups
+/// (deferrals.md#layout-to-pdf-pipeline).
 /// </para>
 /// <para>
 /// <b>Content scope.</b> Literal-string + <c>attr()</c> content, plus <c>counter(page)</c> /

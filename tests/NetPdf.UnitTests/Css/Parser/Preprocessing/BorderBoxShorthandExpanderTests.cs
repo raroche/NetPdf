@@ -52,6 +52,16 @@ public sealed class BorderBoxShorthandExpanderTests
     }
 
     [Fact]
+    public void Border_color_three_values_are_top_horizontal_bottom()
+    {
+        var d = Expand("border-color", "red green blue");
+        Assert.Equal("red", d["border-top-color"]);
+        Assert.Equal("green", d["border-right-color"]);
+        Assert.Equal("blue", d["border-bottom-color"]);
+        Assert.Equal("green", d["border-left-color"]);   // 3-value: left mirrors right
+    }
+
+    [Fact]
     public void Border_color_keeps_a_functional_color_token_intact()
     {
         // Paren-aware tokenization: rgb(0, 128, 0) stays one token in a multi-value box list.
@@ -71,15 +81,20 @@ public sealed class BorderBoxShorthandExpanderTests
     }
 
     [Theory]
-    [InlineData("inherit")]
-    [InlineData("initial")]
-    [InlineData("unset")]
-    public void Border_box_css_wide_keyword_applies_to_every_longhand(string keyword)
+    [InlineData("border-width", "width", "inherit")]
+    [InlineData("border-width", "width", "unset")]
+    [InlineData("border-style", "style", "initial")]
+    [InlineData("border-style", "style", "revert")]
+    [InlineData("border-color", "color", "inherit")]
+    [InlineData("border-color", "color", "unset")]
+    public void Border_box_css_wide_keyword_applies_to_every_longhand(string property, string suffix, string keyword)
     {
-        var d = Expand("border-width", keyword);
+        // A whole-value CSS-wide keyword maps to all four per-edge longhands of the property — across
+        // all three box shorthands (width / style / color).
+        var d = Expand(property, keyword);
         Assert.Equal(4, d.Count);
         foreach (var edge in new[] { "top", "right", "bottom", "left" })
-            Assert.Equal(keyword, d[$"border-{edge}-width"]);
+            Assert.Equal(keyword, d[$"border-{edge}-{suffix}"]);
     }
 
     [Theory]

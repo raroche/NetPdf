@@ -1358,6 +1358,41 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Page_margin_box_border_width_box_shorthand_cascades_with_a_longhand()
+    {
+        // The box shorthand expands to per-edge longhands, so it cascades against an explicit
+        // border-left-width by importance then source order. Observed via the start-aligned text inset
+        // (border-left-width drives the @top-left content-origin shift): 4px → ~3pt, 40px → ~30pt.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double LeftX(string decls) => FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-left { content:\"AB\"; border-style: solid; " + decls +
+            " } }</style></head><body></body></html>", opts))).X;
+
+        var shorthandLast = LeftX("border-left-width: 40px; border-width: 4px");      // later shorthand wins → 4px
+        var longhandLast = LeftX("border-width: 4px; border-left-width: 40px");        // later longhand wins → 40px
+        var importantShorthand = LeftX("border-width: 4px !important; border-left-width: 40px"); // !important wins → 4px
+
+        Assert.True(longhandLast > shorthandLast + 20,
+            $"later longhand (40px) should beat the earlier shorthand (4px): short={shorthandLast} long={longhandLast}");
+        Assert.True(importantShorthand < longhandLast - 20,
+            $"an !important shorthand should beat a later normal longhand: imp={importantShorthand} long={longhandLast}");
+        Assert.InRange(importantShorthand - shorthandLast, -2.0, 2.0);   // both resolve left=4px
+    }
+
+    [Fact]
+    public void Page_margin_box_border_color_box_shorthand_cascades_with_a_longhand()
+    {
+        // border-color: red expands to all four edges, then a later border-left-color: blue overrides
+        // the left edge — so both colors paint (top/right/bottom red, left blue).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; border-style: solid; border-width: 2px; border-color: red; border-left-color: blue } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Contains("1 0 0 rg", pdf);   // red (top/right/bottom)
+        Assert.Contains("0 0 1 rg", pdf);   // blue (the left-edge longhand override)
+    }
+
+    [Fact]
     public void Page_margin_box_font_shorthand_sets_the_size(/* Task 21 cycle 6 */)
     {
         // The `font` shorthand is expanded into longhands for margin-box bodies (AngleSharp never

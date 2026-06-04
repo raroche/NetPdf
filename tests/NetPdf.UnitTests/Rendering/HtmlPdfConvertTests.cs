@@ -775,15 +775,26 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
-    public void Page_margin_box_declared_text_align_overrides_the_name_default()
+    public void Page_margin_box_declared_text_align_does_not_move_the_box_placement()
     {
-        // @top-center defaults to centered; text-align: left pins the line to the band's left edge
-        // (the left margin = 96px → 72pt on A4), distinctly left of the centered position.
-        var pdf = Latin1(HtmlPdf.Convert(
+        // §5.3.2.4: a margin box is placed by its NAME-DERIVED role (@top-center → centered),
+        // independent of a declared text-align. `text-align: left` must NOT pull the centered box's
+        // line to the band's ~72pt left edge (the pre-fix behavior) — the line stays centered, in the
+        // same place as the box with no declared text-align (a shrink-to-fit box is content-sized, so
+        // text-align has no room to act). [Was: the old full-band model where text-align positioned the
+        // line within the whole band, so `left` pinned it to the 72pt edge.]
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var withLeftPdf = Latin1(HtmlPdf.Convert(
             "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"AB\"; text-align: left } }</style>" +
-            "</head><body></body></html>",
-            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
-        Assert.InRange(FirstTd(pdf).X, 71.0, 73.0);   // ≈ 72pt left content edge, not centered
+            "</head><body></body></html>", opts));
+        var withoutAlignX = FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"AB\" } }</style>" +
+            "</head><body></body></html>", opts))).X;
+        var withLeftX = FirstTd(withLeftPdf).X;
+        var pageCenterX = MediaBox(withLeftPdf).W / 2.0;
+        Assert.Equal(withoutAlignX, withLeftX, 1);                  // text-align: left didn't move the centered box
+        Assert.True(withLeftX > 150, $"line must not be pinned to the ~72pt left edge: {withLeftX}pt");
+        Assert.InRange(withLeftX, pageCenterX - 30, pageCenterX);   // centered (line starts just left of center)
     }
 
     [Fact]
@@ -1025,13 +1036,20 @@ public sealed class HtmlPdfConvertTests
     [Fact]
     public void Page_margin_box_text_align_initial_is_start()
     {
-        // text-align: initial → start (the property's initial value), overriding @top-center's
-        // name-derived centering → the line sits at the left content edge.
-        var pdf = Latin1(HtmlPdf.Convert(
-            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"AB\"; text-align: initial } }</style>" +
-            "</head><body></body></html>",
-            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
-        Assert.InRange(FirstTd(pdf).X, 71.0, 73.0);   // start → 72pt left edge
+        // text-align: initial resolves to `start` (the property's initial value), NOT ignored. Proven
+        // on a CORNER box, whose content area isn't shrink-to-fit (§5.3 varies only the edge boxes), so
+        // its content alignment is observable: `initial`→start pins "AB" to the corner's left edge
+        // (x≈0), distinct from the name-derived centering it would keep if `initial` were ignored.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var initialX = FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-left-corner { content: \"AB\"; text-align: initial } }</style>" +
+            "</head><body></body></html>", opts))).X;
+        var defaultX = FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-left-corner { content: \"AB\" } }</style>" +
+            "</head><body></body></html>", opts))).X;
+        Assert.True(initialX < defaultX - 10,
+            $"initial→start should left-align in the corner (got {initialX}pt vs name-centered {defaultX}pt)");
+        Assert.InRange(initialX, 0.0, 3.0);   // flush to the corner's left edge (x≈0)
     }
 
     [Fact]
@@ -1136,10 +1154,11 @@ public sealed class HtmlPdfConvertTests
     // ---- background-color (Task 21 cycle 8) ----
 
     [Fact]
-    public void Page_margin_box_background_color_fills_the_region_band()
+    public void Page_margin_box_background_color_fills_the_band_height()
     {
-        // @bottom-center { background-color: red } → a red rectangle filling the FULL bottom-margin
-        // band (behind the footer text), not just the text's bounding box.
+        // @bottom-center { background-color: red } → a red rectangle spanning the bottom-margin band's
+        // full HEIGHT (the §5.3 FIXED axis for a bottom box) behind the footer text. The WIDTH is the
+        // §5.3 VARIABLE axis — content-sized (see the shrink-to-fit tests below), not asserted here.
         var pdf = Latin1(HtmlPdf.Convert(
             "<!DOCTYPE html><html><head><style>@page { @bottom-center { content:\"AB\"; background-color: red } }</style>" +
             "</head><body></body></html>",
@@ -1390,6 +1409,85 @@ public sealed class HtmlPdfConvertTests
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
         Assert.Contains("1 0 0 rg", pdf);   // red (top/right/bottom)
         Assert.Contains("0 0 1 rg", pdf);   // blue (the left-edge longhand override)
+    }
+
+    // ---- §5.3 three-box-per-edge sizing: shrink-to-fit (Task 21) ----
+
+    [Fact]
+    public void Page_margin_box_background_shrinks_to_fit_content_width()
+    {
+        // §5.3 (first cut): a top/bottom edge box's background covers its CONTENT width along the
+        // variable axis, not the whole band — so a wider content gives a wider band (was full-band in
+        // the cycle-8 model). The A/B-only SyntheticFont makes "ABABABABAB" ~5× the width of "AB".
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double BgWidth(string content) => FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"" + content + "\"; background-color: red } }</style>" +
+            "</head><body></body></html>", opts))).W;
+        var narrow = BgWidth("AB");
+        var wide = BgWidth("ABABABABAB");
+        Assert.True(wide > narrow + 20, $"wider content → wider background: narrow={narrow} wide={wide}");
+        Assert.True(narrow < 200, $"a 2-glyph background should be content-sized, not the ~468pt full band: {narrow}pt");
+    }
+
+    [Fact]
+    public void Page_margin_box_empty_content_keeps_the_full_band_background()
+    {
+        // An empty content:"" box has no content size → it keeps the FULL band (the cycle-8 decorative
+        // band is preserved; explicit width is a deferred follow-up).
+        var emptyWidth = FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"\"; background-color: red } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }))).W;
+        Assert.True(emptyWidth > 300, $"an empty box should span the full ~468pt band, got {emptyWidth}pt");
+    }
+
+    [Fact]
+    public void Page_margin_box_left_edge_background_shrinks_to_fit_height()
+    {
+        // A left/right edge box's VARIABLE axis is HEIGHT — its background shrinks to the line height,
+        // not the full margin column (~648pt for Letter minus 1in margins).
+        var h = FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @left-middle { content:\"AB\"; background-color: red } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }))).H;
+        Assert.True(h < 60, $"a single-line left box should shrink to ~line height, not the full column: {h}pt");
+    }
+
+    [Fact]
+    public void Page_margin_box_top_center_background_stays_centered_under_text_align_left()
+    {
+        // §5.3.2.4: the shrunk box's background rect is placed by the box's NAME-DERIVED role, NOT the
+        // declared text-align — so @top-center { text-align: left } keeps the band horizontally
+        // CENTERED (pre-fix the box slid to the band's left edge). The rect is identical to the same
+        // centered box with no declared text-align, and its center sits at the page's horizontal center.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        (double X, double Y, double W, double H) Band(string decls) => FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"" + decls + "; background-color: red } }" +
+            "</style></head><body></body></html>", opts)));
+        var withLeftPdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; text-align: left; background-color: red } }" +
+            "</style></head><body></body></html>", opts));
+        var withLeft = FirstRect(withLeftPdf);
+        var centered = Band("");
+        Assert.Equal(centered.X, withLeft.X, 1);    // text-align: left did NOT move the box's background rect
+        var pageCenterX = MediaBox(withLeftPdf).W / 2.0;
+        Assert.InRange(withLeft.X + withLeft.W / 2.0, pageCenterX - 1, pageCenterX + 1);   // band centered, not at the left edge
+    }
+
+    [Fact]
+    public void Page_margin_box_left_middle_background_stays_vertically_centered_under_vertical_align_top()
+    {
+        // §5.3.2.4: a left/right box is placed by its NAME-DERIVED role too — @left-middle stays
+        // vertically CENTERED in its column regardless of a declared vertical-align: top (pre-fix the
+        // box slid to the top of the column). The rect's vertical center must sit at the page's
+        // vertical center (margins are symmetric, so the column is centered on the page).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @left-middle { content:\"AB\"; vertical-align: top; background-color: red } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        var r = FirstRect(pdf);
+        var pageCenterY = MediaBox(pdf).H / 2.0;
+        Assert.InRange(r.Y + r.H / 2.0, pageCenterY - 1, pageCenterY + 1);   // column-centered despite vertical-align: top
     }
 
     [Fact]

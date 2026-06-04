@@ -47,6 +47,24 @@ public sealed class PageMarginBoxGeometryTests
         Assert.Equal(vAlign, r.VAlign, 3);
     }
 
+    [Fact]
+    public void TryGetRegion_assigns_the_variable_axis()
+    {
+        // The §5.3 variable axis: top/bottom edges shrink WIDTH, left/right shrink HEIGHT, corners
+        // neither. (An internal-enum theory param can't sit on a public xUnit method, so assert inline.)
+        PageMarginBoxGeometry.MarginBoxAxis Axis(string name)
+        {
+            Assert.True(PageMarginBoxGeometry.TryGetRegion(name, PageW, PageH, MTop, MRight, MBottom, MLeft, out var r));
+            return r.VariableAxis;
+        }
+        Assert.Equal(PageMarginBoxGeometry.MarginBoxAxis.Horizontal, Axis("top-center"));
+        Assert.Equal(PageMarginBoxGeometry.MarginBoxAxis.Horizontal, Axis("bottom-left"));
+        Assert.Equal(PageMarginBoxGeometry.MarginBoxAxis.Vertical, Axis("left-middle"));
+        Assert.Equal(PageMarginBoxGeometry.MarginBoxAxis.Vertical, Axis("right-bottom"));
+        Assert.Equal(PageMarginBoxGeometry.MarginBoxAxis.None, Axis("top-left-corner"));
+        Assert.Equal(PageMarginBoxGeometry.MarginBoxAxis.None, Axis("bottom-right-corner"));
+    }
+
     [Theory]
     [InlineData("middle-center")]   // not a CSS Page 3 §6.4 box
     [InlineData("")]

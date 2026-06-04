@@ -43,18 +43,19 @@ namespace NetPdf.Rendering;
 /// <b>Style (cycles 4–8 + border + padding).</b> The box's declared <c>font-family</c> /
 /// <c>font-size</c> / <c>font-weight</c> / <c>font-style</c> / <c>color</c> flow through the shaper +
 /// painter (inherited along root → page context → box; relative sizes + the <c>font</c> shorthand
-/// resolved); a declared <c>text-align</c> / <c>vertical-align</c> overrides the box's name-derived
-/// alignment. A declared <c>background-color</c> (cycle 8, non-inherited) fills a band over the box's
-/// full region behind the content — collected as a <see cref="MarginBoxBackgroundFill"/>, painted by
+/// resolved); a declared <c>text-align</c> / <c>vertical-align</c> aligns the line WITHIN the box's
+/// content area — the box's PLACEMENT in its edge band stays its §5.3.2.4 name-derived role
+/// (start/center/end). A declared <c>background-color</c> (cycle 8, non-inherited) fills the box's
+/// region behind the content — collected as a <see cref="MarginBoxBackgroundFill"/>, painted by
 /// <see cref="PaintBackgrounds"/>; a declared <c>border</c> (non-inherited, the <c>border</c> /
-/// <c>border-&lt;side&gt;</c> shorthands expanded for margin-box bodies) strokes the box's full
+/// <c>border-&lt;side&gt;</c> shorthands expanded for margin-box bodies) strokes the box's
 /// region — collected as a <see cref="MarginBoxBorder"/>, painted by <see cref="PaintBorders"/> via
 /// the shared <see cref="FragmentPainter.PaintBorders"/>; a declared <c>padding</c> (non-inherited,
 /// the 1–4-value box shorthand + per-side longhands) insets the text content origin, together with the
 /// used border-width per side (CSS box model). Unspecified properties fall back to the reader defaults
 /// (16px / default family / black / transparent / no border / no padding / name-derived alignment).
-/// The <c>border-width</c>/<c>-style</c>/<c>-color</c> box shorthands distribute across the edges too
-/// (border-box cycle); <c>border-radius</c> + background images are tracked follow-ups
+/// The <c>border-width</c>/<c>-style</c>/<c>-color</c> box shorthands distribute across the edges as
+/// well; <c>border-radius</c> + background images are tracked follow-ups
 /// (deferrals.md#layout-to-pdf-pipeline).
 /// </para>
 /// <para>
@@ -160,92 +161,109 @@ internal static class PageMarginBoxPainter
 
             // Per-box style from the box's declared longhands (font-* / color → shaping + fill;
             // background-color + border-* → decoration; padding + border-width → the text content-origin
-            // inset below). The style is box-owned, so the rented instance isn't pooled — a negligible
-            // per-render miss.
+            // inset). The style is box-owned, so the rented instance isn't pooled — a negligible miss.
             var style = MarginBoxStyle.Build(mb.Declarations, pageContextStyle, styleDiagnostics);
 
-            // Background-color (cycle 8): a declared (non-inherited) background-color fills a band over
-            // the box's FULL region, behind the content. `currentcolor` resolves against the box's own
-            // color; transparent (the initial value) or unset paints nothing. Collected BEFORE the text
-            // layout so the band still shows when the text is empty or its font fails to resolve.
             var currentColor = FragmentPainter.TryResolveColor(style.Get(PropertyId.Color), DefaultColorArgb, out var fg)
                 ? fg : DefaultColorArgb;
-            if (FragmentPainter.TryResolveColor(style.Get(PropertyId.BackgroundColor), currentColor, out var bgArgb)
-                && FragmentPainter.Alpha(bgArgb) != 0)
-            {
-                backgrounds.Add(new MarginBoxBackgroundFill(region.X, region.Y, region.Width, region.Height, bgArgb));
-            }
 
-            // Border (border cycle): a declared border strokes the box's FULL region (currentcolor =
-            // the box's own color). Collected with the style (which carries the border-* longhands)
-            // before the text layout, so an empty/failed-font box still shows its border.
-            if (HasBorder(style))
-                borders.Add(new MarginBoxBorder(region.X, region.Y, region.Width, region.Height, style, currentColor));
-
-            // `content: ""` generates the box (CSS Page 3 §6.1: content is not none/normal) — the
-            // band above still paints, but there is no text to lay out, so skip the text fragment
-            // (post-PR-#137 review P2).
-            if (string.IsNullOrEmpty(text)) continue;
-
-            var box = Box.TextRun(string.Empty, style);
-            var lineHeightPx = style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16) * NormalLineHeightFactor;
-
-            InlineLayoutResult inline;
-            try
-            {
-                inline = InlineLayouter.Layout(
-                    sourceTextRuns: new[] { new TextRun(text, style) },
-                    availableInlineSize: availableInlinePx,
-                    resolver: shaper,
-                    scriptIso15924: "Latn",
-                    language: "en",
-                    paragraphDirection: ParagraphDirection.LeftToRight,
-                    whiteSpace: WhiteSpace.NoWrap);
-            }
-            catch (FontResolutionException ex)
-            {
-                // Shaping the margin-box text needs a font; if none resolves (the default
-                // SystemFontResolver path, no bundled fallback yet) degrade to a diagnostic
-                // instead of crashing the render (CLAUDE.md #7) — mirrors the body path.
-                EmitFontUnresolved(diagnostics, mb.Name, ex.Message);
-                continue;
-            }
-            if (inline.Lines.Length == 0) continue;
-
-            // Alignment within the CONTENT box: a text-align / vertical-align DECLARED ON THE BOX
-            // overrides the box's name-derived default (e.g. top-left → start); otherwise keep the
-            // default. Read from the box's own declarations (not the inherited style) so the
-            // page/root's UA-default text-align can't override the name-derived alignment (review).
+            // CONTENT alignment WITHIN the box: a text-align / vertical-align DECLARED ON THE BOX aligns
+            // the line inside the box's content area (read from the box's OWN declarations so the
+            // page/root's UA-default text-align can't leak in); it falls back to the name-derived
+            // default. This is NOT the box's PLACEMENT in the band — that's the §5.3.2.4 name-derived
+            // role (region.HAlign/VAlign), applied below independent of this declared alignment.
             var hAlign = MarginBoxStyle.HorizontalAlignFactor(mb.Declarations) ?? region.HAlign;
             var vAlign = MarginBoxStyle.VerticalAlignFactor(mb.Declarations) ?? region.VAlign;
 
-            // Content box (padding cycle): the text is inset from the region by the used border-width
-            // + padding on each side. TextPainter.CollectFragment ALREADY shifts a fragment's inline
-            // content right/down by the box's border-left/top + padding-left/top (the body path's
-            // border-box → content-box step), so here we only SHRINK the alignment extent to the
-            // content box and place the line at the BORDER-box origin — adding the inset to the
-            // placement here too would DOUBLE it. ReadLengthPxOrZero applies the §4.3 border-width
-            // used-value gate (none/hidden → 0), so the reserved space matches what the painter strokes.
-            // Clamp the content box to >= 0 so an over-large inset (padding/border exceeding the band)
-            // stays finite.
+            // Content-origin insets: the used border-width + padding per side (the §4.3 used-width gate
+            // makes the reserved space match what FragmentPainter strokes; TextPainter then adds the
+            // same inset to land the line in the content box).
             var insetLeftPx = style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth) + style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
             var insetTopPx = style.ReadLengthPxOrZero(PropertyId.BorderTopWidth) + style.ReadLengthPxOrZero(PropertyId.PaddingTop);
             var insetRightPx = style.ReadLengthPxOrZero(PropertyId.BorderRightWidth) + style.ReadLengthPxOrZero(PropertyId.PaddingRight);
             var insetBottomPx = style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth) + style.ReadLengthPxOrZero(PropertyId.PaddingBottom);
-            var contentWidthPx = Math.Max(0, region.Width - insetLeftPx - insetRightPx);
-            var contentHeightPx = Math.Max(0, region.Height - insetTopPx - insetBottomPx);
 
-            // Place + align the line within the content box, expressed at the BORDER-box origin
-            // (region.X/Y); TextPainter adds the border+padding inset to land it in the content box.
+            // Lay out the content line FIRST — its size drives the §5.3 shrink-to-fit box below. An
+            // empty `content: ""` box (CSS Page 3 §6.1: content not none/normal) or one whose font won't
+            // resolve has no content size, so it keeps the FULL band.
+            var lineHeightPx = style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16) * NormalLineHeightFactor;
+            InlineLayoutResult inline = default;
+            var hasLine = false;
+            if (!string.IsNullOrEmpty(text))
+            {
+                try
+                {
+                    var laid = InlineLayouter.Layout(
+                        sourceTextRuns: new[] { new TextRun(text, style) },
+                        availableInlineSize: availableInlinePx, resolver: shaper,
+                        scriptIso15924: "Latn", language: "en",
+                        paragraphDirection: ParagraphDirection.LeftToRight, whiteSpace: WhiteSpace.NoWrap);
+                    if (laid.Lines.Length > 0) { inline = laid; hasLine = true; }
+                }
+                catch (FontResolutionException ex)
+                {
+                    // No font resolves (the default SystemFontResolver, no bundled fallback yet) →
+                    // degrade to a diagnostic instead of crashing (CLAUDE.md #7). The box keeps the full
+                    // band for its decoration (hasLine stays false), but no text fragment is emitted.
+                    EmitFontUnresolved(diagnostics, mb.Name, ex.Message);
+                }
+            }
+
+            // §5.3 three-box-per-edge sizing (first cut): a CONTENT-BEARING edge box SHRINKS to its
+            // border-box content size along the VARIABLE axis (top/bottom edges → width; left/right →
+            // height), so its background/border cover the box rather than the whole band; it's then
+            // positioned in the band by its §5.3.2.4 name-derived ROLE (start/center/end by name, NOT
+            // the declared content alignment). Corner boxes + empty/failed-font boxes keep
+            // the full band (explicit width is deferred — this preserves the cycle-8 decorative band).
+            // The full CSS min/max-content distribution for OVERLAPPING siblings, explicit width/height,
+            // and overflow clipping stay deferred (deferrals.md). Box size is clamped to the band.
+            var boxWidthPx = region.Width;
+            var boxHeightPx = region.Height;
+            if (hasLine)
+            {
+                if (region.VariableAxis == PageMarginBoxGeometry.MarginBoxAxis.Horizontal)
+                    boxWidthPx = Math.Min(region.Width, inline.Lines[0].TotalAdvance + insetLeftPx + insetRightPx);
+                else if (region.VariableAxis == PageMarginBoxGeometry.MarginBoxAxis.Vertical)
+                    boxHeightPx = Math.Min(region.Height, (lineHeightPx * inline.Lines.Length) + insetTopPx + insetBottomPx);
+            }
+            // Place the box in the band by its §5.3.2.4 ROLE (region.HAlign/VAlign — A flush start,
+            // B centered, C flush end, BY NAME), NOT the declared content alignment: e.g. @top-center
+            // stays centered even under `text-align: left`. On the box's FIXED axis it spans the band,
+            // so the leftover term is 0 and this reduces to region.X / region.Y.
+            var boxXPx = region.X + (region.Width - boxWidthPx) * region.HAlign;
+            var boxYPx = region.Y + (region.Height - boxHeightPx) * region.VAlign;
+
+            // Background-color (cycle 8): fills the BOX behind the content. `currentcolor` resolves
+            // against the box's own color; transparent (initial) / unset paints nothing.
+            if (FragmentPainter.TryResolveColor(style.Get(PropertyId.BackgroundColor), currentColor, out var bgArgb)
+                && FragmentPainter.Alpha(bgArgb) != 0)
+            {
+                backgrounds.Add(new MarginBoxBackgroundFill(boxXPx, boxYPx, boxWidthPx, boxHeightPx, bgArgb));
+            }
+
+            // Border (border cycle): strokes the BOX (currentcolor = the box's own color).
+            if (HasBorder(style))
+                borders.Add(new MarginBoxBorder(boxXPx, boxYPx, boxWidthPx, boxHeightPx, style, currentColor));
+
+            if (!hasLine) continue; // empty / failed-font box: decoration only, no text fragment.
+
+            // Place + align the line within the box's content box, at the BORDER-box origin (boxX/boxY);
+            // TextPainter adds the border+padding inset. On the box's VARIABLE axis it's content-sized,
+            // so the content-align term collapses to 0 (the line fills the box); on the FIXED axis the
+            // box spans the band, so the term aligns the line within it (e.g. a top box's line stays
+            // vertically centered). When the box doesn't redefine alignment (hAlign/vAlign equal the
+            // name-derived role), this yields the same line position as the full-band model.
             var lineWidthPx = inline.Lines[0].TotalAdvance;
-            var absLeftPx = region.X + (contentWidthPx - lineWidthPx) * hAlign;
-            var absTopPx = region.Y + (contentHeightPx - lineHeightPx) * vAlign;
+            var contentBoxWidthPx = Math.Max(0, boxWidthPx - insetLeftPx - insetRightPx);
+            var contentBoxHeightPx = Math.Max(0, boxHeightPx - insetTopPx - insetBottomPx);
+            var absLeftPx = boxXPx + (contentBoxWidthPx - lineWidthPx) * hAlign;
+            var absTopPx = boxYPx + (contentBoxHeightPx - lineHeightPx) * vAlign;
 
             fragments.Add(new BoxFragment(
-                Box: box,
+                Box: Box.TextRun(string.Empty, style),
                 InlineOffset: absLeftPx - contentOriginLeftPx,
                 BlockOffset: absTopPx - contentOriginTopPx,
-                InlineSize: contentWidthPx,
+                InlineSize: contentBoxWidthPx,
                 BlockSize: lineHeightPx * inline.Lines.Length,
                 InlineLayout: inline));
         }

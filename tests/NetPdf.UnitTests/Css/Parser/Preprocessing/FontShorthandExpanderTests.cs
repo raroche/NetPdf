@@ -26,6 +26,10 @@ public sealed class FontShorthandExpanderTests
     [InlineData("small-caps 11px monospace", "normal", "normal", "11px", "monospace")] // variant consumed
     [InlineData("0 serif", "normal", "normal", "0", "serif")]                // unitless zero is a valid <length> (Copilot)
     [InlineData("italic/*c*/12pt serif", "italic", "normal", "12pt", "serif")] // CSS comment is whitespace (Copilot)
+    // Relative weight/size survive expansion as DEFERRED longhands — PR135 (shorthand) + PR136
+    // (deferred parent-relative resolution) compose (the dispatch validates `bolder`/`1.5em` as
+    // Deferred, not Invalid, so atomic validation accepts them).
+    [InlineData("bolder 1.5em serif", "normal", "bolder", "1.5em", "serif")]
     public void TryExpand_parses_valid_forms(
         string value, string style, string weight, string size, string family)
     {

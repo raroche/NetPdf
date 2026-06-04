@@ -3,6 +3,7 @@
 
 using System.Collections.Generic;
 using System.Collections.Immutable;
+using NetPdf.Css.ComputedValues;
 using NetPdf.Css.Diagnostics;
 using NetPdf.Css.Parser;
 using NetPdf.Css.Properties;
@@ -203,6 +204,72 @@ public sealed class MarginBoxStyleTests
         // (keep the name-derived default).
         Assert.Equal(0.0, MarginBoxStyle.HorizontalAlignFactor(ImmutableArray.Create(Decl("text-align", "initial"))));
         Assert.Null(MarginBoxStyle.HorizontalAlignFactor(ImmutableArray.Create(Decl("text-align", "inherit"))));
+    }
+
+    // ---- parent-relative font resolution (cycle 7) ----
+
+    [Fact]
+    public void Build_resolves_em_font_size_against_the_default_when_no_parent()
+    {
+        // No parent → the relative em resolves against the initial 16px → 2em = 32px.
+        var style = MarginBoxStyle.Build(ImmutableArray.Create(Decl("font-size", "2em")));
+        Assert.Equal(32, style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16), 3);
+    }
+
+    [Fact]
+    public void Build_resolves_em_font_size_against_the_parent_chain()
+    {
+        // The box's 1.5em resolves against the parent's resolved 20px → 30px (CSS Page 3 chain).
+        var parent = MarginBoxStyle.Build(ImmutableArray.Create(Decl("font-size", "20px")));
+        var child = MarginBoxStyle.Build(ImmutableArray.Create(Decl("font-size", "1.5em")), parent);
+        Assert.Equal(30, child.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16), 3);
+    }
+
+    [Theory]
+    [InlineData("larger", 19.2)]    // 16 × 1.2
+    [InlineData("smaller", 16.0 / 1.2)]
+    [InlineData("150%", 24.0)]      // 16 × 1.5
+    [InlineData("4ex", 32.0)]       // ex ≈ 0.5em → 16 × 4 × 0.5 (CSS Values §6.1.2 approximation)
+    [InlineData("4ch", 32.0)]       // ch ≈ 0.5em → 16 × 4 × 0.5
+    public void Build_resolves_relative_size_keywords_and_percent(string value, double expectedPx)
+    {
+        var style = MarginBoxStyle.Build(ImmutableArray.Create(Decl("font-size", value)));
+        Assert.Equal(expectedPx, style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16), 3);
+    }
+
+    [Fact]
+    public void Build_resolves_bolder_font_weight_against_the_default_when_no_parent()
+    {
+        // No parent → bolder resolves against the initial normal (400) → 700 (CSS Fonts 4 §2.2.1).
+        // (Resolution against a NON-default parent is covered by the theory below.)
+        var style = MarginBoxStyle.Build(ImmutableArray.Create(Decl("font-weight", "bolder")));
+        Assert.Equal(700, style.ReadFontWeight());
+    }
+
+    [Theory]
+    // Pin the CSS Fonts 4 §2.2.1 relative-weight TABLE is exercised through the margin-box deferred
+    // path against NON-default parents (the resolver table itself is pinned in FontWeightResolverTests;
+    // this proves DeferredFontResolver threads the parent's weight correctly).
+    [InlineData("bolder", "300", 400)]   // < 350 → 400
+    [InlineData("bolder", "600", 900)]   // ≥ 550 → 900
+    [InlineData("lighter", "700", 400)]  // [550,750) → 400
+    [InlineData("lighter", "900", 700)]  // ≥ 750 → 700
+    public void Build_resolves_relative_font_weight_against_a_non_default_parent(
+        string relative, string parentWeight, int expected)
+    {
+        var parent = MarginBoxStyle.Build(ImmutableArray.Create(Decl("font-weight", parentWeight)));
+        var child = MarginBoxStyle.Build(ImmutableArray.Create(Decl("font-weight", relative)), parent);
+        Assert.Equal(expected, child.ReadFontWeight());
+    }
+
+    [Fact]
+    public void Build_leaves_rem_font_size_deferred_and_unresolved()
+    {
+        // PIN: rem isn't parent-relative (needs the root font-size threaded) → it stays DEFERRED (the
+        // raw "2rem" is preserved, not unset) and the reader falls back to the default (16px).
+        var style = MarginBoxStyle.Build(ImmutableArray.Create(Decl("font-size", "2rem")));
+        Assert.True(style.IsDeferred(PropertyId.FontSize));   // distinguishes "deferred" from "unset"
+        Assert.Equal(16, style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16), 3);
     }
 
     // ---- rejected `font` shorthand marker (review #3) ----

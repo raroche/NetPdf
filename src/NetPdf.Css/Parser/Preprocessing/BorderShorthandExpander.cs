@@ -35,9 +35,9 @@ namespace NetPdf.Css.Parser.Preprocessing;
 /// <para>
 /// <b>Scope:</b> this expander handles only <c>border</c> / <c>border-&lt;side&gt;</c>. The
 /// <c>border-width</c> / <c>border-style</c> / <c>border-color</c> 1–4-value box shorthands are handled
-/// by <see cref="BorderBoxShorthandExpander"/> (border-box cycle), and the content-origin inset (the
-/// margin-box text pushed in by the border width) ships in the padding cycle via
-/// <c>PageMarginBoxPainter</c>. <c>border-radius</c> is a tracked follow-up (deferrals.md).
+/// by <see cref="BorderBoxShorthandExpander"/>, and the content-origin inset (the margin-box text
+/// pushed in by the border width) is applied in <c>PageMarginBoxPainter</c>. <c>border-radius</c> is a
+/// tracked follow-up (deferrals.md).
 /// </para>
 /// </remarks>
 internal static class BorderShorthandExpander

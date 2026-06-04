@@ -189,16 +189,25 @@ diagnosed + dropped — `MarginBoxStyle` drops any declared padding that didn't 
 change; a marker diagnostic surfaces an un-expandable one. The post-PR-#142 review (3 P3) cleaned stale
 "deferred" docs, added cascade-order regression tests (shorthand vs longhand by importance + source
 order), and broadened expander coverage (3-value color, CSS-wide across all three). **Cycle 14 — §5.3
-three-box-per-edge sizing, shrink-to-fit first cut (in progress, branch
-`phase-3-task-21-margin-box-shrink-to-fit`):** a content-bearing edge box now shrinks to its border-box
-content size along the §5.3 VARIABLE axis (new `PageMarginBoxGeometry.MarginBoxAxis` — top/bottom →
-width, left/right → height, corners neither), so its background/border cover the box, not the whole
-band; positioned in the band by the box alignment. `PageMarginBoxPainter` lays the line out first (to
-get the content size), then sizes + places the box — text positions are byte-identical to the old
-full-band model (all 91 existing margin-box tests pass unchanged). Empty `content:""` / failed-font
-boxes keep the full band. DEFERRED: the full §5.3 min/max-content DISTRIBUTION (long siblings can still
-overlap), explicit `width`/`height`, overflow clipping. `border-radius` + background images stay
-deferred. Next (Task 21 remaining, in order):
+three-box-per-edge sizing, shrink-to-fit first cut (merged in PR #143, incl. its review):** a
+content-bearing edge box now shrinks to its border-box content size along the §5.3 VARIABLE axis (new
+`PageMarginBoxGeometry.MarginBoxAxis` — top/bottom → width, left/right → height, corners neither), so
+its background/border cover the box, not the whole band; positioned in the band by its §5.3.2.4
+NAME-DERIVED role (`region.HAlign/VAlign`), with the declared `text-align`/`vertical-align` aligning
+only the line WITHIN the content box (a no-op for a shrink-to-fit edge box; observable on the fixed
+axis + non-shrinking corner boxes). `PageMarginBoxPainter` lays the line out first (to get the content
+size), then sizes + places the box; for a box that doesn't redeclare alignment, line positions are
+byte-identical to the old full-band model. Empty `content:""` / failed-font boxes keep the full band.
+**Post-PR-#143 review (1 P1 + 1 P3): (P1)** box PLACEMENT was wrongly using the box's declared
+`text-align`/`vertical-align` as the placement factor — `@top-center { text-align: left }` slid the
+box/background to the band's left edge instead of staying centered (`@left-middle { vertical-align: top
+}` slid it up) — fixed in `PageMarginBoxPainter` to place by `region.HAlign/VAlign` (the §5.3.2.4
+name-derived role), the declared alignment positioning only the line within the content box; **(P3)**
+tightened two cycle-reference/future-tense doc comments (`PageMarginBoxPainter` class doc +
+`BorderShorthandExpander` remarks) that could read as the `border-width`/`-style`/`-color` box
+shorthands being deferred (they shipped cycle 13). DEFERRED: the full §5.3 min/max-content
+DISTRIBUTION (long siblings can still overlap), explicit `width`/`height`, overflow clipping.
+`border-radius` + background images stay deferred. Next (Task 21 remaining, in order):
 the §5.3 min/max-content distribution + explicit width/height / `@page :left`/`:right`/`:blank` + named pages (multi-page-gated),
 then Task 22 (`string-set`/`string()` running headers). Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES

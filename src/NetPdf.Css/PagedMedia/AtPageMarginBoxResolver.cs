@@ -11,7 +11,7 @@ using NetPdf.Css.Parser;
 namespace NetPdf.Css.PagedMedia;
 
 /// <summary>
-/// Resolves the page margin boxes declared inside bare <c>@page</c> rules — the 16
+/// Resolves the page margin boxes declared inside <c>@page</c> rules — the 16
 /// <c>@top-center</c> / <c>@bottom-right-corner</c> / … at-rules of CSS Paged Media L3 §6.4 —
 /// down to (box name, raw <c>content</c> value) pairs. Phase 3 Task 21 cycle 3 — the
 /// keystone for running headers/footers.
@@ -63,8 +63,8 @@ internal static class AtPageMarginBoxResolver
     private static readonly FrozenSet<string> KnownNames =
         CanonicalNames.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
 
-    /// <summary>Walk the applicable bare <c>@page</c> rules and resolve each declared margin box's
-    /// cascade-winning <c>content</c> (importance then source order). Returns the renderable boxes
+    /// <summary>Walk the applicable <c>@page</c> rules (bare + <c>:first</c>) and resolve each declared
+    /// margin box's cascade-winning <c>content</c> (importance then source order). Returns the renderable boxes
     /// in canonical order — omitting boxes with no <c>content</c> and boxes whose winner is
     /// <c>none</c> / <c>normal</c> (suppression); empty when none render.</summary>
     public static ImmutableArray<ResolvedMarginBox> Resolve(
@@ -111,9 +111,9 @@ internal static class AtPageMarginBoxResolver
         return output.Count == 0 ? ImmutableArray<ResolvedMarginBox>.Empty : output.ToImmutable();
     }
 
-    /// <summary>The bare <c>@page</c> rules' OWN declarations (<c>color</c> / <c>font-*</c> / …) in
-    /// source order across occurrences — the page-context style the margin boxes inherit from (CSS
-    /// Page 3, Task 21 cycle 5). The margin boxes are in each rule's <see cref="CssAtRule.ChildRules"/>,
+    /// <summary>The applicable <c>@page</c> rules' (bare + <c>:first</c>) OWN declarations
+    /// (<c>color</c> / <c>font-*</c> / …) in specificity-then-source order — the page-context style the
+    /// margin boxes inherit from (CSS Page 3, Task 21 cycle 5). The margin boxes are in each rule's <see cref="CssAtRule.ChildRules"/>,
     /// not here. The orchestrator builds the page-context <c>ComputedStyle</c> from these (its
     /// whitelist ignores <c>margin</c> / <c>size</c> / non-inherited declarations).</summary>
     public static ImmutableArray<CssDeclaration> PageContextDeclarations(

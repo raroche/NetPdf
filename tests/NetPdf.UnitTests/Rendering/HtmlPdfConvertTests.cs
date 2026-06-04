@@ -329,6 +329,18 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void At_page_first_selector_margin_box_content_paints_end_to_end()
+    {
+        // The :first margin box wins through to the PDF: bare @bottom-center "A" (1 glyph) is
+        // overridden by :first "AB" (2 glyphs). The glyph count proves the :first box painted.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content: \"A\" } } " +
+            "@page :first { @bottom-center { content: \"AB\" } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(2, TotalGlyphCount(pdf));   // "AB" (the :first box), not "A" (the bare box)
+    }
+
+    [Fact]
     public void At_page_size_is_ignored_when_PreferCssPageSize_is_false()
     {
         var mb = MediaBox(Latin1(HtmlPdf.Convert(

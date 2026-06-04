@@ -142,6 +142,16 @@ public sealed class AtPageMarginResolverTests
     }
 
     [Fact]
+    public async Task Resolve_applies_a_selector_list_containing_first()
+    {
+        // CSS Page 3: a comma-separated page-selector list applies if ANY selector matches — so a list
+        // that includes :first wins on the first page (in either order). A list WITHOUT :first defers.
+        Assert.Equal(2.0, (await ResolveCss("@page { margin: 1px } @page :first, :left { margin: 2px }")).TopPx!.Value, 3);
+        Assert.Equal(2.0, (await ResolveCss("@page { margin: 1px } @page :left, :first { margin: 2px }")).TopPx!.Value, 3);
+        Assert.False((await ResolveCss("@page :left, :right { margin: 5px }")).HasAny);
+    }
+
+    [Fact]
     public void ClassifyPageSelector_maps_the_recovered_prelude()
     {
         // Bare (empty / whitespace), :first (case + whitespace tolerant), everything else deferred.

@@ -3021,13 +3021,22 @@ flags the categories):
          numbers (gated on the multi-page driver below), non-`decimal` counter styles
          (`lower-roman`/…), non-page `counter()` names + `counters()` (need the counter-reset/increment
          machinery), and `counter(page)` in body/pseudo content (no page context → unsupported).
+       - **Margin boxes — `border` (border cycle) — DONE:** a margin box's declared `border` /
+         per-side `border-<side>` shorthand (new `BorderShorthandExpander` for margin-box bodies →
+         the 12 `border-*-width`/`-style`/`-color` longhands, added to `MarginBoxStyle.CascadedStyleIds`)
+         strokes the box's full region via the shared `FragmentPainter.PaintBorders` (extracted from
+         the body 4-edge loop), painted by the pipeline over the background band, before the text,
+         ungated by `PrintBackgrounds`. STILL DEFERRED: margin-box `padding`; the border CONTENT-ORIGIN
+         INSET (the text isn't pushed in by the border width yet — for a thin border + centered content
+         there's no overlap, but a thick border could overlap); the `border-width`/`-style`/`-color`
+         1–4-value box shorthands; `border-radius`; and a diagnostic for an invalid margin-box `border`
+         (it's silently dropped, unlike the `font` shorthand which is surfaced).
        - **Margin boxes — later cycles:**
          `string()` running headers (needs `string-set` collection), and `element()` running
          elements; the CSS Page 3 §5.3 three-box-per-edge
          sizing (each box gets the full edge band + aligns within it, so long sibling boxes on one
-         edge can overlap, and content overflowing a band isn't clipped); margin-box `border`/
-         `padding` (needs a border-shorthand expander for margin-box bodies + the content-origin inset)
-         + background images.
+         edge can overlap, and content overflowing a band isn't clipped); margin-box `padding` (+ the
+         border content-inset above) + background images.
          The per-box / page-context `ComputedStyle.Rent()` is box-owned (not returned to the pool) —
          a negligible per-render miss.
        - **`@page :first` selector (cycle 10) — DONE:** `@page :first` rules apply on the single

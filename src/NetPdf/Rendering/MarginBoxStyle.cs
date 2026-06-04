@@ -80,11 +80,17 @@ internal static class MarginBoxStyle
     private static readonly FrozenSet<PropertyId> InheritedStyleIdSet = SupportedStyleIds.ToFrozenSet();
 
     /// <summary>The longhands a margin box CASCADES from its OWN declarations: the inherited set plus
-    /// the non-inherited <c>background-color</c> (cycle 8 — paints a band behind the box's content).
-    /// <c>background-color</c> is materialized onto the style but deliberately left OUT of the
-    /// inheritance copy above, since it is not a CSS inherited property.</summary>
+    /// the non-inherited <c>background-color</c> (cycle 8 — paints a band behind the box's content)
+    /// and the 12 <c>border-*-width</c> / <c>-style</c> / <c>-color</c> longhands (border cycle —
+    /// painted around the box region). These are materialized onto the style but deliberately left
+    /// OUT of the inheritance copy above, since they are not CSS inherited properties.</summary>
     private static readonly ImmutableArray<PropertyId> CascadedStyleIds =
-        SupportedStyleIds.Add(PropertyId.BackgroundColor);
+        SupportedStyleIds.AddRange(
+            PropertyId.BackgroundColor,
+            PropertyId.BorderTopWidth, PropertyId.BorderTopStyle, PropertyId.BorderTopColor,
+            PropertyId.BorderRightWidth, PropertyId.BorderRightStyle, PropertyId.BorderRightColor,
+            PropertyId.BorderBottomWidth, PropertyId.BorderBottomStyle, PropertyId.BorderBottomColor,
+            PropertyId.BorderLeftWidth, PropertyId.BorderLeftStyle, PropertyId.BorderLeftColor);
 
     private static readonly FrozenSet<PropertyId> CascadedStyleIdSet = CascadedStyleIds.ToFrozenSet();
 

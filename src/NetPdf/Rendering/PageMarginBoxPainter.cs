@@ -40,15 +40,20 @@ namespace NetPdf.Rendering;
 /// (post-PR-#132 review P3). Fragment offsets are made relative to the shared content origin.
 /// </para>
 /// <para>
-/// <b>Style (cycles 4–8).</b> The box's declared <c>font-family</c> / <c>font-size</c> /
+/// <b>Style (cycles 4–8 + border).</b> The box's declared <c>font-family</c> / <c>font-size</c> /
 /// <c>font-weight</c> / <c>font-style</c> / <c>color</c> flow through the shaper + painter (inherited
 /// along root → page context → box; relative sizes + the <c>font</c> shorthand resolved); a declared
 /// <c>text-align</c> / <c>vertical-align</c> overrides the box's name-derived alignment. A declared
 /// <c>background-color</c> (cycle 8, non-inherited) fills a band over the box's full region behind
-/// the content — collected here as a <see cref="MarginBoxBackgroundFill"/>, painted by
-/// <see cref="PaintBackgrounds"/>. Unspecified properties fall back to the reader defaults (16px /
-/// default family / black / transparent / name-derived alignment). <c>border</c> / <c>padding</c> /
-/// background images are tracked follow-ups (deferrals.md#layout-to-pdf-pipeline).
+/// the content — collected as a <see cref="MarginBoxBackgroundFill"/>, painted by
+/// <see cref="PaintBackgrounds"/>; a declared <c>border</c> (non-inherited, the <c>border</c> /
+/// <c>border-&lt;side&gt;</c> shorthands expanded for margin-box bodies) strokes the box's full
+/// region — collected as a <see cref="MarginBoxBorder"/>, painted by <see cref="PaintBorders"/> via
+/// the shared <see cref="FragmentPainter.PaintBorders"/>. Unspecified properties fall back to the
+/// reader defaults (16px / default family / black / transparent / no border / name-derived
+/// alignment). <c>padding</c>, the border content-origin inset (the text isn't pushed in by the
+/// border yet), the <c>border-width</c>/<c>-style</c>/<c>-color</c> box shorthands, and background
+/// images are tracked follow-ups (deferrals.md#layout-to-pdf-pipeline).
 /// </para>
 /// <para>
 /// <b>Content scope.</b> Literal-string + <c>attr()</c> content, plus <c>counter(page)</c> /
@@ -71,14 +76,22 @@ internal static class PageMarginBoxPainter
     internal readonly record struct MarginBoxBackgroundFill(
         double LeftPx, double TopPx, double WidthPx, double HeightPx, uint Argb);
 
+    /// <summary>A margin box's declared borders to stroke around its region rect (border cycle):
+    /// the page-px rect + the box's <see cref="ComputedStyle"/> (carrying the <c>border-*</c>
+    /// longhands) + the <c>currentcolor</c> for an unset border-color (the box's own color). Painted
+    /// by <see cref="PaintBorders"/> via the shared <see cref="FragmentPainter.PaintBorders"/>.</summary>
+    internal readonly record struct MarginBoxBorder(
+        double LeftPx, double TopPx, double WidthPx, double HeightPx, ComputedStyle Style, uint CurrentColorArgb);
+
     /// <summary>The result of laying out the page margin boxes: the text fragments (for the shared
-    /// <see cref="TextPainter"/> pass) + the background bands (cycle 8, painted first behind the text).</summary>
+    /// <see cref="TextPainter"/> pass) + the background bands (cycle 8) + the borders (border cycle).</summary>
     internal sealed record MarginBoxLayoutResult(
         IReadOnlyList<BoxFragment> Fragments,
-        IReadOnlyList<MarginBoxBackgroundFill> Backgrounds)
+        IReadOnlyList<MarginBoxBackgroundFill> Backgrounds,
+        IReadOnlyList<MarginBoxBorder> Borders)
     {
-        public static readonly MarginBoxLayoutResult Empty =
-            new(Array.Empty<BoxFragment>(), Array.Empty<MarginBoxBackgroundFill>());
+        public static readonly MarginBoxLayoutResult Empty = new(
+            Array.Empty<BoxFragment>(), Array.Empty<MarginBoxBackgroundFill>(), Array.Empty<MarginBoxBorder>());
     }
 
     /// <summary>Lay out every resolved margin box's content into a fragment positioned for the
@@ -129,6 +142,7 @@ internal static class PageMarginBoxPainter
 
         var fragments = new List<BoxFragment>(boxes.Length);
         var backgrounds = new List<MarginBoxBackgroundFill>();
+        var borders = new List<MarginBoxBorder>();
         foreach (var mb in boxes)
         {
             if (!CssContentList.TryParse(mb.ContentRawValue, host, pageCounters, out var text))
@@ -142,10 +156,10 @@ internal static class PageMarginBoxPainter
                     marginTopPx, marginRightPx, marginBottomPx, marginLeftPx, out var region))
                 continue; // unknown name (resolver filters these out already).
 
-            // Per-box style from the box's declared longhands (font-* / color → shaping + fill).
-            // No border/padding is set, so the painter's content-origin math collapses to the
-            // fragment offset. The style is box-owned, so the rented instance isn't pooled — a
-            // negligible per-render miss, not a leak.
+            // Per-box style from the box's declared longhands (font-* / color → shaping + fill;
+            // background-color + border-* → decoration). Padding isn't materialized, so the text
+            // content-origin collapses to the fragment offset (border-width inset is a follow-up). The
+            // style is box-owned, so the rented instance isn't pooled — a negligible per-render miss.
             var style = MarginBoxStyle.Build(mb.Declarations, pageContextStyle, styleDiagnostics);
 
             // Background-color (cycle 8): a declared (non-inherited) background-color fills a band over
@@ -159,6 +173,12 @@ internal static class PageMarginBoxPainter
             {
                 backgrounds.Add(new MarginBoxBackgroundFill(region.X, region.Y, region.Width, region.Height, bgArgb));
             }
+
+            // Border (border cycle): a declared border strokes the box's FULL region (currentcolor =
+            // the box's own color). Collected with the style (which carries the border-* longhands)
+            // before the text layout, so an empty/failed-font box still shows its border.
+            if (HasBorder(style))
+                borders.Add(new MarginBoxBorder(region.X, region.Y, region.Width, region.Height, style, currentColor));
 
             // `content: ""` generates the box (CSS Page 3 §6.1: content is not none/normal) — the
             // band above still paints, but there is no text to lay out, so skip the text fragment
@@ -216,7 +236,7 @@ internal static class PageMarginBoxPainter
         // it to the pool now instead of leaking it (post-PR-#134 review; the per-box styles stay
         // box-owned with their synthetic Box).
         pageContextStyle.ReleaseFromBox();
-        return new MarginBoxLayoutResult(fragments, backgrounds);
+        return new MarginBoxLayoutResult(fragments, backgrounds, borders);
     }
 
     /// <summary>Paint the resolved margin-box background bands (cycle 8) onto <paramref name="page"/>,
@@ -236,6 +256,27 @@ internal static class PageMarginBoxPainter
             page.FillRectangle(x, y, w, h, r, g, b, FragmentPainter.Alpha(bg.Argb) / 255.0);
         }
     }
+
+    /// <summary>Stroke the resolved margin-box borders (border cycle) onto <paramref name="page"/>,
+    /// over the background bands but behind the shared text pass — reusing the shared
+    /// <see cref="FragmentPainter.PaintBorders"/> (so margin + body borders render identically). Call
+    /// AFTER <see cref="PaintBackgrounds"/> and BEFORE <see cref="TextPainter.PaintText"/>.</summary>
+    public static void PaintBorders(
+        PdfPage page, IReadOnlyList<MarginBoxBorder> borders, double pageHeightPt, IDiagnosticsSink diagnostics)
+    {
+        ArgumentNullException.ThrowIfNull(page);
+        if (borders is null) return;
+        var styleApproximationReported = false;
+        foreach (var b in borders)
+            FragmentPainter.PaintBorders(page, b.Style, pageHeightPt, b.LeftPx, b.TopPx, b.WidthPx, b.HeightPx,
+                b.CurrentColorArgb, diagnostics, ref styleApproximationReported);
+    }
+
+    /// <summary>Whether <paramref name="style"/> declares any border edge (a <c>border-*-style</c> is
+    /// set) — so a borderless box isn't collected for the border pass.</summary>
+    private static bool HasBorder(ComputedStyle style) =>
+        style.IsSet(PropertyId.BorderTopStyle) || style.IsSet(PropertyId.BorderRightStyle)
+        || style.IsSet(PropertyId.BorderBottomStyle) || style.IsSet(PropertyId.BorderLeftStyle);
 
     private static void EmitContentUnsupported(IDiagnosticsSink diagnostics, string boxName, string raw) =>
         diagnostics.Emit(new Diagnostic(

@@ -200,6 +200,10 @@ internal static class PdfRenderPipeline
             // Gated by PrintBackgrounds, exactly like body backgrounds (post-PR-#137 review P1).
             if (options.PrintBackgrounds && marginResult.Backgrounds.Count > 0)
                 PageMarginBoxPainter.PaintBackgrounds(page, marginResult.Backgrounds, mediaBox.HeightPts);
+            // Margin-box borders (border cycle) paint over the bands, before the text — NOT gated by
+            // PrintBackgrounds (borders aren't background graphics; body borders always paint too).
+            if (marginResult.Borders.Count > 0)
+                PageMarginBoxPainter.PaintBorders(page, marginResult.Borders, mediaBox.HeightPts, diagnostics);
             if (marginResult.Fragments.Count > 0)
             {
                 var combined = new List<BoxFragment>(sink.Fragments.Count + marginResult.Fragments.Count);

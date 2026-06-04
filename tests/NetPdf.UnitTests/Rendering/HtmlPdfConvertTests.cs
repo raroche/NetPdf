@@ -1105,6 +1105,44 @@ public sealed class HtmlPdfConvertTests
         Assert.Contains("0 0 1 rg", beforeRect);
     }
 
+    // ---- border (Task 21 border cycle) ----
+
+    [Fact]
+    public void Page_margin_box_border_strokes_the_region()
+    {
+        // @bottom-center { border: 2px solid red } → the box's border edges stroke around its region
+        // (filled rects in red), reusing the body border painter.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content:\"AB\"; border: 2px solid red } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Contains("1 0 0 rg", pdf);   // red border edges
+        Assert.Contains(" re", pdf);        // the edges are filled rectangles
+    }
+
+    [Fact]
+    public void Page_margin_box_border_top_rule_paints_for_a_footer()
+    {
+        // The common footer "rule line" — @bottom-center { border-top: 1px solid #333 }.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content:\"AB\"; border-top: 1px solid #333333 } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Contains(" re", pdf);        // a stroked top edge
+    }
+
+    [Fact]
+    public void Page_margin_box_border_paints_even_when_print_backgrounds_disabled()
+    {
+        // Borders are NOT background graphics — they paint regardless of PrintBackgrounds (like body
+        // borders), unlike the background band.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content:\"AB\"; border: 2px solid red } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver(), PrintBackgrounds = false }));
+        Assert.Contains("1 0 0 rg", pdf);   // the border still paints
+    }
+
     [Fact]
     public void Page_margin_box_font_shorthand_sets_the_size(/* Task 21 cycle 6 */)
     {

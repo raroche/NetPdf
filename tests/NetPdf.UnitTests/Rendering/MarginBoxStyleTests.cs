@@ -121,12 +121,13 @@ public sealed class MarginBoxStyleTests
     [Fact]
     public void Build_ignores_unsupported_properties()
     {
-        // padding/border affect the painter's content origin; they must NOT be materialized this
-        // cycle, so they can't shift margin-box text. Supported props still resolve.
+        // padding is NOT materialized yet (deferred — it would shift the painter's content origin),
+        // so it can't move margin-box text. Supported props — color, and now the border-* longhands
+        // (border cycle) — still resolve.
         var style = MarginBoxStyle.Build(ImmutableArray.Create(
             Decl("padding-left", "50px"), Decl("border-top-width", "5px"), Decl("color", "red")));
-        Assert.False(style.IsSet(PropertyId.PaddingLeft));
-        Assert.False(style.IsSet(PropertyId.BorderTopWidth));
+        Assert.False(style.IsSet(PropertyId.PaddingLeft));    // padding still deferred
+        Assert.True(style.IsSet(PropertyId.BorderTopWidth));  // border now materialized
         Assert.True(style.IsSet(PropertyId.Color));
     }
 
@@ -332,6 +333,28 @@ public sealed class MarginBoxStyleTests
         var child = MarginBoxStyle.Build(ImmutableArray.Create(Decl("color", "unset")), parent);
         Assert.True(FragmentPainter.TryResolveColor(child.Get(PropertyId.Color), 0xFF000000u, out var argb));
         Assert.Equal(0xFFFF0000u, argb);
+    }
+
+    // ---- border (border cycle) ----
+
+    [Fact]
+    public void Build_resolves_declared_border_longhands()
+    {
+        var style = MarginBoxStyle.Build(ImmutableArray.Create(
+            Decl("border-top-style", "solid"), Decl("border-top-width", "2px"), Decl("border-top-color", "#ff0000")));
+        Assert.True(style.IsSet(PropertyId.BorderTopStyle));
+        Assert.True(style.IsSet(PropertyId.BorderTopWidth));
+        Assert.True(style.IsSet(PropertyId.BorderTopColor));
+    }
+
+    [Fact]
+    public void Build_does_not_inherit_border()
+    {
+        // border-* are NOT CSS inherited properties — a box that declares none doesn't pick up the
+        // parent's border (only the font-*/color whitelist inherits).
+        var parent = MarginBoxStyle.Build(ImmutableArray.Create(Decl("border-top-style", "solid")));
+        var child = MarginBoxStyle.Build(ImmutableArray<CssDeclaration>.Empty, parent);
+        Assert.False(child.IsSet(PropertyId.BorderTopStyle));
     }
 
     // ---- rejected `font` shorthand marker (review #3) ----

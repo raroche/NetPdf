@@ -159,8 +159,14 @@ stay unsupported. **Cycle 10 — the `@page :first` selector (in progress, branc
 (first) page, overriding the bare `@page` (margin / size / margin boxes) by cascade specificity —
 `AtPageRules.EnumeratePageRules` yields bare-then-`:first` so the resolvers' last-wins cascade lets
 `:first` win (a bare `!important` still beats a `:first` normal); `:left`/`:right`/`:blank`/named stay
-deferred (multi-page-gated). Next (Task 21 remaining, in order):
-`@page :left`/`:right`/`:blank` + named pages (multi-page-gated) / margin-box `border`/`padding` / §5.3 three-box-per-edge sizing,
+deferred (multi-page-gated). **Cycle 11 — margin-box `border` (in progress, branch
+`phase-3-task-21-margin-box-border`):** a declared `border` / per-side `border-<side>` strokes the
+box's full region — new `BorderShorthandExpander` (margin-box bodies) → the 12 `border-*` longhands
+(added to `MarginBoxStyle.CascadedStyleIds`, non-inherited) → painted by the pipeline via the shared
+`FragmentPainter.PaintBorders` (extracted from the body 4-edge loop, byte-identical), over the
+background band, ungated by `PrintBackgrounds`; `padding` + the content-origin inset +
+`border-width`/`-style`/`-color` box shorthands stay deferred. Next (Task 21 remaining, in order):
+margin-box `padding` + border content-inset / §5.3 three-box-per-edge sizing / `@page :left`/`:right`/`:blank` + named pages (multi-page-gated),
 then Task 22 (`string-set`/`string()` running headers). Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).

@@ -51,10 +51,10 @@ Phase column shows the milestone in which the feature first ships.
 
 | Feature | Status | Phase | Notes |
 |---|---|---|---|
-| `@page` size, margin | ✅ | 3 | |
-| `@page :first` / `:left` / `:right` / `:blank` | ✅ | 3 | |
-| Page-margin boxes (`@top-left`, `@top-center`, `@top-right`, `@bottom-*`, `@left-*`, `@right-*`) | ✅ | 3 | All 16 boxes. |
-| `string()`, `element()`, named pages | ✅ | 3 | |
+| `@page` size, margin | ✅ | 3 | Named/orientation/`<length>` size + per-side margins; `!important`, paper-size-`@media` ignore (§3.3), `%` margins vs. the resolved page box. |
+| `@page :first` / `:left` / `:right` / `:blank` | 📥 | 3 | Selector text recovered by the pre-pass, but selector-scoped `@page` rules are not yet applied — only the bare `@page` contributes. Tracked follow-up ([deferrals.md](deferrals.md#layout-to-pdf-pipeline)). |
+| Page-margin boxes (`@top-left`, `@top-center`, `@top-right`, `@bottom-*`, `@left-*`, `@right-*`) | 🧪 | 3 | All 16 boxes: literal + `attr()` content, per-box style (`font`/`font-*`/`color`/`text-align`/`vertical-align`) + page-context→root inheritance (Task 21 cycles 3–6). `counter(page)`/`string()`/`element()` content + the §5.3 three-box-per-edge sizing deferred ([deferrals.md](deferrals.md#layout-to-pdf-pipeline)). |
+| `string()`, `element()`, named pages | 📥 | 3 | Deferred — `string-set`/`string()` running headers, running `element()`, and named-page selectors not yet implemented ([deferrals.md](deferrals.md#layout-to-pdf-pipeline)). |
 | `break-before`, `break-after`, `break-inside` | ✅ | 3 | |
 | `widows`, `orphans` | ✅ | 3 | Honored by the pagination optimizer's cost model. |
 | `<thead>` / `<tfoot>` repetition | ✅ | 3 | |

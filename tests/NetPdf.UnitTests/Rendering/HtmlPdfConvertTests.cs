@@ -306,6 +306,25 @@ public sealed class HtmlPdfConvertTests
         return rects;
     }
 
+    /// <summary>The fill colour (<c>"r g b"</c>) set immediately BEFORE each <c>" re"</c> rectangle, in
+    /// emission order — i.e. the actual colour of each painted rectangle (a background band or a border
+    /// edge), NOT a text fill. Lets a test assert the RECT colour rather than just <c>Contains</c> on the
+    /// whole stream (where a same-coloured text fill could mask a wrong rect colour — review P1).</summary>
+    private static List<string> RectFillColors(string pdf)
+    {
+        var colors = new List<string>();
+        for (var i = pdf.IndexOf(" re", StringComparison.Ordinal); i > 0;
+             i = pdf.IndexOf(" re", i + 3, StringComparison.Ordinal))
+        {
+            var rg = pdf.LastIndexOf(" rg", i, StringComparison.Ordinal);   // the fill colour set for this rect
+            if (rg < 0) continue;
+            var nums = pdf[..rg].TrimEnd().Split(' ');   // … <r> <g> <b>
+            if (nums.Length >= 3)
+                colors.Add($"{nums[^3]} {nums[^2]} {nums[^1]}");
+        }
+        return colors;
+    }
+
     [Fact]
     public void At_page_size_keyword_sets_the_media_box()
     {
@@ -2216,6 +2235,147 @@ public sealed class HtmlPdfConvertTests
             "</head><body><div class=\"section\"><div class=\"rh\">AB</div></div></body></html>",
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
         Assert.Equal(18.0, FirstTf(pdf), 1);   // inherited 24px → 18pt
+    }
+
+    // ---- element() full-block decoration: own background (task A) + border (task B) ----
+
+    [Fact]
+    public void Page_margin_box_element_paints_the_running_elements_own_background()
+    {
+        // Task 23 full-block first cut (task A): a standalone element() adopts the running element's OWN
+        // background-color as the box decoration — `.rh { background-color: #3366cc }` paints a band behind
+        // the header (rgb 0.2 0.4 0.8), even though the @page box declares no background of its own.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); background-color: #3366cc } " +
+            "@page { @top-center { content: element(rh) } }</style>" +
+            "</head><body><div class=\"rh\">AB</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Contains("0.2 0.4 0.8 rg", pdf);   // the element's own #3366cc band (text is black)
+    }
+
+    [Fact]
+    public void Page_margin_box_box_background_overrides_the_running_elements_own()
+    {
+        // The element's decoration cascades UNDER the box's own declarations — a box `background-color`
+        // overrides the element's. Box red wins; the element's blue band does NOT paint.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); background-color: #0000ff } " +
+            "@page { @top-center { content: element(rh); background-color: #ff0000 } }</style>" +
+            "</head><body><div class=\"rh\">AB</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Contains("1 0 0 rg", pdf);        // box's red band (it overrides the element's)
+        Assert.DoesNotContain("0 0 1 rg", pdf);  // the element's blue background did NOT win
+    }
+
+    [Theory]
+    [InlineData("element(rh)", "1 0 0 rg", "0 0 1 rg")]        // default = first → r1's red; r2's blue must NOT paint
+    [InlineData("element(rh, last)", "0 0 1 rg", "1 0 0 rg")]  // last → r2's blue; r1's red must NOT paint
+    public void Page_margin_box_element_background_follows_the_selected_occurrence(string content, string colorOp, string otherColorOp)
+    {
+        // The element's DECORATION follows the same occurrence the text does (in lockstep) — element()
+        // default/first → the first running element's red background, last → the last's blue. The NON-selected
+        // occurrence's background must NOT paint (a negative assertion catches a double-paint regression —
+        // Copilot review).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.r1 { position: running(rh); background-color: #ff0000 } " +
+            ".r2 { position: running(rh); background-color: #0000ff } @page { @top-center { content: " + content + " } }</style>" +
+            "</head><body><div class=\"r1\">A</div><div class=\"r2\">B</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Contains(colorOp, pdf);            // the selected occurrence's background paints
+        Assert.DoesNotContain(otherColorOp, pdf); // the non-selected occurrence's does NOT
+    }
+
+    [Fact]
+    public void Page_margin_box_element_does_not_inherit_an_ancestor_background()
+    {
+        // background-color is NON-inherited, so an ancestor's background must NOT bleed onto the running
+        // element (unlike color/font, which DO inherit). No red band paints.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.section { background-color: #ff0000 } .rh { position: running(rh) } " +
+            "@page { @top-center { content: element(rh) } }</style>" +
+            "</head><body><div class=\"section\"><div class=\"rh\">AB</div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.DoesNotContain("1 0 0 rg", pdf);   // ancestor red background NOT applied (non-inherited)
+    }
+
+    [Fact]
+    public void Page_margin_box_element_strokes_the_running_elements_own_border()
+    {
+        // Task 23 full-block first cut (task B): a standalone element() adopts the running element's OWN
+        // border. `.rh { border: 2px solid #00ff00 }` → green edges (the element's `border` shorthand is
+        // expanded to longhands by the normal cascade, since the element is a real DOM node). Borders paint
+        // as filled rects in the edge colour.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); border: 2px solid #00ff00 } " +
+            "@page { @top-center { content: element(rh) } }</style>" +
+            "</head><body><div class=\"rh\">AB</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Contains("0 1 0 rg", pdf);   // green border edges (text is black)
+    }
+
+    [Fact]
+    public void Page_margin_box_element_border_uses_the_running_elements_own_color_as_currentcolor()
+    {
+        // An element-owned border with no colour uses currentColor — for a standalone element() that's the
+        // ELEMENT's own colour. `color: #00ff00; border: 2px solid` → green edges. Asserting the RECT colour
+        // (not just Contains on the stream) so a same-coloured text fill can't mask a wrong border (review P1).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); color: #00ff00; border: 2px solid } " +
+            "@page { @top-center { content: element(rh) } }</style>" +
+            "</head><body><div class=\"rh\">AB</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Contains("0 1 0", RectFillColors(pdf));   // the border RECTS are the element's own green
+    }
+
+    [Fact]
+    public void Page_margin_box_box_border_currentcolor_resolves_against_the_box_color()
+    {
+        // Review P1: when the BOX declares the border, its currentcolor resolves against the BOX's `color`
+        // (CSS Color 4), not the running element's. Box border + `color: blue`, element `color: red` → the
+        // border RECTS are blue (the box's colour), NOT red (the element's). The text stays the element's red.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); color: #ff0000 } " +
+            "@page { @top-center { content: element(rh); color: #0000ff; border: 2px solid } }</style>" +
+            "</head><body><div class=\"rh\">AB</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        var rects = RectFillColors(pdf);
+        Assert.Contains("0 0 1", rects);        // border rects in the BOX's blue (currentcolor → box color)
+        Assert.DoesNotContain("1 0 0", rects);  // NOT the running element's red
+    }
+
+    [Fact]
+    public void Page_margin_box_box_background_currentcolor_resolves_against_the_box_color()
+    {
+        // Review P1: a box-declared `background-color: currentcolor` resolves against the BOX's `color`, not
+        // the running element's. The box's background wins the cascade (overrides the element's), so the band
+        // is the box's blue — NOT the element's red (currentcolor origin) and NOT the element's own green bg.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); color: #ff0000; background-color: #00ff00 } " +
+            "@page { @top-center { content: element(rh); color: #0000ff; background-color: currentcolor } }</style>" +
+            "</head><body><div class=\"rh\">AB</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        var rects = RectFillColors(pdf);
+        Assert.Contains("0 0 1", rects);        // the band is the BOX's blue (currentcolor → box color)
+        Assert.DoesNotContain("1 0 0", rects);  // NOT the element's red (the pre-fix bug)
+        Assert.DoesNotContain("0 1 0", rects);  // NOT the element's own green background (box overrides)
+    }
+
+    [Fact]
+    public void Page_margin_box_element_border_width_insets_the_text()
+    {
+        // The element's border-width insets its text (the existing border content-inset) — a start-aligned
+        // @top-left with the element's `border-left: 20px solid` shifts the line right by ~15pt (20px),
+        // exactly like a box-declared border.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var withBorder = FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); border-left: 20px solid red } " +
+            "@page { @top-left { content: element(rh) } }</style>" +
+            "</head><body><div class=\"rh\">AB</div></body></html>", opts)));
+        var without = FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } " +
+            "@page { @top-left { content: element(rh) } }</style>" +
+            "</head><body><div class=\"rh\">AB</div></body></html>", opts)));
+        Assert.InRange(withBorder.X - without.X, 13.0, 17.0);   // border-left 20px → ~15pt inset
     }
 
     [Fact]

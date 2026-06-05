@@ -133,4 +133,33 @@ public sealed class MarginContentCollectorTests
 
         Assert.Contains(ctx.RunningElementStylesFirst!["rh"], kv => kv.Key == "font-size");
     }
+
+    // ---- own DECORATION capture (background / border) — non-inherited, self-only (Task 23 full-block) ----
+
+    [Fact]
+    public async Task Collect_captures_the_running_elements_own_background_and_border()
+    {
+        // Task 23 full-block: the element's OWN background-color + border-* longhands are captured for the
+        // box decoration. A normal element's `border` shorthand is expanded to longhands by the cascade.
+        var ctx = await CollectAsync(
+            "<div class='rh'>AB</div>",
+            ".rh { position: running(rh); background-color: red; border: 2px solid blue }");
+
+        var own = ctx.RunningElementStyles!["rh"];
+        Assert.Contains(own, kv => kv.Key == "background-color");
+        Assert.Contains(own, kv => kv.Key == "border-top-style");
+        Assert.Contains(own, kv => kv.Key == "border-top-width");
+    }
+
+    [Fact]
+    public async Task Collect_does_not_capture_an_ancestor_background_for_a_running_element()
+    {
+        // background-color is NON-inherited, so the decoration capture is SELF-ONLY — an ancestor's
+        // background must NOT be captured for the running element (unlike the inherited color/font).
+        var ctx = await CollectAsync(
+            "<div class='section'><div class='rh'>AB</div></div>",
+            ".section { background-color: red } .rh { position: running(rh) }");
+
+        Assert.DoesNotContain(ctx.RunningElementStyles!["rh"], kv => kv.Key == "background-color");
+    }
 }

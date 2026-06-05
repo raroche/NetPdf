@@ -266,17 +266,27 @@ section 7.4 — like `string()`, a conformance fix; was last-wins) pull the FIRS
 on the page, `element(name, last)` the exit value (`MarginContentContext.RunningElementsFirst`; the shared
 `TryReadPositionedFunction` parses both `string()` + `element()`); `element()` GCPM-normalizes the running
 element's text (`white-space: normal`, read BOUNDED to 64 KiB — a DoS guard). **Task 23 — `element()`
-first-cut OWN-STYLE (in progress, branch `phase-3-task-23-element-own-style`):** a STANDALONE
+first-cut OWN-STYLE (merged PR #151, incl. its review):** a STANDALONE
 `content: element(name)` paints the running element's text in the ELEMENT's own font + color —
-`MarginContentCollector.CaptureOwnStyle` captures its winning font/color longhands (first + last, into
-`MarginContentContext.RunningElementStyles`); `PageMarginBoxPainter` detects standalone `element()`
-(`CssContentList.TryGetStandaloneElement`) + builds a CONTENT `ComputedStyle` (`MarginBoxStyle.Build`,
-parent = page context) for shaping, the box's decoration/alignment staying the box's. DEFERRED:
-`content(before|after|first-letter|marker)`, the running element's full BLOCK box (background/border/nested
-layout — text-only first cut), relative units/`inherit` in the element's style (resolve against the page
-context — approximation), vertical-edge HEIGHT overflow, `box-sizing`, the body's own `text-align`
-line-positioning. Next (in order): `element()` full BLOCK box / vertical-edge (height) overflow / cross-page
-running + `@page :left`/`:right`/`:blank` + named pages (all multi-page-gated). Blocked (see `deferrals.md`):
+`MarginContentCollector.CaptureOwnStyle` captures its winning font/color longhands; `PageMarginBoxPainter`
+detects standalone `element()` (`CssContentList.TryGetStandaloneElement`) + builds a CONTENT `ComputedStyle`
+for shaping, the box's decoration/alignment staying the box's. Post-PR-#151 review: own-style recorded in
+LOCKSTEP with the text per occurrence (empty marker — no first/last style desync); paint-time line metrics
+follow the content style via `BoxFragment.TextMetricsStyle` (a 32px header no longer paints at the box's 16px
+pitch); inherited font/color WALKED from ancestors; own-style returned as an array (Copilot). **Task 23 —
+`element()` full-block first cut: own `background` + `border` (in progress, branch
+`phase-3-task-23-element-full-block-decoration`):** a STANDALONE `element()` also renders the running
+element's OWN box DECORATION — `CaptureOwnStyle` also captures the NON-inherited `background-color` + 12
+`border-*` longhands (self-only, NO ancestor walk; a normal element's `border`/`background` shorthands are
+cascade-expanded); `PageMarginBoxPainter.BuildFromOwnStyle` builds the box `style` from the element's
+decoration cascaded UNDER the box's own declarations (box overrides), reusing all the box bg/border/inset
+machinery; `currentColor` (border/bg currentcolor) reads the element's own color. DEFERRED:
+`content(before|after|first-letter|marker)`, the running element's nested BLOCK children (laid-out sub-boxes
+— still text-only), its own `padding`, the box/element COINCIDING (a box property overrides rather than
+nesting), relative units/`inherit` (resolve against the page context — approximation), vertical-edge HEIGHT
+overflow, `box-sizing`, the body's own `text-align` line-positioning. Next (in order): `element()` nested
+BLOCK children / vertical-edge (height) overflow / cross-page running + `@page :left`/`:right`/`:blank` +
+named pages (all multi-page-gated). Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).
 For the live state, read the **current-state pointer at the top of [PROGRESS.md](PROGRESS.md)**

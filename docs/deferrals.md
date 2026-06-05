@@ -3082,8 +3082,10 @@ flags the categories):
          element's own text (bare `content()` / `content(text)`; the typographic targets
          `content(before|after|first-letter|marker)` stay deferred). The cascade's own selector matching
          associates the rule with the elements — no separate raw-CSS pre-pass needed; (c) **`element(name [,
-         first | last])`** renders the running element's TEXT, GCPM-normalized as `white-space: normal`
-         (Task 23 follow-up — like `content()`), with the margin box's own style. The position keyword is DONE
+         first | last])`** renders the running element's TEXT, read BOUNDED to 64 KiB
+         (`MarginContentCollector.ReadBoundedDescendantText` — a DoS guard, post-PR-#150 review P2) then
+         GCPM-normalized as `white-space: normal` (Task 23 follow-up — like `content()`), with the margin
+         box's own style. The position keyword is DONE
          (Task 23): `element(name, first)` AND the no-keyword DEFAULT → the first occurrence (GCPM §7.4),
          `element(name, last)` → the exit value (`MarginContentContext.RunningElementsFirst`; the shared
          `TryReadPositionedFunction` parses both `string()` + `element()`); `start` / `first-except` bail.

@@ -2061,6 +2061,18 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Page_margin_box_sizable_running_element_renders_in_full_under_the_cap()
+    {
+        // A sizable (but under the 64 KiB cap) running element renders end-to-end in full — the bounded
+        // read (review P2) only truncates above the cap, so normal running content is unaffected.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } @page { @top-center { content: element(rh) } }</style>" +
+            "</head><body><div class=\"rh\">" + new string('A', 500) + "</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(500, TotalGlyphCount(pdf));   // all 500 'A' glyphs (not truncated under the cap)
+    }
+
+    [Fact]
     public void Page_margin_box_running_element_is_removed_from_the_body_flow()
     {
         // A normal div renders in the body; with `position: running()` (and no element() reference) the

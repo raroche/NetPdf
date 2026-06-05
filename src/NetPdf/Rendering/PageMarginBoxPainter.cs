@@ -605,8 +605,9 @@ internal static class PageMarginBoxPainter
             $"(\"{DiagnosticTextSanitizer.Sanitize(raw)}\"). Supported: literal strings, attr(name), " +
             "counter(page)/counter(pages) (with a predefined counter style — decimal / decimal-leading-zero / " +
             "lower+upper-roman / lower+upper-alpha / -latin / lower-greek; an unknown style falls back to " +
-            "decimal), string(name[, first|last]), and element(name). " +
-            "Any other generated content — a non-page counter() name, counters(), " +
+            "decimal), string(name[, first|last]), and element(name[, first|last]). " +
+            "Any other generated content — a non-page counter() name, counters(), the start/first-except " +
+            "string()/element() keywords, " +
             "url()/image()/image-set(), open-quote/close-quote — is a tracked " +
             "follow-up (deferrals.md#layout-to-pdf-pipeline). The box was not painted.",
             DiagnosticSeverity.Warning));

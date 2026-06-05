@@ -2268,18 +2268,21 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Theory]
-    [InlineData("element(rh)", "1 0 0 rg")]        // default = first → r1's red band
-    [InlineData("element(rh, last)", "0 0 1 rg")]  // last → r2's blue band
-    public void Page_margin_box_element_background_follows_the_selected_occurrence(string content, string colorOp)
+    [InlineData("element(rh)", "1 0 0 rg", "0 0 1 rg")]        // default = first → r1's red; r2's blue must NOT paint
+    [InlineData("element(rh, last)", "0 0 1 rg", "1 0 0 rg")]  // last → r2's blue; r1's red must NOT paint
+    public void Page_margin_box_element_background_follows_the_selected_occurrence(string content, string colorOp, string otherColorOp)
     {
         // The element's DECORATION follows the same occurrence the text does (in lockstep) — element()
-        // default/first → the first running element's red background, last → the last's blue.
+        // default/first → the first running element's red background, last → the last's blue. The NON-selected
+        // occurrence's background must NOT paint (a negative assertion catches a double-paint regression —
+        // Copilot review).
         var pdf = Latin1(HtmlPdf.Convert(
             "<!DOCTYPE html><html><head><style>.r1 { position: running(rh); background-color: #ff0000 } " +
             ".r2 { position: running(rh); background-color: #0000ff } @page { @top-center { content: " + content + " } }</style>" +
             "</head><body><div class=\"r1\">A</div><div class=\"r2\">B</div></body></html>",
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
-        Assert.Contains(colorOp, pdf);
+        Assert.Contains(colorOp, pdf);            // the selected occurrence's background paints
+        Assert.DoesNotContain(otherColorOp, pdf); // the non-selected occurrence's does NOT
     }
 
     [Fact]

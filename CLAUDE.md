@@ -248,18 +248,23 @@ resolved by a §5.3.2 min/max-content flex; the post-PR-#147 review keeps the CE
 against an imaginary `2 × max(A, C)` box via a new `FlexPair`, sides sized in the gaps — no more tiling),
 distributes a no-centre min-overflow PROPORTIONALLY to min-content, vertically centres a re-wrapped block by
 its full block height, and uses the WIDEST line + the box's computed `white-space` for the re-wrap.
-**Tasks 22–23 follow-up — `string-set: content()` + wrapped-line alignment (in progress, branch
-`phase-3-task-22-string-set-content-wrapped-align`):** `string-set: name content()` (the canonical running
-header) now works — AngleSharp drops it, so `CssPreprocessor`'s recovery (gated to `string-set` + a
-`content()` value) re-injects it into the cascade and `CssContentList.TryParseStringSet` resolves `content()`
-to the element's text (NO separate pre-pass — the cascade matches selectors); and a margin box's RE-WRAPPED
-lines are aligned PER LINE by the box's alignment (opt-in `BoxFragment.LineAlignFactor`, applied by
-`TextPainter`; default 0 → body + single-line margin content byte-identical). DEFERRED:
-`content(before|after|first-letter|marker)`, `string(name, first|last)`, `element()` full block rendering,
-vertical-edge HEIGHT overflow, `box-sizing`, the body's own `text-align` line-positioning. Next (in order):
-`element()` full block rendering / vertical-edge (height) overflow / cross-page
-running + `@page :left`/`:right`/`:blank` + named pages (all multi-page-gated), then Task 24
-(`counter(page)` — mostly done cycle 9). Blocked (see `deferrals.md`):
+**Tasks 22–23 follow-up — `string-set: content()` + wrapped-line alignment (merged PR #148, incl. its
+review):** `string-set: name content()` (the canonical running header) works — AngleSharp drops it, so
+`CssPreprocessor`'s recovery (gated to `string-set` + a `content()` value) re-injects it into the cascade and
+`CssContentList.TryParseStringSet` resolves `content()` to the element's text, GCPM-normalized as if
+`white-space: normal` (NO separate pre-pass — the cascade matches selectors); and a margin box's RE-WRAPPED
+lines are aligned PER LINE by the box's alignment (opt-in `BoxFragment.LineAlignFactor`; default 0 → body +
+single-line margin content byte-identical). **Task 21 — `counter(page)` counter styles + `string(name,
+first|last)` (in progress, branch `phase-3-task-21-counter-styles-string-keyword`):** `counter(page,
+<counter-style>)` formats the page number/total in roman / alpha / leading-zero / greek via a new shared
+`CounterStyleFormatter` (EXTRACTED from `BoxBuilder`'s list-marker numerals — both format identically); a
+non-predefined style (`hebrew`) FALLS BACK to `decimal` (CSS Counter Styles §7.1.4 — page numbers never
+vanish; post-PR-#149 review). `string(name, first)` AND the no-keyword DEFAULT (GCPM §7.3) pull the FIRST
+`string-set` assignment on the page; `string(name, last)` is the exit value (`MarginContentContext.NamedStringsFirst`); `start` /
+`first-except` bail (cross-page). DEFERRED: `content(before|after|first-letter|marker)`, `element()` full
+block rendering, vertical-edge HEIGHT overflow, `box-sizing`, the body's own `text-align` line-positioning.
+Next (in order): `element()` full block rendering / vertical-edge (height) overflow / cross-page
+running + `@page :left`/`:right`/`:blank` + named pages (all multi-page-gated). Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).
 For the live state, read the **current-state pointer at the top of [PROGRESS.md](PROGRESS.md)**

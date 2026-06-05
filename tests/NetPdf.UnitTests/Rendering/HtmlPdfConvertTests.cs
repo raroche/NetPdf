@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
 using System.Threading;
@@ -284,6 +285,25 @@ public sealed class HtmlPdfConvertTests
             double.Parse(nums[^3], CultureInfo.InvariantCulture),
             double.Parse(nums[^2], CultureInfo.InvariantCulture),
             double.Parse(nums[^1], CultureInfo.InvariantCulture));
+    }
+
+    /// <summary>Every <c>… &lt;x&gt; &lt;y&gt; &lt;w&gt; &lt;h&gt; re</c> rectangle-fill in the stream, in
+    /// emission order (pt). Each fill is <c>q … &lt;x&gt; &lt;y&gt; &lt;w&gt; &lt;h&gt; re f Q</c>, so the
+    /// four operands are the last four space-separated tokens before each <c>" re"</c>.</summary>
+    private static List<(double X, double Y, double W, double H)> AllRects(string pdf)
+    {
+        var rects = new List<(double, double, double, double)>();
+        for (var i = pdf.IndexOf(" re", StringComparison.Ordinal); i > 0;
+             i = pdf.IndexOf(" re", i + 3, StringComparison.Ordinal))
+        {
+            var nums = pdf[..i].TrimEnd().Split(' ');
+            rects.Add((
+                double.Parse(nums[^4], CultureInfo.InvariantCulture),
+                double.Parse(nums[^3], CultureInfo.InvariantCulture),
+                double.Parse(nums[^2], CultureInfo.InvariantCulture),
+                double.Parse(nums[^1], CultureInfo.InvariantCulture)));
+        }
+        return rects;
     }
 
     [Fact]
@@ -1645,6 +1665,117 @@ public sealed class HtmlPdfConvertTests
             "</style></head><body></body></html>",
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
         Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
+    }
+
+    // ---- §5.3 sibling-box overlap resolution (Task 21) ----
+
+    [Fact]
+    public void Page_margin_box_wide_side_box_is_clamped_by_a_center_sibling()
+    {
+        // §5.3 distribution: a very wide @top-left would overlap a centered @top-center; the center box
+        // gets priority, so @top-left's box (background) is CLAMPED to the left gap (~half the band) —
+        // much narrower than when @top-left is alone on the edge (clamped only to the full band).
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var longText = new string('A', 100);   // far wider than the band → forces overlap with the center
+        double LeftBgWidth(string extra) => FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-left { content:\"" + longText + "\"; background-color: red }" +
+            extra + " }</style></head><body></body></html>", opts))).W;
+        var alone = LeftBgWidth("");
+        var withCenter = LeftBgWidth(" @top-center { content:\"AB\" }");
+        Assert.True(withCenter < alone - 100,
+            $"a center sibling must clamp the wide @top-left box: alone={alone}pt clamped={withCenter}pt");
+        Assert.True(withCenter > 50, $"the clamped box should be the left gap, not zero: {withCenter}pt");
+    }
+
+    [Fact]
+    public void Page_margin_box_center_sibling_stays_centered_when_a_side_box_is_wide()
+    {
+        // Center-priority: the @top-center box keeps its centered position regardless of a very wide
+        // @top-left sibling — its background center stays at the page's horizontal center.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-left { content:\"" + new string('A', 100) + "\" } " +
+            "@top-center { content:\"AB\"; background-color: red } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        var r = FirstRect(pdf);   // only @top-center has a background
+        var pageCenterX = MediaBox(pdf).W / 2.0;
+        Assert.InRange(r.X + r.W / 2.0, pageCenterX - 1, pageCenterX + 1);
+    }
+
+    [Fact]
+    public void Page_margin_box_short_siblings_are_not_repositioned()
+    {
+        // Short content that doesn't overlap → the distribution is a NO-OP: @top-center's background
+        // center is identical with or without a short @top-left sibling (the per-box model is preserved).
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double CenterX(string extra)
+        {
+            var r = FirstRect(Latin1(HtmlPdf.Convert(
+                "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; background-color: red }" +
+                extra + " }</style></head><body></body></html>", opts)));
+            return r.X + r.W / 2.0;
+        }
+        Assert.Equal(CenterX(""), CenterX(" @top-left { content:\"AB\" }"), 3);
+    }
+
+    [Fact]
+    public void Page_margin_box_three_wide_siblings_do_not_overlap_and_stay_ordered()
+    {
+        // §5.3 distribution end-to-end: three wide top boxes (left/center/right) that would all overlap
+        // are clamped apart — collecting every background rect, sorted left→right, each box ends at or
+        // before the next begins, and the center box stays centered.
+        var w = new string('A', 30);
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { " +
+            "@top-left { content:\"" + w + "\"; background-color: red } " +
+            "@top-center { content:\"AB\"; background-color: lime } " +
+            "@top-right { content:\"" + w + "\"; background-color: blue } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        var rects = AllRects(pdf);
+        Assert.Equal(3, rects.Count);
+        rects.Sort((p, q) => p.X.CompareTo(q.X));
+        Assert.True(rects[0].X + rects[0].W <= rects[1].X + 0.5, $"left overlaps center: {rects[0]} / {rects[1]}");
+        Assert.True(rects[1].X + rects[1].W <= rects[2].X + 0.5, $"center overlaps right: {rects[1]} / {rects[2]}");
+        var pageCenterX = MediaBox(pdf).W / 2.0;
+        Assert.InRange(rects[1].X + rects[1].W / 2.0, pageCenterX - 1, pageCenterX + 1);   // center stays centered
+    }
+
+    [Fact]
+    public void Page_margin_box_two_wide_siblings_without_a_center_share_the_band()
+    {
+        // No center box: a wide @top-left + wide @top-right shrink proportionally to share the band — their
+        // backgrounds tile it without overlap, and equal content → equal widths.
+        var w = new string('A', 40);
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { " +
+            "@top-left { content:\"" + w + "\"; background-color: red } " +
+            "@top-right { content:\"" + w + "\"; background-color: blue } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        var rects = AllRects(pdf);
+        Assert.Equal(2, rects.Count);
+        rects.Sort((p, q) => p.X.CompareTo(q.X));
+        Assert.True(rects[0].X + rects[0].W <= rects[1].X + 0.5, $"left overlaps right: {rects[0]} / {rects[1]}");
+        Assert.Equal(rects[0].W, rects[1].W, 1);   // equal content → equal proportional share
+    }
+
+    [Fact]
+    public void Page_margin_box_vertical_edge_siblings_do_not_overlap()
+    {
+        // The distribution runs on the VERTICAL axis too (left/right columns): three tall left-edge boxes
+        // that would overlap are clamped apart by HEIGHT — sorted by Y, each ends at or before the next
+        // begins, and @left-middle stays vertically centered. (Exercises the vertical grouping/writeback.)
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { " +
+            "@left-top { content:\"AB\"; height: 500px; background-color: red } " +
+            "@left-middle { content:\"AB\"; background-color: lime } " +
+            "@left-bottom { content:\"AB\"; height: 500px; background-color: blue } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        var rects = AllRects(pdf);
+        Assert.Equal(3, rects.Count);
+        rects.Sort((p, q) => p.Y.CompareTo(q.Y));   // PDF y is bottom-origin; ascending = bottom→top
+        Assert.True(rects[0].Y + rects[0].H <= rects[1].Y + 0.5, $"boxes overlap: {rects[0]} / {rects[1]}");
+        Assert.True(rects[1].Y + rects[1].H <= rects[2].Y + 0.5, $"boxes overlap: {rects[1]} / {rects[2]}");
+        var pageCenterY = MediaBox(pdf).H / 2.0;
+        Assert.InRange(rects[1].Y + rects[1].H / 2.0, pageCenterY - 1, pageCenterY + 1);   // middle stays centered
     }
 
     [Fact]

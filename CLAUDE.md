@@ -223,8 +223,17 @@ padding policy; `auto` / `<length>` / `<percentage>` don't trip it); **(P3)** ad
 coverage (explicit width + padding/border → border-box; clamp-after-insets; `@left-middle { height: 50% }`
 vertical percentage); **(P3)** fixed a stale `MarginBoxStyle` deferred-list doc still calling the whole
 §5.3 sizing deferred. DEFERRED: the §5.3 min/max-content DISTRIBUTION for overlapping
-siblings, `box-sizing`, font-/viewport-relative + `calc()` sizes, overflow clipping. Next (Task 21
-remaining, in order): the §5.3 min/max-content DISTRIBUTION (overlap resolution) / `@page
+siblings, `box-sizing`, font-/viewport-relative + `calc()` sizes, overflow clipping. **Cycle 16 — §5.3
+sibling-box overlap DISTRIBUTION, first cut (in progress, branch
+`phase-3-task-21-margin-box-distribution`):** boxes sharing one edge band whose desired sizes would
+overlap are resolved so they don't — new `PageMarginBoxGeometry.ResolveEdgeOverlap` (center-priority: the
+center box keeps its band-clamped size centered, the side boxes clamp to the side gaps; no center → two
+side boxes shrink proportionally), a NO-OP when they don't overlap (the common short-content case stays
+byte-identical). `PageMarginBoxPainter.Layout` refactored into two passes (compute desired rects →
+`ResolveEdgeOverlaps` adjusts overlapping siblings per edge → emit). DEFERRED: the spec-strict §5.3.2
+min/max-content flex (no min-content yet — it clamps rather than re-wrapping, so over-long content still
+overflows), `box-sizing`, overflow clipping/wrapping. Next (Task 21
+remaining, in order): the spec-strict §5.3.2 min/max-content flex + overflow clipping/wrapping / `@page
 :left`/`:right`/`:blank` + named pages (multi-page-gated), then Task 22 (`string-set`/`string()` running
 headers). Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES

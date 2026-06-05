@@ -67,8 +67,9 @@ namespace NetPdf.Rendering;
 /// suppresses the box upstream (the resolver omits it). Still-unsupported content (a non-page
 /// <c>counter()</c> / <c>counters()</c> / <c>string()</c> / <c>element()</c>) emits
 /// <c>CSS-CONTENT-FUNCTION-UNSUPPORTED-001</c> and the box is skipped. §5.3 three-box-per-edge sizing
-/// is shrink-to-fit + explicit <c>width</c>/<c>height</c>; the min/max-content DISTRIBUTION for
-/// overlapping siblings is a later cycle.
+/// is shrink-to-fit + explicit <c>width</c>/<c>height</c> + a first-cut overlap DISTRIBUTION
+/// (<see cref="ResolveEdgeOverlaps"/> — center-priority clamp); the spec-strict min/max-content flex +
+/// overflow clipping are later cycles.
 /// </para>
 /// </remarks>
 internal static class PageMarginBoxPainter
@@ -146,9 +147,10 @@ internal static class PageMarginBoxPainter
         // each margin box. Build the page-context style once; every box inherits from it.
         var pageContextStyle = MarginBoxStyle.Build(pageDeclarations, rootElementStyle, styleDiagnostics);
 
-        var fragments = new List<BoxFragment>(boxes.Length);
-        var backgrounds = new List<MarginBoxBackgroundFill>();
-        var borders = new List<MarginBoxBorder>();
+        // PASS 1 — compute each box's style, content layout, and DESIRED box geometry (shrink-to-fit /
+        // explicit size, positioned by its name-derived role). The boxes are COLLECTED (not emitted yet)
+        // so the §5.3 distribution can resolve overlapping siblings before anything paints.
+        var items = new List<MarginBoxItem>(boxes.Length);
         foreach (var mb in boxes)
         {
             if (!CssContentList.TryParse(mb.ContentRawValue, host, pageCounters, out var text))
@@ -221,8 +223,9 @@ internal static class PageMarginBoxPainter
             // content-box); the border-box adds the border+padding insets, and applies even to an
             // empty/failed-font box (a sized decorative box). Corner boxes (no variable axis) + auto-sized
             // empty/failed-font boxes keep the full band (the cycle-8 decorative band). Box size is
-            // clamped to the band; the full CSS min/max-content DISTRIBUTION for OVERLAPPING siblings +
-            // overflow clipping stay deferred (deferrals.md).
+            // clamped to the band. This is each box's DESIRED size; siblings sharing an edge that would
+            // overlap are then resolved by ResolveEdgeOverlaps (the §5.3 first-cut distribution). The
+            // spec-strict min/max-content flex + overflow clipping stay deferred (deferrals.md).
             var boxWidthPx = region.Width;
             var boxHeightPx = region.Height;
             if (region.VariableAxis == PageMarginBoxGeometry.MarginBoxAxis.Horizontal)
@@ -245,6 +248,45 @@ internal static class PageMarginBoxPainter
             // so the leftover term is 0 and this reduces to region.X / region.Y.
             var boxXPx = region.X + (region.Width - boxWidthPx) * region.HAlign;
             var boxYPx = region.Y + (region.Height - boxHeightPx) * region.VAlign;
+
+            items.Add(new MarginBoxItem
+            {
+                Region = region, Style = style, CurrentColorArgb = currentColor, Inline = inline,
+                HasLine = hasLine, InsetLeftPx = insetLeftPx, InsetTopPx = insetTopPx,
+                InsetRightPx = insetRightPx, InsetBottomPx = insetBottomPx, HAlign = hAlign,
+                VAlign = vAlign, LineHeightPx = lineHeightPx, BoxXPx = boxXPx, BoxYPx = boxYPx,
+                BoxWidthPx = boxWidthPx, BoxHeightPx = boxHeightPx,
+            });
+        }
+
+        // §5.3 DISTRIBUTION (first cut) — resolve overlap among the boxes sharing each edge band via the
+        // center-priority clamp (PageMarginBoxGeometry.ResolveEdgeOverlap). A NO-OP when the boxes don't
+        // overlap, so single boxes + the common short-content case keep the per-box (cycle 14/15)
+        // geometry byte-for-byte. Corner boxes (no variable axis) don't participate.
+        ResolveEdgeOverlaps(items);
+
+        // PASS 2 — emit each box's background band (cycle 8) + border (border cycle) + text fragment from
+        // its (possibly adjusted) box rect. Aliased back to the per-box locals the emission code uses.
+        var fragments = new List<BoxFragment>(items.Count);
+        var backgrounds = new List<MarginBoxBackgroundFill>();
+        var borders = new List<MarginBoxBorder>();
+        foreach (var item in items)
+        {
+            var style = item.Style;
+            var currentColor = item.CurrentColorArgb;
+            var inline = item.Inline;
+            var hasLine = item.HasLine;
+            var boxXPx = item.BoxXPx;
+            var boxYPx = item.BoxYPx;
+            var boxWidthPx = item.BoxWidthPx;
+            var boxHeightPx = item.BoxHeightPx;
+            var insetLeftPx = item.InsetLeftPx;
+            var insetTopPx = item.InsetTopPx;
+            var insetRightPx = item.InsetRightPx;
+            var insetBottomPx = item.InsetBottomPx;
+            var hAlign = item.HAlign;
+            var vAlign = item.VAlign;
+            var lineHeightPx = item.LineHeightPx;
 
             // Background-color (cycle 8): fills the BOX behind the content. `currentcolor` resolves
             // against the box's own color; transparent (initial) / unset paints nothing.
@@ -333,9 +375,10 @@ internal static class PageMarginBoxPainter
     /// when it's <c>auto</c>/unresolved (the caller shrink-to-fits). An absolute length is used as-is; a
     /// percentage resolves against <paramref name="bandExtentPx"/> (the box's containing block on that
     /// axis). box-sizing is content-box (the CSS default) — the caller adds the border+padding insets to
-    /// get the border-box. A font-/viewport-relative or <c>calc()</c> size stays unresolved here →
-    /// shrink-to-fit (a documented gap, deferrals.md). Negatives are rejected upstream (non-negative
-    /// property); the <c>Max(0, …)</c> is defensive.</summary>
+    /// get the border-box. A font-/viewport-relative or <c>calc()</c> size is diagnosed + DROPPED
+    /// upstream by <see cref="MarginBoxStyle"/> (post-PR-#144 review), so it never reaches here as a slot
+    /// — this reads it as <c>auto</c> and the caller shrink-to-fits. Negatives are rejected upstream
+    /// (non-negative property); the <c>Max(0, …)</c> is defensive.</summary>
     private static double? TryReadExplicitSizePx(ComputedStyle style, PropertyId id, double bandExtentPx)
     {
         var slot = style.Get(id);
@@ -347,6 +390,93 @@ internal static class PageMarginBoxPainter
             ComputedSlotTag.Percentage => Math.Max(0, slot.AsPercentage() / 100.0 * bandExtentPx),
             _ => null,
         };
+    }
+
+    /// <summary>Per-box state computed in PASS 1 (style + content layout + DESIRED box rect), carried to
+    /// PASS 2 so the §5.3 distribution can adjust the box rect for overlapping siblings in between. The
+    /// box rect (<see cref="BoxXPx"/> … <see cref="BoxHeightPx"/>) is mutable for that adjustment.</summary>
+    private sealed class MarginBoxItem
+    {
+        public PageMarginBoxGeometry.MarginBoxRegion Region;
+        public ComputedStyle Style = null!;
+        public uint CurrentColorArgb;
+        public InlineLayoutResult Inline;
+        public bool HasLine;
+        public double InsetLeftPx;
+        public double InsetTopPx;
+        public double InsetRightPx;
+        public double InsetBottomPx;
+        public double HAlign;
+        public double VAlign;
+        public double LineHeightPx;
+        public double BoxXPx;
+        public double BoxYPx;
+        public double BoxWidthPx;
+        public double BoxHeightPx;
+    }
+
+    /// <summary>Resolve §5.3 overlap among the boxes sharing each edge band, IN PLACE. Groups the
+    /// non-corner items by edge (variable axis + the fixed-axis band coordinate), identifies each box's
+    /// name-derived role (A start / B center / C end) from its region alignment on the variable axis,
+    /// and runs <see cref="PageMarginBoxGeometry.ResolveEdgeOverlap"/> to size + place the boxes without
+    /// overlap (a no-op when they already don't). Writes the resolved variable-axis size + start back
+    /// onto each item's box rect. Edges are resolved INDEPENDENTLY, so the grouping order doesn't affect
+    /// the output (PASS 2 still emits in the original box order).</summary>
+    private static void ResolveEdgeOverlaps(List<MarginBoxItem> items)
+    {
+        if (items.Count < 2) return; // a single box can't overlap a sibling.
+
+        // Group by edge: same variable axis + same fixed-axis band coordinate (region.Y for a horizontal
+        // edge band, region.X for a vertical one). Corner boxes (axis None) are fixed — they don't group.
+        Dictionary<(PageMarginBoxGeometry.MarginBoxAxis, double), List<MarginBoxItem>>? edges = null;
+        foreach (var item in items)
+        {
+            var axis = item.Region.VariableAxis;
+            if (axis == PageMarginBoxGeometry.MarginBoxAxis.None) continue;
+            var key = (axis, axis == PageMarginBoxGeometry.MarginBoxAxis.Horizontal ? item.Region.Y : item.Region.X);
+            edges ??= new Dictionary<(PageMarginBoxGeometry.MarginBoxAxis, double), List<MarginBoxItem>>();
+            if (!edges.TryGetValue(key, out var list)) edges[key] = list = new List<MarginBoxItem>(3);
+            list.Add(item);
+        }
+        if (edges is null) return;
+
+        foreach (var edgeItems in edges.Values)
+        {
+            if (edgeItems.Count < 2) continue; // one box on the edge → nothing to resolve.
+            var horizontal = edgeItems[0].Region.VariableAxis == PageMarginBoxGeometry.MarginBoxAxis.Horizontal;
+            var available = horizontal ? edgeItems[0].Region.Width : edgeItems[0].Region.Height;
+
+            // Identify the up-to-three boxes by their name-derived role on the variable axis (0 = start,
+            // 0.5 = center, 1 = end). Distinct names → distinct roles, so at most one of each.
+            MarginBoxItem? a = null, b = null, c = null;
+            foreach (var item in edgeItems)
+            {
+                var role = horizontal ? item.Region.HAlign : item.Region.VAlign;
+                if (role <= 0.25) a = item;
+                else if (role >= 0.75) c = item;
+                else b = item;
+            }
+
+            var resolved = PageMarginBoxGeometry.ResolveEdgeOverlap(
+                new PageMarginBoxGeometry.EdgeTriple(
+                    a is null ? 0 : VarSize(a, horizontal), a is not null,
+                    b is null ? 0 : VarSize(b, horizontal), b is not null,
+                    c is null ? 0 : VarSize(c, horizontal), c is not null),
+                available);
+
+            if (a is not null) ApplyResolved(a, horizontal, resolved.SizeA, resolved.StartA);
+            if (b is not null) ApplyResolved(b, horizontal, resolved.SizeB, resolved.StartB);
+            if (c is not null) ApplyResolved(c, horizontal, resolved.SizeC, resolved.StartC);
+        }
+
+        static double VarSize(MarginBoxItem item, bool horizontal) =>
+            horizontal ? item.BoxWidthPx : item.BoxHeightPx;
+
+        static void ApplyResolved(MarginBoxItem item, bool horizontal, double size, double start)
+        {
+            if (horizontal) { item.BoxWidthPx = size; item.BoxXPx = item.Region.X + start; }
+            else { item.BoxHeightPx = size; item.BoxYPx = item.Region.Y + start; }
+        }
     }
 
     private static void EmitContentUnsupported(IDiagnosticsSink diagnostics, string boxName, string raw) =>

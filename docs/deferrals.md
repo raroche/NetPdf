@@ -3089,14 +3089,21 @@ flags the categories):
          (Task 23): `element(name, first)` AND the no-keyword DEFAULT → the first occurrence (GCPM §7.4),
          `element(name, last)` → the exit value (`MarginContentContext.RunningElementsFirst`; the shared
          `TryReadPositionedFunction` parses both `string()` + `element()`); `start` / `first-except` bail.
-         A STANDALONE `element(name)` now renders the text in the running element's OWN font + color (Task 23
-         first cut of FULL block rendering): `MarginContentCollector.CaptureOwnStyle` captures its winning
-         font/color longhands (first + last occurrence, into `MarginContentContext.RunningElementStyles`);
-         `PageMarginBoxPainter` detects standalone `element()` (`CssContentList.TryGetStandaloneElement`) +
-         builds a CONTENT `ComputedStyle` (`MarginBoxStyle.Build`, parent = the page context) for shaping +
-         line height, while the box's DECORATION (bg/border/padding) + alignment + white-space stay the box's.
-         STILL deferred for `element()`: the element's full BLOCK box (its background/border/nested block
-         layout — text-only first cut); relative units / `inherit` in the element's style resolve against the
+         A STANDALONE `element(name)` now renders the running element's box AS the margin box's content box
+         (Task 23 FULL-block first cut): its text in the element's OWN font + color, plus its OWN (non-inherited)
+         `background-color` + `border-*` decoration. `MarginContentCollector.CaptureOwnStyle` captures the
+         element's winning font/color longhands (inherited — WALKED from ancestors, post-PR-#151 review P2) AND
+         its NON-inherited `background-color` + 12 `border-*` longhands (`DecorationOwnProperties` — the
+         element's OWN winner only, no ancestor walk), first + last occurrence in LOCKSTEP with the text (review
+         P1). `PageMarginBoxPainter` detects standalone `element()` (`CssContentList.TryGetStandaloneElement`) +
+         builds a CONTENT `ComputedStyle` (font/color, for shaping + the `BoxFragment.TextMetricsStyle` line
+         metrics, review P1) AND a box `style` with the element's decoration cascaded UNDER the box's own
+         declarations (`BuildFromOwnStyle(decorationOnly: true, appendDeclarations: box decls)` — a box-declared
+         `background`/`border` OVERRIDES the element's), reusing all the box bg/border/inset machinery;
+         `currentColor` reads the element's own colour. STILL deferred for `element()`: the running element's
+         NESTED BLOCK children (laid-out sub-boxes — text-only); its own `padding` (an extra inset beyond the
+         border width); the box/element being SEPARATELY-decorated boxes (they COINCIDE — a box property
+         overrides rather than nesting); relative units / `inherit` in the element's style resolve against the
          page context (an approximation — exact for absolute font-size/color); a MIXED list (`"x" element(rh)`)
          keeps the box style (GCPM: element() is standalone); (d) the `string(name, first |
          last)` position keyword is DONE (Task 21):

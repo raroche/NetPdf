@@ -65,8 +65,10 @@ namespace NetPdf.Rendering;
 /// <c>counter(pages)</c> page numbers (cycle 9 — resolved against the page being painted; a single
 /// page renders <c>1</c> until the multi-page driver lands), <c>string(name)</c> (Task 22 — the named
 /// string set by <c>string-set</c>), and <c>element(name)</c> (Task 23 — the text of a
-/// <c>position: running()</c> element); both resolved from <c>marginContext</c> (a single-page first
-/// cut; cross-page "running" persistence is deferred). A winning <c>none</c> / <c>normal</c> suppresses
+/// <c>position: running()</c> element, rendered in the element's OWN font/color, and for a STANDALONE
+/// <c>element(name)</c> also its OWN <c>background-color</c> + <c>border-*</c> decoration cascaded under
+/// the box's own declarations — full-block first cut); both resolved from <c>marginContext</c> (a
+/// single-page first cut; cross-page "running" persistence is deferred). A winning <c>none</c> / <c>normal</c> suppresses
 /// the box upstream (the resolver omits it). Still-unsupported content (a non-page <c>counter()</c> /
 /// <c>counters()</c>) emits <c>CSS-CONTENT-FUNCTION-UNSUPPORTED-001</c> and the box is skipped. §5.3 three-box-per-edge sizing
 /// is shrink-to-fit + explicit <c>width</c>/<c>height</c> + the §5.3.2 overlap DISTRIBUTION
@@ -176,24 +178,39 @@ internal static class PageMarginBoxPainter
             // Per-box style from the box's declared longhands (font-* / color → shaping + fill;
             // background-color + border-* → decoration; padding + border-width → the text content-origin
             // inset). The style is box-owned, so the rented instance isn't pooled — a negligible miss.
-            var style = MarginBoxStyle.Build(mb.Declarations, pageContextStyle, styleDiagnostics);
-
-            var currentColor = FragmentPainter.TryResolveColor(style.Get(PropertyId.Color), DefaultColorArgb, out var fg)
-                ? fg : DefaultColorArgb;
-
-            // element() FIRST-CUT OWN-STYLE (Task 23): when the box's content is a STANDALONE element(name),
-            // shape the text in the RUNNING ELEMENT's own font/color (built from its captured winning
-            // values), not the box's — so a styled running header (e.g. a colored / larger heading) renders
-            // in its own style. The box's DECORATION (background / border / padding) + alignment + white-space
-            // stay the box's; only the content's font + colour come from the element. Mixed / non-element()
-            // content keeps the box style. Relative units / `inherit` in the element's style resolve against
-            // the page context (a documented approximation — exact for the common absolute font-size/colour).
-            var contentStyle = style;
+            //
+            // STANDALONE element() OWN STYLE + DECORATION (Task 23 full-block first cut): a standalone
+            // `content: element(name)` makes the running element's box the margin box's content box. Its OWN
+            // font/color (captured, with inherited values walked from ancestors) drive the CONTENT shaping
+            // (`contentStyle`); its OWN (non-inherited) `background-color` + `border-*` decorate the box,
+            // cascaded UNDER the box's own declarations (an explicit box `background`/`border` overrides) into
+            // `style`. The element decoration stays in `style` (NOT `contentStyle`), preserving the box/content
+            // split: the box font-size can still differ from the content's, so the paint-time line metrics
+            // follow `contentStyle` (post-PR-#151 review P1, BoxFragment.TextMetricsStyle). Mixed / non-
+            // element() content keeps the box's own style for both. APPROXIMATION: the running element's box
+            // and the margin box COINCIDE (no separately-decorated nesting); the element's nested block
+            // children + its own padding stay deferred (deferrals.md). Relative units / `inherit` resolve
+            // against the page context (exact for the common absolute values).
+            ComputedStyle style, contentStyle;
             if (CssContentList.TryGetStandaloneElement(mb.ContentRawValue, out var elName, out var elFirst)
-                && TryBuildRunningElementStyle(marginContext, elName, elFirst, pageContextStyle, styleDiagnostics) is { } elStyle)
+                && TryGetRunningElementOwnStyle(marginContext, elName, elFirst) is { } ownPairs)
             {
-                contentStyle = elStyle;
+                contentStyle = BuildFromOwnStyle(ownPairs, decorationOnly: false,
+                    ImmutableArray<CssDeclaration>.Empty, pageContextStyle, styleDiagnostics);
+                style = BuildFromOwnStyle(ownPairs, decorationOnly: true,
+                    mb.Declarations, pageContextStyle, styleDiagnostics);
             }
+            else
+            {
+                style = MarginBoxStyle.Build(mb.Declarations, pageContextStyle, styleDiagnostics);
+                contentStyle = style;
+            }
+
+            // currentColor = the CONTENT colour (the running element's own colour for a standalone
+            // element(); the box's own colour otherwise, since contentStyle == style there) — the
+            // currentcolor fallback for the element's own border / background.
+            var currentColor = FragmentPainter.TryResolveColor(contentStyle.Get(PropertyId.Color), DefaultColorArgb, out var fg)
+                ? fg : DefaultColorArgb;
 
             // CONTENT alignment WITHIN the box: a text-align / vertical-align DECLARED ON THE BOX aligns
             // the line inside the box's content area (read from the box's OWN declarations so the
@@ -521,23 +538,49 @@ internal static class PageMarginBoxPainter
         };
     }
 
-    /// <summary>Build the running element's OWN-STYLE <see cref="ComputedStyle"/> for a standalone
-    /// element() (Task 23 first cut): its captured winning font/color longhands cascaded over the page
-    /// context via <see cref="MarginBoxStyle.Build"/>. <paramref name="first"/> selects the first vs last
-    /// occurrence's style (matching the resolved text). Returns <see langword="null"/> when the name has no
-    /// captured style — the caller then keeps the box's own style. The result is box-owned (not pooled),
-    /// like the per-box style.</summary>
-    private static ComputedStyle? TryBuildRunningElementStyle(
-        CssContentList.MarginContentContext marginContext, string name, bool first,
-        ComputedStyle pageContextStyle, ICssDiagnosticsSink diagnostics)
+    /// <summary>Look up the running element's captured OWN-STYLE pairs (font/color + the element's own
+    /// background-color / border-* — see <c>MarginContentCollector.CaptureOwnStyle</c>) for a standalone
+    /// element(). <paramref name="first"/> selects the first vs last occurrence (matching the resolved
+    /// text — in lockstep, post-PR-#151 review P1). Returns <see langword="null"/> when the name has no
+    /// non-empty captured style (the caller then keeps the box's own style).</summary>
+    private static IReadOnlyList<KeyValuePair<string, string>>? TryGetRunningElementOwnStyle(
+        CssContentList.MarginContentContext marginContext, string name, bool first)
     {
         var dict = first ? marginContext.RunningElementStylesFirst : marginContext.RunningElementStyles;
-        if (dict is null || !dict.TryGetValue(name, out var pairs) || pairs.Count == 0) return null;
-        var builder = ImmutableArray.CreateBuilder<CssDeclaration>(pairs.Count);
+        return dict is not null && dict.TryGetValue(name, out var pairs) && pairs.Count > 0 ? pairs : null;
+    }
+
+    /// <summary>Build a <see cref="ComputedStyle"/> from the running element's captured <paramref name="pairs"/>
+    /// cascaded over <paramref name="pageContextStyle"/> via <see cref="MarginBoxStyle.Build"/>. When
+    /// <paramref name="decorationOnly"/>, only the element's NON-inherited decoration pairs (background-color
+    /// / border-*) are taken — the inherited content pairs (font/color) are skipped — so the result carries
+    /// the element's DECORATION without overriding the box's font (used for <c>style</c>); otherwise all
+    /// pairs are taken (used for <c>contentStyle</c>). <paramref name="appendDeclarations"/> (the box's own
+    /// declarations) are appended LAST so they WIN the cascade (the box overrides the element). The result
+    /// is box-owned (not pooled), like the per-box style.</summary>
+    private static ComputedStyle BuildFromOwnStyle(
+        IReadOnlyList<KeyValuePair<string, string>> pairs, bool decorationOnly,
+        ImmutableArray<CssDeclaration> appendDeclarations,
+        ComputedStyle pageContextStyle, ICssDiagnosticsSink diagnostics)
+    {
+        var builder = ImmutableArray.CreateBuilder<CssDeclaration>(pairs.Count + appendDeclarations.Length);
         foreach (var kv in pairs)
-            builder.Add(new CssDeclaration(kv.Key, new CssValue(kv.Value), false, CssSourceLocation.Unknown));
+            if (!decorationOnly || !IsElementContentProperty(kv.Key))
+                builder.Add(new CssDeclaration(kv.Key, new CssValue(kv.Value), false, CssSourceLocation.Unknown));
+        if (!appendDeclarations.IsDefaultOrEmpty)
+            builder.AddRange(appendDeclarations);
         return MarginBoxStyle.Build(builder.ToImmutable(), pageContextStyle, diagnostics);
     }
+
+    /// <summary>The CSS-inherited CONTENT longhands (color / font-*) of a running element's captured
+    /// own-style — the complement (background-color / border-*) is the element's DECORATION. Used to split
+    /// the captured pairs when building the decoration-only <c>style</c> (the content pairs would otherwise
+    /// override the box's font).</summary>
+    private static bool IsElementContentProperty(string property) => property switch
+    {
+        "color" or "font-family" or "font-size" or "font-weight" or "font-style" => true,
+        _ => false,
+    };
 
     /// <summary>Per-box state computed in PASS 1 (style + content layout + DESIRED box rect), carried to
     /// PASS 2 so the §5.3 distribution can adjust the box rect for overlapping siblings in between. The

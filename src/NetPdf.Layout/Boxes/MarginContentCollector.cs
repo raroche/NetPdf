@@ -35,10 +35,12 @@ namespace NetPdf.Layout.Boxes;
 /// so <see cref="NetPdf.Css.Parser.Preprocessing.CssPreprocessor"/>'s recovery re-injects the declaration
 /// into the cascade, where this collector reads it + resolves <c>content()</c> to the element's text.
 /// (The typographic targets <c>content(before|after|first-letter|marker)</c> stay deferred.)
-/// <c>element(name)</c> pulls the running element's TEXT; a STANDALONE <c>element(name)</c> renders that
-/// text in the running element's OWN font + color (captured here by <see cref="CaptureOwnStyle"/>,
-/// including values inherited from ancestors — post-PR-#151 review P2). Its full block box (background /
-/// border / nested layout) stays deferred (deferrals.md).
+/// <c>element(name)</c> pulls the running element's TEXT; a STANDALONE <c>element(name)</c> renders the
+/// running element's box AS the margin box's content box — its text in the element's OWN font + color
+/// (inherited values walked from ancestors — post-PR-#151 review P2), plus the element's OWN (non-inherited)
+/// <c>background-color</c> + <c>border-*</c> as the box decoration (cascaded UNDER the box's own
+/// declarations) — all captured here by <see cref="CaptureOwnStyle"/>. The running element's nested BLOCK
+/// children (laid-out sub-boxes) + its own padding stay deferred (deferrals.md).
 /// </para>
 /// </remarks>
 internal static class MarginContentCollector
@@ -110,7 +112,7 @@ internal static class MarginContentCollector
                 // DIFFERENT occurrence's STYLE (e.g. a styled first + unstyled last must render the last text
                 // in the box's own style, not the first's). An empty list makes
                 // PageMarginBoxPainter.TryBuildRunningElementStyle return null → the box's own style is used.
-                var ownStyle = CaptureOwnStyle(element, cascade);
+                var ownStyle = CaptureOwnStyle(element, rules, cascade);
                 (c.RunningStyles ??= new(StringComparer.Ordinal))[runName] = ownStyle;            // last occurrence
                 (c.RunningStylesFirst ??= new(StringComparer.Ordinal)).TryAdd(runName, ownStyle); // first occurrence
             }
@@ -120,40 +122,68 @@ internal static class MarginContentCollector
             Walk(child, cascade, c);
     }
 
-    /// <summary>The font/color longhands element()'s first-cut own-style rendering pulls from the running
-    /// element (the subset MarginBoxStyle supports). The painter builds a ComputedStyle from these winning
-    /// values so a styled running header (e.g. a colored, larger heading) renders in its own style;
-    /// relative units / <c>inherit</c> resolve against the page context (a documented approximation). All
-    /// of these are CSS-INHERITED properties, so <see cref="CaptureOwnStyle"/> walks ancestors for each
+    /// <summary>The CSS-INHERITED font/color longhands element()'s own-style rendering pulls from the
+    /// running element for the CONTENT shaping. The painter builds a content <see cref="NetPdf.Css.ComputedValues.ComputedStyle"/>
+    /// from these so a styled running header (e.g. a colored / larger heading) shapes in its own font +
+    /// colour; relative units / <c>inherit</c> resolve against the page context (a documented
+    /// approximation). All are inherited, so <see cref="CaptureOwnStyle"/> walks ANCESTORS for each
     /// (post-PR-#151 review P2).</summary>
-    private static readonly string[] OwnStyleProperties =
+    private static readonly string[] InheritedOwnProperties =
         { "color", "font-family", "font-size", "font-weight", "font-style" };
 
+    /// <summary>The NON-inherited <c>background-color</c> + <c>border-*</c> longhands element()'s full-block
+    /// first cut pulls from the running element for its DECORATION (Task 23 — the element's box becomes the
+    /// margin box's content box: its own background paints a band, its own border strokes + insets the
+    /// text, cascaded UNDER the box's own declarations). Because these are NOT inherited, they're captured
+    /// from the element's OWN winner only (NO ancestor walk — an ancestor's background must not bleed onto
+    /// the running element). A normal DOM element's <c>border</c> / <c>background</c> shorthands are already
+    /// expanded to these longhands by <c>CssParserAdapter</c>, so the cascade winners are read directly.
+    /// Padding (an extra border content-inset beyond the border width) is the next increment
+    /// (deferrals.md).</summary>
+    private static readonly string[] DecorationOwnProperties =
+    {
+        "background-color",
+        "border-top-width", "border-top-style", "border-top-color",
+        "border-right-width", "border-right-style", "border-right-color",
+        "border-bottom-width", "border-bottom-style", "border-bottom-color",
+        "border-left-width", "border-left-style", "border-left-color",
+    };
+
     /// <summary>The empty own-style list — the lockstep marker for a running element with no declared or
-    /// inherited font/color (post-PR-#151 review P1). Recorded (not skipped) so the style dictionaries
-    /// track the text dictionaries occurrence-for-occurrence; the page-margin painter's own-style builder
-    /// treats it as "no own style" and keeps the box's style.</summary>
+    /// inherited font/color and no own decoration (post-PR-#151 review P1). Recorded (not skipped) so the
+    /// style dictionaries track the text dictionaries occurrence-for-occurrence; the page-margin painter's
+    /// own-style builder treats it as "no own style" and keeps the box's style.</summary>
     private static readonly IReadOnlyList<KeyValuePair<string, string>> EmptyOwnStyle =
         Array.Empty<KeyValuePair<string, string>>();
 
-    /// <summary>Capture the running element's OWN <see cref="OwnStyleProperties"/> values — the nearest
-    /// self-or-ancestor declared winner of each (post-PR-#151 review P2). Returns <see cref="EmptyOwnStyle"/>
-    /// (never <see langword="null"/>) when none is declared anywhere up the chain (the margin box's own
-    /// style is then used as-is).</summary>
-    /// <remarks>color / font-* are all CSS-INHERITED, so the nearest ancestor that declares one is a
-    /// first-order approximation of the running element's COMPUTED inherited value — the element is removed
-    /// from normal flow BEFORE the box-builder computes a real <see cref="NetPdf.Css.ComputedValues.ComputedStyle"/>,
-    /// so none exists to read (e.g. <c>.section { color: red } .rh { position: running(rh) }</c> makes the
-    /// running element red). APPROXIMATION: CSS-wide keywords (<c>inherit</c>/<c>initial</c>/<c>unset</c>) on
-    /// an ancestor + relative-unit resolution against an INTERMEDIATE ancestor are not modeled — a relative
-    /// size resolves against the page context later (documented — deferrals.md).</remarks>
+    /// <summary>Capture the running element's OWN style for element()'s rendering: the inherited
+    /// <see cref="InheritedOwnProperties"/> (font/color — nearest self-or-ancestor declared winner, an
+    /// approximation of computed inheritance, post-PR-#151 review P2) used for the CONTENT, plus the
+    /// non-inherited <see cref="DecorationOwnProperties"/> (background-color / border-* — the element's OWN
+    /// winner only) used for the element's DECORATION. Returns <see cref="EmptyOwnStyle"/> (never
+    /// <see langword="null"/>) when nothing is declared.</summary>
+    /// <remarks>color / font-* are CSS-INHERITED, so the nearest ancestor that declares one is the running
+    /// element's inherited computed value (the element is removed from normal flow BEFORE the box-builder
+    /// computes a real <see cref="NetPdf.Css.ComputedValues.ComputedStyle"/>, so none exists to read — e.g.
+    /// <c>.section { color: red } .rh { position: running(rh) }</c> makes the running element red).
+    /// APPROXIMATION: CSS-wide keywords (<c>inherit</c>/<c>initial</c>/<c>unset</c>) on an ancestor +
+    /// relative-unit resolution against an INTERMEDIATE ancestor are not modeled — a relative size resolves
+    /// against the page context later (documented — deferrals.md).</remarks>
     private static IReadOnlyList<KeyValuePair<string, string>> CaptureOwnStyle(
-        IElement element, ResolvedCascadeResult cascade)
+        IElement element, ResolvedRuleSet rules, ResolvedCascadeResult cascade)
     {
         List<KeyValuePair<string, string>>? captured = null;
-        foreach (var prop in OwnStyleProperties)
+        // Inherited content props — nearest self-or-ancestor winner.
+        foreach (var prop in InheritedOwnProperties)
         {
             var value = NearestDeclaredWinner(element, cascade, prop);
+            if (!string.IsNullOrWhiteSpace(value))
+                (captured ??= new()).Add(new KeyValuePair<string, string>(prop, value));
+        }
+        // Non-inherited decoration props — the element's OWN winner only (no ancestor walk).
+        foreach (var prop in DecorationOwnProperties)
+        {
+            var value = rules.GetWinner(prop)?.ResolvedValue;
             if (!string.IsNullOrWhiteSpace(value))
                 (captured ??= new()).Add(new KeyValuePair<string, string>(prop, value));
         }

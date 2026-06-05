@@ -73,8 +73,8 @@ namespace NetPdf.Rendering;
 /// (<see cref="ResolveEdgeOverlaps"/> — the centre box stays centred, flexed against the imaginary
 /// <c>2 × max(A, C)</c> box, with the sides sized in the gaps; no centre box → the sides flex, or go
 /// proportional to min-content when the mins don't fit; a flexed/shrunk box re-wraps its content to fit,
-/// honouring the box's white-space). The content-alignment of wrapped lines + vertical-edge (height)
-/// overflow are later cycles.
+/// honouring the box's white-space). Wrapped lines are aligned PER LINE by the box's alignment (Task 21 —
+/// via the fragment's <c>LineAlignFactor</c>); vertical-edge (height) overflow is a later cycle.
 /// </para>
 /// </remarks>
 internal static class PageMarginBoxPainter
@@ -358,18 +358,17 @@ internal static class PageMarginBoxPainter
 
             if (!hasLine) continue; // empty / failed-font box: decoration only, no text fragment.
 
-            // Place + align the line within the box's content box, at the BORDER-box origin (boxX/boxY);
-            // TextPainter adds the border+padding inset. On the box's VARIABLE axis a SHRINK-TO-FIT box is
-            // content-sized so the content-align term collapses to 0 (the line fills the box), but an
-            // EXPLICIT-width/height box can be wider/taller than the line, so text-align/vertical-align
-            // now positions the line within it; on the FIXED axis the box spans the band, so the term
-            // aligns the line within it (e.g. a top box's line stays vertically centered). For an
-            // auto-sized box that doesn't redefine alignment, this matches the full-band line position.
-            var lineWidthPx = WidestLineAdvancePx(inline);
+            // Place the content box at the BORDER-box origin (boxX/boxY); TextPainter adds the
+            // border+padding inset to reach the content-box origin. Horizontal alignment is handed to
+            // TextPainter as a PER-LINE factor (LineAlignFactor = hAlign) so a WRAPPED multi-line run is
+            // aligned line-by-line within the content box (Task 21 — wrapped-line content-alignment), not
+            // just block-left. A single line reduces to the old block-level alignment (byte-identical):
+            // its leftover (contentBoxWidth − lineAdvance) × hAlign is exactly what was pre-applied before.
+            // A SHRINK-TO-FIT box is content-sized so the leftover is ~0 (no visible shift); an explicit-
+            // width / flexed / wrapped box has room, so the alignment is observable.
             var blockHeightPx = lineHeightPx * inline.Lines.Length;
             var contentBoxWidthPx = Math.Max(0, boxWidthPx - insetLeftPx - insetRightPx);
             var contentBoxHeightPx = Math.Max(0, boxHeightPx - insetTopPx - insetBottomPx);
-            var absLeftPx = boxXPx + (contentBoxWidthPx - lineWidthPx) * hAlign;
             // Vertical alignment uses the FULL wrapped block height (lineHeight × line count), not one line:
             // a re-wrapped multi-line header would otherwise be positioned as if it were a single line and
             // spill out of its band (review P2). The whole block is centered / top- / bottom-aligned in the
@@ -378,11 +377,12 @@ internal static class PageMarginBoxPainter
 
             fragments.Add(new BoxFragment(
                 Box: Box.TextRun(string.Empty, style),
-                InlineOffset: absLeftPx - contentOriginLeftPx,
+                InlineOffset: boxXPx - contentOriginLeftPx,   // border-box X; TextPainter aligns each line
                 BlockOffset: absTopPx - contentOriginTopPx,
                 InlineSize: contentBoxWidthPx,
                 BlockSize: blockHeightPx,
-                InlineLayout: inline));
+                InlineLayout: inline,
+                LineAlignFactor: hAlign));
         }
 
         // The page-context style is only a parent — each box copied the slots it needs — so return

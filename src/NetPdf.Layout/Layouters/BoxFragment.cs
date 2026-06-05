@@ -112,10 +112,18 @@ namespace NetPdf.Layout.Layouters;
 /// output, plus block containers whose children are themselves
 /// block-level). Empty inline content produces no fragment at
 /// all.</param>
+/// <param name="LineAlignFactor">Per Phase 3 Task 21 (wrapped-line content-alignment) — an OPT-IN
+/// per-line inline-alignment factor (0 = start/left, 0.5 = center, 1 = end/right). When non-zero the
+/// painter shifts EACH painted line by <c>(InlineSize − lineAdvance) × LineAlignFactor</c> so a wrapped
+/// multi-line run is aligned per line, not just block-left. DEFAULT 0 leaves every other fragment
+/// (the body inline path, which doesn't yet apply <c>text-align</c>) byte-identical; only the page-margin
+/// box sets it (to its resolved alignment). A single-line run's offset reduces to the block-level
+/// alignment the caller would otherwise have pre-applied, so single-line output is unchanged.</param>
 internal readonly record struct BoxFragment(
     Box Box,
     double InlineOffset,
     double BlockOffset,
     double InlineSize,
     double BlockSize,
-    InlineLayoutResult? InlineLayout = null);
+    InlineLayoutResult? InlineLayout = null,
+    double LineAlignFactor = 0.0);

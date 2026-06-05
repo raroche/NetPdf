@@ -1866,21 +1866,50 @@ public sealed class HtmlPdfConvertTests
         Assert.InRange(blockMid, single[0] - 1.5, single[0] + 1.5);   // block centre == single-line centre
     }
 
+    [Fact]
+    public void Page_margin_box_wrapped_lines_are_individually_aligned()
+    {
+        // Task 21 (wrapped-line content-alignment): a wrapped @top-center header centers EACH line within
+        // the content box (so narrower lines are indented more) — not just the block. A @top-left header
+        // left-aligns every line at one X. So the centered block's per-line start Xs VARY, while the
+        // left-aligned block's are constant. (Before the fix, the centered block also shared one X.)
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double[] LineXs(string box) => AllTdX(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @" + box + " { content:\"" + Words(200) + "\" } }</style>" +
+            "</head><body></body></html>", opts)));
+        double Spread(double[] a)
+        {
+            double lo = a[0], hi = a[0];
+            foreach (var v in a) { if (v < lo) lo = v; if (v > hi) hi = v; }
+            return hi - lo;
+        }
+        var left = LineXs("top-left");
+        var center = LineXs("top-center");
+        Assert.True(left.Length >= 2 && center.Length >= 2, "content should wrap to multiple lines");
+        Assert.True(Spread(left) < 1.0, $"left-aligned lines should share one X: spread={Spread(left)}");
+        Assert.True(Spread(center) > 5.0, $"centered lines are individually centered (vary): spread={Spread(center)}");
+    }
+
     /// <summary>n space-separated "A" words ("A A A …") — wrappable synthetic content (the spaces are the
     /// break opportunities; the synthetic font has no space glyph but spaces still break a line).</summary>
     private static string Words(int n) => new string('A', n).Replace("A", "A ").TrimEnd();
 
     /// <summary>The Y operand (pt) of every <c>Td</c> text-position operator, in content-stream order.</summary>
-    private static double[] AllTdY(string pdf)
+    private static double[] AllTdY(string pdf) => AllTdOperand(pdf, yAxis: true);
+
+    /// <summary>The X operand (pt) of every <c>Td</c> text-position operator, in content-stream order.</summary>
+    private static double[] AllTdX(string pdf) => AllTdOperand(pdf, yAxis: false);
+
+    private static double[] AllTdOperand(string pdf, bool yAxis)
     {
-        var ys = new List<double>();
+        var vals = new List<double>();
         for (var i = pdf.IndexOf(" Td", StringComparison.Ordinal); i >= 0;
              i = pdf.IndexOf(" Td", i + 3, StringComparison.Ordinal))
         {
             var nums = pdf[..i].TrimEnd().Split(' ');   // … <x> <y>
-            ys.Add(double.Parse(nums[^1], CultureInfo.InvariantCulture));
+            vals.Add(double.Parse(nums[yAxis ? ^1 : ^2], CultureInfo.InvariantCulture));
         }
-        return ys.ToArray();
+        return vals.ToArray();
     }
 
     // ---- string-set / string() (Task 22) + position: running() / element() (Task 23) ----
@@ -1909,6 +1938,45 @@ public sealed class HtmlPdfConvertTests
             "</head><body></body></html>",
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
         Assert.Equal(2, TotalGlyphCount(pdf));   // header "AB" only (empty body)
+    }
+
+    [Fact]
+    public void Page_margin_box_string_set_content_pulls_the_element_text()
+    {
+        // Task 22 (content() form) — the canonical running header: `h1 { string-set: title content() }`
+        // sets `title` to the h1's own text; the header's `content: string(title)` pulls it. AngleSharp.Css
+        // DROPS the content() declaration, so this exercises the raw-CSS recovery (CssPreprocessor) → the
+        // cascade → the collector resolving content() to the element's text. Body h1 "AB" (2) + header (2) = 4.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>h1 { string-set: title content() } @page { @top-center { content: string(title) } }</style>" +
+            "</head><body><h1>AB</h1></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(4, TotalGlyphCount(pdf));   // body h1 "AB" (2) + header string(title) = "AB" (2)
+    }
+
+    [Fact]
+    public void Page_margin_box_string_set_content_takes_the_last_element_in_document_order()
+    {
+        // content() on a selector matching several elements: the named string is the LAST match's text
+        // (the value as of the end of the page). Body h1 "A"(1) + h1 "AB"(2) = 3; header string(title) =
+        // last h1 = "AB"(2) → total 5. If the FIRST won, header "A"(1) → total 4. So 5 proves last-wins.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>h1 { string-set: title content() } @page { @top-center { content: string(title) } }</style>" +
+            "</head><body><h1>A</h1><h1>AB</h1></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(5, TotalGlyphCount(pdf));   // body 3 + header last-wins "AB"(2)
+    }
+
+    [Fact]
+    public void Page_margin_box_string_set_content_mixes_with_a_literal()
+    {
+        // A string-set content-list can mix a literal with content(): `string-set: t "A" content()` →
+        // string(t) = "A" + the element text. Body h1 "B"(1) + header "A"+"B" = "AB"(2) → total 3.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>h1 { string-set: t \"A\" content() } @page { @top-center { content: string(t) } }</style>" +
+            "</head><body><h1>B</h1></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(3, TotalGlyphCount(pdf));   // body h1 "B"(1) + header "A"+content()="B" → "AB"(2)
     }
 
     [Fact]

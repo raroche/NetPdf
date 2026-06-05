@@ -44,7 +44,7 @@ namespace NetPdf.Layout.Boxes;
 /// </para>
 /// <para>
 /// <b>Task 16 cycle 1 — diagnostic emission.</b> The
-/// <see cref="TryParse(string, IElement, ICssDiagnosticsSink?, CssSourceLocation, out string, PageCounters?, MarginContentContext?)"/>
+/// <see cref="TryParse(string, IElement, ICssDiagnosticsSink?, CssSourceLocation, out string, PageCounters?, MarginContentContext?, bool)"/>
 /// overload emits one of two diagnostic codes when the parse fails:
 /// <see cref="CssDiagnosticCodes.CssContentFunctionUnsupported001"/> for
 /// unsupported functions (<c>counter()</c> / <c>url()</c> / etc.) or unsupported
@@ -109,6 +109,15 @@ internal static class CssContentList
         string raw, IElement host, PageCounters pageCounters, MarginContentContext marginContext, out string result)
         => TryParse(raw, host, sink: null, location: CssSourceLocation.Unknown, out result, pageCounters, marginContext);
 
+    /// <summary><c>string-set</c> overload (Task 22 — the <c>content()</c> form) — resolves a
+    /// <c>string-set</c> value's content-list, ALSO accepting the GCPM <c>content()</c> function (the
+    /// <paramref name="host"/> element's own text content). <c>content()</c> is valid ONLY inside a
+    /// <c>string-set</c> value, so it's gated to this entry point — the margin-box / pseudo-element
+    /// <c>content</c> paths never enable it. Used by <see cref="MarginContentCollector"/>.</summary>
+    public static bool TryParseStringSet(string raw, IElement host, out string result)
+        => TryParse(raw, host, sink: null, location: CssSourceLocation.Unknown, out result,
+            pageCounters: null, marginContext: null, allowContentFunction: true);
+
     // Per Phase A security hardening A-5 — cap on the concatenated output of
     // one ::before / ::after / ::marker content-list parse. A pseudo-element's
     // content is rendered into the output PDF; without a cap, an attacker can
@@ -131,7 +140,8 @@ internal static class CssContentList
         CssSourceLocation location,
         out string result,
         PageCounters? pageCounters = null,
-        MarginContentContext? marginContext = null)
+        MarginContentContext? marginContext = null,
+        bool allowContentFunction = false)
     {
         result = string.Empty;
         if (string.IsNullOrWhiteSpace(raw)) return false;
@@ -221,6 +231,23 @@ internal static class CssContentList
                     continue;
                 }
                 EmitContentFunctionUnsupported(sink, span, tokenStart, raw, location);
+                return false;
+            }
+
+            // content() — GCPM string-set ONLY (allowContentFunction): the host element's own text
+            // content, so `h1 { string-set: title content() }` captures each h1's text. Bare content()
+            // or content(text) → the text; the typographic targets content(before|after|first-letter|
+            // marker) are deferred → bail to unsupported. Gated so margin-box / pseudo content can't use it.
+            if (allowContentFunction && StartsWithCaseInsensitive(span, i, "content("))
+            {
+                var contentTokenStart = i;
+                i += "content(".Length;
+                if (TryReadContentText(span, ref i, host, out var contentText))
+                {
+                    if (!TryAppendBounded(sb, contentText, sink, raw, location)) return false;
+                    continue;
+                }
+                EmitContentFunctionUnsupported(sink, span, contentTokenStart, raw, location);
                 return false;
             }
 
@@ -513,6 +540,32 @@ internal static class CssContentList
         if (i >= span.Length || span[i] != ')') return false; // a second arg or malformed → bail (first cut)
         i++; // consume ')'
         name = ident;
+        return true;
+    }
+
+    /// <summary>Parse a GCPM <c>content()</c> call in a <c>string-set</c> value (the <c>content(</c>
+    /// already consumed): bare <c>content()</c> or <c>content(text)</c> → <paramref name="host"/>'s text
+    /// content; the typographic targets <c>content(before|after|first-letter|marker)</c> + any multi-arg
+    /// form are deferred → <see langword="false"/> (the caller bails to the unsupported diagnostic).</summary>
+    private static bool TryReadContentText(ReadOnlySpan<char> span, ref int i, IElement host, out string text)
+    {
+        text = string.Empty;
+        i = SkipWhitespace(span, i);
+        var start = i;
+        while (i < span.Length)
+        {
+            var c = span[i];
+            if (IsCssWhitespace(c) || c == ',' || c == ')') break;
+            if (!IsCssIdentChar(c)) return false; // malformed punctuation
+            i++;
+        }
+        var arg = span[start..i];
+        i = SkipWhitespace(span, i);
+        if (i >= span.Length || span[i] != ')') return false; // a second arg / malformed → bail (first cut)
+        i++; // consume ')'
+        // Only bare content() / content(text) is the element's text; the other GCPM targets are deferred.
+        if (!arg.IsEmpty && !arg.Equals("text", StringComparison.OrdinalIgnoreCase)) return false;
+        text = host.TextContent ?? string.Empty;
         return true;
     }
 

@@ -2072,6 +2072,60 @@ public sealed class HtmlPdfConvertTests
         Assert.Equal(500, TotalGlyphCount(pdf));   // all 500 'A' glyphs (not truncated under the cap)
     }
 
+    // ---- element() first-cut OWN-STYLE rendering (Task 23) ----
+
+    [Fact]
+    public void Page_margin_box_element_uses_the_running_elements_own_color()
+    {
+        // First cut of full block rendering: a STANDALONE element(rh) paints the running element's text in
+        // the ELEMENT's own color, not the box's default. A red .rh → the header glyphs are red.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); color: #ff0000 } @page { @top-center { content: element(rh) } }</style>" +
+            "</head><body><div class=\"rh\">AB</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Contains("1 0 0 rg", pdf);   // rgb(255,0,0) — the element's own red text fill
+    }
+
+    [Fact]
+    public void Page_margin_box_element_uses_the_running_elements_own_font_size()
+    {
+        // A STANDALONE element(rh) renders in the running element's own font-size: a 24px .rh → 18pt Tf
+        // (24 × 0.75), vs the box's default 16px → 12pt.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); font-size: 24px } @page { @top-center { content: element(rh) } }</style>" +
+            "</head><body><div class=\"rh\">AB</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(18.0, FirstTf(pdf), 1);   // the element's 24px → 18pt
+    }
+
+    [Fact]
+    public void Page_margin_box_mixed_element_content_keeps_the_box_style()
+    {
+        // Own-style is STANDALONE element() only (GCPM). A MIXED list (`"A" element(rh)`) keeps the box's
+        // own style — so the red .rh does NOT colour the (box-default black) header.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); color: #ff0000 } @page { @top-center { content: \"A\" element(rh) } }</style>" +
+            "</head><body><div class=\"rh\">B</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.DoesNotContain("1 0 0 rg", pdf);   // mixed content → box style (black), not the element's red
+    }
+
+    [Theory]
+    [InlineData("element(rh)", "1 0 0 rg")]       // default = first → red (r1)
+    [InlineData("element(rh, first)", "1 0 0 rg")]
+    [InlineData("element(rh, last)", "0 0 1 rg")] // last → blue (r2)
+    public void Page_margin_box_element_own_style_follows_the_selected_occurrence(string content, string colorOp)
+    {
+        // Two running elements share `rh` with different colours; the OWN-STYLE follows the SAME occurrence
+        // the text does — element() default + first → the first's red, last → the last's blue.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.r1 { position: running(rh); color: #ff0000 } " +
+            ".r2 { position: running(rh); color: #0000ff } @page { @top-center { content: " + content + " } }</style>" +
+            "</head><body><div class=\"r1\">A</div><div class=\"r2\">B</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Contains(colorOp, pdf);
+    }
+
     [Fact]
     public void Page_margin_box_running_element_is_removed_from_the_body_flow()
     {

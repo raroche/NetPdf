@@ -48,24 +48,31 @@ internal static class MarginContentCollector
     {
         ArgumentNullException.ThrowIfNull(root);
         ArgumentNullException.ThrowIfNull(cascade);
-        Dictionary<string, string>? named = null;          // LAST assignment — string(name, last) / exit value
-        Dictionary<string, string>? namedFirst = null;     // FIRST assignment — string(name) default + `first`
-        Dictionary<string, string>? running = null;        // LAST running element — element(name, last)
-        Dictionary<string, string>? runningFirst = null;   // FIRST running element — element(name) default + `first`
-        Walk(root, cascade, ref named, ref namedFirst, ref running, ref runningFirst);
-        return new CssContentList.MarginContentContext(named, running, namedFirst, runningFirst);
+        var c = new Collected();
+        Walk(root, cascade, c);
+        return new CssContentList.MarginContentContext(
+            c.Named, c.Running, c.NamedFirst, c.RunningFirst, c.RunningStyles, c.RunningStylesFirst);
     }
 
-    private static void Walk(
-        IElement element, ResolvedCascadeResult cascade,
-        ref Dictionary<string, string>? named, ref Dictionary<string, string>? namedFirst,
-        ref Dictionary<string, string>? running, ref Dictionary<string, string>? runningFirst)
+    /// <summary>Mutable accumulator threaded through the document <see cref="Walk"/> (a reference type, so
+    /// the recursion shares one instance rather than passing many <c>ref</c> dictionaries).</summary>
+    private sealed class Collected
+    {
+        public Dictionary<string, string>? Named;        // LAST string-set assignment — string(name, last)
+        public Dictionary<string, string>? NamedFirst;   // FIRST — string(name) default + first
+        public Dictionary<string, string>? Running;      // LAST running element text — element(name, last)
+        public Dictionary<string, string>? RunningFirst; // FIRST — element(name) default + first
+        public Dictionary<string, IReadOnlyList<KeyValuePair<string, string>>>? RunningStyles;      // LAST own style
+        public Dictionary<string, IReadOnlyList<KeyValuePair<string, string>>>? RunningStylesFirst; // FIRST own style
+    }
+
+    private static void Walk(IElement element, ResolvedCascadeResult cascade, Collected c)
     {
         var rules = cascade.TryGetStylesFor(element);
         if (rules is not null)
         {
             // string-set: "<custom-ident> <content-list>"# — one or more comma-separated name/value
-            // pairs (CSS GCPM L3 §2). Each resolved name's last assignment in document order wins.
+            // pairs (CSS GCPM L3 section 2). Each resolved name's last assignment in document order wins.
             var stringSet = rules.GetWinner("string-set")?.ResolvedValue;
             if (!string.IsNullOrWhiteSpace(stringSet)
                 && !stringSet.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
@@ -74,30 +81,58 @@ internal static class MarginContentCollector
                 {
                     if (TryResolveStringSetPair(pair, element, out var name, out var value))
                     {
-                        (named ??= new(StringComparer.Ordinal))[name] = value;            // last-wins
-                        (namedFirst ??= new(StringComparer.Ordinal)).TryAdd(name, value); // first-wins (kept)
+                        (c.Named ??= new(StringComparer.Ordinal))[name] = value;            // last-wins
+                        (c.NamedFirst ??= new(StringComparer.Ordinal)).TryAdd(name, value); // first-wins (kept)
                     }
                 }
             }
 
             // position: running(<name>) — register the element's text for content: element(name). The text
-            // is read BOUNDED (post-PR-#150 review P2 — so a huge running element can't force an unbounded
-            // TextContent + normalized-string allocation, even when element() isn't referenced or is later
-            // capped at resolution) then GCPM-normalized as if white-space: normal (Task 23 follow-up — like
-            // content()) so a formatted/indented running element doesn't leak its source indentation. Both
-            // the FIRST (element(name) default + `first`) and LAST (`last`) occurrence are kept.
+            // is read BOUNDED (post-PR-#150 review P2 - a huge running element can't force an unbounded
+            // TextContent + normalized-string allocation) then GCPM-normalized as if white-space: normal
+            // (Task 23 - like content()). Both the FIRST (element(name) default + first) and LAST (last)
+            // occurrence's text + own style (font/color - for element()'s first-cut own-style rendering)
+            // are kept.
             var position = rules.GetWinner("position")?.ResolvedValue;
             if (position is not null && TryParseRunningName(position, out var runName))
             {
                 var text = LineBuilder.PreprocessWhitespace(
                     ReadBoundedDescendantText(element, MaxRunningTextChars), WhiteSpace.Normal);
-                (running ??= new(StringComparer.Ordinal))[runName] = text;             // last occurrence
-                (runningFirst ??= new(StringComparer.Ordinal)).TryAdd(runName, text);  // first occurrence (kept)
+                (c.Running ??= new(StringComparer.Ordinal))[runName] = text;             // last occurrence
+                (c.RunningFirst ??= new(StringComparer.Ordinal)).TryAdd(runName, text);  // first occurrence (kept)
+
+                var ownStyle = CaptureOwnStyle(rules);
+                if (ownStyle is not null)
+                {
+                    (c.RunningStyles ??= new(StringComparer.Ordinal))[runName] = ownStyle;
+                    (c.RunningStylesFirst ??= new(StringComparer.Ordinal)).TryAdd(runName, ownStyle);
+                }
             }
         }
 
         foreach (var child in element.Children) // IElement children, in document order.
-            Walk(child, cascade, ref named, ref namedFirst, ref running, ref runningFirst);
+            Walk(child, cascade, c);
+    }
+
+    /// <summary>The font/color longhands element()'s first-cut own-style rendering pulls from the running
+    /// element (the subset MarginBoxStyle supports). The painter builds a ComputedStyle from these winning
+    /// values so a styled running header (e.g. a colored, larger heading) renders in its own style;
+    /// relative units / <c>inherit</c> resolve against the page context (a documented approximation).</summary>
+    private static readonly string[] OwnStyleProperties =
+        { "color", "font-family", "font-size", "font-weight", "font-style" };
+
+    /// <summary>Capture the running element's WINNING <see cref="OwnStyleProperties"/> values, or
+    /// <see langword="null"/> when none are declared (the margin box's own style is then used as-is).</summary>
+    private static IReadOnlyList<KeyValuePair<string, string>>? CaptureOwnStyle(ResolvedRuleSet rules)
+    {
+        List<KeyValuePair<string, string>>? captured = null;
+        foreach (var prop in OwnStyleProperties)
+        {
+            var value = rules.GetWinner(prop)?.ResolvedValue;
+            if (!string.IsNullOrWhiteSpace(value))
+                (captured ??= new()).Add(new KeyValuePair<string, string>(prop, value));
+        }
+        return captured;
     }
 
     /// <summary>Split a <c>string-set</c> value into its TOP-LEVEL comma-separated name/value pairs,

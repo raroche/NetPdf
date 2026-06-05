@@ -143,9 +143,12 @@ public sealed class PageMarginBoxGeometryTests
     [Fact]
     public void ResolveEdgeOverlap_single_box_is_unchanged()
     {
-        // One box, no sibling → no overlap possible → its desired size + start are returned as-is.
+        // One box, no sibling → no overlap possible → its desired size + start are returned as-is, and
+        // the ABSENT B/C boxes report (0, 0) per the contract (not the role-derived l/2, l offsets).
         var r = PageMarginBoxGeometry.ResolveEdgeOverlap(Triple(500, true, 0, false, 0, false), 1000);
         Assert.Equal(500, r.SizeA, 3);
         Assert.Equal(0, r.StartA, 3);
+        Assert.Equal(0, r.SizeB, 3); Assert.Equal(0, r.StartB, 3);
+        Assert.Equal(0, r.SizeC, 3); Assert.Equal(0, r.StartC, 3);
     }
 }

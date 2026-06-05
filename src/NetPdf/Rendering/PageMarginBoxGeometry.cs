@@ -144,7 +144,10 @@ internal static class PageMarginBoxGeometry
         var overlapBC = boxes.HasB && boxes.HasC && startB + dB > startC;
         var overlapAC = boxes.HasA && boxes.HasC && !boxes.HasB && dA + dC > l;
         if (!(overlapAB || overlapBC || overlapAC))
-            return new ResolvedTriple(dA, startA, dB, startB, dC, startC); // no overlap → unchanged
+            // No overlap → unchanged. An ABSENT box reports (0, 0) per the contract (the caller ignores
+            // absent boxes, but a clean contract keeps the unit tests unambiguous).
+            return new ResolvedTriple(
+                dA, startA, dB, boxes.HasB ? startB : 0.0, dC, boxes.HasC ? startC : 0.0);
 
         if (boxes.HasB)
         {
@@ -165,6 +168,8 @@ internal static class PageMarginBoxGeometry
             }
         }
 
-        return new ResolvedTriple(dA, 0.0, dB, startB, dC, l - dC);
+        // Absent boxes report (0, 0) per the contract (see the no-overlap return above).
+        return new ResolvedTriple(
+            dA, 0.0, dB, boxes.HasB ? startB : 0.0, dC, boxes.HasC ? l - dC : 0.0);
     }
 }

@@ -191,10 +191,13 @@ internal static class PdfRenderPipeline
             // Page counters for counter(page)/counter(pages) (cycle 9). Single page → (1, 1); the
             // blocked multi-page driver will supply the real per-page number + total once it lands.
             var pageCounters = new CssContentList.PageCounters(page: 1, pages: 1);
+            // Generated-content context for string(name) (Task 22 — string-set) + element(name) (Task 23
+            // — position: running()), collected from the document in document order.
+            var marginContext = MarginContentCollector.Collect(host, phase2.Cascade);
             var marginResult = PageMarginBoxPainter.Layout(
                 marginBoxes, pageSize.WidthPx, pageSize.HeightPx,
                 margins.TopPx, margins.RightPx, margins.BottomPx, margins.LeftPx,
-                margins.LeftPx, margins.TopPx, host, rootEl.Style, pageDecls, pageCounters, shaper, diagnostics);
+                margins.LeftPx, margins.TopPx, host, rootEl.Style, pageDecls, pageCounters, marginContext, shaper, diagnostics);
             // Margin-box background bands (cycle 8) paint BEHIND the header/footer text: after the
             // body backgrounds above, before the shared text pass — same bg → text content order.
             // Gated by PrintBackgrounds, exactly like body backgrounds (post-PR-#137 review P1).

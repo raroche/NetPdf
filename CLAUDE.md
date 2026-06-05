@@ -232,10 +232,20 @@ side boxes shrink proportionally), a NO-OP when they don't overlap (the common s
 byte-identical). `PageMarginBoxPainter.Layout` refactored into two passes (compute desired rects →
 `ResolveEdgeOverlaps` adjusts overlapping siblings per edge → emit). DEFERRED: the spec-strict §5.3.2
 min/max-content flex (no min-content yet — it clamps rather than re-wrapping, so over-long content still
-overflows), `box-sizing`, overflow clipping/wrapping. Next (Task 21
-remaining, in order): the spec-strict §5.3.2 min/max-content flex + overflow clipping/wrapping / `@page
-:left`/`:right`/`:blank` + named pages (multi-page-gated), then Task 22 (`string-set`/`string()` running
-headers). Blocked (see `deferrals.md`):
+overflows), `box-sizing`, overflow clipping/wrapping. **Tasks 22 + 23 — running content (one PR, in
+progress, branch `phase-3-task-22-23-running-content`):** a page-margin box pulls RUNNING CONTENT —
+`content: string(name)` resolves a named string set by `string-set: name <content-list>` (Task 22), and
+`content: element(name)` resolves the text of a `position: running(name)` element (Task 23). New
+`MarginContentCollector` walks the document in document order reading raw declared values (string-set →
+named string [literal + attr() content-lists]; running → element text); `CssContentList` gained
+`string()`/`element()` (undefined name → empty); `BoxBuilder` skips a `position: running()` element from
+the body box tree (detected from the raw value before the keyword resolver → no spurious diagnostic).
+DEFERRED: cross-page "running" persistence (multi-page driver); `string-set: … content()` (AngleSharp
+drops the content() function → needs a raw-CSS pre-pass like @page descriptors); `element()` renders the
+running element's TEXT only (its block box deferred). Next (in order): the spec-strict §5.3.2
+min/max-content flex + overflow clipping/wrapping / `string-set: content()` (raw-CSS pre-pass) +
+`element()` full block rendering + cross-page running + `@page :left`/`:right`/`:blank` + named pages
+(all multi-page-gated), then Task 24 (`counter(page)` — mostly done cycle 9). Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).
 For the live state, read the **current-state pointer at the top of [PROGRESS.md](PROGRESS.md)**

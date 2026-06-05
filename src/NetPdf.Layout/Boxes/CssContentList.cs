@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
 using System;
+using System.Collections.Generic;
 using System.Globalization;
 using System.Text;
 using AngleSharp.Dom;
@@ -43,7 +44,7 @@ namespace NetPdf.Layout.Boxes;
 /// </para>
 /// <para>
 /// <b>Task 16 cycle 1 — diagnostic emission.</b> The
-/// <see cref="TryParse(string, IElement, ICssDiagnosticsSink?, CssSourceLocation, out string, PageCounters?)"/>
+/// <see cref="TryParse(string, IElement, ICssDiagnosticsSink?, CssSourceLocation, out string, PageCounters?, MarginContentContext?)"/>
 /// overload emits one of two diagnostic codes when the parse fails:
 /// <see cref="CssDiagnosticCodes.CssContentFunctionUnsupported001"/> for
 /// unsupported functions (<c>counter()</c> / <c>url()</c> / etc.) or unsupported
@@ -80,6 +81,16 @@ internal static class CssContentList
         }
     }
 
+    /// <summary>Generated-content context for page-margin boxes: the named strings set by
+    /// <c>string-set: name …</c> (resolved for <c>content: string(name)</c> — Task 22) and the running
+    /// elements' text from <c>position: running(name)</c> (resolved for <c>content: element(name)</c> —
+    /// Task 23), collected from the document during the render. A SINGLE-PAGE first cut — cross-page
+    /// "running" persistence (the value carried to the next page until re-set) needs the multi-page
+    /// driver (deferred). Both lookups resolve a missing name to the empty string (CSS GCPM L3).</summary>
+    public readonly record struct MarginContentContext(
+        IReadOnlyDictionary<string, string>? NamedStrings,
+        IReadOnlyDictionary<string, string>? RunningElements);
+
     /// <summary>Sink-less convenience overload — see the four-argument form
     /// for the diagnostic-emitting path. Returns <see langword="true"/> + the
     /// concatenated text on success; <see langword="false"/> when the value
@@ -91,6 +102,12 @@ internal static class CssContentList
     /// against <paramref name="pageCounters"/> (Task 21 cycle 9 — page-margin-box content).</summary>
     public static bool TryParse(string raw, IElement host, PageCounters pageCounters, out string result)
         => TryParse(raw, host, sink: null, location: CssSourceLocation.Unknown, out result, pageCounters);
+
+    /// <summary>Sink-less page-margin-box overload that also resolves <c>string(name)</c> /
+    /// <c>element(name)</c> against <paramref name="marginContext"/> (Task 22 / 23).</summary>
+    public static bool TryParse(
+        string raw, IElement host, PageCounters pageCounters, MarginContentContext marginContext, out string result)
+        => TryParse(raw, host, sink: null, location: CssSourceLocation.Unknown, out result, pageCounters, marginContext);
 
     // Per Phase A security hardening A-5 — cap on the concatenated output of
     // one ::before / ::after / ::marker content-list parse. A pseudo-element's
@@ -113,7 +130,8 @@ internal static class CssContentList
         ICssDiagnosticsSink? sink,
         CssSourceLocation location,
         out string result,
-        PageCounters? pageCounters = null)
+        PageCounters? pageCounters = null,
+        MarginContentContext? marginContext = null)
     {
         result = string.Empty;
         if (string.IsNullOrWhiteSpace(raw)) return false;
@@ -164,6 +182,42 @@ internal static class CssContentList
                     continue;
                 }
                 EmitContentFunctionUnsupported(sink, span, counterTokenStart, raw, location);
+                return false;
+            }
+
+            // string(name) — Task 22. Pulls the named string set by `string-set` (collected during the
+            // document walk). Only valid with a margin context (page-margin boxes); a missing/undefined
+            // name resolves to the empty string per CSS GCPM L3 (no diagnostic). The optional position
+            // keyword form (string(name, first|last|…)) is a deferred first-cut gap → bail to unsupported.
+            if (StartsWithCaseInsensitive(span, i, "string("))
+            {
+                var tokenStart = i;
+                i += "string(".Length;
+                if (marginContext is { } mcStr && TryReadFunctionIdent(span, ref i, out var stringName))
+                {
+                    var value = mcStr.NamedStrings is { } ns && ns.TryGetValue(stringName, out var v) ? v : string.Empty;
+                    if (!TryAppendBounded(sb, value, sink, raw, location)) return false;
+                    continue;
+                }
+                EmitContentFunctionUnsupported(sink, span, tokenStart, raw, location);
+                return false;
+            }
+
+            // element(name) — Task 23. Pulls the text of the running element (`position: running(name)`,
+            // collected during the document walk). Only valid with a margin context; a missing name →
+            // the empty string. First cut: the running element's TEXT (its own block styling/box is a
+            // documented deferral — deferrals.md).
+            if (StartsWithCaseInsensitive(span, i, "element("))
+            {
+                var tokenStart = i;
+                i += "element(".Length;
+                if (marginContext is { } mcEl && TryReadFunctionIdent(span, ref i, out var elementName))
+                {
+                    var value = mcEl.RunningElements is { } re && re.TryGetValue(elementName, out var v) ? v : string.Empty;
+                    if (!TryAppendBounded(sb, value, sink, raw, location)) return false;
+                    continue;
+                }
+                EmitContentFunctionUnsupported(sink, span, tokenStart, raw, location);
                 return false;
             }
 
@@ -428,6 +482,34 @@ internal static class CssContentList
         if (i >= span.Length || span[i] != ')') return false; // missing close-paren.
         i++; // consume ')'
         text = value.ToString(CultureInfo.InvariantCulture);
+        return true;
+    }
+
+    /// <summary>Parse the single bare <c>&lt;custom-ident&gt;</c> argument of a <c>string(name)</c> /
+    /// <c>element(name)</c> call (the <c>name(</c> already consumed). Returns <see langword="false"/>
+    /// (→ the caller bails to the unsupported diagnostic) for an empty/invalid ident, a second argument
+    /// (e.g. <c>string(name, first)</c>), or a missing close-paren — those forms are deferred. Validates
+    /// the ident per CSS Syntax §4.3.11 (ASCII subset, as <see cref="ReadAttrArgs"/> does).</summary>
+    private static bool TryReadFunctionIdent(ReadOnlySpan<char> span, ref int i, out string name)
+    {
+        name = string.Empty;
+        i = SkipWhitespace(span, i);
+        var start = i;
+        while (i < span.Length)
+        {
+            var c = span[i];
+            if (IsCssWhitespace(c) || c == ',' || c == ')') break;
+            if (!IsCssIdentChar(c)) return false; // malformed punctuation
+            i++;
+        }
+        if (i == start) return false; // empty name
+        if (!IsValidCssIdentStart(span[start..i])) return false;
+        var ident = span[start..i].ToString();
+
+        i = SkipWhitespace(span, i);
+        if (i >= span.Length || span[i] != ')') return false; // a second arg or malformed → bail (first cut)
+        i++; // consume ')'
+        name = ident;
         return true;
     }
 

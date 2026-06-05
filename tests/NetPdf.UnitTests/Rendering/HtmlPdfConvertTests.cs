@@ -1778,6 +1778,74 @@ public sealed class HtmlPdfConvertTests
         Assert.InRange(rects[1].Y + rects[1].H / 2.0, pageCenterY - 1, pageCenterY + 1);   // middle stays centered
     }
 
+    // ---- string-set / string() (Task 22) + position: running() / element() (Task 23) ----
+
+    [Fact]
+    public void Page_margin_box_string_resolves_a_string_set_value()
+    {
+        // Task 22: `h1 { string-set: t attr(data-t) }` sets the named string `t`; the header's
+        // `content: string(t)` pulls it. Body h1 "AB" (2 glyphs) + header string(t)="AB" (2) = 4;
+        // an undefined name resolves to the empty string → header empty → body's 2 glyphs only.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        int Glyphs(string headerContent) => TotalGlyphCount(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>h1 { string-set: t attr(data-t) } " +
+            "@page { @top-center { content: " + headerContent + " } }</style></head>" +
+            "<body><h1 data-t=\"AB\">AB</h1></body></html>", opts)));
+        Assert.Equal(2, Glyphs("string(missing)"));   // undefined name → empty header; body h1 only
+        Assert.Equal(4, Glyphs("string(t)"));         // + header string(t) = "AB" (2 more glyphs)
+    }
+
+    [Fact]
+    public void Page_margin_box_string_resolves_a_literal_string_set()
+    {
+        // string-set can take a literal content-list: `string-set: t "AB"` → string(t) renders "AB".
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>body { string-set: t \"AB\" } @page { @top-center { content: string(t) } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(2, TotalGlyphCount(pdf));   // header "AB" only (empty body)
+    }
+
+    [Fact]
+    public void Page_margin_box_element_renders_a_running_element()
+    {
+        // Task 23: a div with `position: running(rh)` is REMOVED from the body flow; the header's
+        // `content: element(rh)` pulls its text "AB" into the margin box. Only the header's 2 glyphs
+        // paint (the running div is out of flow) — 4 would mean it rendered in both places.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } @page { @top-center { content: element(rh) } }</style>" +
+            "</head><body><div class=\"rh\">AB</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(2, TotalGlyphCount(pdf));   // ONLY the header element(rh)="AB"
+    }
+
+    [Fact]
+    public void Page_margin_box_running_element_is_removed_from_the_body_flow()
+    {
+        // A normal div renders in the body; with `position: running()` (and no element() reference) the
+        // div is removed from flow and pulled nowhere → nothing renders.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var normal = TotalGlyphCount(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head></head><body><div>AB</div></body></html>", opts)));
+        var running = TotalGlyphCount(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) }</style></head>" +
+            "<body><div class=\"rh\">AB</div></body></html>", opts)));
+        Assert.Equal(2, normal);    // normal div renders "AB" in the body
+        Assert.Equal(0, running);   // running div removed from flow, referenced nowhere → nothing paints
+    }
+
+    [Fact]
+    public void Page_margin_box_position_running_emits_no_invalid_value_diagnostic()
+    {
+        // `position: running(name)` is a valid GCPM value — it must NOT emit CSS-PROPERTY-VALUE-INVALID-001
+        // (BoxBuilder detects it from the raw value before the keyword resolver, which would reject it).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) }</style></head>" +
+            "<body><div class=\"rh\">AB</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
+    }
+
     [Fact]
     public void Page_margin_box_font_shorthand_sets_the_size(/* Task 21 cycle 6 */)
     {

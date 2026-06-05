@@ -2,6 +2,7 @@
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
 using System;
+using System.Collections.Generic;
 using System.Threading.Tasks;
 using AngleSharp;
 using AngleSharp.Dom;
@@ -202,5 +203,61 @@ public sealed class CssContentListTests
         var pc = new CssContentList.PageCounters(3, 7);
         Assert.Equal(3, pc.Page);
         Assert.Equal(7, pc.Pages);
+    }
+
+    // ---- string(name) (Task 22) + element(name) (Task 23) ----
+
+    private static CssContentList.MarginContentContext Ctx(
+        (string Key, string Value)[]? named = null, (string Key, string Value)[]? running = null)
+    {
+        Dictionary<string, string>? n = null, r = null;
+        if (named is not null) { n = new(); foreach (var (k, v) in named) n[k] = v; }
+        if (running is not null) { r = new(); foreach (var (k, v) in running) r[k] = v; }
+        return new CssContentList.MarginContentContext(n, r);
+    }
+
+    [Fact]
+    public async Task String_function_resolves_a_named_string()
+    {
+        var host = await MakeHost("<p id='h'>x</p>", "h");
+        var ctx = Ctx(named: new[] { ("t", "hello") });
+        Assert.True(CssContentList.TryParse("string(t)", host, new CssContentList.PageCounters(1, 1), ctx, out var result));
+        Assert.Equal("hello", result);
+    }
+
+    [Fact]
+    public async Task String_function_with_an_undefined_name_is_empty()
+    {
+        var host = await MakeHost("<p id='h'>x</p>", "h");
+        var ctx = Ctx(named: new[] { ("t", "hello") });
+        Assert.True(CssContentList.TryParse("string(missing)", host, new CssContentList.PageCounters(1, 1), ctx, out var result));
+        Assert.Equal("", result);   // undefined named string → empty (CSS GCPM L3)
+    }
+
+    [Fact]
+    public async Task String_function_mixed_with_a_literal_concatenates()
+    {
+        var host = await MakeHost("<p id='h'>x</p>", "h");
+        var ctx = Ctx(named: new[] { ("t", "World") });
+        Assert.True(CssContentList.TryParse("\"Hello \" string(t)", host, new CssContentList.PageCounters(1, 1), ctx, out var result));
+        Assert.Equal("Hello World", result);
+    }
+
+    [Fact]
+    public async Task Element_function_resolves_running_element_text()
+    {
+        var host = await MakeHost("<p id='h'>x</p>", "h");
+        var ctx = Ctx(running: new[] { ("rh", "Chapter") });
+        Assert.True(CssContentList.TryParse("element(rh)", host, new CssContentList.PageCounters(1, 1), ctx, out var result));
+        Assert.Equal("Chapter", result);
+    }
+
+    [Fact]
+    public async Task String_function_without_a_margin_context_is_unsupported()
+    {
+        var host = await MakeHost("<p id='h'>x</p>", "h");
+        // The body / pseudo-element path has no margin context → string() is unsupported there (it is
+        // only valid in page-margin boxes), so the parse fails (the pseudo generates no box).
+        Assert.False(CssContentList.TryParse("string(t)", host, out _));
     }
 }

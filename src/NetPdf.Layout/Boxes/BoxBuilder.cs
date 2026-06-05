@@ -178,10 +178,20 @@ internal static class BoxBuilder
             return new[] { Box.ForElement(BoxKind.LineBreak, brStyle, element) };
         }
 
+        var elementRules = cascade.TryGetStylesFor(element);
+
+        // Task 23 — an element with `position: running(name)` (CSS GCPM L3) is REMOVED from normal flow:
+        // it generates no box in the body tree; its content is pulled into a page-margin box by
+        // `content: element(name)` (collected by MarginContentCollector from the DOM). Detected from the
+        // RAW declared value BEFORE ApplyResolvedDeclarations, so the keyword resolver never sees
+        // `running(...)` (which it would reject as an invalid `position` with a spurious diagnostic).
+        if (MarginContentCollector.IsRunning(elementRules?.GetWinner("position")?.ResolvedValue))
+            return Array.Empty<Box>();
+
         var style = ComputedStyle.Rent();
         ApplyDefaults(style);
         ApplyInheritance(style, parentStyle);
-        ApplyResolvedDeclarations(style, cascade.TryGetStylesFor(element), diagnostics);
+        ApplyResolvedDeclarations(style, elementRules, diagnostics);
         ResolveDeferredFontProperties(style, parentStyle);
 
         var displayText = ReadDisplay(style, element);

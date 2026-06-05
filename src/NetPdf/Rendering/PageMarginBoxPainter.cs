@@ -63,10 +63,12 @@ namespace NetPdf.Rendering;
 /// <para>
 /// <b>Content scope.</b> Literal-string + <c>attr()</c> content, plus <c>counter(page)</c> /
 /// <c>counter(pages)</c> page numbers (cycle 9 — resolved against the page being painted; a single
-/// page renders <c>1</c> until the multi-page driver lands). A winning <c>none</c> / <c>normal</c>
-/// suppresses the box upstream (the resolver omits it). Still-unsupported content (a non-page
-/// <c>counter()</c> / <c>counters()</c> / <c>string()</c> / <c>element()</c>) emits
-/// <c>CSS-CONTENT-FUNCTION-UNSUPPORTED-001</c> and the box is skipped. §5.3 three-box-per-edge sizing
+/// page renders <c>1</c> until the multi-page driver lands), <c>string(name)</c> (Task 22 — the named
+/// string set by <c>string-set</c>), and <c>element(name)</c> (Task 23 — the text of a
+/// <c>position: running()</c> element); both resolved from <c>marginContext</c> (a single-page first
+/// cut; cross-page "running" persistence is deferred). A winning <c>none</c> / <c>normal</c> suppresses
+/// the box upstream (the resolver omits it). Still-unsupported content (a non-page <c>counter()</c> /
+/// <c>counters()</c>) emits <c>CSS-CONTENT-FUNCTION-UNSUPPORTED-001</c> and the box is skipped. §5.3 three-box-per-edge sizing
 /// is shrink-to-fit + explicit <c>width</c>/<c>height</c> + a first-cut overlap DISTRIBUTION
 /// (<see cref="ResolveEdgeOverlaps"/> — center-priority clamp); the spec-strict min/max-content flex +
 /// overflow clipping are later cycles.
@@ -124,6 +126,9 @@ internal static class PageMarginBoxPainter
     /// margin boxes inherit from.</param>
     /// <param name="pageCounters">Page counters for <c>counter(page)</c> / <c>counter(pages)</c>
     /// content — the page being painted's number + the total (cycle 9; single page → (1, 1)).</param>
+    /// <param name="marginContext">Named strings (<c>string-set</c> → <c>string(name)</c>, Task 22) +
+    /// running-element text (<c>position: running()</c> → <c>element(name)</c>, Task 23) collected from
+    /// the document — see <see cref="MarginContentCollector"/>.</param>
     /// <param name="shaper">The SAME resolver the body shaped with, kept alive past layout.</param>
     /// <param name="diagnostics">Sink for unsupported-content / unresolved-font diagnostics.</param>
     public static MarginBoxLayoutResult Layout(
@@ -133,6 +138,7 @@ internal static class PageMarginBoxPainter
         double contentOriginLeftPx, double contentOriginTopPx,
         IElement host, ComputedStyle? rootElementStyle, ImmutableArray<CssDeclaration> pageDeclarations,
         CssContentList.PageCounters pageCounters,
+        CssContentList.MarginContentContext marginContext,
         HarfBuzzShaperResolver shaper, IDiagnosticsSink diagnostics)
     {
         ArgumentNullException.ThrowIfNull(host);
@@ -153,7 +159,7 @@ internal static class PageMarginBoxPainter
         var items = new List<MarginBoxItem>(boxes.Length);
         foreach (var mb in boxes)
         {
-            if (!CssContentList.TryParse(mb.ContentRawValue, host, pageCounters, out var text))
+            if (!CssContentList.TryParse(mb.ContentRawValue, host, pageCounters, marginContext, out var text))
             {
                 EmitContentUnsupported(diagnostics, mb.Name, mb.ContentRawValue);
                 continue;
@@ -487,10 +493,10 @@ internal static class PageMarginBoxPainter
             // diagnostic path (post-PR-#132 review P2; DiagnosticTextSanitizer).
             $"The page margin box @{boxName} uses a `content` value that is not yet supported " +
             $"(\"{DiagnosticTextSanitizer.Sanitize(raw)}\"). Supported: literal strings, attr(name), " +
-            "and counter(page)/counter(pages) with the default decimal style. Any other generated content " +
-            "— a non-page counter() name, a non-decimal counter style (e.g. lower-roman), counters(), " +
-            "url()/image()/image-set(), string()/element(), open-quote/close-quote — is a tracked follow-up " +
-            "(deferrals.md#layout-to-pdf-pipeline). The box was not painted.",
+            "counter(page)/counter(pages) with the default decimal style, string(name), and element(name). " +
+            "Any other generated content — a non-page counter() name, a non-decimal counter style (e.g. " +
+            "lower-roman), counters(), url()/image()/image-set(), open-quote/close-quote — is a tracked " +
+            "follow-up (deferrals.md#layout-to-pdf-pipeline). The box was not painted.",
             DiagnosticSeverity.Warning));
 
     private static void EmitFontUnresolved(IDiagnosticsSink diagnostics, string boxName, string detail) =>

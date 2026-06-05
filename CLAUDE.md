@@ -242,10 +242,18 @@ named string [literal + attr() content-lists]; running → element text); `CssCo
 the body box tree (detected from the raw value before the keyword resolver → no spurious diagnostic).
 DEFERRED: cross-page "running" persistence (multi-page driver); `string-set: … content()` (AngleSharp
 drops the content() function → needs a raw-CSS pre-pass like @page descriptors); `element()` renders the
-running element's TEXT only (its block box deferred). Next (in order): the spec-strict §5.3.2
-min/max-content flex + overflow clipping/wrapping / `string-set: content()` (raw-CSS pre-pass) +
-`element()` full block rendering + cross-page running + `@page :left`/`:right`/`:blank` + named pages
-(all multi-page-gated), then Task 24 (`counter(page)` — mostly done cycle 9). Blocked (see `deferrals.md`):
+running element's TEXT only (its block box deferred). **Task 21 — §5.3 min/max-content FLEX + overflow
+WRAPPING (two tasks, one PR, in progress, branch `phase-3-task-21-margin-box-flex-overflow`):** overlapping
+sibling margin boxes whose content can WRAP are now resolved by a min/max-content flex (each gets
+`min + (max−min)×factor`, tiled) instead of the cycle-16 clamp; rigid content (min == max) still takes the
+clamp path, so cycles 14–16 stay byte-identical. The painter measures min-content per horizontal auto box
+(`TryMeasureMinContentWidthPx`), threads min+max into `ResolveEdgeOverlap`, then RE-WRAPS a shrunk box's
+content to its assigned width (multi-line, `TextPainter` already renders it). DEFERRED: wrapped-line
+content-alignment, vertical-edge HEIGHT overflow/flex (horizontal-axis only), `box-sizing`, content
+narrower than its longest unbreakable word. Next (in order): `string-set: content()` (raw-CSS pre-pass) +
+`element()` full block rendering / wrapped-line content-alignment + vertical-edge overflow / cross-page
+running + `@page :left`/`:right`/`:blank` + named pages (all multi-page-gated), then Task 24
+(`counter(page)` — mostly done cycle 9). Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).
 For the live state, read the **current-state pointer at the top of [PROGRESS.md](PROGRESS.md)**

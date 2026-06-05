@@ -88,8 +88,20 @@ public sealed class PageMarginBoxGeometryTests
 
     // ---- §5.3 sibling-box overlap resolution (Task 21) ----
 
+    // RIGID boxes by default (min == desired) → the center-priority CLAMP path, so these legacy cases
+    // keep their cycle-16 assertions. The min-content FLEX is exercised by FlexTriple below.
     private static PageMarginBoxGeometry.EdgeTriple Triple(
-        double a, bool hasA, double b, bool hasB, double c, bool hasC) => new(a, hasA, b, hasB, c, hasC);
+        double a, bool hasA, double b, bool hasB, double c, bool hasC) =>
+        new(a, hasA, b, hasB, c, hasC, MinA: a, MinB: b, MinC: c);
+
+    /// <summary>An edge triple with explicit per-box (min, max) — for the min/max-content flex path. A
+    /// <see langword="null"/> box is ABSENT (<c>Has… = false</c>), so a test for the no-center path isn't
+    /// accidentally given a phantom <c>(0, 0)</c> center box that would route it through the center-box
+    /// branch instead (Copilot review).</summary>
+    private static PageMarginBoxGeometry.EdgeTriple FlexTriple(
+        (double Min, double Max)? a, (double Min, double Max)? b, (double Min, double Max)? c) =>
+        new(a?.Max ?? 0, a is not null, b?.Max ?? 0, b is not null, c?.Max ?? 0, c is not null,
+            a?.Min ?? 0, b?.Min ?? 0, c?.Min ?? 0);
 
     [Fact]
     public void ResolveEdgeOverlap_returns_unchanged_when_boxes_dont_overlap()
@@ -150,5 +162,76 @@ public sealed class PageMarginBoxGeometryTests
         Assert.Equal(0, r.StartA, 3);
         Assert.Equal(0, r.SizeB, 3); Assert.Equal(0, r.StartB, 3);
         Assert.Equal(0, r.SizeC, 3); Assert.Equal(0, r.StartC, 3);
+    }
+
+    // ---- §5.3.2 min/max-content FLEX (wrappable content; Min < Desired) ----
+
+    [Fact]
+    public void ResolveEdgeOverlap_flex_distributes_between_min_and_max()
+    {
+        // Two over-constrained side boxes (no center), each (min 100, max 600), band 1000. They overlap
+        // (600+600>1000) and CAN flex → linear interpolation: factor = (1000−200)/(1200−200) = 0.8 →
+        // each gets 100 + 500×0.8 = 500 (A flush start [0,500], C flush end [500,1000]).
+        var r = PageMarginBoxGeometry.ResolveEdgeOverlap(FlexTriple((100, 600), null, (100, 600)), 1000);
+        Assert.Equal(500, r.SizeA, 2); Assert.Equal(0, r.StartA, 3);
+        Assert.Equal(500, r.SizeC, 2); Assert.Equal(500, r.StartC, 2);
+    }
+
+    [Fact]
+    public void ResolveEdgeOverlap_flex_keeps_the_center_box_centered_against_the_imaginary_AC_box()
+    {
+        // P1 (was a TILING test): a wide side box must NOT push the center box off-centre. A rigid side
+        // (min == max == 100) + a flexible center (min 100, max 900), band 1000. The center is flexed
+        // against the imaginary AC box (2 × max(A, C) = 200), so it gets 1000 − 200 = 800 and stays
+        // CENTERED at [100, 900] (centre = 500). A keeps its rigid 100 in the left gap [0, 100]; the
+        // mirror-image right gap [900, 1000] is empty (no C). Previously this TILED B right after A.
+        var r = PageMarginBoxGeometry.ResolveEdgeOverlap(FlexTriple((100, 100), (100, 900), null), 1000);
+        Assert.Equal(100, r.SizeA, 3); Assert.Equal(0, r.StartA, 3);     // rigid side kept at its size
+        Assert.Equal(800, r.SizeB, 3); Assert.Equal(100, r.StartB, 3);
+        Assert.Equal(500, r.StartB + r.SizeB / 2.0, 3);                  // B's centre stays at the band centre
+    }
+
+    [Fact]
+    public void ResolveEdgeOverlap_flex_three_boxes_keep_the_center_centered_and_dont_overlap()
+    {
+        // P1 (was a TILING test): A(100,500) | B(100,300) | C(100,200), band 1000. B is flexed against the
+        // imaginary AC box (2 × max(500,200) = 1000) → B = 240, CENTERED at [380, 620] (centre 500). A and
+        // C are then sized in the equal side gaps (380 each): A clamps to 380, C fits its 200. No overlap,
+        // and B is centred — previously B was tiled to [500, 800], off-centre.
+        var r = PageMarginBoxGeometry.ResolveEdgeOverlap(FlexTriple((100, 500), (100, 300), (100, 200)), 1000);
+        Assert.Equal(380, r.SizeA, 3); Assert.Equal(0, r.StartA, 3);
+        Assert.Equal(240, r.SizeB, 3); Assert.Equal(380, r.StartB, 3);
+        Assert.Equal(500, r.StartB + r.SizeB / 2.0, 3);                  // centre invariance
+        Assert.Equal(200, r.SizeC, 3); Assert.Equal(800, r.StartC, 3);
+        Assert.True(r.StartA + r.SizeA <= r.StartB + 0.5, "A must not overlap B");
+        Assert.True(r.StartB + r.SizeB <= r.StartC + 0.5, "B must not overlap C");
+    }
+
+    [Fact]
+    public void ResolveEdgeOverlap_center_box_stays_full_size_and_centered_beside_a_wide_wrappable_side()
+    {
+        // P1 — the realistic running-header case: a rigid centred page number (min == max == 100) beside a
+        // WIDE WRAPPABLE side header (min 50, max 800), band 1000. The wrappable side's min-content is
+        // small, so the imaginary AC box (2 × max(50,0) = 100) is small → the centre keeps its full 100 and
+        // stays CENTERED ([450, 550], centre 500); the side flexes to its 450-wide gap (and re-wraps).
+        var r = PageMarginBoxGeometry.ResolveEdgeOverlap(FlexTriple((50, 800), (100, 100), null), 1000);
+        Assert.Equal(100, r.SizeB, 3); Assert.Equal(450, r.StartB, 3);
+        Assert.Equal(500, r.StartB + r.SizeB / 2.0, 3);                  // page number stays centred + full
+        Assert.Equal(450, r.SizeA, 3); Assert.Equal(0, r.StartA, 3);    // side shrinks to its gap
+        Assert.True(r.StartA + r.SizeA <= r.StartB + 0.5, "the side must not overlap the centre");
+    }
+
+    [Fact]
+    public void ResolveEdgeOverlap_min_overflow_distributes_proportional_to_min_content()
+    {
+        // P2 — when the min-contents don't fit (no centre box), the band is distributed PROPORTIONALLY to
+        // each box's MIN-content (not its max). A (min 400, max 500) + C (min 800, max 900), band 1000:
+        // Σmin = 1200 > 1000 → A = 1000 × 400/1200 = 333.33, C = 1000 × 800/1200 = 666.67. (Proportional to
+        // MAX would give 357 / 643 — different — so this asymmetric case proves it's min-proportional.)
+        var r = PageMarginBoxGeometry.ResolveEdgeOverlap(FlexTriple((400, 500), null, (800, 900)), 1000);
+        Assert.Equal(1000.0 * 400 / 1200, r.SizeA, 2); Assert.Equal(0, r.StartA, 3);
+        Assert.Equal(1000.0 * 800 / 1200, r.SizeC, 2);
+        Assert.Equal(1000 - 1000.0 * 800 / 1200, r.StartC, 2);          // C flush end, no overlap
+        Assert.True(r.StartA + r.SizeA <= r.StartC + 0.5, "A must not overlap C");
     }
 }

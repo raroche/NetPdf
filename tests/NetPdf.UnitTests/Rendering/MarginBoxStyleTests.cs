@@ -133,6 +133,27 @@ public sealed class MarginBoxStyleTests
         Assert.True(style.IsSet(PropertyId.Color));
     }
 
+    [Fact]
+    public void Build_materializes_explicit_width_and_height()
+    {
+        // width/height join the cascade whitelist (explicit-size cycle) → resolved to LengthPx slots
+        // the painter reads to size the box along its §5.3 variable axis.
+        var style = MarginBoxStyle.Build(ImmutableArray.Create(
+            Decl("width", "120px"), Decl("height", "40px")));
+        Assert.Equal(120, style.ReadLengthPxOrDefault(PropertyId.Width, defaultPx: -1), 3);
+        Assert.Equal(40, style.ReadLengthPxOrDefault(PropertyId.Height, defaultPx: -1), 3);
+    }
+
+    [Fact]
+    public void Build_does_not_inherit_width_or_height()
+    {
+        // width/height are NOT CSS inherited properties — a parent (page-context) value must not flow
+        // down to the child margin box (mirrors background-color/border/padding).
+        var parent = MarginBoxStyle.Build(ImmutableArray.Create(Decl("width", "200px")));
+        var child = MarginBoxStyle.Build(ImmutableArray<CssDeclaration>.Empty, parent);
+        Assert.False(child.IsSet(PropertyId.Width));
+    }
+
     // ---- Inheritance from the parent (page context / root), cycle 5 ----
 
     [Fact]
@@ -423,6 +444,37 @@ public sealed class MarginBoxStyleTests
             ImmutableArray.Create(Decl("padding-left", value)), parentStyle: null, diagnostics: sink);
         Assert.Empty(sink.Diagnostics);
         Assert.True(style.IsSet(PropertyId.PaddingLeft));
+    }
+
+    [Theory]
+    [InlineData("width", "10em")]    // font-relative (the resolver defers it — no resolver diagnostic)
+    [InlineData("height", "5vh")]    // viewport-relative
+    [InlineData("width", "2rem")]
+    [InlineData("height", "5vw")]
+    public void Build_diagnoses_and_drops_a_deferred_explicit_size(string property, string value)
+    {
+        // A font-/viewport-relative width/height is a VALID value the resolver DEFERS, but the painter
+        // only honors an absolute length or a percentage (TryReadExplicitSizePx); a deferred size would
+        // silently fall back to shrink-to-fit. It must be diagnosed + DROPPED (unset), not left as a
+        // deferred slot the painter silently ignores (review P2).
+        var sink = new CapturingSink();
+        var style = MarginBoxStyle.Build(
+            ImmutableArray.Create(Decl(property, value)), parentStyle: null, diagnostics: sink);
+        Assert.Contains(sink.Diagnostics, d => d.Code == CssDiagnosticCodes.CssPropertyValueInvalid001);
+        Assert.False(style.IsSet(PropertyMetadata.NameToId[property]));   // dropped, not a deferred slot
+    }
+
+    [Theory]
+    [InlineData("100px")]   // absolute length → LengthPx, honored as-is
+    [InlineData("50%")]     // percentage → resolved against the band, honored
+    [InlineData("auto")]    // the default — intended shrink-to-fit, NOT a warning
+    public void Build_keeps_a_supported_explicit_size_without_a_diagnostic(string value)
+    {
+        // No false positives: an absolute length, a percentage, and `auto` must NOT trip the deferred-
+        // size guard (`auto` is the intended shrink-to-fit, not an unsupported value).
+        var sink = new CapturingSink();
+        MarginBoxStyle.Build(ImmutableArray.Create(Decl("width", value)), parentStyle: null, diagnostics: sink);
+        Assert.Empty(sink.Diagnostics);
     }
 
     // ---- rejected `font` shorthand marker (review #3) ----

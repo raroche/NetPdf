@@ -39,20 +39,25 @@ namespace NetPdf.Rendering;
 /// <b>Supported properties (a WHITELIST).</b> The inherited <c>font-family</c> / <c>font-size</c> /
 /// <c>font-weight</c> / <c>font-style</c> / <c>color</c> are materialized + inherited. The
 /// non-inherited <c>background-color</c> (cycle 8), the 12 <c>border-*-width</c> / <c>-style</c> /
-/// <c>-color</c> longhands (border cycle), and the 4 <c>padding-*</c> longhands (padding cycle) are
+/// <c>-color</c> longhands (border cycle), the 4 <c>padding-*</c> longhands (padding cycle), and
+/// <c>width</c> / <c>height</c> (explicit-size cycle) are
 /// materialized from the box's OWN declarations — the painter fills a band behind the box's content,
-/// strokes the border around its full region, and insets the text content origin by the used
-/// border-width + padding on each side. (A <i>non-absolute</i> padding — a percentage or a font-/
+/// strokes the border around its region, insets the text content origin by the used
+/// border-width + padding on each side, and sizes the box along its §5.3 VARIABLE axis from an explicit
+/// <c>width</c> (top/bottom) / <c>height</c> (left/right) — an absolute length or a percentage of the
+/// band; <c>auto</c> shrink-to-fits (cycle 14). (A <i>non-absolute</i> padding — a percentage or a font-/
 /// viewport-relative length — is accepted by the cascade but can't be resolved to used px here yet, so
-/// it's diagnosed + dropped rather than silently zeroed; the §5.3 margin-box sizing / font context it
-/// would resolve against is deferred.) <c>text-align</c> /
+/// it's diagnosed + dropped rather than silently zeroed; likewise a DEFERRED <c>width</c>/<c>height</c>
+/// — a font-/viewport-relative or <c>calc()</c> size (a percentage IS supported) — is diagnosed +
+/// dropped so the box EXPLICITLY shrink-to-fits rather than silently. The §5.3 margin-box sizing / font
+/// context they would resolve against is deferred.) <c>text-align</c> /
 /// <c>vertical-align</c> are NOT inherited
 /// here — alignment is read from the box's OWN declarations (<see cref="HorizontalAlignFactor"/> /
 /// <see cref="VerticalAlignFactor"/>) and overrides the box's name-derived default; inheriting the
 /// page/root's UA-default <c>text-align: start</c> would otherwise spuriously override the name-derived
-/// centering (post-PR-#134 review). The remaining box-model declarations (the <c>border-width</c> /
-/// <c>border-style</c> / <c>border-color</c> 1–4-value box shorthands, <c>border-radius</c>,
-/// background <i>images</i>, …) stay deferred (deferrals.md).
+/// centering (post-PR-#134 review). The remaining box-model declarations (<c>border-radius</c>,
+/// background <i>images</i>, <c>box-sizing</c> — the explicit size is content-box only, …) stay
+/// deferred (deferrals.md).
 /// </para>
 /// <para>
 /// <b>Relative font (cycle 7).</b> A parent-relative <c>font-size</c> (<c>em</c> / <c>ex</c> /
@@ -64,8 +69,10 @@ namespace NetPdf.Rendering;
 /// </para>
 /// <para>
 /// <b>Deferred (later cycles, deferrals.md#layout-to-pdf-pipeline).</b> <c>rem</c> / viewport-relative
-/// font-size, page-context inheritance of alignment, precise <c>revert</c>, and the §5.3
-/// three-box-per-edge sizing.
+/// font-size, page-context inheritance of alignment, precise <c>revert</c>, and — for the §5.3
+/// three-box-per-edge sizing (shrink-to-fit + explicit <c>width</c>/<c>height</c> have shipped) — the
+/// min/max-content DISTRIBUTION for overlapping sibling margin boxes, <c>box-sizing</c>, unsupported
+/// relative/<c>calc()</c> <c>width</c>/<c>height</c>, and overflow clipping.
 /// </para>
 /// </remarks>
 internal static class MarginBoxStyle
@@ -89,8 +96,9 @@ internal static class MarginBoxStyle
     /// <summary>The longhands a margin box CASCADES from its OWN declarations: the inherited set plus
     /// the non-inherited <c>background-color</c> (cycle 8 — paints a band behind the box's content),
     /// the 12 <c>border-*-width</c> / <c>-style</c> / <c>-color</c> longhands (border cycle — painted
-    /// around the box region), and the 4 <c>padding-*</c> longhands (padding cycle — inset the box's
-    /// content origin). These are materialized onto the style but deliberately left OUT of the
+    /// around the box region), the 4 <c>padding-*</c> longhands (padding cycle — inset the box's
+    /// content origin), and <c>width</c> / <c>height</c> (explicit-size cycle — set the box's §5.3
+    /// VARIABLE-axis size). These are materialized onto the style but deliberately left OUT of the
     /// inheritance copy above, since they are not CSS inherited properties.</summary>
     private static readonly ImmutableArray<PropertyId> CascadedStyleIds =
         SupportedStyleIds.AddRange(
@@ -99,7 +107,8 @@ internal static class MarginBoxStyle
             PropertyId.BorderRightWidth, PropertyId.BorderRightStyle, PropertyId.BorderRightColor,
             PropertyId.BorderBottomWidth, PropertyId.BorderBottomStyle, PropertyId.BorderBottomColor,
             PropertyId.BorderLeftWidth, PropertyId.BorderLeftStyle, PropertyId.BorderLeftColor,
-            PropertyId.PaddingTop, PropertyId.PaddingRight, PropertyId.PaddingBottom, PropertyId.PaddingLeft);
+            PropertyId.PaddingTop, PropertyId.PaddingRight, PropertyId.PaddingBottom, PropertyId.PaddingLeft,
+            PropertyId.Width, PropertyId.Height);
 
     private static readonly FrozenSet<PropertyId> CascadedStyleIdSet = CascadedStyleIds.ToFrozenSet();
 
@@ -247,6 +256,28 @@ internal static class MarginBoxStyle
                             w.Location));
                         style.Unset(id);
                     }
+                    // A DEFERRED `width`/`height` — a font-/viewport-relative length (`10em` / `5vh`) or a
+                    // `calc()` the resolver couldn't resolve to a used size at cascade time (it returns
+                    // Deferred, with NO diagnostic) — is a VALID value, but the margin-box painter only
+                    // honors an absolute length or a percentage (TryReadExplicitSizePx); a deferred size
+                    // would SILENTLY fall back to shrink-to-fit. Diagnose + drop it (an EXPLICIT deferral,
+                    // not a silent fallback — CLAUDE.md #7, review P2), mirroring the padding policy,
+                    // pending a font-/viewport-context resolve. Only the Deferred state reaches here:
+                    // `auto` (a Resolved keyword), an absolute length (LengthPx), and a percentage
+                    // (Percentage) are honored as-is, and an invalid value was already diagnosed by Resolve.
+                    else if (IsSizeId(id) && resolved.IsDeferred)
+                    {
+                        diagnostics?.Emit(new CssDiagnostic(
+                            CssDiagnosticCodes.CssPropertyValueInvalid001,
+                            $"The margin-box {(id == PropertyId.Width ? "width" : "height")} " +
+                            $"'{DiagnosticTextSanitizer.Sanitize(w.Value)}' isn't an absolute length or a " +
+                            "percentage — font-/viewport-relative and calc() sizes aren't resolved to a used " +
+                            "size here yet (the box falls back to shrink-to-fit); use an absolute length " +
+                            "(px/pt/cm/in) or a percentage. (deferrals.md)",
+                            CssDiagnosticSeverity.Warning,
+                            w.Location));
+                        style.Unset(id);
+                    }
                 }
             }
         }
@@ -268,6 +299,11 @@ internal static class MarginBoxStyle
     private static bool IsPaddingId(PropertyId id) =>
         id is PropertyId.PaddingTop or PropertyId.PaddingRight
             or PropertyId.PaddingBottom or PropertyId.PaddingLeft;
+
+    /// <summary>Whether <paramref name="id"/> is the box's <c>width</c> or <c>height</c> (which can hold
+    /// a DEFERRED font-/viewport-relative or <c>calc()</c> size the margin-box painter can't yet resolve
+    /// to a used size — only an absolute length or a percentage is honored on the §5.3 variable axis).</summary>
+    private static bool IsSizeId(PropertyId id) => id is PropertyId.Width or PropertyId.Height;
 
     /// <summary>Copy <paramref name="parentStyle"/>'s value for <paramref name="id"/> onto
     /// <paramref name="style"/> — the slot (+ the side-table payload for the font-family list, + a

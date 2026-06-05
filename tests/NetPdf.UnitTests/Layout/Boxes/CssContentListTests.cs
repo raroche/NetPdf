@@ -219,16 +219,17 @@ public sealed class CssContentListTests
 
     private static CssContentList.MarginContentContext Ctx(
         (string Key, string Value)[]? named = null, (string Key, string Value)[]? running = null,
-        (string Key, string Value)[]? namedFirst = null)
+        (string Key, string Value)[]? namedFirst = null, (string Key, string Value)[]? runningFirst = null)
     {
-        Dictionary<string, string>? n = null, r = null, nf = null;
+        Dictionary<string, string>? n = null, r = null, nf = null, rf = null;
         if (named is not null) { n = new(); foreach (var (k, v) in named) n[k] = v; }
         if (running is not null) { r = new(); foreach (var (k, v) in running) r[k] = v; }
-        // Mirror the collector: a single assignment sets BOTH first + last. When a test supplies only
-        // `named` (a single-assignment page), default namedFirst to it so the GCPM `first` default resolves.
-        if (namedFirst is not null) { nf = new(); foreach (var (k, v) in namedFirst) nf[k] = v; }
-        else nf = n;
-        return new CssContentList.MarginContentContext(n, r, nf);
+        // Mirror the collector: a single assignment / element sets BOTH first + last. When a test supplies
+        // only `named` / `running` (a single-occurrence page), default the *First map to it so the GCPM
+        // `first` default resolves for string() AND element().
+        if (namedFirst is not null) { nf = new(); foreach (var (k, v) in namedFirst) nf[k] = v; } else nf = n;
+        if (runningFirst is not null) { rf = new(); foreach (var (k, v) in runningFirst) rf[k] = v; } else rf = r;
+        return new CssContentList.MarginContentContext(n, r, nf, rf);
     }
 
     [Fact]
@@ -290,6 +291,31 @@ public sealed class CssContentListTests
         var ctx = Ctx(running: new[] { ("rh", "Chapter") });
         Assert.True(CssContentList.TryParse("element(rh)", host, new CssContentList.PageCounters(1, 1), ctx, out var result));
         Assert.Equal("Chapter", result);
+    }
+
+    [Fact]
+    public async Task Element_function_first_and_last_keywords_pick_the_occurrence()
+    {
+        var host = await MakeHost("<p id='h'>x</p>", "h");
+        var ctx = Ctx(running: new[] { ("rh", "last") }, runningFirst: new[] { ("rh", "first") });
+        Assert.True(CssContentList.TryParse("element(rh, first)", host, new CssContentList.PageCounters(1, 1), ctx, out var f));
+        Assert.Equal("first", f);
+        Assert.True(CssContentList.TryParse("element(rh, last)", host, new CssContentList.PageCounters(1, 1), ctx, out var l));
+        Assert.Equal("last", l);
+        // No keyword → the GCPM DEFAULT is `first` (the first running element on the page), like string().
+        Assert.True(CssContentList.TryParse("element(rh)", host, new CssContentList.PageCounters(1, 1), ctx, out var d));
+        Assert.Equal("first", d);
+    }
+
+    [Theory]
+    [InlineData("element(rh, start)")]         // cross-page → deferred
+    [InlineData("element(rh, first-except)")]  // niche GCPM keyword → deferred
+    [InlineData("element(rh, bogus)")]         // unknown keyword
+    public async Task Element_function_unsupported_position_keyword_bails(string raw)
+    {
+        var host = await MakeHost("<p id='h'>x</p>", "h");
+        var ctx = Ctx(running: new[] { ("rh", "v") }, runningFirst: new[] { ("rh", "v") });
+        Assert.False(CssContentList.TryParse(raw, host, new CssContentList.PageCounters(1, 1), ctx, out _));
     }
 
     [Fact]

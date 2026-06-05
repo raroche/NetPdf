@@ -88,14 +88,18 @@ internal static class CssContentList
     /// Task 23), collected from the document during the render. A SINGLE-PAGE first cut — cross-page
     /// "running" persistence (the value carried to the next page until re-set) needs the multi-page
     /// driver (deferred). Both lookups resolve a missing name to the empty string (CSS GCPM L3).
-    /// <para><see cref="NamedStrings"/> holds the LAST assignment in document order (the value at the end
-    /// of the page — <c>string(name)</c>'s shipped default + <c>string(name, last)</c>);
-    /// <see cref="NamedStringsFirst"/> holds the FIRST assignment (<c>string(name, first)</c>). The
-    /// <c>start</c> / <c>first-except</c> position keywords need cross-page context and stay deferred.</para></summary>
+    /// <para>Per CSS GCPM L3 §7.3/§7.4, both <c>string()</c> and <c>element()</c> default to the FIRST
+    /// occurrence on the page. <see cref="NamedStringsFirst"/> / <see cref="RunningElementsFirst"/> hold the
+    /// FIRST assignment / running element (<c>string(name)</c> default + <c>string(name, first)</c>;
+    /// <c>element(name)</c> default + <c>element(name, first)</c>); <see cref="NamedStrings"/> /
+    /// <see cref="RunningElements"/> hold the LAST (the exit value — <c>string(name, last)</c> /
+    /// <c>element(name, last)</c>). The <c>start</c> / <c>first-except</c> keywords need cross-page context
+    /// and stay deferred.</para></summary>
     public readonly record struct MarginContentContext(
         IReadOnlyDictionary<string, string>? NamedStrings,
         IReadOnlyDictionary<string, string>? RunningElements,
-        IReadOnlyDictionary<string, string>? NamedStringsFirst = null);
+        IReadOnlyDictionary<string, string>? NamedStringsFirst = null,
+        IReadOnlyDictionary<string, string>? RunningElementsFirst = null);
 
     /// <summary>Sink-less convenience overload — see the four-argument form
     /// for the diagnostic-emitting path. Returns <see langword="true"/> + the
@@ -211,7 +215,7 @@ internal static class CssContentList
             {
                 var tokenStart = i;
                 i += "string(".Length;
-                if (marginContext is { } mcStr && TryReadStringFunction(span, ref i, out var stringName, out var first))
+                if (marginContext is { } mcStr && TryReadPositionedFunction(span, ref i, out var stringName, out var first))
                 {
                     var dict = first ? mcStr.NamedStringsFirst : mcStr.NamedStrings;
                     var value = dict is { } ns && ns.TryGetValue(stringName, out var v) ? v : string.Empty;
@@ -222,20 +226,23 @@ internal static class CssContentList
                 return false;
             }
 
-            // element(name) — Task 23. Pulls the text of the running element (`position: running(name)`,
-            // collected during the document walk). Only valid with a margin context; a missing name →
-            // the empty string. First cut: the running element's TEXT (its own block styling/box is a
-            // documented deferral — deferrals.md). APPROXIMATION: CSS GCPM L3 restricts `element()` to a
-            // standalone margin-box `content` value (not combinable with other tokens); this parser
-            // treats it as a concatenable content-list token (so `"Prefix " element(rh)` works) — a
-            // lenient superset, intentional + documented (deferrals.md).
+            // element(name [, first|last]) — Task 23 (+ the position keyword). Pulls the text of the running
+            // element (`position: running(name)`, collected during the document walk, GCPM-normalized as if
+            // white-space: normal). Only valid with a margin context; a missing name → the empty string.
+            // `first` (AND the no-keyword DEFAULT, per GCPM §7.4) → the FIRST such element on the page;
+            // `last` → the last; `start` / `first-except` bail. First cut: the running element's TEXT (its
+            // own block styling/box is a documented deferral — deferrals.md). APPROXIMATION: CSS GCPM L3
+            // restricts `element()` to a standalone margin-box `content` value (not combinable with other
+            // tokens); this parser treats it as a concatenable content-list token (so `"Prefix " element(rh)`
+            // works) — a lenient superset, intentional + documented (deferrals.md).
             if (StartsWithCaseInsensitive(span, i, "element("))
             {
                 var tokenStart = i;
                 i += "element(".Length;
-                if (marginContext is { } mcEl && TryReadFunctionIdent(span, ref i, out var elementName))
+                if (marginContext is { } mcEl && TryReadPositionedFunction(span, ref i, out var elementName, out var elFirst))
                 {
-                    var value = mcEl.RunningElements is { } re && re.TryGetValue(elementName, out var v) ? v : string.Empty;
+                    var dict = elFirst ? mcEl.RunningElementsFirst : mcEl.RunningElements;
+                    var value = dict is { } re && re.TryGetValue(elementName, out var v) ? v : string.Empty;
                     if (!TryAppendBounded(sb, value, sink, raw, location)) return false;
                     continue;
                 }
@@ -536,42 +543,14 @@ internal static class CssContentList
         return true;
     }
 
-    /// <summary>Parse the single bare <c>&lt;custom-ident&gt;</c> argument of an <c>element(name)</c>
-    /// call (the <c>element(</c> already consumed). Returns <see langword="false"/> (→ the caller bails to
-    /// the unsupported diagnostic) for an empty/invalid ident, a second argument, or a missing close-paren.
-    /// (<c>string()</c> uses <see cref="TryReadStringFunction"/> — it accepts a position keyword.) Validates
-    /// the ident per CSS Syntax §4.3.11 (ASCII subset, as <see cref="ReadAttrArgs"/> does).</summary>
-    private static bool TryReadFunctionIdent(ReadOnlySpan<char> span, ref int i, out string name)
-    {
-        name = string.Empty;
-        i = SkipWhitespace(span, i);
-        var start = i;
-        while (i < span.Length)
-        {
-            var c = span[i];
-            if (IsCssWhitespace(c) || c == ',' || c == ')') break;
-            if (!IsCssIdentChar(c)) return false; // malformed punctuation
-            i++;
-        }
-        if (i == start) return false; // empty name
-        if (!IsValidCssIdentStart(span[start..i])) return false;
-        var ident = span[start..i].ToString();
-
-        i = SkipWhitespace(span, i);
-        if (i >= span.Length || span[i] != ')') return false; // a second arg or malformed → bail (first cut)
-        i++; // consume ')'
-        name = ident;
-        return true;
-    }
-
-    /// <summary>Parse a <c>string(&lt;custom-ident&gt; [, first | last])</c> call (the <c>string(</c>
-    /// already consumed): the named string + an optional GCPM position keyword. <paramref name="first"/>
-    /// is set <see langword="true"/> for <c>first</c> AND for NO keyword — per CSS GCPM L3 §7.3 <c>first</c>
-    /// is the DEFAULT (the value of the first assignment on the page) — and <see langword="false"/> for an
-    /// explicit <c>last</c> (the exit value). Returns <see langword="false"/> (→ the caller bails to
-    /// unsupported) for an empty/invalid name, the cross-page <c>start</c> / <c>first-except</c> keywords
-    /// (deferred), an unknown keyword, or malformed syntax.</summary>
-    private static bool TryReadStringFunction(ReadOnlySpan<char> span, ref int i, out string name, out bool first)
+    /// <summary>Parse a <c>string(…)</c> / <c>element(…)</c> argument list (the opening <c>(</c> already
+    /// consumed): a <c>&lt;custom-ident&gt;</c> + an optional GCPM position keyword. <paramref name="first"/>
+    /// is set <see langword="true"/> for <c>first</c> AND for NO keyword — per CSS GCPM L3 §7.3/§7.4
+    /// <c>first</c> is the DEFAULT (the first occurrence on the page) for both functions — and
+    /// <see langword="false"/> for an explicit <c>last</c> (the exit value). Returns <see langword="false"/>
+    /// (→ the caller bails to unsupported) for an empty/invalid name, the cross-page <c>start</c> /
+    /// <c>first-except</c> keywords (deferred), an unknown keyword, or malformed syntax.</summary>
+    private static bool TryReadPositionedFunction(ReadOnlySpan<char> span, ref int i, out string name, out bool first)
     {
         name = string.Empty;
         first = true; // GCPM default position keyword is `first`.

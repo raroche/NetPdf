@@ -3081,9 +3081,15 @@ flags the categories):
          `MarginContentCollector` reads it and `CssContentList.TryParseStringSet` resolves `content()` to the
          element's own text (bare `content()` / `content(text)`; the typographic targets
          `content(before|after|first-letter|marker)` stay deferred). The cascade's own selector matching
-         associates the rule with the elements — no separate raw-CSS pre-pass needed; (c) **`element(name)`
-         renders the running element's TEXT** with the margin box's own style — the element's own block box /
-         styling is a follow-up; (d) the `string(name, first | last)` position keyword is DONE (Task 21):
+         associates the rule with the elements — no separate raw-CSS pre-pass needed; (c) **`element(name [,
+         first | last])`** renders the running element's TEXT, GCPM-normalized as `white-space: normal`
+         (Task 23 follow-up — like `content()`), with the margin box's own style. The position keyword is DONE
+         (Task 23): `element(name, first)` AND the no-keyword DEFAULT → the first occurrence (GCPM §7.4),
+         `element(name, last)` → the exit value (`MarginContentContext.RunningElementsFirst`; the shared
+         `TryReadPositionedFunction` parses both `string()` + `element()`); `start` / `first-except` bail.
+         STILL deferred for `element()`: the element's own block box / styling (FULL block rendering — needs a
+         `ComputedStyle` threaded through the string-based content model); (d) the `string(name, first |
+         last)` position keyword is DONE (Task 21):
          `MarginContentCollector` keeps both the FIRST and LAST assignment per name (`MarginContentContext`
          gained `NamedStringsFirst`); `string(name, first)` AND the no-keyword DEFAULT → the first
          assignment (per CSS GCPM §7.3 — `first` is the default, NOT the exit value; post-PR-#149 review

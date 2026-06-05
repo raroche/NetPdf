@@ -5,6 +5,7 @@ using System;
 using System.Collections.Generic;
 using AngleSharp.Dom;
 using NetPdf.Css.Cascade;
+using NetPdf.Layout.Inline;
 
 namespace NetPdf.Layout.Boxes;
 
@@ -46,17 +47,18 @@ internal static class MarginContentCollector
     {
         ArgumentNullException.ThrowIfNull(root);
         ArgumentNullException.ThrowIfNull(cascade);
-        Dictionary<string, string>? named = null;       // LAST assignment — string(name) default / `last`
-        Dictionary<string, string>? namedFirst = null;  // FIRST assignment — string(name, first)
-        Dictionary<string, string>? running = null;
-        Walk(root, cascade, ref named, ref namedFirst, ref running);
-        return new CssContentList.MarginContentContext(named, running, namedFirst);
+        Dictionary<string, string>? named = null;          // LAST assignment — string(name, last) / exit value
+        Dictionary<string, string>? namedFirst = null;     // FIRST assignment — string(name) default + `first`
+        Dictionary<string, string>? running = null;        // LAST running element — element(name, last)
+        Dictionary<string, string>? runningFirst = null;   // FIRST running element — element(name) default + `first`
+        Walk(root, cascade, ref named, ref namedFirst, ref running, ref runningFirst);
+        return new CssContentList.MarginContentContext(named, running, namedFirst, runningFirst);
     }
 
     private static void Walk(
         IElement element, ResolvedCascadeResult cascade,
         ref Dictionary<string, string>? named, ref Dictionary<string, string>? namedFirst,
-        ref Dictionary<string, string>? running)
+        ref Dictionary<string, string>? running, ref Dictionary<string, string>? runningFirst)
     {
         var rules = cascade.TryGetStylesFor(element);
         if (rules is not null)
@@ -77,16 +79,21 @@ internal static class MarginContentCollector
                 }
             }
 
-            // position: running(<name>) — register the element's text for content: element(name).
+            // position: running(<name>) — register the element's text for content: element(name). The text
+            // is GCPM-normalized as if white-space: normal (Task 23 follow-up) — like content() — so a
+            // formatted/indented running element doesn't leak its source indentation into the margin box.
+            // Both the FIRST (element(name) default + `first`) and LAST (`last`) occurrence are kept.
             var position = rules.GetWinner("position")?.ResolvedValue;
             if (position is not null && TryParseRunningName(position, out var runName))
             {
-                (running ??= new(StringComparer.Ordinal))[runName] = element.TextContent ?? string.Empty;
+                var text = LineBuilder.PreprocessWhitespace(element.TextContent ?? string.Empty, WhiteSpace.Normal);
+                (running ??= new(StringComparer.Ordinal))[runName] = text;             // last occurrence
+                (runningFirst ??= new(StringComparer.Ordinal)).TryAdd(runName, text);  // first occurrence (kept)
             }
         }
 
         foreach (var child in element.Children) // IElement children, in document order.
-            Walk(child, cascade, ref named, ref namedFirst, ref running);
+            Walk(child, cascade, ref named, ref namedFirst, ref running, ref runningFirst);
     }
 
     /// <summary>Split a <c>string-set</c> value into its TOP-LEVEL comma-separated name/value pairs,

@@ -157,7 +157,10 @@ internal static class MarginContentCollector
             if (!string.IsNullOrWhiteSpace(value))
                 (captured ??= new()).Add(new KeyValuePair<string, string>(prop, value));
         }
-        return captured ?? EmptyOwnStyle;
+        // Return an ARRAY, not the mutable builder List, so the stored IReadOnlyList can't be down-cast
+        // to List<T> and mutated (the same instance is aliased into both the first + last dictionaries for
+        // a single-occurrence element) — Copilot review.
+        return captured is null ? EmptyOwnStyle : captured.ToArray();
     }
 
     /// <summary>The nearest self-or-ancestor declared winning value of <paramref name="prop"/>, walking up

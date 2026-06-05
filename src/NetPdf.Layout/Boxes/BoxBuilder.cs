@@ -573,42 +573,13 @@ internal static class BoxBuilder
             "disc" => "•" + trailer,             // •
             "circle" => "◦" + trailer,           // ◦
             "square" => "▪" + trailer,           // ▪
-            "decimal" => ComputeListItemPosition(host, cascade).ToString(System.Globalization.CultureInfo.InvariantCulture) + "." + trailer,
-            "decimal-leading-zero" => FormatDecimalLeadingZero(ComputeListItemPosition(host, cascade)) + "." + trailer,
-            "lower-roman" => ToRoman(ComputeListItemPosition(host, cascade), upper: false) + "." + trailer,
-            "upper-roman" => ToRoman(ComputeListItemPosition(host, cascade), upper: true) + "." + trailer,
-            "lower-alpha" or "lower-latin" => ToAlpha(ComputeListItemPosition(host, cascade), upper: false) + "." + trailer,
-            "upper-alpha" or "upper-latin" => ToAlpha(ComputeListItemPosition(host, cascade), upper: true) + "." + trailer,
-            "lower-greek" => ToGreek(ComputeListItemPosition(host, cascade)) + "." + trailer,
-            _ => "•" + trailer,
+            // Numeric / alphabetic styles → the shared CounterStyleFormatter (1-indexed sibling
+            // position) + a trailing dot; an unsupported style falls back to the disc default (cycle 1).
+            _ => CounterStyleFormatter.TryFormat(ComputeListItemPosition(host, cascade), listStyleType) is { } numeral
+                ? numeral + "." + trailer
+                : "•" + trailer,
         };
     }
-
-    /// <summary>Bijective base-24 Greek alphabetic conversion per CSS Counter
-    /// Styles 3 §6 — symbols α β γ δ ε ζ η θ ι κ λ μ ν ξ ο π ρ σ τ υ φ χ ψ ω
-    /// (omits final-sigma ς since lists use the medial form per Counter
-    /// Styles 3 Appendix). Values 1..24 → α..ω; 25..600 → αα..ωω; etc.</summary>
-    private static string ToGreek(int n)
-    {
-        if (n < 1) return n.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        var sb = new System.Text.StringBuilder();
-        while (n > 0)
-        {
-            n--;
-            sb.Insert(0, GreekLowerSymbols[n % GreekLowerSymbols.Length]);
-            n /= GreekLowerSymbols.Length;
-        }
-        return sb.ToString();
-    }
-
-    /// <summary>The 24 lowercase Greek symbols used by <c>lower-greek</c>
-    /// per CSS Counter Styles 3 §6.</summary>
-    private static readonly char[] GreekLowerSymbols =
-    {
-        'α', 'β', 'γ', 'δ', 'ε', 'ζ', 'η', 'θ',
-        'ι', 'κ', 'λ', 'μ', 'ν', 'ξ', 'ο', 'π',
-        'ρ', 'σ', 'τ', 'υ', 'φ', 'χ', 'ψ', 'ω',
-    };
 
     /// <summary>Count this <paramref name="host"/>'s 1-indexed position among
     /// its sibling list-items per Task 14 review Rec 3 — "list-item" is any
@@ -652,50 +623,6 @@ internal static class BoxBuilder
         }
         // Fall back to UA default — only `<li>` defaults to list-item.
         return string.Equals(element.LocalName, "li", StringComparison.OrdinalIgnoreCase);
-    }
-
-    /// <summary>Format a list position with a leading zero when the count is
-    /// less than 10 (per Lists L3 §7.1's <c>decimal-leading-zero</c>).</summary>
-    private static string FormatDecimalLeadingZero(int n) =>
-        n < 10 && n >= 0
-            ? "0" + n.ToString(System.Globalization.CultureInfo.InvariantCulture)
-            : n.ToString(System.Globalization.CultureInfo.InvariantCulture);
-
-    /// <summary>Roman-numeral conversion 1..3999. Out-of-range values fall
-    /// back to decimal per Lists L3 §7.1.4.</summary>
-    private static string ToRoman(int n, bool upper)
-    {
-        if (n < 1 || n > 3999)
-            return n.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        var sb = new System.Text.StringBuilder();
-        var pairs = new (string, int)[]
-        {
-            ("M", 1000), ("CM", 900), ("D", 500), ("CD", 400),
-            ("C", 100), ("XC", 90), ("L", 50), ("XL", 40),
-            ("X", 10), ("IX", 9), ("V", 5), ("IV", 4), ("I", 1),
-        };
-        foreach (var (sym, val) in pairs)
-        {
-            while (n >= val) { sb.Append(sym); n -= val; }
-        }
-        var s = sb.ToString();
-        return upper ? s : s.ToLowerInvariant();
-    }
-
-    /// <summary>Bijective base-26 alphabetic conversion (1→a, 26→z, 27→aa, …)
-    /// per Lists L3 §7.1.4.</summary>
-    private static string ToAlpha(int n, bool upper)
-    {
-        if (n < 1) return n.ToString(System.Globalization.CultureInfo.InvariantCulture);
-        var sb = new System.Text.StringBuilder();
-        var baseChar = upper ? 'A' : 'a';
-        while (n > 0)
-        {
-            n--;
-            sb.Insert(0, (char)(baseChar + (n % 26)));
-            n /= 26;
-        }
-        return sb.ToString();
     }
 
     /// <summary>Stage <c>::first-line</c> + <c>::first-letter</c> cascade

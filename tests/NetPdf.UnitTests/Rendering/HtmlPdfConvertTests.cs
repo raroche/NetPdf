@@ -629,10 +629,17 @@ public sealed class HtmlPdfConvertTests
     [InlineData("counter(page)")]
     [InlineData("counter(pages)")]
     [InlineData("counter(page, decimal)")]
+    [InlineData("counter(page, lower-roman)")]    // page 1 → "i" (Task 21 — counter styles)
+    [InlineData("counter(page, upper-roman)")]    // → "I"
+    [InlineData("counter(page, lower-alpha)")]    // → "a"
+    [InlineData("counter(page, upper-latin)")]    // → "A"
+    [InlineData("counter(page, decimal-leading-zero)")] // → "01"
+    [InlineData("counter(pages, lower-roman)")]
     public void Page_margin_box_page_counter_content_is_painted(string content)
     {
-        // counter(page)/counter(pages) now resolve (Task 21 cycle 9) — the page number is laid out
-        // + painted (a text run), with NO unsupported-content diagnostic. Single page → "1".
+        // counter(page)/counter(pages) now resolve (Task 21 cycle 9) with an optional <counter-style>
+        // (Task 21 — roman/alpha/leading-zero, shared with list markers via CounterStyleFormatter) — the
+        // page number is laid out + painted (a text run), with NO unsupported-content diagnostic.
         var result = HtmlPdf.ConvertDetailed(
             $"<!DOCTYPE html><html><head><style>@page {{ @bottom-center {{ content: {content} }} }}</style>" +
             "</head><body></body></html>",
@@ -644,12 +651,27 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
-    public void Page_margin_box_unsupported_counter_style_is_skipped_with_a_diagnostic()
+    public void Page_margin_box_upper_alpha_page_counter_paints_the_letter()
     {
-        // counter(page, lower-roman) IS a page counter, but only the default decimal style is
-        // supported → it must emit the unsupported-content diagnostic + paint nothing (review P3).
+        // counter(page, upper-alpha) on the single (first) page → "A" — the one numeral the synthetic
+        // font has a glyph for, so the painted output is observable (1 glyph), proving the style resolved.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content: counter(page, upper-alpha) } }</style>" +
+            "</head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(1, TotalGlyphCount(pdf));   // page 1 → "A" → one glyph
+    }
+
+    [Theory]
+    [InlineData("hebrew")]            // a predefined style we don't format
+    [InlineData("cjk-ideographic")]
+    [InlineData("not-a-style")]
+    public void Page_margin_box_unsupported_counter_style_is_skipped_with_a_diagnostic(string style)
+    {
+        // counter(page, <style>) IS a page counter, but a style outside CounterStyleFormatter's set must
+        // emit the unsupported-content diagnostic + paint nothing (no silent fallback to decimal).
         var result = HtmlPdf.ConvertDetailed(
-            "<!DOCTYPE html><html><head><style>@page { @bottom-center { content: counter(page, lower-roman) } }</style>" +
+            $"<!DOCTYPE html><html><head><style>@page {{ @bottom-center {{ content: counter(page, {style}) }} }}</style>" +
             "</head><body></body></html>",
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
 
@@ -2060,6 +2082,19 @@ public sealed class HtmlPdfConvertTests
             "</head><body><h1 data-t=\"A\">A</h1><h1 data-t=\"AB\">AB</h1></body></html>",
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
         Assert.Equal(5, TotalGlyphCount(pdf));   // body 3 + header last-wins "AB"(2)
+    }
+
+    [Fact]
+    public void Page_margin_box_string_first_keyword_takes_the_first_assignment()
+    {
+        // Task 21 (string position keyword): `string(t, first)` pulls the FIRST element's value on the
+        // page (vs the default/`last`). Same document as the last-wins test: body h1 "A"(1) + "AB"(2) = 3;
+        // header string(t, first) = first h1 = "A"(1) → total 4. (The default → 5; this 4 proves `first`.)
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>h1 { string-set: t attr(data-t) } @page { @top-center { content: string(t, first) } }</style>" +
+            "</head><body><h1 data-t=\"A\">A</h1><h1 data-t=\"AB\">AB</h1></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(4, TotalGlyphCount(pdf));   // body 3 + header first "A"(1)
     }
 
     [Fact]

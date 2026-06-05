@@ -46,15 +46,17 @@ internal static class MarginContentCollector
     {
         ArgumentNullException.ThrowIfNull(root);
         ArgumentNullException.ThrowIfNull(cascade);
-        Dictionary<string, string>? named = null;
+        Dictionary<string, string>? named = null;       // LAST assignment — string(name) default / `last`
+        Dictionary<string, string>? namedFirst = null;  // FIRST assignment — string(name, first)
         Dictionary<string, string>? running = null;
-        Walk(root, cascade, ref named, ref running);
-        return new CssContentList.MarginContentContext(named, running);
+        Walk(root, cascade, ref named, ref namedFirst, ref running);
+        return new CssContentList.MarginContentContext(named, running, namedFirst);
     }
 
     private static void Walk(
         IElement element, ResolvedCascadeResult cascade,
-        ref Dictionary<string, string>? named, ref Dictionary<string, string>? running)
+        ref Dictionary<string, string>? named, ref Dictionary<string, string>? namedFirst,
+        ref Dictionary<string, string>? running)
     {
         var rules = cascade.TryGetStylesFor(element);
         if (rules is not null)
@@ -68,7 +70,10 @@ internal static class MarginContentCollector
                 foreach (var pair in SplitTopLevelCommas(stringSet))
                 {
                     if (TryResolveStringSetPair(pair, element, out var name, out var value))
-                        (named ??= new(StringComparer.Ordinal))[name] = value;
+                    {
+                        (named ??= new(StringComparer.Ordinal))[name] = value;            // last-wins
+                        (namedFirst ??= new(StringComparer.Ordinal)).TryAdd(name, value); // first-wins (kept)
+                    }
                 }
             }
 
@@ -81,7 +86,7 @@ internal static class MarginContentCollector
         }
 
         foreach (var child in element.Children) // IElement children, in document order.
-            Walk(child, cascade, ref named, ref running);
+            Walk(child, cascade, ref named, ref namedFirst, ref running);
     }
 
     /// <summary>Split a <c>string-set</c> value into its TOP-LEVEL comma-separated name/value pairs,

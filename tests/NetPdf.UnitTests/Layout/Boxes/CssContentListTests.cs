@@ -162,6 +162,13 @@ public sealed class CssContentListTests
     [InlineData("counter( page )", "3")]          // whitespace tolerance
     [InlineData("\"Page \" counter(page)", "Page 3")]   // string + counter mix
     [InlineData("counter(page) \" of \" counter(pages)", "3 of 7")]
+    [InlineData("counter(page, lower-roman)", "iii")]          // Task 21 — counter styles
+    [InlineData("counter(page, upper-roman)", "III")]
+    [InlineData("counter(page, lower-alpha)", "c")]           // 3rd letter
+    [InlineData("counter(page, upper-latin)", "C")]          // -latin alias of -alpha
+    [InlineData("counter(page, decimal-leading-zero)", "03")]
+    [InlineData("counter(pages, lower-roman)", "vii")]       // the total, roman
+    [InlineData("\"Page \" counter(page, upper-roman) \" of \" counter(pages, upper-roman)", "Page III of VII")]
     public async Task TryParse_resolves_page_counters(string raw, string expected)
     {
         var host = await MakeHost("<p id='h'>x</p>", "h");
@@ -171,7 +178,9 @@ public sealed class CssContentListTests
 
     [Theory]
     [InlineData("counter(chapter)")]               // a non-page counter name
-    [InlineData("counter(page, lower-roman)")]      // an unsupported counter style
+    [InlineData("counter(page, hebrew)")]           // a predefined style we don't format
+    [InlineData("counter(page, cjk-ideographic)")]
+    [InlineData("counter(page, )")]                 // empty style after the comma
     [InlineData("counters(page, \".\")")]           // counters() (plural) is unsupported
     public async Task TryParse_rejects_unsupported_counters(string raw)
     {
@@ -208,12 +217,39 @@ public sealed class CssContentListTests
     // ---- string(name) (Task 22) + element(name) (Task 23) ----
 
     private static CssContentList.MarginContentContext Ctx(
-        (string Key, string Value)[]? named = null, (string Key, string Value)[]? running = null)
+        (string Key, string Value)[]? named = null, (string Key, string Value)[]? running = null,
+        (string Key, string Value)[]? namedFirst = null)
     {
-        Dictionary<string, string>? n = null, r = null;
+        Dictionary<string, string>? n = null, r = null, nf = null;
         if (named is not null) { n = new(); foreach (var (k, v) in named) n[k] = v; }
         if (running is not null) { r = new(); foreach (var (k, v) in running) r[k] = v; }
-        return new CssContentList.MarginContentContext(n, r);
+        if (namedFirst is not null) { nf = new(); foreach (var (k, v) in namedFirst) nf[k] = v; }
+        return new CssContentList.MarginContentContext(n, r, nf);
+    }
+
+    [Fact]
+    public async Task String_function_first_and_last_keywords_pick_the_assignment()
+    {
+        var host = await MakeHost("<p id='h'>x</p>", "h");
+        var ctx = Ctx(named: new[] { ("t", "last") }, namedFirst: new[] { ("t", "first") });
+        Assert.True(CssContentList.TryParse("string(t, first)", host, new CssContentList.PageCounters(1, 1), ctx, out var f));
+        Assert.Equal("first", f);
+        Assert.True(CssContentList.TryParse("string(t, last)", host, new CssContentList.PageCounters(1, 1), ctx, out var l));
+        Assert.Equal("last", l);
+        // No keyword → the shipped default (= last, the value at the end of the page).
+        Assert.True(CssContentList.TryParse("string(t)", host, new CssContentList.PageCounters(1, 1), ctx, out var d));
+        Assert.Equal("last", d);
+    }
+
+    [Theory]
+    [InlineData("string(t, start)")]         // cross-page → deferred (needs the multi-page driver)
+    [InlineData("string(t, first-except)")]  // niche GCPM keyword → deferred
+    [InlineData("string(t, bogus)")]         // unknown keyword
+    public async Task String_function_unsupported_position_keyword_bails(string raw)
+    {
+        var host = await MakeHost("<p id='h'>x</p>", "h");
+        var ctx = Ctx(named: new[] { ("t", "v") }, namedFirst: new[] { ("t", "v") });
+        Assert.False(CssContentList.TryParse(raw, host, new CssContentList.PageCounters(1, 1), ctx, out _));
     }
 
     [Fact]

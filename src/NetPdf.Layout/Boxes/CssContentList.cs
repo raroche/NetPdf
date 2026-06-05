@@ -87,10 +87,15 @@ internal static class CssContentList
     /// elements' text from <c>position: running(name)</c> (resolved for <c>content: element(name)</c> —
     /// Task 23), collected from the document during the render. A SINGLE-PAGE first cut — cross-page
     /// "running" persistence (the value carried to the next page until re-set) needs the multi-page
-    /// driver (deferred). Both lookups resolve a missing name to the empty string (CSS GCPM L3).</summary>
+    /// driver (deferred). Both lookups resolve a missing name to the empty string (CSS GCPM L3).
+    /// <para><see cref="NamedStrings"/> holds the LAST assignment in document order (the value at the end
+    /// of the page — <c>string(name)</c>'s shipped default + <c>string(name, last)</c>);
+    /// <see cref="NamedStringsFirst"/> holds the FIRST assignment (<c>string(name, first)</c>). The
+    /// <c>start</c> / <c>first-except</c> position keywords need cross-page context and stay deferred.</para></summary>
     public readonly record struct MarginContentContext(
         IReadOnlyDictionary<string, string>? NamedStrings,
-        IReadOnlyDictionary<string, string>? RunningElements);
+        IReadOnlyDictionary<string, string>? RunningElements,
+        IReadOnlyDictionary<string, string>? NamedStringsFirst = null);
 
     /// <summary>Sink-less convenience overload — see the four-argument form
     /// for the diagnostic-emitting path. Returns <see langword="true"/> + the
@@ -196,17 +201,20 @@ internal static class CssContentList
                 return false;
             }
 
-            // string(name) — Task 22. Pulls the named string set by `string-set` (collected during the
-            // document walk). Only valid with a margin context (page-margin boxes); a missing/undefined
-            // name resolves to the empty string per CSS GCPM L3 (no diagnostic). The optional position
-            // keyword form (string(name, first|last|…)) is a deferred first-cut gap → bail to unsupported.
+            // string(name [, first|last]) — Task 22 (+ the position keyword). Pulls the named string set
+            // by `string-set` (collected during the document walk). Only valid with a margin context
+            // (page-margin boxes); a missing/undefined name resolves to the empty string per CSS GCPM L3
+            // (no diagnostic). `first` → the FIRST assignment on the page, `last` (+ the no-keyword default,
+            // the shipped behavior) → the LAST. The cross-page `start` / `first-except` keywords bail to
+            // unsupported (need the multi-page driver).
             if (StartsWithCaseInsensitive(span, i, "string("))
             {
                 var tokenStart = i;
                 i += "string(".Length;
-                if (marginContext is { } mcStr && TryReadFunctionIdent(span, ref i, out var stringName))
+                if (marginContext is { } mcStr && TryReadStringFunction(span, ref i, out var stringName, out var first))
                 {
-                    var value = mcStr.NamedStrings is { } ns && ns.TryGetValue(stringName, out var v) ? v : string.Empty;
+                    var dict = first ? mcStr.NamedStringsFirst : mcStr.NamedStrings;
+                    var value = dict is { } ns && ns.TryGetValue(stringName, out var v) ? v : string.Empty;
                     if (!TryAppendBounded(sb, value, sink, raw, location)) return false;
                     continue;
                 }
@@ -466,12 +474,14 @@ internal static class CssContentList
     }
 
     /// <summary>Parse a <c>counter(...)</c> call (the <c>counter(</c> already consumed) as a page
-    /// counter (Task 21 cycle 9). Supports ONLY <c>counter(page)</c> / <c>counter(pages)</c>, with an
-    /// optional <c>decimal</c> style (the default). Resolves <c>page</c> → the current page number and
-    /// <c>pages</c> → the total from <paramref name="pc"/>. Returns <see langword="false"/> (→ the
-    /// caller bails to the unsupported diagnostic) for any other counter name, a non-<c>decimal</c>
-    /// style, or malformed syntax. Other counter styles (<c>lower-roman</c> / …) and the
-    /// <c>counters()</c> form are tracked follow-ups.</summary>
+    /// counter (Task 21 cycle 9). Supports <c>counter(page)</c> / <c>counter(pages)</c> with an optional
+    /// <c>&lt;counter-style&gt;</c> (default <c>decimal</c>) — the predefined numeric / alphabetic styles
+    /// shared with list markers via <see cref="CounterStyleFormatter"/> (<c>decimal</c>,
+    /// <c>decimal-leading-zero</c>, <c>lower-roman</c> / <c>upper-roman</c>, <c>lower-alpha</c> /
+    /// <c>upper-alpha</c> / <c>-latin</c>, <c>lower-greek</c>). Resolves <c>page</c> → the current page
+    /// number, <c>pages</c> → the total from <paramref name="pc"/>. Returns <see langword="false"/> (→ the
+    /// caller bails to the unsupported diagnostic) for any other counter name, an unsupported style (e.g.
+    /// <c>hebrew</c>), or malformed syntax. The <c>counters()</c> form is a tracked follow-up.</summary>
     private static bool TryReadPageCounter(ReadOnlySpan<char> span, ref int i, PageCounters pc, out string text)
     {
         text = string.Empty;
@@ -492,8 +502,9 @@ internal static class CssContentList
         else if (name.Equals("pages", StringComparison.OrdinalIgnoreCase)) value = pc.Pages;
         else return false; // a non-page counter — not supported here.
 
+        // Optional `, <counter-style>` (default `decimal`); the style is resolved by CounterStyleFormatter.
+        var style = "decimal".AsSpan();
         i = SkipWhitespace(span, i);
-        // Optional `, <counter-style>` — only the default `decimal` is supported this cycle.
         if (i < span.Length && span[i] == ',')
         {
             i++;
@@ -506,20 +517,22 @@ internal static class CssContentList
                 if (!IsCssIdentChar(c)) return false;
                 i++;
             }
-            if (!span[styleStart..i].Equals("decimal", StringComparison.OrdinalIgnoreCase)) return false;
+            if (styleStart == i) return false; // empty style after the comma
+            style = span[styleStart..i];
             i = SkipWhitespace(span, i);
         }
 
         if (i >= span.Length || span[i] != ')') return false; // missing close-paren.
         i++; // consume ')'
-        text = value.ToString(CultureInfo.InvariantCulture);
+        if (CounterStyleFormatter.TryFormat(value, style) is not { } formatted) return false; // unsupported style
+        text = formatted;
         return true;
     }
 
-    /// <summary>Parse the single bare <c>&lt;custom-ident&gt;</c> argument of a <c>string(name)</c> /
-    /// <c>element(name)</c> call (the <c>name(</c> already consumed). Returns <see langword="false"/>
-    /// (→ the caller bails to the unsupported diagnostic) for an empty/invalid ident, a second argument
-    /// (e.g. <c>string(name, first)</c>), or a missing close-paren — those forms are deferred. Validates
+    /// <summary>Parse the single bare <c>&lt;custom-ident&gt;</c> argument of an <c>element(name)</c>
+    /// call (the <c>element(</c> already consumed). Returns <see langword="false"/> (→ the caller bails to
+    /// the unsupported diagnostic) for an empty/invalid ident, a second argument, or a missing close-paren.
+    /// (<c>string()</c> uses <see cref="TryReadStringFunction"/> — it accepts a position keyword.) Validates
     /// the ident per CSS Syntax §4.3.11 (ASCII subset, as <see cref="ReadAttrArgs"/> does).</summary>
     private static bool TryReadFunctionIdent(ReadOnlySpan<char> span, ref int i, out string name)
     {
@@ -541,6 +554,55 @@ internal static class CssContentList
         if (i >= span.Length || span[i] != ')') return false; // a second arg or malformed → bail (first cut)
         i++; // consume ')'
         name = ident;
+        return true;
+    }
+
+    /// <summary>Parse a <c>string(&lt;custom-ident&gt; [, first | last])</c> call (the <c>string(</c>
+    /// already consumed): the named string + an optional GCPM position keyword. <paramref name="first"/>
+    /// is set <see langword="true"/> for <c>first</c> (the first assignment on the page) and
+    /// <see langword="false"/> for <c>last</c> / no keyword (the last — the shipped default). Returns
+    /// <see langword="false"/> (→ the caller bails to unsupported) for an empty/invalid name, the
+    /// cross-page <c>start</c> / <c>first-except</c> keywords (deferred), an unknown keyword, or malformed
+    /// syntax.</summary>
+    private static bool TryReadStringFunction(ReadOnlySpan<char> span, ref int i, out string name, out bool first)
+    {
+        name = string.Empty;
+        first = false;
+        i = SkipWhitespace(span, i);
+        var start = i;
+        while (i < span.Length)
+        {
+            var c = span[i];
+            if (IsCssWhitespace(c) || c == ',' || c == ')') break;
+            if (!IsCssIdentChar(c)) return false; // malformed punctuation
+            i++;
+        }
+        if (i == start) return false; // empty name
+        if (!IsValidCssIdentStart(span[start..i])) return false;
+        name = span[start..i].ToString();
+
+        i = SkipWhitespace(span, i);
+        if (i < span.Length && span[i] == ',') // optional position keyword
+        {
+            i++;
+            i = SkipWhitespace(span, i);
+            var kwStart = i;
+            while (i < span.Length)
+            {
+                var c = span[i];
+                if (IsCssWhitespace(c) || c == ')') break;
+                if (!IsCssIdentChar(c)) return false;
+                i++;
+            }
+            var kw = span[kwStart..i];
+            if (kw.Equals("first", StringComparison.OrdinalIgnoreCase)) first = true;
+            else if (kw.Equals("last", StringComparison.OrdinalIgnoreCase)) first = false;
+            else return false; // start / first-except (cross-page) or unknown → bail
+            i = SkipWhitespace(span, i);
+        }
+
+        if (i >= span.Length || span[i] != ')') return false;
+        i++; // consume ')'
         return true;
     }
 

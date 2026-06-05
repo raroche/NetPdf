@@ -3014,12 +3014,15 @@ flags the categories):
          shared text pass. rgba composites via `/ca`. STILL DEFERRED: `border` / `padding` (need the
          content-origin inset the cycle-4 whitelist still avoids — they would shift the text) and
          background images.
-       - **Margin boxes — `counter(page)`/`counter(pages)` (cycle 9) — DONE:** `content:
-         counter(page)` / `counter(pages)` (optional `decimal` style) resolves to the page number /
-         total via a new `CssContentList.PageCounters` context threaded through `PageMarginBoxPainter`;
-         `PdfRenderPipeline` passes `(1, 1)` (single page → "1"). STILL DEFERRED: the real multi-page
-         numbers (gated on the multi-page driver below), non-`decimal` counter styles
-         (`lower-roman`/…), non-page `counter()` names + `counters()` (need the counter-reset/increment
+       - **Margin boxes — `counter(page)`/`counter(pages)` (cycle 9; counter styles — Task 21) — DONE:**
+         `content: counter(page)` / `counter(pages)` resolves to the page number / total via a new
+         `CssContentList.PageCounters` context threaded through `PageMarginBoxPainter`; `PdfRenderPipeline`
+         passes `(1, 1)` (single page → "1"). An optional `<counter-style>` (Task 21) formats it via a new
+         shared `CounterStyleFormatter` (EXTRACTED from `BoxBuilder`'s list-marker numerals — `decimal`,
+         `decimal-leading-zero`, `lower`/`upper-roman`, `lower`/`upper-alpha`+`-latin`, `lower-greek`; both
+         callers now format identically). STILL DEFERRED: the real multi-page numbers (gated on the
+         multi-page driver below), a non-predefined counter style (e.g. `hebrew`/`cjk-ideographic` →
+         diagnosed + dropped), non-page `counter()` names + `counters()` (need the counter-reset/increment
          machinery), and `counter(page)` in body/pseudo content (no page context → unsupported).
        - **Margin boxes — `border` (border cycle) — DONE:** a margin box's declared `border` /
          per-side `border-<side>` shorthand (new `BorderShorthandExpander` for margin-box bodies →
@@ -3076,9 +3079,12 @@ flags the categories):
          `content(before|after|first-letter|marker)` stay deferred). The cascade's own selector matching
          associates the rule with the elements — no separate raw-CSS pre-pass needed; (c) **`element(name)`
          renders the running element's TEXT** with the margin box's own style — the element's own block box /
-         styling is a follow-up; (d) the `string(name, first|last)` position keyword. Other deferrals:
-         `border-radius` + background images. The per-box / page-context `ComputedStyle.Rent()` is
-         box-owned (not returned to the pool) — a negligible per-render miss.
+         styling is a follow-up; (d) the `string(name, first | last)` position keyword is DONE (Task 21):
+         `MarginContentCollector` keeps both the FIRST and LAST assignment per name (`MarginContentContext`
+         gained `NamedStringsFirst`); `string(name, first)` → first, `string(name, last)` / no keyword →
+         last (the shipped default). The cross-page `start` / `first-except` keywords stay deferred (need
+         the multi-page driver). Other deferrals: `border-radius` + background images. The per-box /
+         page-context `ComputedStyle.Rent()` is box-owned (not returned to the pool) — a negligible miss.
        - **Margin boxes — §5.3 three-box-per-edge sizing (shrink-to-fit + explicit size + overlap distribution) — DONE:** a
          content-bearing edge box is sized along the §5.3 variable axis
          (`PageMarginBoxGeometry.MarginBoxAxis` — top/bottom → width, left/right → height; corners

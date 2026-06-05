@@ -1571,6 +1571,83 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Page_margin_box_explicit_width_is_content_box_padding_adds_to_the_border_box()
+    {
+        // The explicit `width` is the CONTENT-box; the painted background is the BORDER-box = content +
+        // padding (+ border). width:200px + padding-left/right:20px → (200+40)px → 180pt.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; width: 200px; " +
+            "padding-left: 20px; padding-right: 20px; background-color: red } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.InRange(FirstRect(pdf).W, 178.0, 182.0);   // (200 + 20 + 20)px × 0.75 = 180pt
+    }
+
+    [Fact]
+    public void Page_margin_box_explicit_width_border_box_adds_border_width()
+    {
+        // The border-box also includes the border width: width:200px + border-left/right:10px →
+        // (200+20)px → 165pt. (The background band, painted first, is the border-box.)
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; width: 200px; " +
+            "border-left: 10px solid blue; border-right: 10px solid blue; background-color: red } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.InRange(FirstRect(pdf).W, 163.0, 167.0);   // (200 + 10 + 10)px × 0.75 = 165pt
+    }
+
+    [Fact]
+    public void Page_margin_box_explicit_width_plus_insets_clamps_to_the_band()
+    {
+        // The border-box (content width + padding + border) is clamped to the band — even when the
+        // explicit content width is reduced, the insets must not push it past the band edge.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; width: 10000px; " +
+            "padding-left: 50px; background-color: red } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        var bandWidth = MediaBox(pdf).W - 144.0;
+        Assert.InRange(FirstRect(pdf).W, bandWidth - 1.0, bandWidth + 1.0);   // clamped to the band
+    }
+
+    [Fact]
+    public void Page_margin_box_explicit_percent_height_resolves_against_the_column()
+    {
+        // A left/right box's VARIABLE axis is HEIGHT — a percentage height resolves against the column
+        // extent (the box's containing block on that axis): 50% of (page height − 2×1in margins).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @left-middle { content:\"AB\"; height: 50%; background-color: red } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        var halfColumn = (MediaBox(pdf).H - 144.0) / 2.0;
+        Assert.InRange(FirstRect(pdf).H, halfColumn - 2.0, halfColumn + 2.0);
+    }
+
+    [Fact]
+    public void Page_margin_box_deferred_explicit_width_is_surfaced_and_shrinks_to_fit()
+    {
+        // A font-relative `width: 10em` can't be resolved to a used size here yet → it's diagnosed
+        // (CSS-PROPERTY-VALUE-INVALID-001) and DROPPED, so the box EXPLICITLY shrink-to-fits (a 2-glyph
+        // content box, not the full ~450pt band) rather than silently falling back — review P2.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; width: 10em; background-color: red } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
+        Assert.True(FirstRect(Latin1(result.Pdf)).W < 200.0,
+            "a dropped deferred width should shrink-to-fit, not paint the full band");
+    }
+
+    [Fact]
+    public void Page_margin_box_supported_explicit_width_emits_no_diagnostic()
+    {
+        // No false positive: an absolute / percentage width must NOT trip the deferred-size guard.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; width: 300px; background-color: red } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
+    }
+
+    [Fact]
     public void Page_margin_box_font_shorthand_sets_the_size(/* Task 21 cycle 6 */)
     {
         // The `font` shorthand is expanded into longhands for margin-box bodies (AngleSharp never

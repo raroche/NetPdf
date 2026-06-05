@@ -208,14 +208,21 @@ tightened two cycle-reference/future-tense doc comments (`PageMarginBoxPainter` 
 shorthands being deferred (they shipped cycle 13). DEFERRED: the full §5.3 min/max-content
 DISTRIBUTION (long siblings can still overlap), explicit `width`/`height`, overflow clipping.
 `border-radius` + background images stay deferred. **Cycle 15 — margin-box explicit `width`/`height`
-(in progress, branch `phase-3-task-21-margin-box-explicit-size`):** a declared `width` (top/bottom) /
+(merged in PR #144, incl. its review):** a declared `width` (top/bottom) /
 `height` (left/right) sizes the box along its §5.3 VARIABLE axis, overriding shrink-to-fit (an absolute
-length or a percentage of the band; `auto`/font-relative/`calc()` → shrink-to-fit). `width`/`height`
+length or a percentage of the band; `auto` shrink-to-fits, a deferred font-/viewport-relative or
+`calc()` size is diagnosed + dropped). `width`/`height`
 joined `MarginBoxStyle.CascadedStyleIds` (non-inherited); `PageMarginBoxPainter.TryReadExplicitSizePx`
 reads them. The explicit size is content-box (box-sizing deferred); the border-box adds the
 border+padding insets, and applies even to an empty `content:""` box. An explicit width can make the
 content box wider than the line, so the (content-only) `text-align`/`vertical-align` is now observable
-on edge boxes. Clamped to the band. DEFERRED: the §5.3 min/max-content DISTRIBUTION for overlapping
+on edge boxes. Clamped to the band. **Post-PR-#144 review (1 P2 + 2 P3): (P2)** a DEFERRED
+`width`/`height` (`10em` / `5vh` / `calc()`) was silently shrink-to-fitting — `MarginBoxStyle.Build` now
+diagnoses (`CSS-PROPERTY-VALUE-INVALID-001`) + drops it (keyed on `resolved.IsDeferred`, mirroring the
+padding policy; `auto` / `<length>` / `<percentage>` don't trip it); **(P3)** added content-box-with-insets
+coverage (explicit width + padding/border → border-box; clamp-after-insets; `@left-middle { height: 50% }`
+vertical percentage); **(P3)** fixed a stale `MarginBoxStyle` deferred-list doc still calling the whole
+§5.3 sizing deferred. DEFERRED: the §5.3 min/max-content DISTRIBUTION for overlapping
 siblings, `box-sizing`, font-/viewport-relative + `calc()` sizes, overflow clipping. Next (Task 21
 remaining, in order): the §5.3 min/max-content DISTRIBUTION (overlap resolution) / `@page
 :left`/`:right`/`:blank` + named pages (multi-page-gated), then Task 22 (`string-set`/`string()` running

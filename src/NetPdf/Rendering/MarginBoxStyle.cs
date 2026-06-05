@@ -47,8 +47,10 @@ namespace NetPdf.Rendering;
 /// <c>width</c> (top/bottom) / <c>height</c> (left/right) — an absolute length or a percentage of the
 /// band; <c>auto</c> shrink-to-fits (cycle 14). (A <i>non-absolute</i> padding — a percentage or a font-/
 /// viewport-relative length — is accepted by the cascade but can't be resolved to used px here yet, so
-/// it's diagnosed + dropped rather than silently zeroed; the §5.3 margin-box sizing / font context it
-/// would resolve against is deferred.) <c>text-align</c> /
+/// it's diagnosed + dropped rather than silently zeroed; likewise a DEFERRED <c>width</c>/<c>height</c>
+/// — a font-/viewport-relative or <c>calc()</c> size (a percentage IS supported) — is diagnosed +
+/// dropped so the box EXPLICITLY shrink-to-fits rather than silently. The §5.3 margin-box sizing / font
+/// context they would resolve against is deferred.) <c>text-align</c> /
 /// <c>vertical-align</c> are NOT inherited
 /// here — alignment is read from the box's OWN declarations (<see cref="HorizontalAlignFactor"/> /
 /// <see cref="VerticalAlignFactor"/>) and overrides the box's name-derived default; inheriting the
@@ -67,8 +69,10 @@ namespace NetPdf.Rendering;
 /// </para>
 /// <para>
 /// <b>Deferred (later cycles, deferrals.md#layout-to-pdf-pipeline).</b> <c>rem</c> / viewport-relative
-/// font-size, page-context inheritance of alignment, precise <c>revert</c>, and the §5.3
-/// three-box-per-edge sizing.
+/// font-size, page-context inheritance of alignment, precise <c>revert</c>, and — for the §5.3
+/// three-box-per-edge sizing (shrink-to-fit + explicit <c>width</c>/<c>height</c> have shipped) — the
+/// min/max-content DISTRIBUTION for overlapping sibling margin boxes, <c>box-sizing</c>, unsupported
+/// relative/<c>calc()</c> <c>width</c>/<c>height</c>, and overflow clipping.
 /// </para>
 /// </remarks>
 internal static class MarginBoxStyle
@@ -252,6 +256,28 @@ internal static class MarginBoxStyle
                             w.Location));
                         style.Unset(id);
                     }
+                    // A DEFERRED `width`/`height` — a font-/viewport-relative length (`10em` / `5vh`) or a
+                    // `calc()` the resolver couldn't resolve to a used size at cascade time (it returns
+                    // Deferred, with NO diagnostic) — is a VALID value, but the margin-box painter only
+                    // honors an absolute length or a percentage (TryReadExplicitSizePx); a deferred size
+                    // would SILENTLY fall back to shrink-to-fit. Diagnose + drop it (an EXPLICIT deferral,
+                    // not a silent fallback — CLAUDE.md #7, review P2), mirroring the padding policy,
+                    // pending a font-/viewport-context resolve. Only the Deferred state reaches here:
+                    // `auto` (a Resolved keyword), an absolute length (LengthPx), and a percentage
+                    // (Percentage) are honored as-is, and an invalid value was already diagnosed by Resolve.
+                    else if (IsSizeId(id) && resolved.IsDeferred)
+                    {
+                        diagnostics?.Emit(new CssDiagnostic(
+                            CssDiagnosticCodes.CssPropertyValueInvalid001,
+                            $"The margin-box {(id == PropertyId.Width ? "width" : "height")} " +
+                            $"'{DiagnosticTextSanitizer.Sanitize(w.Value)}' isn't an absolute length or a " +
+                            "percentage — font-/viewport-relative and calc() sizes aren't resolved to a used " +
+                            "size here yet (the box falls back to shrink-to-fit); use an absolute length " +
+                            "(px/pt/cm/in) or a percentage. (deferrals.md)",
+                            CssDiagnosticSeverity.Warning,
+                            w.Location));
+                        style.Unset(id);
+                    }
                 }
             }
         }
@@ -273,6 +299,11 @@ internal static class MarginBoxStyle
     private static bool IsPaddingId(PropertyId id) =>
         id is PropertyId.PaddingTop or PropertyId.PaddingRight
             or PropertyId.PaddingBottom or PropertyId.PaddingLeft;
+
+    /// <summary>Whether <paramref name="id"/> is the box's <c>width</c> or <c>height</c> (which can hold
+    /// a DEFERRED font-/viewport-relative or <c>calc()</c> size the margin-box painter can't yet resolve
+    /// to a used size — only an absolute length or a percentage is honored on the §5.3 variable axis).</summary>
+    private static bool IsSizeId(PropertyId id) => id is PropertyId.Width or PropertyId.Height;
 
     /// <summary>Copy <paramref name="parentStyle"/>'s value for <paramref name="id"/> onto
     /// <paramref name="style"/> — the slot (+ the side-table payload for the font-family list, + a

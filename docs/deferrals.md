@@ -3073,12 +3073,14 @@ flags the categories):
          start/center/end); the declared `text-align`/`vertical-align` aligns only the line within the
          content box (observable now that an explicit size can make the content box wider than the line;
          post-PR-#143 review). An explicit size is content-box (the box-sizing default — `box-sizing`
-         deferred); an absolute length or a percentage of the band resolves; `auto`/font-relative/`calc()`
-         falls back to shrink-to-fit, clamped to the band. Auto-sized empty (`content:""`) / failed-font
+         deferred); an absolute length or a percentage of the band resolves, `auto` shrink-to-fits, and a
+         DEFERRED font-/viewport-relative or `calc()` size is diagnosed (`CSS-PROPERTY-VALUE-INVALID-001`)
+         + dropped so the box explicitly shrink-to-fits (post-PR-#144 review). Clamped to the band.
+         Auto-sized empty (`content:""`) / failed-font
          boxes keep the full band (preserving the cycle-8 decorative band; an explicit size sizes them).
          STILL DEFERRED: the full CSS §5.3 min/max-content DISTRIBUTION (resolving the three boxes' widths
          so long siblings on one edge don't overlap — they still can), `box-sizing` (explicit size is
-         content-box only), font-/viewport-relative + `calc()` `width`/`height` (fall back to
+         content-box only), font-/viewport-relative + `calc()` `width`/`height` (diagnosed + dropped →
          shrink-to-fit), and overflow clipping (content wider than its band isn't clipped). No
          min/max-content intrinsic sizing yet — an auto box uses the single NoWrap line's natural advance.
        - **`@page :first` selector (cycle 10) — DONE:** `@page :first` rules apply on the single

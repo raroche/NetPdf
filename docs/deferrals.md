@@ -3058,11 +3058,24 @@ flags the categories):
          distribute across the four edges. The 12 longhands are already in `MarginBoxStyle.CascadedStyleIds`
          (cycle 11), so they paint (cycle 11) + inset the text (cycle 12) with no painter change; an
          un-expandable one surfaces a marker diagnostic. STILL DEFERRED: `border-radius`.
-       - **Margin boxes — later cycles:**
-         `string()` running headers (needs `string-set` collection), and `element()` running
-         elements; `border-radius` + background images.
-         The per-box / page-context `ComputedStyle.Rent()` is box-owned (not returned to the pool) —
-         a negligible per-render miss.
+       - **Margin boxes — `string-set` / `string()` (Task 22) + `position: running()` / `element()` (Task 23) — FIRST CUT DONE:**
+         `MarginContentCollector` walks the document (document order) reading raw declared values:
+         `string-set: name <content-list>` sets a named string (later assignment wins — the end-of-page
+         value); `position: running(name)` registers the element's text. The result threads to
+         `PageMarginBoxPainter` as a `CssContentList.MarginContentContext`, where `content: string(name)`
+         pulls the named string and `content: element(name)` pulls the running element's text (an undefined
+         name → the empty string). `BoxBuilder` SKIPS a `position: running()` element from the body box
+         tree (detected from the raw `position` value before the keyword resolver, so no spurious
+         invalid-value diagnostic). STILL DEFERRED: (a) **cross-page "running" persistence** — the value
+         carried to later pages until re-set (needs the multi-page driver); (b) **`string-set: … content()`**
+         — AngleSharp.Css DROPS the `content()` function from `string-set` (an unknown property + unknown
+         function value), so only literal-string + `attr()` content-lists are collected; supporting
+         `content()` (the common running-header form) needs a raw-CSS pre-pass that recovers the declared
+         value + matches selectors (the same pattern `@page` descriptors use); (c) **`element(name)` renders
+         the running element's TEXT** with the margin box's own style — the element's own block box /
+         styling is a follow-up; (d) the `string(name, first|last)` position keyword. Other deferrals:
+         `border-radius` + background images. The per-box / page-context `ComputedStyle.Rent()` is
+         box-owned (not returned to the pool) — a negligible per-render miss.
        - **Margin boxes — §5.3 three-box-per-edge sizing (shrink-to-fit + explicit size + overlap distribution) — DONE:** a
          content-bearing edge box is sized along the §5.3 variable axis
          (`PageMarginBoxGeometry.MarginBoxAxis` — top/bottom → width, left/right → height; corners

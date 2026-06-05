@@ -33,11 +33,14 @@ namespace NetPdf.Css.PagedMedia;
 /// paints text only).
 /// </para>
 /// <para>
-/// <b>Cycle 3 scope.</b> Only the raw <c>content</c> value is returned; the orchestrator resolves
-/// it (literal strings + <c>attr()</c> via <c>CssContentList</c>) — <c>counter()</c> / <c>string()</c>
-/// / <c>element()</c> generated content, per-box style (font / color / alignment), and the CSS
-/// Page 3 §5.3 three-box-per-edge sizing algorithm are later cycles
-/// (deferrals.md#layout-to-pdf-pipeline).
+/// <b>Scope.</b> Only the raw <c>content</c> value is returned; the orchestrator resolves it via
+/// <c>CssContentList</c> + <c>MarginContentCollector</c> — literal strings, <c>attr()</c>,
+/// <c>counter(page)</c>/<c>counter(pages)</c>, <c>string(name)</c> (via <c>string-set</c>), and
+/// <c>element(name)</c> (via <c>position: running()</c>) are supported; per-box style (font / color /
+/// alignment / background / border / padding / size) + the CSS Page 3 §5.3 three-box-per-edge sizing
+/// shipped across Task 21 cycles 3–16 + Tasks 22–23. Still deferred: a non-page <c>counter()</c> /
+/// <c>counters()</c>, <c>string-set: … content()</c>, <c>element()</c> full block rendering, and
+/// cross-page "running" persistence (deferrals.md#layout-to-pdf-pipeline).
 /// </para>
 /// </remarks>
 internal static class AtPageMarginBoxResolver

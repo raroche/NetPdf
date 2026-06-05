@@ -3,8 +3,10 @@
 
 using System;
 using System.Collections.Generic;
+using System.Text;
 using AngleSharp.Dom;
 using NetPdf.Css.Cascade;
+using NetPdf.Layout.Inline;
 
 namespace NetPdf.Layout.Boxes;
 
@@ -46,17 +48,18 @@ internal static class MarginContentCollector
     {
         ArgumentNullException.ThrowIfNull(root);
         ArgumentNullException.ThrowIfNull(cascade);
-        Dictionary<string, string>? named = null;       // LAST assignment — string(name) default / `last`
-        Dictionary<string, string>? namedFirst = null;  // FIRST assignment — string(name, first)
-        Dictionary<string, string>? running = null;
-        Walk(root, cascade, ref named, ref namedFirst, ref running);
-        return new CssContentList.MarginContentContext(named, running, namedFirst);
+        Dictionary<string, string>? named = null;          // LAST assignment — string(name, last) / exit value
+        Dictionary<string, string>? namedFirst = null;     // FIRST assignment — string(name) default + `first`
+        Dictionary<string, string>? running = null;        // LAST running element — element(name, last)
+        Dictionary<string, string>? runningFirst = null;   // FIRST running element — element(name) default + `first`
+        Walk(root, cascade, ref named, ref namedFirst, ref running, ref runningFirst);
+        return new CssContentList.MarginContentContext(named, running, namedFirst, runningFirst);
     }
 
     private static void Walk(
         IElement element, ResolvedCascadeResult cascade,
         ref Dictionary<string, string>? named, ref Dictionary<string, string>? namedFirst,
-        ref Dictionary<string, string>? running)
+        ref Dictionary<string, string>? running, ref Dictionary<string, string>? runningFirst)
     {
         var rules = cascade.TryGetStylesFor(element);
         if (rules is not null)
@@ -77,16 +80,24 @@ internal static class MarginContentCollector
                 }
             }
 
-            // position: running(<name>) — register the element's text for content: element(name).
+            // position: running(<name>) — register the element's text for content: element(name). The text
+            // is read BOUNDED (post-PR-#150 review P2 — so a huge running element can't force an unbounded
+            // TextContent + normalized-string allocation, even when element() isn't referenced or is later
+            // capped at resolution) then GCPM-normalized as if white-space: normal (Task 23 follow-up — like
+            // content()) so a formatted/indented running element doesn't leak its source indentation. Both
+            // the FIRST (element(name) default + `first`) and LAST (`last`) occurrence are kept.
             var position = rules.GetWinner("position")?.ResolvedValue;
             if (position is not null && TryParseRunningName(position, out var runName))
             {
-                (running ??= new(StringComparer.Ordinal))[runName] = element.TextContent ?? string.Empty;
+                var text = LineBuilder.PreprocessWhitespace(
+                    ReadBoundedDescendantText(element, MaxRunningTextChars), WhiteSpace.Normal);
+                (running ??= new(StringComparer.Ordinal))[runName] = text;             // last occurrence
+                (runningFirst ??= new(StringComparer.Ordinal)).TryAdd(runName, text);  // first occurrence (kept)
             }
         }
 
         foreach (var child in element.Children) // IElement children, in document order.
-            Walk(child, cascade, ref named, ref namedFirst, ref running);
+            Walk(child, cascade, ref named, ref namedFirst, ref running, ref runningFirst);
     }
 
     /// <summary>Split a <c>string-set</c> value into its TOP-LEVEL comma-separated name/value pairs,
@@ -180,4 +191,43 @@ internal static class MarginContentCollector
 
     private static bool IsIdentChar(char c) =>
         (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_';
+
+    /// <summary>Cap on the text captured from one <c>position: running()</c> element (post-PR-#150 review
+    /// P2). Mirrors <see cref="CssContentList"/>'s 64 KiB generated-content output cap — generous for any
+    /// real running header/footer while keeping an adversarial / accidental megabyte element bounded
+    /// (otherwise <c>IElement.TextContent</c> would allocate the whole thing up front, here, for
+    /// every running element, regardless of whether <c>element(name)</c> references it).</summary>
+    private const int MaxRunningTextChars = 64 * 1024;
+
+    /// <summary>The element's descendant text (DOM <c>textContent</c>) read BOUNDED to
+    /// <paramref name="maxChars"/>: walks child nodes in document order accumulating <see cref="IText"/>
+    /// data and STOPS once the cap is reached, so a huge subtree never materializes a full string. The
+    /// (already-bounded) result is then normalized + capped again at resolution by
+    /// <see cref="CssContentList"/>.</summary>
+    internal static string ReadBoundedDescendantText(IElement element, int maxChars)
+    {
+        var sb = new StringBuilder();
+        AppendBoundedText(element, sb, maxChars);
+        return sb.ToString();
+    }
+
+    private static void AppendBoundedText(INode node, StringBuilder sb, int maxChars)
+    {
+        foreach (var child in node.ChildNodes)
+        {
+            if (sb.Length >= maxChars) return;
+            switch (child)
+            {
+                case IText text:
+                    var data = text.Data;
+                    var room = maxChars - sb.Length;
+                    if (data.Length <= room) sb.Append(data);
+                    else { sb.Append(data, 0, room); return; }
+                    break;
+                case IElement: // recurse — textContent concatenates ALL descendant text in document order.
+                    AppendBoundedText(child, sb, maxChars);
+                    break;
+            }
+        }
+    }
 }

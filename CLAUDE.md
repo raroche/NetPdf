@@ -255,14 +255,20 @@ review):** `string-set: name content()` (the canonical running header) works —
 `white-space: normal` (NO separate pre-pass — the cascade matches selectors); and a margin box's RE-WRAPPED
 lines are aligned PER LINE by the box's alignment (opt-in `BoxFragment.LineAlignFactor`; default 0 → body +
 single-line margin content byte-identical). **Task 21 — `counter(page)` counter styles + `string(name,
-first|last)` (in progress, branch `phase-3-task-21-counter-styles-string-keyword`):** `counter(page,
-<counter-style>)` formats the page number/total in roman / alpha / leading-zero / greek via a new shared
-`CounterStyleFormatter` (EXTRACTED from `BoxBuilder`'s list-marker numerals — both format identically); a
-non-predefined style (`hebrew`) FALLS BACK to `decimal` (CSS Counter Styles §7.1.4 — page numbers never
-vanish; post-PR-#149 review). `string(name, first)` AND the no-keyword DEFAULT (GCPM §7.3) pull the FIRST
-`string-set` assignment on the page; `string(name, last)` is the exit value (`MarginContentContext.NamedStringsFirst`); `start` /
-`first-except` bail (cross-page). DEFERRED: `content(before|after|first-letter|marker)`, `element()` full
-block rendering, vertical-edge HEIGHT overflow, `box-sizing`, the body's own `text-align` line-positioning.
+first|last)` (merged PR #149, incl. its review):** `counter(page, <counter-style>)` formats the page
+number/total in roman / alpha / leading-zero / greek via a new shared `CounterStyleFormatter` (EXTRACTED
+from `BoxBuilder`'s list-marker numerals — both format identically); a non-predefined style (`hebrew`) FALLS
+BACK to `decimal` (CSS Counter Styles §7.1.4 — page numbers never vanish). `string(name, first)` AND the
+no-keyword DEFAULT (GCPM §7.3) pull the FIRST `string-set` assignment on the page; `string(name, last)` is
+the exit value; `start` / `first-except` bail. **Task 23 — `element(name, first|last)` + GCPM-normalized
+running text (in progress, branch `phase-3-task-23-element-position-and-style`):** `element(name, first)`
+AND the no-keyword DEFAULT (GCPM §7.4 — like `string()`, a conformance fix; was last-wins) pull the FIRST
+`position: running()` element on the page, `element(name, last)` the exit value
+(`MarginContentContext.RunningElementsFirst`; the shared `TryReadPositionedFunction` parses both `string()`
++ `element()`); and `element()` now GCPM-normalizes the running element's text (`white-space: normal`, like
+`content()`). DEFERRED: `content(before|after|first-letter|marker)`, `element()` full block rendering (the
+element's own style/box — needs a `ComputedStyle` threaded through the string-based content model),
+vertical-edge HEIGHT overflow, `box-sizing`, the body's own `text-align` line-positioning.
 Next (in order): `element()` full block rendering / vertical-edge (height) overflow / cross-page
 running + `@page :left`/`:right`/`:blank` + named pages (all multi-page-gated). Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES

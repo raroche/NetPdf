@@ -2031,6 +2031,47 @@ public sealed class HtmlPdfConvertTests
         Assert.Equal(2, TotalGlyphCount(pdf));   // ONLY the header element(rh)="AB"
     }
 
+    [Theory]
+    [InlineData("element(rh)", 1)]          // GCPM default = first → "A"
+    [InlineData("element(rh, first)", 1)]   // explicit first → "A"
+    [InlineData("element(rh, last)", 2)]    // last → "AB"
+    public void Page_margin_box_element_position_keyword_picks_the_occurrence(string content, int glyphs)
+    {
+        // Two running elements share the name `rh`. Per CSS GCPM §7.4 element() defaults to `first` (the
+        // first occurrence on the page), like string(); `last` is the exit value. Both divs are removed
+        // from flow, so ONLY the header renders. first → "A"(1); last → "AB"(2).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } @page { @top-center { content: " + content + " } }</style>" +
+            "</head><body><div class=\"rh\">A</div><div class=\"rh\">AB</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(glyphs, TotalGlyphCount(pdf));
+    }
+
+    [Fact]
+    public void Page_margin_box_element_normalizes_indented_nested_text()
+    {
+        // element() GCPM-normalizes the running element's text (white-space: normal) — an INDENTED div
+        // with NESTED spans resolves to "AB" in the header without leaking the source indentation. The div
+        // is removed from flow → only the header's 2 glyphs paint.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } @page { @top-center { content: element(rh) } }</style>" +
+            "</head><body><div class=\"rh\">\n  <span>A</span><span>B</span>\n</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(2, TotalGlyphCount(pdf));   // "AB" (nested spans, indentation stripped)
+    }
+
+    [Fact]
+    public void Page_margin_box_sizable_running_element_renders_in_full_under_the_cap()
+    {
+        // A sizable (but under the 64 KiB cap) running element renders end-to-end in full — the bounded
+        // read (review P2) only truncates above the cap, so normal running content is unaffected.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } @page { @top-center { content: element(rh) } }</style>" +
+            "</head><body><div class=\"rh\">" + new string('A', 500) + "</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(500, TotalGlyphCount(pdf));   // all 500 'A' glyphs (not truncated under the cap)
+    }
+
     [Fact]
     public void Page_margin_box_running_element_is_removed_from_the_body_flow()
     {

@@ -306,6 +306,25 @@ public sealed class HtmlPdfConvertTests
         return rects;
     }
 
+    /// <summary>The fill colour (<c>"r g b"</c>) set immediately BEFORE each <c>" re"</c> rectangle, in
+    /// emission order — i.e. the actual colour of each painted rectangle (a background band or a border
+    /// edge), NOT a text fill. Lets a test assert the RECT colour rather than just <c>Contains</c> on the
+    /// whole stream (where a same-coloured text fill could mask a wrong rect colour — review P1).</summary>
+    private static List<string> RectFillColors(string pdf)
+    {
+        var colors = new List<string>();
+        for (var i = pdf.IndexOf(" re", StringComparison.Ordinal); i > 0;
+             i = pdf.IndexOf(" re", i + 3, StringComparison.Ordinal))
+        {
+            var rg = pdf.LastIndexOf(" rg", i, StringComparison.Ordinal);   // the fill colour set for this rect
+            if (rg < 0) continue;
+            var nums = pdf[..rg].TrimEnd().Split(' ');   // … <r> <g> <b>
+            if (nums.Length >= 3)
+                colors.Add($"{nums[^3]} {nums[^2]} {nums[^1]}");
+        }
+        return colors;
+    }
+
     [Fact]
     public void At_page_size_keyword_sets_the_media_box()
     {
@@ -2294,15 +2313,48 @@ public sealed class HtmlPdfConvertTests
     [Fact]
     public void Page_margin_box_element_border_uses_the_running_elements_own_color_as_currentcolor()
     {
-        // A border with no colour uses currentColor — for a standalone element() that's the ELEMENT's own
-        // colour (read from the content style), not the box's default black. `color: #00ff00; border: 2px
-        // solid` → green edges. (The text is green too; the green edges prove the border took currentColor.)
+        // An element-owned border with no colour uses currentColor — for a standalone element() that's the
+        // ELEMENT's own colour. `color: #00ff00; border: 2px solid` → green edges. Asserting the RECT colour
+        // (not just Contains on the stream) so a same-coloured text fill can't mask a wrong border (review P1).
         var pdf = Latin1(HtmlPdf.Convert(
             "<!DOCTYPE html><html><head><style>.rh { position: running(rh); color: #00ff00; border: 2px solid } " +
             "@page { @top-center { content: element(rh) } }</style>" +
             "</head><body><div class=\"rh\">AB</div></body></html>",
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
-        Assert.Contains("0 1 0 rg", pdf);   // border edges in the element's own green (currentColor)
+        Assert.Contains("0 1 0", RectFillColors(pdf));   // the border RECTS are the element's own green
+    }
+
+    [Fact]
+    public void Page_margin_box_box_border_currentcolor_resolves_against_the_box_color()
+    {
+        // Review P1: when the BOX declares the border, its currentcolor resolves against the BOX's `color`
+        // (CSS Color 4), not the running element's. Box border + `color: blue`, element `color: red` → the
+        // border RECTS are blue (the box's colour), NOT red (the element's). The text stays the element's red.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); color: #ff0000 } " +
+            "@page { @top-center { content: element(rh); color: #0000ff; border: 2px solid } }</style>" +
+            "</head><body><div class=\"rh\">AB</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        var rects = RectFillColors(pdf);
+        Assert.Contains("0 0 1", rects);        // border rects in the BOX's blue (currentcolor → box color)
+        Assert.DoesNotContain("1 0 0", rects);  // NOT the running element's red
+    }
+
+    [Fact]
+    public void Page_margin_box_box_background_currentcolor_resolves_against_the_box_color()
+    {
+        // Review P1: a box-declared `background-color: currentcolor` resolves against the BOX's `color`, not
+        // the running element's. The box's background wins the cascade (overrides the element's), so the band
+        // is the box's blue — NOT the element's red (currentcolor origin) and NOT the element's own green bg.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); color: #ff0000; background-color: #00ff00 } " +
+            "@page { @top-center { content: element(rh); color: #0000ff; background-color: currentcolor } }</style>" +
+            "</head><body><div class=\"rh\">AB</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        var rects = RectFillColors(pdf);
+        Assert.Contains("0 0 1", rects);        // the band is the BOX's blue (currentcolor → box color)
+        Assert.DoesNotContain("1 0 0", rects);  // NOT the element's red (the pre-fix bug)
+        Assert.DoesNotContain("0 1 0", rects);  // NOT the element's own green background (box overrides)
     }
 
     [Fact]

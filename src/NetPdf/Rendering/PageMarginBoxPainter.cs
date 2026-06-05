@@ -206,11 +206,21 @@ internal static class PageMarginBoxPainter
                 contentStyle = style;
             }
 
-            // currentColor = the CONTENT colour (the running element's own colour for a standalone
-            // element(); the box's own colour otherwise, since contentStyle == style there) — the
-            // currentcolor fallback for the element's own border / background.
-            var currentColor = FragmentPainter.TryResolveColor(contentStyle.Get(PropertyId.Color), DefaultColorArgb, out var fg)
-                ? fg : DefaultColorArgb;
+            // currentcolor ORIGIN (CSS Color 4 §6.2 — currentcolor resolves to the `color` of the style that
+            // OWNS the property). The box's declarations WIN the cascade (appended last), so a decoration
+            // property is BOX-owned iff the box declares it, else ELEMENT-owned (post-PR-#152 review P1): a
+            // box-declared `background-color`/`border` currentcolor resolves against the BOX's colour, an
+            // element-declared one against the RUNNING ELEMENT's. `style.Get(Color)` is the box's colour (the
+            // decoration build excludes the element's colour + appends the box's), `contentStyle` the
+            // element's. For the non-element path `style == contentStyle`, so both reduce to the box colour —
+            // byte-identical to the prior single currentColor. (A box that declares ONE edge + the element
+            // another is an approximation — it uses the box colour for the whole border; deferrals.md.)
+            var elementColor = FragmentPainter.TryResolveColor(contentStyle.Get(PropertyId.Color), DefaultColorArgb, out var ec)
+                ? ec : DefaultColorArgb;
+            var boxColor = FragmentPainter.TryResolveColor(style.Get(PropertyId.Color), DefaultColorArgb, out var bc)
+                ? bc : DefaultColorArgb;
+            var bgCurrentColor = MarginBoxDeclares(mb.Declarations, "background-color") ? boxColor : elementColor;
+            var borderCurrentColor = MarginBoxDeclaresBorder(mb.Declarations) ? boxColor : elementColor;
 
             // CONTENT alignment WITHIN the box: a text-align / vertical-align DECLARED ON THE BOX aligns
             // the line inside the box's content area (read from the box's OWN declarations so the
@@ -315,7 +325,8 @@ internal static class PageMarginBoxPainter
 
             items.Add(new MarginBoxItem
             {
-                Region = region, Style = style, ContentStyle = contentStyle, CurrentColorArgb = currentColor,
+                Region = region, Style = style, ContentStyle = contentStyle,
+                BgCurrentColorArgb = bgCurrentColor, BorderCurrentColorArgb = borderCurrentColor,
                 Inline = inline, HasLine = hasLine, Text = text, MinVarSizePx = minVarSizePx,
                 WhiteSpace = boxWhiteSpace, CanWrap = canWrap,
                 InsetLeftPx = insetLeftPx, InsetTopPx = insetTopPx,
@@ -360,7 +371,8 @@ internal static class PageMarginBoxPainter
         foreach (var item in items)
         {
             var style = item.Style;
-            var currentColor = item.CurrentColorArgb;
+            var bgCurrentColor = item.BgCurrentColorArgb;
+            var borderCurrentColor = item.BorderCurrentColorArgb;
             var inline = item.Inline;
             var hasLine = item.HasLine;
             var boxXPx = item.BoxXPx;
@@ -376,16 +388,18 @@ internal static class PageMarginBoxPainter
             var lineHeightPx = item.LineHeightPx;
 
             // Background-color (cycle 8): fills the BOX behind the content. `currentcolor` resolves
-            // against the box's own color; transparent (initial) / unset paints nothing.
-            if (FragmentPainter.TryResolveColor(style.Get(PropertyId.BackgroundColor), currentColor, out var bgArgb)
+            // against the OWNER's color (the box's if the box declares the background, else the running
+            // element's — review P1); transparent (initial) / unset paints nothing.
+            if (FragmentPainter.TryResolveColor(style.Get(PropertyId.BackgroundColor), bgCurrentColor, out var bgArgb)
                 && FragmentPainter.Alpha(bgArgb) != 0)
             {
                 backgrounds.Add(new MarginBoxBackgroundFill(boxXPx, boxYPx, boxWidthPx, boxHeightPx, bgArgb));
             }
 
-            // Border (border cycle): strokes the BOX (currentcolor = the box's own color).
+            // Border (border cycle): strokes the BOX. `currentcolor` resolves against the OWNER's color
+            // (the box's if the box declares the border, else the running element's — review P1).
             if (HasBorder(style))
-                borders.Add(new MarginBoxBorder(boxXPx, boxYPx, boxWidthPx, boxHeightPx, style, currentColor));
+                borders.Add(new MarginBoxBorder(boxXPx, boxYPx, boxWidthPx, boxHeightPx, style, borderCurrentColor));
 
             if (!hasLine) continue; // empty / failed-font box: decoration only, no text fragment.
 
@@ -582,6 +596,30 @@ internal static class PageMarginBoxPainter
         _ => false,
     };
 
+    /// <summary>Whether the margin box's OWN declarations set <paramref name="property"/> (a longhand) —
+    /// the currentcolor ORIGIN test (review P1). The box's declarations win the cascade, so a decoration
+    /// property the box declares is box-owned (its currentcolor resolves against the box's colour), else it
+    /// is the running element's. The box's `border`/`background` shorthands are already expanded to longhands
+    /// upstream (the same declarations <see cref="MarginBoxStyle.Build"/> consumes), so this reads them
+    /// directly.</summary>
+    private static bool MarginBoxDeclares(ImmutableArray<CssDeclaration> declarations, string property)
+    {
+        if (declarations.IsDefaultOrEmpty) return false;
+        foreach (var d in declarations)
+            if (string.Equals(d.Property, property, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
+
+    /// <summary>Whether the margin box declares a BORDER of its own — any per-edge <c>border-*-style</c>
+    /// (a border paints only with a style, so the style longhands are what make it the box's). A box-declared
+    /// border's currentcolor resolves against the box's colour (review P1). The per-side mixed-origin case
+    /// (box declares one edge, the element another) uses the box colour for the whole border — an
+    /// approximation, since the shared <see cref="FragmentPainter.PaintBorders"/> takes one currentcolor
+    /// (deferrals.md).</summary>
+    private static bool MarginBoxDeclaresBorder(ImmutableArray<CssDeclaration> declarations) =>
+        MarginBoxDeclares(declarations, "border-top-style") || MarginBoxDeclares(declarations, "border-right-style")
+        || MarginBoxDeclares(declarations, "border-bottom-style") || MarginBoxDeclares(declarations, "border-left-style");
+
     /// <summary>Per-box state computed in PASS 1 (style + content layout + DESIRED box rect), carried to
     /// PASS 2 so the §5.3 distribution can adjust the box rect for overlapping siblings in between. The
     /// box rect (<see cref="BoxXPx"/> … <see cref="BoxHeightPx"/>) is mutable for that adjustment.</summary>
@@ -591,7 +629,8 @@ internal static class PageMarginBoxPainter
         public ComputedStyle Style = null!;        // the BOX style — decoration (bg/border/padding) + insets.
         public ComputedStyle ContentStyle = null!; // the CONTENT style — usually == Style, but the running
                                                    // element's own font/colour for a standalone element().
-        public uint CurrentColorArgb;
+        public uint BgCurrentColorArgb;     // currentcolor for the background — the OWNER's colour (review P1).
+        public uint BorderCurrentColorArgb; // currentcolor for the border — the OWNER's colour (review P1).
         public InlineLayoutResult Inline;
         public bool HasLine;
         public WhiteSpace WhiteSpace;           // the box's computed white-space (drives the re-wrap mode).

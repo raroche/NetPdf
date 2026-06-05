@@ -110,8 +110,8 @@ internal static class MarginContentCollector
                 // it is recorded with the SAME last-wins ([key]=) / first-wins (TryAdd) semantics as the text
                 // above — so element(name, first|last) can never pair the selected occurrence's TEXT with a
                 // DIFFERENT occurrence's STYLE (e.g. a styled first + unstyled last must render the last text
-                // in the box's own style, not the first's). An empty list makes
-                // PageMarginBoxPainter.TryBuildRunningElementStyle return null → the box's own style is used.
+                // in the box's own style, not the first's). An empty list makes the page-margin painter's
+                // `TryGetRunningElementOwnStyle` return null (Count == 0) → the box's own style is used.
                 var ownStyle = CaptureOwnStyle(element, rules, cascade);
                 (c.RunningStyles ??= new(StringComparer.Ordinal))[runName] = ownStyle;            // last occurrence
                 (c.RunningStylesFirst ??= new(StringComparer.Ordinal)).TryAdd(runName, ownStyle); // first occurrence

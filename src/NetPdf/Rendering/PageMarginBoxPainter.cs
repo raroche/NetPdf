@@ -396,7 +396,13 @@ internal static class PageMarginBoxPainter
                 InlineSize: contentBoxWidthPx,
                 BlockSize: blockHeightPx,
                 InlineLayout: inline,
-                LineAlignFactor: hAlign));
+                LineAlignFactor: hAlign,
+                // The TEXT line metrics (line-height / pitch / baseline) follow the CONTENT style, not the
+                // box style (post-PR-#151 review P1): a standalone element() shapes glyphs at the running
+                // element's font-size, so the pitch must match (else a 32px header overlaps at 16px pitch).
+                // For non-element content ContentStyle == Style, so this is byte-identical there. The box
+                // style still drives the border/padding origin + decoration in TextPainter/FragmentPainter.
+                TextMetricsStyle: item.ContentStyle));
         }
 
         // The page-context style is only a parent — each box copied the slots it needs — so return

@@ -2127,6 +2127,98 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Page_margin_box_element_last_unstyled_does_not_inherit_the_first_occurrences_style()
+    {
+        // Review P1: a STYLED first + UNSTYLED last running element. element(rh, last) must render the LAST
+        // text in the box's own (default black) style — NOT the first occurrence's red. Without lockstep
+        // style capture, the stale first-occurrence red would leak onto the last text.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.r1 { position: running(rh); color: #ff0000 } " +
+            ".r2 { position: running(rh) } @page { @top-center { content: element(rh, last) } }</style>" +
+            "</head><body><div class=\"r1\">A</div><div class=\"r2\">B</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.DoesNotContain("1 0 0 rg", pdf);   // last (r2) unstyled → box style (black), not the first's red
+    }
+
+    [Fact]
+    public void Page_margin_box_element_first_unstyled_does_not_inherit_a_later_occurrences_style()
+    {
+        // Review P1, converse: an UNSTYLED first + STYLED second. element(rh) (default = first) must render
+        // the FIRST text in the box's own style — NOT the later occurrence's blue. Without lockstep capture,
+        // the second's blue would be recorded as the "first" style and leak onto the first text.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.r1 { position: running(rh) } " +
+            ".r2 { position: running(rh); color: #0000ff } @page { @top-center { content: element(rh) } }</style>" +
+            "</head><body><div class=\"r1\">A</div><div class=\"r2\">B</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.DoesNotContain("0 0 1 rg", pdf);   // first (r1) unstyled → box style (black), not the later blue
+    }
+
+    [Fact]
+    public void Page_margin_box_element_wrapped_lines_use_the_running_element_font_pitch()
+    {
+        // Review P1 (#2): a standalone element() shapes glyphs at the running element's font-size, so the
+        // painter must STACK wrapped lines at THAT pitch — not the box's default 16px. A 32px element forced
+        // to wrap (narrow box width) → consecutive baselines are 32 × 1.2 × 0.75 = 28.8pt apart, not the
+        // box-default 16 × 1.2 × 0.75 = 14.4pt (which would overlap the 32px glyphs).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); font-size: 32px } " +
+            "@page { @top-center { content: element(rh); width: 20px } }</style>" +
+            "</head><body><div class=\"rh\">A A A A</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        var ys = AllTdY(pdf);
+        Array.Sort(ys);
+        Array.Reverse(ys);   // descending: the top line (largest PDF-y) first
+        var pitch = 0.0;
+        var found = false;
+        for (var i = 1; i < ys.Length; i++)
+            if (ys[i - 1] - ys[i] > 0.5) { pitch = ys[i - 1] - ys[i]; found = true; break; }
+        Assert.True(found, "expected the 32px content to wrap to >= 2 lines at distinct baselines");
+        Assert.Equal(28.8, pitch, 1);   // line pitch = element 32px × 1.2 × 0.75, not the 16px box default
+    }
+
+    [Fact]
+    public void Page_margin_box_element_box_height_uses_the_running_element_font_size()
+    {
+        // Review P1 (#2): the box reserves its block height from the running element's font-size too. A
+        // VERTICAL edge box (@left-middle, height shrinks to content) holding a single-line 32px element →
+        // its background band is 32 × 1.2 × 0.75 = 28.8pt tall, not the box default 16 × 1.2 × 0.75 = 14.4pt.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); font-size: 32px } " +
+            "@page { @left-middle { content: element(rh); background-color: #ff0000 } }</style>" +
+            "</head><body><div class=\"rh\">A</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(28.8, FirstRect(pdf).H, 1);   // band height = element 32px × 1.2 × 0.75
+    }
+
+    [Fact]
+    public void Page_margin_box_element_inherits_an_ancestor_color()
+    {
+        // Review P2: color is CSS-inherited, so an ANCESTOR's `color` is the running element's own colour —
+        // a standalone element() renders the header in the inherited red even though the running element
+        // itself declares no colour (the collector walks ancestors for the nearest declared winner).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.section { color: #ff0000 } .rh { position: running(rh) } " +
+            "@page { @top-center { content: element(rh) } }</style>" +
+            "</head><body><div class=\"section\"><div class=\"rh\">AB</div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Contains("1 0 0 rg", pdf);   // inherited red from the .section ancestor
+    }
+
+    [Fact]
+    public void Page_margin_box_element_inherits_an_ancestor_font_size()
+    {
+        // Review P2: font-size is inherited too — an ancestor's 24px reaches the running element's own-style
+        // → 18pt Tf (24 × 0.75), vs the box default 16px → 12pt.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.section { font-size: 24px } .rh { position: running(rh) } " +
+            "@page { @top-center { content: element(rh) } }</style>" +
+            "</head><body><div class=\"section\"><div class=\"rh\">AB</div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(18.0, FirstTf(pdf), 1);   // inherited 24px → 18pt
+    }
+
+    [Fact]
     public void Page_margin_box_running_element_is_removed_from_the_body_flow()
     {
         // A normal div renders in the body; with `position: running()` (and no element() reference) the

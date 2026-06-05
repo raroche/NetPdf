@@ -3063,7 +3063,7 @@ flags the categories):
          elements; `border-radius` + background images.
          The per-box / page-context `ComputedStyle.Rent()` is box-owned (not returned to the pool) —
          a negligible per-render miss.
-       - **Margin boxes — §5.3 three-box-per-edge sizing (shrink-to-fit + explicit size) — DONE:** a
+       - **Margin boxes — §5.3 three-box-per-edge sizing (shrink-to-fit + explicit size + overlap distribution) — DONE:** a
          content-bearing edge box is sized along the §5.3 variable axis
          (`PageMarginBoxGeometry.MarginBoxAxis` — top/bottom → width, left/right → height; corners
          neither) either from an explicit `width` (top/bottom) / `height` (left/right) — explicit-size
@@ -3078,10 +3078,18 @@ flags the categories):
          + dropped so the box explicitly shrink-to-fits (post-PR-#144 review). Clamped to the band.
          Auto-sized empty (`content:""`) / failed-font
          boxes keep the full band (preserving the cycle-8 decorative band; an explicit size sizes them).
-         STILL DEFERRED: the full CSS §5.3 min/max-content DISTRIBUTION (resolving the three boxes' widths
-         so long siblings on one edge don't overlap — they still can), `box-sizing` (explicit size is
+         **Overlap DISTRIBUTION (first cut):** boxes sharing an edge whose desired sizes would OVERLAP are
+         resolved by `PageMarginBoxGeometry.ResolveEdgeOverlap` (wired via
+         `PageMarginBoxPainter.ResolveEdgeOverlaps`): the CENTER box keeps its (band-clamped) size centered
+         and the side boxes CLAMP to the gap on each side (center-priority); with no center box, two
+         overlapping side boxes shrink PROPORTIONALLY. A NO-OP when they don't overlap, so single boxes +
+         the common short-content case are byte-identical to the per-box model. It uses each box's
+         max-content / explicit outer size (no min-content) and clamps the box rather than re-wrapping, so
+         content wider than its clamped box still OVERFLOWS.
+         STILL DEFERRED: the spec-strict §5.3.2 min/max-content FLEX (measuring min-content + letting the
+         center box shrink toward it to give the sides more room), `box-sizing` (explicit size is
          content-box only), font-/viewport-relative + `calc()` `width`/`height` (diagnosed + dropped →
-         shrink-to-fit), and overflow clipping (content wider than its band isn't clipped). No
+         shrink-to-fit), and overflow clipping (content wider than its box isn't clipped/wrapped). No
          min/max-content intrinsic sizing yet — an auto box uses the single NoWrap line's natural advance.
        - **`@page :first` selector (cycle 10) — DONE:** `@page :first` rules apply on the single
          (first) page, overriding the bare `@page` by cascade specificity — `AtPageRules.EnumeratePageRules`

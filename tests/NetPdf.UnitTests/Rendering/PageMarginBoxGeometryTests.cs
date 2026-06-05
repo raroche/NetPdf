@@ -85,4 +85,67 @@ public sealed class PageMarginBoxGeometryTests
         Assert.True(PageMarginBoxGeometry.TryGetRegion("left-middle", 100, 100, 60, 30, 60, 30, out var left));
         Assert.Equal(0, left.Height, 3);  // contentHeight = max(0, 100 − 60 − 60) = 0
     }
+
+    // ---- §5.3 sibling-box overlap resolution (Task 21) ----
+
+    private static PageMarginBoxGeometry.EdgeTriple Triple(
+        double a, bool hasA, double b, bool hasB, double c, bool hasC) => new(a, hasA, b, hasB, c, hasC);
+
+    [Fact]
+    public void ResolveEdgeOverlap_returns_unchanged_when_boxes_dont_overlap()
+    {
+        // A(100)|B(200)|C(100) in a 1000 band: A [0,100], B centered [400,600], C [900,1000] — no
+        // overlap, so each keeps its desired size + role position (the per-box cycle-14/15 model).
+        var r = PageMarginBoxGeometry.ResolveEdgeOverlap(Triple(100, true, 200, true, 100, true), 1000);
+        Assert.Equal(100, r.SizeA, 3); Assert.Equal(0, r.StartA, 3);
+        Assert.Equal(200, r.SizeB, 3); Assert.Equal(400, r.StartB, 3);
+        Assert.Equal(100, r.SizeC, 3); Assert.Equal(900, r.StartC, 3);
+    }
+
+    [Fact]
+    public void ResolveEdgeOverlap_clamps_a_wide_start_box_to_the_center_gap()
+    {
+        // A wants 500 but B(200) is centered at [400,600]; A clamps to the left gap [0,400], B stays put.
+        var r = PageMarginBoxGeometry.ResolveEdgeOverlap(Triple(500, true, 200, true, 0, false), 1000);
+        Assert.Equal(400, r.SizeA, 3); Assert.Equal(0, r.StartA, 3);
+        Assert.Equal(200, r.SizeB, 3); Assert.Equal(400, r.StartB, 3);   // B centered, unmoved
+    }
+
+    [Fact]
+    public void ResolveEdgeOverlap_clamps_a_wide_end_box_to_the_center_gap()
+    {
+        // C wants 500 but B(200) is centered at [400,600]; C clamps to the right gap [600,1000].
+        var r = PageMarginBoxGeometry.ResolveEdgeOverlap(Triple(0, false, 200, true, 500, true), 1000);
+        Assert.Equal(400, r.SizeC, 3); Assert.Equal(600, r.StartC, 3);
+        Assert.Equal(200, r.SizeB, 3); Assert.Equal(400, r.StartB, 3);
+    }
+
+    [Fact]
+    public void ResolveEdgeOverlap_shrinks_two_side_boxes_proportionally_without_a_center()
+    {
+        // No center box: A(700)+C(600)=1300 > 1000 → proportional shrink, tiling the band edge-to-edge.
+        var r = PageMarginBoxGeometry.ResolveEdgeOverlap(Triple(700, true, 0, false, 600, true), 1000);
+        Assert.Equal(700.0 * 1000 / 1300, r.SizeA, 2); Assert.Equal(0, r.StartA, 3);
+        Assert.Equal(600.0 * 1000 / 1300, r.SizeC, 2);
+        Assert.Equal(1000 - 600.0 * 1000 / 1300, r.StartC, 2);   // A and C abut, no gap
+    }
+
+    [Fact]
+    public void ResolveEdgeOverlap_a_full_band_center_box_squeezes_the_sides_to_zero()
+    {
+        // B wants 1500 (clamped to the 1000 band) → fills it; A and C are squeezed to 0.
+        var r = PageMarginBoxGeometry.ResolveEdgeOverlap(Triple(100, true, 1500, true, 100, true), 1000);
+        Assert.Equal(1000, r.SizeB, 3);
+        Assert.Equal(0, r.SizeA, 3);
+        Assert.Equal(0, r.SizeC, 3);
+    }
+
+    [Fact]
+    public void ResolveEdgeOverlap_single_box_is_unchanged()
+    {
+        // One box, no sibling → no overlap possible → its desired size + start are returned as-is.
+        var r = PageMarginBoxGeometry.ResolveEdgeOverlap(Triple(500, true, 0, false, 0, false), 1000);
+        Assert.Equal(500, r.SizeA, 3);
+        Assert.Equal(0, r.StartA, 3);
+    }
 }

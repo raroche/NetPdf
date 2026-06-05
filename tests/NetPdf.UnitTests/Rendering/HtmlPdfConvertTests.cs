@@ -1647,6 +1647,56 @@ public sealed class HtmlPdfConvertTests
         Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
     }
 
+    // ---- §5.3 sibling-box overlap resolution (Task 21) ----
+
+    [Fact]
+    public void Page_margin_box_wide_side_box_is_clamped_by_a_center_sibling()
+    {
+        // §5.3 distribution: a very wide @top-left would overlap a centered @top-center; the center box
+        // gets priority, so @top-left's box (background) is CLAMPED to the left gap (~half the band) —
+        // much narrower than when @top-left is alone on the edge (clamped only to the full band).
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var longText = new string('A', 100);   // far wider than the band → forces overlap with the center
+        double LeftBgWidth(string extra) => FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-left { content:\"" + longText + "\"; background-color: red }" +
+            extra + " }</style></head><body></body></html>", opts))).W;
+        var alone = LeftBgWidth("");
+        var withCenter = LeftBgWidth(" @top-center { content:\"AB\" }");
+        Assert.True(withCenter < alone - 100,
+            $"a center sibling must clamp the wide @top-left box: alone={alone}pt clamped={withCenter}pt");
+        Assert.True(withCenter > 50, $"the clamped box should be the left gap, not zero: {withCenter}pt");
+    }
+
+    [Fact]
+    public void Page_margin_box_center_sibling_stays_centered_when_a_side_box_is_wide()
+    {
+        // Center-priority: the @top-center box keeps its centered position regardless of a very wide
+        // @top-left sibling — its background center stays at the page's horizontal center.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-left { content:\"" + new string('A', 100) + "\" } " +
+            "@top-center { content:\"AB\"; background-color: red } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        var r = FirstRect(pdf);   // only @top-center has a background
+        var pageCenterX = MediaBox(pdf).W / 2.0;
+        Assert.InRange(r.X + r.W / 2.0, pageCenterX - 1, pageCenterX + 1);
+    }
+
+    [Fact]
+    public void Page_margin_box_short_siblings_are_not_repositioned()
+    {
+        // Short content that doesn't overlap → the distribution is a NO-OP: @top-center's background
+        // center is identical with or without a short @top-left sibling (the per-box model is preserved).
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double CenterX(string extra)
+        {
+            var r = FirstRect(Latin1(HtmlPdf.Convert(
+                "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; background-color: red }" +
+                extra + " }</style></head><body></body></html>", opts)));
+            return r.X + r.W / 2.0;
+        }
+        Assert.Equal(CenterX(""), CenterX(" @top-left { content:\"AB\" }"), 3);
+    }
+
     [Fact]
     public void Page_margin_box_font_shorthand_sets_the_size(/* Task 21 cycle 6 */)
     {

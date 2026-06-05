@@ -206,7 +206,10 @@ internal static class CssContentList
             // element(name) — Task 23. Pulls the text of the running element (`position: running(name)`,
             // collected during the document walk). Only valid with a margin context; a missing name →
             // the empty string. First cut: the running element's TEXT (its own block styling/box is a
-            // documented deferral — deferrals.md).
+            // documented deferral — deferrals.md). APPROXIMATION: CSS GCPM L3 restricts `element()` to a
+            // standalone margin-box `content` value (not combinable with other tokens); this parser
+            // treats it as a concatenable content-list token (so `"Prefix " element(rh)` works) — a
+            // lenient superset, intentional + documented (deferrals.md).
             if (StartsWithCaseInsensitive(span, i, "element("))
             {
                 var tokenStart = i;
@@ -542,6 +545,21 @@ internal static class CssContentList
                 || second == '_' || second == '-';
         }
         return false;
+    }
+
+    /// <summary><see langword="true"/> when <paramref name="ident"/> is a valid CSS
+    /// <c>&lt;custom-ident&gt;</c> per CSS Syntax §4.3.11 (ASCII subset, the same rules
+    /// <see cref="ReadAttrArgs"/> applies): a non-empty ident-token whose START is a letter / <c>_</c> /
+    /// <c>-</c> (a leading <c>-</c> needs a letter/<c>_</c>/<c>-</c> after it — so leading digits are
+    /// rejected) and whose remaining chars are letters / digits / <c>-</c> / <c>_</c>. Shared with
+    /// <see cref="MarginContentCollector"/> to validate <c>string-set</c> + <c>running()</c> names so an
+    /// invalid ident (e.g. <c>running(123)</c>) is not mistaken for a real name.</summary>
+    internal static bool IsValidCustomIdent(ReadOnlySpan<char> ident)
+    {
+        if (!IsValidCssIdentStart(ident)) return false;
+        foreach (var c in ident)
+            if (!IsCssIdentChar(c)) return false;
+        return true;
     }
 
     private static bool StartsWithCaseInsensitive(ReadOnlySpan<char> span, int i, string ascii)

@@ -1847,6 +1847,46 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Page_margin_box_string_set_supports_multiple_comma_separated_pairs()
+    {
+        // GCPM §2: string-set takes one-or-more comma-separated name/value pairs. Both names resolve —
+        // string(a)="AB" (2 glyphs) + string(b)="BA" (2) = 4 across the two headers (empty body). Only 2
+        // would mean a single pair parsed; 0 would mean the whole declaration failed (review P2).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>body { string-set: a attr(data-a), b attr(data-b) } " +
+            "@page { @top-left { content: string(a) } @top-right { content: string(b) } }</style></head>" +
+            "<body data-a=\"AB\" data-b=\"BA\"></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(4, TotalGlyphCount(pdf));   // string(a)=2 + string(b)=2 → both pairs set
+    }
+
+    [Fact]
+    public void Page_margin_box_string_uses_the_last_assignment_in_document_order()
+    {
+        // Two elements set the same name; the LAST in document order wins (the end-of-page value).
+        // Body h1 "A"(1) + h1 "AB"(2) = 3 glyphs; header string(t) = last data-t = "AB"(2) → total 5.
+        // If the FIRST won, string(t)="A"(1) → total 4. So 5 proves last-assignment-wins.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>h1 { string-set: t attr(data-t) } @page { @top-center { content: string(t) } }</style>" +
+            "</head><body><h1 data-t=\"A\">A</h1><h1 data-t=\"AB\">AB</h1></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(5, TotalGlyphCount(pdf));   // body 3 + header last-wins "AB"(2)
+    }
+
+    [Fact]
+    public void Page_margin_box_invalid_running_name_does_not_remove_the_element()
+    {
+        // `position: running(123)` is an INVALID custom-ident (leading digit) → NOT treated as running →
+        // the element is NOT removed from flow; it renders normally in the body (review P2). If the
+        // invalid name were accepted, the div would be removed (0 glyphs).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.x { position: running(123) }</style></head>" +
+            "<body><div class=\"x\">AB</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(2, TotalGlyphCount(pdf));   // the div renders "AB" in the body (not removed)
+    }
+
+    [Fact]
     public void Page_margin_box_font_shorthand_sets_the_size(/* Task 21 cycle 6 */)
     {
         // The `font` shorthand is expanded into longhands for margin-box bodies (AngleSharp never

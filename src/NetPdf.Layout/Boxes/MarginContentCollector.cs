@@ -16,18 +16,21 @@ namespace NetPdf.Layout.Boxes;
 /// <remarks>
 /// <para>
 /// Walks the element tree in DOCUMENT ORDER reading the cascade's raw declared values: an element with
-/// <c>string-set: name &lt;content-list&gt;</c> sets the named string (later assignments win — the value
-/// "as of the end of the page", the common running-header case); an element with
-/// <c>position: running(name)</c> registers its text for <c>element(name)</c>. The result is a
+/// <c>string-set: name &lt;content-list&gt;</c># (one or more comma-separated name/value pairs, CSS GCPM
+/// L3 §2) sets each named string (later assignments win — the value "as of the end of the page", the
+/// common running-header case); an element with <c>position: running(name)</c> registers its text for
+/// <c>element(name)</c>. Both names are validated as strict CSS <c>&lt;custom-ident&gt;</c>s (so an
+/// invalid name like <c>running(123)</c> is ignored, not mistaken for a real name). The result is a
 /// <see cref="CssContentList.MarginContentContext"/> threaded to the margin-box painter.
 /// </para>
 /// <para>
 /// <b>First-cut scope (single page).</b> The CSS GCPM L3 cross-page "running" semantics (a named string
 /// / running element persists onto later pages until re-set) need the multi-page driver and are
-/// deferred. <c>string-set</c> resolves the common content-lists — a bare <c>content()</c> (the
-/// element's text), <c>attr()</c>, and literal strings (via <see cref="CssContentList"/>); a mixed list
-/// containing <c>content()</c> alongside other tokens is a documented follow-up. <c>element(name)</c>
-/// pulls the running element's TEXT (its own block box / styling is deferred — deferrals.md).
+/// deferred. A <c>string-set</c> pair resolves a bare <c>content()</c> (the element's text), <c>attr()</c>,
+/// and literal strings (via <see cref="CssContentList"/>); <c>content()</c> mixed with other tokens, and
+/// <c>string-set: … content()</c> recovery when AngleSharp drops it, are documented follow-ups.
+/// <c>element(name)</c> pulls the running element's TEXT (its own block box / styling is deferred —
+/// deferrals.md).
 /// </para>
 /// </remarks>
 internal static class MarginContentCollector
@@ -52,12 +55,17 @@ internal static class MarginContentCollector
         var rules = cascade.TryGetStylesFor(element);
         if (rules is not null)
         {
-            // string-set: "<custom-ident> <content-list>" — last assignment in document order wins.
+            // string-set: "<custom-ident> <content-list>"# — one or more comma-separated name/value
+            // pairs (CSS GCPM L3 §2). Each resolved name's last assignment in document order wins.
             var stringSet = rules.GetWinner("string-set")?.ResolvedValue;
             if (!string.IsNullOrWhiteSpace(stringSet)
-                && TryResolveStringSet(stringSet, element, out var name, out var value))
+                && !stringSet.Trim().Equals("none", StringComparison.OrdinalIgnoreCase))
             {
-                (named ??= new(StringComparer.Ordinal))[name] = value;
+                foreach (var pair in SplitTopLevelCommas(stringSet))
+                {
+                    if (TryResolveStringSetPair(pair, element, out var name, out var value))
+                        (named ??= new(StringComparer.Ordinal))[name] = value;
+                }
             }
 
             // position: running(<name>) — register the element's text for content: element(name).
@@ -72,24 +80,58 @@ internal static class MarginContentCollector
             Walk(child, cascade, ref named, ref running);
     }
 
-    /// <summary>Parse <c>string-set: &lt;custom-ident&gt; &lt;content-list&gt;</c>: split the leading
-    /// ident (the name) from the content-list, then resolve the list. A bare <c>content()</c> →
-    /// <paramref name="element"/>'s text; otherwise the list is resolved via <see cref="CssContentList"/>
-    /// (literal strings + <c>attr()</c>). Returns <see langword="false"/> for <c>none</c>, a missing
-    /// content-list, or an unresolvable one.</summary>
-    private static bool TryResolveStringSet(string raw, IElement element, out string name, out string value)
+    /// <summary>Split a <c>string-set</c> value into its TOP-LEVEL comma-separated name/value pairs,
+    /// honoring parentheses (a functional <c>attr()</c>) and quoted strings (a literal containing a
+    /// comma), so <c>a attr(x), b "y,z"</c> → two pairs.</summary>
+    private static List<string> SplitTopLevelCommas(string value)
+    {
+        var parts = new List<string>();
+        var depth = 0;
+        var start = 0;
+        var quote = '\0';
+        for (var i = 0; i < value.Length; i++)
+        {
+            var c = value[i];
+            if (quote != '\0')
+            {
+                if (c == '\\' && i + 1 < value.Length) i++;   // escape — skip the next char
+                else if (c == quote) quote = '\0';
+                continue;
+            }
+            switch (c)
+            {
+                case '"':
+                case '\'': quote = c; break;
+                case '(': depth++; break;
+                case ')': if (depth > 0) depth--; break;
+                case ',' when depth == 0:
+                    parts.Add(value[start..i]);
+                    start = i + 1;
+                    break;
+            }
+        }
+        parts.Add(value[start..]);
+        return parts;
+    }
+
+    /// <summary>Resolve ONE <c>string-set</c> pair (<c>&lt;custom-ident&gt; &lt;content-list&gt;</c>):
+    /// read + strictly validate the leading name (a CSS <c>&lt;custom-ident&gt;</c>), then resolve the
+    /// content-list. A bare <c>content()</c> → <paramref name="element"/>'s text; otherwise via
+    /// <see cref="CssContentList"/> (literal strings + <c>attr()</c>). Returns <see langword="false"/>
+    /// for an invalid name, a missing content-list, or an unresolvable one.</summary>
+    private static bool TryResolveStringSetPair(string pair, IElement element, out string name, out string value)
     {
         name = string.Empty;
         value = string.Empty;
-        var trimmed = raw.Trim();
-        if (trimmed.Length == 0 || trimmed.Equals("none", StringComparison.OrdinalIgnoreCase))
-            return false;
+        var trimmed = pair.Trim();
+        if (trimmed.Length == 0) return false;
 
-        // Leading custom-ident (the string name).
+        // Leading custom-ident (the string name) — read its span, then validate it strictly.
         var i = 0;
         while (i < trimmed.Length && IsIdentChar(trimmed[i])) i++;
         if (i == 0) return false;                 // no name
         name = trimmed[..i];
+        if (!CssContentList.IsValidCustomIdent(name)) return false;   // rejects e.g. a leading-digit name
 
         var rest = trimmed[i..].Trim();
         if (rest.Length == 0) return false;       // no content-list
@@ -124,9 +166,9 @@ internal static class MarginContentCollector
         if (!trimmed.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) || !trimmed.EndsWith(")", StringComparison.Ordinal))
             return false;
         var inner = trimmed[prefix.Length..^1].Trim();
-        if (inner.Length == 0) return false;
-        foreach (var c in inner)
-            if (!IsIdentChar(c)) return false;
+        // Strict <custom-ident> validation: rejects empty, leading-digit (`running(123)`), or punctuation
+        // shapes — so invalid CSS does NOT silently remove the element from flow (post-PR-#146 review P2).
+        if (!CssContentList.IsValidCustomIdent(inner)) return false;
         name = inner;
         return true;
     }

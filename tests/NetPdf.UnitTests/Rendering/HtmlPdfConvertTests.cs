@@ -1778,6 +1778,23 @@ public sealed class HtmlPdfConvertTests
         Assert.InRange(rects[1].Y + rects[1].H / 2.0, pageCenterY - 1, pageCenterY + 1);   // middle stays centered
     }
 
+    [Fact]
+    public void Page_margin_box_flexed_box_re_wraps_its_content_to_multiple_lines()
+    {
+        // §5.3 min/max-content flex + overflow wrapping: a wide WRAPPABLE @top-left overlapping a centered
+        // @top-center is flexed narrower than its single-line width, so its content RE-WRAPS to multiple
+        // lines (more Td operators) instead of overflowing — vs the same @top-left alone (one line).
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        const string wrappable = "A A A A A A A A A A A A";   // 12 wrappable words (spaces = break points)
+        int Lines(string extra) => TdCount(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-left { content:\"" + wrappable + "\" }" + extra +
+            " }</style></head><body></body></html>", opts)));
+        var alone = Lines("");
+        var withCenter = Lines(" @top-center { content:\"AB\" }");
+        Assert.True(withCenter > alone,
+            $"a flexed wrappable box should wrap to more lines than when alone: alone={alone} withCenter={withCenter}");
+    }
+
     // ---- string-set / string() (Task 22) + position: running() / element() (Task 23) ----
 
     [Fact]
@@ -1984,6 +2001,17 @@ public sealed class HtmlPdfConvertTests
         var nums = pdf[..idx].TrimEnd().Split(' ');   // … <x> <y>
         return (double.Parse(nums[^2], CultureInfo.InvariantCulture),
             double.Parse(nums[^1], CultureInfo.InvariantCulture));
+    }
+
+    /// <summary>Count of <c>Td</c> text-position operators — one per painted line, so more lines (e.g.
+    /// wrapped content) → a higher count.</summary>
+    private static int TdCount(string pdf)
+    {
+        var n = 0;
+        for (var i = pdf.IndexOf(" Td", StringComparison.Ordinal); i >= 0;
+             i = pdf.IndexOf(" Td", i + 3, StringComparison.Ordinal))
+            n++;
+        return n;
     }
 
     /// <summary>A deterministic <see cref="IFontResolver"/> that resolves every query to the

@@ -3091,19 +3091,23 @@ flags the categories):
          + dropped so the box explicitly shrink-to-fits (post-PR-#144 review). Clamped to the band.
          Auto-sized empty (`content:""`) / failed-font
          boxes keep the full band (preserving the cycle-8 decorative band; an explicit size sizes them).
-         **Overlap DISTRIBUTION (first cut):** boxes sharing an edge whose desired sizes would OVERLAP are
-         resolved by `PageMarginBoxGeometry.ResolveEdgeOverlap` (wired via
-         `PageMarginBoxPainter.ResolveEdgeOverlaps`): the CENTER box keeps its (band-clamped) size centered
-         and the side boxes CLAMP to the gap on each side (center-priority); with no center box, two
-         overlapping side boxes shrink PROPORTIONALLY. A NO-OP when they don't overlap, so single boxes +
-         the common short-content case are byte-identical to the per-box model. It uses each box's
-         max-content / explicit outer size (no min-content) and clamps the box rather than re-wrapping, so
-         content wider than its clamped box still OVERFLOWS.
-         STILL DEFERRED: the spec-strict §5.3.2 min/max-content FLEX (measuring min-content + letting the
-         center box shrink toward it to give the sides more room), `box-sizing` (explicit size is
-         content-box only), font-/viewport-relative + `calc()` `width`/`height` (diagnosed + dropped →
-         shrink-to-fit), and overflow clipping (content wider than its box isn't clipped/wrapped). No
-         min/max-content intrinsic sizing yet — an auto box uses the single NoWrap line's natural advance.
+         **Overlap DISTRIBUTION + min/max-content FLEX + overflow WRAPPING:** boxes sharing an edge whose
+         desired sizes would OVERLAP are resolved by `PageMarginBoxGeometry.ResolveEdgeOverlap` (wired via
+         `PageMarginBoxPainter.ResolveEdgeOverlaps`): when content can wrap (some box's min-content &lt;
+         its max-content AND the mins fit the band) it does a min/max-content FLEX — each box gets
+         `min + (max − min) × factor`, `factor = clamp((band − Σmin)/(Σmax − Σmin), 0, 1)`, tiled
+         edge-to-edge; otherwise (rigid content, or mins don't fit) the center-priority CLAMP (center
+         centered, sides clamp to the gaps; no center → proportional shrink). Min-content is measured per
+         box (`TryMeasureMinContentWidthPx` — re-lay-out at a tiny width, widest line = longest unbreakable
+         run). A NO-OP when they don't overlap, and RIGID content (min == max) always takes the clamp path,
+         so single boxes + the common short-content case stay byte-identical to the cycle-14/15 model. A
+         HORIZONTAL box the distribution shrank below its single-line width then RE-WRAPS its content
+         (`TryLayoutContent`, `WhiteSpace.Normal`) to the assigned width (multi-line) so it FITS.
+         STILL DEFERRED: the content-alignment of wrapped lines (left-aligned within the box), vertical-edge
+         (left/right) HEIGHT overflow + height flex (the flex/re-wrap is horizontal-axis only), `box-sizing`
+         (explicit size is content-box only), font-/viewport-relative + `calc()` `width`/`height`
+         (diagnosed + dropped → shrink-to-fit), and the inherent overflow of content narrower than its
+         longest unbreakable word (can't wrap a single word).
        - **`@page :first` selector (cycle 10) — DONE:** `@page :first` rules apply on the single
          (first) page, overriding the bare `@page` by cascade specificity — `AtPageRules.EnumeratePageRules`
          yields bare-then-`:first` so the resolvers' last-wins cascade lets `:first` win (a bare

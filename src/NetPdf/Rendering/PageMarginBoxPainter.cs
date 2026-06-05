@@ -70,8 +70,9 @@ namespace NetPdf.Rendering;
 /// the box upstream (the resolver omits it). Still-unsupported content (a non-page <c>counter()</c> /
 /// <c>counters()</c>) emits <c>CSS-CONTENT-FUNCTION-UNSUPPORTED-001</c> and the box is skipped. §5.3 three-box-per-edge sizing
 /// is shrink-to-fit + explicit <c>width</c>/<c>height</c> + a first-cut overlap DISTRIBUTION
-/// (<see cref="ResolveEdgeOverlaps"/> — center-priority clamp); the spec-strict min/max-content flex +
-/// overflow clipping are later cycles.
+/// (<see cref="ResolveEdgeOverlaps"/> — min/max-content flex when content can wrap, else a center-priority
+/// clamp; a flexed/shrunk box re-wraps its content to fit). The content-alignment of wrapped lines +
+/// vertical-edge (height) overflow are later cycles.
 /// </para>
 /// </remarks>
 internal static class PageMarginBoxPainter
@@ -229,9 +230,10 @@ internal static class PageMarginBoxPainter
             // content-box); the border-box adds the border+padding insets, and applies even to an
             // empty/failed-font box (a sized decorative box). Corner boxes (no variable axis) + auto-sized
             // empty/failed-font boxes keep the full band (the cycle-8 decorative band). Box size is
-            // clamped to the band. This is each box's DESIRED size; siblings sharing an edge that would
-            // overlap are then resolved by ResolveEdgeOverlaps (the §5.3 first-cut distribution). The
-            // spec-strict min/max-content flex + overflow clipping stay deferred (deferrals.md).
+            // clamped to the band. This is each box's DESIRED (max-content / explicit) size; siblings
+            // sharing an edge that would overlap are then resolved by ResolveEdgeOverlaps (§5.3 min/max-
+            // content flex or center-priority clamp), and a flexed/shrunk box's content is re-wrapped to
+            // fit. The wrapped-line content-alignment + vertical-edge overflow stay deferred (deferrals.md).
             var boxWidthPx = region.Width;
             var boxHeightPx = region.Height;
             if (region.VariableAxis == PageMarginBoxGeometry.MarginBoxAxis.Horizontal)
@@ -248,6 +250,21 @@ internal static class PageMarginBoxPainter
                 else if (hasLine)
                     boxHeightPx = Math.Min(region.Height, (lineHeightPx * inline.Lines.Length) + insetTopPx + insetBottomPx);
             }
+
+            // Min-content border-box size along the VARIABLE axis — drives the §5.3 min/max-content flex
+            // (ResolveEdgeOverlaps). Only a HORIZONTAL auto box (top/bottom, no explicit width) can flex:
+            // its min-content WIDTH is the longest unbreakable run (measured by re-laying the content out
+            // at a tiny width). Every other box (vertical, explicit, empty/failed-font) reports its desired
+            // size as the min, so it takes the (rigid) center-priority clamp path — preserving cycle 16.
+            var minVarSizePx = region.VariableAxis == PageMarginBoxGeometry.MarginBoxAxis.Horizontal
+                ? boxWidthPx : boxHeightPx;
+            if (region.VariableAxis == PageMarginBoxGeometry.MarginBoxAxis.Horizontal && hasLine
+                && TryReadExplicitSizePx(style, PropertyId.Width, region.Width) is null
+                && TryMeasureMinContentWidthPx(text, style, shaper, out var minContentWidthPx))
+            {
+                minVarSizePx = Math.Min(region.Width, minContentWidthPx + insetLeftPx + insetRightPx);
+            }
+
             // Place the box in the band by its §5.3.2.4 ROLE (region.HAlign/VAlign — A flush start,
             // B centered, C flush end, BY NAME), NOT the declared content alignment: e.g. @top-center
             // stays centered even under `text-align: left`. On the box's FIXED axis it spans the band,
@@ -258,7 +275,8 @@ internal static class PageMarginBoxPainter
             items.Add(new MarginBoxItem
             {
                 Region = region, Style = style, CurrentColorArgb = currentColor, Inline = inline,
-                HasLine = hasLine, InsetLeftPx = insetLeftPx, InsetTopPx = insetTopPx,
+                HasLine = hasLine, Text = text, MinVarSizePx = minVarSizePx,
+                InsetLeftPx = insetLeftPx, InsetTopPx = insetTopPx,
                 InsetRightPx = insetRightPx, InsetBottomPx = insetBottomPx, HAlign = hAlign,
                 VAlign = vAlign, LineHeightPx = lineHeightPx, BoxXPx = boxXPx, BoxYPx = boxYPx,
                 BoxWidthPx = boxWidthPx, BoxHeightPx = boxHeightPx,
@@ -270,6 +288,24 @@ internal static class PageMarginBoxPainter
         // overlap, so single boxes + the common short-content case keep the per-box (cycle 14/15)
         // geometry byte-for-byte. Corner boxes (no variable axis) don't participate.
         ResolveEdgeOverlaps(items);
+
+        // §5.3 overflow WRAPPING — a HORIZONTAL box the distribution shrank below its single-line
+        // (max-content) width re-wraps its content to the assigned content width (multi-line), so the
+        // content FITS instead of overflowing. Only horizontal edges (variable axis = width); a box still
+        // narrower than its longest unbreakable word overflows that word (inherent). The content-alignment
+        // of wrapped lines + vertical-edge (height) overflow are documented follow-ups (deferrals.md).
+        foreach (var item in items)
+        {
+            if (!item.HasLine || item.Region.VariableAxis != PageMarginBoxGeometry.MarginBoxAxis.Horizontal
+                || item.Inline.Lines.Length == 0)
+                continue;
+            var contentWidthPx = item.BoxWidthPx - item.InsetLeftPx - item.InsetRightPx;
+            if (contentWidthPx > 0 && contentWidthPx < item.Inline.Lines[0].TotalAdvance - 0.5
+                && TryLayoutContent(item.Text, item.Style, shaper, contentWidthPx, WhiteSpace.Normal, out var wrapped))
+            {
+                item.Inline = wrapped;
+            }
+        }
 
         // PASS 2 — emit each box's background band (cycle 8) + border (border cycle) + text fragment from
         // its (possibly adjusted) box rect. Aliased back to the per-box locals the emission code uses.
@@ -376,6 +412,42 @@ internal static class PageMarginBoxPainter
         style.IsSet(PropertyId.BorderTopStyle) || style.IsSet(PropertyId.BorderRightStyle)
         || style.IsSet(PropertyId.BorderBottomStyle) || style.IsSet(PropertyId.BorderLeftStyle);
 
+    /// <summary>Lay <paramref name="text"/> out in <paramref name="style"/> at <paramref name="widthPx"/>
+    /// with the given wrapping mode. Returns <see langword="false"/> on empty text, no line, or a
+    /// font-resolution failure. Used for the §5.3 min-content measurement + the overflow re-wrap.</summary>
+    private static bool TryLayoutContent(
+        string text, ComputedStyle style, HarfBuzzShaperResolver shaper, double widthPx, WhiteSpace whiteSpace,
+        out InlineLayoutResult result)
+    {
+        result = default;
+        if (string.IsNullOrEmpty(text)) return false;
+        try
+        {
+            var laid = InlineLayouter.Layout(
+                sourceTextRuns: new[] { new TextRun(text, style) },
+                availableInlineSize: Math.Max(widthPx, 1.0), resolver: shaper,
+                scriptIso15924: "Latn", language: "en",
+                paragraphDirection: ParagraphDirection.LeftToRight, whiteSpace: whiteSpace);
+            if (laid.Lines.Length == 0) return false;
+            result = laid;
+            return true;
+        }
+        catch (FontResolutionException) { return false; }
+    }
+
+    /// <summary>The min-content WIDTH (px) of <paramref name="text"/> — the longest unbreakable run, found
+    /// by wrapping at a tiny width so each break opportunity splits a line; the widest resulting line is
+    /// the min-content. <see langword="false"/> on a font-resolution failure.</summary>
+    private static bool TryMeasureMinContentWidthPx(
+        string text, ComputedStyle style, HarfBuzzShaperResolver shaper, out double minContentPx)
+    {
+        minContentPx = 0;
+        if (!TryLayoutContent(text, style, shaper, 1.0, WhiteSpace.Normal, out var laid)) return false;
+        foreach (var line in laid.Lines)
+            if (line.TotalAdvance > minContentPx) minContentPx = line.TotalAdvance;
+        return true;
+    }
+
     /// <summary>The explicit content-box size (CSS px) a margin box declares on its §5.3 VARIABLE axis
     /// — <c>width</c> for top/bottom boxes, <c>height</c> for left/right — or <see langword="null"/>
     /// when it's <c>auto</c>/unresolved (the caller shrink-to-fits). An absolute length is used as-is; a
@@ -408,6 +480,10 @@ internal static class PageMarginBoxPainter
         public uint CurrentColorArgb;
         public InlineLayoutResult Inline;
         public bool HasLine;
+        public string Text = string.Empty;     // raw content text — re-laid-out (wrapped) if the box shrinks.
+        public double MinVarSizePx;             // min-content border-box size along the VARIABLE axis (= the
+                                                // box's desired/max size for rigid/explicit/vertical boxes,
+                                                // so they take the clamp path — only horizontal auto boxes flex).
         public double InsetLeftPx;
         public double InsetTopPx;
         public double InsetRightPx;
@@ -467,7 +543,8 @@ internal static class PageMarginBoxPainter
                 new PageMarginBoxGeometry.EdgeTriple(
                     a is null ? 0 : VarSize(a, horizontal), a is not null,
                     b is null ? 0 : VarSize(b, horizontal), b is not null,
-                    c is null ? 0 : VarSize(c, horizontal), c is not null),
+                    c is null ? 0 : VarSize(c, horizontal), c is not null,
+                    a?.MinVarSizePx ?? 0, b?.MinVarSizePx ?? 0, c?.MinVarSizePx ?? 0),
                 available);
 
             if (a is not null) ApplyResolved(a, horizontal, resolved.SizeA, resolved.StartA);

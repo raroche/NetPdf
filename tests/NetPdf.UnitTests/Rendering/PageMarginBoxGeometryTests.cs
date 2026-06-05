@@ -88,8 +88,16 @@ public sealed class PageMarginBoxGeometryTests
 
     // ---- §5.3 sibling-box overlap resolution (Task 21) ----
 
+    // RIGID boxes by default (min == desired) → the center-priority CLAMP path, so these legacy cases
+    // keep their cycle-16 assertions. The min-content FLEX is exercised by FlexTriple below.
     private static PageMarginBoxGeometry.EdgeTriple Triple(
-        double a, bool hasA, double b, bool hasB, double c, bool hasC) => new(a, hasA, b, hasB, c, hasC);
+        double a, bool hasA, double b, bool hasB, double c, bool hasC) =>
+        new(a, hasA, b, hasB, c, hasC, MinA: a, MinB: b, MinC: c);
+
+    /// <summary>An edge triple with explicit per-box (min, max) — for the min/max-content flex path.</summary>
+    private static PageMarginBoxGeometry.EdgeTriple FlexTriple(
+        (double Min, double Max) a, (double Min, double Max) b, (double Min, double Max) c) =>
+        new(a.Max, true, b.Max, true, c.Max, true, a.Min, b.Min, c.Min);
 
     [Fact]
     public void ResolveEdgeOverlap_returns_unchanged_when_boxes_dont_overlap()
@@ -150,5 +158,49 @@ public sealed class PageMarginBoxGeometryTests
         Assert.Equal(0, r.StartA, 3);
         Assert.Equal(0, r.SizeB, 3); Assert.Equal(0, r.StartB, 3);
         Assert.Equal(0, r.SizeC, 3); Assert.Equal(0, r.StartC, 3);
+    }
+
+    // ---- §5.3 min/max-content FLEX (wrappable content; Min < Desired) ----
+
+    [Fact]
+    public void ResolveEdgeOverlap_flex_distributes_between_min_and_max()
+    {
+        // Two over-constrained side boxes (no center), each (min 100, max 600), band 1000. They overlap
+        // (600+600>1000) and CAN flex → linear interpolation: factor = (1000−200)/(1200−200) = 0.8 →
+        // each gets 100 + 500×0.8 = 500, tiled edge-to-edge (A [0,500], C [500,1000]).
+        var r = PageMarginBoxGeometry.ResolveEdgeOverlap(FlexTriple((100, 600), (0, 0), (100, 600)), 1000);
+        Assert.Equal(500, r.SizeA, 2); Assert.Equal(0, r.StartA, 3);
+        Assert.Equal(500, r.SizeC, 2); Assert.Equal(500, r.StartC, 2);
+    }
+
+    [Fact]
+    public void ResolveEdgeOverlap_flex_keeps_a_rigid_box_at_its_size()
+    {
+        // A is RIGID (min == max == 100), B flexible (min 100, max 900), band 1000. Overlap; canFlex (B
+        // can shrink, mins fit). factor = (1000−200)/(1000−200) = 1 → A stays 100, B gets 900, tiled.
+        var r = PageMarginBoxGeometry.ResolveEdgeOverlap(FlexTriple((100, 100), (100, 900), (0, 0)), 1000);
+        Assert.Equal(100, r.SizeA, 3); Assert.Equal(0, r.StartA, 3);
+        Assert.Equal(900, r.SizeB, 3); Assert.Equal(100, r.StartB, 3);
+    }
+
+    [Fact]
+    public void ResolveEdgeOverlap_flex_three_boxes_tile_the_band()
+    {
+        // A(100,500) | B(100,300) | C(100,200), band 1000. Role positions overlap (A 500 past B's
+        // centered start 350); sumMax == band so factor = 1 → max sizes, tiled A|B|C with no gap.
+        var r = PageMarginBoxGeometry.ResolveEdgeOverlap(FlexTriple((100, 500), (100, 300), (100, 200)), 1000);
+        Assert.Equal(500, r.SizeA, 3); Assert.Equal(0, r.StartA, 3);
+        Assert.Equal(300, r.SizeB, 3); Assert.Equal(500, r.StartB, 3);
+        Assert.Equal(200, r.SizeC, 3); Assert.Equal(800, r.StartC, 3);
+    }
+
+    [Fact]
+    public void ResolveEdgeOverlap_falls_back_to_clamp_when_mins_dont_fit()
+    {
+        // Flexible boxes whose MINS exceed the band (600+600 > 1000) can't flex-fit → CLAMP path (no
+        // center → proportional shrink to share the band, so they don't overlap).
+        var r = PageMarginBoxGeometry.ResolveEdgeOverlap(FlexTriple((600, 700), (0, 0), (600, 700)), 1000);
+        Assert.True(r.SizeA + r.SizeC <= 1000.001, $"clamped to the band: {r.SizeA}+{r.SizeC}");
+        Assert.True(r.StartA + r.SizeA <= r.StartC + 0.5, "A must not overlap C");
     }
 }

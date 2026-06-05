@@ -22,10 +22,12 @@ namespace NetPdf.Rendering;
 /// its content (shrink-to-fit) or to an explicit <c>width</c>/<c>height</c> along that axis (top/bottom
 /// edges → width; left/right → height) so its background/border cover the box, positions it in the band
 /// by its name-derived role (start / center / end), and — when siblings would overlap —
-/// <see cref="ResolveEdgeOverlap"/> clamps them apart (center-priority). Corner boxes + empty boxes keep
-/// the full band. STILL DEFERRED: the spec-strict §5.3.2 min/max-content FLEX (this first cut uses each
-/// box's max-content / explicit size + clamps rather than re-wrapping) and overflow clipping/wrapping —
-/// so content wider than its clamped box still overflows (deferrals.md#layout-to-pdf-pipeline).
+/// <see cref="ResolveEdgeOverlap"/> resolves them: a min/max-content FLEX (distribute between each box's
+/// min-content and max-content) when content can wrap, else a center-priority CLAMP. The painter then
+/// RE-WRAPS a flexed/shrunk box's content to its assigned width (multi-line) so it fits. Corner boxes +
+/// empty boxes keep the full band. STILL DEFERRED: the content-alignment of wrapped lines, vertical-edge
+/// (height) overflow, and `box-sizing` — content narrower than its longest unbreakable word still
+/// overflows that word (deferrals.md#layout-to-pdf-pipeline).
 /// </para>
 /// </remarks>
 internal static class PageMarginBoxGeometry
@@ -99,11 +101,14 @@ internal static class PageMarginBoxGeometry
         return r is not null;
     }
 
-    /// <summary>The desired outer sizes (along the §5.3 VARIABLE axis) of the up-to-three boxes sharing
-    /// one edge band, by name-derived role: A = start, B = center, C = end. An absent box
-    /// (<c>Has… = false</c>) doesn't participate.</summary>
+    /// <summary>The MAX-content (or explicit) + MIN-content outer sizes (along the §5.3 VARIABLE axis) of
+    /// the up-to-three boxes sharing one edge band, by name-derived role: A = start, B = center, C = end.
+    /// <c>Desired…</c> is the max-content / explicit size, <c>Min…</c> the min-content (longest
+    /// unbreakable run; <c>Min ≤ Desired</c>; <c>Min == Desired</c> for rigid / unbreakable / explicit
+    /// content). An absent box (<c>Has… = false</c>) doesn't participate.</summary>
     internal readonly record struct EdgeTriple(
-        double DesiredA, bool HasA, double DesiredB, bool HasB, double DesiredC, bool HasC);
+        double DesiredA, bool HasA, double DesiredB, bool HasB, double DesiredC, bool HasC,
+        double MinA, double MinB, double MinC);
 
     /// <summary>Each resolved box's outer size + start offset along the variable axis (0 = the band's
     /// start). Absent boxes are (0, 0).</summary>
@@ -112,27 +117,32 @@ internal static class PageMarginBoxGeometry
 
     /// <summary>
     /// CSS Paged Media L3 §5.3 — resolve the up-to-three page-margin boxes sharing one edge band so they
-    /// don't OVERLAP (first cut of the §5.3.2 distribution). Each box is positioned by its name-derived
-    /// role: A flush start, B centered, C flush end. When the boxes' desired sizes at those positions
-    /// would overlap, the CENTER box keeps its (band-clamped) size centered and the side boxes are
-    /// CLAMPED to the gap on each side (center-priority); with NO center box, two overlapping side boxes
-    /// shrink PROPORTIONALLY to share the band. When they DON'T overlap, the desired sizes + role
-    /// positions are returned unchanged — so the common short-header/footer case stays byte-identical to
-    /// the per-box (cycle 14/15) model.
+    /// don't OVERLAP. Each box is positioned by its name-derived role: A flush start, B centered, C flush
+    /// end. When the boxes' desired sizes at those role positions would overlap, the resolution is:
+    /// <list type="bullet">
+    ///   <item><b>min/max-content FLEX</b> (when at least one box can shrink — <c>Min &lt; Desired</c> —
+    ///     AND every box's MIN fits the band): each box gets <c>Min + (Desired − Min) × factor</c> where
+    ///     <c>factor = clamp((l − ΣMin) / (ΣDesired − ΣMin), 0, 1)</c>, and they TILE the band edge-to-edge
+    ///     (A | B | C). The shrunk widths drive the painter's content re-wrap so content fits.</item>
+    ///   <item><b>center-priority CLAMP</b> (otherwise — all rigid, or the mins don't fit): the CENTER box
+    ///     keeps its band-clamped size centered and the side boxes clamp to the side gaps; with no center
+    ///     box, two overlapping side boxes shrink proportionally. (Unbreakable content then overflows.)</item>
+    /// </list>
+    /// When they DON'T overlap, the desired sizes + role positions are returned unchanged — so the common
+    /// short-header/footer case stays byte-identical to the per-box (cycle 14/15) model. RIGID content
+    /// (<c>Min == Desired</c> for all, e.g. a single unbreakable word) always takes the CLAMP path, so the
+    /// cycle-16 behavior is preserved exactly for it.
     /// </summary>
-    /// <remarks>
-    /// Deterministic first cut: it uses each box's max-content / explicit outer size (no min-content
-    /// measurement) and CLAMPS the box rather than re-wrapping its content, so content wider than its
-    /// clamped box overflows — overflow clipping is a separate deferral (deferrals.md). The spec-strict
-    /// §5.3.2 min/max-content flex (letting the center box shrink toward its min-content to give the
-    /// sides more room) is a follow-up.
-    /// </remarks>
     internal static ResolvedTriple ResolveEdgeOverlap(EdgeTriple boxes, double available)
     {
         var l = Math.Max(0, available);
         var dA = boxes.HasA ? Math.Clamp(boxes.DesiredA, 0, l) : 0;
         var dB = boxes.HasB ? Math.Clamp(boxes.DesiredB, 0, l) : 0;
         var dC = boxes.HasC ? Math.Clamp(boxes.DesiredC, 0, l) : 0;
+        // Min-content per box, clamped to its (clamped) max so Min ≤ Desired always holds.
+        var mA = boxes.HasA ? Math.Clamp(boxes.MinA, 0, dA) : 0;
+        var mB = boxes.HasB ? Math.Clamp(boxes.MinB, 0, dB) : 0;
+        var mC = boxes.HasC ? Math.Clamp(boxes.MinC, 0, dC) : 0;
 
         // Role positions (start offsets) of the DESIRED boxes: A flush start, B centered, C flush end.
         var startA = 0.0;
@@ -149,16 +159,34 @@ internal static class PageMarginBoxGeometry
             return new ResolvedTriple(
                 dA, startA, dB, boxes.HasB ? startB : 0.0, dC, boxes.HasC ? startC : 0.0);
 
+        var sumMax = dA + dB + dC;
+        var sumMin = mA + mB + mC;
+        var canFlex = (mA < dA || mB < dB || mC < dC) && sumMin <= l;
+        if (canFlex)
+        {
+            // min/max-content flex: distribute by linear interpolation between ΣMin and ΣDesired, then
+            // TILE the band (A | B | C, edge-to-edge). factor clamps to [0,1] so a box never exceeds its
+            // max-content (when ΣDesired ≤ l) nor drops below its min-content.
+            var factor = Math.Clamp((l - sumMin) / (sumMax - sumMin), 0.0, 1.0);
+            dA = mA + (dA - mA) * factor;
+            dB = mB + (dB - mB) * factor;
+            dC = mC + (dC - mC) * factor;
+            return new ResolvedTriple(
+                dA, boxes.HasA ? 0.0 : 0.0,
+                dB, boxes.HasB ? dA : 0.0,            // B tiled right after A
+                dC, boxes.HasC ? dA + dB : 0.0);      // C tiled right after B
+        }
+
+        // Center-priority CLAMP (rigid content, or the mins don't fit) — prevents overlap; unbreakable
+        // content overflows its clamped box.
         if (boxes.HasB)
         {
-            // Center-priority: B keeps its (band-clamped) size, centered; A/C clamp to the side gaps.
             startB = (l - dB) / 2.0;
             dA = Math.Min(dA, Math.Max(0, startB));               // left gap  = [0, startB)
             dC = Math.Min(dC, Math.Max(0, l - (startB + dB)));    // right gap = (startB+dB, l]
         }
         else
         {
-            // No center box: A (start) + C (end) overlap → shrink proportionally to share the band.
             var total = dA + dC;
             if (total > l && total > 0)
             {
@@ -168,7 +196,6 @@ internal static class PageMarginBoxGeometry
             }
         }
 
-        // Absent boxes report (0, 0) per the contract (see the no-overlap return above).
         return new ResolvedTriple(
             dA, 0.0, dB, boxes.HasB ? startB : 0.0, dC, boxes.HasC ? l - dC : 0.0);
     }

@@ -8,6 +8,7 @@ using System.Text;
 using AngleSharp.Dom;
 using NetPdf.Css.Diagnostics;
 using NetPdf.Css.Parser;
+using NetPdf.Layout.Inline;
 
 namespace NetPdf.Layout.Boxes;
 
@@ -547,6 +548,13 @@ internal static class CssContentList
     /// already consumed): bare <c>content()</c> or <c>content(text)</c> → <paramref name="host"/>'s text
     /// content; the typographic targets <c>content(before|after|first-letter|marker)</c> + any multi-arg
     /// form are deferred → <see langword="false"/> (the caller bails to the unsupported diagnostic).</summary>
+    /// <remarks>Per CSS GCPM L3 §3.1, the element's string is taken "as if <c>white-space: normal</c> were
+    /// in effect" — so the raw <see cref="INode.TextContent"/> (which keeps the source indentation /
+    /// newlines / runs of spaces of formatted HTML) is collapsed with the SAME normalizer the body inline
+    /// pass uses (<see cref="LineBuilder.PreprocessWhitespace"/> in <see cref="WhiteSpace.Normal"/> mode:
+    /// collapse every SP/TAB/LF/CR/FF run to a single space + strip leading/trailing) so a heading like
+    /// <c>&lt;h1&gt;\n  Chapter   &lt;span&gt;One&lt;/span&gt;\n&lt;/h1&gt;</c> yields <c>Chapter One</c>,
+    /// not the indented source text, in the running header.</remarks>
     private static bool TryReadContentText(ReadOnlySpan<char> span, ref int i, IElement host, out string text)
     {
         text = string.Empty;
@@ -565,7 +573,8 @@ internal static class CssContentList
         i++; // consume ')'
         // Only bare content() / content(text) is the element's text; the other GCPM targets are deferred.
         if (!arg.IsEmpty && !arg.Equals("text", StringComparison.OrdinalIgnoreCase)) return false;
-        text = host.TextContent ?? string.Empty;
+        // GCPM: the element string is determined as if white-space: normal — collapse source whitespace.
+        text = LineBuilder.PreprocessWhitespace(host.TextContent ?? string.Empty, WhiteSpace.Normal);
         return true;
     }
 

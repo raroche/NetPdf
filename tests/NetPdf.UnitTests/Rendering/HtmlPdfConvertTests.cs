@@ -1980,6 +1980,22 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Page_margin_box_string_set_content_includes_nested_indented_text()
+    {
+        // content() pulls the element's full (NESTED) text end-to-end and the source INDENTATION does not
+        // leak in: an indented <h1> wrapping two <span>s resolves to "AB" in the header (the leading
+        // "\n  " + trailing "\n" are stripped, so no stray .notdef whitespace glyphs). Body h1 "AB" (2) +
+        // header content()="AB" (2) = 4. (The exact GCPM white-space:normal collapse is unit-tested in
+        // CssContentListTests; here the margin box's own NoWrap layout would also collapse it, so this
+        // asserts the nested-element + indentation PATH renders cleanly end-to-end.)
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>h1 { string-set: title content() } @page { @top-center { content: string(title) } }</style>" +
+            "</head><body><h1>\n  <span>A</span><span>B</span>\n</h1></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(4, TotalGlyphCount(pdf));   // body "AB"→A,B (2) + header content()="AB"→A,B (2)
+    }
+
+    [Fact]
     public void Page_margin_box_element_renders_a_running_element()
     {
         // Task 23: a div with `position: running(rh)` is REMOVED from the body flow; the header's

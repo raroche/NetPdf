@@ -282,6 +282,18 @@ public sealed class CssContentListTests
     }
 
     [Fact]
+    public async Task StringSet_content_collapses_source_whitespace_per_gcpm()
+    {
+        // CSS GCPM §3.1: content() takes the element string as if white-space: normal — so a formatted,
+        // INDENTED heading with a NESTED element collapses to single-spaced text (no leading/trailing
+        // whitespace, no embedded newlines/indentation, runs of spaces → one). Else the raw source
+        // indentation would leak into the running header.
+        var host = await MakeHost("<h1 id='h'>\n  Chapter   <span>One</span>\n</h1>", "h");
+        Assert.True(CssContentList.TryParseStringSet("content()", host, out var result));
+        Assert.Equal("Chapter One", result);
+    }
+
+    [Fact]
     public async Task Content_function_is_unsupported_outside_a_string_set()
     {
         var host = await MakeHost("<h1 id='h'>One</h1>", "h");

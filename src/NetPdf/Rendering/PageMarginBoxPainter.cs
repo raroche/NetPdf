@@ -375,9 +375,10 @@ internal static class PageMarginBoxPainter
     /// when it's <c>auto</c>/unresolved (the caller shrink-to-fits). An absolute length is used as-is; a
     /// percentage resolves against <paramref name="bandExtentPx"/> (the box's containing block on that
     /// axis). box-sizing is content-box (the CSS default) — the caller adds the border+padding insets to
-    /// get the border-box. A font-/viewport-relative or <c>calc()</c> size stays unresolved here →
-    /// shrink-to-fit (a documented gap, deferrals.md). Negatives are rejected upstream (non-negative
-    /// property); the <c>Max(0, …)</c> is defensive.</summary>
+    /// get the border-box. A font-/viewport-relative or <c>calc()</c> size is diagnosed + DROPPED
+    /// upstream by <see cref="MarginBoxStyle"/> (post-PR-#144 review), so it never reaches here as a slot
+    /// — this reads it as <c>auto</c> and the caller shrink-to-fits. Negatives are rejected upstream
+    /// (non-negative property); the <c>Max(0, …)</c> is defensive.</summary>
     private static double? TryReadExplicitSizePx(ComputedStyle style, PropertyId id, double bandExtentPx)
     {
         var slot = style.Get(id);

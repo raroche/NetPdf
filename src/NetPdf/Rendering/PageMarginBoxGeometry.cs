@@ -16,14 +16,16 @@ namespace NetPdf.Rendering;
 /// margin-width × margin-height rectangle) and, per edge, 3 boxes that share the edge band.
 /// </para>
 /// <para>
-/// <b>Placement (§5.3 shrink-to-fit, first cut).</b> This type returns each box's full edge BAND +
-/// its name-derived alignment + the §5.3 <see cref="MarginBoxAxis"/> (the dimension that varies). The
-/// painter then SHRINKS a content-bearing box to its content size along that axis (top/bottom edges →
-/// width; left/right → height) so its background/border cover the box, and positions it in the band by
-/// the alignment (start / center / end by name). Corner boxes + empty boxes keep the full band. The
-/// FULL CSS §5.3 min/max-content DISTRIBUTION (resolving widths when sibling boxes would overlap),
-/// explicit <c>width</c>/<c>height</c>, and overflow clipping stay deferred — so two long boxes on one
-/// edge can still overlap and content overflowing a band isn't clipped (deferrals.md#layout-to-pdf-pipeline).
+/// <b>Placement (§5.3, first cut).</b> This type returns each box's full edge BAND + its name-derived
+/// alignment + the §5.3 <see cref="MarginBoxAxis"/> (the dimension that varies), and resolves sibling
+/// OVERLAP on an edge via <see cref="ResolveEdgeOverlap"/>. The painter sizes a content-bearing box to
+/// its content (shrink-to-fit) or to an explicit <c>width</c>/<c>height</c> along that axis (top/bottom
+/// edges → width; left/right → height) so its background/border cover the box, positions it in the band
+/// by its name-derived role (start / center / end), and — when siblings would overlap —
+/// <see cref="ResolveEdgeOverlap"/> clamps them apart (center-priority). Corner boxes + empty boxes keep
+/// the full band. STILL DEFERRED: the spec-strict §5.3.2 min/max-content FLEX (this first cut uses each
+/// box's max-content / explicit size + clamps rather than re-wrapping) and overflow clipping/wrapping —
+/// so content wider than its clamped box still overflows (deferrals.md#layout-to-pdf-pipeline).
 /// </para>
 /// </remarks>
 internal static class PageMarginBoxGeometry

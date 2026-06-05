@@ -258,8 +258,9 @@ single-line margin content byte-identical). **Task 21 — `counter(page)` counte
 first|last)` (in progress, branch `phase-3-task-21-counter-styles-string-keyword`):** `counter(page,
 <counter-style>)` formats the page number/total in roman / alpha / leading-zero / greek via a new shared
 `CounterStyleFormatter` (EXTRACTED from `BoxBuilder`'s list-marker numerals — both format identically); a
-non-predefined style (`hebrew`) is diagnosed + dropped. `string(name, first)` pulls the FIRST `string-set`
-assignment on the page, `last` / no keyword the LAST (`MarginContentContext.NamedStringsFirst`); `start` /
+non-predefined style (`hebrew`) FALLS BACK to `decimal` (CSS Counter Styles §7.1.4 — page numbers never
+vanish; post-PR-#149 review). `string(name, first)` AND the no-keyword DEFAULT (GCPM §7.3) pull the FIRST
+`string-set` assignment on the page; `string(name, last)` is the exit value (`MarginContentContext.NamedStringsFirst`); `start` /
 `first-except` bail (cross-page). DEFERRED: `content(before|after|first-letter|marker)`, `element()` full
 block rendering, vertical-edge HEIGHT overflow, `box-sizing`, the body's own `text-align` line-positioning.
 Next (in order): `element()` full block rendering / vertical-edge (height) overflow / cross-page

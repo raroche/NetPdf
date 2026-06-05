@@ -169,6 +169,9 @@ public sealed class CssContentListTests
     [InlineData("counter(page, decimal-leading-zero)", "03")]
     [InlineData("counter(pages, lower-roman)", "vii")]       // the total, roman
     [InlineData("\"Page \" counter(page, upper-roman) \" of \" counter(pages, upper-roman)", "Page III of VII")]
+    [InlineData("counter(page, hebrew)", "3")]               // an unimplemented style → decimal (review P2)
+    [InlineData("counter(page, cjk-ideographic)", "3")]
+    [InlineData("counter(page, not-a-style)", "3")]          // an undefined name → decimal
     public async Task TryParse_resolves_page_counters(string raw, string expected)
     {
         var host = await MakeHost("<p id='h'>x</p>", "h");
@@ -178,9 +181,7 @@ public sealed class CssContentListTests
 
     [Theory]
     [InlineData("counter(chapter)")]               // a non-page counter name
-    [InlineData("counter(page, hebrew)")]           // a predefined style we don't format
-    [InlineData("counter(page, cjk-ideographic)")]
-    [InlineData("counter(page, )")]                 // empty style after the comma
+    [InlineData("counter(page, )")]                 // empty style after the comma → malformed
     [InlineData("counters(page, \".\")")]           // counters() (plural) is unsupported
     public async Task TryParse_rejects_unsupported_counters(string raw)
     {
@@ -223,7 +224,10 @@ public sealed class CssContentListTests
         Dictionary<string, string>? n = null, r = null, nf = null;
         if (named is not null) { n = new(); foreach (var (k, v) in named) n[k] = v; }
         if (running is not null) { r = new(); foreach (var (k, v) in running) r[k] = v; }
+        // Mirror the collector: a single assignment sets BOTH first + last. When a test supplies only
+        // `named` (a single-assignment page), default namedFirst to it so the GCPM `first` default resolves.
         if (namedFirst is not null) { nf = new(); foreach (var (k, v) in namedFirst) nf[k] = v; }
+        else nf = n;
         return new CssContentList.MarginContentContext(n, r, nf);
     }
 
@@ -236,9 +240,9 @@ public sealed class CssContentListTests
         Assert.Equal("first", f);
         Assert.True(CssContentList.TryParse("string(t, last)", host, new CssContentList.PageCounters(1, 1), ctx, out var l));
         Assert.Equal("last", l);
-        // No keyword → the shipped default (= last, the value at the end of the page).
+        // No keyword → the GCPM DEFAULT is `first` (the first assignment on the page), NOT last (review P1).
         Assert.True(CssContentList.TryParse("string(t)", host, new CssContentList.PageCounters(1, 1), ctx, out var d));
-        Assert.Equal("last", d);
+        Assert.Equal("first", d);
     }
 
     [Theory]

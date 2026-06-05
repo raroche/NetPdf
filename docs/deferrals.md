@@ -3020,10 +3020,14 @@ flags the categories):
          passes `(1, 1)` (single page → "1"). An optional `<counter-style>` (Task 21) formats it via a new
          shared `CounterStyleFormatter` (EXTRACTED from `BoxBuilder`'s list-marker numerals — `decimal`,
          `decimal-leading-zero`, `lower`/`upper-roman`, `lower`/`upper-alpha`+`-latin`, `lower-greek`; both
-         callers now format identically). STILL DEFERRED: the real multi-page numbers (gated on the
-         multi-page driver below), a non-predefined counter style (e.g. `hebrew`/`cjk-ideographic` →
-         diagnosed + dropped), non-page `counter()` names + `counters()` (need the counter-reset/increment
-         machinery), and `counter(page)` in body/pseudo content (no page context → unsupported).
+         callers now format identically). A non-predefined / unimplemented style (`hebrew`,
+         `cjk-ideographic`, an undefined name) FALLS BACK to `decimal` (CSS Counter Styles §7.1.4 — the page
+         number must never silently vanish; post-PR-#149 review P2) — `CounterStyleFormatter.TryFormat`
+         stays null-returning so each caller chooses its own fallback (page counters → decimal, list
+         markers → disc). STILL DEFERRED: the real multi-page numbers (gated on the multi-page driver
+         below), rendering `hebrew`/`cjk-ideographic`/… AS those styles (they approximate as decimal),
+         non-page `counter()` names + `counters()` (need the counter-reset/increment machinery), and
+         `counter(page)` in body/pseudo content (no page context → unsupported).
        - **Margin boxes — `border` (border cycle) — DONE:** a margin box's declared `border` /
          per-side `border-<side>` shorthand (new `BorderShorthandExpander` for margin-box bodies →
          the 12 `border-*-width`/`-style`/`-color` longhands, added to `MarginBoxStyle.CascadedStyleIds`)
@@ -3081,8 +3085,9 @@ flags the categories):
          renders the running element's TEXT** with the margin box's own style — the element's own block box /
          styling is a follow-up; (d) the `string(name, first | last)` position keyword is DONE (Task 21):
          `MarginContentCollector` keeps both the FIRST and LAST assignment per name (`MarginContentContext`
-         gained `NamedStringsFirst`); `string(name, first)` → first, `string(name, last)` / no keyword →
-         last (the shipped default). The cross-page `start` / `first-except` keywords stay deferred (need
+         gained `NamedStringsFirst`); `string(name, first)` AND the no-keyword DEFAULT → the first
+         assignment (per CSS GCPM §7.3 — `first` is the default, NOT the exit value; post-PR-#149 review
+         P1); `string(name, last)` → the exit value. The cross-page `start` / `first-except` keywords stay deferred (need
          the multi-page driver). Other deferrals: `border-radius` + background images. The per-box /
          page-context `ComputedStyle.Rent()` is box-owned (not returned to the pool) — a negligible miss.
        - **Margin boxes — §5.3 three-box-per-edge sizing (shrink-to-fit + explicit size + overlap distribution) — DONE:** a

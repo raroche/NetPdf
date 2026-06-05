@@ -204,8 +204,8 @@ internal static class CssContentList
             // string(name [, first|last]) — Task 22 (+ the position keyword). Pulls the named string set
             // by `string-set` (collected during the document walk). Only valid with a margin context
             // (page-margin boxes); a missing/undefined name resolves to the empty string per CSS GCPM L3
-            // (no diagnostic). `first` → the FIRST assignment on the page, `last` (+ the no-keyword default,
-            // the shipped behavior) → the LAST. The cross-page `start` / `first-except` keywords bail to
+            // (no diagnostic). `first` (AND the no-keyword DEFAULT, per GCPM §7.3) → the FIRST assignment on
+            // the page; `last` → the exit value. The cross-page `start` / `first-except` keywords bail to
             // unsupported (need the multi-page driver).
             if (StartsWithCaseInsensitive(span, i, "string("))
             {
@@ -479,9 +479,12 @@ internal static class CssContentList
     /// shared with list markers via <see cref="CounterStyleFormatter"/> (<c>decimal</c>,
     /// <c>decimal-leading-zero</c>, <c>lower-roman</c> / <c>upper-roman</c>, <c>lower-alpha</c> /
     /// <c>upper-alpha</c> / <c>-latin</c>, <c>lower-greek</c>). Resolves <c>page</c> → the current page
-    /// number, <c>pages</c> → the total from <paramref name="pc"/>. Returns <see langword="false"/> (→ the
-    /// caller bails to the unsupported diagnostic) for any other counter name, an unsupported style (e.g.
-    /// <c>hebrew</c>), or malformed syntax. The <c>counters()</c> form is a tracked follow-up.</summary>
+    /// number, <c>pages</c> → the total from <paramref name="pc"/>. An UNKNOWN / unimplemented style (e.g.
+    /// <c>hebrew</c>, <c>cjk-ideographic</c>, an undefined name) FALLS BACK TO <c>decimal</c> per CSS
+    /// Counter Styles L3 §7.1.4 — the page number must never silently vanish (post-PR-#149 review P2).
+    /// Returns <see langword="false"/> (→ the caller bails to the unsupported diagnostic) only for a
+    /// non-page counter name, an empty style, or malformed syntax. The <c>counters()</c> form is a tracked
+    /// follow-up.</summary>
     private static bool TryReadPageCounter(ReadOnlySpan<char> span, ref int i, PageCounters pc, out string text)
     {
         text = string.Empty;
@@ -524,8 +527,12 @@ internal static class CssContentList
 
         if (i >= span.Length || span[i] != ')') return false; // missing close-paren.
         i++; // consume ')'
-        if (CounterStyleFormatter.TryFormat(value, style) is not { } formatted) return false; // unsupported style
-        text = formatted;
+        // CSS Counter Styles §7.1.4: an unknown / unimplemented counter style falls back to `decimal`
+        // (the page number must never vanish — review P2). CounterStyleFormatter.TryFormat returns null
+        // for a style it doesn't implement; we then render decimal. (List markers keep their own disc
+        // fallback — the formatter stays null-returning so each caller chooses.)
+        text = CounterStyleFormatter.TryFormat(value, style)
+            ?? value.ToString(CultureInfo.InvariantCulture);
         return true;
     }
 
@@ -559,15 +566,15 @@ internal static class CssContentList
 
     /// <summary>Parse a <c>string(&lt;custom-ident&gt; [, first | last])</c> call (the <c>string(</c>
     /// already consumed): the named string + an optional GCPM position keyword. <paramref name="first"/>
-    /// is set <see langword="true"/> for <c>first</c> (the first assignment on the page) and
-    /// <see langword="false"/> for <c>last</c> / no keyword (the last — the shipped default). Returns
-    /// <see langword="false"/> (→ the caller bails to unsupported) for an empty/invalid name, the
-    /// cross-page <c>start</c> / <c>first-except</c> keywords (deferred), an unknown keyword, or malformed
-    /// syntax.</summary>
+    /// is set <see langword="true"/> for <c>first</c> AND for NO keyword — per CSS GCPM L3 §7.3 <c>first</c>
+    /// is the DEFAULT (the value of the first assignment on the page) — and <see langword="false"/> for an
+    /// explicit <c>last</c> (the exit value). Returns <see langword="false"/> (→ the caller bails to
+    /// unsupported) for an empty/invalid name, the cross-page <c>start</c> / <c>first-except</c> keywords
+    /// (deferred), an unknown keyword, or malformed syntax.</summary>
     private static bool TryReadStringFunction(ReadOnlySpan<char> span, ref int i, out string name, out bool first)
     {
         name = string.Empty;
-        first = false;
+        first = true; // GCPM default position keyword is `first`.
         i = SkipWhitespace(span, i);
         var start = i;
         while (i < span.Length)

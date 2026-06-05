@@ -603,9 +603,11 @@ internal static class PageMarginBoxPainter
             // diagnostic path (post-PR-#132 review P2; DiagnosticTextSanitizer).
             $"The page margin box @{boxName} uses a `content` value that is not yet supported " +
             $"(\"{DiagnosticTextSanitizer.Sanitize(raw)}\"). Supported: literal strings, attr(name), " +
-            "counter(page)/counter(pages) with the default decimal style, string(name), and element(name). " +
-            "Any other generated content — a non-page counter() name, a non-decimal counter style (e.g. " +
-            "lower-roman), counters(), url()/image()/image-set(), open-quote/close-quote — is a tracked " +
+            "counter(page)/counter(pages) (with a predefined counter style — decimal / decimal-leading-zero / " +
+            "lower+upper-roman / lower+upper-alpha / -latin / lower-greek; an unknown style falls back to " +
+            "decimal), string(name[, first|last]), and element(name). " +
+            "Any other generated content — a non-page counter() name, counters(), " +
+            "url()/image()/image-set(), open-quote/close-quote — is a tracked " +
             "follow-up (deferrals.md#layout-to-pdf-pipeline). The box was not painted.",
             DiagnosticSeverity.Warning));
 

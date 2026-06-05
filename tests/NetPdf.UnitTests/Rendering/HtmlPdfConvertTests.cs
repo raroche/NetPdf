@@ -665,18 +665,19 @@ public sealed class HtmlPdfConvertTests
     [Theory]
     [InlineData("hebrew")]            // a predefined style we don't format
     [InlineData("cjk-ideographic")]
-    [InlineData("not-a-style")]
-    public void Page_margin_box_unsupported_counter_style_is_skipped_with_a_diagnostic(string style)
+    [InlineData("not-a-style")]       // an undefined name
+    public void Page_margin_box_unknown_counter_style_falls_back_to_decimal(string style)
     {
-        // counter(page, <style>) IS a page counter, but a style outside CounterStyleFormatter's set must
-        // emit the unsupported-content diagnostic + paint nothing (no silent fallback to decimal).
+        // CSS Counter Styles §7.1.4: an unknown / unimplemented counter style falls back to `decimal` —
+        // the page number must NEVER silently vanish (review P2). So counter(page, <style>) still paints
+        // (the decimal page number), with NO unsupported-content diagnostic.
         var result = HtmlPdf.ConvertDetailed(
             $"<!DOCTYPE html><html><head><style>@page {{ @bottom-center {{ content: counter(page, {style}) }} }}</style>" +
             "</head><body></body></html>",
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
 
-        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssContentFunctionUnsupported001);
-        Assert.DoesNotContain("BT", Latin1(result.Pdf));   // nothing painted
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssContentFunctionUnsupported001);
+        Assert.Contains("BT", Latin1(result.Pdf));   // the decimal page number was painted, not dropped
     }
 
     [Fact]
@@ -1977,16 +1978,16 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
-    public void Page_margin_box_string_set_content_takes_the_last_element_in_document_order()
+    public void Page_margin_box_string_set_content_last_keyword_takes_the_last_element()
     {
-        // content() on a selector matching several elements: the named string is the LAST match's text
-        // (the value as of the end of the page). Body h1 "A"(1) + h1 "AB"(2) = 3; header string(title) =
-        // last h1 = "AB"(2) → total 5. If the FIRST won, header "A"(1) → total 4. So 5 proves last-wins.
+        // content() on a selector matching several elements, with `string(title, last)` (the EXIT value):
+        // the named string is the LAST match's text. Body h1 "A"(1) + h1 "AB"(2) = 3; header
+        // string(title, last) = last h1 = "AB"(2) → total 5. (The default `first` would give "A"(1) → 4.)
         var pdf = Latin1(HtmlPdf.Convert(
-            "<!DOCTYPE html><html><head><style>h1 { string-set: title content() } @page { @top-center { content: string(title) } }</style>" +
+            "<!DOCTYPE html><html><head><style>h1 { string-set: title content() } @page { @top-center { content: string(title, last) } }</style>" +
             "</head><body><h1>A</h1><h1>AB</h1></body></html>",
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
-        Assert.Equal(5, TotalGlyphCount(pdf));   // body 3 + header last-wins "AB"(2)
+        Assert.Equal(5, TotalGlyphCount(pdf));   // body 3 + header last "AB"(2)
     }
 
     [Fact]
@@ -2072,26 +2073,27 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
-    public void Page_margin_box_string_uses_the_last_assignment_in_document_order()
+    public void Page_margin_box_string_last_keyword_takes_the_exit_value()
     {
-        // Two elements set the same name; the LAST in document order wins (the end-of-page value).
-        // Body h1 "A"(1) + h1 "AB"(2) = 3 glyphs; header string(t) = last data-t = "AB"(2) → total 5.
-        // If the FIRST won, string(t)="A"(1) → total 4. So 5 proves last-assignment-wins.
+        // Two elements set the same name; `string(t, last)` is the EXIT value (the LAST in document order).
+        // Body h1 "A"(1) + h1 "AB"(2) = 3 glyphs; header string(t, last) = last data-t = "AB"(2) → total 5.
         var pdf = Latin1(HtmlPdf.Convert(
-            "<!DOCTYPE html><html><head><style>h1 { string-set: t attr(data-t) } @page { @top-center { content: string(t) } }</style>" +
+            "<!DOCTYPE html><html><head><style>h1 { string-set: t attr(data-t) } @page { @top-center { content: string(t, last) } }</style>" +
             "</head><body><h1 data-t=\"A\">A</h1><h1 data-t=\"AB\">AB</h1></body></html>",
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
-        Assert.Equal(5, TotalGlyphCount(pdf));   // body 3 + header last-wins "AB"(2)
+        Assert.Equal(5, TotalGlyphCount(pdf));   // body 3 + header last "AB"(2)
     }
 
-    [Fact]
-    public void Page_margin_box_string_first_keyword_takes_the_first_assignment()
+    [Theory]
+    [InlineData("string(t)")]          // GCPM DEFAULT is `first` (review P1)
+    [InlineData("string(t, first)")]   // explicit `first`
+    public void Page_margin_box_string_default_and_first_take_the_first_assignment(string headerContent)
     {
-        // Task 21 (string position keyword): `string(t, first)` pulls the FIRST element's value on the
-        // page (vs the default/`last`). Same document as the last-wins test: body h1 "A"(1) + "AB"(2) = 3;
-        // header string(t, first) = first h1 = "A"(1) → total 4. (The default → 5; this 4 proves `first`.)
+        // Per CSS GCPM §7.3 the DEFAULT position keyword is `first` (the first assignment on the page) —
+        // NOT the exit value. Same document as the exit-value test: body h1 "A"(1) + "AB"(2) = 3; header
+        // first = first h1 = "A"(1) → total 4. (The exit value → 5; this 4 proves the default is `first`.)
         var pdf = Latin1(HtmlPdf.Convert(
-            "<!DOCTYPE html><html><head><style>h1 { string-set: t attr(data-t) } @page { @top-center { content: string(t, first) } }</style>" +
+            "<!DOCTYPE html><html><head><style>h1 { string-set: t attr(data-t) } @page { @top-center { content: " + headerContent + " } }</style>" +
             "</head><body><h1 data-t=\"A\">A</h1><h1 data-t=\"AB\">AB</h1></body></html>",
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
         Assert.Equal(4, TotalGlyphCount(pdf));   // body 3 + header first "A"(1)

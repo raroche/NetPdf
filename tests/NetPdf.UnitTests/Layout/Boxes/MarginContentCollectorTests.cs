@@ -1,17 +1,23 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using System.Collections.Immutable;
 using System.Threading.Tasks;
 using AngleSharp;
+using AngleSharp.Css;
 using AngleSharp.Dom;
+using NetPdf.Css.Cascade;
+using NetPdf.Css.Parser;
 using NetPdf.Layout.Boxes;
 using Xunit;
 
 namespace NetPdf.UnitTests.Layout.Boxes;
 
 /// <summary>
-/// Tests for <see cref="MarginContentCollector"/>'s bounded running-element text read — the
-/// allocation guard (post-PR-#150 review P2) for <c>content: element(name)</c> running content.
+/// Tests for <see cref="MarginContentCollector"/>: the bounded running-element text read — the
+/// allocation guard (post-PR-#150 review P2) for <c>content: element(name)</c> running content — plus
+/// the own-style capture for element()'s first-cut own-style rendering: in LOCKSTEP with the text per
+/// occurrence (post-PR-#151 review P1) and walking ancestors for inherited font/color (review P2).
 /// </summary>
 public sealed class MarginContentCollectorTests
 {
@@ -20,6 +26,23 @@ public sealed class MarginContentCollectorTests
         var ctx = BrowsingContext.New(Configuration.Default);
         var doc = await ctx.OpenAsync(req => req.Content(html));
         return doc.QuerySelector("#" + id)!;
+    }
+
+    /// <summary>Parse <paramref name="html"/> + <paramref name="css"/>, run the real cascade + var
+    /// resolver, then <see cref="MarginContentCollector.Collect"/> from the document element — mirroring
+    /// the render pipeline (<c>PdfRenderPipeline</c>), so the returned context is exactly what the
+    /// page-margin painter would consume.</summary>
+    private static async Task<CssContentList.MarginContentContext> CollectAsync(string html, string css)
+    {
+        var ctx = BrowsingContext.New(Configuration.Default.WithCss());
+        var doc = await ctx.OpenAsync(req => req.Content(html));
+        var parser = ctx.GetService<AngleSharp.Css.Parser.ICssParser>()!;
+        var sheet = CssParserAdapter.Adapt(parser.ParseStyleSheet(css), href: null,
+            origin: CssStylesheetOrigin.Author, ownerKind: CssStylesheetOwnerKind.StyleElement,
+            mediaQuery: null, isDisabled: false, order: 0);
+        var cascade = CascadeResolver.Resolve(doc, ImmutableArray.Create(sheet), CssMediaContext.DefaultPrint);
+        var resolved = VarResolver.Resolve(cascade, doc);
+        return MarginContentCollector.Collect(doc.DocumentElement!, resolved);
     }
 
     [Fact]
@@ -52,5 +75,62 @@ public sealed class MarginContentCollectorTests
         // The cap can fall in the middle of a single text node — only `maxChars` are taken.
         var host = await MakeHost("<div id='h'>" + new string('A', 100) + "</div>", "h");
         Assert.Equal(new string('A', 10), MarginContentCollector.ReadBoundedDescendantText(host, 10));
+    }
+
+    // ---- own-style capture: lockstep with text (review P1) + inherited (review P2) ----
+
+    [Fact]
+    public async Task Collect_records_running_element_style_in_lockstep_when_last_is_unstyled()
+    {
+        // Review P1: two running elements share `rh` — the FIRST is styled (colour), the LAST is unstyled.
+        // The style dictionaries must track the text dictionaries occurrence-for-occurrence: the LAST entry
+        // (what element(rh, last) reads) pairs the last text with an EMPTY style, so the box's own style is
+        // used — NOT the first occurrence's stale colour.
+        var ctx = await CollectAsync(
+            "<div class='r1'>A</div><div class='r2'>B</div>",
+            ".r1 { position: running(rh); color: #ff0000 } .r2 { position: running(rh) }");
+
+        Assert.Equal("B", ctx.RunningElements!["rh"]);        // last text
+        Assert.Equal("A", ctx.RunningElementsFirst!["rh"]);   // first text
+        Assert.Empty(ctx.RunningElementStyles!["rh"]);                                  // last (r2) unstyled → empty marker
+        Assert.Contains(ctx.RunningElementStylesFirst!["rh"], kv => kv.Key == "color"); // first (r1) styled → colour
+    }
+
+    [Fact]
+    public async Task Collect_records_running_element_style_in_lockstep_when_first_is_unstyled()
+    {
+        // Review P1, the converse: the FIRST is unstyled, the SECOND styled. The FIRST entry (what
+        // element(rh)/first reads) must be the EMPTY marker — the later occurrence's colour must NOT be
+        // recorded as the "first" style.
+        var ctx = await CollectAsync(
+            "<div class='r1'>A</div><div class='r2'>B</div>",
+            ".r1 { position: running(rh) } .r2 { position: running(rh); color: #0000ff }");
+
+        Assert.Empty(ctx.RunningElementStylesFirst!["rh"]);                          // first (r1) unstyled → empty marker
+        Assert.Contains(ctx.RunningElementStyles!["rh"], kv => kv.Key == "color");   // last (r2) styled → colour
+    }
+
+    [Fact]
+    public async Task Collect_captures_inherited_ancestor_color_for_a_running_element()
+    {
+        // Review P2: `color` is CSS-inherited, so an ancestor's colour is the running element's own colour
+        // even though the element declares none — the collector walks ancestors for the nearest winner.
+        var ctx = await CollectAsync(
+            "<div class='section'><div class='rh'>AB</div></div>",
+            ".section { color: #ff0000 } .rh { position: running(rh) }");
+
+        Assert.Contains(ctx.RunningElementStylesFirst!["rh"], kv => kv.Key == "color");
+    }
+
+    [Fact]
+    public async Task Collect_captures_inherited_ancestor_font_size_for_a_running_element()
+    {
+        // Review P2: font-size is inherited too — an ancestor's font-size reaches the running element's
+        // own-style.
+        var ctx = await CollectAsync(
+            "<div class='section'><div class='rh'>AB</div></div>",
+            ".section { font-size: 24px } .rh { position: running(rh) }");
+
+        Assert.Contains(ctx.RunningElementStylesFirst!["rh"], kv => kv.Key == "font-size");
     }
 }

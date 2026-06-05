@@ -181,6 +181,20 @@ internal static class PageMarginBoxPainter
             var currentColor = FragmentPainter.TryResolveColor(style.Get(PropertyId.Color), DefaultColorArgb, out var fg)
                 ? fg : DefaultColorArgb;
 
+            // element() FIRST-CUT OWN-STYLE (Task 23): when the box's content is a STANDALONE element(name),
+            // shape the text in the RUNNING ELEMENT's own font/color (built from its captured winning
+            // values), not the box's — so a styled running header (e.g. a colored / larger heading) renders
+            // in its own style. The box's DECORATION (background / border / padding) + alignment + white-space
+            // stay the box's; only the content's font + colour come from the element. Mixed / non-element()
+            // content keeps the box style. Relative units / `inherit` in the element's style resolve against
+            // the page context (a documented approximation — exact for the common absolute font-size/colour).
+            var contentStyle = style;
+            if (CssContentList.TryGetStandaloneElement(mb.ContentRawValue, out var elName, out var elFirst)
+                && TryBuildRunningElementStyle(marginContext, elName, elFirst, pageContextStyle, styleDiagnostics) is { } elStyle)
+            {
+                contentStyle = elStyle;
+            }
+
             // CONTENT alignment WITHIN the box: a text-align / vertical-align DECLARED ON THE BOX aligns
             // the line inside the box's content area (read from the box's OWN declarations so the
             // page/root's UA-default text-align can't leak in); it falls back to the name-derived
@@ -200,7 +214,7 @@ internal static class PageMarginBoxPainter
             // Lay out the content line FIRST — its size drives the §5.3 shrink-to-fit box below. An
             // empty `content: ""` box (CSS Page 3 §6.1: content not none/normal) or one whose font won't
             // resolve has no content size, so it keeps the FULL band.
-            var lineHeightPx = style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16) * NormalLineHeightFactor;
+            var lineHeightPx = contentStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16) * NormalLineHeightFactor;
             // The box's computed white-space decides whether its content can WRAP: only Normal / PreWrap /
             // PreLine / BreakSpaces wrap, so only they can flex narrower than the single-line width and
             // re-wrap to fit. A `nowrap` / `pre` box is rigid (min-content == max-content) → it takes the
@@ -216,7 +230,7 @@ internal static class PageMarginBoxPainter
                 try
                 {
                     var laid = InlineLayouter.Layout(
-                        sourceTextRuns: new[] { new TextRun(text, style) },
+                        sourceTextRuns: new[] { new TextRun(text, contentStyle) },
                         availableInlineSize: availableInlinePx, resolver: shaper,
                         scriptIso15924: "Latn", language: "en",
                         paragraphDirection: ParagraphDirection.LeftToRight, whiteSpace: WhiteSpace.NoWrap);
@@ -270,7 +284,7 @@ internal static class PageMarginBoxPainter
                 ? boxWidthPx : boxHeightPx;
             if (region.VariableAxis == PageMarginBoxGeometry.MarginBoxAxis.Horizontal && hasLine && canWrap
                 && TryReadExplicitSizePx(style, PropertyId.Width, region.Width) is null
-                && TryMeasureMinContentWidthPx(text, style, shaper, boxWhiteSpace, out var minContentWidthPx))
+                && TryMeasureMinContentWidthPx(text, contentStyle, shaper, boxWhiteSpace, out var minContentWidthPx))
             {
                 minVarSizePx = Math.Min(region.Width, minContentWidthPx + insetLeftPx + insetRightPx);
             }
@@ -284,8 +298,8 @@ internal static class PageMarginBoxPainter
 
             items.Add(new MarginBoxItem
             {
-                Region = region, Style = style, CurrentColorArgb = currentColor, Inline = inline,
-                HasLine = hasLine, Text = text, MinVarSizePx = minVarSizePx,
+                Region = region, Style = style, ContentStyle = contentStyle, CurrentColorArgb = currentColor,
+                Inline = inline, HasLine = hasLine, Text = text, MinVarSizePx = minVarSizePx,
                 WhiteSpace = boxWhiteSpace, CanWrap = canWrap,
                 InsetLeftPx = insetLeftPx, InsetTopPx = insetTopPx,
                 InsetRightPx = insetRightPx, InsetBottomPx = insetBottomPx, HAlign = hAlign,
@@ -315,7 +329,7 @@ internal static class PageMarginBoxPainter
             // Re-wrap when the assigned content box is narrower than the content's WIDEST line (NOT line 0
             // — a mandatory break can put a wider line later), wrapping with the box's own white-space.
             if (contentWidthPx > 0 && contentWidthPx < WidestLineAdvancePx(item.Inline) - 0.5
-                && TryLayoutContent(item.Text, item.Style, shaper, contentWidthPx, item.WhiteSpace, out var wrapped))
+                && TryLayoutContent(item.Text, item.ContentStyle, shaper, contentWidthPx, item.WhiteSpace, out var wrapped))
             {
                 item.Inline = wrapped;
             }
@@ -382,7 +396,13 @@ internal static class PageMarginBoxPainter
                 InlineSize: contentBoxWidthPx,
                 BlockSize: blockHeightPx,
                 InlineLayout: inline,
-                LineAlignFactor: hAlign));
+                LineAlignFactor: hAlign,
+                // The TEXT line metrics (line-height / pitch / baseline) follow the CONTENT style, not the
+                // box style (post-PR-#151 review P1): a standalone element() shapes glyphs at the running
+                // element's font-size, so the pitch must match (else a 32px header overlaps at 16px pitch).
+                // For non-element content ContentStyle == Style, so this is byte-identical there. The box
+                // style still drives the border/padding origin + decoration in TextPainter/FragmentPainter.
+                TextMetricsStyle: item.ContentStyle));
         }
 
         // The page-context style is only a parent — each box copied the slots it needs — so return
@@ -501,13 +521,33 @@ internal static class PageMarginBoxPainter
         };
     }
 
+    /// <summary>Build the running element's OWN-STYLE <see cref="ComputedStyle"/> for a standalone
+    /// element() (Task 23 first cut): its captured winning font/color longhands cascaded over the page
+    /// context via <see cref="MarginBoxStyle.Build"/>. <paramref name="first"/> selects the first vs last
+    /// occurrence's style (matching the resolved text). Returns <see langword="null"/> when the name has no
+    /// captured style — the caller then keeps the box's own style. The result is box-owned (not pooled),
+    /// like the per-box style.</summary>
+    private static ComputedStyle? TryBuildRunningElementStyle(
+        CssContentList.MarginContentContext marginContext, string name, bool first,
+        ComputedStyle pageContextStyle, ICssDiagnosticsSink diagnostics)
+    {
+        var dict = first ? marginContext.RunningElementStylesFirst : marginContext.RunningElementStyles;
+        if (dict is null || !dict.TryGetValue(name, out var pairs) || pairs.Count == 0) return null;
+        var builder = ImmutableArray.CreateBuilder<CssDeclaration>(pairs.Count);
+        foreach (var kv in pairs)
+            builder.Add(new CssDeclaration(kv.Key, new CssValue(kv.Value), false, CssSourceLocation.Unknown));
+        return MarginBoxStyle.Build(builder.ToImmutable(), pageContextStyle, diagnostics);
+    }
+
     /// <summary>Per-box state computed in PASS 1 (style + content layout + DESIRED box rect), carried to
     /// PASS 2 so the §5.3 distribution can adjust the box rect for overlapping siblings in between. The
     /// box rect (<see cref="BoxXPx"/> … <see cref="BoxHeightPx"/>) is mutable for that adjustment.</summary>
     private sealed class MarginBoxItem
     {
         public PageMarginBoxGeometry.MarginBoxRegion Region;
-        public ComputedStyle Style = null!;
+        public ComputedStyle Style = null!;        // the BOX style — decoration (bg/border/padding) + insets.
+        public ComputedStyle ContentStyle = null!; // the CONTENT style — usually == Style, but the running
+                                                   // element's own font/colour for a standalone element().
         public uint CurrentColorArgb;
         public InlineLayoutResult Inline;
         public bool HasLine;

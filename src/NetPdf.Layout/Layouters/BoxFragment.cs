@@ -1,6 +1,7 @@
 // Copyright 2026 Roland Aroche and NetPdf contributors.
 // Licensed under the Apache License, Version 2.0. See LICENSE in the repository root.
 
+using NetPdf.Css.ComputedValues;
 using NetPdf.Layout.Boxes;
 using NetPdf.Layout.Inline;
 
@@ -119,6 +120,14 @@ namespace NetPdf.Layout.Layouters;
 /// (the body inline path, which doesn't yet apply <c>text-align</c>) byte-identical; only the page-margin
 /// box sets it (to its resolved alignment). A single-line run's offset reduces to the block-level
 /// alignment the caller would otherwise have pre-applied, so single-line output is unchanged.</param>
+/// <param name="TextMetricsStyle">Per Phase 3 Task 23 (post-PR-#151 review P1) — an OPT-IN
+/// <see cref="ComputedStyle"/> the painter uses for the TEXT line metrics (line-height / baseline /
+/// line pitch) instead of <see cref="Box"/>'s style, while <see cref="Box"/>'s style still drives the
+/// border/padding origin + decoration. <see langword="null"/> (the default) → the painter uses the box
+/// style for both, so every other fragment is byte-identical. The page-margin box sets it to the CONTENT
+/// style when a standalone <c>element(name)</c> renders the running element in its OWN font: the glyphs
+/// are shaped at the element's font-size, so the line pitch + baseline must use that size too — otherwise
+/// a 32px running header would paint 32px glyphs at the box's default 16px pitch and overlap.</param>
 internal readonly record struct BoxFragment(
     Box Box,
     double InlineOffset,
@@ -126,4 +135,5 @@ internal readonly record struct BoxFragment(
     double InlineSize,
     double BlockSize,
     InlineLayoutResult? InlineLayout = null,
-    double LineAlignFactor = 0.0);
+    double LineAlignFactor = 0.0,
+    ComputedStyle? TextMetricsStyle = null);

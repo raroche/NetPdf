@@ -99,7 +99,11 @@ internal static class CssContentList
         IReadOnlyDictionary<string, string>? NamedStrings,
         IReadOnlyDictionary<string, string>? RunningElements,
         IReadOnlyDictionary<string, string>? NamedStringsFirst = null,
-        IReadOnlyDictionary<string, string>? RunningElementsFirst = null);
+        IReadOnlyDictionary<string, string>? RunningElementsFirst = null,
+        // element()'s first-cut OWN-STYLE rendering (Task 23): the running element's winning font/color
+        // (property, value) pairs, by name — first occurrence + last, mirroring the text dictionaries.
+        IReadOnlyDictionary<string, IReadOnlyList<KeyValuePair<string, string>>>? RunningElementStyles = null,
+        IReadOnlyDictionary<string, IReadOnlyList<KeyValuePair<string, string>>>? RunningElementStylesFirst = null);
 
     /// <summary>Sink-less convenience overload — see the four-argument form
     /// for the diagnostic-emitting path. Returns <see langword="true"/> + the
@@ -589,6 +593,30 @@ internal static class CssContentList
 
         if (i >= span.Length || span[i] != ')') return false;
         i++; // consume ')'
+        return true;
+    }
+
+    /// <summary>When <paramref name="raw"/> is a STANDALONE <c>element(&lt;name&gt; [, first | last])</c>
+    /// content value (the GCPM form — no other tokens), returns its <paramref name="name"/> +
+    /// <paramref name="first"/> (the first occurrence is selected: <c>first</c> / no keyword) so the
+    /// page-margin painter can render the running element in its OWN style (Task 23 — first cut). Returns
+    /// <see langword="false"/> for empty input, a position keyword that bails (<c>start</c> /
+    /// <c>first-except</c>), or any MIXED / non-element() content (where the box's own style is used).</summary>
+    public static bool TryGetStandaloneElement(string raw, out string name, out bool first)
+    {
+        name = string.Empty;
+        first = true;
+        if (string.IsNullOrWhiteSpace(raw)) return false;
+        var span = raw.AsSpan().Trim();
+        if (!StartsWithCaseInsensitive(span, 0, "element(")) return false;
+        var i = "element(".Length;
+        if (!TryReadPositionedFunction(span, ref i, out name, out first)) return false;
+        // STANDALONE — only whitespace may follow the close-paren (a mixed list keeps the box's style).
+        while (i < span.Length)
+        {
+            if (!IsCssWhitespace(span[i])) return false;
+            i++;
+        }
         return true;
     }
 

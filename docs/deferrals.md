@@ -3089,8 +3089,16 @@ flags the categories):
          (Task 23): `element(name, first)` AND the no-keyword DEFAULT → the first occurrence (GCPM §7.4),
          `element(name, last)` → the exit value (`MarginContentContext.RunningElementsFirst`; the shared
          `TryReadPositionedFunction` parses both `string()` + `element()`); `start` / `first-except` bail.
-         STILL deferred for `element()`: the element's own block box / styling (FULL block rendering — needs a
-         `ComputedStyle` threaded through the string-based content model); (d) the `string(name, first |
+         A STANDALONE `element(name)` now renders the text in the running element's OWN font + color (Task 23
+         first cut of FULL block rendering): `MarginContentCollector.CaptureOwnStyle` captures its winning
+         font/color longhands (first + last occurrence, into `MarginContentContext.RunningElementStyles`);
+         `PageMarginBoxPainter` detects standalone `element()` (`CssContentList.TryGetStandaloneElement`) +
+         builds a CONTENT `ComputedStyle` (`MarginBoxStyle.Build`, parent = the page context) for shaping +
+         line height, while the box's DECORATION (bg/border/padding) + alignment + white-space stay the box's.
+         STILL deferred for `element()`: the element's full BLOCK box (its background/border/nested block
+         layout — text-only first cut); relative units / `inherit` in the element's style resolve against the
+         page context (an approximation — exact for absolute font-size/color); a MIXED list (`"x" element(rh)`)
+         keeps the box style (GCPM: element() is standalone); (d) the `string(name, first |
          last)` position keyword is DONE (Task 21):
          `MarginContentCollector` keeps both the FIRST and LAST assignment per name (`MarginContentContext`
          gained `NamedStringsFirst`); `string(name, first)` AND the no-keyword DEFAULT → the first

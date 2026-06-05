@@ -182,11 +182,16 @@ internal static class TextPainter
 
         // line-height: mirror BlockLayouter's inline-only block rule EXACTLY (declared
         // line-height when > 0, else 1.2 × the block's font-size) so painted lines stack at
-        // the same pitch the layouter reserved.
-        var lineHeightOverridePx = blockStyle.ReadLengthPxOrZero(PropertyId.LineHeight);
+        // the same pitch the layouter reserved. The line METRICS follow the fragment's
+        // TextMetricsStyle when set (post-PR-#151 review P1 — a page-margin box rendering a
+        // standalone element() in the running element's own font shapes glyphs at THAT
+        // font-size, so the pitch/baseline must match it, not the box's default), falling back
+        // to the box style so every other fragment is byte-identical.
+        var metricsStyle = fragment.TextMetricsStyle ?? blockStyle;
+        var lineHeightOverridePx = metricsStyle.ReadLengthPxOrZero(PropertyId.LineHeight);
         var lineHeightPx = lineHeightOverridePx > 0
             ? lineHeightOverridePx
-            : blockStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16) * NormalLineHeightFactor;
+            : metricsStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16) * NormalLineHeightFactor;
 
         var lines = inline.Lines;
         var shapedRuns = inline.ShapedRuns;

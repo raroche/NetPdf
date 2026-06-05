@@ -196,7 +196,12 @@ internal static class TextPainter
         {
             var line = lines[li];
             var lineTopPx = contentTopPx + (li * lineHeightPx);
-            var xCursorPx = 0.0;
+            // Per-line inline alignment (wrapped-line content-alignment, Task 21): shift each line by its
+            // own leftover × the fragment's align factor (0 = start; default, so non-margin fragments are
+            // unchanged). Clamped to ≥ 0 so a line wider than the content box still starts at the left edge.
+            var xCursorPx = fragment.LineAlignFactor != 0.0
+                ? Math.Max(0.0, (fragment.InlineSize - line.TotalAdvance) * fragment.LineAlignFactor)
+                : 0.0;
 
             foreach (var slice in line.Slices)
             {

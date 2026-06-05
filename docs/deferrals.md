@@ -3066,13 +3066,16 @@ flags the categories):
          pulls the named string and `content: element(name)` pulls the running element's text (an undefined
          name → the empty string). `BoxBuilder` SKIPS a `position: running()` element from the body box
          tree (detected from the raw `position` value before the keyword resolver, so no spurious
-         invalid-value diagnostic). STILL DEFERRED: (a) **cross-page "running" persistence** — the value
-         carried to later pages until re-set (needs the multi-page driver); (b) **`string-set: … content()`**
-         — AngleSharp.Css DROPS the `content()` function from `string-set` (an unknown property + unknown
-         function value), so only literal-string + `attr()` content-lists are collected; supporting
-         `content()` (the common running-header form) needs a raw-CSS pre-pass that recovers the declared
-         value + matches selectors (the same pattern `@page` descriptors use); (c) **`element(name)` renders
-         the running element's TEXT** with the margin box's own style — the element's own block box /
+         invalid-value diagnostic). STATUS: (a) **cross-page "running" persistence** DEFERRED — the value
+         carried to later pages until re-set (needs the multi-page driver); (b) **`string-set: … content()`
+         — DONE (Task 22 follow-up):** AngleSharp.Css DROPS the `content()` function from `string-set` (an
+         unknown function in the unknown `string-set` property); `CssPreprocessor`'s recovery (gated to
+         `string-set` + a `content()` value) re-injects the dropped declaration into the cascade, where
+         `MarginContentCollector` reads it and `CssContentList.TryParseStringSet` resolves `content()` to the
+         element's own text (bare `content()` / `content(text)`; the typographic targets
+         `content(before|after|first-letter|marker)` stay deferred). The cascade's own selector matching
+         associates the rule with the elements — no separate raw-CSS pre-pass needed; (c) **`element(name)`
+         renders the running element's TEXT** with the margin box's own style — the element's own block box /
          styling is a follow-up; (d) the `string(name, first|last)` position keyword. Other deferrals:
          `border-radius` + background images. The per-box / page-context `ComputedStyle.Rent()` is
          box-owned (not returned to the pool) — a negligible per-render miss.
@@ -3102,8 +3105,10 @@ flags the categories):
          run). A NO-OP when they don't overlap, and RIGID content (min == max) always takes the clamp path,
          so single boxes + the common short-content case stay byte-identical to the cycle-14/15 model. A
          HORIZONTAL box the distribution shrank below its single-line width then RE-WRAPS its content
-         (`TryLayoutContent`, `WhiteSpace.Normal`) to the assigned width (multi-line) so it FITS.
-         STILL DEFERRED: the content-alignment of wrapped lines (left-aligned within the box), vertical-edge
+         (honouring the box's computed `white-space`) to the assigned width (multi-line) so it FITS, and each
+         wrapped line is ALIGNED PER LINE by the box's alignment (Task 21 — `BoxFragment.LineAlignFactor`,
+         applied by `TextPainter`; default 0 keeps body fragments byte-identical, single-line margin content
+         too). STILL DEFERRED: vertical-edge
          (left/right) HEIGHT overflow + height flex (the flex/re-wrap is horizontal-axis only), `box-sizing`
          (explicit size is content-box only), font-/viewport-relative + `calc()` `width`/`height`
          (diagnosed + dropped → shrink-to-fit), and the inherent overflow of content narrower than its

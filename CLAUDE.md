@@ -243,15 +243,21 @@ the body box tree (detected from the raw value before the keyword resolver → n
 DEFERRED: cross-page "running" persistence (multi-page driver); `string-set: … content()` (AngleSharp
 drops the content() function → needs a raw-CSS pre-pass like @page descriptors); `element()` renders the
 running element's TEXT only (its block box deferred). **Task 21 — §5.3 min/max-content FLEX + overflow
-WRAPPING (two tasks, one PR, in progress, branch `phase-3-task-21-margin-box-flex-overflow`):** overlapping
-sibling margin boxes whose content can WRAP are now resolved by a min/max-content flex (each gets
-`min + (max−min)×factor`, tiled) instead of the cycle-16 clamp; rigid content (min == max) still takes the
-clamp path, so cycles 14–16 stay byte-identical. The painter measures min-content per horizontal auto box
-(`TryMeasureMinContentWidthPx`), threads min+max into `ResolveEdgeOverlap`, then RE-WRAPS a shrunk box's
-content to its assigned width (multi-line, `TextPainter` already renders it). DEFERRED: wrapped-line
-content-alignment, vertical-edge HEIGHT overflow/flex (horizontal-axis only), `box-sizing`, content
-narrower than its longest unbreakable word. Next (in order): `string-set: content()` (raw-CSS pre-pass) +
-`element()` full block rendering / wrapped-line content-alignment + vertical-edge overflow / cross-page
+WRAPPING (merged in PR #147, incl. its review):** overlapping sibling margin boxes whose content can WRAP are
+resolved by a §5.3.2 min/max-content flex; the post-PR-#147 review keeps the CENTER box CENTERED (flexed
+against an imaginary `2 × max(A, C)` box via a new `FlexPair`, sides sized in the gaps — no more tiling),
+distributes a no-centre min-overflow PROPORTIONALLY to min-content, vertically centres a re-wrapped block by
+its full block height, and uses the WIDEST line + the box's computed `white-space` for the re-wrap.
+**Tasks 22–23 follow-up — `string-set: content()` + wrapped-line alignment (in progress, branch
+`phase-3-task-22-string-set-content-wrapped-align`):** `string-set: name content()` (the canonical running
+header) now works — AngleSharp drops it, so `CssPreprocessor`'s recovery (gated to `string-set` + a
+`content()` value) re-injects it into the cascade and `CssContentList.TryParseStringSet` resolves `content()`
+to the element's text (NO separate pre-pass — the cascade matches selectors); and a margin box's RE-WRAPPED
+lines are aligned PER LINE by the box's alignment (opt-in `BoxFragment.LineAlignFactor`, applied by
+`TextPainter`; default 0 → body + single-line margin content byte-identical). DEFERRED:
+`content(before|after|first-letter|marker)`, `string(name, first|last)`, `element()` full block rendering,
+vertical-edge HEIGHT overflow, `box-sizing`, the body's own `text-align` line-positioning. Next (in order):
+`element()` full block rendering / vertical-edge (height) overflow / cross-page
 running + `@page :left`/`:right`/`:blank` + named pages (all multi-page-gated), then Task 24
 (`counter(page)` — mostly done cycle 9). Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES

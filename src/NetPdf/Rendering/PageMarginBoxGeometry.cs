@@ -25,8 +25,8 @@ namespace NetPdf.Rendering;
 /// <see cref="ResolveEdgeOverlap"/> resolves them per §5.3.2: the center box B is kept CENTERED (flexed
 /// against an imaginary 2x-max(A, C) box) with A/C sized into the side gaps; with no center box the two
 /// sides flex (interpolate min-to-max, or proportional to min-content when the mins don't fit). The painter
-/// then RE-WRAPS a flexed/shrunk box's content to its assigned width (multi-line) so it fits. Corner boxes +
-/// empty boxes keep the full band. STILL DEFERRED: the content-alignment of wrapped lines, vertical-edge
+/// then RE-WRAPS a flexed/shrunk box's content to its assigned width (multi-line, aligned per line) so it
+/// fits. Corner boxes + empty boxes keep the full band. STILL DEFERRED: vertical-edge
 /// (height) overflow, and `box-sizing` — content narrower than its longest unbreakable word still
 /// overflows that word (deferrals.md#layout-to-pdf-pipeline).
 /// </para>

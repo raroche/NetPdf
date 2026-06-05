@@ -720,6 +720,14 @@ internal static class CssPreprocessor
                 ? ContainsModernValueFunction(rawValue)
                   || ContainsMultiArgAttr(rawValue)
                   || isKnownDropped
+                  // Per Phase 3 Task 22 (the content() form) — AngleSharp.Css DROPS a
+                  // `string-set: name content()` declaration (content() is an unknown function in the
+                  // unknown `string-set` property), so the canonical running-header form
+                  // `h1 { string-set: title content() }` never reaches the cascade. Recover it here so
+                  // MarginContentCollector sees it + resolves content() to the element's text. (Gated to
+                  // string-set + content() so the attr()/literal forms AngleSharp already keeps aren't
+                  // duplicate-recovered.)
+                  || (lowerName == "string-set" && ContainsContentFunction(rawValue))
                 : !string.IsNullOrEmpty(rawValue);
             if (include)
             {
@@ -1106,6 +1114,33 @@ internal static class CssPreprocessor
                 {
                     if (ModernValueFunctions.Contains(ident.ToString())) return true;
                     // Skip the function args; ReadParenthesizedBlock handles balance.
+                    tok.ReadParenthesizedBlock();
+                }
+                continue;
+            }
+            tok.ReadChar();
+        }
+        return false;
+    }
+
+    /// <summary>Per Phase 3 Task 22 — <see langword="true"/> when <paramref name="value"/> contains a
+    /// <c>content(</c> function call (the GCPM <c>string-set: name content()</c> value AngleSharp.Css
+    /// drops). Tokenized so a <c>content(</c> inside a quoted string isn't matched.</summary>
+    private static bool ContainsContentFunction(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return false;
+        var tok = new CssTokenizer(value.AsSpan(), null);
+        while (!tok.IsEnd)
+        {
+            var c = tok.PeekChar();
+            if (c == '\'' || c == '"') { tok.SkipString(); continue; }
+            if (c == '/' && tok.PeekCharAt(1) == '*') { tok.SkipWhitespaceAndComments(); continue; }
+            if (IsIdentifierStart(c))
+            {
+                var ident = tok.ReadIdentifier();
+                if (tok.PeekChar() == '(')
+                {
+                    if (ident.Equals("content", StringComparison.OrdinalIgnoreCase)) return true;
                     tok.ReadParenthesizedBlock();
                 }
                 continue;

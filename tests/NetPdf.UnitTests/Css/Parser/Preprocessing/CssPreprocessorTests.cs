@@ -356,6 +356,27 @@ public sealed class CssPreprocessorTests
     }
 
     [Fact]
+    public void ScanForModernDeclarations_recovers_a_dropped_string_set_content()
+    {
+        // Phase 3 Task 22 (the content() form): AngleSharp.Css drops `string-set: name content()`
+        // (content() — an unknown function in the unknown string-set property). The recovery re-adds the
+        // declaration verbatim so the cascade + MarginContentCollector see it and resolve content().
+        var rec = Assert.Single(CssPreprocessor.ScanForModernDeclarations("string-set: title content()"));
+        Assert.Equal("string-set", rec.Property);
+        Assert.Contains("content()", rec.RawValueText);
+        Assert.False(rec.IsImportant);
+    }
+
+    [Fact]
+    public void ScanForModernDeclarations_does_not_recover_a_string_set_without_content()
+    {
+        // The attr()/literal forms AngleSharp already keeps must NOT be duplicate-recovered — the trigger
+        // is gated to string-set + content().
+        Assert.Empty(CssPreprocessor.ScanForModernDeclarations("string-set: title attr(data-t)"));
+        Assert.Empty(CssPreprocessor.ScanForModernDeclarations("string-set: title \"literal\""));
+    }
+
+    [Fact]
     public void Process_modern_function_inside_string_does_not_emit_recovery()
     {
         // Function-name match must be token-aware: "oklch(" inside a string is not a function call.

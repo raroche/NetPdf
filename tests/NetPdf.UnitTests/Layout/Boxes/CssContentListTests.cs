@@ -260,4 +260,56 @@ public sealed class CssContentListTests
         // only valid in page-margin boxes), so the parse fails (the pseudo generates no box).
         Assert.False(CssContentList.TryParse("string(t)", host, out _));
     }
+
+    // ---- content() in string-set (Task 22 — the content() form) ----
+
+    [Theory]
+    [InlineData("content()")]        // bare form → the element's text
+    [InlineData("content(text)")]    // explicit text target → the element's text
+    public async Task StringSet_content_function_resolves_the_host_text(string raw)
+    {
+        var host = await MakeHost("<h1 id='h'>Chapter One</h1>", "h");
+        Assert.True(CssContentList.TryParseStringSet(raw, host, out var result));
+        Assert.Equal("Chapter One", result);
+    }
+
+    [Fact]
+    public async Task StringSet_content_mixed_with_a_literal_concatenates()
+    {
+        var host = await MakeHost("<h1 id='h'>One</h1>", "h");
+        Assert.True(CssContentList.TryParseStringSet("\"Ch. \" content()", host, out var result));
+        Assert.Equal("Ch. One", result);
+    }
+
+    [Fact]
+    public async Task StringSet_content_collapses_source_whitespace_per_gcpm()
+    {
+        // CSS GCPM §3.1: content() takes the element string as if white-space: normal — so a formatted,
+        // INDENTED heading with a NESTED element collapses to single-spaced text (no leading/trailing
+        // whitespace, no embedded newlines/indentation, runs of spaces → one). Else the raw source
+        // indentation would leak into the running header.
+        var host = await MakeHost("<h1 id='h'>\n  Chapter   <span>One</span>\n</h1>", "h");
+        Assert.True(CssContentList.TryParseStringSet("content()", host, out var result));
+        Assert.Equal("Chapter One", result);
+    }
+
+    [Fact]
+    public async Task Content_function_is_unsupported_outside_a_string_set()
+    {
+        var host = await MakeHost("<h1 id='h'>One</h1>", "h");
+        // content() is a GCPM string-set value only — the regular (margin-box / pseudo) content path must
+        // NOT resolve it, so the parse fails there (it stays a tracked unsupported token).
+        Assert.False(CssContentList.TryParse("content()", host, out _));
+    }
+
+    [Theory]
+    [InlineData("content(before)")]      // typographic targets are deferred
+    [InlineData("content(after)")]
+    [InlineData("content(first-letter)")]
+    [InlineData("content(text, more)")]  // a second argument is malformed for the first cut
+    public async Task StringSet_content_with_an_unsupported_target_is_rejected(string raw)
+    {
+        var host = await MakeHost("<h1 id='h'>One</h1>", "h");
+        Assert.False(CssContentList.TryParseStringSet(raw, host, out _));
+    }
 }

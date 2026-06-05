@@ -26,11 +26,12 @@ namespace NetPdf.Layout.Boxes;
 /// <para>
 /// <b>First-cut scope (single page).</b> The CSS GCPM L3 cross-page "running" semantics (a named string
 /// / running element persists onto later pages until re-set) need the multi-page driver and are
-/// deferred. A <c>string-set</c> pair resolves a bare <c>content()</c> (the element's text), <c>attr()</c>,
-/// and literal strings (via <see cref="CssContentList"/>); <c>content()</c> mixed with other tokens, and
-/// <c>string-set: … content()</c> recovery when AngleSharp drops it, are documented follow-ups.
-/// <c>element(name)</c> pulls the running element's TEXT (its own block box / styling is deferred —
-/// deferrals.md).
+/// deferred. A <c>string-set</c> pair resolves literal strings + <c>attr()</c> (via
+/// <see cref="CssContentList"/>). <c>content()</c> (the element's text — the common running-header form)
+/// is NOT supported end-to-end: AngleSharp.Css DROPS a <c>string-set</c> whose value contains
+/// <c>content()</c> (an unknown function in an unknown property) before it reaches this collector, so
+/// recovering it needs a raw-CSS pre-pass (a documented follow-up, deferrals.md). <c>element(name)</c>
+/// pulls the running element's TEXT (its own block box / styling is deferred — deferrals.md).
 /// </para>
 /// </remarks>
 internal static class MarginContentCollector
@@ -116,9 +117,9 @@ internal static class MarginContentCollector
 
     /// <summary>Resolve ONE <c>string-set</c> pair (<c>&lt;custom-ident&gt; &lt;content-list&gt;</c>):
     /// read + strictly validate the leading name (a CSS <c>&lt;custom-ident&gt;</c>), then resolve the
-    /// content-list. A bare <c>content()</c> → <paramref name="element"/>'s text; otherwise via
-    /// <see cref="CssContentList"/> (literal strings + <c>attr()</c>). Returns <see langword="false"/>
-    /// for an invalid name, a missing content-list, or an unresolvable one.</summary>
+    /// content-list via <see cref="CssContentList"/> (literal strings + <c>attr()</c>). A <c>content()</c>
+    /// form does NOT reach the collector — AngleSharp drops it (see the class remarks). Returns
+    /// <see langword="false"/> for an invalid name, a missing content-list, or an unresolvable one.</summary>
     private static bool TryResolveStringSetPair(string pair, IElement element, out string name, out string value)
     {
         name = string.Empty;
@@ -136,15 +137,12 @@ internal static class MarginContentCollector
         var rest = trimmed[i..].Trim();
         if (rest.Length == 0) return false;       // no content-list
 
-        // The common `string-set: name content()` form → the element's own text.
-        if (rest.Equals("content()", StringComparison.OrdinalIgnoreCase)
-            || rest.Equals("content(text)", StringComparison.OrdinalIgnoreCase))
-        {
-            value = element.TextContent ?? string.Empty;
-            return true;
-        }
-
-        // Otherwise resolve a literal-string / attr() content-list against the element.
+        // Resolve a literal-string / attr() content-list against the element (the attr() host). NOTE: the
+        // common `content()` form (the element's own text) does NOT reach here — AngleSharp.Css DROPS a
+        // string-set whose value contains content() (an unknown function in an unknown property) before
+        // collection, so string-set + content() needs a raw-CSS pre-pass (a documented follow-up,
+        // deferrals.md). CssContentList rejects a content() token, so such a (hypothetical) value fails
+        // cleanly rather than being half-resolved.
         return CssContentList.TryParse(rest, element, out value);
     }
 

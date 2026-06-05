@@ -1795,6 +1795,94 @@ public sealed class HtmlPdfConvertTests
             $"a flexed wrappable box should wrap to more lines than when alone: alone={alone} withCenter={withCenter}");
     }
 
+    [Fact]
+    public void Page_margin_box_center_box_stays_centered_beside_a_wide_wrappable_side()
+    {
+        // §5.3.2 / review P1 — the FLEX path must keep @top-center CENTERED. A wide WRAPPABLE @top-left
+        // (spaces = break points) overlaps and flexes narrower; @top-center's background centre must stay
+        // at the page centre. (The old flex tiled B right after A, sliding the page number off-centre.)
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-left { content:\"" + Words(40) + "\" } " +
+            "@top-center { content:\"AB\"; background-color: red } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        var r = FirstRect(pdf);   // only @top-center has a background
+        var pageCenterX = MediaBox(pdf).W / 2.0;
+        Assert.InRange(r.X + r.W / 2.0, pageCenterX - 1, pageCenterX + 1);
+    }
+
+    [Fact]
+    public void Page_margin_box_wrappable_side_does_not_overlap_the_center()
+    {
+        // §5.3.2 / review P1 — no side/centre overlap on the FLEX path: a wide wrappable @top-left + a
+        // centred @top-center, both with backgrounds → the left box ends at or before the centre begins,
+        // and the centre stays centred.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-left { content:\"" + Words(40) + "\"; background-color: red } " +
+            "@top-center { content:\"AB\"; background-color: lime } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        var rects = AllRects(pdf);
+        Assert.Equal(2, rects.Count);
+        rects.Sort((p, q) => p.X.CompareTo(q.X));
+        Assert.True(rects[0].X + rects[0].W <= rects[1].X + 0.5, $"side overlaps centre: {rects[0]} / {rects[1]}");
+        var pageCenterX = MediaBox(pdf).W / 2.0;
+        Assert.InRange(rects[1].X + rects[1].W / 2.0, pageCenterX - 1, pageCenterX + 1);
+    }
+
+    [Fact]
+    public void Page_margin_box_min_overflow_widths_are_proportional_to_content()
+    {
+        // §5.3.2 / review P2 end-to-end: two rigid side boxes (no centre) whose min-contents overflow the
+        // band share it PROPORTIONALLY to content — @top-left has twice @top-right's content, so its
+        // background is ~2× as wide, and they tile the band without overlap (not clamped or max-proportional).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { " +
+            "@top-left { content:\"" + new string('A', 60) + "\"; background-color: red } " +
+            "@top-right { content:\"" + new string('A', 30) + "\"; background-color: blue } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        var rects = AllRects(pdf);
+        Assert.Equal(2, rects.Count);
+        rects.Sort((p, q) => p.X.CompareTo(q.X));
+        Assert.True(rects[0].X + rects[0].W <= rects[1].X + 0.5, $"left overlaps right: {rects[0]} / {rects[1]}");
+        Assert.True(rects[0].W < MediaBox(pdf).W, "the wider box must not be clamped to the full band");
+        Assert.Equal(2.0, rects[0].W / rects[1].W, 1);   // left content 2× right → ~2× width (min-proportional)
+    }
+
+    [Fact]
+    public void Page_margin_box_wrapped_lines_stay_block_centered_in_the_band()
+    {
+        // review P2 — a re-wrapped multi-line header is positioned by its FULL block height, not as one
+        // line. So the wrapped block's vertical CENTRE coincides with where a single centred line sits
+        // (proving block, not single-line, centring — which would slide the block down out of the band).
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double[] TdYs(string content) => AllTdY(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"" + content + "\" } }</style>" +
+            "</head><body></body></html>", opts)));
+        var single = TdYs("AB");          // one centred line
+        var wrapped = TdYs(Words(200));   // long → wraps to several lines, filling the band width
+        Assert.True(wrapped.Length >= 2, $"expected the content to wrap to multiple lines: {wrapped.Length}");
+        double Max(double[] a) { var m = a[0]; foreach (var v in a) if (v > m) m = v; return m; }
+        double Min(double[] a) { var m = a[0]; foreach (var v in a) if (v < m) m = v; return m; }
+        var blockMid = (Max(wrapped) + Min(wrapped)) / 2.0;
+        Assert.InRange(blockMid, single[0] - 1.5, single[0] + 1.5);   // block centre == single-line centre
+    }
+
+    /// <summary>n space-separated "A" words ("A A A …") — wrappable synthetic content (the spaces are the
+    /// break opportunities; the synthetic font has no space glyph but spaces still break a line).</summary>
+    private static string Words(int n) => new string('A', n).Replace("A", "A ").TrimEnd();
+
+    /// <summary>The Y operand (pt) of every <c>Td</c> text-position operator, in content-stream order.</summary>
+    private static double[] AllTdY(string pdf)
+    {
+        var ys = new List<double>();
+        for (var i = pdf.IndexOf(" Td", StringComparison.Ordinal); i >= 0;
+             i = pdf.IndexOf(" Td", i + 3, StringComparison.Ordinal))
+        {
+            var nums = pdf[..i].TrimEnd().Split(' ');   // … <x> <y>
+            ys.Add(double.Parse(nums[^1], CultureInfo.InvariantCulture));
+        }
+        return ys.ToArray();
+    }
+
     // ---- string-set / string() (Task 22) + position: running() / element() (Task 23) ----
 
     [Fact]
@@ -2003,8 +2091,10 @@ public sealed class HtmlPdfConvertTests
             double.Parse(nums[^1], CultureInfo.InvariantCulture));
     }
 
-    /// <summary>Count of <c>Td</c> text-position operators — one per painted line, so more lines (e.g.
-    /// wrapped content) → a higher count.</summary>
+    /// <summary>Count of <c>Td</c> text-position operators. <c>TextPainter</c> emits one <c>Td</c> per
+    /// painted SLICE (per line, per run-slice), so a multi-run line can yield several — but for the
+    /// single-run synthetic-font content here it's effectively one per line, so more lines (e.g. wrapped
+    /// content) → a higher count (Copilot review).</summary>
     private static int TdCount(string pdf)
     {
         var n = 0;

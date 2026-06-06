@@ -333,14 +333,11 @@ internal sealed class Box
     // ============================================================
 
     /// <summary><see langword="true"/> when this box generates a block-level
-    /// outer display per Display L3 §2. Phase 3 BFC code dispatches on this.</summary>
-    public bool IsBlockLevel => Kind switch
-    {
-        BoxKind.Root or BoxKind.BlockContainer or BoxKind.ListItem
-            or BoxKind.AnonymousBlock or BoxKind.Table or BoxKind.FlexContainer
-            or BoxKind.GridContainer or BoxKind.BlockReplacedElement => true,
-        _ => false,
-    };
+    /// outer display per Display L3 §2. Phase 3 BFC code dispatches on this.
+    /// Delegates to <see cref="BoxKindFacts.IsBlockLevelOuter"/> — the single
+    /// source of truth shared with running-content classification (post-PR-#154
+    /// review P3).</summary>
+    public bool IsBlockLevel => BoxKindFacts.IsBlockLevelOuter(Kind);
 
     /// <summary><see langword="true"/> when this box participates in an inline
     /// formatting context per Inline L3 §2 (atomic or non-atomic).

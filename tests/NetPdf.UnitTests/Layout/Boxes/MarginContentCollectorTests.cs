@@ -254,4 +254,70 @@ public sealed class MarginContentCollectorTests
 
         Assert.Equal("Alpha\nBeta", ctx.RunningElementsFirst!["rh"]);
     }
+
+    [Fact]
+    public async Task Collect_caps_total_running_content_across_many_block_children()
+    {
+        // Review P1 / Copilot: the running-element content is bounded to MaxRunningTextChars (64 KiB) TOTAL,
+        // NOT per block child — a SINGLE budget is shared, so five 100 KiB block children can't store
+        // 5 × 64 KiB. (Before the fix each block read up to the cap independently and they were joined.)
+        var block = "<div>" + new string('x', 100_000) + "</div>";
+        var ctx = await CollectAsync(
+            "<div class='rh'>" + block + block + block + block + block + "</div>",
+            ".rh { position: running(rh) }");
+
+        Assert.True(ctx.RunningElementsFirst!["rh"].Length <= 64 * 1024,
+            $"expected ≤ 64 KiB TOTAL across the block children; got {ctx.RunningElementsFirst!["rh"].Length}");
+    }
+
+    // ---- display classification via the production DisplayMapper (review P3) ----
+
+    [Theory]
+    [InlineData("block")]
+    [InlineData("flex")]
+    [InlineData("grid")]
+    [InlineData("table")]
+    [InlineData("list-item")]
+    public async Task Collect_stacks_a_block_level_display_child(string display)
+    {
+        // Review P3: every BLOCK-level outer display (incl. flex/grid/table/list-item — set on a normally-
+        // inline <span>) forces a stacked line, via the production DisplayMapper + the shared
+        // BoxKindFacts.IsBlockLevelOuter (aligned with the box tree).
+        var ctx = await CollectAsync(
+            "<div class='rh'><span class='c'>AA</span><span class='c'>BB</span></div>",
+            ".rh { position: running(rh) } .c { display: " + display + " }");
+
+        Assert.Equal("AA\nBB", ctx.RunningElementsFirst!["rh"]);
+    }
+
+    [Theory]
+    [InlineData("inline")]
+    [InlineData("inline-block")]
+    [InlineData("inline-flex")]
+    [InlineData("inline-grid")]
+    [InlineData("inline-table")]
+    [InlineData("contents")]
+    [InlineData("ruby")]   // unsupported display → NOT defaulted to block (the pre-fix bug)
+    public async Task Collect_does_not_stack_a_non_block_level_child(string display)
+    {
+        // Review P3: an inline-level / contents / unsupported display child does NOT force a stacked line
+        // (no U+000A) — only block-level outers do. Fixes the old classifier that defaulted unknowns to block.
+        var ctx = await CollectAsync(
+            "<div class='rh'><span class='c'>AA</span><span class='c'>BB</span></div>",
+            ".rh { position: running(rh) } .c { display: " + display + " }");
+
+        Assert.DoesNotContain('\n', ctx.RunningElementsFirst!["rh"]);
+    }
+
+    [Fact]
+    public async Task Collect_excludes_a_display_none_child_from_running_content()
+    {
+        // Review P3: a `display: none` child generates no box — its text is NOT included in the running
+        // content (only the visible block child contributes).
+        var ctx = await CollectAsync(
+            "<div class='rh'><div>AA</div><div class='hidden'>SECRET</div></div>",
+            ".rh { position: running(rh) } .hidden { display: none }");
+
+        Assert.Equal("AA", ctx.RunningElementsFirst!["rh"]);
+    }
 }

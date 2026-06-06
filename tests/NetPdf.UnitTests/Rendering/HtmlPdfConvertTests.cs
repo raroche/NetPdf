@@ -2600,6 +2600,52 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Page_margin_box_element_long_block_child_wraps_in_a_narrow_box()
+    {
+        // Review P2: a LONG block child WRAPS within a narrow box (pre-line) while the authored block
+        // boundary still forces a break — so a 2-block element produces MORE lines in a narrow @top-center
+        // than a wide one (the long block re-wraps), not 2 rigid overflowing lines. (Before the fix,
+        // forced-break content used `pre` + skipped re-wrap, so the long block never wrapped.)
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        int Lines(string widthCss)
+        {
+            var pdf = Latin1(HtmlPdf.Convert(
+                "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } " +
+                "@page { @top-center { content: element(rh)" + widthCss + " } }</style></head>" +
+                "<body><div class=\"rh\"><div>AA AA AA AA AA AA AA AA</div><div>BB</div></div></body></html>", opts));
+            var n = 0;
+            for (var i = pdf.IndexOf(" Td", StringComparison.Ordinal); i >= 0; i = pdf.IndexOf(" Td", i + 3, StringComparison.Ordinal))
+                n++;
+            return n;
+        }
+        var wide = Lines("; width: 400px");
+        var narrow = Lines("; width: 60px");
+        Assert.True(wide >= 2, $"the two block children keep their authored break (≥ 2 lines); got {wide}");
+        Assert.True(narrow > wide, $"a long block child should wrap MORE in a narrower box; narrow {narrow} vs wide {wide}");
+    }
+
+    [Fact]
+    public void Page_margin_box_content_overflow_diagnostic_names_the_box_and_dimensions()
+    {
+        // Review P3: the overflow diagnostic is ACTIONABLE — its message names the box (@left-middle) + the
+        // measured content vs available height, rather than a generic once-per-render message.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); font-size: 2000px } " +
+            "@page { @left-middle { content: element(rh) } }</style>" +
+            "</head><body><div class=\"rh\">AB</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        var found = false;
+        foreach (var d in result.Warnings)
+        {
+            if (d.Code != DiagnosticCodes.PaintMarginBoxContentOverflow001) continue;
+            found = true;
+            Assert.Contains("left-middle", d.Message);     // names the box
+            Assert.Contains("px content", d.Message);      // includes the measured height
+        }
+        Assert.True(found, "expected a PAINT-MARGIN-BOX-CONTENT-OVERFLOW-001 diagnostic");
+    }
+
+    [Fact]
     public void Page_margin_box_running_element_is_removed_from_the_body_flow()
     {
         // A normal div renders in the body; with `position: running()` (and no element() reference) the

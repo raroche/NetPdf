@@ -715,7 +715,8 @@ internal static class DiagnosticCodes
     /// multi-line <c>element()</c> running header taller than its band. The content still PAINTS (it
     /// overflows the box) — content-box clipping / truncation is a tracked follow-up
     /// (<c>docs/deferrals.md#layout-to-pdf-pipeline</c>). Surfaced rather than letting the overflow pass
-    /// silently. Fires at most once per conversion.
+    /// silently. The message NAMES the box (e.g. <c>@left-middle</c>) + the measured content vs available
+    /// height; fired once PER overflowing box (so multiple overflowing headers/footers are each diagnosable).
     /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
     /// </summary>
     public const string PaintMarginBoxContentOverflow001 = "PAINT-MARGIN-BOX-CONTENT-OVERFLOW-001";

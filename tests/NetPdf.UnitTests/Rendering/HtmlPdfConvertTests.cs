@@ -2547,6 +2547,58 @@ public sealed class HtmlPdfConvertTests
         Assert.Equal(FirstRect(baseline).W, FirstRect(dropped).W, 1); // not grown
     }
 
+    // ---- element() nested BLOCK children (stacked lines) + vertical-edge height overflow ----
+
+    [Fact]
+    public void Page_margin_box_element_stacks_block_children_as_separate_lines()
+    {
+        // Task 23 nested BLOCK children first cut: a running element with two BLOCK children renders as TWO
+        // STACKED lines, not one concatenated line. On a vertical @left-middle box (variable axis = height)
+        // the shrink-to-fit band is ~1 line-height TALLER for two block children than for one flat line.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double BandH(string inner) => FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); background-color: red } " +
+            "@page { @left-middle { content: element(rh) } }</style>" +
+            "</head><body><div class=\"rh\">" + inner + "</div></body></html>", opts))).H;
+        var twoBlocks = BandH("<div>AB</div><div>AB</div>");
+        var oneLine = BandH("ABAB");
+        Assert.True(twoBlocks > oneLine + 10,
+            $"two block children should stack into a ~1-line-taller band; two-block {twoBlocks} vs one-line {oneLine}");
+    }
+
+    [Fact]
+    public void Page_margin_box_element_with_inline_only_children_stays_one_line()
+    {
+        // No block-level child (text + an inline <span>) → a single flat line (byte-identical to the
+        // pre-first-cut path): the @left-middle band is the SAME height as a plain single-line element.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double BandH(string inner) => FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); background-color: red } " +
+            "@page { @left-middle { content: element(rh) } }</style>" +
+            "</head><body><div class=\"rh\">" + inner + "</div></body></html>", opts))).H;
+        Assert.Equal(BandH("AB AB"), BandH("A<span>B</span> A<span>B</span>"), 1);   // inline children → one line
+    }
+
+    [Fact]
+    public void Page_margin_box_vertical_content_overflow_emits_a_diagnostic()
+    {
+        // Task 23 vertical-edge height-overflow first cut: a left/right edge box whose content is TALLER than
+        // its band surfaces PAINT-MARGIN-BOX-CONTENT-OVERFLOW-001 (the content still paints; clipping
+        // deferred). A 2000px running header far exceeds the @left-middle band; a 16px one does not.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var overflow = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); font-size: 2000px } " +
+            "@page { @left-middle { content: element(rh) } }</style>" +
+            "</head><body><div class=\"rh\">AB</div></body></html>", opts);
+        Assert.Contains(overflow.Warnings, d => d.Code == DiagnosticCodes.PaintMarginBoxContentOverflow001);
+
+        var fits = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); font-size: 16px } " +
+            "@page { @left-middle { content: element(rh) } }</style>" +
+            "</head><body><div class=\"rh\">AB</div></body></html>", opts);
+        Assert.DoesNotContain(fits.Warnings, d => d.Code == DiagnosticCodes.PaintMarginBoxContentOverflow001);
+    }
+
     [Fact]
     public void Page_margin_box_running_element_is_removed_from_the_body_flow()
     {

@@ -83,6 +83,7 @@ internal static class PageMarginBoxPainter
 {
     private const double NormalLineHeightFactor = 1.2; // mirrors TextPainter's line-height: normal.
     private const uint DefaultColorArgb = 0xFF000000;   // CSS initial `color` (opaque black) — currentColor fallback.
+    private const double OverflowEpsilonPx = 0.5;       // content-height overflow tolerance (sub-px rounding slack).
 
     /// <summary>A background band to fill behind a margin box: its page-px region rect (CSS-px,
     /// page-top origin) + the resolved packed 0xAARRGGBB color. Painted by
@@ -268,6 +269,13 @@ internal static class PageMarginBoxPainter
             var boxWhiteSpace = style.ReadInlineTextPolicy().WhiteSpace;
             var canWrap = boxWhiteSpace is WhiteSpace.Normal or WhiteSpace.PreWrap
                 or WhiteSpace.PreLine or WhiteSpace.BreakSpaces;
+            // A standalone element() whose running element has BLOCK-LEVEL children arrives as
+            // U+000A-separated lines (nested BLOCK children first cut — MarginContentCollector): lay it out
+            // as `white-space: pre` so each U+000A is a MANDATORY break (the painter stacks the lines via
+            // inline.Lines), not a collapsed space. A plain header / literal has no U+000A → the single-line
+            // `nowrap` path is byte-identical. Pre-formatted (forced-break) content does NOT re-wrap or
+            // min-content-flex (its breaks are authored) — gated out of those §5.3 paths below.
+            var hasForcedBreaks = !string.IsNullOrEmpty(text) && text.IndexOf('\n') >= 0;
             InlineLayoutResult inline = default;
             var hasLine = false;
             if (!string.IsNullOrEmpty(text))
@@ -278,7 +286,8 @@ internal static class PageMarginBoxPainter
                         sourceTextRuns: new[] { new TextRun(text, contentStyle) },
                         availableInlineSize: availableInlinePx, resolver: shaper,
                         scriptIso15924: "Latn", language: "en",
-                        paragraphDirection: ParagraphDirection.LeftToRight, whiteSpace: WhiteSpace.NoWrap);
+                        paragraphDirection: ParagraphDirection.LeftToRight,
+                        whiteSpace: hasForcedBreaks ? WhiteSpace.Pre : WhiteSpace.NoWrap);
                     if (laid.Lines.Length > 0) { inline = laid; hasLine = true; }
                 }
                 catch (FontResolutionException ex)
@@ -328,6 +337,7 @@ internal static class PageMarginBoxPainter
             var minVarSizePx = region.VariableAxis == PageMarginBoxGeometry.MarginBoxAxis.Horizontal
                 ? boxWidthPx : boxHeightPx;
             if (region.VariableAxis == PageMarginBoxGeometry.MarginBoxAxis.Horizontal && hasLine && canWrap
+                && !hasForcedBreaks   // authored block-child lines don't re-flow (nested BLOCK children first cut)
                 && TryReadExplicitSizePx(style, PropertyId.Width, region.Width) is null
                 && TryMeasureMinContentWidthPx(text, contentStyle, shaper, boxWhiteSpace, out var minContentWidthPx))
             {
@@ -346,7 +356,7 @@ internal static class PageMarginBoxPainter
                 Region = region, Style = style, ContentStyle = contentStyle,
                 BgCurrentColorArgb = bgCurrentColor, BorderCurrentColorArgb = borderCurrentColor,
                 Inline = inline, HasLine = hasLine, Text = text, MinVarSizePx = minVarSizePx,
-                WhiteSpace = boxWhiteSpace, CanWrap = canWrap,
+                WhiteSpace = boxWhiteSpace, CanWrap = canWrap, HasForcedBreaks = hasForcedBreaks,
                 InsetLeftPx = insetLeftPx, InsetTopPx = insetTopPx,
                 InsetRightPx = insetRightPx, InsetBottomPx = insetBottomPx, HAlign = hAlign,
                 VAlign = vAlign, LineHeightPx = lineHeightPx, BoxXPx = boxXPx, BoxYPx = boxYPx,
@@ -367,10 +377,10 @@ internal static class PageMarginBoxPainter
         // of wrapped lines + vertical-edge (height) overflow are documented follow-ups (deferrals.md).
         foreach (var item in items)
         {
-            if (!item.HasLine || !item.CanWrap
+            if (!item.HasLine || !item.CanWrap || item.HasForcedBreaks
                 || item.Region.VariableAxis != PageMarginBoxGeometry.MarginBoxAxis.Horizontal
                 || item.Inline.Lines.Length == 0)
-                continue;
+                continue;   // forced-break (nested-block) content keeps its authored lines — no re-wrap
             var contentWidthPx = item.BoxWidthPx - item.InsetLeftPx - item.InsetRightPx;
             // Re-wrap when the assigned content box is narrower than the content's WIDEST line (NOT line 0
             // — a mandatory break can put a wider line later), wrapping with the box's own white-space.
@@ -386,6 +396,7 @@ internal static class PageMarginBoxPainter
         var fragments = new List<BoxFragment>(items.Count);
         var backgrounds = new List<MarginBoxBackgroundFill>();
         var borders = new List<MarginBoxBorder>();
+        var contentOverflowReported = false;   // vertical-edge (height) overflow — diagnosed once per render.
         foreach (var item in items)
         {
             var style = item.Style;
@@ -432,6 +443,17 @@ internal static class PageMarginBoxPainter
             var blockHeightPx = lineHeightPx * inline.Lines.Length;
             var contentBoxWidthPx = Math.Max(0, boxWidthPx - insetLeftPx - insetRightPx);
             var contentBoxHeightPx = Math.Max(0, boxHeightPx - insetTopPx - insetBottomPx);
+            // Vertical-edge (height) OVERFLOW first cut (Task 23): when the content block-height exceeds the
+            // box's content-box height — the box was clamped to the page-margin band but its content is
+            // TALLER (the common case is a vertical left/right edge box at the band limit, or a multi-line
+            // element() running header) — surface it (CLAUDE.md #7, no silent overflow). The content still
+            // paints (it overflows the box); content-box clipping/truncation is a documented follow-up
+            // (deferrals.md). Diagnosed once per render.
+            if (!contentOverflowReported && blockHeightPx > contentBoxHeightPx + OverflowEpsilonPx)
+            {
+                EmitContentOverflow(diagnostics);
+                contentOverflowReported = true;
+            }
             // Vertical alignment uses the FULL wrapped block height (lineHeight × line count), not one line:
             // a re-wrapped multi-line header would otherwise be positioned as if it were a single line and
             // spill out of its band (review P2). The whole block is centered / top- / bottom-aligned in the
@@ -668,6 +690,7 @@ internal static class PageMarginBoxPainter
         public bool HasLine;
         public WhiteSpace WhiteSpace;           // the box's computed white-space (drives the re-wrap mode).
         public bool CanWrap;                    // white-space allows wrapping (Normal/PreWrap/PreLine/BreakSpaces).
+        public bool HasForcedBreaks;            // content has authored U+000A breaks (nested BLOCK children) — no re-wrap.
         public string Text = string.Empty;     // raw content text — re-laid-out (wrapped) if the box shrinks.
         public double MinVarSizePx;             // min-content border-box size along the VARIABLE axis (= the
                                                 // box's desired/max size for rigid/explicit/vertical boxes,
@@ -774,5 +797,15 @@ internal static class PageMarginBoxPainter
             "resolved during layout: " + DiagnosticTextSanitizer.Sanitize(detail) + " A bundled " +
             "deterministic last-resort font (so the default path always resolves) is a tracked " +
             "follow-up (deferrals.md#layout-to-pdf-pipeline).",
+            DiagnosticSeverity.Warning));
+
+    private static void EmitContentOverflow(IDiagnosticsSink diagnostics) =>
+        diagnostics.Emit(new Diagnostic(
+            DiagnosticCodes.PaintMarginBoxContentOverflow001,
+            "A page margin box's content is taller than its area: the box was clamped to the page-margin " +
+            "band but its content block-height exceeds the available height (the common case is a vertical " +
+            "left/right edge box at the band limit, or a multi-line element() running header). The content " +
+            "still paints — it overflows the box; content-box clipping / truncation is a tracked follow-up " +
+            "(deferrals.md#layout-to-pdf-pipeline).",
             DiagnosticSeverity.Warning));
 }

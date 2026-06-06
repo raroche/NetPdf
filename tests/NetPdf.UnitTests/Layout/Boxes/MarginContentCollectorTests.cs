@@ -214,4 +214,44 @@ public sealed class MarginContentCollectorTests
 
         Assert.Contains(ctx.RunningElementStylesFirst!["rh"], kv => kv.Key == "text-align" && kv.Value == "right");
     }
+
+    // ---- nested BLOCK children — stacked lines (Task 23 first cut) ----
+
+    [Fact]
+    public async Task Collect_stacks_a_running_elements_block_children_as_newline_separated_lines()
+    {
+        // Task 23 nested BLOCK children first cut: a running element with BLOCK-level children yields one
+        // U+000A-separated LINE per block child (the page-margin painter stacks them as `white-space: pre`),
+        // instead of concatenating their text onto one line ("AlphaBeta").
+        var ctx = await CollectAsync(
+            "<div class='rh'><div>Alpha</div><div>Beta</div></div>",
+            ".rh { position: running(rh) }");
+
+        Assert.Equal("Alpha\nBeta", ctx.RunningElementsFirst!["rh"]);
+    }
+
+    [Fact]
+    public async Task Collect_keeps_a_plain_inline_running_header_on_one_line()
+    {
+        // No block-level child (text + an inline <span>) → flat single-line text, NO U+000A — byte-identical
+        // to the pre-first-cut behavior (the painter keeps its single-line `nowrap` path).
+        var ctx = await CollectAsync(
+            "<div class='rh'>Alpha <span>Beta</span></div>",
+            ".rh { position: running(rh) }");
+
+        Assert.Equal("Alpha Beta", ctx.RunningElementsFirst!["rh"]);
+        Assert.DoesNotContain('\n', ctx.RunningElementsFirst!["rh"]);
+    }
+
+    [Fact]
+    public async Task Collect_drops_inter_block_whitespace_when_stacking_block_children()
+    {
+        // Indented real-world HTML has whitespace text nodes between the block children; those collapse away
+        // (not spurious blank stacked lines), so two indented block divs still yield exactly two lines.
+        var ctx = await CollectAsync(
+            "<div class='rh'>\n  <div>Alpha</div>\n  <div>Beta</div>\n</div>",
+            ".rh { position: running(rh) }");
+
+        Assert.Equal("Alpha\nBeta", ctx.RunningElementsFirst!["rh"]);
+    }
 }

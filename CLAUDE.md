@@ -297,9 +297,24 @@ nested BLOCK children (laid-out sub-boxes — still text-only), the box/element 
 overrides rather than nesting), RELATIVE UNITS (`%`/`em`/`calc()`) in the element's style resolve against the
 page context — approximation (CSS-wide `inherit`/`initial` now resolved), a
 non-absolute (`%`/`em`/`calc()`) element padding (diagnosed + dropped like the box's), vertical-edge HEIGHT
-overflow, `box-sizing`, the body's own `text-align` line-positioning. Next (in order): `element()` nested
-BLOCK children / vertical-edge (height) overflow / cross-page running + `@page :left`/`:right`/`:blank` +
-named pages (all multi-page-gated). Blocked (see `deferrals.md`):
+overflow, `box-sizing`, the body's own `text-align` line-positioning. **Task 23 — `element()` nested BLOCK
+children (stacked lines, first cut) + vertical-edge (height) overflow (in progress, branch
+`phase-3-task-23-element-nested-blocks-vedge-overflow`):** TWO `element()` increments, completing the
+running element's single-box presentation. **(A) nested BLOCK children** — a running element with
+BLOCK-level children (per computed `display`, UA tag default via `HtmlDefaultDisplay` included) now renders
+each block child's text on its OWN stacked line instead of concatenating: `MarginContentCollector.
+ReadRunningElementContent` joins the per-block GCPM-normalized lines with `U+000A` (inter-block whitespace
+dropped; inline runs between blocks coalesce), and `PageMarginBoxPainter` lays the content out as
+`white-space: pre` when a `U+000A` is present (honoring the mandatory breaks via the existing multi-line
+stacking) — a plain header has no `U+000A` → byte-identical single-line `nowrap` path. Forced-break content
+is gated OUT of the §5.3 re-wrap / min-content flex (its breaks are authored). **(B) vertical-edge (height)
+overflow** — a margin box whose content block-height exceeds its content-box height (clamped to the band but
+content is TALLER — a vertical left/right edge box at the band limit, or a multi-line `element()` header) now
+surfaces a new `PAINT-MARGIN-BOX-CONTENT-OVERFLOW-001` (Warning, once per render); the content still PAINTS
+(clipping deferred). DEFERRED: the running element's real nested BLOCK LAYOUT (sub-boxes with their own
+decoration / margins — still FLATTENED text per block child), deep recursion (each direct block child → one
+line), content-box CLIPPING / truncation of the overflow, `box-sizing`. Next (in order): cross-page running +
+`@page :left`/`:right`/`:blank` + named pages (all multi-page-gated). Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).
 For the live state, read the **current-state pointer at the top of [PROGRESS.md](PROGRESS.md)**

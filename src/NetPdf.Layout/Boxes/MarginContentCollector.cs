@@ -36,11 +36,12 @@ namespace NetPdf.Layout.Boxes;
 /// into the cascade, where this collector reads it + resolves <c>content()</c> to the element's text.
 /// (The typographic targets <c>content(before|after|first-letter|marker)</c> stay deferred.)
 /// <c>element(name)</c> pulls the running element's TEXT; a STANDALONE <c>element(name)</c> renders the
-/// running element's box AS the margin box's content box — its text in the element's OWN font + color
-/// (inherited values walked from ancestors — post-PR-#151 review P2), plus the element's OWN (non-inherited)
-/// <c>background-color</c> + <c>border-*</c> as the box decoration (cascaded UNDER the box's own
+/// running element's box AS the margin box's content box — its text in the element's OWN font + color +
+/// <c>text-align</c> (inherited values walked from ancestors, CSS-wide keywords resolved — post-PR-#151
+/// review P2 + post-PR-#153 review P2), plus the element's OWN (non-inherited) <c>background-color</c> +
+/// <c>border-*</c> + <c>padding-*</c> as the box decoration / box model (cascaded UNDER the box's own
 /// declarations) — all captured here by <see cref="CaptureOwnStyle"/>. The running element's nested BLOCK
-/// children (laid-out sub-boxes) + its own padding stay deferred (deferrals.md).
+/// children (laid-out sub-boxes) stay deferred (deferrals.md).
 /// </para>
 /// </remarks>
 internal static class MarginContentCollector
@@ -122,24 +123,26 @@ internal static class MarginContentCollector
             Walk(child, cascade, c);
     }
 
-    /// <summary>The CSS-INHERITED font/color longhands element()'s own-style rendering pulls from the
-    /// running element for the CONTENT shaping. The painter builds a content <see cref="NetPdf.Css.ComputedValues.ComputedStyle"/>
-    /// from these so a styled running header (e.g. a colored / larger heading) shapes in its own font +
-    /// colour; relative units / <c>inherit</c> resolve against the page context (a documented
-    /// approximation). All are inherited, so <see cref="CaptureOwnStyle"/> walks ANCESTORS for each
-    /// (post-PR-#151 review P2).</summary>
+    /// <summary>The CSS-INHERITED longhands element()'s own-style rendering pulls from the running element:
+    /// the font/color for the CONTENT shaping + <c>text-align</c> for the content alignment within the box.
+    /// The painter builds a content <see cref="NetPdf.Css.ComputedValues.ComputedStyle"/> from the font/color
+    /// (so a styled running header shapes in its own font + colour; relative units / <c>inherit</c> resolve
+    /// against the page context — a documented approximation), and reads <c>text-align</c> directly (it isn't
+    /// a <c>MarginBoxStyle</c> longhand) to align the line. All are inherited, so <see cref="CaptureOwnStyle"/>
+    /// walks ANCESTORS for each (post-PR-#151 review P2).</summary>
     private static readonly string[] InheritedOwnProperties =
-        { "color", "font-family", "font-size", "font-weight", "font-style" };
+        { "color", "font-family", "font-size", "font-weight", "font-style", "text-align" };
 
-    /// <summary>The NON-inherited <c>background-color</c> + <c>border-*</c> longhands element()'s full-block
-    /// first cut pulls from the running element for its DECORATION (Task 23 — the element's box becomes the
-    /// margin box's content box: its own background paints a band, its own border strokes + insets the
-    /// text, cascaded UNDER the box's own declarations). Because these are NOT inherited, they're captured
-    /// from the element's OWN winner only (NO ancestor walk — an ancestor's background must not bleed onto
-    /// the running element). A normal DOM element's <c>border</c> / <c>background</c> shorthands are already
-    /// expanded to these longhands by <c>CssParserAdapter</c>, so the cascade winners are read directly.
-    /// Padding (an extra border content-inset beyond the border width) is the next increment
-    /// (deferrals.md).</summary>
+    /// <summary>The NON-inherited <c>background-color</c> + <c>border-*</c> + <c>padding-*</c> longhands
+    /// element()'s full-block first cut pulls from the running element for its DECORATION + box model (Task 23
+    /// — the element's box becomes the margin box's content box: its own background paints a band, its own
+    /// border strokes, and its own border-width + padding inset the text, cascaded UNDER the box's own
+    /// declarations). Because these are NOT inherited, they're captured from the element's OWN winner only
+    /// (NO ancestor walk — an ancestor's background/padding must not bleed onto the running element). A normal
+    /// DOM element's <c>border</c> / <c>background</c> / <c>padding</c> shorthands are already expanded to
+    /// these longhands by <c>CssParserAdapter</c>, so the cascade winners are read directly. (A non-absolute
+    /// padding — <c>%</c> / <c>em</c> / <c>calc()</c> — is diagnosed + dropped by <c>MarginBoxStyle.Build</c>,
+    /// like the box's own; nested block children stay deferred — deferrals.md.)</summary>
     private static readonly string[] DecorationOwnProperties =
     {
         "background-color",
@@ -147,6 +150,7 @@ internal static class MarginContentCollector
         "border-right-width", "border-right-style", "border-right-color",
         "border-bottom-width", "border-bottom-style", "border-bottom-color",
         "border-left-width", "border-left-style", "border-left-color",
+        "padding-top", "padding-right", "padding-bottom", "padding-left",
     };
 
     /// <summary>The empty own-style list — the lockstep marker for a running element with no declared or
@@ -162,13 +166,16 @@ internal static class MarginContentCollector
     /// non-inherited <see cref="DecorationOwnProperties"/> (background-color / border-* — the element's OWN
     /// winner only) used for the element's DECORATION. Returns <see cref="EmptyOwnStyle"/> (never
     /// <see langword="null"/>) when nothing is declared.</summary>
-    /// <remarks>color / font-* are CSS-INHERITED, so the nearest ancestor that declares one is the running
-    /// element's inherited computed value (the element is removed from normal flow BEFORE the box-builder
-    /// computes a real <see cref="NetPdf.Css.ComputedValues.ComputedStyle"/>, so none exists to read — e.g.
-    /// <c>.section { color: red } .rh { position: running(rh) }</c> makes the running element red).
-    /// APPROXIMATION: CSS-wide keywords (<c>inherit</c>/<c>initial</c>/<c>unset</c>) on an ancestor +
-    /// relative-unit resolution against an INTERMEDIATE ancestor are not modeled — a relative size resolves
-    /// against the page context later (documented — deferrals.md).</remarks>
+    /// <remarks>color / font-* / text-align are CSS-INHERITED, so the nearest ancestor that declares one is
+    /// the running element's inherited computed value (the element is removed from normal flow BEFORE the
+    /// box-builder computes a real <see cref="NetPdf.Css.ComputedValues.ComputedStyle"/>, so none exists to
+    /// read — e.g. <c>.section { color: red } .rh { position: running(rh) }</c> makes the running element
+    /// red). CSS-wide keywords ARE resolved by the walk (<see cref="NearestDeclaredWinner"/>):
+    /// <c>inherit</c>/<c>unset</c>/<c>revert</c> continue to the ancestor value, <c>initial</c> resolves to
+    /// the property's initial (so <c>.rh { text-align: inherit }</c> under <c>.section { text-align: right }</c>
+    /// aligns right — post-PR-#153 review P2). APPROXIMATION: relative-unit resolution against an INTERMEDIATE
+    /// ancestor is not modeled — a relative size resolves against the page context later (documented —
+    /// deferrals.md).</remarks>
     private static IReadOnlyList<KeyValuePair<string, string>> CaptureOwnStyle(
         IElement element, ResolvedRuleSet rules, ResolvedCascadeResult cascade)
     {
@@ -194,17 +201,43 @@ internal static class MarginContentCollector
     }
 
     /// <summary>The nearest self-or-ancestor declared winning value of <paramref name="prop"/>, walking up
-    /// the element tree from <paramref name="element"/>, or <see langword="null"/> when nothing in the chain
-    /// declares it. Valid only for INHERITED properties (the caller's color / font-*), where the nearest
-    /// declaration is the inherited computed value modulo the documented approximations.</summary>
+    /// the element tree from <paramref name="element"/>, with CSS-wide keywords resolved per the cascade
+    /// (CSS Cascade L5 §7) for these INHERITED properties: <c>inherit</c> / <c>unset</c> / <c>revert</c> /
+    /// <c>revert-layer</c> take the PARENT's value, so the walk CONTINUES past them to the nearest concrete
+    /// (or <c>initial</c>) ancestor value; <c>initial</c> and every concrete value STOP the walk (the
+    /// callers map <c>initial</c> — <c>MarginBoxStyle.HorizontalAlignFactor</c> reads it as <c>start</c>,
+    /// the style build resets the slot). Returns
+    /// <see langword="null"/> when nothing in the chain declares a non-inherit-like value. Valid only for
+    /// INHERITED properties (the caller's color / font-* / text-align), where the nearest concrete
+    /// declaration is the inherited computed value modulo the documented relative-unit approximations.</summary>
     private static string? NearestDeclaredWinner(IElement element, ResolvedCascadeResult cascade, string prop)
     {
         for (IElement? e = element; e is not null; e = e.ParentElement)
         {
             var winner = cascade.TryGetStylesFor(e)?.GetWinner(prop)?.ResolvedValue;
-            if (!string.IsNullOrWhiteSpace(winner)) return winner;
+            if (string.IsNullOrWhiteSpace(winner)) continue;   // undeclared here — keep walking up
+            // An INHERITED property's `inherit`/`unset`/`revert`/`revert-layer` resolves to the PARENT's
+            // value (post-PR-#153 review P2): skip this element and continue the walk. `initial` (and every
+            // concrete value) stops here — the callers map a captured `initial` (text-align → start, the
+            // style build → the property's initial), matching `MarginBoxStyle.ApplyCssWideKeyword`.
+            if (IsInheritLikeKeyword(winner)) continue;
+            return winner;
         }
         return null;
+    }
+
+    /// <summary><see langword="true"/> when <paramref name="value"/> is a CSS-wide keyword that, for an
+    /// INHERITED property, resolves to the parent's value (<c>inherit</c> / <c>unset</c> / <c>revert</c> /
+    /// <c>revert-layer</c>) — so <see cref="NearestDeclaredWinner"/>'s walk continues to the ancestor.
+    /// <c>initial</c> is deliberately NOT here: it resolves to the property's initial value (the walk stops),
+    /// matching <c>MarginBoxStyle.ApplyCssWideKeyword</c>'s inherited-property handling.</summary>
+    private static bool IsInheritLikeKeyword(string value)
+    {
+        var v = value.Trim();
+        return v.Equals("inherit", StringComparison.OrdinalIgnoreCase)
+            || v.Equals("unset", StringComparison.OrdinalIgnoreCase)
+            || v.Equals("revert", StringComparison.OrdinalIgnoreCase)
+            || v.Equals("revert-layer", StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>Split a <c>string-set</c> value into its TOP-LEVEL comma-separated name/value pairs,

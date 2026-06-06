@@ -274,16 +274,29 @@ for shaping, the box's decoration/alignment staying the box's. Post-PR-#151 revi
 LOCKSTEP with the text per occurrence (empty marker — no first/last style desync); paint-time line metrics
 follow the content style via `BoxFragment.TextMetricsStyle` (a 32px header no longer paints at the box's 16px
 pitch); inherited font/color WALKED from ancestors; own-style returned as an array (Copilot). **Task 23 —
-`element()` full-block first cut: own `background` + `border` (in progress, branch
-`phase-3-task-23-element-full-block-decoration`):** a STANDALONE `element()` also renders the running
-element's OWN box DECORATION — `CaptureOwnStyle` also captures the NON-inherited `background-color` + 12
-`border-*` longhands (self-only, NO ancestor walk; a normal element's `border`/`background` shorthands are
-cascade-expanded); `PageMarginBoxPainter.BuildFromOwnStyle` builds the box `style` from the element's
-decoration cascaded UNDER the box's own declarations (box overrides), reusing all the box bg/border/inset
-machinery; `currentColor` (border/bg currentcolor) reads the element's own color. DEFERRED:
-`content(before|after|first-letter|marker)`, the running element's nested BLOCK children (laid-out sub-boxes
-— still text-only), its own `padding`, the box/element COINCIDING (a box property overrides rather than
-nesting), relative units/`inherit` (resolve against the page context — approximation), vertical-edge HEIGHT
+`element()` full-block first cut: own `background` + `border` (merged PR #152, incl. its review):** a
+STANDALONE `element()` also renders the running element's OWN box DECORATION — `CaptureOwnStyle` also captures
+the NON-inherited `background-color` + 12 `border-*` longhands (self-only, NO ancestor walk; a normal
+element's `border`/`background` shorthands are cascade-expanded); `PageMarginBoxPainter.BuildFromOwnStyle`
+builds the box `style` from the element's decoration cascaded UNDER the box's own declarations (box overrides),
+reusing all the box bg/border/inset machinery. Post-PR-#152 review: `currentcolor` is ORIGIN-aware (CSS Color
+4 §6.2 — split into bg + border currentcolor, each resolving against the box's colour when the box declares
+that decoration [it wins the cascade], else the running element's). **Task 23 — `element()` own `padding` +
+`text-align` (merged in PR #153, incl. its review):** the running element's OWN
+`padding-*` (self-only, added to `DecorationOwnProperties`) insets its text + grows the shrink-to-fit box
+(reusing the border+padding inset machinery — no painter change), and its OWN (inherited) `text-align` (added
+to `InheritedOwnProperties`, ancestor-walked) aligns its line via `ElementHorizontalAlignFactor`, the box's
+own `text-align` still winning. Post-PR-#153 review: **(P2)** the inherited-property walk
+(`NearestDeclaredWinner`) now RESOLVES CSS-wide keywords (CSS Cascade L5 §7) — `inherit`/`unset`/`revert`
+continue to the ANCESTOR value, `initial` → `start` — so `.section { text-align: right } .rh { text-align:
+inherit }` aligns the running line RIGHT (was falling back to the box's name-derived default); **(Copilot)** a
+box that DECLARES `text-align` as a CSS-wide/unknown keyword keeps its NAME-DERIVED default instead of
+deferring to the element (margin-box alignment isn't inherited, so `@top-center { text-align: inherit }` stays
+centered). DEFERRED: `content(before|after|first-letter|marker)`, the running element's
+nested BLOCK children (laid-out sub-boxes — still text-only), the box/element COINCIDING (a box property
+overrides rather than nesting), RELATIVE UNITS (`%`/`em`/`calc()`) in the element's style resolve against the
+page context — approximation (CSS-wide `inherit`/`initial` now resolved), a
+non-absolute (`%`/`em`/`calc()`) element padding (diagnosed + dropped like the box's), vertical-edge HEIGHT
 overflow, `box-sizing`, the body's own `text-align` line-positioning. Next (in order): `element()` nested
 BLOCK children / vertical-edge (height) overflow / cross-page running + `@page :left`/`:right`/`:blank` +
 named pages (all multi-page-gated). Blocked (see `deferrals.md`):

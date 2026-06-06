@@ -66,8 +66,8 @@ namespace NetPdf.Rendering;
 /// page renders <c>1</c> until the multi-page driver lands), <c>string(name)</c> (Task 22 — the named
 /// string set by <c>string-set</c>), and <c>element(name)</c> (Task 23 — the text of a
 /// <c>position: running()</c> element, rendered in the element's OWN font/color, and for a STANDALONE
-/// <c>element(name)</c> also its OWN <c>background-color</c> + <c>border-*</c> decoration cascaded under
-/// the box's own declarations — full-block first cut); both resolved from <c>marginContext</c> (a
+/// <c>element(name)</c> also its OWN <c>background-color</c> + <c>border-*</c> + <c>padding-*</c> +
+/// <c>text-align</c> cascaded under the box's own declarations — full-block first cut); both resolved from <c>marginContext</c> (a
 /// single-page first cut; cross-page "running" persistence is deferred). A winning <c>none</c> / <c>normal</c> suppresses
 /// the box upstream (the resolver omits it). Still-unsupported content (a non-page <c>counter()</c> /
 /// <c>counters()</c>) emits <c>CSS-CONTENT-FUNCTION-UNSUPPORTED-001</c> and the box is skipped. §5.3 three-box-per-edge sizing
@@ -182,16 +182,18 @@ internal static class PageMarginBoxPainter
             // STANDALONE element() OWN STYLE + DECORATION (Task 23 full-block first cut): a standalone
             // `content: element(name)` makes the running element's box the margin box's content box. Its OWN
             // font/color (captured, with inherited values walked from ancestors) drive the CONTENT shaping
-            // (`contentStyle`); its OWN (non-inherited) `background-color` + `border-*` decorate the box,
-            // cascaded UNDER the box's own declarations (an explicit box `background`/`border` overrides) into
-            // `style`. The element decoration stays in `style` (NOT `contentStyle`), preserving the box/content
-            // split: the box font-size can still differ from the content's, so the paint-time line metrics
-            // follow `contentStyle` (post-PR-#151 review P1, BoxFragment.TextMetricsStyle). Mixed / non-
-            // element() content keeps the box's own style for both. APPROXIMATION: the running element's box
-            // and the margin box COINCIDE (no separately-decorated nesting); the element's nested block
-            // children + its own padding stay deferred (deferrals.md). Relative units / `inherit` resolve
-            // against the page context (exact for the common absolute values).
+            // (`contentStyle`); its OWN (non-inherited) `background-color` + `border-*` + `padding-*` decorate
+            // the box + inset the text, cascaded UNDER the box's own declarations (an explicit box
+            // `background`/`border`/`padding` overrides) into `style`; its OWN (inherited) `text-align` aligns
+            // the line (`elementHAlign`, the box's own text-align still winning). The element decoration stays
+            // in `style` (NOT `contentStyle`), preserving the box/content split: the box font-size can still
+            // differ from the content's, so the paint-time line metrics follow `contentStyle` (post-PR-#151
+            // review P1, BoxFragment.TextMetricsStyle). Mixed / non-element() content keeps the box's own style
+            // for both. APPROXIMATION: the running element's box and the margin box COINCIDE (no separately-
+            // decorated nesting); the element's nested BLOCK children stay deferred (deferrals.md). Relative
+            // units / `inherit` resolve against the page context (exact for the common absolute values).
             ComputedStyle style, contentStyle;
+            double? elementHAlign = null;   // the running element's own text-align factor (Task 23), if any.
             if (CssContentList.TryGetStandaloneElement(mb.ContentRawValue, out var elName, out var elFirst)
                 && TryGetRunningElementOwnStyle(marginContext, elName, elFirst) is { } ownPairs)
             {
@@ -199,6 +201,7 @@ internal static class PageMarginBoxPainter
                     ImmutableArray<CssDeclaration>.Empty, pageContextStyle, styleDiagnostics);
                 style = BuildFromOwnStyle(ownPairs, decorationOnly: true,
                     mb.Declarations, pageContextStyle, styleDiagnostics);
+                elementHAlign = ElementHorizontalAlignFactor(ownPairs);
             }
             else
             {
@@ -224,10 +227,25 @@ internal static class PageMarginBoxPainter
 
             // CONTENT alignment WITHIN the box: a text-align / vertical-align DECLARED ON THE BOX aligns
             // the line inside the box's content area (read from the box's OWN declarations so the
-            // page/root's UA-default text-align can't leak in); it falls back to the name-derived
-            // default. This is NOT the box's PLACEMENT in the band — that's the §5.3.2.4 name-derived
-            // role (region.HAlign/VAlign), applied below independent of this declared alignment.
-            var hAlign = MarginBoxStyle.HorizontalAlignFactor(mb.Declarations) ?? region.HAlign;
+            // page/root's UA-default text-align can't leak in). For a standalone element() the running
+            // element's OWN (inherited) text-align is the next fallback (Task 23 — so a `.rh { text-align:
+            // right }` aligns its line when the box declares none), then the §5.3.2.4 name-derived default.
+            // The element fallback applies ONLY when the box declares NO text-align: a box that DECLARES
+            // text-align but as a CSS-wide / unrecognized keyword (HorizontalAlignFactor → null) keeps its
+            // NAME-DERIVED default rather than deferring to the element (post-PR-#153 Copilot review — a
+            // margin box's alignment isn't inherited, so `@top-center { text-align: inherit }` stays
+            // centered, it does NOT pick up the running element's alignment). This is NOT the box's
+            // PLACEMENT in the band — that's the name-derived role (region.HAlign/VAlign), applied below
+            // independent of this content alignment. (Like the box's own text-align, it's observable only
+            // when the content box is wider than the line — an explicit box width or wrapped content; a
+            // shrink-to-fit box's content area equals its line, so alignment is a no-op.)
+            double hAlign;
+            if (MarginBoxStyle.HorizontalAlignFactor(mb.Declarations) is double boxHAlign)
+                hAlign = boxHAlign;                                  // box declares a recognized text-align — wins
+            else if (MarginBoxDeclares(mb.Declarations, "text-align"))
+                hAlign = region.HAlign;                              // box declares text-align but CSS-wide/unknown → name-derived (Copilot)
+            else
+                hAlign = elementHAlign ?? region.HAlign;             // box silent → the element's own, then name-derived
             var vAlign = MarginBoxStyle.VerticalAlignFactor(mb.Declarations) ?? region.VAlign;
 
             // Content-origin insets: the used border-width + padding per side (the §4.3 used-width gate
@@ -565,13 +583,14 @@ internal static class PageMarginBoxPainter
     }
 
     /// <summary>Build a <see cref="ComputedStyle"/> from the running element's captured <paramref name="pairs"/>
-    /// cascaded over <paramref name="pageContextStyle"/> via <see cref="MarginBoxStyle.Build"/>. When
-    /// <paramref name="decorationOnly"/>, only the element's NON-inherited decoration pairs (background-color
-    /// / border-*) are taken — the inherited content pairs (font/color) are skipped — so the result carries
-    /// the element's DECORATION without overriding the box's font (used for <c>style</c>); otherwise all
-    /// pairs are taken (used for <c>contentStyle</c>). <paramref name="appendDeclarations"/> (the box's own
-    /// declarations) are appended LAST so they WIN the cascade (the box overrides the element). The result
-    /// is box-owned (not pooled), like the per-box style.</summary>
+    /// cascaded over <paramref name="pageContextStyle"/> via <see cref="MarginBoxStyle.Build"/>, split by
+    /// <paramref name="decorationOnly"/>: <see langword="true"/> takes the element's NON-content pairs (the
+    /// DECORATION — background-color / border-* / padding-*) so the result carries the decoration without
+    /// overriding the box's font (used for <c>style</c>); <see langword="false"/> takes the CONTENT pairs
+    /// (font/color) only — NOT the decoration — so a deferred-and-dropped padding isn't diagnosed twice (used
+    /// for <c>contentStyle</c>, which only needs the shaping font/color). <paramref name="appendDeclarations"/>
+    /// (the box's own declarations) are appended LAST so they WIN the cascade (the box overrides the element).
+    /// The result is box-owned (not pooled), like the per-box style.</summary>
     private static ComputedStyle BuildFromOwnStyle(
         IReadOnlyList<KeyValuePair<string, string>> pairs, bool decorationOnly,
         ImmutableArray<CssDeclaration> appendDeclarations,
@@ -579,11 +598,25 @@ internal static class PageMarginBoxPainter
     {
         var builder = ImmutableArray.CreateBuilder<CssDeclaration>(pairs.Count + appendDeclarations.Length);
         foreach (var kv in pairs)
-            if (!decorationOnly || !IsElementContentProperty(kv.Key))
+            if (decorationOnly ? !IsElementContentProperty(kv.Key) : IsElementContentProperty(kv.Key))
                 builder.Add(new CssDeclaration(kv.Key, new CssValue(kv.Value), false, CssSourceLocation.Unknown));
         if (!appendDeclarations.IsDefaultOrEmpty)
             builder.AddRange(appendDeclarations);
         return MarginBoxStyle.Build(builder.ToImmutable(), pageContextStyle, diagnostics);
+    }
+
+    /// <summary>The running element's OWN content alignment (Task 23) — its captured (inherited)
+    /// <c>text-align</c> mapped to a leftover-space factor via <see cref="MarginBoxStyle.HorizontalAlignFactor"/>,
+    /// or <see langword="null"/> when it declared none. <c>text-align</c> isn't a <c>MarginBoxStyle</c>
+    /// longhand (so it isn't in the built styles); it's read straight from the captured pairs. The box's
+    /// OWN <c>text-align</c> still takes precedence (the caller tries it first).</summary>
+    private static double? ElementHorizontalAlignFactor(IReadOnlyList<KeyValuePair<string, string>> pairs)
+    {
+        foreach (var kv in pairs)
+            if (string.Equals(kv.Key, "text-align", StringComparison.OrdinalIgnoreCase))
+                return MarginBoxStyle.HorizontalAlignFactor(ImmutableArray.Create(
+                    new CssDeclaration(kv.Key, new CssValue(kv.Value), false, CssSourceLocation.Unknown)));
+        return null;
     }
 
     /// <summary>The CSS-inherited CONTENT longhands (color / font-*) of a running element's captured

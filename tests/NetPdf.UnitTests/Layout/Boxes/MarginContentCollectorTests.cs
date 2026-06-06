@@ -162,4 +162,56 @@ public sealed class MarginContentCollectorTests
 
         Assert.DoesNotContain(ctx.RunningElementStyles!["rh"], kv => kv.Key == "background-color");
     }
+
+    // ---- own padding (non-inherited, self-only) + text-align (inherited) — Task 23 ----
+
+    [Fact]
+    public async Task Collect_captures_the_running_elements_own_padding()
+    {
+        // Task A: the element's OWN padding-* longhands are captured (the `padding` shorthand is cascade-
+        // expanded). They inset the element's text in the margin box.
+        var ctx = await CollectAsync(
+            "<div class='rh'>AB</div>",
+            ".rh { position: running(rh); padding: 4px }");
+
+        Assert.Contains(ctx.RunningElementStyles!["rh"], kv => kv.Key == "padding-top");
+        Assert.Contains(ctx.RunningElementStyles!["rh"], kv => kv.Key == "padding-left");
+    }
+
+    [Fact]
+    public async Task Collect_does_not_capture_an_ancestor_padding_for_a_running_element()
+    {
+        // padding is NON-inherited → self-only: an ancestor's padding must NOT be captured for the element.
+        var ctx = await CollectAsync(
+            "<div class='section'><div class='rh'>AB</div></div>",
+            ".section { padding: 4px } .rh { position: running(rh) }");
+
+        Assert.DoesNotContain(ctx.RunningElementStyles!["rh"], kv => kv.Key == "padding-top");
+    }
+
+    [Fact]
+    public async Task Collect_captures_an_inherited_ancestor_text_align_for_a_running_element()
+    {
+        // Task B: text-align IS inherited, so an ancestor's text-align reaches the running element (walked
+        // like color/font). It aligns the element's line within the margin box.
+        var ctx = await CollectAsync(
+            "<div class='section'><div class='rh'>AB</div></div>",
+            ".section { text-align: right } .rh { position: running(rh) }");
+
+        Assert.Contains(ctx.RunningElementStylesFirst!["rh"], kv => kv.Key == "text-align");
+    }
+
+    [Fact]
+    public async Task Collect_resolves_an_inherit_text_align_to_the_ancestor_value()
+    {
+        // Review P2: a running element's OWN `text-align: inherit` resolves to the DOM ancestor's value (the
+        // walk continues past inherit/unset/revert per CSS Cascade L5 §7), so the captured value is the
+        // ancestor's concrete `right` — NOT the literal `inherit`, which would map to no alignment factor
+        // downstream and wrongly fall back to the margin box's name-derived default.
+        var ctx = await CollectAsync(
+            "<div class='section'><div class='rh'>AB</div></div>",
+            ".section { text-align: right } .rh { position: running(rh); text-align: inherit }");
+
+        Assert.Contains(ctx.RunningElementStylesFirst!["rh"], kv => kv.Key == "text-align" && kv.Value == "right");
+    }
 }

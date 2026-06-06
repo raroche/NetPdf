@@ -282,13 +282,20 @@ builds the box `style` from the element's decoration cascaded UNDER the box's ow
 reusing all the box bg/border/inset machinery. Post-PR-#152 review: `currentcolor` is ORIGIN-aware (CSS Color
 4 §6.2 — split into bg + border currentcolor, each resolving against the box's colour when the box declares
 that decoration [it wins the cascade], else the running element's). **Task 23 — `element()` own `padding` +
-`text-align` (in progress, branch `phase-3-task-23-element-padding-text-align`):** the running element's OWN
+`text-align` (merged in PR #153, incl. its review):** the running element's OWN
 `padding-*` (self-only, added to `DecorationOwnProperties`) insets its text + grows the shrink-to-fit box
 (reusing the border+padding inset machinery — no painter change), and its OWN (inherited) `text-align` (added
 to `InheritedOwnProperties`, ancestor-walked) aligns its line via `ElementHorizontalAlignFactor`, the box's
-own `text-align` still winning. DEFERRED: `content(before|after|first-letter|marker)`, the running element's
+own `text-align` still winning. Post-PR-#153 review: **(P2)** the inherited-property walk
+(`NearestDeclaredWinner`) now RESOLVES CSS-wide keywords (CSS Cascade L5 §7) — `inherit`/`unset`/`revert`
+continue to the ANCESTOR value, `initial` → `start` — so `.section { text-align: right } .rh { text-align:
+inherit }` aligns the running line RIGHT (was falling back to the box's name-derived default); **(Copilot)** a
+box that DECLARES `text-align` as a CSS-wide/unknown keyword keeps its NAME-DERIVED default instead of
+deferring to the element (margin-box alignment isn't inherited, so `@top-center { text-align: inherit }` stays
+centered). DEFERRED: `content(before|after|first-letter|marker)`, the running element's
 nested BLOCK children (laid-out sub-boxes — still text-only), the box/element COINCIDING (a box property
-overrides rather than nesting), relative units/`inherit` (resolve against the page context — approximation), a
+overrides rather than nesting), RELATIVE UNITS (`%`/`em`/`calc()`) in the element's style resolve against the
+page context — approximation (CSS-wide `inherit`/`initial` now resolved), a
 non-absolute (`%`/`em`/`calc()`) element padding (diagnosed + dropped like the box's), vertical-edge HEIGHT
 overflow, `box-sizing`, the body's own `text-align` line-positioning. Next (in order): `element()` nested
 BLOCK children / vertical-edge (height) overflow / cross-page running + `@page :left`/`:right`/`:blank` +

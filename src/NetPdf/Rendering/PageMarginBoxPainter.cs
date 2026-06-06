@@ -230,11 +230,22 @@ internal static class PageMarginBoxPainter
             // page/root's UA-default text-align can't leak in). For a standalone element() the running
             // element's OWN (inherited) text-align is the next fallback (Task 23 — so a `.rh { text-align:
             // right }` aligns its line when the box declares none), then the §5.3.2.4 name-derived default.
-            // This is NOT the box's PLACEMENT in the band — that's the name-derived role (region.HAlign/
-            // VAlign), applied below independent of this content alignment. (Like the box's own text-align,
-            // it's observable only when the content box is wider than the line — an explicit box width or
-            // wrapped content; a shrink-to-fit box's content area equals its line, so alignment is a no-op.)
-            var hAlign = MarginBoxStyle.HorizontalAlignFactor(mb.Declarations) ?? elementHAlign ?? region.HAlign;
+            // The element fallback applies ONLY when the box declares NO text-align: a box that DECLARES
+            // text-align but as a CSS-wide / unrecognized keyword (HorizontalAlignFactor → null) keeps its
+            // NAME-DERIVED default rather than deferring to the element (post-PR-#153 Copilot review — a
+            // margin box's alignment isn't inherited, so `@top-center { text-align: inherit }` stays
+            // centered, it does NOT pick up the running element's alignment). This is NOT the box's
+            // PLACEMENT in the band — that's the name-derived role (region.HAlign/VAlign), applied below
+            // independent of this content alignment. (Like the box's own text-align, it's observable only
+            // when the content box is wider than the line — an explicit box width or wrapped content; a
+            // shrink-to-fit box's content area equals its line, so alignment is a no-op.)
+            double hAlign;
+            if (MarginBoxStyle.HorizontalAlignFactor(mb.Declarations) is double boxHAlign)
+                hAlign = boxHAlign;                                  // box declares a recognized text-align — wins
+            else if (MarginBoxDeclares(mb.Declarations, "text-align"))
+                hAlign = region.HAlign;                              // box declares text-align but CSS-wide/unknown → name-derived (Copilot)
+            else
+                hAlign = elementHAlign ?? region.HAlign;             // box silent → the element's own, then name-derived
             var vAlign = MarginBoxStyle.VerticalAlignFactor(mb.Declarations) ?? region.VAlign;
 
             // Content-origin insets: the used border-width + padding per side (the §4.3 used-width gate

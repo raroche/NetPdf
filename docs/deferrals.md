@@ -3104,11 +3104,17 @@ flags the categories):
          currentcolor resolves against the box's colour, an element-declared one against the running element's.
          The element's OWN `padding-*` (self-only) insets its text + grows the shrink-to-fit box, and its OWN
          (inherited) `text-align` aligns its line (`ElementHorizontalAlignFactor`, the box's own text-align
-         winning) — both reusing existing machinery. STILL deferred for `element()`: the running element's
+         winning — and post-PR-#153 Copilot review, a box that DECLARES `text-align` as a CSS-wide/unknown
+         keyword keeps its NAME-DERIVED default rather than deferring to the element). Post-PR-#153 review P2:
+         the inherited-property walk (`NearestDeclaredWinner`) now RESOLVES CSS-wide keywords (CSS Cascade L5
+         §7) — `inherit`/`unset`/`revert` continue to the ANCESTOR value, `initial` → the property initial
+         (`start` for `text-align`) — so `.section { text-align: right } .rh { text-align: inherit }` aligns the
+         running line right. STILL deferred for `element()`: the running element's
          NESTED BLOCK children (laid-out sub-boxes — text-only); the box/element being SEPARATELY-decorated
-         boxes (they COINCIDE — a box property overrides rather than nesting); relative units / `inherit` in
-         the element's style resolve against the page context (an approximation — exact for absolute
-         font-size/color); a non-absolute (`%`/`em`/`calc()`) element padding is diagnosed + dropped like the
+         boxes (they COINCIDE — a box property overrides rather than nesting); only RELATIVE UNITS (`%`/`em`/
+         `calc()`) in the element's style resolve against the page context (an approximation — exact for
+         absolute font-size/color, and CSS-wide `inherit`/`initial` now resolved); a non-absolute
+         (`%`/`em`/`calc()`) element padding is diagnosed + dropped like the
          box's; a MIXED list (`"x" element(rh)`) keeps the box style (GCPM: element() is standalone); (d) the `string(name, first |
          last)` position keyword is DONE (Task 21):
          `MarginContentCollector` keeps both the FIRST and LAST assignment per name (`MarginContentContext`

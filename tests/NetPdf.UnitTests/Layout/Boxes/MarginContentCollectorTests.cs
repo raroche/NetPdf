@@ -200,4 +200,18 @@ public sealed class MarginContentCollectorTests
 
         Assert.Contains(ctx.RunningElementStylesFirst!["rh"], kv => kv.Key == "text-align");
     }
+
+    [Fact]
+    public async Task Collect_resolves_an_inherit_text_align_to_the_ancestor_value()
+    {
+        // Review P2: a running element's OWN `text-align: inherit` resolves to the DOM ancestor's value (the
+        // walk continues past inherit/unset/revert per CSS Cascade L5 §7), so the captured value is the
+        // ancestor's concrete `right` — NOT the literal `inherit`, which would map to no alignment factor
+        // downstream and wrongly fall back to the margin box's name-derived default.
+        var ctx = await CollectAsync(
+            "<div class='section'><div class='rh'>AB</div></div>",
+            ".section { text-align: right } .rh { position: running(rh); text-align: inherit }");
+
+        Assert.Contains(ctx.RunningElementStylesFirst!["rh"], kv => kv.Key == "text-align" && kv.Value == "right");
+    }
 }

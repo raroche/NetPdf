@@ -122,24 +122,26 @@ internal static class MarginContentCollector
             Walk(child, cascade, c);
     }
 
-    /// <summary>The CSS-INHERITED font/color longhands element()'s own-style rendering pulls from the
-    /// running element for the CONTENT shaping. The painter builds a content <see cref="NetPdf.Css.ComputedValues.ComputedStyle"/>
-    /// from these so a styled running header (e.g. a colored / larger heading) shapes in its own font +
-    /// colour; relative units / <c>inherit</c> resolve against the page context (a documented
-    /// approximation). All are inherited, so <see cref="CaptureOwnStyle"/> walks ANCESTORS for each
-    /// (post-PR-#151 review P2).</summary>
+    /// <summary>The CSS-INHERITED longhands element()'s own-style rendering pulls from the running element:
+    /// the font/color for the CONTENT shaping + <c>text-align</c> for the content alignment within the box.
+    /// The painter builds a content <see cref="NetPdf.Css.ComputedValues.ComputedStyle"/> from the font/color
+    /// (so a styled running header shapes in its own font + colour; relative units / <c>inherit</c> resolve
+    /// against the page context — a documented approximation), and reads <c>text-align</c> directly (it isn't
+    /// a <c>MarginBoxStyle</c> longhand) to align the line. All are inherited, so <see cref="CaptureOwnStyle"/>
+    /// walks ANCESTORS for each (post-PR-#151 review P2).</summary>
     private static readonly string[] InheritedOwnProperties =
-        { "color", "font-family", "font-size", "font-weight", "font-style" };
+        { "color", "font-family", "font-size", "font-weight", "font-style", "text-align" };
 
-    /// <summary>The NON-inherited <c>background-color</c> + <c>border-*</c> longhands element()'s full-block
-    /// first cut pulls from the running element for its DECORATION (Task 23 — the element's box becomes the
-    /// margin box's content box: its own background paints a band, its own border strokes + insets the
-    /// text, cascaded UNDER the box's own declarations). Because these are NOT inherited, they're captured
-    /// from the element's OWN winner only (NO ancestor walk — an ancestor's background must not bleed onto
-    /// the running element). A normal DOM element's <c>border</c> / <c>background</c> shorthands are already
-    /// expanded to these longhands by <c>CssParserAdapter</c>, so the cascade winners are read directly.
-    /// Padding (an extra border content-inset beyond the border width) is the next increment
-    /// (deferrals.md).</summary>
+    /// <summary>The NON-inherited <c>background-color</c> + <c>border-*</c> + <c>padding-*</c> longhands
+    /// element()'s full-block first cut pulls from the running element for its DECORATION + box model (Task 23
+    /// — the element's box becomes the margin box's content box: its own background paints a band, its own
+    /// border strokes, and its own border-width + padding inset the text, cascaded UNDER the box's own
+    /// declarations). Because these are NOT inherited, they're captured from the element's OWN winner only
+    /// (NO ancestor walk — an ancestor's background/padding must not bleed onto the running element). A normal
+    /// DOM element's <c>border</c> / <c>background</c> / <c>padding</c> shorthands are already expanded to
+    /// these longhands by <c>CssParserAdapter</c>, so the cascade winners are read directly. (A non-absolute
+    /// padding — <c>%</c> / <c>em</c> / <c>calc()</c> — is diagnosed + dropped by <c>MarginBoxStyle.Build</c>,
+    /// like the box's own; nested block children stay deferred — deferrals.md.)</summary>
     private static readonly string[] DecorationOwnProperties =
     {
         "background-color",
@@ -147,6 +149,7 @@ internal static class MarginContentCollector
         "border-right-width", "border-right-style", "border-right-color",
         "border-bottom-width", "border-bottom-style", "border-bottom-color",
         "border-left-width", "border-left-style", "border-left-color",
+        "padding-top", "padding-right", "padding-bottom", "padding-left",
     };
 
     /// <summary>The empty own-style list — the lockstep marker for a running element with no declared or

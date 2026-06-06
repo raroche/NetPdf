@@ -3099,13 +3099,17 @@ flags the categories):
          builds a CONTENT `ComputedStyle` (font/color, for shaping + the `BoxFragment.TextMetricsStyle` line
          metrics, review P1) AND a box `style` with the element's decoration cascaded UNDER the box's own
          declarations (`BuildFromOwnStyle(decorationOnly: true, appendDeclarations: box decls)` — a box-declared
-         `background`/`border` OVERRIDES the element's), reusing all the box bg/border/inset machinery;
-         `currentColor` reads the element's own colour. STILL deferred for `element()`: the running element's
-         NESTED BLOCK children (laid-out sub-boxes — text-only); its own `padding` (an extra inset beyond the
-         border width); the box/element being SEPARATELY-decorated boxes (they COINCIDE — a box property
-         overrides rather than nesting); relative units / `inherit` in the element's style resolve against the
-         page context (an approximation — exact for absolute font-size/color); a MIXED list (`"x" element(rh)`)
-         keeps the box style (GCPM: element() is standalone); (d) the `string(name, first |
+         `background`/`border`/`padding` OVERRIDES the element's), reusing all the box bg/border/inset machinery.
+         currentcolor is ORIGIN-aware (CSS Color 4 §6.2, post-PR-#152 review P1): a box-declared decoration's
+         currentcolor resolves against the box's colour, an element-declared one against the running element's.
+         The element's OWN `padding-*` (self-only) insets its text + grows the shrink-to-fit box, and its OWN
+         (inherited) `text-align` aligns its line (`ElementHorizontalAlignFactor`, the box's own text-align
+         winning) — both reusing existing machinery. STILL deferred for `element()`: the running element's
+         NESTED BLOCK children (laid-out sub-boxes — text-only); the box/element being SEPARATELY-decorated
+         boxes (they COINCIDE — a box property overrides rather than nesting); relative units / `inherit` in
+         the element's style resolve against the page context (an approximation — exact for absolute
+         font-size/color); a non-absolute (`%`/`em`/`calc()`) element padding is diagnosed + dropped like the
+         box's; a MIXED list (`"x" element(rh)`) keeps the box style (GCPM: element() is standalone); (d) the `string(name, first |
          last)` position keyword is DONE (Task 21):
          `MarginContentCollector` keeps both the FIRST and LAST assignment per name (`MarginContentContext`
          gained `NamedStringsFirst`); `string(name, first)` AND the no-keyword DEFAULT → the first

@@ -2378,6 +2378,72 @@ public sealed class HtmlPdfConvertTests
         Assert.InRange(withBorder.X - without.X, 13.0, 17.0);   // border-left 20px → ~15pt inset
     }
 
+    // ---- element() own padding (task A) + own text-align (task B) ----
+
+    [Fact]
+    public void Page_margin_box_element_padding_insets_the_text()
+    {
+        // Task A: the running element's own `padding-left` insets its text (the existing border+padding
+        // content-inset) — a start-aligned @top-left shifts the line right by ~15pt (20px), like the box's
+        // own padding.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var withPad = FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); padding-left: 20px } " +
+            "@page { @top-left { content: element(rh) } }</style>" +
+            "</head><body><div class=\"rh\">AB</div></body></html>", opts)));
+        var without = FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } " +
+            "@page { @top-left { content: element(rh) } }</style>" +
+            "</head><body><div class=\"rh\">AB</div></body></html>", opts)));
+        Assert.InRange(withPad.X - without.X, 13.0, 17.0);   // padding-left 20px → ~15pt inset
+    }
+
+    [Fact]
+    public void Page_margin_box_element_padding_grows_the_background_band()
+    {
+        // Task A: the element's padding grows the shrink-to-fit box, so its background covers content +
+        // padding. `padding: 10px` (→ 10px each side) widens the band by ~15pt (20px) vs no padding.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var padded = FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); padding: 10px; background-color: red } " +
+            "@page { @top-center { content: element(rh) } }</style>" +
+            "</head><body><div class=\"rh\">AB</div></body></html>", opts))).W;
+        var unpadded = FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); background-color: red } " +
+            "@page { @top-center { content: element(rh) } }</style>" +
+            "</head><body><div class=\"rh\">AB</div></body></html>", opts))).W;
+        Assert.InRange(padded - unpadded, 13.0, 17.0);   // +20px padding (left+right) → +~15pt band width
+    }
+
+    [Fact]
+    public void Page_margin_box_element_text_align_aligns_the_line_in_an_explicit_width_box()
+    {
+        // Task B: the running element's own `text-align` aligns its line within the content box (observable
+        // when the box is wider than the line — here an explicit 300px @top-left). text-align:right pushes
+        // the line far to the right vs text-align:left.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double LineX(string align) => FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); text-align: " + align + " } " +
+            "@page { @top-left { content: element(rh); width: 300px } }</style>" +
+            "</head><body><div class=\"rh\">AB</div></body></html>", opts))).X;
+        Assert.True(LineX("right") > LineX("left") + 100,
+            "the element's text-align:right should push the line far right of text-align:left in a wide box");
+    }
+
+    [Fact]
+    public void Page_margin_box_box_text_align_overrides_the_running_elements()
+    {
+        // Task B: the box's OWN text-align wins over the element's (the box declarations override). Box
+        // `text-align: left` + element `text-align: right` → the line is LEFT (box wins) — identical to the
+        // box-left case with no element text-align.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double LineX(string rhAlign) => FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); text-align: " + rhAlign + " } " +
+            "@page { @top-left { content: element(rh); width: 300px; text-align: left } }</style>" +
+            "</head><body><div class=\"rh\">AB</div></body></html>", opts))).X;
+        Assert.Equal(LineX("left"), LineX("right"), 1);   // box text-align:left wins regardless of the element's
+    }
+
     [Fact]
     public void Page_margin_box_running_element_is_removed_from_the_body_flow()
     {

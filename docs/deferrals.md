@@ -3109,8 +3109,18 @@ flags the categories):
          the inherited-property walk (`NearestDeclaredWinner`) now RESOLVES CSS-wide keywords (CSS Cascade L5
          §7) — `inherit`/`unset`/`revert` continue to the ANCESTOR value, `initial` → the property initial
          (`start` for `text-align`) — so `.section { text-align: right } .rh { text-align: inherit }` aligns the
-         running line right. STILL deferred for `element()`: the running element's
-         NESTED BLOCK children (laid-out sub-boxes — text-only); the box/element being SEPARATELY-decorated
+         running line right. `element()` nested BLOCK children FIRST CUT (branch
+         `phase-3-task-23-element-nested-blocks-vedge-overflow`): a running element with BLOCK-level children
+         (per computed `display`, UA tag default via `HtmlDefaultDisplay`) renders each block child's text on
+         its OWN STACKED line (`MarginContentCollector.ReadRunningElementContent` joins the per-block
+         GCPM-normalized lines with `U+000A`; `PageMarginBoxPainter` lays them out as `white-space: pre` so the
+         existing multi-line stacking honors the mandatory breaks — a plain header has no `U+000A`, single-line
+         path byte-identical), and a margin box whose content block-height is TALLER than its band now surfaces
+         `PAINT-MARGIN-BOX-CONTENT-OVERFLOW-001` (vertical-edge height-overflow first cut — content still
+         paints, clipping/truncation deferred). STILL deferred for `element()`: the running element's REAL
+         nested BLOCK LAYOUT (sub-boxes with their OWN decoration / margins — still FLATTENED text per direct
+         block child) + deep recursion (each direct block child → one line); content-box CLIPPING of the
+         overflow; the box/element being SEPARATELY-decorated
          boxes (they COINCIDE — a box property overrides rather than nesting); only RELATIVE UNITS (`%`/`em`/
          `calc()`) in the element's style resolve against the page context (an approximation — exact for
          absolute font-size/color, and CSS-wide `inherit`/`initial` now resolved); a non-absolute

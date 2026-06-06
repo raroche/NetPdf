@@ -297,9 +297,29 @@ nested BLOCK children (laid-out sub-boxes — still text-only), the box/element 
 overrides rather than nesting), RELATIVE UNITS (`%`/`em`/`calc()`) in the element's style resolve against the
 page context — approximation (CSS-wide `inherit`/`initial` now resolved), a
 non-absolute (`%`/`em`/`calc()`) element padding (diagnosed + dropped like the box's), vertical-edge HEIGHT
-overflow, `box-sizing`, the body's own `text-align` line-positioning. Next (in order): `element()` nested
-BLOCK children / vertical-edge (height) overflow / cross-page running + `@page :left`/`:right`/`:blank` +
-named pages (all multi-page-gated). Blocked (see `deferrals.md`):
+overflow, `box-sizing`, the body's own `text-align` line-positioning. **Task 23 — `element()` nested BLOCK
+children (stacked lines, first cut) + vertical-edge (height) overflow (merged in PR #154, incl. its
+review):** TWO `element()` increments, completing the
+running element's single-box presentation. **(A) nested BLOCK children** — a running element with
+BLOCK-level children (per the production `DisplayMapper` + the shared `BoxKindFacts.IsBlockLevelOuter`, UA tag
+default via `HtmlDefaultDisplay`) renders each block child's text on its OWN stacked line: `MarginContent
+Collector.ReadRunningElementContent` joins the per-block GCPM-normalized lines with `U+000A` (inter-block
+whitespace dropped; inline runs coalesce), and `PageMarginBoxPainter` lays the content out as `pre-line` (or
+`pre` for a `nowrap`/`pre` box) when a `U+000A` is present — a plain header has no `U+000A` → byte-identical
+single-line `nowrap` path. **(B) vertical-edge (height) overflow** — a margin box whose content block-height
+exceeds its content-box height (clamped to the band but content is TALLER) surfaces a new
+`PAINT-MARGIN-BOX-CONTENT-OVERFLOW-001` (Warning); the content still PAINTS (clipping deferred). Post-PR-#154
+review: **(P1/Copilot)** the running-content read is bounded to 64 KiB TOTAL via a SINGLE budget (was N ×
+64 KiB per block child); **(P2)** block boundaries stay mandatory breaks but text WITHIN each block now WRAPS
+— forced-break content lays out `pre-line` + DOES min-content-flex + re-wrap (a long block child wraps under
+sibling distribution / explicit width); **(P3)** the overflow diagnostic is ACTIONABLE (names the box + the
+measured vs available height, once per overflowing box), and the block-child display classifier is DRY'd
+through the production `DisplayMapper` + shared `BoxKindFacts.IsBlockLevelOuter` (an inline-block/-flex/-grid/
+-table / `contents` / `none` / unsupported child is no longer mis-classified as block; `Box.IsBlockLevel`
+delegates to the same helper). DEFERRED: the running element's real nested BLOCK LAYOUT (sub-boxes with their
+own decoration / margins — still FLATTENED text per direct block child), deep recursion (each direct block
+child → one line), content-box CLIPPING / truncation of the overflow, `box-sizing`. Next (in order): cross-page running +
+`@page :left`/`:right`/`:blank` + named pages (all multi-page-gated). Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).
 For the live state, read the **current-state pointer at the top of [PROGRESS.md](PROGRESS.md)**

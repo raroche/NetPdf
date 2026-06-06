@@ -987,6 +987,30 @@ public sealed class DiagnosticCodesTests
         Assert.Equal("PAINT-TEXT-FONT-UNRESOLVED-001", DiagnosticCodes.PaintTextFontUnresolved001);
     }
 
+    // ============================================================
+    // Phase 3 Task 23 — PAINT-MARGIN-BOX-CONTENT-OVERFLOW-001 parity
+    // (vertical-edge height-overflow first cut).
+    // ============================================================
+
+    [Fact]
+    public void Paint_margin_box_content_overflow_001_constant_matches_registry_doc()
+    {
+        var registry = LoadRegistry();
+        var match = Regex.Match(
+            registry,
+            @"\|\s*`?(PAINT-MARGIN-BOX-CONTENT-OVERFLOW-001)`?\s*\|\s*(\w+)\s*\|");
+
+        Assert.True(match.Success, "PAINT-MARGIN-BOX-CONTENT-OVERFLOW-001 row not found in docs/diagnostics-codes.md");
+        Assert.Equal("PAINT-MARGIN-BOX-CONTENT-OVERFLOW-001", DiagnosticCodes.PaintMarginBoxContentOverflow001);
+        Assert.Equal("Warning", match.Groups[2].Value);
+    }
+
+    [Fact]
+    public void Paint_margin_box_content_overflow_001_constant_value_is_stable()
+    {
+        Assert.Equal("PAINT-MARGIN-BOX-CONTENT-OVERFLOW-001", DiagnosticCodes.PaintMarginBoxContentOverflow001);
+    }
+
     private static string LoadRegistry()
     {
         var dir = new DirectoryInfo(AppContext.BaseDirectory);

@@ -2547,6 +2547,104 @@ public sealed class HtmlPdfConvertTests
         Assert.Equal(FirstRect(baseline).W, FirstRect(dropped).W, 1); // not grown
     }
 
+    // ---- element() nested BLOCK children (stacked lines) + vertical-edge height overflow ----
+
+    [Fact]
+    public void Page_margin_box_element_stacks_block_children_as_separate_lines()
+    {
+        // Task 23 nested BLOCK children first cut: a running element with two BLOCK children renders as TWO
+        // STACKED lines, not one concatenated line. On a vertical @left-middle box (variable axis = height)
+        // the shrink-to-fit band is ~1 line-height TALLER for two block children than for one flat line.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double BandH(string inner) => FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); background-color: red } " +
+            "@page { @left-middle { content: element(rh) } }</style>" +
+            "</head><body><div class=\"rh\">" + inner + "</div></body></html>", opts))).H;
+        var twoBlocks = BandH("<div>AB</div><div>AB</div>");
+        var oneLine = BandH("ABAB");
+        Assert.True(twoBlocks > oneLine + 10,
+            $"two block children should stack into a ~1-line-taller band; two-block {twoBlocks} vs one-line {oneLine}");
+    }
+
+    [Fact]
+    public void Page_margin_box_element_with_inline_only_children_stays_one_line()
+    {
+        // No block-level child (text + an inline <span>) → a single flat line (byte-identical to the
+        // pre-first-cut path): the @left-middle band is the SAME height as a plain single-line element.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double BandH(string inner) => FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); background-color: red } " +
+            "@page { @left-middle { content: element(rh) } }</style>" +
+            "</head><body><div class=\"rh\">" + inner + "</div></body></html>", opts))).H;
+        Assert.Equal(BandH("AB AB"), BandH("A<span>B</span> A<span>B</span>"), 1);   // inline children → one line
+    }
+
+    [Fact]
+    public void Page_margin_box_vertical_content_overflow_emits_a_diagnostic()
+    {
+        // Task 23 vertical-edge height-overflow first cut: a left/right edge box whose content is TALLER than
+        // its band surfaces PAINT-MARGIN-BOX-CONTENT-OVERFLOW-001 (the content still paints; clipping
+        // deferred). A 2000px running header far exceeds the @left-middle band; a 16px one does not.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var overflow = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); font-size: 2000px } " +
+            "@page { @left-middle { content: element(rh) } }</style>" +
+            "</head><body><div class=\"rh\">AB</div></body></html>", opts);
+        Assert.Contains(overflow.Warnings, d => d.Code == DiagnosticCodes.PaintMarginBoxContentOverflow001);
+
+        var fits = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); font-size: 16px } " +
+            "@page { @left-middle { content: element(rh) } }</style>" +
+            "</head><body><div class=\"rh\">AB</div></body></html>", opts);
+        Assert.DoesNotContain(fits.Warnings, d => d.Code == DiagnosticCodes.PaintMarginBoxContentOverflow001);
+    }
+
+    [Fact]
+    public void Page_margin_box_element_long_block_child_wraps_in_a_narrow_box()
+    {
+        // Review P2: a LONG block child WRAPS within a narrow box (pre-line) while the authored block
+        // boundary still forces a break — so a 2-block element produces MORE lines in a narrow @top-center
+        // than a wide one (the long block re-wraps), not 2 rigid overflowing lines. (Before the fix,
+        // forced-break content used `pre` + skipped re-wrap, so the long block never wrapped.)
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        int Lines(string widthCss)
+        {
+            var pdf = Latin1(HtmlPdf.Convert(
+                "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } " +
+                "@page { @top-center { content: element(rh)" + widthCss + " } }</style></head>" +
+                "<body><div class=\"rh\"><div>AA AA AA AA AA AA AA AA</div><div>BB</div></div></body></html>", opts));
+            var n = 0;
+            for (var i = pdf.IndexOf(" Td", StringComparison.Ordinal); i >= 0; i = pdf.IndexOf(" Td", i + 3, StringComparison.Ordinal))
+                n++;
+            return n;
+        }
+        var wide = Lines("; width: 400px");
+        var narrow = Lines("; width: 60px");
+        Assert.True(wide >= 2, $"the two block children keep their authored break (≥ 2 lines); got {wide}");
+        Assert.True(narrow > wide, $"a long block child should wrap MORE in a narrower box; narrow {narrow} vs wide {wide}");
+    }
+
+    [Fact]
+    public void Page_margin_box_content_overflow_diagnostic_names_the_box_and_dimensions()
+    {
+        // Review P3: the overflow diagnostic is ACTIONABLE — its message names the box (@left-middle) + the
+        // measured content vs available height, rather than a generic once-per-render message.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); font-size: 2000px } " +
+            "@page { @left-middle { content: element(rh) } }</style>" +
+            "</head><body><div class=\"rh\">AB</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        var found = false;
+        foreach (var d in result.Warnings)
+        {
+            if (d.Code != DiagnosticCodes.PaintMarginBoxContentOverflow001) continue;
+            found = true;
+            Assert.Contains("left-middle", d.Message);     // names the box
+            Assert.Contains("px content", d.Message);      // includes the measured height
+        }
+        Assert.True(found, "expected a PAINT-MARGIN-BOX-CONTENT-OVERFLOW-001 diagnostic");
+    }
+
     [Fact]
     public void Page_margin_box_running_element_is_removed_from_the_body_flow()
     {

@@ -92,17 +92,17 @@ internal static class MarginContentCollector
                 }
             }
 
-            // position: running(<name>) — register the element's text for content: element(name). The text
-            // is read BOUNDED (post-PR-#150 review P2 - a huge running element can't force an unbounded
-            // TextContent + normalized-string allocation) then GCPM-normalized as if white-space: normal
-            // (Task 23 - like content()). Both the FIRST (element(name) default + first) and LAST (last)
-            // occurrence's text + own style (font/color - for element()'s first-cut own-style rendering)
-            // are kept.
+            // position: running(<name>) — register the element's content for content: element(name). The
+            // content is read BOUNDED (post-PR-#150 review P2 - a huge running element can't force an
+            // unbounded TextContent + normalized-string allocation). A running element with BLOCK-LEVEL
+            // children yields one U+000A-separated LINE per block child (nested BLOCK children first cut —
+            // the painter stacks them as `white-space: pre`); a plain header yields its flat GCPM-normalized
+            // text (no U+000A). Both the FIRST (element(name) default + first) and LAST (last) occurrence's
+            // content + own style (font/color - for element()'s own-style rendering) are kept.
             var position = rules.GetWinner("position")?.ResolvedValue;
             if (position is not null && TryParseRunningName(position, out var runName))
             {
-                var text = LineBuilder.PreprocessWhitespace(
-                    ReadBoundedDescendantText(element, MaxRunningTextChars), WhiteSpace.Normal);
+                var text = ReadRunningElementContent(element, cascade, MaxRunningTextChars);
                 (c.Running ??= new(StringComparer.Ordinal))[runName] = text;             // last occurrence
                 (c.RunningFirst ??= new(StringComparer.Ordinal)).TryAdd(runName, text);  // first occurrence (kept)
 
@@ -338,6 +338,120 @@ internal static class MarginContentCollector
     /// (otherwise <c>IElement.TextContent</c> would allocate the whole thing up front, here, for
     /// every running element, regardless of whether <c>element(name)</c> references it).</summary>
     private const int MaxRunningTextChars = 64 * 1024;
+
+    /// <summary>The running element's content for <c>element(name)</c> (Task 23 — nested BLOCK children
+    /// FIRST CUT). When the element has BLOCK-LEVEL child elements (per the production
+    /// <see cref="DisplayMapper"/>, with the HTML UA tag default via <see cref="HtmlDefaultDisplay"/> when
+    /// the cascade doesn't set <c>display</c>), each block child's flattened, GCPM-normalized text becomes
+    /// its OWN line and runs of inline/text content between blocks coalesce into a line; the lines are joined
+    /// by <c>U+000A</c>, which the page-margin painter honors as a mandatory break (stacked lines). With NO
+    /// block-level child (the common single-line header) the flat GCPM-normalized text is returned (no
+    /// <c>U+000A</c> → the painter keeps its single-line <c>nowrap</c> path, byte-identical). The whole
+    /// result is BOUNDED to <paramref name="maxChars"/> TOTAL — a SINGLE budget is shared across every block
+    /// read + inline run + newline separator, and the walk STOPS once exhausted, so N huge block children
+    /// can't store N × the cap (post-PR-#154 review P1 / Copilot). APPROXIMATION: nested blocks are FLATTENED
+    /// (each direct block child is one line — its own further block structure / decoration / margins stay
+    /// deferred, deferrals.md); a <c>display: none</c> child renders nothing; a <c>display: contents</c>
+    /// child's block grandchildren aren't promoted (treated as an inline run).</summary>
+    private static string ReadRunningElementContent(IElement element, ResolvedCascadeResult cascade, int maxChars)
+    {
+        // No block-level child → the flat normalized text (the common single-line header — no U+000A, so the
+        // painter's single-line path is byte-identical to before this first cut).
+        if (!HasBlockLevelChild(element, cascade))
+            return LineBuilder.PreprocessWhitespace(ReadBoundedDescendantText(element, maxChars), WhiteSpace.Normal);
+
+        // Block children → one U+000A-separated LINE per block child, bounded to maxChars TOTAL: `output`
+        // never exceeds the cap (each block reads only the REMAINING budget, the inline buffer is capped to
+        // it too, and the loop breaks once it's spent — so N huge block children can't store N × the cap).
+        var output = new StringBuilder();
+        var inlineBuf = new StringBuilder();
+        foreach (var child in element.ChildNodes)   // direct children, document order
+        {
+            var remaining = maxChars - output.Length;
+            if (remaining <= 0) break;
+            if (child is IElement el)
+            {
+                var result = DisplayMapper.Map(ResolveDisplay(el, cascade), el.LocalName, out var kind);
+                if (result == DisplayMapper.DisplayMappingResult.None) continue;   // display:none → no box, no content
+                if (result == DisplayMapper.DisplayMappingResult.Resolved && BoxKindFacts.IsBlockLevelOuter(kind))
+                {
+                    FlushInlineRun(inlineBuf, output, maxChars);   // flush the pending inline run as a line
+                    if (output.Length >= maxChars) break;
+                    var block = LineBuilder.PreprocessWhitespace(
+                        ReadBoundedDescendantText(el, maxChars - output.Length), WhiteSpace.Normal);
+                    AppendLine(output, block, maxChars);
+                }
+                else if (inlineBuf.Length < remaining)             // inline / inline-block / contents / unsupported
+                {
+                    AppendBoundedText(el, inlineBuf, remaining);
+                }
+            }
+            else if (child is IText t && inlineBuf.Length < remaining)
+            {
+                inlineBuf.Append(t.Data, 0, Math.Min(t.Data.Length, remaining - inlineBuf.Length));
+            }
+        }
+        FlushInlineRun(inlineBuf, output, maxChars);
+        return output.ToString();
+    }
+
+    /// <summary>An element's computed <c>display</c> for running-content classification: the cascade winner,
+    /// or the HTML UA tag default (<see cref="HtmlDefaultDisplay"/> — <c>div</c>→block, <c>span</c>→inline)
+    /// when the cascade doesn't set it. Never <see langword="null"/> (so <see cref="DisplayMapper.Map"/> can
+    /// consume it).</summary>
+    private static string ResolveDisplay(IElement element, ResolvedCascadeResult cascade)
+    {
+        var display = cascade.TryGetStylesFor(element)?.GetWinner("display")?.ResolvedValue;
+        return string.IsNullOrWhiteSpace(display) ? HtmlDefaultDisplay.GetDefault(element.LocalName) : display;
+    }
+
+    /// <summary><see langword="true"/> when <paramref name="element"/> has at least one BLOCK-LEVEL child
+    /// element — drives the up-front common-case split (no block child → one flat bounded read).</summary>
+    private static bool HasBlockLevelChild(IElement element, ResolvedCascadeResult cascade)
+    {
+        foreach (var child in element.Children)   // IElement children only
+            if (IsBlockLevelChild(child, cascade)) return true;
+        return false;
+    }
+
+    /// <summary><see langword="true"/> when <paramref name="child"/>'s computed <c>display</c> maps to a
+    /// BLOCK-LEVEL outer box (block / flow-root / list-item / flex / grid / table / block-replaced) — so it
+    /// forces a stacked line in the running content. Routes through the PRODUCTION <see cref="DisplayMapper"/>
+    /// + the shared <see cref="BoxKindFacts.IsBlockLevelOuter"/>, so running-content line boundaries stay
+    /// aligned with <see cref="BoxBuilder"/>'s box tree (post-PR-#154 review P3): an inline-level value
+    /// (incl. <c>inline-block</c>/<c>-flex</c>/<c>-grid</c>/<c>-table</c>), <c>none</c>, <c>contents</c>, or
+    /// an unsupported value (ruby / …) is NOT block-level — no more defaulting unknowns to block.</summary>
+    private static bool IsBlockLevelChild(IElement child, ResolvedCascadeResult cascade)
+    {
+        var result = DisplayMapper.Map(ResolveDisplay(child, cascade), child.LocalName, out var kind);
+        return result == DisplayMapper.DisplayMappingResult.Resolved && BoxKindFacts.IsBlockLevelOuter(kind);
+    }
+
+    /// <summary>Flush the pending inline-content buffer as ONE GCPM-normalized line (when non-empty after
+    /// normalization) into <paramref name="output"/> and clear it — a run of text / inline children between
+    /// two block children becomes a single line. Whitespace-only runs (the inter-block whitespace text nodes
+    /// of indented HTML like <c>&lt;div&gt;\n  &lt;div&gt;A&lt;/div&gt;…</c>) are dropped.</summary>
+    private static void FlushInlineRun(StringBuilder inlineBuf, StringBuilder output, int maxChars)
+    {
+        if (inlineBuf.Length == 0) return;
+        var line = LineBuilder.PreprocessWhitespace(inlineBuf.ToString(), WhiteSpace.Normal);
+        inlineBuf.Clear();
+        if (!string.IsNullOrWhiteSpace(line)) AppendLine(output, line, maxChars);
+    }
+
+    /// <summary>Append <paramref name="line"/> to <paramref name="output"/> as a stacked line (a leading
+    /// <c>U+000A</c> separator before all but the first), capping the TOTAL at <paramref name="maxChars"/>
+    /// (the single running-content budget) — both the separator and the line content count against it.</summary>
+    private static void AppendLine(StringBuilder output, string line, int maxChars)
+    {
+        if (line.Length == 0 || output.Length >= maxChars) return;
+        if (output.Length > 0)
+        {
+            output.Append('\n');
+            if (output.Length >= maxChars) return;
+        }
+        output.Append(line, 0, Math.Min(line.Length, maxChars - output.Length));
+    }
 
     /// <summary>The element's descendant text (DOM <c>textContent</c>) read BOUNDED to
     /// <paramref name="maxChars"/>: walks child nodes in document order accumulating <see cref="IText"/>

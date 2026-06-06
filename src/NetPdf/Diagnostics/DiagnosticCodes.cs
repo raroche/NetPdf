@@ -708,5 +708,18 @@ internal static class DiagnosticCodes
     /// </summary>
     public const string PaintTextFontUnresolved001 = "PAINT-TEXT-FONT-UNRESOLVED-001";
 
+    /// <summary>
+    /// Per Phase 3 Task 23 — a page margin box's laid-out content is TALLER than its content area: the box
+    /// was clamped to the page-margin band but its content block-height exceeds the available height. The
+    /// common case is a vertical (left/right) EDGE box whose shrink-to-fit height hit the band limit, or a
+    /// multi-line <c>element()</c> running header taller than its band. The content still PAINTS (it
+    /// overflows the box) — content-box clipping / truncation is a tracked follow-up
+    /// (<c>docs/deferrals.md#layout-to-pdf-pipeline</c>). Surfaced rather than letting the overflow pass
+    /// silently. The message NAMES the box (e.g. <c>@left-middle</c>) + the measured content vs available
+    /// height; fired once PER overflowing box (so multiple overflowing headers/footers are each diagnosable).
+    /// Severity: <see cref="DiagnosticSeverity.Warning"/>.
+    /// </summary>
+    public const string PaintMarginBoxContentOverflow001 = "PAINT-MARGIN-BOX-CONTENT-OVERFLOW-001";
+
     // endregion PAINT-*
 }

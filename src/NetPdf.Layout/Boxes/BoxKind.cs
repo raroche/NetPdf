@@ -221,3 +221,20 @@ internal enum BoxKind : byte
     /// layout's view.</summary>
     LineBreak,
 }
+
+/// <summary>Pure facts about a <see cref="BoxKind"/>, factored out so that callers OUTSIDE the box tree
+/// (e.g. <see cref="MarginContentCollector"/> classifying running-content block boundaries) share the SAME
+/// block-level-outer classification as <see cref="Box.IsBlockLevel"/> — one source of truth (post-PR-#154
+/// review P3).</summary>
+internal static class BoxKindFacts
+{
+    /// <summary><see langword="true"/> when <paramref name="kind"/> generates a BLOCK-LEVEL outer display
+    /// per CSS Display L3 §2 — the set <see cref="Box.IsBlockLevel"/> reports.</summary>
+    public static bool IsBlockLevelOuter(BoxKind kind) => kind switch
+    {
+        BoxKind.Root or BoxKind.BlockContainer or BoxKind.ListItem
+            or BoxKind.AnonymousBlock or BoxKind.Table or BoxKind.FlexContainer
+            or BoxKind.GridContainer or BoxKind.BlockReplacedElement => true,
+        _ => false,
+    };
+}

@@ -3115,12 +3115,18 @@ flags the categories):
          its OWN STACKED line (`MarginContentCollector.ReadRunningElementContent` joins the per-block
          GCPM-normalized lines with `U+000A`; `PageMarginBoxPainter` lays them out as `white-space: pre` so the
          existing multi-line stacking honors the mandatory breaks — a plain header has no `U+000A`, single-line
-         path byte-identical), and a margin box whose content block-height is TALLER than its band now surfaces
-         `PAINT-MARGIN-BOX-CONTENT-OVERFLOW-001` (vertical-edge height-overflow first cut — content still
-         paints, clipping/truncation deferred). STILL deferred for `element()`: the running element's REAL
+         path byte-identical), and a margin box whose content block-height is TALLER than its band surfaces
+         `PAINT-MARGIN-BOX-CONTENT-OVERFLOW-001` AND is CLIPPED (overflow-clipping cycle): the overflow is
+         truncated at LINE granularity — `PageMarginBoxPainter.MaxLinesThatFit` caps the painted lines to the
+         content-box height (reading-order: the first N whole lines paint; 0 fit → decoration-only box), the
+         truncated block then vertical-aligned in the content box; the diagnostic names the kept/total lines.
+         APPROXIMATIONS (documented): a whole line either fits or is dropped (a PARTIAL-GLYPH clip via a PDF
+         clip path — `W n` — is the tracked follow-up), and the clip applies REGARDLESS of the box's
+         `overflow` property (CSS Paged Media §6.2 applies `overflow` to margin boxes, default `visible`
+         which would spill — honoring an explicit `overflow: visible` opt-out is part of the clip-path
+         follow-up). STILL deferred for `element()`: the running element's REAL
          nested BLOCK LAYOUT (sub-boxes with their OWN decoration / margins — still FLATTENED text per direct
-         block child) + deep recursion (each direct block child → one line); content-box CLIPPING of the
-         overflow; the box/element being SEPARATELY-decorated
+         block child) + deep recursion (each direct block child → one line); the box/element being SEPARATELY-decorated
          boxes (they COINCIDE — a box property overrides rather than nesting); only RELATIVE UNITS (`%`/`em`/
          `calc()`) in the element's style resolve against the page context (an approximation — exact for
          absolute font-size/color, and CSS-wide `inherit`/`initial` now resolved); a non-absolute
@@ -3142,8 +3148,8 @@ flags the categories):
          is positioned in the band by its §5.3.2.4 NAME-DERIVED role (`region.HAlign/VAlign` —
          start/center/end); the declared `text-align`/`vertical-align` aligns only the line within the
          content box (observable now that an explicit size can make the content box wider than the line;
-         post-PR-#143 review). An explicit size is content-box (the box-sizing default — `box-sizing`
-         deferred); an absolute length or a percentage of the band resolves, `auto` shrink-to-fits, and a
+         post-PR-#143 review). An explicit size is content- or border-box per the box's `box-sizing`
+         (overflow-clip/box-sizing cycle — see below); an absolute length or a percentage of the band resolves, `auto` shrink-to-fits, and a
          DEFERRED font-/viewport-relative or `calc()` size is diagnosed (`CSS-PROPERTY-VALUE-INVALID-001`)
          + dropped so the box explicitly shrink-to-fits (post-PR-#144 review). Clamped to the band.
          Auto-sized empty (`content:""`) / failed-font
@@ -3162,9 +3168,16 @@ flags the categories):
          (honouring the box's computed `white-space`) to the assigned width (multi-line) so it FITS, and each
          wrapped line is ALIGNED PER LINE by the box's alignment (Task 21 — `BoxFragment.LineAlignFactor`,
          applied by `TextPainter`; default 0 keeps body fragments byte-identical, single-line margin content
-         too). STILL DEFERRED: vertical-edge
-         (left/right) HEIGHT overflow + height flex (the flex/re-wrap is horizontal-axis only), `box-sizing`
-         (explicit size is content-box only), font-/viewport-relative + `calc()` `width`/`height`
+         too). **Vertical-edge (height) overflow CLIPPING + `box-sizing` — DONE (overflow-clip/box-sizing
+         cycle):** content taller than the content-box height is truncated at line granularity (see the
+         Task-23 entry above — `MaxLinesThatFit`, kept/total surfaced via
+         `PAINT-MARGIN-BOX-CONTENT-OVERFLOW-001`), and an explicit `width`/`height` honours the box's
+         `box-sizing` (CSS Basic UI 4 §10: `content-box` initial — insets add; `border-box` — the size IS
+         the border box, floored at the insets, the content box at 0; cascaded via
+         `MarginBoxStyle.CascadedStyleIds`, non-inherited, read by `IsBorderBoxSizing`; a no-op for
+         shrink-to-fit `auto`). STILL DEFERRED: a HEIGHT flex (the flex/re-wrap is horizontal-axis only;
+         vertical overflow now clips instead of spilling), the partial-glyph clip path + `overflow:
+         visible` opt-out (see above), font-/viewport-relative + `calc()` `width`/`height`
          (diagnosed + dropped → shrink-to-fit), and the inherent overflow of content narrower than its
          longest unbreakable word (can't wrap a single word).
        - **`@page :first` selector (cycle 10) — DONE:** `@page :first` rules apply on the single

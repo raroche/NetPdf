@@ -26,9 +26,10 @@ namespace NetPdf.Rendering;
 /// against an imaginary 2x-max(A, C) box) with A/C sized into the side gaps; with no center box the two
 /// sides flex (interpolate min-to-max, or proportional to min-content when the mins don't fit). The painter
 /// then RE-WRAPS a flexed/shrunk box's content to its assigned width (multi-line, aligned per line) so it
-/// fits. Corner boxes + empty boxes keep the full band. STILL DEFERRED: vertical-edge
-/// (height) overflow, and `box-sizing` — content narrower than its longest unbreakable word still
-/// overflows that word (deferrals.md#layout-to-pdf-pipeline).
+/// fits, CLIPS vertical-edge (height) overflow at line granularity, and honours the box's
+/// <c>box-sizing</c> for an explicit size. Corner boxes + empty boxes keep the full band. STILL
+/// DEFERRED: content narrower than its longest unbreakable word still overflows that word; a
+/// partial-glyph clip path (deferrals.md#layout-to-pdf-pipeline).
 /// </para>
 /// </remarks>
 internal static class PageMarginBoxGeometry

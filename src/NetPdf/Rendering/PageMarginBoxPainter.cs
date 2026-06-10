@@ -75,9 +75,11 @@ namespace NetPdf.Rendering;
 /// (<see cref="ResolveEdgeOverlaps"/> — the centre box stays centred, flexed against the imaginary
 /// <c>2 × max(A, C)</c> box, with the sides sized in the gaps; no centre box → the sides flex, or go
 /// proportional to min-content when the mins don't fit; a flexed/shrunk box re-wraps its content to fit,
-/// honouring the box's white-space). Wrapped lines are aligned PER LINE by the box's alignment (Task 21 —
-/// via the fragment's <c>LineAlignFactor</c>); vertical-edge (height) overflow is DIAGNOSED
-/// (<c>PAINT-MARGIN-BOX-CONTENT-OVERFLOW-001</c>) — content-box clipping is a later cycle.
+/// honouring the box's white-space). An explicit size is content- or border-box per the box's
+/// <c>box-sizing</c> (box-sizing cycle). Wrapped lines are aligned PER LINE by the box's alignment
+/// (Task 21 — via the fragment's <c>LineAlignFactor</c>); vertical-edge (height) overflow is CLIPPED at
+/// line granularity + DIAGNOSED (<c>PAINT-MARGIN-BOX-CONTENT-OVERFLOW-001</c>, overflow-clipping cycle)
+/// — a partial-glyph clip path is a tracked follow-up.
 /// </para>
 /// </remarks>
 internal static class PageMarginBoxPainter
@@ -85,6 +87,7 @@ internal static class PageMarginBoxPainter
     private const double NormalLineHeightFactor = 1.2; // mirrors TextPainter's line-height: normal.
     private const uint DefaultColorArgb = 0xFF000000;   // CSS initial `color` (opaque black) — currentColor fallback.
     private const double OverflowEpsilonPx = 0.5;       // content-height overflow tolerance (sub-px rounding slack).
+    private const int BoxSizingBorderBox = 1;           // KeywordResolver box-sizing table: 0 = content-box, 1 = border-box.
 
     /// <summary>A background band to fill behind a margin box: its page-px region rect (CSS-px,
     /// page-top origin) + the resolved packed 0xAARRGGBB color. Painted by
@@ -311,28 +314,33 @@ internal static class PageMarginBoxPainter
             // that's `auto`, by SHRINKING a content-bearing box to its border-box content size (cycle 14
             // first cut) — so its background/border cover the box rather than the whole band. The box is
             // then positioned in the band by its §5.3.2.4 name-derived ROLE (start/center/end by name,
-            // NOT the declared content alignment). An explicit size is the content-box size (box-sizing:
-            // content-box); the border-box adds the border+padding insets, and applies even to an
-            // empty/failed-font box (a sized decorative box). Corner boxes (no variable axis) + auto-sized
-            // empty/failed-font boxes keep the full band (the cycle-8 decorative band). Box size is
-            // clamped to the band. This is each box's DESIRED (max-content / explicit) size; siblings
-            // sharing an edge that would overlap are then resolved by ResolveEdgeOverlaps (§5.3 min/max-
-            // content flex or center-priority clamp), and a flexed/shrunk box's content is re-wrapped to
-            // fit. The wrapped-line content-alignment stays deferred; vertical-edge overflow is DIAGNOSED
-            // below (clipping deferred — deferrals.md).
+            // NOT the declared content alignment). An explicit size specifies the box per its `box-sizing`
+            // (CSS Basic UI 4 §10, box-sizing cycle): the CONTENT box by default (the border-box adds the
+            // border+padding insets) or, under `box-sizing: border-box`, the BORDER box itself (the insets
+            // come out of the content area; the used border-box never goes below the insets, flooring the
+            // content box at 0). Either way it applies even to an empty/failed-font box (a sized decorative
+            // box). Corner boxes (no variable axis) + auto-sized empty/failed-font boxes keep the full band
+            // (the cycle-8 decorative band). Box size is clamped to the band. This is each box's DESIRED
+            // (max-content / explicit) size; siblings sharing an edge that would overlap are then resolved
+            // by ResolveEdgeOverlaps (§5.3 min/max-content flex or center-priority clamp), and a
+            // flexed/shrunk box's content is re-wrapped to fit. Vertical-edge overflow is CLIPPED at line
+            // granularity + DIAGNOSED below (overflow-clipping cycle).
             var boxWidthPx = region.Width;
             var boxHeightPx = region.Height;
+            var borderBoxSizing = IsBorderBoxSizing(style);
             if (region.VariableAxis == PageMarginBoxGeometry.MarginBoxAxis.Horizontal)
             {
                 if (TryReadExplicitSizePx(style, PropertyId.Width, region.Width) is double w)
-                    boxWidthPx = Math.Min(region.Width, w + insetLeftPx + insetRightPx);
+                    boxWidthPx = Math.Min(region.Width,
+                        borderBoxSizing ? Math.Max(w, insetLeftPx + insetRightPx) : w + insetLeftPx + insetRightPx);
                 else if (hasLine)
                     boxWidthPx = Math.Min(region.Width, WidestLineAdvancePx(inline) + insetLeftPx + insetRightPx);
             }
             else if (region.VariableAxis == PageMarginBoxGeometry.MarginBoxAxis.Vertical)
             {
                 if (TryReadExplicitSizePx(style, PropertyId.Height, region.Height) is double h)
-                    boxHeightPx = Math.Min(region.Height, h + insetTopPx + insetBottomPx);
+                    boxHeightPx = Math.Min(region.Height,
+                        borderBoxSizing ? Math.Max(h, insetTopPx + insetBottomPx) : h + insetTopPx + insetBottomPx);
                 else if (hasLine)
                     boxHeightPx = Math.Min(region.Height, (lineHeightPx * inline.Lines.Length) + insetTopPx + insetBottomPx);
             }
@@ -382,9 +390,9 @@ internal static class PageMarginBoxPainter
         // content FITS instead of overflowing. Only horizontal edges (variable axis = width); a box still
         // narrower than its longest unbreakable word overflows that word (inherent). Forced-break
         // (nested-block) content re-wraps too — its `reflowWhiteSpace` (pre-line/pre) preserves the authored
-        // U+000A block breaks while wrapping a long block child (post-PR-#154 review P2). The content-
-        // alignment of wrapped lines is a documented follow-up; vertical-edge (height) overflow is now
-        // DIAGNOSED above (clipping deferred — deferrals.md).
+        // U+000A block breaks while wrapping a long block child (post-PR-#154 review P2). Wrapped lines are
+        // aligned per line by the box's alignment (LineAlignFactor); vertical-edge (height) overflow is
+        // CLIPPED at line granularity + DIAGNOSED in PASS 2 (overflow-clipping cycle).
         foreach (var item in items)
         {
             if (!item.HasLine || !item.CanWrap
@@ -453,16 +461,27 @@ internal static class PageMarginBoxPainter
             var blockHeightPx = lineHeightPx * inline.Lines.Length;
             var contentBoxWidthPx = Math.Max(0, boxWidthPx - insetLeftPx - insetRightPx);
             var contentBoxHeightPx = Math.Max(0, boxHeightPx - insetTopPx - insetBottomPx);
-            // Vertical-edge (height) OVERFLOW (Task 23): when the content block-height exceeds the box's
-            // content-box height — the box was clamped to the page-margin band but its content is TALLER (the
-            // common case is a vertical left/right edge box at the band limit, or a multi-line element()
-            // running header) — surface it (CLAUDE.md #7, no silent overflow), naming the box + the measured
-            // vs available height so the diagnostic is actionable (post-PR-#154 review P3). Reported once PER
-            // BOX (each item is visited once here), so multiple overflowing headers/footers are each
-            // diagnosable. The content still paints (it overflows the box); content-box clipping/truncation
-            // is a documented follow-up (deferrals.md).
+            // Vertical-edge (height) OVERFLOW (Task 23 + the overflow-clipping cycle): when the content
+            // block-height exceeds the box's content-box height — the box was clamped to the page-margin
+            // band but its content is TALLER (the common case is a vertical left/right edge box at the band
+            // limit, or a multi-line element() running header) — the overflow is CLIPPED at line
+            // granularity: the first lines that fit the content-box height paint (reading-order truncation;
+            // a whole line either fits or is dropped — a partial-glyph clip via a PDF clip path is a
+            // tracked follow-up, deferrals.md), and the truncated block is then vertical-aligned within the
+            // content box. The diagnostic keeps the truncation visible (CLAUDE.md #7 — never drop content
+            // silently), naming the box + the measured vs available height + the kept/total lines
+            // (post-PR-#154 review P3); reported once PER BOX (each item is visited once here), so multiple
+            // overflowing headers/footers are each diagnosable. When not even one line fits, the box paints
+            // its decoration only (like an empty `content: ""` box).
             if (blockHeightPx > contentBoxHeightPx + OverflowEpsilonPx)
-                EmitContentOverflow(diagnostics, item.Name, blockHeightPx, contentBoxHeightPx);
+            {
+                var keptLines = MaxLinesThatFit(contentBoxHeightPx, lineHeightPx, inline.Lines.Length);
+                EmitContentOverflow(
+                    diagnostics, item.Name, blockHeightPx, contentBoxHeightPx, keptLines, inline.Lines.Length);
+                if (keptLines <= 0) continue; // nothing fits — decoration only, no text fragment.
+                inline = inline with { Lines = inline.Lines[..keptLines] };
+                blockHeightPx = lineHeightPx * keptLines;
+            }
             // Vertical alignment uses the FULL wrapped block height (lineHeight × line count), not one line:
             // a re-wrapped multi-line header would otherwise be positioned as if it were a single line and
             // spill out of its band (review P2). The whole block is centered / top- / bottom-aligned in the
@@ -568,6 +587,23 @@ internal static class PageMarginBoxPainter
         return true;
     }
 
+    /// <summary>The number of whole lines (at <paramref name="lineHeightPx"/> pitch) that fit
+    /// <paramref name="contentBoxHeightPx"/>, clamped to <c>[0, totalLines]</c> — the overflow-clipping
+    /// cap (line-granularity truncation; <see cref="OverflowEpsilonPx"/> absorbs sub-px rounding so an
+    /// exactly-fitting block isn't clipped). A non-positive line-height can't have produced an overflowing
+    /// block-height (it would be ≤ 0), so it keeps every line — defensive; the caller only clips after
+    /// measuring an overflow. The range is narrowed BEFORE the int cast (post-PR-#155 review P2): a huge
+    /// ratio (a tiny positive line-height under a tall box) would make the double→int conversion overflow
+    /// into an unspecified value — e.g. int.MinValue, clamping to 0 and clipping EVERY line.</summary>
+    internal static int MaxLinesThatFit(double contentBoxHeightPx, double lineHeightPx, int totalLines)
+    {
+        if (lineHeightPx <= 0) return totalLines;
+        var ratio = (Math.Max(0, contentBoxHeightPx) + OverflowEpsilonPx) / lineHeightPx;
+        if (ratio >= totalLines) return totalLines; // huge/∞ ratio: every line fits — decided before any cast
+        if (!(ratio > 0)) return 0;                 // ≤ 0 or NaN (defensive)
+        return (int)Math.Floor(ratio);              // 0 < ratio < totalLines (an int) → the cast is safe
+    }
+
     /// <summary>The widest line's advance (px) in <paramref name="inline"/> — the content's max-content
     /// width. The first line is NOT always the widest: a mandatory break (a newline in the content) can put
     /// a wider line later (Copilot review), so the desired-size + re-wrap-trigger comparisons use this.</summary>
@@ -579,12 +615,13 @@ internal static class PageMarginBoxPainter
         return widest;
     }
 
-    /// <summary>The explicit content-box size (CSS px) a margin box declares on its §5.3 VARIABLE axis
+    /// <summary>The explicit size (CSS px) a margin box declares on its §5.3 VARIABLE axis
     /// — <c>width</c> for top/bottom boxes, <c>height</c> for left/right — or <see langword="null"/>
     /// when it's <c>auto</c>/unresolved (the caller shrink-to-fits). An absolute length is used as-is; a
     /// percentage resolves against <paramref name="bandExtentPx"/> (the box's containing block on that
-    /// axis). box-sizing is content-box (the CSS default) — the caller adds the border+padding insets to
-    /// get the border-box. A font-/viewport-relative or <c>calc()</c> size is diagnosed + DROPPED
+    /// axis). The caller maps the size to the border-box per the box's <c>box-sizing</c>
+    /// (<see cref="IsBorderBoxSizing"/>): content-box (the initial) adds the border+padding insets,
+    /// border-box floors at them. A font-/viewport-relative or <c>calc()</c> size is diagnosed + DROPPED
     /// upstream by <see cref="MarginBoxStyle"/> (post-PR-#144 review), so it never reaches here as a slot
     /// — this reads it as <c>auto</c> and the caller shrink-to-fits. Negatives are rejected upstream
     /// (non-negative property); the <c>Max(0, …)</c> is defensive.</summary>
@@ -599,6 +636,18 @@ internal static class PageMarginBoxPainter
             ComputedSlotTag.Percentage => Math.Max(0, slot.AsPercentage() / 100.0 * bandExtentPx),
             _ => null,
         };
+    }
+
+    /// <summary>Whether the box computes <c>box-sizing: border-box</c> (CSS Basic UI 4 §10) — its
+    /// explicit §5.3 variable-axis <c>width</c>/<c>height</c> then specifies the BORDER box (the
+    /// border+padding insets come out of the content area) instead of the content box (the initial
+    /// <c>content-box</c> — insets add around it). Unset / <c>content-box</c> / an invalid keyword
+    /// (rejected by the resolver) → <see langword="false"/>. <c>box-sizing</c> has no effect on a
+    /// shrink-to-fit (<c>auto</c>) box — it only changes what an EXPLICIT size specifies.</summary>
+    private static bool IsBorderBoxSizing(ComputedStyle style)
+    {
+        var slot = style.Get(PropertyId.BoxSizing);
+        return slot.Tag == ComputedSlotTag.Keyword && slot.AsKeyword() == BoxSizingBorderBox;
     }
 
     /// <summary>Look up the running element's captured OWN-STYLE pairs (font/color + the element's own
@@ -809,14 +858,15 @@ internal static class PageMarginBoxPainter
             DiagnosticSeverity.Warning));
 
     private static void EmitContentOverflow(
-        IDiagnosticsSink diagnostics, string boxName, double contentHeightPx, double availableHeightPx) =>
+        IDiagnosticsSink diagnostics, string boxName, double contentHeightPx, double availableHeightPx,
+        int keptLines, int totalLines) =>
         diagnostics.Emit(new Diagnostic(
             DiagnosticCodes.PaintMarginBoxContentOverflow001,
             $"The page margin box @{boxName} has content taller than its area " +
             $"({contentHeightPx:0.#}px content vs {availableHeightPx:0.#}px available): the box was clamped " +
             "to the page-margin band but its content block-height exceeds the available height (a vertical " +
-            "left/right edge box at the band limit, or a multi-line element() running header). The content " +
-            "still paints — it overflows the box; content-box clipping / truncation is a tracked follow-up " +
-            "(deferrals.md#layout-to-pdf-pipeline).",
+            "left/right edge box at the band limit, or a multi-line element() running header). The overflow " +
+            $"was clipped at line granularity — {keptLines} of {totalLines} line(s) painted; a partial-glyph " +
+            "clip via a PDF clip path is a tracked follow-up (deferrals.md#layout-to-pdf-pipeline).",
             DiagnosticSeverity.Warning));
 }

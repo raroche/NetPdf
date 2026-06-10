@@ -154,6 +154,50 @@ public sealed class MarginBoxStyleTests
         Assert.False(child.IsSet(PropertyId.Width));
     }
 
+    [Theory]
+    [InlineData("border-box", 1)]
+    [InlineData("content-box", 0)]
+    public void Build_materializes_box_sizing(string value, int expectedKeyword)
+    {
+        // box-sizing joins the cascade whitelist (box-sizing cycle) → a keyword slot the painter reads
+        // to decide whether an explicit width/height specifies the content box or the border box.
+        var style = MarginBoxStyle.Build(ImmutableArray.Create(Decl("box-sizing", value)));
+        var slot = style.Get(PropertyId.BoxSizing);
+        Assert.Equal(ComputedSlotTag.Keyword, slot.Tag);
+        Assert.Equal(expectedKeyword, slot.AsKeyword());   // KeywordResolver table: content-box=0, border-box=1
+    }
+
+    [Fact]
+    public void Build_does_not_inherit_box_sizing()
+    {
+        // box-sizing is NOT a CSS inherited property — a page-context `box-sizing: border-box` must
+        // not flow down to the child margin box (mirrors width/height).
+        var parent = MarginBoxStyle.Build(ImmutableArray.Create(Decl("box-sizing", "border-box")));
+        var child = MarginBoxStyle.Build(ImmutableArray<CssDeclaration>.Empty, parent);
+        Assert.False(child.IsSet(PropertyId.BoxSizing));
+    }
+
+    [Fact]
+    public void Build_css_wide_unset_resets_box_sizing_to_initial()
+    {
+        // box-sizing isn't inherited, so `unset` behaves as `initial` (CSS Cascade L5 §7) — the slot is
+        // cleared (→ the content-box default) even with a parent that declares border-box.
+        var parent = MarginBoxStyle.Build(ImmutableArray.Create(Decl("box-sizing", "border-box")));
+        var child = MarginBoxStyle.Build(ImmutableArray.Create(Decl("box-sizing", "unset")), parent);
+        Assert.False(child.IsSet(PropertyId.BoxSizing));
+    }
+
+    [Fact]
+    public void Build_css_wide_inherit_takes_the_parent_box_sizing()
+    {
+        // An explicit `inherit` DOES take the parent's value (explicit inheritance of a non-inherited
+        // property, like `background-color: inherit`).
+        var parent = MarginBoxStyle.Build(ImmutableArray.Create(Decl("box-sizing", "border-box")));
+        var child = MarginBoxStyle.Build(ImmutableArray.Create(Decl("box-sizing", "inherit")), parent);
+        Assert.Equal(ComputedSlotTag.Keyword, child.Get(PropertyId.BoxSizing).Tag);
+        Assert.Equal(parent.Get(PropertyId.BoxSizing).AsKeyword(), child.Get(PropertyId.BoxSizing).AsKeyword());
+    }
+
     // ---- Inheritance from the parent (page context / root), cycle 5 ----
 
     [Fact]

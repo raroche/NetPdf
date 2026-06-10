@@ -39,13 +39,15 @@ namespace NetPdf.Rendering;
 /// <b>Supported properties (a WHITELIST).</b> The inherited <c>font-family</c> / <c>font-size</c> /
 /// <c>font-weight</c> / <c>font-style</c> / <c>color</c> are materialized + inherited. The
 /// non-inherited <c>background-color</c> (cycle 8), the 12 <c>border-*-width</c> / <c>-style</c> /
-/// <c>-color</c> longhands (border cycle), the 4 <c>padding-*</c> longhands (padding cycle), and
-/// <c>width</c> / <c>height</c> (explicit-size cycle) are
+/// <c>-color</c> longhands (border cycle), the 4 <c>padding-*</c> longhands (padding cycle),
+/// <c>width</c> / <c>height</c> (explicit-size cycle), and <c>box-sizing</c> (box-sizing cycle) are
 /// materialized from the box's OWN declarations — the painter fills a band behind the box's content,
 /// strokes the border around its region, insets the text content origin by the used
 /// border-width + padding on each side, and sizes the box along its §5.3 VARIABLE axis from an explicit
 /// <c>width</c> (top/bottom) / <c>height</c> (left/right) — an absolute length or a percentage of the
-/// band; <c>auto</c> shrink-to-fits (cycle 14). (A <i>non-absolute</i> padding — a percentage or a font-/
+/// band; <c>auto</c> shrink-to-fits (cycle 14); per CSS Basic UI 4 §10 the explicit size specifies the
+/// content box (<c>box-sizing: content-box</c>, the initial) or the border box
+/// (<c>box-sizing: border-box</c>). (A <i>non-absolute</i> padding — a percentage or a font-/
 /// viewport-relative length — is accepted by the cascade but can't be resolved to used px here yet, so
 /// it's diagnosed + dropped rather than silently zeroed; likewise a DEFERRED <c>width</c>/<c>height</c>
 /// — a font-/viewport-relative or <c>calc()</c> size (a percentage IS supported) — is diagnosed +
@@ -56,8 +58,7 @@ namespace NetPdf.Rendering;
 /// <see cref="VerticalAlignFactor"/>) and overrides the box's name-derived default; inheriting the
 /// page/root's UA-default <c>text-align: start</c> would otherwise spuriously override the name-derived
 /// centering (post-PR-#134 review). The remaining box-model declarations (<c>border-radius</c>,
-/// background <i>images</i>, <c>box-sizing</c> — the explicit size is content-box only, …) stay
-/// deferred (deferrals.md).
+/// background <i>images</i>, …) stay deferred (deferrals.md).
 /// </para>
 /// <para>
 /// <b>Relative font (cycle 7).</b> A parent-relative <c>font-size</c> (<c>em</c> / <c>ex</c> /
@@ -70,9 +71,9 @@ namespace NetPdf.Rendering;
 /// <para>
 /// <b>Deferred (later cycles, deferrals.md#layout-to-pdf-pipeline).</b> <c>rem</c> / viewport-relative
 /// font-size, page-context inheritance of alignment, precise <c>revert</c>, and — for the §5.3
-/// three-box-per-edge sizing (shrink-to-fit + explicit <c>width</c>/<c>height</c> have shipped) — the
-/// min/max-content DISTRIBUTION for overlapping sibling margin boxes, <c>box-sizing</c>, unsupported
-/// relative/<c>calc()</c> <c>width</c>/<c>height</c>, and overflow clipping.
+/// three-box-per-edge sizing (shrink-to-fit + explicit <c>width</c>/<c>height</c> + the min/max-content
+/// overlap distribution + <c>box-sizing</c> + line-granularity overflow clipping have shipped) —
+/// unsupported relative/<c>calc()</c> <c>width</c>/<c>height</c> and partial-glyph clip paths.
 /// </para>
 /// </remarks>
 internal static class MarginBoxStyle
@@ -97,9 +98,11 @@ internal static class MarginBoxStyle
     /// the non-inherited <c>background-color</c> (cycle 8 — paints a band behind the box's content),
     /// the 12 <c>border-*-width</c> / <c>-style</c> / <c>-color</c> longhands (border cycle — painted
     /// around the box region), the 4 <c>padding-*</c> longhands (padding cycle — inset the box's
-    /// content origin), and <c>width</c> / <c>height</c> (explicit-size cycle — set the box's §5.3
-    /// VARIABLE-axis size). These are materialized onto the style but deliberately left OUT of the
-    /// inheritance copy above, since they are not CSS inherited properties.</summary>
+    /// content origin), <c>width</c> / <c>height</c> (explicit-size cycle — set the box's §5.3
+    /// VARIABLE-axis size), and <c>box-sizing</c> (box-sizing cycle — whether that explicit size
+    /// specifies the content box or the border box). These are materialized onto the style but
+    /// deliberately left OUT of the inheritance copy above, since they are not CSS inherited
+    /// properties.</summary>
     private static readonly ImmutableArray<PropertyId> CascadedStyleIds =
         SupportedStyleIds.AddRange(
             PropertyId.BackgroundColor,
@@ -108,7 +111,7 @@ internal static class MarginBoxStyle
             PropertyId.BorderBottomWidth, PropertyId.BorderBottomStyle, PropertyId.BorderBottomColor,
             PropertyId.BorderLeftWidth, PropertyId.BorderLeftStyle, PropertyId.BorderLeftColor,
             PropertyId.PaddingTop, PropertyId.PaddingRight, PropertyId.PaddingBottom, PropertyId.PaddingLeft,
-            PropertyId.Width, PropertyId.Height);
+            PropertyId.Width, PropertyId.Height, PropertyId.BoxSizing);
 
     private static readonly FrozenSet<PropertyId> CascadedStyleIdSet = CascadedStyleIds.ToFrozenSet();
 

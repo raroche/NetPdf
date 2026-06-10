@@ -55,6 +55,16 @@ internal static class LengthResolver
     private static readonly CalcLengthEvaluator.CalcContext AbsoluteOnlyCalcContext =
         new(double.NaN, double.NaN, double.NaN, double.NaN, double.NaN);
 
+    /// <summary>Post-PR-#159 Copilot review — a finite PROBE context used only to pick the right
+    /// failure DIAGNOSTIC: when the NaN-context evaluation fails, a re-evaluation against these
+    /// arbitrary finite bases (UA-default-ish, all non-zero so no term degenerates) succeeding
+    /// proves the expression itself is well-formed and only its context-dependent terms were
+    /// unresolvable; it failing too means the expression is malformed/unsupported (type error,
+    /// zero divisor/step, a number-typed whole value like <c>sign(…)</c>, a §10.8+ function).
+    /// The probe RESULT is never used — only success/failure.</summary>
+    private static readonly CalcLengthEvaluator.CalcContext FiniteProbeCalcContext =
+        new(PercentBasePx: 100, EmPx: 16, RootEmPx: 16, ViewportWidthPx: 800, ViewportHeightPx: 600);
+
     /// <summary>The single keyword id used by the dimension family for the property's
     /// admitted keyword (<c>auto</c>, <c>normal</c>, or <c>none</c>). v1 uses one id
     /// per property since only one keyword applies.</summary>
@@ -116,15 +126,24 @@ internal static class LengthResolver
         // `margin-left: calc(0px - 10px)` legitimately resolves to −10px.
         if (CalcLengthEvaluator.IsMathFunction(value))
         {
+            var clampNonNegative = NonNegativeProperties.IsRequired(propertyId);
             if (CalcLengthEvaluator.TryEvaluate(
-                    value, AbsoluteOnlyCalcContext,
-                    clampNonNegative: NonNegativeProperties.IsRequired(propertyId), out var calcPx))
+                    value, AbsoluteOnlyCalcContext, clampNonNegative, out var calcPx))
             {
                 return ResolverResult.Resolved(ComputedSlot.FromLengthPx(calcPx));
             }
+            // Post-PR-#159 Copilot review — the failure has TWO distinct causes and the
+            // diagnostic should name the right one. A finite-probe re-evaluation succeeding
+            // means the expression is well-formed and only failed under the NaN context
+            // (= it carries context-dependent terms, the documented deferral); the probe
+            // failing too means the expression itself is malformed or unsupported.
             EmitInvalid(diagnostics, propertyName, value,
-                "math functions with context-dependent terms (%/em/rem/viewport units) aren't resolved " +
-                "for body properties yet — absolute-term expressions are (deferrals.md)", location);
+                CalcLengthEvaluator.TryEvaluate(value, FiniteProbeCalcContext, clampNonNegative, out _)
+                    ? "math functions with context-dependent terms (%/em/rem/viewport units) aren't resolved " +
+                      "for body properties yet — absolute-term expressions are (deferrals.md)"
+                    : "invalid or unsupported math function expression (type mismatch, zero divisor/step, " +
+                      "a number-valued result for a length property, or a §10.8+ function)",
+                location);
             return ResolverResult.Invalid();
         }
 

@@ -1154,11 +1154,16 @@ internal static class CssPreprocessor
             if (IsIdentifierStart(c))
             {
                 var ident = tok.ReadIdentifier();
-                if (tok.PeekChar() == '(')
-                {
-                    if (MathFunctionNames.Contains(ident.ToString())) return true;
-                    tok.ReadParenthesizedBlock();
-                }
+                if (tok.PeekChar() == '(' && MathFunctionNames.Contains(ident.ToString()))
+                    return true;
+                // Post-PR-#159 Copilot review — do NOT skip an unknown function's argument
+                // list: a math function can nest inside one (var(--x, calc(1in - 24pt))),
+                // and this detector's contract is CONTAINS. The scan continues INTO the
+                // block (the '(' falls through to the generic ReadChar below); quoted
+                // strings inside the arguments are still skipped by the loop head. A
+                // false positive (e.g. "calc(" inside an unquoted url()) is benign — the
+                // recovery delivers the raw verbatim and a kept AngleSharp copy stays
+                // last-wins-identical (see the recovery gate's doc).
                 continue;
             }
             tok.ReadChar();

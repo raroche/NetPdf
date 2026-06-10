@@ -216,6 +216,36 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Explicit_width_sizes_the_background_band()
+    {
+        // Body-explicit-width gap fix — an empty block with `width: 64px` paints a
+        // 64px-wide (= 48pt) background band, not a full-content-width one (pre-fix the
+        // no-inline-content block path ignored explicit width entirely; the band spanned
+        // the whole content area, ~451.5pt under the default 96px page margins).
+        var r = FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:64px;height:20px;background-color:#3366cc\"></div>" +
+            "</body></html>")));
+        Assert.Equal(48.0, r.W, 1);   // 64px → 48pt
+        Assert.Equal(15.0, r.H, 1);   // 20px → 15pt
+    }
+
+    [Fact]
+    public void Explicit_width_background_band_is_the_border_box()
+    {
+        // The declared width is the CONTENT-box size — the painted band adds the
+        // inline borders + padding: 64 + 2×2 + 2×8 = 84px → 63pt wide,
+        // 20 + 2×2 + 2×8 = 40px → 30pt tall.
+        var r = FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:64px;height:20px;padding:8px;border:2px solid #000;" +
+            "background-color:#3366cc\"></div>" +
+            "</body></html>")));
+        Assert.Equal(63.0, r.W, 1);
+        Assert.Equal(30.0, r.H, 1);
+    }
+
+    [Fact]
     public void At_page_margin_overrides_the_content_area_width()
     {
         // A full-width (auto) block paints a background rect spanning the content width. With

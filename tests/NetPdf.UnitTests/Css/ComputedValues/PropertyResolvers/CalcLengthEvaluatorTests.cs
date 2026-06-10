@@ -75,6 +75,12 @@ public sealed class CalcLengthEvaluatorTests
     [InlineData("calc(10px * sign(0px - 5px))", 0.0)] // sign → −1 (number) → −10px → §10.5 clamp
     [InlineData("calc(10px * sign(5px) + 2px)", 12.0)]
     [InlineData("ROUND(UP, 1px, 10px)", 10.0)]        // names + strategies are case-insensitive
+    // Post-PR-#159 Copilot review — a NEGATIVE step normalizes to |B| (multiples of B and |B|
+    // are the same set); pre-fix the flipped ratio inverted the strategies + the tie-break.
+    [InlineData("round(nearest, 5px, -2px)", 6.0)]    // tie between 4 and 6 → toward +∞ (was 4)
+    [InlineData("round(up, 11px, -10px)", 20.0)]      // up stays toward +∞ (was 10)
+    [InlineData("round(down, 11px, -10px)", 10.0)]
+    [InlineData("calc(round(nearest, 0px - 5px, -2px) + 10px)", 6.0)]  // −5 ties −6/−4 → −4; +10
     public void TryEvaluate_resolves_stepped_and_sign_functions(string raw, double expectedPx, bool isNumber = false)
     {
         if (isNumber)
@@ -102,6 +108,17 @@ public sealed class CalcLengthEvaluatorTests
         Assert.False(CalcLengthEvaluator.TryEvaluate(raw, Ctx, out _), raw);
     }
 
+    [Fact]
+    public void Sign_of_a_NaN_context_term_fails_cleanly_instead_of_throwing()
+    {
+        // Post-PR-#159 Copilot review — Math.Sign(double.NaN) THROWS; the body-calc NaN
+        // context makes a %/relative sign() argument NaN, so `calc(10px * sign(50%))` on a
+        // body property crashed the whole convert instead of failing to the surfaced path.
+        var nanCtx = new CalcLengthEvaluator.CalcContext(
+            double.NaN, double.NaN, double.NaN, double.NaN, double.NaN);
+        Assert.False(CalcLengthEvaluator.TryEvaluate("calc(10px * sign(50%))", nanCtx, out _));
+    }
+
     [Theory]
     [InlineData("min()")]                  // no arguments
     [InlineData("min(10px, 5)")]           // mixed-type arguments (§10.4)
@@ -126,7 +143,7 @@ public sealed class CalcLengthEvaluatorTests
     [InlineData("calc(10px + 5)")]      // mixed-type sum (length + number, §10.4)
     [InlineData("calc(5)")]             // a bare-number result is not a length
     [InlineData("calc(10cqw + 5px)")]   // container units — unsupported
-    [InlineData("calc(round(1px))")]    // round()/mod()/abs() etc. — unsupported
+    [InlineData("calc(round(1px))")]    // B defaults to the NUMBER 1 → type mismatch with a length A
     [InlineData("calc(10px")]           // unbalanced — not even calc-shaped
     [InlineData("calc()")]
     [InlineData("10px")]                // not a calc() at all

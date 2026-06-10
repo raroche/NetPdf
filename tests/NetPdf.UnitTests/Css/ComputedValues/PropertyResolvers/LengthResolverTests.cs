@@ -64,6 +64,41 @@ public sealed class LengthResolverTests
     }
 
     [Theory]
+    [InlineData("mod(10px, 0px)")]      // zero step/divisor
+    [InlineData("sign(10px)")]          // number-valued whole result for a length property
+    [InlineData("round(7px)")]          // B defaults to the NUMBER 1 → type mismatch
+    [InlineData("calc(10px + 5)")]      // mixed-type sum (§10.4)
+    public void Body_malformed_math_function_gets_the_invalid_not_the_deferral_message(string input)
+    {
+        // Post-PR-#159 Copilot review — a failure that ISN'T about context-dependent terms
+        // (the finite-probe re-evaluation fails too) names the real cause instead of
+        // misleadingly blaming unresolved %/em/viewport terms.
+        var sink = new CapturingSink();
+        var result = LengthResolver.Resolve(input, PropertyType.LengthPercentageAuto,
+            PropertyId.Width, "width", sink, default);
+        Assert.True(result.IsInvalid, input);
+        var d = Assert.Single(sink.Diagnostics);
+        Assert.Contains("invalid or unsupported", d.Message);
+        Assert.DoesNotContain("context-dependent", d.Message);
+    }
+
+    [Fact]
+    public void Body_sign_of_a_percent_term_is_diagnosed_context_dependent_without_crashing()
+    {
+        // Post-PR-#159 Copilot review — pre-fix Math.Sign(NaN) THREW here (the NaN context
+        // makes sign(50%)'s argument NaN). Now it fails cleanly, and the finite probe
+        // (under which sign(50%) → 1 and the expression evaluates) classifies the failure
+        // as context-dependent — the expression is well-formed, only its % term isn't
+        // resolvable at cascade time.
+        var sink = new CapturingSink();
+        var result = LengthResolver.Resolve("calc(10px * sign(50%))", PropertyType.LengthPercentageAuto,
+            PropertyId.Width, "width", sink, default);
+        Assert.True(result.IsInvalid);
+        var d = Assert.Single(sink.Diagnostics);
+        Assert.Contains("context-dependent", d.Message);
+    }
+
+    [Theory]
     [InlineData("16px", 16.0)]
     [InlineData("0", 0.0)]                  // bare zero is a valid length
     [InlineData("1in", 96.0)]

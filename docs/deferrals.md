@@ -3249,7 +3249,24 @@ flags the categories):
          §10.8+ trig/exponential functions (`sin()`/`pow()`/…), CONTEXT-DEPENDENT body calc (%/em/
          viewport terms need layout-time bases — margin boxes resolve them via the painter), and the
          running element's REAL nested block LAYOUT (sub-boxes with own decoration/margins — lines
-         only).
+         only). The post-PR-#159 review fixed `round()`'s negative-step inversion (the step
+         normalizes to |B|), a `sign(NaN)` crash under the body NaN context (NaN now propagates to
+         the surfaced path), the failure diagnostic mis-blaming context-dependent terms for
+         malformed expressions (a finite-probe re-evaluation picks the right message), and
+         `ContainsMathFunction` missing math functions nested inside unknown functions
+         (`var(--x, calc(…))` now recovers).
+       - **Body explicit `width` (post-PR-#159 handoff-spotted gap) — first cut DONE:** an in-flow
+         `BlockContainer`/`ListItem` with an explicit `width` sizes its border box to
+         width + inline borders + padding at BOTH `BlockLayouter` fill sites (outer dispatch +
+         subtree recursion, shared `ResolveInFlowBorderBoxInlineSize`), mirroring the inline-only
+         block path — so an empty `width: 64px` div's background band no longer spans the full
+         content width. STILL DEFERRED (the CSS 2.2 §10.3.3 remainder): margin DISTRIBUTION
+         (`margin: auto` centering, the over-constrained rule — the box keeps its inline-start
+         edge), body `box-sizing`, percent width (reads as 0 → auto fill, the
+         `ReadLengthPxOrZero` cycle-1 contract), and the explicit width of `Table`/`InlineTable`
+         wrappers (the measured-grid growth logic owns their inline extent),
+         `FlexContainer`/`GridContainer`, and replaced boxes (all keep the documented
+         available-range fill).
        - **`@page :first` selector (cycle 10) — DONE:** `@page :first` rules apply on the single
          (first) page, overriding the bare `@page` by cascade specificity — `AtPageRules.EnumeratePageRules`
          yields bare-then-`:first` so the resolvers' last-wins cascade lets `:first` win (a bare

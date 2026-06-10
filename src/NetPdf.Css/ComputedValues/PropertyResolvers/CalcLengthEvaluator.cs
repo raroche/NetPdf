@@ -391,7 +391,13 @@ internal static class CalcLengthEvaluator
         pos++;
         if (a.IsNumber != b.IsNumber) return false;      // §10.4: same-type arguments only.
         if (b.Value == 0.0) return false;                // rounding to a zero step is invalid.
-        var ratio = a.Value / b.Value;
+        // Post-PR-#159 Copilot review — normalize the step to |B|: the multiples of B and of
+        // |B| are the same set, but a NEGATIVE B flips the ratio's sign, inverting the
+        // directional strategies (round(up, 11px, -10px) returned 10px instead of 20px) and
+        // the nearest tie-break (round(nearest, 5px, -2px) returned 4px instead of 6px —
+        // ties go to the LARGER multiple, toward +∞).
+        var step = Math.Abs(b.Value);
+        var ratio = a.Value / step;
         var multiple = strategy switch
         {
             RoundStrategy.Up => Math.Ceiling(ratio),
@@ -399,7 +405,7 @@ internal static class CalcLengthEvaluator
             RoundStrategy.ToZero => Math.Truncate(ratio),
             _ => Math.Floor(ratio + 0.5),                // nearest — ties toward +∞ (the larger multiple).
         };
-        result = a with { Value = multiple * b.Value };
+        result = a with { Value = multiple * step };
         return true;
     }
 
@@ -449,9 +455,14 @@ internal static class CalcLengthEvaluator
         SkipWhitespace(s, ref pos);
         if (pos >= s.Length || s[pos] != ')') return false;
         pos++;
+        // Post-PR-#159 Copilot review — Math.Sign(double.NaN) THROWS ArithmeticException;
+        // the body-calc NaN context makes a %/relative argument NaN, so sign(50%) would
+        // crash evaluation instead of failing cleanly. Propagate NaN (CSS Values 4 §10.9:
+        // sign(NaN) is NaN) — the caller's finite gate then rejects it on the surfaced
+        // path. Math.Sign handles ±∞ without throwing (±1, matching §10.7).
         result = isAbs
             ? a with { Value = Math.Abs(a.Value) }
-            : new Term(Math.Sign(a.Value), IsNumber: true);
+            : new Term(double.IsNaN(a.Value) ? double.NaN : Math.Sign(a.Value), IsNumber: true);
         return true;
     }
 

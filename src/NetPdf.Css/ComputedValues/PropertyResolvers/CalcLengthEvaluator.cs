@@ -3,6 +3,7 @@
 
 using System;
 using System.Globalization;
+using NetPdf.Css.Cascade;
 
 namespace NetPdf.Css.ComputedValues.PropertyResolvers;
 
@@ -24,11 +25,13 @@ namespace NetPdf.Css.ComputedValues.PropertyResolvers;
 /// <para>
 /// <b>Type checking (§10.4).</b> <c>+</c>/<c>-</c> require both operands to be the SAME type
 /// (length+length or number+number); <c>*</c> requires at least one NUMBER operand;
-/// <c>/</c> requires a NUMBER divisor (a near-zero divisor is invalid — division by zero, §10.4).
-/// The whole expression must evaluate to a LENGTH (a bare-number result is invalid for a length
-/// property). Intermediates may be negative; the final used value is CLAMPED to the property's
-/// allowed range by the caller contract here — ≥ 0, per §10.5 ("clamped at used-value time") and
-/// the non-negative consumers (margin-box <c>width</c>/<c>height</c>/<c>padding</c>, calc cycle).
+/// <c>/</c> requires a NUMBER divisor and rejects an EXACTLY-zero one (division by zero, §10.4 —
+/// a tiny non-zero divisor is valid per spec; post-PR-#157 Copilot review). A non-finite result
+/// (e.g. an overflowing quotient) is rejected at the end. The whole expression must evaluate to a
+/// LENGTH (a bare-number result is invalid for a length property). Intermediates may be negative;
+/// the final used value is CLAMPED to the property's allowed range by the caller contract here —
+/// ≥ 0, per §10.5 ("clamped at used-value time") and the non-negative consumers (margin-box
+/// <c>width</c>/<c>height</c>/<c>padding</c>, calc cycle).
 /// </para>
 /// <para>
 /// <b>Out of scope</b> (evaluate → <see langword="false"/>, the caller surfaces + falls back):
@@ -37,9 +40,6 @@ namespace NetPdf.Css.ComputedValues.PropertyResolvers;
 /// </remarks>
 internal static class CalcLengthEvaluator
 {
-    /// <summary>Near-zero divisor guard — a smaller magnitude is treated as division by zero
-    /// (invalid per §10.4) rather than producing an absurd/non-finite quotient.</summary>
-    private const double MinDivisorMagnitude = 1e-12;
 
     /// <summary>The contexts a <c>calc()</c> term resolves against: the percent base (the
     /// property's containing-block extent on its axis), the owning element's resolved font-size,
@@ -63,17 +63,21 @@ internal static class CalcLengthEvaluator
 
     /// <summary>Evaluate <paramref name="rawText"/> (a full <c>calc(…)</c> value) to a used length
     /// (px, ≥ 0 — range-clamped per §10.5). Returns <see langword="false"/> on a parse/type error,
-    /// an unsupported unit/function, division by (near-)zero, a bare-number result, or a non-finite
-    /// result.</summary>
+    /// an unsupported unit/function, division by (near-)zero, a bare-number result, a non-finite
+    /// result, or an expression exceeding the adversarial-input guards — the body length cap
+    /// (<see cref="CalcResolver.MaxBodyLength"/>) and the nesting-depth cap
+    /// (<see cref="CalcResolver.MaxDepth"/>), mirrored from the cascade calc resolver so both calc
+    /// front doors bound CPU/stack identically (post-PR-#157 review P2).</summary>
     public static bool TryEvaluate(string rawText, in CalcContext context, out double px)
     {
         px = 0;
         if (!IsCalc(rawText)) return false;
         var expr = rawText.AsSpan().Trim();
         expr = expr[5..^1]; // strip "calc(" + ")".
+        if (expr.Length > CalcResolver.MaxBodyLength) return false; // breadth guard (long operand chains).
 
         var pos = 0;
-        if (!TryParseSum(expr, ref pos, context, out var result)) return false;
+        if (!TryParseSum(expr, ref pos, context, depth: 0, out var result)) return false;
         SkipWhitespace(expr, ref pos);
         if (pos != expr.Length) return false;            // trailing junk.
         if (result.IsNumber) return false;               // a length property needs a length result.
@@ -86,9 +90,10 @@ internal static class CalcLengthEvaluator
     /// only these two types occur in the length subset).</summary>
     private readonly record struct Term(double Value, bool IsNumber);
 
-    private static bool TryParseSum(ReadOnlySpan<char> s, ref int pos, in CalcContext ctx, out Term result)
+    private static bool TryParseSum(
+        ReadOnlySpan<char> s, ref int pos, in CalcContext ctx, int depth, out Term result)
     {
-        if (!TryParseProduct(s, ref pos, ctx, out result)) return false;
+        if (!TryParseProduct(s, ref pos, ctx, depth, out result)) return false;
         while (true)
         {
             var beforeWs = pos;
@@ -100,15 +105,16 @@ internal static class CalcLengthEvaluator
             var op = s[pos];
             pos++;
             if (!hadLeadingWs || pos >= s.Length || !char.IsWhiteSpace(s[pos])) return false;
-            if (!TryParseProduct(s, ref pos, ctx, out var right)) return false;
+            if (!TryParseProduct(s, ref pos, ctx, depth, out var right)) return false;
             if (result.IsNumber != right.IsNumber) return false; // §10.4: same-type operands only.
             result = result with { Value = op == '+' ? result.Value + right.Value : result.Value - right.Value };
         }
     }
 
-    private static bool TryParseProduct(ReadOnlySpan<char> s, ref int pos, in CalcContext ctx, out Term result)
+    private static bool TryParseProduct(
+        ReadOnlySpan<char> s, ref int pos, in CalcContext ctx, int depth, out Term result)
     {
-        if (!TryParseValue(s, ref pos, ctx, out result)) return false;
+        if (!TryParseValue(s, ref pos, ctx, depth, out result)) return false;
         while (true)
         {
             var beforeWs = pos;
@@ -116,7 +122,7 @@ internal static class CalcLengthEvaluator
             if (pos >= s.Length || (s[pos] != '*' && s[pos] != '/')) { pos = beforeWs; return true; }
             var op = s[pos];
             pos++; // * and / need no surrounding whitespace (§10.3).
-            if (!TryParseValue(s, ref pos, ctx, out var right)) return false;
+            if (!TryParseValue(s, ref pos, ctx, depth, out var right)) return false;
             if (op == '*')
             {
                 if (!result.IsNumber && !right.IsNumber) return false; // length × length has no CSS type.
@@ -124,24 +130,31 @@ internal static class CalcLengthEvaluator
             }
             else
             {
-                // §10.4: the divisor must be a NUMBER, and not (near-)zero.
-                if (!right.IsNumber || Math.Abs(right.Value) < MinDivisorMagnitude) return false;
+                // §10.4: the divisor must be a NUMBER and not EXACTLY zero. A tiny non-zero divisor
+                // is a valid expression per spec (post-PR-#157 Copilot review — a near-zero guard
+                // wrongly rejected e.g. `calc(10px / 1e-13)`); an overflowing quotient is caught by
+                // the final IsFinite gate instead.
+                if (!right.IsNumber || right.Value == 0.0) return false;
                 result = result with { Value = result.Value / right.Value };
             }
         }
     }
 
-    private static bool TryParseValue(ReadOnlySpan<char> s, ref int pos, in CalcContext ctx, out Term result)
+    private static bool TryParseValue(
+        ReadOnlySpan<char> s, ref int pos, in CalcContext ctx, int depth, out Term result)
     {
         result = default;
         SkipWhitespace(s, ref pos);
         if (pos >= s.Length) return false;
 
-        // A parenthesized sub-sum — or a nested calc(), which §10.1 defines as equivalent.
+        // A parenthesized sub-sum — or a nested calc(), which §10.1 defines as equivalent. Depth-
+        // capped (CalcResolver.MaxDepth, shared with the cascade resolver) so pathological nesting
+        // can't grow the recursion unboundedly (post-PR-#157 review P2).
         if (s[pos] == '(')
         {
+            if (depth >= CalcResolver.MaxDepth) return false;
             pos++;
-            if (!TryParseSum(s, ref pos, ctx, out result)) return false;
+            if (!TryParseSum(s, ref pos, ctx, depth + 1, out result)) return false;
             SkipWhitespace(s, ref pos);
             if (pos >= s.Length || s[pos] != ')') return false;
             pos++;
@@ -149,8 +162,8 @@ internal static class CalcLengthEvaluator
         }
         if (pos + 5 <= s.Length && s.Slice(pos, 5).Equals("calc(", StringComparison.OrdinalIgnoreCase))
         {
-            pos += 4; // leave the '(' for the branch above.
-            return TryParseValue(s, ref pos, ctx, out result);
+            pos += 4; // leave the '(' for the branch above (which applies the depth cap).
+            return TryParseValue(s, ref pos, ctx, depth, out result);
         }
 
         // <number> with an optional unit / '%'. A sign is part of the value here (a value position),
@@ -186,7 +199,10 @@ internal static class CalcLengthEvaluator
         while (pos < s.Length && char.IsAsciiLetter(s[pos])) pos++;
         if (pos == unitStart) { result = new Term(number, IsNumber: true); return true; }
 
-        var unit = s[unitStart..pos].ToString();
+        // CSS units are ASCII case-insensitive (CSS Syntax §4) — normalize before the lookups:
+        // TryAbsoluteUnitToPx matches lowercase only, so `calc(1IN - 24PT)` would otherwise be
+        // rejected as an unknown unit (post-PR-#157 review P2).
+        var unit = s[unitStart..pos].ToString().ToLowerInvariant();
         if (LengthResolver.TryAbsoluteUnitToPx(unit, number, out var absPx))
         {
             result = new Term(absPx, IsNumber: false);

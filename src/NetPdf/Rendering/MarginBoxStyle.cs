@@ -37,22 +37,25 @@ namespace NetPdf.Rendering;
 /// </para>
 /// <para>
 /// <b>Supported properties (a WHITELIST).</b> The inherited <c>font-family</c> / <c>font-size</c> /
-/// <c>font-weight</c> / <c>font-style</c> / <c>color</c> are materialized + inherited. The
+/// <c>font-weight</c> / <c>font-style</c> / <c>color</c> / <c>white-space</c> (white-space cycle —
+/// drives the painter's wrap policy) are materialized + inherited. The
 /// non-inherited <c>background-color</c> (cycle 8), the 12 <c>border-*-width</c> / <c>-style</c> /
 /// <c>-color</c> longhands (border cycle), the 4 <c>padding-*</c> longhands (padding cycle),
 /// <c>width</c> / <c>height</c> (explicit-size cycle), and <c>box-sizing</c> (box-sizing cycle) are
 /// materialized from the box's OWN declarations — the painter fills a band behind the box's content,
 /// strokes the border around its region, insets the text content origin by the used
 /// border-width + padding on each side, and sizes the box along its §5.3 VARIABLE axis from an explicit
-/// <c>width</c> (top/bottom) / <c>height</c> (left/right) — an absolute length or a percentage of the
-/// band; <c>auto</c> shrink-to-fits (cycle 14); per CSS Basic UI 4 §10 the explicit size specifies the
-/// content box (<c>box-sizing: content-box</c>, the initial) or the border box
-/// (<c>box-sizing: border-box</c>). (A <i>non-absolute</i> padding — a percentage or a font-/
-/// viewport-relative length — is accepted by the cascade but can't be resolved to used px here yet, so
-/// it's diagnosed + dropped rather than silently zeroed; likewise a DEFERRED <c>width</c>/<c>height</c>
-/// — a font-/viewport-relative or <c>calc()</c> size (a percentage IS supported) — is diagnosed +
-/// dropped so the box EXPLICITLY shrink-to-fits rather than silently. The §5.3 margin-box sizing / font
-/// context they would resolve against is deferred.) <c>text-align</c> /
+/// <c>width</c> (top/bottom) / <c>height</c> (left/right); <c>auto</c> shrink-to-fits (cycle 14); per
+/// CSS Basic UI 4 §10 the explicit size specifies the content box (<c>box-sizing: content-box</c>, the
+/// initial) or the border box (<c>box-sizing: border-box</c>). Sizes AND paddings take an absolute
+/// length, a percentage (sizes against the band; padding against the containing-block width, CSS B&amp;B
+/// §8.4), a font-/viewport-relative length, or <c>calc()</c> (relative-units / calc / relative-padding
+/// cycles): a relative or calc raw is KEPT as a DEFERRED value here (a calc size/padding is admitted
+/// BEFORE the leaf resolver — LengthResolver has no calc machinery) and the PAINTER resolves it against
+/// the box font / root font / page box / band (<c>RelativeLengthResolver</c> /
+/// <c>CalcLengthEvaluator</c>), surfacing a contextual failure instead of falling back silently. Only
+/// what the painter still can't resolve (container units, malformed/negative relatives) is diagnosed +
+/// dropped at cascade time. <c>text-align</c> /
 /// <c>vertical-align</c> are NOT inherited
 /// here — alignment is read from the box's OWN declarations (<see cref="HorizontalAlignFactor"/> /
 /// <see cref="VerticalAlignFactor"/>) and overrides the box's name-derived default; inheriting the
@@ -70,10 +73,11 @@ namespace NetPdf.Rendering;
 /// </para>
 /// <para>
 /// <b>Deferred (later cycles, deferrals.md#layout-to-pdf-pipeline).</b> <c>rem</c> / viewport-relative
-/// font-size, page-context inheritance of alignment, precise <c>revert</c>, and — for the §5.3
-/// three-box-per-edge sizing (shrink-to-fit + explicit <c>width</c>/<c>height</c> + the min/max-content
-/// overlap distribution + <c>box-sizing</c> + line-granularity overflow clipping have shipped) —
-/// unsupported relative/<c>calc()</c> <c>width</c>/<c>height</c> and partial-glyph clip paths.
+/// font-size, page-context inheritance of alignment, precise <c>revert</c>, container-relative units,
+/// and calc <c>min()</c>/<c>max()</c>/<c>clamp()</c>. The §5.3 three-box-per-edge sizing is COMPLETE
+/// (shrink-to-fit, explicit <c>width</c>/<c>height</c> incl. relative + <c>calc()</c>, the
+/// min/max-content overlap distribution, <c>box-sizing</c>, line-granularity overflow clipping + the
+/// padding-box clip path, and relative/percent/calc padding have all shipped).
 /// </para>
 /// </remarks>
 internal static class MarginBoxStyle

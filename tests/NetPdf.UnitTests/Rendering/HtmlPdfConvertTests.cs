@@ -2056,6 +2056,19 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Page_margin_box_calc_width_accepts_uppercase_units()
+    {
+        // CSS units are case-insensitive (CSS Syntax §4) — `calc(1IN - 24PT)` = 96 − 32 = 64px → 48pt
+        // band, with no diagnostic (post-PR-#157 review P2: the absolute-unit lookup normalizes case).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; " +
+            "width: calc(1IN - 24PT); background-color: red } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
+        Assert.InRange(FirstRect(Latin1(result.Pdf)).W, 46.0, 50.0);   // 64px × 0.75 = 48pt
+    }
+
+    [Fact]
     public void Page_margin_box_malformed_calc_width_is_surfaced_and_shrinks_to_fit()
     {
         // A calc() that fails evaluation (length × length has no CSS type, §10.4) is KEPT by the

@@ -721,18 +721,19 @@ internal static class PageMarginBoxPainter
     /// — <c>width</c> for top/bottom boxes, <c>height</c> for left/right — or <see langword="null"/>
     /// when it's <c>auto</c>/unresolved (the caller shrink-to-fits). An absolute length is used as-is; a
     /// percentage resolves against <paramref name="bandExtentPx"/> (the box's containing block on that
-    /// axis); a DEFERRED font-/viewport-relative length (<c>10em</c> / <c>1.5rem</c> / <c>50vw</c> —
-    /// kept as a deferred raw by <see cref="MarginBoxStyle"/>, relative-units cycle) resolves against
-    /// <paramref name="bases"/> via <see cref="RelativeLengthResolver"/>. The caller maps the size to
-    /// the border-box per the box's <c>box-sizing</c> (<see cref="IsBorderBoxSizing"/>): content-box
-    /// (the initial) adds the border+padding insets, border-box floors at them. A <c>calc()</c> /
-    /// container-relative / malformed size is diagnosed + DROPPED upstream by
-    /// <see cref="MarginBoxStyle"/> (post-PR-#144 review), so it never reaches here — this reads it as
-    /// <c>auto</c> and the caller shrink-to-fits. A kept relative size that still fails to resolve IN
-    /// CONTEXT (a syntactically-supported value whose product is non-finite, e.g. <c>1e308em</c>) is
-    /// SURFACED via <paramref name="diagnostics"/> before the shrink-to-fit fallback (post-PR-#156
-    /// review P2 — the keep gate is syntactic, so the contextual failure must not be silent). Negatives
-    /// are rejected upstream (non-negative property); the <c>Max(0, …)</c> is defensive.</summary>
+    /// axis); a DEFERRED raw kept by <see cref="MarginBoxStyle"/> — a font-/viewport-relative length
+    /// (<c>10em</c> / <c>1.5rem</c> / <c>50vw</c>, relative-units cycle) or a <c>calc()</c> expression
+    /// (calc cycle, percent terms against the band) — resolves HERE against <paramref name="bases"/>
+    /// via <see cref="TryResolveDeferredLengthPx"/> (post-PR-#157 Copilot review — this doc previously
+    /// said calc never reaches here). The caller maps the size to the border-box per the box's
+    /// <c>box-sizing</c> (<see cref="IsBorderBoxSizing"/>): content-box (the initial) adds the
+    /// border+padding insets, border-box floors at them. Only a container-relative / malformed /
+    /// negative size is diagnosed + DROPPED upstream by <see cref="MarginBoxStyle"/> (post-PR-#144
+    /// review) and reads as <c>auto</c> here. A kept raw that still fails to resolve IN CONTEXT (a
+    /// non-finite product like <c>1e308em</c>, or a calc() that fails evaluation — the keep gates are
+    /// syntactic) is SURFACED via <paramref name="diagnostics"/> before the shrink-to-fit fallback
+    /// (post-PR-#156 review P2 — the contextual failure must not be silent). Negatives are rejected
+    /// upstream (non-negative property); the <c>Max(0, …)</c> is defensive.</summary>
     private static double? TryReadExplicitSizePx(
         ComputedStyle style, PropertyId id, double bandExtentPx, in RelativeSizeBases bases,
         string boxName, IDiagnosticsSink diagnostics)

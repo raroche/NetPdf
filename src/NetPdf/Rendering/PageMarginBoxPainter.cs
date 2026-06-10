@@ -51,7 +51,7 @@ namespace NetPdf.Rendering;
 /// <see cref="PaintBackgrounds"/>; a declared <c>border</c> (non-inherited, the <c>border</c> /
 /// <c>border-&lt;side&gt;</c> shorthands expanded for margin-box bodies) strokes the box's
 /// region — collected as a <see cref="MarginBoxBorder"/>, painted by <see cref="PaintBorders"/> via
-/// the shared <see cref="FragmentPainter.PaintBorders"/>; a declared <c>padding</c> (non-inherited,
+/// the shared <c>FragmentPainter.PaintBorders</c>; a declared <c>padding</c> (non-inherited,
 /// the 1–4-value box shorthand + per-side longhands) insets the text content origin, together with the
 /// used border-width per side (CSS box model); a declared <c>width</c> (top/bottom) / <c>height</c>
 /// (left/right) sizes the box along its §5.3 variable axis (explicit-size cycle — see <see cref="Layout"/>).
@@ -103,10 +103,13 @@ internal static class PageMarginBoxPainter
 
     /// <summary>A margin box's declared borders to stroke around its region rect (border cycle):
     /// the page-px rect + the box's <see cref="ComputedStyle"/> (carrying the <c>border-*</c>
-    /// longhands) + the <c>currentcolor</c> for an unset border-color (the box's own color). Painted
-    /// by <see cref="PaintBorders"/> via the shared <see cref="FragmentPainter.PaintBorders"/>.</summary>
+    /// longhands) + the PER-EDGE <c>currentcolor</c> fallbacks (per-edge currentcolor cycle — each
+    /// edge falls back to its OWNER's colour: the box's when the box declares that edge, else the
+    /// running element's). Painted by <see cref="PaintBorders"/> via the shared
+    /// <c>FragmentPainter.PaintBorders</c>.</summary>
     internal readonly record struct MarginBoxBorder(
-        double LeftPx, double TopPx, double WidthPx, double HeightPx, ComputedStyle Style, uint CurrentColorArgb);
+        double LeftPx, double TopPx, double WidthPx, double HeightPx, ComputedStyle Style,
+        FragmentPainter.BorderEdgeCurrentColors CurrentColors);
 
     /// <summary>The result of laying out the page margin boxes: the text fragments (for the shared
     /// <see cref="TextPainter"/> pass) + the background bands (cycle 8) + the borders (border cycle).</summary>
@@ -176,6 +179,11 @@ internal static class PageMarginBoxPainter
         {
             rootEmPx = rootSizeSlot.AsLengthPx();
         }
+        // Resolve a root-/viewport-relative PAGE-CONTEXT font-size (`@page { font-size: 2rem }`)
+        // BEFORE the boxes inherit from it (font-size cycle): a box's parent-relative `1.5em` resolves
+        // against the parent's LengthPx slot (DeferredFontResolver), which must be the used px — a
+        // still-deferred parent raw would read as the 16px default.
+        ResolveDeferredFontSizeInPlace(pageContextStyle, rootEmPx, pageWidthPx, pageHeightPx);
 
         // PASS 1 — compute each box's style, content layout, and DESIRED box geometry (shrink-to-fit /
         // explicit size, positioned by its name-derived role). The boxes are COLLECTED (not emitted yet)
@@ -228,6 +236,14 @@ internal static class PageMarginBoxPainter
                 contentStyle = style;
             }
 
+            // A still-DEFERRED root-/viewport-relative font-size (`2rem` / `5vw` — DeferredFontResolver
+            // resolves only the PARENT-relative forms) resolves HERE against the root font-size / page
+            // box (font-size cycle), BEFORE anything reads the font: the shaper, the line height, and
+            // the `em` bases of the size/padding resolves below all see the used px.
+            ResolveDeferredFontSizeInPlace(style, rootEmPx, pageWidthPx, pageHeightPx);
+            if (!ReferenceEquals(contentStyle, style))
+                ResolveDeferredFontSizeInPlace(contentStyle, rootEmPx, pageWidthPx, pageHeightPx);
+
             // currentcolor ORIGIN (CSS Color 4 §6.2 — currentcolor resolves to the `color` of the style that
             // OWNS the property). The box's declarations WIN the cascade (appended last), so a decoration
             // property is BOX-owned iff the box declares it, else ELEMENT-owned (post-PR-#152 review P1): a
@@ -235,14 +251,23 @@ internal static class PageMarginBoxPainter
             // element-declared one against the RUNNING ELEMENT's. `style.Get(Color)` is the box's colour (the
             // decoration build excludes the element's colour + appends the box's), `contentStyle` the
             // element's. For the non-element path `style == contentStyle`, so both reduce to the box colour —
-            // byte-identical to the prior single currentColor. (A box that declares ONE edge + the element
-            // another is an approximation — it uses the box colour for the whole border; deferrals.md.)
+            // byte-identical to the prior single currentColor. (Per-edge currentcolor
+            // ownership ships in the per-edge-currentcolor cycle — see EdgeCurrentColor below.)
             var elementColor = FragmentPainter.TryResolveColor(contentStyle.Get(PropertyId.Color), DefaultColorArgb, out var ec)
                 ? ec : DefaultColorArgb;
             var boxColor = FragmentPainter.TryResolveColor(style.Get(PropertyId.Color), DefaultColorArgb, out var bc)
                 ? bc : DefaultColorArgb;
             var bgCurrentColor = MarginBoxDeclares(mb.Declarations, "background-color") ? boxColor : elementColor;
-            var borderCurrentColor = MarginBoxDeclaresBorder(mb.Declarations) ? boxColor : elementColor;
+            // Border currentcolor is resolved PER EDGE (per-edge currentcolor cycle — refines the
+            // whole-border rule): an edge falls back to the BOX's colour when the box's own
+            // declarations claim it — its color longhand (the property currentcolor appears in) or,
+            // failing that, its style longhand (whoever turns the edge on owns it) — else the running
+            // element's. Non-element content has elementColor == boxColor, so this is uniform there.
+            var borderCurrentColors = new FragmentPainter.BorderEdgeCurrentColors(
+                EdgeCurrentColor(mb.Declarations, "border-top-color", "border-top-style", boxColor, elementColor),
+                EdgeCurrentColor(mb.Declarations, "border-right-color", "border-right-style", boxColor, elementColor),
+                EdgeCurrentColor(mb.Declarations, "border-bottom-color", "border-bottom-style", boxColor, elementColor),
+                EdgeCurrentColor(mb.Declarations, "border-left-color", "border-left-style", boxColor, elementColor));
 
             // CONTENT alignment WITHIN the box: a text-align / vertical-align DECLARED ON THE BOX aligns
             // the line inside the box's content area (read from the box's OWN declarations so the
@@ -428,7 +453,7 @@ internal static class PageMarginBoxPainter
             items.Add(new MarginBoxItem
             {
                 Region = region, Style = style, ContentStyle = contentStyle,
-                BgCurrentColorArgb = bgCurrentColor, BorderCurrentColorArgb = borderCurrentColor,
+                BgCurrentColorArgb = bgCurrentColor, BorderCurrentColors = borderCurrentColors,
                 Inline = inline, HasLine = hasLine, Text = text, MinVarSizePx = minVarSizePx,
                 ReflowWhiteSpace = reflowWhiteSpace, CanWrap = canWrap, Name = mb.Name,
                 OverflowVisible = MarginBoxStyle.OverflowVisible(mb.Declarations),
@@ -479,7 +504,7 @@ internal static class PageMarginBoxPainter
         {
             var style = item.Style;
             var bgCurrentColor = item.BgCurrentColorArgb;
-            var borderCurrentColor = item.BorderCurrentColorArgb;
+            var borderCurrentColors = item.BorderCurrentColors;
             var inline = item.Inline;
             var hasLine = item.HasLine;
             var boxXPx = item.BoxXPx;
@@ -506,7 +531,7 @@ internal static class PageMarginBoxPainter
             // Border (border cycle): strokes the BOX. `currentcolor` resolves against the OWNER's color
             // (the box's if the box declares the border, else the running element's — review P1).
             if (HasBorder(style))
-                borders.Add(new MarginBoxBorder(boxXPx, boxYPx, boxWidthPx, boxHeightPx, style, borderCurrentColor));
+                borders.Add(new MarginBoxBorder(boxXPx, boxYPx, boxWidthPx, boxHeightPx, style, borderCurrentColors));
 
             if (!hasLine) continue; // empty / failed-font box: decoration only, no text fragment.
 
@@ -627,7 +652,7 @@ internal static class PageMarginBoxPainter
 
     /// <summary>Stroke the resolved margin-box borders (border cycle) onto <paramref name="page"/>,
     /// over the background bands but behind the shared text pass — reusing the shared
-    /// <see cref="FragmentPainter.PaintBorders"/> (so margin + body borders render identically). Call
+    /// <c>FragmentPainter.PaintBorders</c> (so margin + body borders render identically). Call
     /// AFTER <see cref="PaintBackgrounds"/> and BEFORE <see cref="TextPainter.PaintText"/>.</summary>
     public static void PaintBorders(
         PdfPage page, IReadOnlyList<MarginBoxBorder> borders, double pageHeightPt, IDiagnosticsSink diagnostics)
@@ -637,7 +662,7 @@ internal static class PageMarginBoxPainter
         var styleApproximationReported = false;
         foreach (var b in borders)
             FragmentPainter.PaintBorders(page, b.Style, pageHeightPt, b.LeftPx, b.TopPx, b.WidthPx, b.HeightPx,
-                b.CurrentColorArgb, diagnostics, ref styleApproximationReported);
+                b.CurrentColors, diagnostics, ref styleApproximationReported);
     }
 
     /// <summary>Whether <paramref name="style"/> declares any border edge (a <c>border-*-style</c> is
@@ -764,14 +789,15 @@ internal static class PageMarginBoxPainter
         return null;
     }
 
-    /// <summary>Resolve a KEPT deferred length raw — a <c>calc()</c> expression (calc cycle, percent
-    /// terms against <paramref name="percentBasePx"/>) or a font-/viewport-relative length
-    /// (relative-units cycle) — to used px against <paramref name="bases"/>. Shared by the explicit
-    /// §5.3 size and the padding resolve.</summary>
+    /// <summary>Resolve a KEPT deferred length raw — a <c>calc()</c>/<c>min()</c>/<c>max()</c>/
+    /// <c>clamp()</c> math function (calc + min/max/clamp cycles, percent terms against
+    /// <paramref name="percentBasePx"/>) or a font-/viewport-relative length (relative-units cycle) —
+    /// to used px against <paramref name="bases"/>. Shared by the explicit §5.3 size and the padding
+    /// resolve.</summary>
     private static bool TryResolveDeferredLengthPx(
         string raw, double percentBasePx, in RelativeSizeBases bases, out double px)
     {
-        return CalcLengthEvaluator.IsCalc(raw)
+        return CalcLengthEvaluator.IsMathFunction(raw)
             ? CalcLengthEvaluator.TryEvaluate(
                 raw,
                 new CalcLengthEvaluator.CalcContext(
@@ -827,6 +853,23 @@ internal static class PageMarginBoxPainter
                 DiagnosticSeverity.Warning));
             style.Unset(id);
         }
+    }
+
+    /// <summary>Resolve a still-DEFERRED <c>font-size</c> raw on <paramref name="style"/> — a
+    /// root-/viewport-relative form (<c>rem</c>/<c>vw</c>/<c>vh</c>/<c>vmin</c>/<c>vmax</c>) that
+    /// <see cref="DeferredFontResolver"/> deliberately leaves for a later stage (it resolves only the
+    /// PARENT-relative <c>em</c>/<c>ex</c>/<c>ch</c>/<c>%</c>/keywords) — to used px IN PLACE against
+    /// the root font-size / page box (font-size cycle; closes the long-standing "rem/viewport
+    /// font-size falls back to 16px" gap for margin boxes). The em base is passed defensively (any
+    /// em-relative raw was already consumed upstream). A still-unresolvable raw (container units)
+    /// stays deferred → the 16px reader default (documented).</summary>
+    private static void ResolveDeferredFontSizeInPlace(
+        ComputedStyle style, double rootEmPx, double pageWidthPx, double pageHeightPx)
+    {
+        if (!style.TryGetDeferred(PropertyId.FontSize, out var raw) || raw is null) return;
+        var emBasePx = style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
+        if (RelativeLengthResolver.TryResolve(raw, emBasePx, rootEmPx, pageWidthPx, pageHeightPx, out var px))
+            style.Set(PropertyId.FontSize, ComputedSlot.FromLengthPx(px));
     }
 
     /// <summary>Whether the box computes <c>box-sizing: border-box</c> (CSS Basic UI 4 §10) — its
@@ -914,15 +957,18 @@ internal static class PageMarginBoxPainter
         return false;
     }
 
-    /// <summary>Whether the margin box declares a BORDER of its own — any per-edge <c>border-*-style</c>
-    /// (a border paints only with a style, so the style longhands are what make it the box's). A box-declared
-    /// border's currentcolor resolves against the box's colour (review P1). The per-side mixed-origin case
-    /// (box declares one edge, the element another) uses the box colour for the whole border — an
-    /// approximation, since the shared <see cref="FragmentPainter.PaintBorders"/> takes one currentcolor
-    /// (deferrals.md).</summary>
-    private static bool MarginBoxDeclaresBorder(ImmutableArray<CssDeclaration> declarations) =>
-        MarginBoxDeclares(declarations, "border-top-style") || MarginBoxDeclares(declarations, "border-right-style")
-        || MarginBoxDeclares(declarations, "border-bottom-style") || MarginBoxDeclares(declarations, "border-left-style");
+    /// <summary>The <c>currentcolor</c> OWNER colour for ONE border edge (per-edge currentcolor
+    /// cycle — replaces the whole-border ownership rule, whose mixed-origin case used the box colour
+    /// for every edge): the BOX's colour when the box's own declarations claim the edge — its
+    /// <paramref name="colorProperty"/> (the longhand a <c>currentcolor</c> value appears in) or,
+    /// failing that, its <paramref name="styleProperty"/> (whoever turns the edge on owns it) — else
+    /// the running element's. The box's shorthands are cascade-expanded to longhands upstream, so
+    /// declaring <c>border</c>/<c>border-left</c> claims the matching edges here.</summary>
+    private static uint EdgeCurrentColor(
+        ImmutableArray<CssDeclaration> declarations, string colorProperty, string styleProperty,
+        uint boxColor, uint elementColor) =>
+        MarginBoxDeclares(declarations, colorProperty) || MarginBoxDeclares(declarations, styleProperty)
+            ? boxColor : elementColor;
 
     /// <summary>Per-box state computed in PASS 1 (style + content layout + DESIRED box rect), carried to
     /// PASS 2 so the §5.3 distribution can adjust the box rect for overlapping siblings in between. The
@@ -934,7 +980,7 @@ internal static class PageMarginBoxPainter
         public ComputedStyle ContentStyle = null!; // the CONTENT style — usually == Style, but the running
                                                    // element's own font/colour for a standalone element().
         public uint BgCurrentColorArgb;     // currentcolor for the background — the OWNER's colour (review P1).
-        public uint BorderCurrentColorArgb; // currentcolor for the border — the OWNER's colour (review P1).
+        public FragmentPainter.BorderEdgeCurrentColors BorderCurrentColors; // per-edge border currentcolor — each edge's OWNER colour.
         public InlineLayoutResult Inline;
         public bool HasLine;
         public WhiteSpace ReflowWhiteSpace;     // white-space for re-wrap / min-content (box's own, or pre-line/pre for forced breaks).

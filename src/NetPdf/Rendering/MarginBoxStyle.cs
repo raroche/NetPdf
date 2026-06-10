@@ -68,13 +68,15 @@ namespace NetPdf.Rendering;
 /// <c>ch</c> / <c>%</c> / <c>larger</c> / <c>smaller</c>) or <c>font-weight</c> (<c>bolder</c> /
 /// <c>lighter</c>) that the dispatch leaves deferred is resolved against the inherited parent via
 /// <see cref="DeferredFontResolver"/> after the cascade — so <c>@page { font-size: 20px;
-/// @bottom-center { font-size: 1.5em } }</c> → 30px. (A non-parent-relative form — <c>rem</c> /
-/// viewport / container units — stays deferred and falls back to the reader default, a documented gap.)
+/// @bottom-center { font-size: 1.5em } }</c> → 30px. A root-/viewport-relative form (<c>rem</c> /
+/// <c>vw</c>/<c>vh</c>/<c>vmin</c>/<c>vmax</c>) resolves at PAINT time against the root font-size /
+/// page box (the painter's <c>ResolveDeferredFontSizeInPlace</c>, font-size cycle — closes the old
+/// 16px-fallback gap); container units still fall back to the reader default.
 /// </para>
 /// <para>
-/// <b>Deferred (later cycles, deferrals.md#layout-to-pdf-pipeline).</b> <c>rem</c> / viewport-relative
-/// font-size, page-context inheritance of alignment, precise <c>revert</c>, container-relative units,
-/// and calc <c>min()</c>/<c>max()</c>/<c>clamp()</c>. The §5.3 three-box-per-edge sizing is COMPLETE
+/// <b>Deferred (later cycles, deferrals.md#layout-to-pdf-pipeline).</b> Page-context inheritance of
+/// alignment, precise <c>revert</c>, container-relative units, and the CSS Values 4 §10.3+ math
+/// functions beyond min/max/clamp (<c>round()</c>/<c>mod()</c>/…). The §5.3 three-box-per-edge sizing is COMPLETE
 /// (shrink-to-fit, explicit <c>width</c>/<c>height</c> incl. relative + <c>calc()</c>, the
 /// min/max-content overlap distribution, <c>box-sizing</c>, line-granularity overflow clipping + the
 /// padding-box clip path, and relative/percent/calc padding have all shipped).
@@ -240,7 +242,8 @@ internal static class MarginBoxStyle
                         continue;
                     }
 
-                    // A calc() SIZE / PADDING is admitted BEFORE the leaf resolver (calc cycle):
+                    // A math-function SIZE / PADDING — calc(), and min()/max()/clamp() standalone
+                    // (min/max/clamp cycle) — is admitted BEFORE the leaf resolver (calc cycle):
                     // LengthResolver has no calc machinery and would reject the value as unparseable,
                     // but the margin-box painter CAN evaluate it (CalcLengthEvaluator — percent terms
                     // against the band, relative terms against the box font / root / page box). Store
@@ -248,7 +251,7 @@ internal static class MarginBoxStyle
                     // resolves it or surfaces the contextual failure. Margin-box-scoped — a BODY calc()
                     // keeps the resolver's invalid-value diagnostic (body calc machinery is a separate
                     // pickup, deferrals.md).
-                    if ((IsSizeId(id) || IsPaddingId(id)) && CalcLengthEvaluator.IsCalc(w.Value))
+                    if ((IsSizeId(id) || IsPaddingId(id)) && CalcLengthEvaluator.IsMathFunction(w.Value))
                     {
                         style.SetDeferred(id, w.Value);
                         continue;
@@ -271,7 +274,7 @@ internal static class MarginBoxStyle
                     if (IsPaddingId(id) && !resolved.IsInvalid
                         && style.Get(id).Tag is not (ComputedSlotTag.LengthPx or ComputedSlotTag.Percentage)
                         && !(resolved.IsDeferred
-                            && (RelativeLengthResolver.IsSupported(w.Value) || CalcLengthEvaluator.IsCalc(w.Value))))
+                            && (RelativeLengthResolver.IsSupported(w.Value) || CalcLengthEvaluator.IsMathFunction(w.Value))))
                     {
                         diagnostics?.Emit(new CssDiagnostic(
                             CssDiagnosticCodes.CssPropertyValueInvalid001,
@@ -296,7 +299,7 @@ internal static class MarginBoxStyle
                     // absolute length (LengthPx), and a percentage (Percentage) are honored as-is, and an
                     // invalid value was already diagnosed by Resolve.
                     else if (IsSizeId(id) && resolved.IsDeferred
-                        && !RelativeLengthResolver.IsSupported(w.Value) && !CalcLengthEvaluator.IsCalc(w.Value))
+                        && !RelativeLengthResolver.IsSupported(w.Value) && !CalcLengthEvaluator.IsMathFunction(w.Value))
                     {
                         diagnostics?.Emit(new CssDiagnostic(
                             CssDiagnosticCodes.CssPropertyValueInvalid001,

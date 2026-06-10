@@ -20,7 +20,10 @@ namespace NetPdf.Css.ComputedValues.PropertyResolvers;
 /// surrounded by whitespace — <c>calc(10px+5px)</c> is invalid, §10.3);
 /// <c>&lt;product&gt; = &lt;value&gt; [ '*' &lt;value&gt; | '/' &lt;value&gt; ]*</c>;
 /// <c>&lt;value&gt; = &lt;number&gt; | &lt;dimension&gt; | &lt;percentage&gt; | ( &lt;sum&gt; ) |
-/// calc( &lt;sum&gt; )</c> (a nested <c>calc()</c> is equivalent to parentheses, §10.1).
+/// calc( &lt;sum&gt; ) | min( &lt;sum&gt;# ) | max( &lt;sum&gt;# ) | clamp( &lt;sum&gt;, &lt;sum&gt;,
+/// &lt;sum&gt; )</c> (a nested <c>calc()</c> is equivalent to parentheses per §10.1; the §10.2
+/// comparison functions take same-type arguments — <c>clamp(MIN, VAL, MAX)</c> =
+/// <c>max(MIN, min(VAL, MAX))</c> — and are also valid as the WHOLE value, min/max/clamp cycle).
 /// </para>
 /// <para>
 /// <b>Type checking (§10.4).</b> <c>+</c>/<c>-</c> require both operands to be the SAME type
@@ -35,7 +38,8 @@ namespace NetPdf.Css.ComputedValues.PropertyResolvers;
 /// </para>
 /// <para>
 /// <b>Out of scope</b> (evaluate → <see langword="false"/>, the caller surfaces + falls back):
-/// container-relative units, <c>min()</c>/<c>max()</c>/<c>clamp()</c>, attr(), non-finite results.
+/// container-relative units, <c>round()</c>/<c>mod()</c>/<c>abs()</c> and the other CSS Values 4
+/// §10.3+ math functions, attr(), non-finite results.
 /// </para>
 /// </remarks>
 internal static class CalcLengthEvaluator
@@ -47,37 +51,42 @@ internal static class CalcLengthEvaluator
     internal readonly record struct CalcContext(
         double PercentBasePx, double EmPx, double RootEmPx, double ViewportWidthPx, double ViewportHeightPx);
 
-    /// <summary>Whether <paramref name="rawText"/> is shaped like a <c>calc()</c> expression
-    /// (<c>calc(</c> … <c>)</c>, case-insensitive). Shape only — <see cref="TryEvaluate"/> decides
-    /// validity; callers use this as the keep-vs-drop gate (like
-    /// <see cref="RelativeLengthResolver.IsSupported"/>, the contextual evaluation can still fail
-    /// and must then be surfaced, not silently dropped).</summary>
-    public static bool IsCalc(string rawText)
+    /// <summary>Whether <paramref name="rawText"/> is shaped like a CSS math function —
+    /// <c>calc(</c> / <c>min(</c> / <c>max(</c> / <c>clamp(</c> … <c>)</c>, case-insensitive
+    /// (min/max/clamp are valid as a WHOLE value, not just inside calc — CSS Values 4 §10.1).
+    /// Shape only — <see cref="TryEvaluate"/> decides validity; callers use this as the
+    /// keep-vs-drop gate (like <see cref="RelativeLengthResolver.IsSupported"/>, the contextual
+    /// evaluation can still fail and must then be surfaced, not silently dropped).</summary>
+    public static bool IsMathFunction(string rawText)
     {
         if (string.IsNullOrWhiteSpace(rawText)) return false;
         var v = rawText.AsSpan().Trim();
-        return v.Length > 6
-            && v[..5].Equals("calc(", StringComparison.OrdinalIgnoreCase)
-            && v[^1] == ')';
+        if (v.Length < 6 || v[^1] != ')') return false; // shortest: "min(x)".
+        return v[..5].Equals("calc(", StringComparison.OrdinalIgnoreCase)
+            || v[..4].Equals("min(", StringComparison.OrdinalIgnoreCase)
+            || v[..4].Equals("max(", StringComparison.OrdinalIgnoreCase)
+            || (v.Length > 7 && v[..6].Equals("clamp(", StringComparison.OrdinalIgnoreCase));
     }
 
-    /// <summary>Evaluate <paramref name="rawText"/> (a full <c>calc(…)</c> value) to a used length
-    /// (px, ≥ 0 — range-clamped per §10.5). Returns <see langword="false"/> on a parse/type error,
-    /// an unsupported unit/function, division by (near-)zero, a bare-number result, a non-finite
-    /// result, or an expression exceeding the adversarial-input guards — the body length cap
-    /// (<see cref="CalcResolver.MaxBodyLength"/>) and the nesting-depth cap
-    /// (<see cref="CalcResolver.MaxDepth"/>), mirrored from the cascade calc resolver so both calc
-    /// front doors bound CPU/stack identically (post-PR-#157 review P2).</summary>
+    /// <summary>Evaluate <paramref name="rawText"/> (a full <c>calc(…)</c> / <c>min(…)</c> /
+    /// <c>max(…)</c> / <c>clamp(…)</c> value) to a used length (px, ≥ 0 — range-clamped per §10.5).
+    /// Returns <see langword="false"/> on a parse/type error, an unsupported unit/function, division
+    /// by zero, a bare-number result, a non-finite result, or an expression exceeding the
+    /// adversarial-input guards — the body length cap (<see cref="CalcResolver.MaxBodyLength"/>) and
+    /// the nesting-depth cap (<see cref="CalcResolver.MaxDepth"/>), mirrored from the cascade calc
+    /// resolver so both calc front doors bound CPU/stack identically (post-PR-#157 review P2).</summary>
     public static bool TryEvaluate(string rawText, in CalcContext context, out double px)
     {
         px = 0;
-        if (!IsCalc(rawText)) return false;
+        if (!IsMathFunction(rawText)) return false;
         var expr = rawText.AsSpan().Trim();
-        expr = expr[5..^1]; // strip "calc(" + ")".
         if (expr.Length > CalcResolver.MaxBodyLength) return false; // breadth guard (long operand chains).
 
+        // The whole value is one math-function <value> — TryParseValue recognizes calc( (≡ parens,
+        // §10.1) and min(/max(/clamp( (§10.2 comparison functions) and consumes through the
+        // matching ')'.
         var pos = 0;
-        if (!TryParseSum(expr, ref pos, context, depth: 0, out var result)) return false;
+        if (!TryParseValue(expr, ref pos, context, depth: 0, out var result)) return false;
         SkipWhitespace(expr, ref pos);
         if (pos != expr.Length) return false;            // trailing junk.
         if (result.IsNumber) return false;               // a length property needs a length result.
@@ -165,6 +174,14 @@ internal static class CalcLengthEvaluator
             pos += 4; // leave the '(' for the branch above (which applies the depth cap).
             return TryParseValue(s, ref pos, ctx, depth, out result);
         }
+        // min() / max() / clamp() — the §10.2 comparison functions, valid wherever a calc value is
+        // (and as the whole expression — TryEvaluate enters here). Each consumes a depth level.
+        if (TryMatchFunctionName(s, ref pos, "min("))
+            return TryParseMinMax(s, ref pos, ctx, depth, isMin: true, out result);
+        if (TryMatchFunctionName(s, ref pos, "max("))
+            return TryParseMinMax(s, ref pos, ctx, depth, isMin: false, out result);
+        if (TryMatchFunctionName(s, ref pos, "clamp("))
+            return TryParseClamp(s, ref pos, ctx, depth, out result);
 
         // <number> with an optional unit / '%'. A sign is part of the value here (a value position),
         // unlike the whitespace-required binary +/- (an operator position).
@@ -215,6 +232,68 @@ internal static class CalcLengthEvaluator
             return true;
         }
         return false; // container units / unknown units — unsupported.
+    }
+
+    /// <summary>Match a case-insensitive function-name prefix (incl. its <c>(</c>) at
+    /// <paramref name="pos"/>, advancing past it on success.</summary>
+    private static bool TryMatchFunctionName(ReadOnlySpan<char> s, ref int pos, string nameWithParen)
+    {
+        if (pos + nameWithParen.Length > s.Length
+            || !s.Slice(pos, nameWithParen.Length).Equals(nameWithParen, StringComparison.OrdinalIgnoreCase))
+            return false;
+        pos += nameWithParen.Length;
+        return true;
+    }
+
+    /// <summary><c>min( &lt;sum&gt; [, &lt;sum&gt;]* )</c> / <c>max(…)</c> — §10.2: the smallest /
+    /// largest of one-or-more comma-separated arguments, all of the SAME type. The caller consumed
+    /// the name + <c>(</c>; this consumes through the matching <c>)</c>. Depth-capped like
+    /// parentheses.</summary>
+    private static bool TryParseMinMax(
+        ReadOnlySpan<char> s, ref int pos, in CalcContext ctx, int depth, bool isMin, out Term result)
+    {
+        result = default;
+        if (depth >= CalcResolver.MaxDepth) return false;
+        var first = true;
+        while (true)
+        {
+            if (!TryParseSum(s, ref pos, ctx, depth + 1, out var arg)) return false;
+            if (first) { result = arg; first = false; }
+            else
+            {
+                if (result.IsNumber != arg.IsNumber) return false; // §10.4: same-type arguments only.
+                result = result with
+                {
+                    Value = isMin ? Math.Min(result.Value, arg.Value) : Math.Max(result.Value, arg.Value),
+                };
+            }
+            SkipWhitespace(s, ref pos);
+            if (pos < s.Length && s[pos] == ',') { pos++; continue; }
+            if (pos < s.Length && s[pos] == ')') { pos++; return true; }
+            return false; // unterminated / junk between arguments.
+        }
+    }
+
+    /// <summary><c>clamp(MIN, VAL, MAX)</c> — §10.2: exactly three same-type arguments, computed as
+    /// <c>max(MIN, min(VAL, MAX))</c> (when MIN &gt; MAX, MIN wins — per spec). The caller consumed
+    /// the name + <c>(</c>. Depth-capped like parentheses.</summary>
+    private static bool TryParseClamp(
+        ReadOnlySpan<char> s, ref int pos, in CalcContext ctx, int depth, out Term result)
+    {
+        result = default;
+        if (depth >= CalcResolver.MaxDepth) return false;
+        Span<Term> args = stackalloc Term[3];
+        for (var i = 0; i < 3; i++)
+        {
+            if (!TryParseSum(s, ref pos, ctx, depth + 1, out args[i])) return false;
+            SkipWhitespace(s, ref pos);
+            var wantComma = i < 2;
+            if (pos >= s.Length || s[pos] != (wantComma ? ',' : ')')) return false;
+            pos++;
+        }
+        if (args[0].IsNumber != args[1].IsNumber || args[1].IsNumber != args[2].IsNumber) return false;
+        result = args[0] with { Value = Math.Max(args[0].Value, Math.Min(args[1].Value, args[2].Value)) };
+        return true;
     }
 
     private static void SkipWhitespace(ReadOnlySpan<char> s, ref int pos)

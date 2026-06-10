@@ -66,4 +66,14 @@ public sealed class RelativeLengthResolverTests
         Assert.True(RelativeLengthResolver.TryResolve("1.5rem", Em, RootEm, Vw, Vh, out var px));
         Assert.Equal(15.0, px, 3);
     }
+
+    [Fact]
+    public void TryResolve_rejects_a_context_overflowing_product_that_IsSupported_accepts()
+    {
+        // The keep gate (IsSupported) is SYNTACTIC; the contextual product can still overflow to a
+        // non-finite value (1e308 × 20 = ∞) — TryResolve must reject it (the consumer surfaces the
+        // fallback, post-PR-#156 review P2).
+        Assert.True(RelativeLengthResolver.IsSupported("1e308em"));
+        Assert.False(RelativeLengthResolver.TryResolve("1e308em", Em, RootEm, Vw, Vh, out _));
+    }
 }

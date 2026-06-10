@@ -34,7 +34,11 @@ internal static class RelativeLengthResolver
     /// <summary>Whether <paramref name="rawText"/> is a relative length this resolver can resolve —
     /// a non-negative number with an <c>em</c>/<c>ex</c>/<c>ch</c>/<c>rem</c>/<c>vw</c>/<c>vh</c>/
     /// <c>vmin</c>/<c>vmax</c> unit. <c>calc()</c>, container units, negatives, and malformed values
-    /// are NOT supported (the caller diagnoses + drops them).</summary>
+    /// are NOT supported (the caller diagnoses + drops them). NOTE this check is SYNTACTIC:
+    /// <see cref="TryResolve"/> can still fail IN CONTEXT when the product overflows to a non-finite
+    /// value (e.g. <c>1e308em</c> × a 16px base) — a caller that keeps a value because it
+    /// IsSupported must handle (and surface) that contextual failure rather than fall back silently
+    /// (post-PR-#156 review P2; the margin-box painter diagnoses it).</summary>
     public static bool IsSupported(string rawText) =>
         TryClassify(rawText, out _, out var n) && n >= 0;
 

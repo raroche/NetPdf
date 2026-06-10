@@ -76,11 +76,16 @@ namespace NetPdf.Rendering;
 /// (<see cref="ResolveEdgeOverlaps"/> — the centre box stays centred, flexed against the imaginary
 /// <c>2 × max(A, C)</c> box, with the sides sized in the gaps; no centre box → the sides flex, or go
 /// proportional to min-content when the mins don't fit; a flexed/shrunk box re-wraps its content to fit,
-/// honouring the box's white-space). An explicit size is content- or border-box per the box's
-/// <c>box-sizing</c> (box-sizing cycle). Wrapped lines are aligned PER LINE by the box's alignment
-/// (Task 21 — via the fragment's <c>LineAlignFactor</c>); vertical-edge (height) overflow is CLIPPED at
-/// line granularity + DIAGNOSED (<c>PAINT-MARGIN-BOX-CONTENT-OVERFLOW-001</c>, overflow-clipping cycle)
-/// — a partial-glyph clip path is a tracked follow-up.
+/// honouring the box's computed white-space — note margin-box <c>white-space</c> itself is NOT yet
+/// cascaded (not a <see cref="MarginBoxStyle"/> longhand), so boxes always compute the <c>normal</c>
+/// default (deferrals.md). An explicit size is content- or border-box per the box's
+/// <c>box-sizing</c> (box-sizing cycle); a VERTICAL (left/right) or CORNER box's content WRAPS at its
+/// fixed band/corner width (vertical-wrap cycle). Wrapped lines are aligned PER LINE by the box's
+/// alignment (Task 21 — via the fragment's <c>LineAlignFactor</c>). OVERFLOW is CLIPPED + DIAGNOSED
+/// (<c>PAINT-MARGIN-BOX-CONTENT-OVERFLOW-001</c>): height overflow at line granularity
+/// (overflow-clipping cycle), horizontal glyph overflow at the padding-box edge via a PDF clip path
+/// (clip-path cycle — the fragment's <c>ClipRect</c>); an explicit <c>overflow: visible</c> on the box
+/// opts out of all of it.
 /// </para>
 /// </remarks>
 internal static class PageMarginBoxPainter
@@ -276,9 +281,12 @@ internal static class PageMarginBoxPainter
             var lineHeightPx = contentStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16) * NormalLineHeightFactor;
             // The box's computed white-space decides whether its content can WRAP: only Normal / PreWrap /
             // PreLine / BreakSpaces wrap, so only they can flex narrower than the single-line width and
-            // re-wrap to fit. A `nowrap` / `pre` box is rigid (min-content == max-content) → it takes the
-            // center-priority clamp and never re-wraps. (Copilot review — honor the computed white-space,
-            // not a hard-coded Normal, in the min-content measurement + the re-wrap.) Default = `normal`.
+            // re-wrap to fit. A `nowrap` / `pre` box would be rigid (min-content == max-content) → the
+            // center-priority clamp, no re-wrap. NOTE: margin-box `white-space` is NOT yet cascaded
+            // (PropertyId.WhiteSpace isn't a MarginBoxStyle longhand), so this read always computes the
+            // `normal` DEFAULT today — a DECLARED `nowrap`/`pre` on the box is ignored and the non-wrap
+            // branches are reachable only via that default (post-PR-#156 Copilot review; deferrals.md —
+            // pickup: add white-space to the whitelist).
             var boxWhiteSpace = style.ReadInlineTextPolicy().WhiteSpace;
             var canWrap = boxWhiteSpace is WhiteSpace.Normal or WhiteSpace.PreWrap
                 or WhiteSpace.PreLine or WhiteSpace.BreakSpaces;
@@ -358,9 +366,21 @@ internal static class PageMarginBoxPainter
             var sizeBases = new RelativeSizeBases(
                 style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16),
                 rootEmPx, pageWidthPx, pageHeightPx);
+            // Resolve the variable-axis explicit size ONCE per box (post-PR-#156 review P2): the same
+            // value feeds the sizing AND the min-content gate below, and the single call site lets an
+            // unresolvable-in-context kept relative size (e.g. `1e308em` → a non-finite product) surface
+            // ONE diagnostic instead of silently shrink-to-fitting.
+            var explicitVarSizePx = region.VariableAxis switch
+            {
+                PageMarginBoxGeometry.MarginBoxAxis.Horizontal =>
+                    TryReadExplicitSizePx(style, PropertyId.Width, region.Width, sizeBases, mb.Name, diagnostics),
+                PageMarginBoxGeometry.MarginBoxAxis.Vertical =>
+                    TryReadExplicitSizePx(style, PropertyId.Height, region.Height, sizeBases, mb.Name, diagnostics),
+                _ => null, // corner boxes have no variable axis — width/height don't apply.
+            };
             if (region.VariableAxis == PageMarginBoxGeometry.MarginBoxAxis.Horizontal)
             {
-                if (TryReadExplicitSizePx(style, PropertyId.Width, region.Width, sizeBases) is double w)
+                if (explicitVarSizePx is double w)
                     boxWidthPx = Math.Min(region.Width,
                         borderBoxSizing ? Math.Max(w, insetLeftPx + insetRightPx) : w + insetLeftPx + insetRightPx);
                 else if (hasLine)
@@ -368,7 +388,7 @@ internal static class PageMarginBoxPainter
             }
             else if (region.VariableAxis == PageMarginBoxGeometry.MarginBoxAxis.Vertical)
             {
-                if (TryReadExplicitSizePx(style, PropertyId.Height, region.Height, sizeBases) is double h)
+                if (explicitVarSizePx is double h)
                     boxHeightPx = Math.Min(region.Height,
                         borderBoxSizing ? Math.Max(h, insetTopPx + insetBottomPx) : h + insetTopPx + insetBottomPx);
                 else if (hasLine)
@@ -383,7 +403,7 @@ internal static class PageMarginBoxPainter
             var minVarSizePx = region.VariableAxis == PageMarginBoxGeometry.MarginBoxAxis.Horizontal
                 ? boxWidthPx : boxHeightPx;
             if (region.VariableAxis == PageMarginBoxGeometry.MarginBoxAxis.Horizontal && hasLine && canWrap
-                && TryReadExplicitSizePx(style, PropertyId.Width, region.Width, sizeBases) is null
+                && explicitVarSizePx is null
                 && TryMeasureMinContentWidthPx(text, contentStyle, shaper, reflowWhiteSpace, out var minContentWidthPx))
             {
                 minVarSizePx = Math.Min(region.Width, minContentWidthPx + insetLeftPx + insetRightPx);
@@ -514,26 +534,36 @@ internal static class PageMarginBoxPainter
                 inline = inline with { Lines = inline.Lines[..keptLines] };
                 blockHeightPx = lineHeightPx * keptLines;
             }
-            // HORIZONTAL overflow of the surviving lines (clip-path cycle): a line whose advance exceeds
-            // the content-box width — an unbreakable run wider than the box (a long word in a narrow
+            // HORIZONTAL overflow of the surviving lines (clip-path cycle): a line that protrudes past
+            // the box's CLIP EDGE — an unbreakable run wider than the box (a long word in a narrow
             // band / a clamped rigid sibling), or a `nowrap` box — would previously SPILL over the page.
             // Now the fragment carries a CLIP RECT (the box's PADDING box, per CSS Overflow 3 §3 — the
             // clip edge of overflow ≠ visible) and the shared TextPainter wraps its glyph runs in a PDF
             // `q <rect> re W n … Q` clip path, so the protruding GLYPHS clip at the box edge
-            // (partial-glyph clipping — the vertically-truncated lines above stay whole-line). Surfaced
-            // per box (same code, width-phrased — CLAUDE.md #7); `overflow: visible` opts out. A box
-            // whose content fits carries no clip rect, so its stream is byte-identical.
+            // (partial-glyph clipping — the vertically-truncated lines above stay whole-line). The
+            // predicate uses the SAME geometry as the rect (post-PR-#156 review P2): a line starts at the
+            // CONTENT-box left (= padding-box left + padding-left; a line wider than the content box
+            // isn't alignment-shifted — TextPainter clamps its shift to ≥ 0), so it crosses the clip edge
+            // only when padding-left + advance exceeds the PADDING-box width — overflow into the right
+            // padding stays inside the clip edge and must trip neither the clip nor the diagnostic.
+            // Surfaced per box (same code, width-phrased — CLAUDE.md #7); `overflow: visible` opts out. A
+            // box whose content fits carries no clip rect, so its stream is byte-identical.
             FragmentClipRect? clipRect = null;
             var widestSurvivingPx = WidestLineAdvancePx(inline);
-            if (!item.OverflowVisible && widestSurvivingPx > contentBoxWidthPx + OverflowEpsilonPx)
+            var borderLeftPx = style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
+            var paddingBoxWidthPx = Math.Max(
+                0, boxWidthPx - borderLeftPx - style.ReadLengthPxOrZero(PropertyId.BorderRightWidth));
+            var paddingLeftPx = insetLeftPx - borderLeftPx;
+            if (!item.OverflowVisible
+                && paddingLeftPx + widestSurvivingPx > paddingBoxWidthPx + OverflowEpsilonPx)
             {
-                EmitContentOverflowWidth(diagnostics, item.Name, widestSurvivingPx, contentBoxWidthPx);
-                var borderLeftPx = style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
+                EmitContentOverflowWidth(
+                    diagnostics, item.Name, widestSurvivingPx, Math.Max(0, paddingBoxWidthPx - paddingLeftPx));
                 var borderTopPx = style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
                 clipRect = new FragmentClipRect(
                     boxXPx + borderLeftPx - contentOriginLeftPx,
                     boxYPx + borderTopPx - contentOriginTopPx,
-                    Math.Max(0, boxWidthPx - borderLeftPx - style.ReadLengthPxOrZero(PropertyId.BorderRightWidth)),
+                    paddingBoxWidthPx,
                     Math.Max(0, boxHeightPx - borderTopPx - style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth)));
             }
             // Vertical alignment uses the FULL wrapped block height (lineHeight × line count), not one line:
@@ -689,10 +719,14 @@ internal static class PageMarginBoxPainter
     /// (the initial) adds the border+padding insets, border-box floors at them. A <c>calc()</c> /
     /// container-relative / malformed size is diagnosed + DROPPED upstream by
     /// <see cref="MarginBoxStyle"/> (post-PR-#144 review), so it never reaches here — this reads it as
-    /// <c>auto</c> and the caller shrink-to-fits. Negatives are rejected upstream (non-negative
-    /// property); the <c>Max(0, …)</c> is defensive.</summary>
+    /// <c>auto</c> and the caller shrink-to-fits. A kept relative size that still fails to resolve IN
+    /// CONTEXT (a syntactically-supported value whose product is non-finite, e.g. <c>1e308em</c>) is
+    /// SURFACED via <paramref name="diagnostics"/> before the shrink-to-fit fallback (post-PR-#156
+    /// review P2 — the keep gate is syntactic, so the contextual failure must not be silent). Negatives
+    /// are rejected upstream (non-negative property); the <c>Max(0, …)</c> is defensive.</summary>
     private static double? TryReadExplicitSizePx(
-        ComputedStyle style, PropertyId id, double bandExtentPx, in RelativeSizeBases bases)
+        ComputedStyle style, PropertyId id, double bandExtentPx, in RelativeSizeBases bases,
+        string boxName, IDiagnosticsSink diagnostics)
     {
         var slot = style.Get(id);
         switch (slot.Tag)
@@ -704,11 +738,20 @@ internal static class PageMarginBoxPainter
             case ComputedSlotTag.Percentage:
                 return Math.Max(0, slot.AsPercentage() / 100.0 * bandExtentPx);
         }
-        if (style.TryGetDeferred(id, out var raw) && raw is not null
-            && RelativeLengthResolver.TryResolve(
-                raw, bases.EmPx, bases.RootEmPx, bases.PageWidthPx, bases.PageHeightPx, out var relativePx))
+        if (style.TryGetDeferred(id, out var raw) && raw is not null)
         {
-            return relativePx; // TryResolve guarantees finite + ≥ 0.
+            if (RelativeLengthResolver.TryResolve(
+                    raw, bases.EmPx, bases.RootEmPx, bases.PageWidthPx, bases.PageHeightPx, out var relativePx))
+            {
+                return relativePx; // TryResolve guarantees finite + ≥ 0.
+            }
+            diagnostics.Emit(new Diagnostic(
+                DiagnosticCodes.CssPropertyValueInvalid001,
+                $"The page margin box @{boxName} {(id == PropertyId.Width ? "width" : "height")} " +
+                $"'{DiagnosticTextSanitizer.Sanitize(raw)}' could not be resolved against its context — " +
+                "the result is not a finite non-negative size (e.g. an extreme multiplier overflowing the " +
+                "font-size/page product). The box falls back to shrink-to-fit.",
+                DiagnosticSeverity.Warning));
         }
         return null;
     }
@@ -951,9 +994,10 @@ internal static class PageMarginBoxPainter
         diagnostics.Emit(new Diagnostic(
             DiagnosticCodes.PaintMarginBoxContentOverflow001,
             $"The page margin box @{boxName} has content wider than its area " +
-            $"({contentWidthPx:0.#}px content vs {availableWidthPx:0.#}px available): a line's unbreakable " +
-            "content exceeds the box's content-box width (a long word in a narrow band, a clamped rigid " +
-            "sibling, or a nowrap box). The protruding glyphs were clipped at the box edge via a PDF clip " +
-            "path. Declare `overflow: visible` on the box to let the content spill instead.",
+            $"({contentWidthPx:0.#}px content vs {availableWidthPx:0.#}px available to the clip edge): a " +
+            "line's unbreakable content crosses the box's padding-box edge — the clip edge of CSS " +
+            "overflow — (a long word in a narrow band, a clamped rigid sibling, or a nowrap box). The " +
+            "protruding glyphs were clipped there via a PDF clip path. Declare `overflow: visible` on the " +
+            "box to let the content spill instead.",
             DiagnosticSeverity.Warning));
 }

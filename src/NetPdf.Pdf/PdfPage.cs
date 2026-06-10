@@ -235,10 +235,11 @@ internal sealed class PdfPage
     /// clip from the current path, <c>n</c> ends the path without painting it). Everything painted
     /// until the balancing <see cref="RestoreGraphicsState"/> renders only inside the rectangle.
     /// Coordinates are PDF points, bottom-left origin (the <c>re</c> convention). A non-positive
-    /// <paramref name="width"/>/<paramref name="height"/> is emitted as-is — a DEGENERATE clip that
-    /// paints nothing (deliberate: a clip request must never silently widen; contrast
-    /// <see cref="FillRectangle"/>'s no-op). Callers MUST balance every call with
-    /// <see cref="RestoreGraphicsState"/> — the page does not auto-close at finalize.
+    /// <paramref name="width"/>/<paramref name="height"/> is CLAMPED to 0 and emitted — a DEGENERATE
+    /// zero-area clip that paints nothing (deliberate: a clip request must never silently widen, and a
+    /// negative <c>re</c> dimension is NOT equivalent to an empty rectangle — it would flip the rect
+    /// across its origin; contrast <see cref="FillRectangle"/>'s no-op). Callers MUST balance every call
+    /// with <see cref="RestoreGraphicsState"/> — the page does not auto-close at finalize.
     /// </summary>
     public void BeginRectangleClip(double x, double y, double width, double height)
     {

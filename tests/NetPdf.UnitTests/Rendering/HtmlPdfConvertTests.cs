@@ -1966,6 +1966,51 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Page_margin_box_overflow_into_padding_is_not_clipped()
+    {
+        // Post-PR-#156 review P2: the clip predicate uses the PADDING-BOX geometry — the same rect the
+        // clip path uses. Content wider than the 100px CONTENT box but inside the (100+80)px padding box
+        // (12 A's ≈ 115px ≤ 180px) extends into the right padding, which is INSIDE the clip edge: no
+        // clip path and no overflow diagnostic. (The old content-box predicate wrongly tripped both.)
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"" + new string('A', 12) +
+            "\"; width: 100px; padding-right: 80px } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        Assert.DoesNotContain(" re W n", Latin1(result.Pdf));
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PaintMarginBoxContentOverflow001);
+    }
+
+    [Fact]
+    public void Page_margin_box_overflow_past_the_padding_box_still_clips()
+    {
+        // The padding-box predicate still catches a genuine spill: 30 A's ≈ 288px crosses the 180px
+        // padding box → clip path + width diagnostic.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"" + new string('A', 30) +
+            "\"; width: 100px; padding-right: 80px } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        Assert.Contains(" re W n", Latin1(result.Pdf));
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.PaintMarginBoxContentOverflow001
+            && d.Message.Contains("wider"));
+    }
+
+    [Fact]
+    public void Page_margin_box_extreme_relative_size_is_surfaced_not_silent()
+    {
+        // Post-PR-#156 review P2: a SYNTACTICALLY supported relative size whose contextual product
+        // overflows to a non-finite value (1e308 × 16px font = ∞) must be SURFACED before the
+        // shrink-to-fit fallback — not silently ignored (the keep gate in MarginBoxStyle is syntactic).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; width: 1e308em; background-color: red } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001
+            && d.Message.Contains("could not be resolved against its context"));
+        Assert.True(FirstRect(Latin1(result.Pdf)).W < 200.0,
+            "an unresolvable relative width should shrink-to-fit, not paint the full band");
+    }
+
+    [Fact]
     public void Page_margin_box_deferred_explicit_width_is_surfaced_and_shrinks_to_fit()
     {
         // A `calc()` width can't be resolved to a used size here yet → it's diagnosed

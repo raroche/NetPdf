@@ -80,8 +80,11 @@ namespace NetPdf.Layout.Layouters;
 /// <list type="bullet">
 ///   <item>No transformations applied (<c>transform</c> is Phase 3
 ///   Task 19+'s concern).</item>
-///   <item>No clipping rectangle (<c>overflow: clip</c> /
-///   <c>clip-path</c> deferred to a later task).</item>
+///   <item>BODY fragments carry no clipping rectangle (the body's
+///   <c>overflow: clip</c>/<c>hidden</c> + <c>clip-path</c> stay
+///   deferred); the opt-in <see cref="ClipRect"/> (margin-box
+///   overflow clip-path cycle) is currently set only by the
+///   page-margin-box painter.</item>
 ///   <item>Logical-axis property reads default to physical
 ///   <c>top</c>/<c>bottom</c>/<c>left</c>/<c>right</c> regardless of
 ///   <c>writing-mode</c> (PR #22 review fix #5 deferred to cycle 3).</item>

@@ -339,6 +339,28 @@ public sealed class CssPreprocessorTests
     }
 
     [Fact]
+    public void Process_math_function_nested_in_unknown_function_emits_style_rule_recovery()
+    {
+        // Post-PR-#159 Copilot review — the math-function detector's contract is CONTAINS:
+        // it scans INTO an unknown function's argument list, so calc() nested in a var()
+        // fallback is recovered (pre-fix the block was skipped wholesale and missed it).
+        var result = CssPreprocessor.Process(".a { width: var(--x, calc(1in - 24pt)) }");
+        var rec = Assert.Single(result.StyleRuleRecoveries);
+        var decl = Assert.Single(rec.Declarations);
+        Assert.Equal("width", decl.Property);
+        Assert.Contains("calc", decl.RawValueText);
+    }
+
+    [Fact]
+    public void Process_math_function_name_in_a_string_inside_function_args_is_not_matched()
+    {
+        // The scan inside a function's argument list still skips quoted strings — a literal
+        // "calc(1px)" in a var() fallback is NOT a math-function call.
+        var result = CssPreprocessor.Process(".a { width: var(--x, \"calc(1px)\") }");
+        Assert.True(result.StyleRuleRecoveries.IsEmpty);
+    }
+
+    [Fact]
     public void Process_oklch_with_important_recovers_important_flag()
     {
         var result = CssPreprocessor.Process(".a { color: oklch(0.5 0.2 30) !important }");

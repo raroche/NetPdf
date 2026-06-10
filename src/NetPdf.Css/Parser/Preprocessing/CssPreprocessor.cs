@@ -728,6 +728,13 @@ internal static class CssPreprocessor
                   // string-set + content() so the attr()/literal forms AngleSharp already keeps aren't
                   // duplicate-recovered.)
                   || (lowerName == "string-set" && ContainsContentFunction(rawValue))
+                  // Per the body-calc cycle — AngleSharp.Css drops/normalizes declarations whose value
+                  // carries a CSS math function it can't represent (`width: calc(1in - 24pt)` never
+                  // reaches the cascade), so the body-calc first cut would silently see nothing.
+                  // Recover any declaration containing a math function verbatim; if AngleSharp ALSO
+                  // kept (or reduced) a copy, the recovered raw lands later in the rule and wins the
+                  // last-wins cascade with an equivalent value — benign.
+                  || ContainsMathFunction(rawValue)
                 : !string.IsNullOrEmpty(rawValue);
             if (include)
             {
@@ -1116,6 +1123,47 @@ internal static class CssPreprocessor
                     // Skip the function args; ReadParenthesizedBlock handles balance.
                     tok.ReadParenthesizedBlock();
                 }
+                continue;
+            }
+            tok.ReadChar();
+        }
+        return false;
+    }
+
+    /// <summary>The CSS Values 4 §10 math-function names the body-calc cycle recovers (the same set
+    /// <c>CalcLengthEvaluator</c> evaluates) — AngleSharp.Css drops or normalizes values carrying
+    /// them, so without recovery they never reach the cascade.</summary>
+    private static readonly FrozenSet<string> MathFunctionNames = new[]
+    {
+        "calc", "min", "max", "clamp", "round", "mod", "rem", "abs", "sign",
+    }.ToFrozenSet(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Per the body-calc cycle — <see langword="true"/> when <paramref name="value"/>
+    /// contains a CSS math-function call (<see cref="MathFunctionNames"/>). Tokenized like
+    /// <see cref="ContainsModernValueFunction"/>, so a name inside a quoted string isn't
+    /// matched.</summary>
+    private static bool ContainsMathFunction(string value)
+    {
+        if (string.IsNullOrEmpty(value)) return false;
+        var tok = new CssTokenizer(value.AsSpan(), null);
+        while (!tok.IsEnd)
+        {
+            var c = tok.PeekChar();
+            if (c == '\'' || c == '"') { tok.SkipString(); continue; }
+            if (c == '/' && tok.PeekCharAt(1) == '*') { tok.SkipWhitespaceAndComments(); continue; }
+            if (IsIdentifierStart(c))
+            {
+                var ident = tok.ReadIdentifier();
+                if (tok.PeekChar() == '(' && MathFunctionNames.Contains(ident.ToString()))
+                    return true;
+                // Post-PR-#159 Copilot review — do NOT skip an unknown function's argument
+                // list: a math function can nest inside one (var(--x, calc(1in - 24pt))),
+                // and this detector's contract is CONTAINS. The scan continues INTO the
+                // block (the '(' falls through to the generic ReadChar below); quoted
+                // strings inside the arguments are still skipped by the loop head. A
+                // false positive (e.g. "calc(" inside an unquoted url()) is benign — the
+                // recovery delivers the raw verbatim and a kept AngleSharp copy stays
+                // last-wins-identical (see the recovery gate's doc).
                 continue;
             }
             tok.ReadChar();

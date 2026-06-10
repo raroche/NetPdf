@@ -365,7 +365,15 @@ relative margin-box `font-size` (`2rem`/`5vw`) resolves at paint time (`ResolveD
 context first, then each box before the shaper/em bases read it) — closes the 16px-fallback gap. **(C)** border
 `currentcolor` is per-EDGE (CSS Color 4 §6.2): each edge falls back to its OWNER's colour (box-declared edge →
 box colour, element-declared → element's) via `FragmentPainter.BorderEdgeCurrentColors` (uniform body overload
-delegates, byte-identical). Next (in order): cross-page running +
+delegates, byte-identical). Merged as PR #158 incl. its review (P2 clamp(…, none) bounds; P2 math-function
+font-size with parent-em bases; P3 body-length guard + cref). **Math-fns / body-calc / deep-recursion cycles (in
+progress, branch `phase-3-task-21-23-math-fns-body-calc-deep-recursion`) — the next three deferrals, one PR:**
+**(A)** `round()`/`mod()`/`rem()`/`abs()`/`sign()` (§10.6/10.7) evaluate in `CalcLengthEvaluator`. **(B)** BODY
+properties evaluate ABSOLUTE-term math functions at cascade time (`LengthResolver` → the evaluator with a NaN
+context — %/em/viewport terms stay diagnosed; range-aware §10.5 clamp so a body negative margin calc works;
+`CssPreprocessor` recovers the AngleSharp-dropped declarations via `ContainsMathFunction`). **(C)** the running
+element's nested blocks RECURSE (one stacked line per NESTED block, depth-capped 16, single 64 KiB budget).
+Next (in order): cross-page running +
 `@page :left`/`:right`/`:blank` + named pages (all multi-page-gated). Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).

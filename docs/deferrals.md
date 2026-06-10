@@ -3228,10 +3228,45 @@ flags the categories):
          edge falls back to its OWNER's colour — the box's when the box declares that edge's color or
          style longhand, else the running element's (`FragmentPainter.BorderEdgeCurrentColors`; the
          uniform body path delegates, byte-identical — replaces the whole-border ownership rule whose
-         mixed-origin case painted every edge with the box colour). STILL DEFERRED: container-relative
-         units (no container context — diagnosed + dropped), the §10.3+ math functions
-         (`round()`/`mod()`/`abs()`/…), and BODY calc machinery (body lengths still reject
-         calc with the resolver's invalid-value diagnostic).
+         mixed-origin case painted every edge with the box colour). **§10.6/10.7 math functions + BODY calc first cut + element() deep recursion — DONE
+         (math-fns / body-calc / deep-recursion cycles):** `round(<strategy>?, A, B?)` (nearest
+         ties-up default / up / down / to-zero; B defaults to the number 1, so a length A without B is
+         a type error per spec), `mod(A, B)` (sign of B), `rem(A, B)` (sign of A), `abs(A)`, and
+         `sign(A)` (a NUMBER — composes in products, invalid as a whole length) evaluate in
+         `CalcLengthEvaluator` (same-type args, zero step/divisor invalid, depth-capped). BODY
+         properties evaluate ABSOLUTE-term math functions at cascade time: `LengthResolver` routes a
+         math-function value through the evaluator with a NaN context (any %/font-/viewport term
+         poisons → rejected → the diagnosed-invalid path, message naming the context-dependent
+         deferral), with the §10.5 range clamp following the property's actual range (a body
+         `margin-left: calc(0px - 10px)` resolves to −10px); `CssPreprocessor` RECOVERS dropped
+         math-function declarations (AngleSharp drops/normalizes them — new `ContainsMathFunction`
+         gate, tokenized so quoted strings don't match), and the padding-shorthand expander now
+         accepts an absolute calc part. The running element's nested blocks RECURSE
+         (`MarginContentCollector.ReadRunningElementContent` — a block child with block children
+         contributes one stacked line per NESTED block, `MaxRunningBlockDepth` = 16 deep, the single
+         64 KiB budget threading through every level; deeper nests flatten — the pre-cycle behavior).
+         STILL DEFERRED: container-relative units (no container context — diagnosed + dropped), the
+         §10.8+ trig/exponential functions (`sin()`/`pow()`/…), CONTEXT-DEPENDENT body calc (%/em/
+         viewport terms need layout-time bases — margin boxes resolve them via the painter), and the
+         running element's REAL nested block LAYOUT (sub-boxes with own decoration/margins — lines
+         only). The post-PR-#159 review fixed `round()`'s negative-step inversion (the step
+         normalizes to |B|), a `sign(NaN)` crash under the body NaN context (NaN now propagates to
+         the surfaced path), the failure diagnostic mis-blaming context-dependent terms for
+         malformed expressions (a finite-probe re-evaluation picks the right message), and
+         `ContainsMathFunction` missing math functions nested inside unknown functions
+         (`var(--x, calc(…))` now recovers).
+       - **Body explicit `width` (post-PR-#159 handoff-spotted gap) — first cut DONE:** an in-flow
+         `BlockContainer`/`ListItem` with an explicit `width` sizes its border box to
+         width + inline borders + padding at BOTH `BlockLayouter` fill sites (outer dispatch +
+         subtree recursion, shared `ResolveInFlowBorderBoxInlineSize`), mirroring the inline-only
+         block path — so an empty `width: 64px` div's background band no longer spans the full
+         content width. STILL DEFERRED (the CSS 2.2 §10.3.3 remainder): margin DISTRIBUTION
+         (`margin: auto` centering, the over-constrained rule — the box keeps its inline-start
+         edge), body `box-sizing`, percent width (reads as 0 → auto fill, the
+         `ReadLengthPxOrZero` cycle-1 contract), and the explicit width of `Table`/`InlineTable`
+         wrappers (the measured-grid growth logic owns their inline extent),
+         `FlexContainer`/`GridContainer`, and replaced boxes (all keep the documented
+         available-range fill).
        - **`@page :first` selector (cycle 10) — DONE:** `@page :first` rules apply on the single
          (first) page, overriding the bare `@page` by cascade specificity — `AtPageRules.EnumeratePageRules`
          yields bare-then-`:first` so the resolvers' last-wins cascade lets `:first` win (a bare

@@ -1372,9 +1372,10 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // Per PR #23 review fix #5 — clamp the border-box inline
             // size to non-negative. Per cycle 2 — derive from the
             // float-adjusted available range, not the full containing
-            // block.
-            var borderBoxInlineSize = Math.Max(0,
-                availInlineSize - marginInlineStart - marginInlineEnd);
+            // block. Per the body-explicit-width gap fix — an explicit
+            // `width` on a plain block container overrides the fill.
+            var borderBoxInlineSize = ResolveInFlowBorderBoxInlineSize(
+                child, availInlineSize, marginInlineStart, marginInlineEnd);
 
             // Per Phase 3 Task 12 sub-cycle 1 hardening (Finding 1) —
             // for Table / InlineTable wrappers, pre-measure the
@@ -4502,8 +4503,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
 
             var childBorderBoxBlockSize = borderStart + paddingStart + contentBlock
                 + paddingEnd + borderEnd;
-            var childBorderBoxInlineSize = Math.Max(0,
-                contentInlineSize - marginInlineStart - marginInlineEnd);
+            // Per the body-explicit-width gap fix — same §10.3.3 subset
+            // as the outer dispatch path (explicit `width` on a plain
+            // block container overrides the fill), so a nested div
+            // sizes identically to a top-level one.
+            var childBorderBoxInlineSize = ResolveInFlowBorderBoxInlineSize(
+                child, contentInlineSize, marginInlineStart, marginInlineEnd);
 
             // Per cycle 2c post-PR-29 review #2 — measure/emit cursor
             // mismatch fix. Pre-fix the recursion advanced by
@@ -6331,6 +6336,47 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // will read per-TextRun + apply the CSS Text L3 strut
             // rule (max of constituent runs' line-heights).
             LineHeightOverridePx: block.Style.ReadLengthPxOrZero(PropertyId.LineHeight));
+
+    /// <summary>Used border-box inline size for an in-flow block-level child (the CSS 2.2
+    /// §10.3.3 cycle-1 subset; body-explicit-width gap fix). A plain block container
+    /// (<see cref="BoxKind.BlockContainer"/> / <see cref="BoxKind.ListItem"/>) with an explicit
+    /// <c>width</c> (the CONTENT-box inline size; <c>auto</c> / percentage read as 0 via
+    /// <see cref="ComputedStyleLayoutExtensions.ReadLengthPxOrZero"/>, the cycle-1 contract)
+    /// maps it to the border box via the inline-axis borders + padding — mirroring
+    /// <see cref="ComputeInlineOnlyBlockLayout"/>, so a block WITHOUT inline content (whose
+    /// background band previously spanned the full available range) sizes identically to one
+    /// WITH it. Everything else keeps the fill behavior (available range minus the inline
+    /// margins, the pre-fix path, byte-identical):
+    /// <list type="bullet">
+    ///   <item><see cref="BoxKind.AnonymousBlock"/> SHARES its parent's style object, so the
+    ///   parent's explicit width would double-apply (plus re-add the parent's borders/padding);
+    ///   per Display L3 §3.1 anonymous boxes take the initial <c>width: auto</c>.</item>
+    ///   <item><see cref="BoxKind.Table"/> / <see cref="BoxKind.InlineTable"/> wrappers track
+    ///   the MEASURED grid via the table-driven growth logic (Task 12 Finding 6) — the grid
+    ///   already consumes the css width itself.</item>
+    ///   <item><see cref="BoxKind.FlexContainer"/> / <see cref="BoxKind.GridContainer"/> /
+    ///   replaced boxes keep the documented cycle-1 fill behavior (their explicit-width
+    ///   honoring is its own cycle — see <c>docs/deferrals.md</c>).</item>
+    /// </list>
+    /// §10.3.3 margin DISTRIBUTION (<c>margin: auto</c> centering, the over-constrained
+    /// rule) stays deferred — the box keeps its inline-start edge.</summary>
+    private static double ResolveInFlowBorderBoxInlineSize(
+        Box child, double availableInlineSize, double marginInlineStart, double marginInlineEnd)
+    {
+        if (child.Kind is BoxKind.BlockContainer or BoxKind.ListItem)
+        {
+            var declaredWidth = child.Style.ReadLengthPxOrZero(PropertyId.Width);
+            if (declaredWidth > 0)
+            {
+                return declaredWidth
+                    + child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth)
+                    + child.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth)
+                    + child.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft)
+                    + child.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
+            }
+        }
+        return Math.Max(0, availableInlineSize - marginInlineStart - marginInlineEnd);
+    }
 
     /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 — compute the
     /// inline-only block's full pre-emit picture: the inline pass

@@ -28,6 +28,77 @@ public sealed class LengthResolverTests
     // ============================================================
 
     [Theory]
+    [InlineData("calc(1in - 24pt)", 64.0)]       // body-calc cycle: absolute-term calc folds at cascade time
+    [InlineData("calc(0px - 10px)", -10.0)]      // a negative result is legal for Top (range-aware §10.5 clamp)
+    [InlineData("min(10px, 5mm)", 10.0)]         // the §10.2/§10.6 functions ride the same path
+    [InlineData("round(7px, 2px)", 8.0)]
+    public void Body_absolute_math_functions_resolve_at_cascade_time(string input, double expectedPx)
+    {
+        var result = LengthResolver.Resolve(input, PropertyType.LengthPercentageAuto, PropertyId.Top,
+            "top", null, default);
+        Assert.True(result.IsResolved, input);
+        Assert.Equal(ComputedSlotTag.LengthPx, result.Slot.Tag);
+        Assert.Equal(expectedPx, result.Slot.AsLengthPx(), 3);
+    }
+
+    [Fact]
+    public void Body_non_negative_property_clamps_a_negative_math_result()
+    {
+        // Width is a non-negative property — §10.5 clamps the used value at 0 (not invalid).
+        var result = LengthResolver.Resolve("calc(0px - 10px)", PropertyType.LengthPercentageAuto,
+            PropertyId.Width, "width", null, default);
+        Assert.True(result.IsResolved);
+        Assert.Equal(0.0, result.Slot.AsLengthPx(), 3);
+    }
+
+    [Fact]
+    public void Body_context_dependent_math_function_is_diagnosed_invalid()
+    {
+        // %/em/viewport terms need layout-time bases the cascade doesn't have — diagnosed + invalid
+        // (a documented deferral; the @page margin-box path resolves those via its painter).
+        var sink = new CapturingSink();
+        var result = LengthResolver.Resolve("calc(50% - 10px)", PropertyType.LengthPercentageAuto,
+            PropertyId.Width, "width", sink, default);
+        Assert.True(result.IsInvalid);
+        Assert.Contains(sink.Diagnostics, d => d.Message.Contains("context-dependent"));
+    }
+
+    [Theory]
+    [InlineData("mod(10px, 0px)")]      // zero step/divisor
+    [InlineData("sign(10px)")]          // number-valued whole result for a length property
+    [InlineData("round(7px)")]          // B defaults to the NUMBER 1 → type mismatch
+    [InlineData("calc(10px + 5)")]      // mixed-type sum (§10.4)
+    public void Body_malformed_math_function_gets_the_invalid_not_the_deferral_message(string input)
+    {
+        // Post-PR-#159 Copilot review — a failure that ISN'T about context-dependent terms
+        // (the finite-probe re-evaluation fails too) names the real cause instead of
+        // misleadingly blaming unresolved %/em/viewport terms.
+        var sink = new CapturingSink();
+        var result = LengthResolver.Resolve(input, PropertyType.LengthPercentageAuto,
+            PropertyId.Width, "width", sink, default);
+        Assert.True(result.IsInvalid, input);
+        var d = Assert.Single(sink.Diagnostics);
+        Assert.Contains("invalid or unsupported", d.Message);
+        Assert.DoesNotContain("context-dependent", d.Message);
+    }
+
+    [Fact]
+    public void Body_sign_of_a_percent_term_is_diagnosed_context_dependent_without_crashing()
+    {
+        // Post-PR-#159 Copilot review — pre-fix Math.Sign(NaN) THREW here (the NaN context
+        // makes sign(50%)'s argument NaN). Now it fails cleanly, and the finite probe
+        // (under which sign(50%) → 1 and the expression evaluates) classifies the failure
+        // as context-dependent — the expression is well-formed, only its % term isn't
+        // resolvable at cascade time.
+        var sink = new CapturingSink();
+        var result = LengthResolver.Resolve("calc(10px * sign(50%))", PropertyType.LengthPercentageAuto,
+            PropertyId.Width, "width", sink, default);
+        Assert.True(result.IsInvalid);
+        var d = Assert.Single(sink.Diagnostics);
+        Assert.Contains("context-dependent", d.Message);
+    }
+
+    [Theory]
     [InlineData("16px", 16.0)]
     [InlineData("0", 0.0)]                  // bare zero is a valid length
     [InlineData("1in", 96.0)]

@@ -96,6 +96,83 @@ public sealed class BlockLayouterTests
         Assert.Equal(550, sink.Fragments[0].InlineSize);
     }
 
+    [Fact]
+    public void Explicit_width_sizes_the_fragment_border_box_inline_size()
+    {
+        // Body-explicit-width gap fix — a plain block container with an
+        // explicit `width` (the CONTENT-box size) gets a border-box
+        // fragment of width + inline borders + padding, mirroring the
+        // inline-only block path (CSS 2.2 §10.3.3 cycle-1 subset). The
+        // pre-fix behavior filled the available range, so an empty
+        // `width: 64px` div painted a full-content-width background band.
+        var sink = new RecordingFragmentSink();
+        var style = MakeStyle();
+        SetLengthPx(style, PropertyId.Width, 64);
+        SetLengthPx(style, PropertyId.MarginLeft, 30);
+        SolidBorders(style);
+        SetLengthPx(style, PropertyId.BorderLeftWidth, 2);
+        SetLengthPx(style, PropertyId.BorderRightWidth, 2);
+        SetLengthPx(style, PropertyId.PaddingLeft, 8);
+        SetLengthPx(style, PropertyId.PaddingRight, 8);
+        SetLengthPx(style, PropertyId.Height, 100);
+
+        var root = Box.CreateRoot(MakeStyle());
+        root.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Single(sink.Fragments);
+        // Border box = 64 (content) + 2 + 2 (borders) + 8 + 8 (padding) = 84,
+        // NOT 600 - 30 = 570 (the auto fill). Margin distribution stays
+        // deferred — the box keeps its inline-start edge (margin-left).
+        Assert.Equal(84, sink.Fragments[0].InlineSize);
+        Assert.Equal(30, sink.Fragments[0].InlineOffset);
+    }
+
+    [Fact]
+    public void Explicit_width_in_nested_recursion_matches_the_outer_path()
+    {
+        // Body-explicit-width gap fix — the recursive subtree path sizes an
+        // explicit-width nested block exactly like the outer dispatch path,
+        // and an auto sibling still fills the parent's content box.
+        var sink = new RecordingFragmentSink();
+        var parentStyle = MakeStyle();
+        SetLengthPx(parentStyle, PropertyId.Width, 200);
+        var fixedChildStyle = MakeStyle();
+        SetLengthPx(fixedChildStyle, PropertyId.Width, 64);
+        SetLengthPx(fixedChildStyle, PropertyId.Height, 40);
+        var autoChildStyle = MakeStyle();
+        SetLengthPx(autoChildStyle, PropertyId.Height, 40);
+
+        var root = Box.CreateRoot(MakeStyle());
+        var parent = Box.ForElement(BoxKind.BlockContainer, parentStyle, MakeElement());
+        parent.AppendChild(Box.ForElement(BoxKind.BlockContainer, fixedChildStyle, MakeElement()));
+        parent.AppendChild(Box.ForElement(BoxKind.BlockContainer, autoChildStyle, MakeElement()));
+        root.AppendChild(parent);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // Parent border box = its explicit 200 (no borders/padding);
+        // nested explicit child = 64; nested auto child fills the
+        // parent's content box (= 200, parent has no borders/padding).
+        // Emit order: parent wrapper first, then the children in
+        // document order via the recursive subtree walk.
+        Assert.Equal(3, sink.Fragments.Count);
+        Assert.Equal(200, sink.Fragments[0].InlineSize);
+        Assert.Equal(64, sink.Fragments[1].InlineSize);
+        Assert.Equal(200, sink.Fragments[2].InlineSize);
+    }
+
     // --- Multi-block stacking ----------------------------------------
 
     [Fact]

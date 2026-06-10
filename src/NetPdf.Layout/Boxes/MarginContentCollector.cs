@@ -339,6 +339,12 @@ internal static class MarginContentCollector
     /// every running element, regardless of whether <c>element(name)</c> references it).</summary>
     private const int MaxRunningTextChars = 64 * 1024;
 
+    /// <summary>The maximum BLOCK-nesting depth the running-content read recurses into
+    /// (deep-recursion cycle) — a block child deeper than this flattens to one line (the pre-cycle
+    /// behavior), so a pathological nest can't grow the stack; content is additionally bounded by
+    /// the shared <see cref="MaxRunningTextChars"/> budget at every level.</summary>
+    private const int MaxRunningBlockDepth = 16;
+
     /// <summary>The running element's content for <c>element(name)</c> (Task 23 — nested BLOCK children
     /// FIRST CUT). When the element has BLOCK-LEVEL child elements (per the production
     /// <see cref="DisplayMapper"/>, with the HTML UA tag default via <see cref="HtmlDefaultDisplay"/> when
@@ -352,8 +358,12 @@ internal static class MarginContentCollector
     /// can't store N × the cap (post-PR-#154 review P1 / Copilot). APPROXIMATION: nested blocks are FLATTENED
     /// (each direct block child is one line — its own further block structure / decoration / margins stay
     /// deferred, deferrals.md); a <c>display: none</c> child renders nothing; a <c>display: contents</c>
-    /// child's block grandchildren aren't promoted (treated as an inline run).</summary>
-    private static string ReadRunningElementContent(IElement element, ResolvedCascadeResult cascade, int maxChars)
+    /// child's block grandchildren aren't promoted (treated as an inline run). DEEP RECURSION
+    /// (deep-recursion cycle): a block child that itself has block-level children RECURSES (each
+    /// nested block its own stacked line) up to <see cref="MaxRunningBlockDepth"/> levels — a deeper
+    /// nest flattens to one line; the SAME total budget threads through every level.</summary>
+    private static string ReadRunningElementContent(
+        IElement element, ResolvedCascadeResult cascade, int maxChars, int depth = 0)
     {
         // No block-level child → the flat normalized text (the common single-line header — no U+000A, so the
         // painter's single-line path is byte-identical to before this first cut).
@@ -377,8 +387,16 @@ internal static class MarginContentCollector
                 {
                     FlushInlineRun(inlineBuf, output, maxChars);   // flush the pending inline run as a line
                     if (output.Length >= maxChars) break;
-                    var block = LineBuilder.PreprocessWhitespace(
-                        ReadBoundedDescendantText(el, maxChars - output.Length), WhiteSpace.Normal);
+                    // DEEP RECURSION (deep-recursion cycle): a block child that ITSELF has block-level
+                    // children recurses, so each NESTED block contributes its own stacked line —
+                    // `<div><div>A</div><div>B</div></div><div>C</div>` renders three lines, not the
+                    // flattened "A B" + "C". Depth-capped (a deeper nest flattens — the pre-cycle
+                    // behavior) and budget-bounded: the REMAINING budget threads down, so the 64 KiB
+                    // total cap holds across every level.
+                    var block = depth < MaxRunningBlockDepth && HasBlockLevelChild(el, cascade)
+                        ? ReadRunningElementContent(el, cascade, maxChars - output.Length, depth + 1)
+                        : LineBuilder.PreprocessWhitespace(
+                            ReadBoundedDescendantText(el, maxChars - output.Length), WhiteSpace.Normal);
                     AppendLine(output, block, maxChars);
                 }
                 else if (inlineBuf.Length < remaining)             // inline / inline-block / contents / unsupported

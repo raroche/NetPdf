@@ -71,12 +71,16 @@ public sealed class PaddingShorthandExpanderTests
     }
 
     [Fact]
-    public void Rejects_an_unsupported_functional_value_atomically()
+    public void Expands_an_absolute_calc_part_and_rejects_an_unsupported_function_atomically()
     {
-        // The paren-aware tokenizer keeps calc(1px + 2px) as ONE token (not split on its inner spaces),
-        // which then fails atomic resolver validation (calc() isn't resolvable yet) — so the whole
-        // shorthand is rejected cleanly rather than mangled into garbage tokens.
-        Assert.False(PaddingShorthandExpander.TryExpand("padding", "calc(1px + 2px) 5px", out _));
+        // The paren-aware tokenizer keeps calc(1px + 2px) as ONE token (not split on its inner
+        // spaces). Since the body-calc cycle, an ABSOLUTE-term calc part passes atomic resolver
+        // validation (LengthResolver folds it to 3px), so the shorthand EXPANDS; a still-unsupported
+        // function (url()) keeps the clean atomic rejection.
+        var d = Expand("calc(1px + 2px) 5px");
+        Assert.Equal("calc(1px + 2px)", d["padding-top"]);
+        Assert.Equal("5px", d["padding-right"]);
+        Assert.False(PaddingShorthandExpander.TryExpand("padding", "url(x.png) 5px", out _));
     }
 
     [Theory]

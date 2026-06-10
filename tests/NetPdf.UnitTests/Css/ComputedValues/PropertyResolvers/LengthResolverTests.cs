@@ -28,6 +28,42 @@ public sealed class LengthResolverTests
     // ============================================================
 
     [Theory]
+    [InlineData("calc(1in - 24pt)", 64.0)]       // body-calc cycle: absolute-term calc folds at cascade time
+    [InlineData("calc(0px - 10px)", -10.0)]      // a negative result is legal for Top (range-aware §10.5 clamp)
+    [InlineData("min(10px, 5mm)", 10.0)]         // the §10.2/§10.6 functions ride the same path
+    [InlineData("round(7px, 2px)", 8.0)]
+    public void Body_absolute_math_functions_resolve_at_cascade_time(string input, double expectedPx)
+    {
+        var result = LengthResolver.Resolve(input, PropertyType.LengthPercentageAuto, PropertyId.Top,
+            "top", null, default);
+        Assert.True(result.IsResolved, input);
+        Assert.Equal(ComputedSlotTag.LengthPx, result.Slot.Tag);
+        Assert.Equal(expectedPx, result.Slot.AsLengthPx(), 3);
+    }
+
+    [Fact]
+    public void Body_non_negative_property_clamps_a_negative_math_result()
+    {
+        // Width is a non-negative property — §10.5 clamps the used value at 0 (not invalid).
+        var result = LengthResolver.Resolve("calc(0px - 10px)", PropertyType.LengthPercentageAuto,
+            PropertyId.Width, "width", null, default);
+        Assert.True(result.IsResolved);
+        Assert.Equal(0.0, result.Slot.AsLengthPx(), 3);
+    }
+
+    [Fact]
+    public void Body_context_dependent_math_function_is_diagnosed_invalid()
+    {
+        // %/em/viewport terms need layout-time bases the cascade doesn't have — diagnosed + invalid
+        // (a documented deferral; the @page margin-box path resolves those via its painter).
+        var sink = new CapturingSink();
+        var result = LengthResolver.Resolve("calc(50% - 10px)", PropertyType.LengthPercentageAuto,
+            PropertyId.Width, "width", sink, default);
+        Assert.True(result.IsInvalid);
+        Assert.Contains(sink.Diagnostics, d => d.Message.Contains("context-dependent"));
+    }
+
+    [Theory]
     [InlineData("16px", 16.0)]
     [InlineData("0", 0.0)]                  // bare zero is a valid length
     [InlineData("1in", 96.0)]

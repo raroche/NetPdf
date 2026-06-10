@@ -48,6 +48,13 @@ namespace NetPdf.Css.ComputedValues.PropertyResolvers;
 /// </remarks>
 internal static class LengthResolver
 {
+    /// <summary>The body-calc evaluation context (body-calc cycle): every relative base is NaN, so
+    /// any %/font-/viewport-relative term poisons the result and the evaluator rejects it — only
+    /// ABSOLUTE-term math functions resolve at cascade time (context-dependent ones need layout-time
+    /// bases, deferrals.md).</summary>
+    private static readonly CalcLengthEvaluator.CalcContext AbsoluteOnlyCalcContext =
+        new(double.NaN, double.NaN, double.NaN, double.NaN, double.NaN);
+
     /// <summary>The single keyword id used by the dimension family for the property's
     /// admitted keyword (<c>auto</c>, <c>normal</c>, or <c>none</c>). v1 uses one id
     /// per property since only one keyword applies.</summary>
@@ -98,6 +105,28 @@ internal static class LengthResolver
         // here is forward-compat for that work.
         if (TryMatchMulticolKeyword(value, propertyId, out var multicolKeywordSlot))
             return ResolverResult.Resolved(multicolKeywordSlot);
+
+        // BODY calc() first cut (body-calc cycle): an ABSOLUTE-term math function — calc(1in - 24pt),
+        // min(10px, 5mm), round(7px, 2px), … — evaluates at cascade time via the shared
+        // CalcLengthEvaluator with a NaN context: a context-dependent term (% / em / rem / viewport)
+        // poisons the result to NaN, the evaluator's finite gate rejects it, and the value stays on
+        // the diagnosed-invalid path below (context-dependent BODY calc needs layout-time bases — a
+        // documented deferral; the @page margin-box path resolves those via its painter). The §10.5
+        // used-value range clamp follows the property's actual range, so a body
+        // `margin-left: calc(0px - 10px)` legitimately resolves to −10px.
+        if (CalcLengthEvaluator.IsMathFunction(value))
+        {
+            if (CalcLengthEvaluator.TryEvaluate(
+                    value, AbsoluteOnlyCalcContext,
+                    clampNonNegative: NonNegativeProperties.IsRequired(propertyId), out var calcPx))
+            {
+                return ResolverResult.Resolved(ComputedSlot.FromLengthPx(calcPx));
+            }
+            EmitInvalid(diagnostics, propertyName, value,
+                "math functions with context-dependent terms (%/em/rem/viewport units) aren't resolved " +
+                "for body properties yet — absolute-term expressions are (deferrals.md)", location);
+            return ResolverResult.Invalid();
+        }
 
         // Numeric path: decompose into (number, unit).
         if (!TrySplitNumberAndUnit(value, out var number, out var unit))

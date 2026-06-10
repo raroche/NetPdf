@@ -38,8 +38,10 @@ namespace NetPdf.Css.ComputedValues.PropertyResolvers;
 /// </para>
 /// <para>
 /// <b>Out of scope</b> (evaluate → <see langword="false"/>, the caller surfaces + falls back):
-/// container-relative units, <c>round()</c>/<c>mod()</c>/<c>abs()</c> and the other CSS Values 4
-/// §10.3+ math functions, attr(), non-finite results.
+/// container-relative units, the §10.8+ trigonometric/exponential functions
+/// (<c>sin()</c>/<c>pow()</c>/…), attr(), non-finite results. The §10.6 stepped-value
+/// (<c>round()</c>/<c>mod()</c>/<c>rem()</c>) and §10.7 sign-related (<c>abs()</c>/<c>sign()</c>)
+/// functions ARE evaluated (math-fns cycle).
 /// </para>
 /// </remarks>
 internal static class CalcLengthEvaluator
@@ -54,7 +56,7 @@ internal static class CalcLengthEvaluator
     /// <summary>Whether <paramref name="rawText"/> is shaped like a CSS math function —
     /// <c>calc(</c> / <c>min(</c> / <c>max(</c> / <c>clamp(</c> … <c>)</c>, case-insensitive
     /// (min/max/clamp are valid as a WHOLE value, not just inside calc — CSS Values 4 §10.1).
-    /// Shape only — <see cref="TryEvaluate"/> decides validity; callers use this as the
+    /// Shape only — <c>TryEvaluate</c> decides validity; callers use this as the
     /// keep-vs-drop gate (like <see cref="RelativeLengthResolver.IsSupported"/>, the contextual
     /// evaluation can still fail and must then be surfaced, not silently dropped).</summary>
     public static bool IsMathFunction(string rawText)
@@ -62,10 +64,17 @@ internal static class CalcLengthEvaluator
         if (string.IsNullOrWhiteSpace(rawText)) return false;
         var v = rawText.AsSpan().Trim();
         if (v.Length < 6 || v[^1] != ')') return false; // shortest: "min(x)".
-        return v[..5].Equals("calc(", StringComparison.OrdinalIgnoreCase)
-            || v[..4].Equals("min(", StringComparison.OrdinalIgnoreCase)
-            || v[..4].Equals("max(", StringComparison.OrdinalIgnoreCase)
-            || (v.Length > 7 && v[..6].Equals("clamp(", StringComparison.OrdinalIgnoreCase));
+        return StartsWithName(v, "calc(") || StartsWithName(v, "min(") || StartsWithName(v, "max(")
+            || StartsWithName(v, "clamp(")
+            // §10.6 stepped-value + §10.7 sign-related functions (math-fns cycle). `sign()` yields a
+            // NUMBER, so as a WHOLE length value it admits here then fails evaluation (surfaced) —
+            // correct: it IS invalid as a length, but it's still a math function.
+            || StartsWithName(v, "round(") || StartsWithName(v, "mod(") || StartsWithName(v, "rem(")
+            || StartsWithName(v, "abs(") || StartsWithName(v, "sign(");
+
+        static bool StartsWithName(ReadOnlySpan<char> v, string nameWithParen) =>
+            v.Length > nameWithParen.Length + 1
+            && v[..nameWithParen.Length].Equals(nameWithParen, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>Evaluate <paramref name="rawText"/> (a full <c>calc(…)</c> / <c>min(…)</c> /
@@ -75,7 +84,15 @@ internal static class CalcLengthEvaluator
     /// adversarial-input guards — the body length cap (<see cref="CalcResolver.MaxBodyLength"/>) and
     /// the nesting-depth cap (<see cref="CalcResolver.MaxDepth"/>), mirrored from the cascade calc
     /// resolver so both calc front doors bound CPU/stack identically (post-PR-#157 review P2).</summary>
-    public static bool TryEvaluate(string rawText, in CalcContext context, out double px)
+    public static bool TryEvaluate(string rawText, in CalcContext context, out double px) =>
+        TryEvaluate(rawText, context, clampNonNegative: true, out px);
+
+    /// <summary><paramref name="clampNonNegative"/> controls the §10.5 used-value range clamp: the
+    /// margin-box consumers (width/height/padding/font-size) are non-negative properties, so the
+    /// default clamps at 0; the BODY length path (body-calc cycle) passes the property's actual
+    /// range — a body <c>margin-left: calc(0px - 10px)</c> legitimately evaluates to −10px.</summary>
+    public static bool TryEvaluate(
+        string rawText, in CalcContext context, bool clampNonNegative, out double px)
     {
         px = 0;
         if (!IsMathFunction(rawText)) return false;
@@ -96,7 +113,7 @@ internal static class CalcLengthEvaluator
         if (pos != expr.Length) return false;            // trailing junk.
         if (result.IsNumber) return false;               // a length property needs a length result.
         if (!double.IsFinite(result.Value)) return false;
-        px = Math.Max(0, result.Value);                  // §10.5 used-value range clamp (non-negative consumers).
+        px = clampNonNegative ? Math.Max(0, result.Value) : result.Value; // §10.5 used-value range clamp.
         return true;
     }
 
@@ -187,6 +204,18 @@ internal static class CalcLengthEvaluator
             return TryParseMinMax(s, ref pos, ctx, depth, isMin: false, out result);
         if (TryMatchFunctionName(s, ref pos, "clamp("))
             return TryParseClamp(s, ref pos, ctx, depth, out result);
+        // §10.6 stepped-value + §10.7 sign-related functions (math-fns cycle). `rem(` the FUNCTION
+        // only matches with its paren — the `rem` UNIT still parses via the number path below.
+        if (TryMatchFunctionName(s, ref pos, "round("))
+            return TryParseRound(s, ref pos, ctx, depth, out result);
+        if (TryMatchFunctionName(s, ref pos, "mod("))
+            return TryParseModRem(s, ref pos, ctx, depth, isMod: true, out result);
+        if (TryMatchFunctionName(s, ref pos, "rem("))
+            return TryParseModRem(s, ref pos, ctx, depth, isMod: false, out result);
+        if (TryMatchFunctionName(s, ref pos, "abs("))
+            return TryParseAbsSign(s, ref pos, ctx, depth, isAbs: true, out result);
+        if (TryMatchFunctionName(s, ref pos, "sign("))
+            return TryParseAbsSign(s, ref pos, ctx, depth, isAbs: false, out result);
 
         // <number> with an optional unit / '%'. A sign is part of the value here (a value position),
         // unlike the whitespace-required binary +/- (an operator position).
@@ -311,6 +340,118 @@ internal static class CalcLengthEvaluator
         if (!isNone[2]) value = Math.Min(value, args[2].Value);
         if (!isNone[0]) value = Math.Max(args[0].Value, value); // MIN applied last → MIN wins over MAX.
         result = args[1] with { Value = value };
+        return true;
+    }
+
+    /// <summary><c>round(&lt;strategy&gt;?, A, B?)</c> — §10.6: round A to the nearest multiple of
+    /// B per the strategy (<c>nearest</c> default / <c>up</c> / <c>down</c> / <c>to-zero</c>). A and
+    /// B must be the SAME type; B defaults to the number 1 (so omitting B is valid only for a number
+    /// A — for a length A the type check rejects it, per spec). <c>nearest</c> ties round UP (toward
+    /// +∞, per spec). B must not be zero. The caller consumed the name + <c>(</c>.</summary>
+    private static bool TryParseRound(
+        ReadOnlySpan<char> s, ref int pos, in CalcContext ctx, int depth, out Term result)
+    {
+        result = default;
+        if (depth >= CalcResolver.MaxDepth) return false;
+        // Optional <rounding-strategy> keyword followed by a comma.
+        var strategy = RoundStrategy.Nearest;
+        var save = pos;
+        SkipWhitespace(s, ref pos);
+        foreach (var (name, st) in RoundStrategies)
+        {
+            if (pos + name.Length <= s.Length
+                && s.Slice(pos, name.Length).Equals(name, StringComparison.OrdinalIgnoreCase))
+            {
+                var after = pos + name.Length;
+                var probe = after;
+                SkipWhitespace(s, ref probe);
+                if (probe < s.Length && s[probe] == ',')
+                {
+                    strategy = st;
+                    pos = probe + 1;
+                }
+                break;
+            }
+        }
+        if (strategy == RoundStrategy.Nearest && pos != save)
+        {
+            // "nearest," consumed explicitly is fine; otherwise pos only moved past whitespace.
+        }
+
+        if (!TryParseSum(s, ref pos, ctx, depth + 1, out var a)) return false;
+        var b = new Term(1.0, IsNumber: true); // §10.6: B defaults to 1 (a NUMBER).
+        SkipWhitespace(s, ref pos);
+        if (pos < s.Length && s[pos] == ',')
+        {
+            pos++;
+            if (!TryParseSum(s, ref pos, ctx, depth + 1, out b)) return false;
+            SkipWhitespace(s, ref pos);
+        }
+        if (pos >= s.Length || s[pos] != ')') return false;
+        pos++;
+        if (a.IsNumber != b.IsNumber) return false;      // §10.4: same-type arguments only.
+        if (b.Value == 0.0) return false;                // rounding to a zero step is invalid.
+        var ratio = a.Value / b.Value;
+        var multiple = strategy switch
+        {
+            RoundStrategy.Up => Math.Ceiling(ratio),
+            RoundStrategy.Down => Math.Floor(ratio),
+            RoundStrategy.ToZero => Math.Truncate(ratio),
+            _ => Math.Floor(ratio + 0.5),                // nearest — ties toward +∞ (the larger multiple).
+        };
+        result = a with { Value = multiple * b.Value };
+        return true;
+    }
+
+    private enum RoundStrategy { Nearest, Up, Down, ToZero }
+
+    private static readonly (string Name, RoundStrategy Strategy)[] RoundStrategies =
+    [
+        ("nearest", RoundStrategy.Nearest), ("to-zero", RoundStrategy.ToZero),
+        ("up", RoundStrategy.Up), ("down", RoundStrategy.Down),
+    ];
+
+    /// <summary><c>mod(A, B)</c> / <c>rem(A, B)</c> — §10.6: the modulus/remainder of two SAME-type
+    /// arguments. <c>mod</c> takes the SIGN OF B (<c>A − B·⌊A/B⌋</c>), <c>rem</c> the sign of A
+    /// (<c>A − B·trunc(A/B)</c>). A zero B is invalid. The caller consumed the name + <c>(</c>.</summary>
+    private static bool TryParseModRem(
+        ReadOnlySpan<char> s, ref int pos, in CalcContext ctx, int depth, bool isMod, out Term result)
+    {
+        result = default;
+        if (depth >= CalcResolver.MaxDepth) return false;
+        if (!TryParseSum(s, ref pos, ctx, depth + 1, out var a)) return false;
+        SkipWhitespace(s, ref pos);
+        if (pos >= s.Length || s[pos] != ',') return false;
+        pos++;
+        if (!TryParseSum(s, ref pos, ctx, depth + 1, out var b)) return false;
+        SkipWhitespace(s, ref pos);
+        if (pos >= s.Length || s[pos] != ')') return false;
+        pos++;
+        if (a.IsNumber != b.IsNumber) return false;      // §10.4: same-type arguments only.
+        if (b.Value == 0.0) return false;
+        var value = isMod
+            ? a.Value - (b.Value * Math.Floor(a.Value / b.Value))
+            : a.Value - (b.Value * Math.Truncate(a.Value / b.Value));
+        result = a with { Value = value };
+        return true;
+    }
+
+    /// <summary><c>abs(A)</c> / <c>sign(A)</c> — §10.7: <c>abs</c> keeps A's type; <c>sign</c>
+    /// yields a unitless NUMBER (−1 / 0 / +1), so it only composes inside products — a bare
+    /// <c>width: sign(…)</c> fails the length-result gate (correct per the type system). The caller
+    /// consumed the name + <c>(</c>.</summary>
+    private static bool TryParseAbsSign(
+        ReadOnlySpan<char> s, ref int pos, in CalcContext ctx, int depth, bool isAbs, out Term result)
+    {
+        result = default;
+        if (depth >= CalcResolver.MaxDepth) return false;
+        if (!TryParseSum(s, ref pos, ctx, depth + 1, out var a)) return false;
+        SkipWhitespace(s, ref pos);
+        if (pos >= s.Length || s[pos] != ')') return false;
+        pos++;
+        result = isAbs
+            ? a with { Value = Math.Abs(a.Value) }
+            : new Term(Math.Sign(a.Value), IsNumber: true);
         return true;
     }
 

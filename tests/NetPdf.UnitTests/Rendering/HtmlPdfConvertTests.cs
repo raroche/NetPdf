@@ -2106,6 +2106,64 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Body_absolute_calc_padding_resolves()
+    {
+        // Body-calc cycle: an ABSOLUTE-term calc() on a BODY property folds at cascade time —
+        // padding-left: calc(10px + 14px) = 24px shifts the text right by 18pt, with no
+        // CSS-PROPERTY-VALUE-INVALID-001 (pre-cycle, AngleSharp dropped the declaration and the
+        // padding silently vanished; the math-function recovery + LengthResolver fold deliver it).
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>div { padding-left: calc(10px + 14px) }</style></head>" +
+            "<body><div>AB</div></body></html>", opts);
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
+        var without = FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head></head><body><div>AB</div></body></html>", opts)));
+        Assert.Equal(without.X + 18.0, FirstTd(Latin1(result.Pdf)).X, 1);   // 24px × 0.75 = 18pt shift
+    }
+
+    [Fact]
+    public void Body_context_dependent_calc_is_still_surfaced()
+    {
+        // The body first cut covers ABSOLUTE terms only — a % term still needs layout-time bases and
+        // keeps the diagnosed-invalid path (documented deferral).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>div { width: calc(50% - 10px) }</style></head>" +
+            "<body><div>AB</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
+    }
+
+    [Fact]
+    public void Page_margin_box_element_nested_blocks_recurse_into_stacked_lines()
+    {
+        // Deep-recursion cycle: a block child that ITSELF has block children contributes one line per
+        // NESTED block — <div><div>AB</div><div>AB</div></div><div>AB</div> renders THREE lines
+        // (was two: the outer pair flattened to "AB AB").
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } " +
+            "@page { @top-center { content: element(rh) } }</style></head>" +
+            "<body><div class=\"rh\"><div><div>AB</div><div>AB</div></div><div>AB</div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(3, TdCount(pdf));
+    }
+
+    [Fact]
+    public void Page_margin_box_element_deep_block_chain_renders_bounded()
+    {
+        // A 24-deep single-block chain exceeds MaxRunningBlockDepth (16) — the deeper nest flattens
+        // (the pre-cycle behavior) instead of recursing unboundedly: still ONE line, no crash.
+        var open = string.Concat(System.Linq.Enumerable.Repeat("<div>", 24));
+        var close = string.Concat(System.Linq.Enumerable.Repeat("</div>", 24));
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } " +
+            "@page { @top-center { content: element(rh) } }</style></head>" +
+            "<body><div class=\"rh\">" + open + "AB" + close + "</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(1, TdCount(pdf));   // one leaf line, depth-capped recursion
+    }
+
+    [Fact]
     public void Page_margin_box_math_function_font_size_resolves()
     {
         // Post-PR-#158 review P2: font-size math functions evaluate — clamp(12px, 5vw, 24px) on an

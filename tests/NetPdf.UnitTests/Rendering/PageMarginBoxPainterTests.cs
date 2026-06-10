@@ -44,4 +44,15 @@ public sealed class PageMarginBoxPainterTests
         Assert.Equal(4, PageMarginBoxPainter.MaxLinesThatFit(57.6, 0.0, 4));
         Assert.Equal(4, PageMarginBoxPainter.MaxLinesThatFit(57.6, -1.0, 4));
     }
+
+    [Fact]
+    public void MaxLinesThatFit_ratio_beyond_int_range_keeps_every_line()
+    {
+        // Post-PR-#155 review P2: a ratio far beyond int.MaxValue (a tall box over a tiny positive
+        // line-height) must return totalLines, NOT overflow the double→int cast into an unspecified
+        // value (e.g. int.MinValue → clamped to 0 → every line wrongly clipped). The range is
+        // narrowed before the cast.
+        Assert.Equal(3, PageMarginBoxPainter.MaxLinesThatFit(1e18, 1e-4, 3));            // ratio ≈ 1e22
+        Assert.Equal(2, PageMarginBoxPainter.MaxLinesThatFit(double.MaxValue, 1e-300, 2)); // ratio = ∞
+    }
 }

@@ -592,12 +592,16 @@ internal static class PageMarginBoxPainter
     /// cap (line-granularity truncation; <see cref="OverflowEpsilonPx"/> absorbs sub-px rounding so an
     /// exactly-fitting block isn't clipped). A non-positive line-height can't have produced an overflowing
     /// block-height (it would be ≤ 0), so it keeps every line — defensive; the caller only clips after
-    /// measuring an overflow.</summary>
+    /// measuring an overflow. The range is narrowed BEFORE the int cast (post-PR-#155 review P2): a huge
+    /// ratio (a tiny positive line-height under a tall box) would make the double→int conversion overflow
+    /// into an unspecified value — e.g. int.MinValue, clamping to 0 and clipping EVERY line.</summary>
     internal static int MaxLinesThatFit(double contentBoxHeightPx, double lineHeightPx, int totalLines)
     {
         if (lineHeightPx <= 0) return totalLines;
-        var fit = (int)Math.Floor((Math.Max(0, contentBoxHeightPx) + OverflowEpsilonPx) / lineHeightPx);
-        return Math.Clamp(fit, 0, totalLines);
+        var ratio = (Math.Max(0, contentBoxHeightPx) + OverflowEpsilonPx) / lineHeightPx;
+        if (ratio >= totalLines) return totalLines; // huge/∞ ratio: every line fits — decided before any cast
+        if (!(ratio > 0)) return 0;                 // ≤ 0 or NaN (defensive)
+        return (int)Math.Floor(ratio);              // 0 < ratio < totalLines (an int) → the cast is safe
     }
 
     /// <summary>The widest line's advance (px) in <paramref name="inline"/> — the content's max-content

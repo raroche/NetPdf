@@ -970,35 +970,53 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Theory]
-    [InlineData("padding-left: 10%")]   // a percentage per-side longhand
-    [InlineData("padding-top: 10%")]
-    [InlineData("padding: 10%")]        // the shorthand (expands to four % longhands)
-    [InlineData("padding-left: 1em")]   // a font-relative length (also can't resolve to px here)
-    public void Page_margin_box_non_absolute_padding_is_surfaced(string decls)
+    [InlineData("padding-left: 10%", false)]   // a percentage per-side longhand — resolves vs the band
+    [InlineData("padding: 10%", false)]        // the shorthand (expands to four % longhands)
+    [InlineData("padding-left: 1em", false)]   // a font-relative length — resolves vs the box font
+    [InlineData("padding-left: 10cqw", true)]  // container units — still unsupported → surfaced
+    public void Page_margin_box_unsupported_padding_is_surfaced_supported_is_not(string decls, bool surfaced)
     {
-        // A percentage (resolves against the containing block) or a font-/viewport-relative padding
-        // can't be resolved to used px in margin boxes yet (the §5.3 box sizing / font context is
-        // deferred). It must be DIAGNOSED, not silently rendered as 0 (review P2 + Copilot).
+        // Relative-padding cycle: a percentage / font-/viewport-relative / calc() padding now RESOLVES
+        // (no diagnostic — see the shift tests below); only what still can't resolve (container units)
+        // keeps the diagnose-and-drop path (CLAUDE.md #7, review P2 + Copilot).
         var result = HtmlPdf.ConvertDetailed(
             "<!DOCTYPE html><html><head><style>@page { @top-left { content:\"AB\"; " + decls + " } }</style>" +
             "</head><body></body></html>",
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
-        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
+        if (surfaced)
+            Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
+        else
+            Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
     }
 
     [Fact]
-    public void Page_margin_box_percentage_padding_does_not_shift_the_text()
+    public void Page_margin_box_percentage_padding_insets_by_the_band_fraction()
     {
-        // The deferred % padding resolves to no inset (it's dropped, not mis-rendered) — the line stays
-        // at the same X as a box with no padding.
+        // Relative-padding cycle: padding-left: 10% resolves against the box's containing-block width
+        // (the top edge band, CSS B&B §8.4) — the line shifts right by exactly 10% of the band.
         var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
-        var withPct = FirstTd(Latin1(HtmlPdf.Convert(
+        var pdf = Latin1(HtmlPdf.Convert(
             "<!DOCTYPE html><html><head><style>@page { @top-left { content:\"AB\"; padding-left: 10% } }</style>" +
-            "</head><body></body></html>", opts)));
+            "</head><body></body></html>", opts));
         var without = FirstTd(Latin1(HtmlPdf.Convert(
             "<!DOCTYPE html><html><head><style>@page { @top-left { content:\"AB\" } }</style>" +
             "</head><body></body></html>", opts)));
-        Assert.Equal(without.X, withPct.X, 1);   // % padding dropped → no horizontal shift
+        var bandPt = MediaBox(pdf).W - 144.0;   // page − 2 × 1in margins (the top band width, pt)
+        Assert.Equal(without.X + bandPt * 0.10, FirstTd(pdf).X, 1);   // shifted by 10% of the band
+    }
+
+    [Fact]
+    public void Page_margin_box_em_and_calc_padding_inset_the_text()
+    {
+        // Relative-padding cycle: `1em` padding resolves against the BOX's font-size (20px → 15pt
+        // shift), and a calc() padding evaluates with the same context (10px + 1em = 30px → 22.5pt).
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double LineX(string decls) => FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-left { content:\"AB\"; font-size: 20px; " + decls +
+            " } }</style></head><body></body></html>", opts))).X;
+        var baseline = LineX("");
+        Assert.Equal(baseline + 15.0, LineX("padding-left: 1em"), 1);                  // 20px × 0.75
+        Assert.Equal(baseline + 22.5, LineX("padding-left: calc(10px + 1em)"), 1);     // 30px × 0.75
     }
 
     [Fact]
@@ -2010,16 +2028,101 @@ public sealed class HtmlPdfConvertTests
             "an unresolvable relative width should shrink-to-fit, not paint the full band");
     }
 
+    // ---- calc() explicit sizes (Task 21, calc cycle) ----
+
+    [Fact]
+    public void Page_margin_box_calc_width_resolves_percent_minus_length()
+    {
+        // calc cycle: `width: calc(100% - 100px)` sizes the band to the full edge band minus 100px
+        // (= 75pt) — the % term resolves against the band, the px term is absolute.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; " +
+            "width: calc(100% - 100px); background-color: red } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        var bandPt = MediaBox(pdf).W - 144.0;
+        Assert.InRange(FirstRect(pdf).W, bandPt - 75.0 - 2.0, bandPt - 75.0 + 2.0);   // band − 100px(75pt)
+    }
+
+    [Fact]
+    public void Page_margin_box_calc_height_mixes_em_and_absolute_terms()
+    {
+        // A vertical box's calc() height with a font-relative term: font-size 20px →
+        // calc(2em + 60px) = 100px = 75pt.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @left-middle { content:\"AB\"; font-size: 20px; " +
+            "height: calc(2em + 60px); background-color: red } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.InRange(FirstRect(pdf).H, 73.0, 77.0);   // (40 + 60)px × 0.75 = 75pt
+    }
+
+    [Fact]
+    public void Page_margin_box_malformed_calc_width_is_surfaced_and_shrinks_to_fit()
+    {
+        // A calc() that fails evaluation (length × length has no CSS type, §10.4) is KEPT by the
+        // syntactic gate but must SURFACE the contextual failure and shrink-to-fit — not vanish.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; " +
+            "width: calc(10px * 5px); background-color: red } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001
+            && d.Message.Contains("could not be resolved against its context"));
+        Assert.True(FirstRect(Latin1(result.Pdf)).W < 200.0, "a failed calc() width should shrink-to-fit");
+    }
+
+    // ---- margin-box white-space (Task 21, white-space cycle) ----
+
+    [Fact]
+    public void Page_margin_box_nowrap_keeps_wrappable_content_on_one_line()
+    {
+        // white-space cycle: a DECLARED `white-space: nowrap` is now cascaded — wrappable content in a
+        // vertical box stays ONE line (clipped at the band edge via the clip path + width diagnostic)
+        // instead of wrapping at the band width.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        string Render(string ws) => Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @left-middle { content:\"AB AB AB AB AB AB AB AB\"; " +
+            ws + " } }</style></head><body></body></html>", opts));
+        var wrapped = Render("");
+        var nowrap = Render("white-space: nowrap");
+        Assert.True(TdCount(wrapped) >= 2, "the default (normal) should wrap at the band width");
+        Assert.Equal(1, TdCount(nowrap));            // nowrap → a single rigid line
+        Assert.Contains(" re W n", nowrap);          // …clipped at the band edge
+    }
+
+    [Fact]
+    public void Page_margin_box_white_space_is_inherited_from_the_page_context()
+    {
+        // white-space is a CSS inherited property: `@page { white-space: nowrap }` flows into the
+        // margin box (root → page context → box), keeping its wrappable content on one line.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { white-space: nowrap; " +
+            "@left-middle { content:\"AB AB AB AB AB AB AB AB\" } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.Equal(1, TdCount(pdf));
+    }
+
+    [Fact]
+    public void Page_margin_box_nowrap_skips_the_min_content_flex()
+    {
+        // A nowrap box is RIGID (min == max), so two overlapping horizontal siblings take the
+        // center-priority clamp instead of the wrap flex — the wide nowrap @top-left stays ONE line
+        // (no re-wrap Tds) beside a centered sibling.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-left { content:\"" + Words(40) +
+            "\"; white-space: nowrap } @top-center { content:\"AB\" } }</style></head><body></body></html>", opts));
+        Assert.Equal(2, TdCount(pdf));   // the @top-left line + the @top-center line — no wrapped extras
+    }
+
     [Fact]
     public void Page_margin_box_deferred_explicit_width_is_surfaced_and_shrinks_to_fit()
     {
-        // A `calc()` width can't be resolved to a used size here yet → it's diagnosed
-        // (CSS-PROPERTY-VALUE-INVALID-001) and DROPPED, so the box EXPLICITLY shrink-to-fits (a 2-glyph
-        // content box, not the full ~450pt band) rather than silently falling back — review P2. (A
-        // font-/viewport-relative size used to take this path too; the relative-units cycle resolves
-        // those now — see the relative-units tests.)
+        // A container-relative width can't be resolved to a used size here (no container context) →
+        // it's diagnosed (CSS-PROPERTY-VALUE-INVALID-001) and DROPPED, so the box EXPLICITLY
+        // shrink-to-fits (a 2-glyph content box, not the full ~450pt band) rather than silently falling
+        // back — review P2. (Font-/viewport-relative sizes and calc() used to take this path too; the
+        // relative-units + calc cycles resolve those now — see their tests.)
         var result = HtmlPdf.ConvertDetailed(
-            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; width: calc(100% - 10px); background-color: red } }" +
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; width: 10cqw; background-color: red } }" +
             "</style></head><body></body></html>",
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
         Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
@@ -2852,30 +2955,29 @@ public sealed class HtmlPdfConvertTests
     [InlineData("10%")]                // a percentage (resolves against the containing block)
     [InlineData("1em")]                // a font-relative length
     [InlineData("calc(10% + 5px)")]    // a calc() with a non-absolute term (a px-only calc IS absolute)
-    public void Page_margin_box_element_non_absolute_padding_is_diagnosed_once_and_dropped(string pad)
+    public void Page_margin_box_element_non_absolute_padding_resolves_and_insets(string pad)
     {
-        // Review P3: a non-absolute element padding (%/em/calc — can't resolve to used px in the margin
-        // context yet) is DROPPED with EXACTLY ONE CSS-PROPERTY-VALUE-INVALID-001 (not zero, not double — it
-        // is diagnosed only in the decoration-only `style` build, not the content build) and does NOT shift
-        // or grow the box (identical to no padding), mirroring the box's own non-absolute-padding policy.
+        // Relative-padding cycle (flips the post-PR-#153 review P3 contract): a %/em/calc() element
+        // padding now RESOLVES in the margin context — % against the band, em against the box font,
+        // calc() with both — with NO diagnostic; the line shifts right and the shrink-to-fit box grows
+        // (mirroring the box's own relative-padding policy).
         var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
         var result = HtmlPdf.ConvertDetailed(
             "<!DOCTYPE html><html><head><style>.rh { position: running(rh); padding-left: " + pad + "; background-color: red } " +
             "@page { @top-center { content: element(rh) } }</style>" +
             "</head><body><div class=\"rh\">AB</div></body></html>", opts);
-        var invalidCount = 0;
-        foreach (var d in result.Warnings)
-            if (d.Code == DiagnosticCodes.CssPropertyValueInvalid001) invalidCount++;
-        Assert.Equal(1, invalidCount);   // exactly one diagnostic — not silently zeroed, not double-diagnosed
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
 
-        // No shift / grow: the line X + band width match the no-padding baseline.
+        // Shift + grow vs the no-padding baseline (every theory value resolves to ≥ 16px ≈ 12pt).
         var baseline = Latin1(HtmlPdf.Convert(
             "<!DOCTYPE html><html><head><style>.rh { position: running(rh); background-color: red } " +
             "@page { @top-center { content: element(rh) } }</style>" +
             "</head><body><div class=\"rh\">AB</div></body></html>", opts));
-        var dropped = Latin1(result.Pdf);
-        Assert.Equal(FirstTd(baseline).X, FirstTd(dropped).X, 1);     // not shifted
-        Assert.Equal(FirstRect(baseline).W, FirstRect(dropped).W, 1); // not grown
+        var padded = Latin1(result.Pdf);
+        Assert.True(FirstTd(padded).X > FirstTd(baseline).X + 5.0,
+            $"the resolved element padding should shift the line right: {FirstTd(baseline).X} → {FirstTd(padded).X}");
+        Assert.True(FirstRect(padded).W > FirstRect(baseline).W + 5.0,
+            $"the resolved element padding should grow the shrink-to-fit box: {FirstRect(baseline).W} → {FirstRect(padded).W}");
     }
 
     // ---- element() nested BLOCK children (stacked lines) + vertical-edge height overflow ----

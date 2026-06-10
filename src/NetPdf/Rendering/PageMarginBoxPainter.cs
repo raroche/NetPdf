@@ -76,9 +76,9 @@ namespace NetPdf.Rendering;
 /// (<see cref="ResolveEdgeOverlaps"/> — the centre box stays centred, flexed against the imaginary
 /// <c>2 × max(A, C)</c> box, with the sides sized in the gaps; no centre box → the sides flex, or go
 /// proportional to min-content when the mins don't fit; a flexed/shrunk box re-wraps its content to fit,
-/// honouring the box's computed white-space — note margin-box <c>white-space</c> itself is NOT yet
-/// cascaded (not a <see cref="MarginBoxStyle"/> longhand), so boxes always compute the <c>normal</c>
-/// default (deferrals.md). An explicit size is content- or border-box per the box's
+/// honouring the box's computed white-space — CASCADED + inherited as a <see cref="MarginBoxStyle"/>
+/// longhand (white-space cycle), so a declared <c>nowrap</c>/<c>pre</c> keeps a rigid single line. An
+/// explicit size is content- or border-box per the box's
 /// <c>box-sizing</c> (box-sizing cycle); a VERTICAL (left/right) or CORNER box's content WRAPS at its
 /// fixed band/corner width (vertical-wrap cycle). Wrapped lines are aligned PER LINE by the box's
 /// alignment (Task 21 — via the fragment's <c>LineAlignFactor</c>). OVERFLOW is CLIPPED + DIAGNOSED
@@ -267,6 +267,22 @@ internal static class PageMarginBoxPainter
                 hAlign = elementHAlign ?? region.HAlign;             // box silent → the element's own, then name-derived
             var vAlign = MarginBoxStyle.VerticalAlignFactor(mb.Declarations) ?? region.VAlign;
 
+            // Relative-size bases (relative-units cycle): `em` against the BOX's resolved font-size
+            // (width/height/padding are box properties — CSS Values 4 §6.1.1), `rem` against the
+            // root's, viewport units against the page box. Shared by the explicit size, calc(), and
+            // the padding resolve below.
+            var sizeBases = new RelativeSizeBases(
+                style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16),
+                rootEmPx, pageWidthPx, pageHeightPx);
+
+            // Padding → USED px, IN PLACE (relative-padding cycle): a percentage (against the box's
+            // containing-block width — the region width on this edge, CSS B&B §8.4: all four sides use
+            // the INLINE-axis base), a font-/viewport-relative length, or a calc() is resolved and the
+            // slot REWRITTEN as LengthPx — so every downstream reader (the insets below, TextPainter's
+            // content origin, FragmentPainter) sees the same used value. A kept-but-unresolvable raw is
+            // surfaced + dropped (reads as 0).
+            ResolveUsedPaddingInPlace(style, region.Width, sizeBases, mb.Name, diagnostics);
+
             // Content-origin insets: the used border-width + padding per side (the §4.3 used-width gate
             // makes the reserved space match what FragmentPainter strokes; TextPainter then adds the
             // same inset to land the line in the content box).
@@ -281,12 +297,11 @@ internal static class PageMarginBoxPainter
             var lineHeightPx = contentStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16) * NormalLineHeightFactor;
             // The box's computed white-space decides whether its content can WRAP: only Normal / PreWrap /
             // PreLine / BreakSpaces wrap, so only they can flex narrower than the single-line width and
-            // re-wrap to fit. A `nowrap` / `pre` box would be rigid (min-content == max-content) → the
-            // center-priority clamp, no re-wrap. NOTE: margin-box `white-space` is NOT yet cascaded
-            // (PropertyId.WhiteSpace isn't a MarginBoxStyle longhand), so this read always computes the
-            // `normal` DEFAULT today — a DECLARED `nowrap`/`pre` on the box is ignored and the non-wrap
-            // branches are reachable only via that default (post-PR-#156 Copilot review; deferrals.md —
-            // pickup: add white-space to the whitelist).
+            // re-wrap to fit. A `nowrap` / `pre` box is rigid (min-content == max-content) → the
+            // center-priority clamp, no re-wrap, and a vertical box keeps its single (clipped) line.
+            // `white-space` IS cascaded now (white-space cycle — an inherited MarginBoxStyle longhand, so
+            // a declared `nowrap`/`pre` on the box or inherited from the page context/root drives this);
+            // unset boxes compute the `normal` default.
             var boxWhiteSpace = style.ReadInlineTextPolicy().WhiteSpace;
             var canWrap = boxWhiteSpace is WhiteSpace.Normal or WhiteSpace.PreWrap
                 or WhiteSpace.PreLine or WhiteSpace.BreakSpaces;
@@ -360,12 +375,6 @@ internal static class PageMarginBoxPainter
             var boxWidthPx = region.Width;
             var boxHeightPx = region.Height;
             var borderBoxSizing = IsBorderBoxSizing(style);
-            // Relative-size bases (relative-units cycle): `em` against the BOX's resolved font-size
-            // (width/height are box properties — CSS Values 4 §6.1.1), `rem` against the root's,
-            // viewport units against the page box.
-            var sizeBases = new RelativeSizeBases(
-                style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16),
-                rootEmPx, pageWidthPx, pageHeightPx);
             // Resolve the variable-axis explicit size ONCE per box (post-PR-#156 review P2): the same
             // value feeds the sizing AND the min-content gate below, and the single call site lets an
             // unresolvable-in-context kept relative size (e.g. `1e308em` → a non-finite product) surface
@@ -740,20 +749,83 @@ internal static class PageMarginBoxPainter
         }
         if (style.TryGetDeferred(id, out var raw) && raw is not null)
         {
-            if (RelativeLengthResolver.TryResolve(
-                    raw, bases.EmPx, bases.RootEmPx, bases.PageWidthPx, bases.PageHeightPx, out var relativePx))
-            {
-                return relativePx; // TryResolve guarantees finite + ≥ 0.
-            }
+            if (TryResolveDeferredLengthPx(raw, bandExtentPx, bases, out var resolvedPx))
+                return resolvedPx; // both resolvers guarantee finite + ≥ 0 (calc range-clamps per §10.5).
             diagnostics.Emit(new Diagnostic(
                 DiagnosticCodes.CssPropertyValueInvalid001,
                 $"The page margin box @{boxName} {(id == PropertyId.Width ? "width" : "height")} " +
                 $"'{DiagnosticTextSanitizer.Sanitize(raw)}' could not be resolved against its context — " +
                 "the result is not a finite non-negative size (e.g. an extreme multiplier overflowing the " +
-                "font-size/page product). The box falls back to shrink-to-fit.",
+                "font-size/page product), or the calc() expression is malformed/unsupported. The box " +
+                "falls back to shrink-to-fit.",
                 DiagnosticSeverity.Warning));
         }
         return null;
+    }
+
+    /// <summary>Resolve a KEPT deferred length raw — a <c>calc()</c> expression (calc cycle, percent
+    /// terms against <paramref name="percentBasePx"/>) or a font-/viewport-relative length
+    /// (relative-units cycle) — to used px against <paramref name="bases"/>. Shared by the explicit
+    /// §5.3 size and the padding resolve.</summary>
+    private static bool TryResolveDeferredLengthPx(
+        string raw, double percentBasePx, in RelativeSizeBases bases, out double px)
+    {
+        return CalcLengthEvaluator.IsCalc(raw)
+            ? CalcLengthEvaluator.TryEvaluate(
+                raw,
+                new CalcLengthEvaluator.CalcContext(
+                    percentBasePx, bases.EmPx, bases.RootEmPx, bases.PageWidthPx, bases.PageHeightPx),
+                out px)
+            : RelativeLengthResolver.TryResolve(
+                raw, bases.EmPx, bases.RootEmPx, bases.PageWidthPx, bases.PageHeightPx, out px);
+    }
+
+    /// <summary>The four <c>padding-*</c> longhands, paired with the side name for diagnostics.</summary>
+    private static readonly (PropertyId Id, string Side)[] PaddingSides =
+    [
+        (PropertyId.PaddingLeft, "left"), (PropertyId.PaddingTop, "top"),
+        (PropertyId.PaddingRight, "right"), (PropertyId.PaddingBottom, "bottom"),
+    ];
+
+    /// <summary>Resolve the box's padding to USED px IN PLACE (relative-padding cycle): a PERCENTAGE
+    /// slot resolves against <paramref name="containingWidthPx"/> (the box's region width — CSS B&amp;B
+    /// §8.4: padding percentages on ALL FOUR sides resolve against the containing block's INLINE-axis
+    /// size; the margin-box containing block is approximated as its edge region), a kept deferred
+    /// font-/viewport-relative or <c>calc()</c> raw resolves via <see cref="TryResolveDeferredLengthPx"/>
+    /// — and the slot is REWRITTEN as a LengthPx so every downstream reader (the painter's insets,
+    /// <c>TextPainter</c>'s content origin, <c>FragmentPainter</c>) sees the SAME used value. A
+    /// kept-but-unresolvable-in-context raw is SURFACED + unset (reads as 0 — mirroring the explicit-size
+    /// policy); an already-absolute LengthPx (or unset) padding is untouched.</summary>
+    private static void ResolveUsedPaddingInPlace(
+        ComputedStyle style, double containingWidthPx, in RelativeSizeBases bases,
+        string boxName, IDiagnosticsSink diagnostics)
+    {
+        foreach (var (id, side) in PaddingSides)
+        {
+            var slot = style.Get(id);
+            if (slot.Tag == ComputedSlotTag.Percentage)
+            {
+                style.Set(id, ComputedSlot.FromLengthPx(
+                    Math.Max(0, slot.AsPercentage() / 100.0 * containingWidthPx)));
+                continue;
+            }
+            if (slot.Tag == ComputedSlotTag.LengthPx) continue; // absolute — already the used value.
+            if (!style.TryGetDeferred(id, out var raw) || raw is null) continue; // unset → no padding.
+
+            if (TryResolveDeferredLengthPx(raw, containingWidthPx, bases, out var px))
+            {
+                style.Set(id, ComputedSlot.FromLengthPx(px));
+                continue;
+            }
+            diagnostics.Emit(new Diagnostic(
+                DiagnosticCodes.CssPropertyValueInvalid001,
+                $"The page margin box @{boxName} padding-{side} " +
+                $"'{DiagnosticTextSanitizer.Sanitize(raw)}' could not be resolved against its context — " +
+                "the result is not a finite non-negative length, or the calc() expression is " +
+                "malformed/unsupported. The padding is treated as 0.",
+                DiagnosticSeverity.Warning));
+            style.Unset(id);
+        }
     }
 
     /// <summary>Whether the box computes <c>box-sizing: border-box</c> (CSS Basic UI 4 §10) — its

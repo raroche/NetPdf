@@ -146,9 +146,22 @@ internal static class TextPainter
         }
 
         // ---- Pass 2b: replay the draw commands, mapping original → subset glyph ids ----
+        // A fragment's clip rect (margin-box overflow clip-path cycle) wraps its glyph runs in ONE
+        // q <rect> re W n … Q pair: draws are replayed in collect order, so a fragment's commands are
+        // contiguous and the clip opens on the first drawn command carrying it and closes when the clip
+        // changes (or at the end). The state is transitioned only for commands that actually draw —
+        // a skipped (failed-font) command must not open a clip. ShowGlyphs wraps each run in its own
+        // q/Q, so nesting inside the clip's q/Q is balanced.
+        (double X, double Y, double W, double H)? openClipPt = null;
         foreach (var cmd in draws)
         {
             if (!emits.TryGetValue(cmd.FontKey, out var emit)) continue; // build failed → already diagnosed.
+            if (cmd.ClipPt != openClipPt)
+            {
+                if (openClipPt is not null) page.RestoreGraphicsState();
+                openClipPt = cmd.ClipPt;
+                if (openClipPt is { } clip) page.BeginRectangleClip(clip.X, clip.Y, clip.W, clip.H);
+            }
             var subsetIds = new ushort[cmd.OriginalGlyphIds.Length];
             for (var g = 0; g < subsetIds.Length; g++)
                 subsetIds[g] = (ushort)emit.OldToNew[cmd.OriginalGlyphIds[g]];
@@ -159,6 +172,7 @@ internal static class TextPainter
             var alpha = FragmentPainter.Alpha(cmd.ColorArgb) / 255.0;
             page.ShowGlyphs(emit.Name, cmd.SizePt, cmd.XPt, cmd.YPt, subsetIds, r, g2, b, alpha);
         }
+        if (openClipPt is not null) page.RestoreGraphicsState();
     }
 
     /// <summary>Collect one fragment's inline text: walk its lines → slices → shaped runs,
@@ -196,6 +210,19 @@ internal static class TextPainter
         var lines = inline.Lines;
         var shapedRuns = inline.ShapedRuns;
         var preRuns = inline.PreprocessedRuns;
+
+        // The fragment's opt-in clip rect (margin-box overflow clip-path cycle) → page-pt once per
+        // fragment; every draw command this fragment queues carries it (replay groups them under one
+        // q … re W n / Q pair). Content-area-relative px, like the fragment offsets.
+        (double X, double Y, double W, double H)? clipPt = null;
+        if (fragment.ClipRect is { } clipRect)
+        {
+            FragmentPainter.ToPdfRect(
+                contentOriginLeftPx + clipRect.LeftPx, contentOriginTopPx + clipRect.TopPx,
+                clipRect.WidthPx, clipRect.HeightPx, pageHeightPt,
+                out var cx, out var cy, out var cw, out var ch);
+            clipPt = (cx, cy, cw, ch);
+        }
 
         for (var li = 0; li < lines.Length; li++)
         {
@@ -257,7 +284,8 @@ internal static class TextPainter
                     XPt: PdfUnits.PxToPt(xStartPx),
                     YPt: pageHeightPt - PdfUnits.PxToPt(baselineTopPx),
                     SizePt: PdfUnits.PxToPt(fontSizePx),
-                    ColorArgb: argb));
+                    ColorArgb: argb,
+                    ClipPt: clipPt));
             }
         }
     }
@@ -340,12 +368,15 @@ internal static class TextPainter
     private readonly record struct FontEmit(PdfName Name, IReadOnlyDictionary<int, int> OldToNew);
 
     /// <summary>One queued glyph-show: the font, the original glyph ids (mapped to subset ids
-    /// at replay), the baseline origin + size in PDF points, and the fill color.</summary>
+    /// at replay), the baseline origin + size in PDF points, the fill color, and the fragment's
+    /// optional clip rect (page-pt, bottom-origin — replay groups consecutive same-clip commands
+    /// under one <c>q … re W n</c> / <c>Q</c> pair).</summary>
     private readonly record struct DrawCommand(
         string FontKey,
         ushort[] OriginalGlyphIds,
         double XPt,
         double YPt,
         double SizePt,
-        uint ColorArgb);
+        uint ColorArgb,
+        (double X, double Y, double W, double H)? ClipPt = null);
 }

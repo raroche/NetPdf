@@ -259,24 +259,26 @@ internal static class MarginBoxStyle
                             w.Location));
                         style.Unset(id);
                     }
-                    // A DEFERRED `width`/`height` — a font-/viewport-relative length (`10em` / `5vh`) or a
-                    // `calc()` the resolver couldn't resolve to a used size at cascade time (it returns
-                    // Deferred, with NO diagnostic) — is a VALID value, but the margin-box painter only
-                    // honors an absolute length or a percentage (TryReadExplicitSizePx); a deferred size
-                    // would SILENTLY fall back to shrink-to-fit. Diagnose + drop it (an EXPLICIT deferral,
-                    // not a silent fallback — CLAUDE.md #7, review P2), mirroring the padding policy,
-                    // pending a font-/viewport-context resolve. Only the Deferred state reaches here:
-                    // `auto` (a Resolved keyword), an absolute length (LengthPx), and a percentage
-                    // (Percentage) are honored as-is, and an invalid value was already diagnosed by Resolve.
-                    else if (IsSizeId(id) && resolved.IsDeferred)
+                    // A DEFERRED `width`/`height` the painter CAN now resolve — a font-/viewport-relative
+                    // length (`10em` / `1.5rem` / `50vw`, relative-units cycle) — is KEPT as a deferred raw
+                    // on the style; PageMarginBoxPainter.TryReadExplicitSizePx resolves it against the box
+                    // font-size / root font-size / page box via RelativeLengthResolver. Anything ELSE the
+                    // resolver deferred (`calc()`, container units, a negative/malformed relative) still
+                    // can't resolve to a used size — diagnose + drop it (an EXPLICIT deferral, not a silent
+                    // shrink-to-fit fallback — CLAUDE.md #7, post-PR-#144 review P2), mirroring the padding
+                    // policy. Only the Deferred state reaches here: `auto` (a Resolved keyword), an absolute
+                    // length (LengthPx), and a percentage (Percentage) are honored as-is, and an invalid
+                    // value was already diagnosed by Resolve.
+                    else if (IsSizeId(id) && resolved.IsDeferred && !RelativeLengthResolver.IsSupported(w.Value))
                     {
                         diagnostics?.Emit(new CssDiagnostic(
                             CssDiagnosticCodes.CssPropertyValueInvalid001,
                             $"The margin-box {(id == PropertyId.Width ? "width" : "height")} " +
-                            $"'{DiagnosticTextSanitizer.Sanitize(w.Value)}' isn't an absolute length or a " +
-                            "percentage — font-/viewport-relative and calc() sizes aren't resolved to a used " +
-                            "size here yet (the box falls back to shrink-to-fit); use an absolute length " +
-                            "(px/pt/cm/in) or a percentage. (deferrals.md)",
+                            $"'{DiagnosticTextSanitizer.Sanitize(w.Value)}' isn't a supported size — " +
+                            "calc(), container-relative, and malformed/negative sizes aren't resolved to a " +
+                            "used size here (the box falls back to shrink-to-fit); use an absolute length " +
+                            "(px/pt/cm/in), a percentage, or a font-/viewport-relative length " +
+                            "(em/ex/ch/rem/vw/vh/vmin/vmax). (deferrals.md)",
                             CssDiagnosticSeverity.Warning,
                             w.Location));
                         style.Unset(id);
@@ -364,6 +366,19 @@ internal static class MarginBoxStyle
             _ => null, // not declared / inherit / unset / revert / unknown → name-derived default
         };
     }
+
+    /// <summary>Whether the box's OWN declarations opt OUT of overflow clipping with an explicit
+    /// <c>overflow: visible</c> (clip-path cycle) — the content then spills like pre-clipping
+    /// builds (CSS Paged Media §6.2 applies <c>overflow</c> to margin boxes; its initial value IS
+    /// <c>visible</c>, but the engine clips by default — page furniture spilling over the body is
+    /// near-always unwanted — so <c>visible</c> must be DECLARED to opt out, a documented
+    /// approximation). Any other declared value (<c>hidden</c> / <c>clip</c> / <c>auto</c> /
+    /// CSS-wide / unrecognized) or no declaration keeps the clipping default. Read from the box's
+    /// raw declarations (importance then source order), like the alignment readers — <c>overflow</c>
+    /// isn't a cascaded margin-box longhand.</summary>
+    public static bool OverflowVisible(ImmutableArray<CssDeclaration> declarations) =>
+        string.Equals(WinningRawValue(declarations, "overflow")?.Trim(), "visible",
+            StringComparison.OrdinalIgnoreCase);
 
     /// <summary>The fraction of leftover block space before the line (0 = top, 0.5 = middle,
     /// 1 = bottom) implied by the box's OWN declared <c>vertical-align: top|middle|bottom</c>, or

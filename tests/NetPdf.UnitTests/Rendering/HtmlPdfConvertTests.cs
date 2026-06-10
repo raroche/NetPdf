@@ -274,10 +274,12 @@ public sealed class HtmlPdfConvertTests
         Assert.Equal(732.75, r.Y, 1);     // 842.25 − 72 (default top 96px) − 37.5
     }
 
-    /// <summary>The (x, y, width, height) operands of the first <c>… re f</c> rectangle-fill op.</summary>
+    /// <summary>The (x, y, width, height) operands of the first <c>… re f</c> rectangle-FILL op.
+    /// Matches <c>" re f"</c>, not bare <c>" re"</c>, so a clip-path rectangle (<c>… re W n</c> —
+    /// clip-path cycle) is never mistaken for a painted background/border rect.</summary>
     private static (double X, double Y, double W, double H) FirstRect(string pdf)
     {
-        var idx = pdf.IndexOf(" re", StringComparison.Ordinal);
+        var idx = pdf.IndexOf(" re f", StringComparison.Ordinal);
         Assert.True(idx > 0, "expected a rectangle-fill operator in the content stream");
         var nums = pdf[..idx].TrimEnd().Split(' ');   // … <x> <y> <w> <h>
         return (
@@ -287,14 +289,15 @@ public sealed class HtmlPdfConvertTests
             double.Parse(nums[^1], CultureInfo.InvariantCulture));
     }
 
-    /// <summary>Every <c>… &lt;x&gt; &lt;y&gt; &lt;w&gt; &lt;h&gt; re</c> rectangle-fill in the stream, in
-    /// emission order (pt). Each fill is <c>q … &lt;x&gt; &lt;y&gt; &lt;w&gt; &lt;h&gt; re f Q</c>, so the
-    /// four operands are the last four space-separated tokens before each <c>" re"</c>.</summary>
+    /// <summary>Every <c>… &lt;x&gt; &lt;y&gt; &lt;w&gt; &lt;h&gt; re f</c> rectangle-FILL in the stream,
+    /// in emission order (pt). Each fill is <c>q … &lt;x&gt; &lt;y&gt; &lt;w&gt; &lt;h&gt; re f Q</c>, so
+    /// the four operands are the last four space-separated tokens before each <c>" re f"</c>. A clip-path
+    /// rect (<c>… re W n</c>) is deliberately excluded.</summary>
     private static List<(double X, double Y, double W, double H)> AllRects(string pdf)
     {
         var rects = new List<(double, double, double, double)>();
-        for (var i = pdf.IndexOf(" re", StringComparison.Ordinal); i > 0;
-             i = pdf.IndexOf(" re", i + 3, StringComparison.Ordinal))
+        for (var i = pdf.IndexOf(" re f", StringComparison.Ordinal); i > 0;
+             i = pdf.IndexOf(" re f", i + 5, StringComparison.Ordinal))
         {
             var nums = pdf[..i].TrimEnd().Split(' ');
             rects.Add((
@@ -306,15 +309,16 @@ public sealed class HtmlPdfConvertTests
         return rects;
     }
 
-    /// <summary>The fill colour (<c>"r g b"</c>) set immediately BEFORE each <c>" re"</c> rectangle, in
+    /// <summary>The fill colour (<c>"r g b"</c>) set immediately BEFORE each <c>" re f"</c> rectangle, in
     /// emission order — i.e. the actual colour of each painted rectangle (a background band or a border
-    /// edge), NOT a text fill. Lets a test assert the RECT colour rather than just <c>Contains</c> on the
-    /// whole stream (where a same-coloured text fill could mask a wrong rect colour — review P1).</summary>
+    /// edge), NOT a text fill and NOT a (colourless) clip-path rect. Lets a test assert the RECT colour
+    /// rather than just <c>Contains</c> on the whole stream (where a same-coloured text fill could mask a
+    /// wrong rect colour — review P1).</summary>
     private static List<string> RectFillColors(string pdf)
     {
         var colors = new List<string>();
-        for (var i = pdf.IndexOf(" re", StringComparison.Ordinal); i > 0;
-             i = pdf.IndexOf(" re", i + 3, StringComparison.Ordinal))
+        for (var i = pdf.IndexOf(" re f", StringComparison.Ordinal); i > 0;
+             i = pdf.IndexOf(" re f", i + 5, StringComparison.Ordinal))
         {
             var rg = pdf.LastIndexOf(" rg", i, StringComparison.Ordinal);   // the fill colour set for this rect
             if (rg < 0) continue;
@@ -1771,14 +1775,206 @@ public sealed class HtmlPdfConvertTests
         Assert.Equal(BandW(""), BandW("box-sizing: border-box; "), 3);
     }
 
+    // ---- vertical-edge content wrapping at the band width (Task 21, vertical-wrap cycle) ----
+
+    [Fact]
+    public void Page_margin_box_vertical_box_wraps_at_the_band_width()
+    {
+        // A left/right box's inline axis is FIXED (the 96px margin band) — wrappable content wider
+        // than the band now WRAPS there (was: one NoWrap line spilling horizontally into the page),
+        // stacking lines down the variable axis: multiple Td operators, and the shrink-to-fit band
+        // grows ~one line-height per extra line vs a single-AB box.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        (int Lines, double BandH) Render(string content)
+        {
+            var pdf = Latin1(HtmlPdf.Convert(
+                "<!DOCTYPE html><html><head><style>@page { @left-middle { content:\"" + content + "\"; " +
+                "background-color: red } }</style></head><body></body></html>", opts));
+            return (TdCount(pdf), FirstRect(pdf).H);
+        }
+        var single = Render("AB");
+        var wrapped = Render("AB AB AB AB AB AB AB AB");   // wrappable: spaces are break points
+        Assert.Equal(1, single.Lines);
+        Assert.True(wrapped.Lines >= 2, $"wrappable content should wrap at the band width; got {wrapped.Lines} line(s)");
+        Assert.True(wrapped.BandH > single.BandH + 10.0,
+            $"the wrapped box should be taller (stacked lines): single={single.BandH}pt wrapped={wrapped.BandH}pt");
+    }
+
+    [Fact]
+    public void Page_margin_box_corner_box_wraps_at_its_fixed_width()
+    {
+        // A corner box (both axes fixed to margin × margin) wraps at its own width too — wrappable
+        // content wider than the 96px corner stacks into multiple lines instead of spilling.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-left-corner { content:\"AB AB AB AB AB AB AB AB\" } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.True(TdCount(pdf) >= 2, $"corner content should wrap at the corner width; got {TdCount(pdf)} line(s)");
+    }
+
+    [Fact]
+    public void Page_margin_box_vertical_wrapped_lines_clip_at_the_band_limit()
+    {
+        // Wrapping + clipping integration: wrappable content that wraps to more lines than the box's
+        // explicit 60px height holds (floor(60.5 / 19.2) = 3) truncates at line granularity and
+        // surfaces the height diagnostic — the wrap must not bypass the PR #155 vertical clip.
+        var words = string.Join(" ", System.Linq.Enumerable.Repeat("AB", 16));   // wraps to > 3 band-width lines
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @left-middle { content:\"" + words + "\"; height: 60px } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.PaintMarginBoxContentOverflow001
+            && d.Message.Contains("taller"));
+        Assert.Equal(3, TdCount(Latin1(result.Pdf)));   // exactly the lines that fit the 60px box
+    }
+
+    // ---- margin-box overflow clip path + overflow: visible opt-out (Task 21, clip-path cycle) ----
+
+    /// <summary>The (x, y, w, h) operands of the first <c>… re W n</c> clip-path rectangle.</summary>
+    private static (double X, double Y, double W, double H) FirstClipRect(string pdf)
+    {
+        var idx = pdf.IndexOf(" re W n", StringComparison.Ordinal);
+        Assert.True(idx > 0, "expected a clip-path rectangle (re W n) in the content stream");
+        var nums = pdf[..idx].TrimEnd().Split(' ');
+        return (
+            double.Parse(nums[^4], CultureInfo.InvariantCulture),
+            double.Parse(nums[^3], CultureInfo.InvariantCulture),
+            double.Parse(nums[^2], CultureInfo.InvariantCulture),
+            double.Parse(nums[^1], CultureInfo.InvariantCulture));
+    }
+
+    [Fact]
+    public void Page_margin_box_unbreakable_overflow_is_clipped_via_a_clip_path()
+    {
+        // An unbreakable run wider than the box (60 A's ≈ 576px in an explicit 100px box) now paints
+        // CLIPPED: the fragment's glyph runs are wrapped in a `q <rect> re W n … Q` clip path at the
+        // box edge, the glyphs still emit (clipping is visual, not operator-dropping), and the
+        // width-phrased overflow diagnostic surfaces it.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"" + new string('A', 60) +
+            "\"; width: 100px } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        var pdf = Latin1(result.Pdf);
+        Assert.Contains(" re W n", pdf);                       // the clip path
+        Assert.Equal(60, TotalGlyphCount(pdf));                // glyphs still emitted under the clip
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.PaintMarginBoxContentOverflow001
+            && d.Message.Contains("wider"));
+    }
+
+    [Fact]
+    public void Page_margin_box_clip_rect_is_the_padding_box()
+    {
+        // CSS Overflow 3 §3: the clip edge is the PADDING box — the clip rect spans the border box
+        // minus the border widths: width 100px + 10px left/right borders → border box 120px, clip
+        // width (120 − 10 − 10)px = 100px → 75pt.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"" + new string('A', 60) +
+            "\"; width: 100px; border-left: 10px solid blue; border-right: 10px solid blue } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.InRange(FirstClipRect(pdf).W, 74.0, 76.0);      // 100px × 0.75 = 75pt
+    }
+
+    [Fact]
+    public void Page_margin_box_overflow_visible_opts_out_of_clipping()
+    {
+        // An EXPLICIT `overflow: visible` on the box restores the spill: no clip path, no overflow
+        // diagnostic — authored overflow (the pre-clipping behavior).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"" + new string('A', 60) +
+            "\"; width: 100px; overflow: visible } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        var pdf = Latin1(result.Pdf);
+        Assert.DoesNotContain(" re W n", pdf);
+        Assert.Equal(60, TotalGlyphCount(pdf));                // the full run paints, spilling
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PaintMarginBoxContentOverflow001);
+    }
+
+    [Fact]
+    public void Page_margin_box_overflow_visible_lets_tall_content_spill()
+    {
+        // The opt-out covers the VERTICAL truncation too: six stacked lines in the 96px band (5 fit)
+        // all paint under `overflow: visible`, with no truncation and no diagnostic.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } " +
+            "@page { @top-center { content: element(rh); overflow: visible } }</style></head>" +
+            "<body><div class=\"rh\"><div>AB</div><div>AB</div><div>AB</div><div>AB</div><div>AB</div>" +
+            "<div>AB</div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        Assert.Equal(6, TdCount(Latin1(result.Pdf)));          // nothing truncated
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PaintMarginBoxContentOverflow001);
+    }
+
+    [Fact]
+    public void Page_margin_box_fitting_content_emits_no_clip_path()
+    {
+        // A box whose content fits carries no clip rect — its stream must stay clip-free
+        // (byte-identical to pre-cycle output).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; background-color: red } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.DoesNotContain(" re W n", pdf);
+    }
+
+    // ---- font-/viewport-relative explicit width/height (Task 21, relative-units cycle) ----
+
+    [Fact]
+    public void Page_margin_box_em_width_resolves_against_the_box_font_size()
+    {
+        // `width: 10em` scales by the BOX's resolved font-size (width is a box property): at
+        // font-size 20px → 200px → 150pt; at the 16px default → 160px → 120pt.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double BandW(string extra) => FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; width: 10em; " + extra +
+            "background-color: red } }</style></head><body></body></html>", opts))).W;
+        Assert.InRange(BandW("font-size: 20px; "), 148.0, 152.0);   // 10 × 20px × 0.75
+        Assert.InRange(BandW(""), 118.0, 122.0);                    // 10 × 16px × 0.75
+    }
+
+    [Fact]
+    public void Page_margin_box_rem_width_resolves_against_the_root_font_size()
+    {
+        // `width: 10rem` scales by the ROOT element's font-size, not the box's own — a 10px box font
+        // with a 20px root still yields 200px → 150pt (10em would give 100px → 75pt).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>html { font-size: 20px } " +
+            "@page { @top-center { content:\"AB\"; width: 10rem; font-size: 10px; background-color: red } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.InRange(FirstRect(pdf).W, 148.0, 152.0);   // 10 × 20px × 0.75 = 150pt
+    }
+
+    [Fact]
+    public void Page_margin_box_viewport_units_resolve_against_the_page_box()
+    {
+        // Viewport units scale by the PAGE box (paged media maps the viewport to the page):
+        // width: 50vw paints a band of exactly half the page width, height: 25vh a quarter of the
+        // page height — asserted against the document's own /MediaBox so the default page size
+        // doesn't matter.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var vw = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; width: 50vw; background-color: red } }" +
+            "</style></head><body></body></html>", opts));
+        var halfPage = MediaBox(vw).W / 2.0;
+        Assert.InRange(FirstRect(vw).W, halfPage - 2.0, halfPage + 2.0);
+        var vh = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @left-middle { content:\"AB\"; height: 25vh; background-color: red } }" +
+            "</style></head><body></body></html>", opts));
+        var quarterPage = MediaBox(vh).H / 4.0;
+        Assert.InRange(FirstRect(vh).H, quarterPage - 2.0, quarterPage + 2.0);
+    }
+
     [Fact]
     public void Page_margin_box_deferred_explicit_width_is_surfaced_and_shrinks_to_fit()
     {
-        // A font-relative `width: 10em` can't be resolved to a used size here yet → it's diagnosed
+        // A `calc()` width can't be resolved to a used size here yet → it's diagnosed
         // (CSS-PROPERTY-VALUE-INVALID-001) and DROPPED, so the box EXPLICITLY shrink-to-fits (a 2-glyph
-        // content box, not the full ~450pt band) rather than silently falling back — review P2.
+        // content box, not the full ~450pt band) rather than silently falling back — review P2. (A
+        // font-/viewport-relative size used to take this path too; the relative-units cycle resolves
+        // those now — see the relative-units tests.)
         var result = HtmlPdf.ConvertDetailed(
-            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; width: 10em; background-color: red } }" +
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; width: calc(100% - 10px); background-color: red } }" +
             "</style></head><body></body></html>",
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
         Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);

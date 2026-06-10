@@ -3120,11 +3120,19 @@ flags the categories):
          truncated at LINE granularity — `PageMarginBoxPainter.MaxLinesThatFit` caps the painted lines to the
          content-box height (reading-order: the first N whole lines paint; 0 fit → decoration-only box), the
          truncated block then vertical-aligned in the content box; the diagnostic names the kept/total lines.
-         APPROXIMATIONS (documented): a whole line either fits or is dropped (a PARTIAL-GLYPH clip via a PDF
-         clip path — `W n` — is the tracked follow-up), and the clip applies REGARDLESS of the box's
-         `overflow` property (CSS Paged Media §6.2 applies `overflow` to margin boxes, default `visible`
-         which would spill — honoring an explicit `overflow: visible` opt-out is part of the clip-path
-         follow-up). STILL deferred for `element()`: the running element's REAL
+         **Clip-path cycle (DONE):** HORIZONTAL overflow of the surviving lines (an unbreakable run wider
+         than the box / a clamped rigid sibling / a nowrap line) is CLIPPED at GLYPH level — the fragment
+         carries a PADDING-box clip rect (CSS Overflow 3 §3; `BoxFragment.ClipRect`) and the shared
+         `TextPainter` wraps its glyph runs in a PDF `q <rect> re W n … Q` clip path
+         (`PdfPage.BeginRectangleClip`/`RestoreGraphicsState`), surfaced via the same diagnostic code
+         (width-phrased message); an EXPLICIT `overflow: visible` declared on the box OPTS OUT of all of
+         it — no truncation, no clip, no diagnostic (`MarginBoxStyle.OverflowVisible`, raw-read like the
+         alignment readers; a fitting box carries no clip rect, so its stream is byte-identical).
+         APPROXIMATIONS (documented): a VERTICALLY part-fitting line is still dropped whole (line
+         granularity — the clip rect guarantees nothing paints outside the padding box, but a sliver of a
+         partial line isn't painted), and clip-by-default INVERTS the spec initial (CSS Paged Media §6.2
+         applies `overflow` to margin boxes with initial `visible` — page furniture spilling over the body
+         is near-always unwanted, so `visible` must be DECLARED to opt out). STILL deferred for `element()`: the running element's REAL
          nested BLOCK LAYOUT (sub-boxes with their OWN decoration / margins — still FLATTENED text per direct
          block child) + deep recursion (each direct block child → one line); the box/element being SEPARATELY-decorated
          boxes (they COINCIDE — a box property overrides rather than nesting); only RELATIVE UNITS (`%`/`em`/
@@ -3175,11 +3183,25 @@ flags the categories):
          `box-sizing` (CSS Basic UI 4 §10: `content-box` initial — insets add; `border-box` — the size IS
          the border box, floored at the insets, the content box at 0; cascaded via
          `MarginBoxStyle.CascadedStyleIds`, non-inherited, read by `IsBorderBoxSizing`; a no-op for
-         shrink-to-fit `auto`). STILL DEFERRED: a HEIGHT flex (the flex/re-wrap is horizontal-axis only;
-         vertical overflow now clips instead of spilling), the partial-glyph clip path + `overflow:
-         visible` opt-out (see above), font-/viewport-relative + `calc()` `width`/`height`
-         (diagnosed + dropped → shrink-to-fit), and the inherent overflow of content narrower than its
-         longest unbreakable word (can't wrap a single word).
+         shrink-to-fit `auto`). **Vertical-edge WRAPPING + clip path + relative-unit sizes — DONE
+         (vertical-wrap / clip-path / relative-units cycles):** a VERTICAL (left/right) or CORNER box's
+         inline axis is FIXED (the band/corner width), so its content now WRAPS AT THAT WIDTH (a block
+         container wraps at its content width — was one NoWrap line spilling horizontally), stacking lines
+         down the variable axis (height shrink-to-fit, clamp + line-granularity clip apply); HORIZONTAL
+         (top/bottom) boxes keep the unconstrained max-content measure that drives shrink-to-fit + the
+         §5.3 flex. Horizontal GLYPH overflow clips via the padding-box `W n` clip path with an
+         `overflow: visible` opt-out (see the Task-23 entry). A font-/viewport-relative explicit
+         `width`/`height` (`10em`/`4ex`/`4ch`/`1.5rem`/`50vw`/`25vh`/`vmin`/`vmax`) now RESOLVES — kept as
+         a deferred raw by `MarginBoxStyle`, resolved by `PageMarginBoxPainter.TryReadExplicitSizePx` via
+         the shared `RelativeLengthResolver` (`em` against the BOX's resolved font-size, `rem` the root's,
+         viewport units the PAGE box per CSS Paged Media; `ex`/`ch` ≈ 0.5em per CSS Values 4 §6.1.2).
+         STILL DEFERRED: `calc()` + container-relative sizes (diagnosed + dropped → shrink-to-fit, needs
+         calc machinery); margin-box `white-space` is NOT cascaded (not in `CascadedStyleIds` — boxes
+         always wrap as `normal`; a declared `nowrap`/`pre` is currently ignored, so the PR-#147
+         computed-white-space paths are reachable only via defaults — pickup: add `white-space` to the
+         whitelist when an author needs it); a HEIGHT flex for overlapping vertical siblings (their
+         heights are rigid at the fixed band width — they take the clamp + clip); relative-unit margin-box
+         PADDING (still diagnosed + dropped, unlike width/height).
        - **`@page :first` selector (cycle 10) — DONE:** `@page :first` rules apply on the single
          (first) page, overriding the bare `@page` by cascade specificity — `AtPageRules.EnumeratePageRules`
          yields bare-then-`:first` so the resolvers' last-wins cascade lets `:first` win (a bare

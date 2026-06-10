@@ -229,6 +229,43 @@ internal sealed class PdfPage
         AppendContent(sb.ToString());
     }
 
+    /// <summary>
+    /// Push the graphics state and intersect the clip path with an axis-aligned rectangle —
+    /// <c>q &lt;x&gt; &lt;y&gt; &lt;w&gt; &lt;h&gt; re W n</c> (ISO 32000-2 §8.5.4: <c>W</c> sets the
+    /// clip from the current path, <c>n</c> ends the path without painting it). Everything painted
+    /// until the balancing <see cref="RestoreGraphicsState"/> renders only inside the rectangle.
+    /// Coordinates are PDF points, bottom-left origin (the <c>re</c> convention). A non-positive
+    /// <paramref name="width"/>/<paramref name="height"/> is emitted as-is — a DEGENERATE clip that
+    /// paints nothing (deliberate: a clip request must never silently widen; contrast
+    /// <see cref="FillRectangle"/>'s no-op). Callers MUST balance every call with
+    /// <see cref="RestoreGraphicsState"/> — the page does not auto-close at finalize.
+    /// </summary>
+    public void BeginRectangleClip(double x, double y, double width, double height)
+    {
+        ThrowIfFinalized();
+        if (!double.IsFinite(x) || !double.IsFinite(y) || !double.IsFinite(width) || !double.IsFinite(height))
+        {
+            throw new ArgumentException(
+                $"BeginRectangleClip coordinates must be finite; got x={x}, y={y}, width={width}, height={height}.");
+        }
+
+        var sb = new StringBuilder(48);
+        sb.Append("q ");
+        AppendNumber(sb, x); sb.Append(' ');
+        AppendNumber(sb, y); sb.Append(' ');
+        AppendNumber(sb, Math.Max(width, 0)); sb.Append(' ');
+        AppendNumber(sb, Math.Max(height, 0)); sb.Append(" re W n\n");
+        AppendContent(sb.ToString());
+    }
+
+    /// <summary>Pop the graphics state (<c>Q</c>) — balances <see cref="BeginRectangleClip"/>,
+    /// restoring the clip (and any other state) saved by its <c>q</c>.</summary>
+    public void RestoreGraphicsState()
+    {
+        ThrowIfFinalized();
+        AppendContent("Q\n");
+    }
+
     /// <summary>Get (or create) the per-page <c>/ExtGState</c> resource name for a constant
     /// fill alpha (<c>/ca</c>), deduped by the alpha value (so equal alphas share one
     /// ExtGState). The name is derived from the value, so it's deterministic.</summary>

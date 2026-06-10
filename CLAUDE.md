@@ -318,7 +318,19 @@ through the production `DisplayMapper` + shared `BoxKindFacts.IsBlockLevelOuter`
 -table / `contents` / `none` / unsupported child is no longer mis-classified as block; `Box.IsBlockLevel`
 delegates to the same helper). DEFERRED: the running element's real nested BLOCK LAYOUT (sub-boxes with their
 own decoration / margins — still FLATTENED text per direct block child), deep recursion (each direct block
-child → one line), content-box CLIPPING / truncation of the overflow, `box-sizing`. Next (in order): cross-page running +
+child → one line). **Overflow-clip/box-sizing cycle (in progress, branch
+`phase-3-task-21-23-overflow-clip-box-sizing`) — two left-behind §5.3 deferrals, one PR:** **(A) vertical-edge
+(height) overflow CLIPPING** — overflowing margin-box content no longer SPILLS: truncated at LINE granularity
+(`PageMarginBoxPainter.MaxLinesThatFit` caps the painted lines to the content-box height in PASS 2;
+reading-order — the first N whole lines paint, the truncated block vertical-aligned in the content box; 0 fit
+→ decoration-only box); `PAINT-MARGIN-BOX-CONTENT-OVERFLOW-001` (still once per box) now also names the
+KEPT/TOTAL lines. Approximations: whole-line truncation (the partial-glyph `W n` clip path is the follow-up);
+the clip applies regardless of the box's `overflow` (Paged Media §6.2 default `visible` would spill — the
+opt-out rides the clip-path follow-up). **(B) margin-box `box-sizing`** — an explicit `width`/`height`
+honours `box-sizing` (CSS Basic UI 4 §10): `border-box` makes the declared size the BORDER box (insets come
+out of the content area; floored at the insets, the content box at 0), `content-box` (initial) unchanged;
+`PropertyId.BoxSizing` joined `MarginBoxStyle.CascadedStyleIds` (non-inherited, property-aware CSS-wide
+handling for free), read by `IsBorderBoxSizing`; a no-op for shrink-to-fit `auto`. Next (in order): cross-page running +
 `@page :left`/`:right`/`:blank` + named pages (all multi-page-gated). Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).

@@ -891,16 +891,18 @@ public sealed class HtmlPdfConvertTests
     [Fact]
     public void Page_margin_box_padding_shorthand_insets_the_text()
     {
-        // The `padding` 1-value box shorthand expands to all four longhands end-to-end — padding: 40px
-        // sets padding-left = 40px, shifting the start-aligned @top-left line right by ~30pt.
+        // The `padding` 1-value box shorthand expands to all four longhands end-to-end — padding: 30px
+        // sets padding-left = 30px, shifting the start-aligned @top-left line right by ~22.5pt. (30px,
+        // not more: the vertical paddings count against the 96px band — the 19.2px line still fits the
+        // 36px content box, so the overflow-clipping cycle doesn't truncate it.)
         var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
         var withPad = FirstTd(Latin1(HtmlPdf.Convert(
-            "<!DOCTYPE html><html><head><style>@page { @top-left { content: \"AB\"; padding: 40px } }</style>" +
+            "<!DOCTYPE html><html><head><style>@page { @top-left { content: \"AB\"; padding: 30px } }</style>" +
             "</head><body></body></html>", opts)));
         var without = FirstTd(Latin1(HtmlPdf.Convert(
             "<!DOCTYPE html><html><head><style>@page { @top-left { content: \"AB\" } }</style>" +
             "</head><body></body></html>", opts)));
-        Assert.InRange(withPad.X - without.X, 28.0, 32.0);   // 40px → ~30pt shift
+        Assert.InRange(withPad.X - without.X, 21.0, 24.0);   // 30px → ~22.5pt shift
     }
 
     [Fact]
@@ -937,12 +939,18 @@ public sealed class HtmlPdfConvertTests
     public void Page_margin_box_oversized_padding_clamps_without_crashing()
     {
         // padding larger than the band clamps the content box to >= 0 — no negative-size / non-finite
-        // coords; the box still emits valid text output.
-        var pdf = Latin1(HtmlPdf.Convert(
+        // coords, and a valid PDF is still produced. The 0-height content box means the line no longer
+        // fits, so the overflow-clipping cycle truncates the text (surfaced via the diagnostic) rather
+        // than painting it at bogus coordinates.
+        var result = HtmlPdf.ConvertDetailed(
             "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"AB\"; padding: 9999px } }</style>" +
             "</head><body></body></html>",
-            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
-        Assert.Contains("BT", pdf);   // still produced a text run, no crash
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        var pdf = Latin1(result.Pdf);
+        Assert.StartsWith("%PDF-", pdf);          // valid output, no crash
+        Assert.DoesNotContain("BT", pdf);         // the line doesn't fit the 0-height content box → clipped
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.PaintMarginBoxContentOverflow001
+            && d.Message.Contains("0 of 1 line(s) painted"));   // …and the truncation is surfaced
     }
 
     [Fact]
@@ -1684,6 +1692,86 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Page_margin_box_border_box_sizing_makes_the_explicit_width_the_border_box()
+    {
+        // box-sizing cycle (CSS Basic UI 4 §10): under `box-sizing: border-box` the explicit `width`
+        // IS the painted border-box — 200px → 150pt — the 20px paddings come out of the content area
+        // instead of adding to it (content-box default: (200+40)px → 180pt, covered above).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; width: 200px; " +
+            "box-sizing: border-box; padding-left: 20px; padding-right: 20px; background-color: red } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.InRange(FirstRect(pdf).W, 148.0, 152.0);   // 200px × 0.75 = 150pt — the border box itself
+    }
+
+    [Fact]
+    public void Page_margin_box_explicit_content_box_sizing_matches_the_default()
+    {
+        // An explicit `box-sizing: content-box` (the initial) behaves exactly like the default:
+        // width 200px + 20px paddings → a (200+40)px = 180pt border box.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; width: 200px; " +
+            "box-sizing: content-box; padding-left: 20px; padding-right: 20px; background-color: red } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.InRange(FirstRect(pdf).W, 178.0, 182.0);   // (200 + 20 + 20)px × 0.75 = 180pt
+    }
+
+    [Fact]
+    public void Page_margin_box_border_box_sizing_floors_at_the_insets()
+    {
+        // A border-box size SMALLER than the border+padding insets floors at the insets (the content
+        // box floors at 0, it can't go negative): width 10px + 20px paddings → a 40px = 30pt box.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"\"; width: 10px; " +
+            "box-sizing: border-box; padding-left: 20px; padding-right: 20px; background-color: red } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.InRange(FirstRect(pdf).W, 28.0, 32.0);     // max(10, 20+20)px × 0.75 = 30pt
+    }
+
+    [Fact]
+    public void Page_margin_box_border_box_sizing_includes_the_border_width()
+    {
+        // The border widths are part of the border-box size too: width 200px + 10px borders +
+        // box-sizing: border-box → the painted band stays 200px = 150pt (content box 180px).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; width: 200px; " +
+            "box-sizing: border-box; border-left: 10px solid blue; border-right: 10px solid blue; " +
+            "background-color: red } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.InRange(FirstRect(pdf).W, 148.0, 152.0);   // 200px × 0.75 = 150pt
+    }
+
+    [Fact]
+    public void Page_margin_box_border_box_sizing_sizes_a_left_box_height()
+    {
+        // The vertical (left/right) variable axis honours box-sizing the same way: an explicit
+        // `height: 200px` with `box-sizing: border-box` + 20px vertical paddings paints a 200px =
+        // 150pt band (content-box would be (200+40)px = 180pt).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @left-middle { content:\"AB\"; height: 200px; " +
+            "box-sizing: border-box; padding-top: 20px; padding-bottom: 20px; background-color: red } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.InRange(FirstRect(pdf).H, 148.0, 152.0);   // 200px × 0.75 = 150pt
+    }
+
+    [Fact]
+    public void Page_margin_box_box_sizing_is_a_no_op_without_an_explicit_size()
+    {
+        // box-sizing only changes what an EXPLICIT size specifies — a shrink-to-fit (`width: auto`)
+        // box is sized content + insets either way, so declaring border-box must not change the band.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        double BandW(string sizing) => FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; " + sizing +
+            "padding-left: 20px; padding-right: 20px; background-color: red } }</style></head><body></body></html>",
+            opts))).W;
+        Assert.Equal(BandW(""), BandW("box-sizing: border-box; "), 3);
+    }
+
+    [Fact]
     public void Page_margin_box_deferred_explicit_width_is_surfaced_and_shrinks_to_fit()
     {
         // A font-relative `width: 10em` can't be resolved to a used size here yet → it's diagnosed
@@ -1915,9 +2003,11 @@ public sealed class HtmlPdfConvertTests
         // the content box (so narrower lines are indented more) — not just the block. A @top-left header
         // left-aligns every line at one X. So the centered block's per-line start Xs VARY, while the
         // left-aligned block's are constant. (Before the fix, the centered block also shared one X.)
+        // margin-top raises the band so EVERY wrapped line fits — the X variation comes from the short
+        // LAST line, which the overflow-clipping cycle would otherwise truncate away.
         var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
         double[] LineXs(string box) => AllTdX(Latin1(HtmlPdf.Convert(
-            "<!DOCTYPE html><html><head><style>@page { @" + box + " { content:\"" + Words(200) + "\" } }</style>" +
+            "<!DOCTYPE html><html><head><style>@page { margin-top: 400px; @" + box + " { content:\"" + Words(200) + "\" } }</style>" +
             "</head><body></body></html>", opts)));
         double Spread(double[] a)
         {
@@ -2580,23 +2670,26 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
-    public void Page_margin_box_vertical_content_overflow_emits_a_diagnostic()
+    public void Page_margin_box_vertical_content_overflow_emits_a_diagnostic_and_is_clipped()
     {
-        // Task 23 vertical-edge height-overflow first cut: a left/right edge box whose content is TALLER than
-        // its band surfaces PAINT-MARGIN-BOX-CONTENT-OVERFLOW-001 (the content still paints; clipping
-        // deferred). A 2000px running header far exceeds the @left-middle band; a 16px one does not.
+        // Task 23 vertical-edge height-overflow + the overflow-clipping cycle: a left/right edge box whose
+        // content is TALLER than its band surfaces PAINT-MARGIN-BOX-CONTENT-OVERFLOW-001 AND the overflow is
+        // clipped at line granularity. A 2000px running header far exceeds the @left-middle band — not even
+        // one 2400px line fits, so NO text paints (was: the line spilled over the page). A 16px one fits.
         var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
         var overflow = HtmlPdf.ConvertDetailed(
             "<!DOCTYPE html><html><head><style>.rh { position: running(rh); font-size: 2000px } " +
             "@page { @left-middle { content: element(rh) } }</style>" +
             "</head><body><div class=\"rh\">AB</div></body></html>", opts);
         Assert.Contains(overflow.Warnings, d => d.Code == DiagnosticCodes.PaintMarginBoxContentOverflow001);
+        Assert.Equal(0, TotalGlyphCount(Latin1(overflow.Pdf)));   // fully clipped — no glyphs painted
 
         var fits = HtmlPdf.ConvertDetailed(
             "<!DOCTYPE html><html><head><style>.rh { position: running(rh); font-size: 16px } " +
             "@page { @left-middle { content: element(rh) } }</style>" +
             "</head><body><div class=\"rh\">AB</div></body></html>", opts);
         Assert.DoesNotContain(fits.Warnings, d => d.Code == DiagnosticCodes.PaintMarginBoxContentOverflow001);
+        Assert.Equal(2, TotalGlyphCount(Latin1(fits.Pdf)));       // a fitting header still paints in full
     }
 
     [Fact]
@@ -2627,8 +2720,9 @@ public sealed class HtmlPdfConvertTests
     [Fact]
     public void Page_margin_box_content_overflow_diagnostic_names_the_box_and_dimensions()
     {
-        // Review P3: the overflow diagnostic is ACTIONABLE — its message names the box (@left-middle) + the
-        // measured content vs available height, rather than a generic once-per-render message.
+        // Review P3 + the overflow-clipping cycle: the overflow diagnostic is ACTIONABLE — its message
+        // names the box (@left-middle), the measured content vs available height, AND the kept/total
+        // line count of the line-granularity truncation (here 0 of 1 — not even one line fits).
         var result = HtmlPdf.ConvertDetailed(
             "<!DOCTYPE html><html><head><style>.rh { position: running(rh); font-size: 2000px } " +
             "@page { @left-middle { content: element(rh) } }</style>" +
@@ -2639,10 +2733,80 @@ public sealed class HtmlPdfConvertTests
         {
             if (d.Code != DiagnosticCodes.PaintMarginBoxContentOverflow001) continue;
             found = true;
-            Assert.Contains("left-middle", d.Message);     // names the box
-            Assert.Contains("px content", d.Message);      // includes the measured height
+            Assert.Contains("left-middle", d.Message);              // names the box
+            Assert.Contains("px content", d.Message);               // includes the measured height
+            Assert.Contains("0 of 1 line(s) painted", d.Message);   // names the truncation
         }
         Assert.True(found, "expected a PAINT-MARGIN-BOX-CONTENT-OVERFLOW-001 diagnostic");
+    }
+
+    [Fact]
+    public void Page_margin_box_overflowing_lines_are_clipped_to_the_content_box()
+    {
+        // Overflow-clipping cycle: SIX stacked lines (six block children at the default 19.2px pitch =
+        // 115.2px) exceed the 96px top band — only the first FIVE whole lines fit (floor(96.5/19.2)),
+        // so 5 lines paint (5 Td operators; was 6, the last spilling into the body area) and the
+        // diagnostic reports the truncation.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } " +
+            "@page { @top-center { content: element(rh) } }</style></head>" +
+            "<body><div class=\"rh\"><div>AB</div><div>AB</div><div>AB</div><div>AB</div><div>AB</div>" +
+            "<div>AB</div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        var pdf = Latin1(result.Pdf);
+        var lines = 0;
+        for (var i = pdf.IndexOf(" Td", StringComparison.Ordinal); i >= 0; i = pdf.IndexOf(" Td", i + 3, StringComparison.Ordinal))
+            lines++;
+        Assert.Equal(5, lines);                                    // the 6th line is clipped
+        Assert.Equal(10, TotalGlyphCount(pdf));                    // 5 × "AB", not 6
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.PaintMarginBoxContentOverflow001
+            && d.Message.Contains("top-center") && d.Message.Contains("5 of 6 line(s) painted"));
+    }
+
+    [Fact]
+    public void Page_margin_box_exactly_fitting_lines_are_not_clipped()
+    {
+        // Boundary: FIVE stacked lines = 5 × 19.2 = 96px fill the 96px top band EXACTLY — the epsilon
+        // absorbs the boundary, so nothing is clipped and no overflow diagnostic fires.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } " +
+            "@page { @top-center { content: element(rh) } }</style></head>" +
+            "<body><div class=\"rh\"><div>AB</div><div>AB</div><div>AB</div><div>AB</div><div>AB</div>" +
+            "</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        Assert.Equal(10, TotalGlyphCount(Latin1(result.Pdf)));     // all 5 lines paint
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.PaintMarginBoxContentOverflow001);
+    }
+
+    [Fact]
+    public void Page_margin_box_explicit_height_clips_overflowing_lines()
+    {
+        // Clipping is driven by the CONTENT-BOX height, so an explicit `height` (smaller than the band)
+        // clips too: two stacked lines (38.4px) in a 30px-tall @left-middle keep only the first
+        // (floor(30.5/19.2) = 1) — and the second line's glyphs don't paint.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } " +
+            "@page { @left-middle { content: element(rh); height: 30px } }</style></head>" +
+            "<body><div class=\"rh\"><div>AB</div><div>AB</div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        Assert.Equal(2, TotalGlyphCount(Latin1(result.Pdf)));      // 1 × "AB" kept, the 2nd line clipped
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.PaintMarginBoxContentOverflow001
+            && d.Message.Contains("1 of 2 line(s) painted"));
+    }
+
+    [Fact]
+    public void Page_margin_box_fully_clipped_box_still_paints_its_decoration()
+    {
+        // When not even one line fits, the box paints decoration only (like an empty `content: ""`
+        // box): the background band is still filled while the text is fully clipped.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); font-size: 2000px } " +
+            "@page { @left-middle { content: element(rh); background-color: red } }</style>" +
+            "</head><body><div class=\"rh\">AB</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        var pdf = Latin1(result.Pdf);
+        Assert.Equal(0, TotalGlyphCount(pdf));                     // text fully clipped…
+        Assert.True(FirstRect(pdf).W > 0);                         // …but the background band still paints
     }
 
     [Fact]

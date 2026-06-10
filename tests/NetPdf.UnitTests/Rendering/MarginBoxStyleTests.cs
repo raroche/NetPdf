@@ -495,12 +495,28 @@ public sealed class MarginBoxStyleTests
     [InlineData("height", "5vh")]    // viewport-relative
     [InlineData("width", "2rem")]
     [InlineData("height", "5vw")]
-    public void Build_diagnoses_and_drops_a_deferred_explicit_size(string property, string value)
+    [InlineData("width", "3vmin")]
+    public void Build_keeps_a_relative_explicit_size_as_a_deferred_raw(string property, string value)
     {
-        // A font-/viewport-relative width/height is a VALID value the resolver DEFERS, but the painter
-        // only honors an absolute length or a percentage (TryReadExplicitSizePx); a deferred size would
-        // silently fall back to shrink-to-fit. It must be diagnosed + DROPPED (unset), not left as a
-        // deferred slot the painter silently ignores (review P2).
+        // Relative-units cycle: a font-/viewport-relative width/height is KEPT as a deferred raw — the
+        // painter resolves it against the box font / root font / page box (TryReadExplicitSizePx →
+        // RelativeLengthResolver) — with NO diagnostic (it's fully supported now; was diagnosed +
+        // dropped per the post-PR-#144 review).
+        var sink = new CapturingSink();
+        var style = MarginBoxStyle.Build(
+            ImmutableArray.Create(Decl(property, value)), parentStyle: null, diagnostics: sink);
+        Assert.Empty(sink.Diagnostics);
+        Assert.True(style.TryGetDeferred(PropertyMetadata.NameToId[property], out var raw));
+        Assert.Equal(value, raw);
+    }
+
+    [Theory]
+    [InlineData("width", "calc(100% - 10px)")]   // calc() — needs calc machinery, still unsupported
+    [InlineData("height", "-2em")]               // negative relative — rejected (non-negative property)
+    public void Build_diagnoses_and_drops_an_unresolvable_explicit_size(string property, string value)
+    {
+        // What the painter still can't resolve to a used size must keep the diagnose-and-drop path
+        // (post-PR-#144 review P2 — an explicit deferral, not a silent shrink-to-fit fallback).
         var sink = new CapturingSink();
         var style = MarginBoxStyle.Build(
             ImmutableArray.Create(Decl(property, value)), parentStyle: null, diagnostics: sink);

@@ -80,8 +80,11 @@ namespace NetPdf.Layout.Layouters;
 /// <list type="bullet">
 ///   <item>No transformations applied (<c>transform</c> is Phase 3
 ///   Task 19+'s concern).</item>
-///   <item>No clipping rectangle (<c>overflow: clip</c> /
-///   <c>clip-path</c> deferred to a later task).</item>
+///   <item>BODY fragments carry no clipping rectangle (the body's
+///   <c>overflow: clip</c>/<c>hidden</c> + <c>clip-path</c> stay
+///   deferred); the opt-in <see cref="ClipRect"/> (margin-box
+///   overflow clip-path cycle) is currently set only by the
+///   page-margin-box painter.</item>
 ///   <item>Logical-axis property reads default to physical
 ///   <c>top</c>/<c>bottom</c>/<c>left</c>/<c>right</c> regardless of
 ///   <c>writing-mode</c> (PR #22 review fix #5 deferred to cycle 3).</item>
@@ -128,6 +131,13 @@ namespace NetPdf.Layout.Layouters;
 /// style when a standalone <c>element(name)</c> renders the running element in its OWN font: the glyphs
 /// are shaped at the element's font-size, so the line pitch + baseline must use that size too — otherwise
 /// a 32px running header would paint 32px glyphs at the box's default 16px pitch and overlap.</param>
+/// <param name="ClipRect">Per Phase 3 Task 21 (margin-box overflow clip-path cycle) — an OPT-IN
+/// rectangle the painter clips this fragment's TEXT to (a PDF <c>q … re W n</c> / <c>Q</c> pair around
+/// the fragment's glyph runs), in the same content-area-relative CSS px as
+/// <see cref="InlineOffset"/>/<see cref="BlockOffset"/>. <see langword="null"/> (the default) paints
+/// unclipped — every other fragment is byte-identical. The page-margin box sets it (to its padding box)
+/// when its content overflows, so protruding glyphs clip at the box edge instead of spilling over the
+/// page; an explicit <c>overflow: visible</c> on the box leaves it unset.</param>
 internal readonly record struct BoxFragment(
     Box Box,
     double InlineOffset,
@@ -136,4 +146,10 @@ internal readonly record struct BoxFragment(
     double BlockSize,
     InlineLayoutResult? InlineLayout = null,
     double LineAlignFactor = 0.0,
-    ComputedStyle? TextMetricsStyle = null);
+    ComputedStyle? TextMetricsStyle = null,
+    FragmentClipRect? ClipRect = null);
+
+/// <summary>An axis-aligned fragment clip rectangle (content-area-relative CSS px, y-down — the
+/// <see cref="BoxFragment.InlineOffset"/>/<see cref="BoxFragment.BlockOffset"/> space). See
+/// <see cref="BoxFragment.ClipRect"/>.</summary>
+internal readonly record struct FragmentClipRect(double LeftPx, double TopPx, double WidthPx, double HeightPx);

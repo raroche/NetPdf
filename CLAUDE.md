@@ -330,7 +330,21 @@ opt-out rides the clip-path follow-up). **(B) margin-box `box-sizing`** — an e
 honours `box-sizing` (CSS Basic UI 4 §10): `border-box` makes the declared size the BORDER box (insets come
 out of the content area; floored at the insets, the content box at 0), `content-box` (initial) unchanged;
 `PropertyId.BoxSizing` joined `MarginBoxStyle.CascadedStyleIds` (non-inherited, property-aware CSS-wide
-handling for free), read by `IsBorderBoxSizing`; a no-op for shrink-to-fit `auto`. Next (in order): cross-page running +
+handling for free), read by `IsBorderBoxSizing`; a no-op for shrink-to-fit `auto`. Merged as PR #155 incl.
+its review (P2 `MaxLinesThatFit` range-narrow before the int cast; P3 stale matrix row). **Vertical-wrap /
+clip-path / relative-units cycles (in progress, branch `phase-3-task-21-vedge-wrap-clip-path-relative-units`)
+— the next three left-behind §5.3 deferrals, one PR:** **(A)** a VERTICAL (left/right) or CORNER box's content
+WRAPS at its fixed band/corner width (was one NoWrap line spilling horizontally) — lines stack down the
+variable axis, height shrink-to-fit + clamp + line clip apply; horizontal boxes keep the unconstrained
+max-content measure (byte-identical). **(B)** HORIZONTAL glyph overflow (unbreakable run / clamped rigid
+sibling) clips at the box's PADDING box via a PDF `q <rect> re W n … Q` clip path (new opt-in
+`BoxFragment.ClipRect` → `TextPainter`; new `PdfPage.BeginRectangleClip`/`RestoreGraphicsState`), surfaced by
+a width-phrased `PAINT-MARGIN-BOX-CONTENT-OVERFLOW-001`; an EXPLICIT `overflow: visible` on the box opts out
+of truncation + clip + diagnostic (`MarginBoxStyle.OverflowVisible`; clip-by-default inverts the spec-initial
+`visible` — documented). **(C)** font-/viewport-relative explicit `width`/`height`
+(`em`/`ex`/`ch`/`rem`/`vw`/`vh`/`vmin`/`vmax`) RESOLVE via the new shared `RelativeLengthResolver` (`em` →
+box font, `rem` → root, viewport → page box; `ex`/`ch` ≈ 0.5em) — kept as deferred raws by `MarginBoxStyle`;
+`calc()` still diagnosed + dropped. Next (in order): cross-page running +
 `@page :left`/`:right`/`:blank` + named pages (all multi-page-gated). Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).

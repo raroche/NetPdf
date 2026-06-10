@@ -2106,6 +2106,37 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Page_margin_box_math_function_font_size_resolves()
+    {
+        // Post-PR-#158 review P2: font-size math functions evaluate — clamp(12px, 5vw, 24px) on an
+        // 800px page clamps 40px down to 24px → 18pt Tf, and calc(50% + 10px)'s % term scales by the
+        // PARENT (page-context) font-size per CSS Fonts (20px → 10 + 10 = 20px → 15pt Tf).
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var clamp = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { size: 800px 600px; " +
+            "@top-center { content:\"AB\"; font-size: clamp(12px, 5vw, 24px) } }</style></head><body></body></html>", opts));
+        Assert.Contains(" 18 Tf", clamp);   // 24px × 0.75
+        var pct = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { font-size: 20px; " +
+            "@top-center { content:\"AB\"; font-size: calc(50% + 10px) } }</style></head><body></body></html>", opts));
+        Assert.Contains(" 15 Tf", pct);     // (10 + 10)px × 0.75
+    }
+
+    [Fact]
+    public void Page_margin_box_malformed_math_font_size_is_surfaced()
+    {
+        // A kept-but-unevaluable math-function font-size (length × length) is SURFACED before the
+        // default fallback — not silently 16px (the admit gate is syntactic).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; " +
+            "font-size: calc(10px * 5px) } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001
+            && d.Message.Contains("font-size"));
+        Assert.Contains(" 12 Tf", Latin1(result.Pdf));   // falls back to the 16px default → 12pt
+    }
+
+    [Fact]
     public void Page_margin_box_rem_font_size_feeds_the_em_width_base()
     {
         // Resolve ORDER: the font-size resolves BEFORE the size bases are read, so `width: 10em`

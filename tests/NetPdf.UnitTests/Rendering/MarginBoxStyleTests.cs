@@ -538,6 +538,21 @@ public sealed class MarginBoxStyleTests
         Assert.Equal(value, raw);
     }
 
+    [Fact]
+    public void Build_keeps_a_math_function_font_size_as_a_deferred_raw()
+    {
+        // Post-PR-#158 review P2: `font-size: clamp(12px, 5vw, 24px)` (the canonical responsive-
+        // typography form) is admitted before the leaf resolver as a deferred raw — the painter
+        // evaluates it against the parent font / page box — with NO diagnostic (FontSizeResolver →
+        // LengthResolver would otherwise reject the math function as unparseable).
+        var sink = new CapturingSink();
+        var style = MarginBoxStyle.Build(
+            ImmutableArray.Create(Decl("font-size", "clamp(12px, 5vw, 24px)")), parentStyle: null, diagnostics: sink);
+        Assert.Empty(sink.Diagnostics);
+        Assert.True(style.TryGetDeferred(PropertyId.FontSize, out var raw));
+        Assert.Equal("clamp(12px, 5vw, 24px)", raw);
+    }
+
     [Theory]
     [InlineData("width", "10cqw")]    // container units — no container context, still unsupported
     [InlineData("height", "-2em")]    // negative relative — rejected (non-negative property)

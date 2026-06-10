@@ -51,6 +51,9 @@ public sealed class CalcLengthEvaluatorTests
     [InlineData("calc(min(10px, 2em) + 5px)", 15.0)]  // nested inside calc (min(10, 40) + 5)
     [InlineData("MIN(10px, 20px)", 10.0)]             // function names are case-insensitive
     [InlineData("calc(100% - max(20px, 10px))", 380.0)]
+    [InlineData("clamp(none, 5vw, 24px)", 24.0)]      // §10.2: `none` MIN → min(VAL, MAX); 5vw = 40
+    [InlineData("clamp(12px, 5vw, none)", 40.0)]      // `none` MAX → max(MIN, VAL)
+    [InlineData("clamp(NONE, 5vw, none)", 40.0)]      // both bounds none (case-insensitive) → VAL
     public void TryEvaluate_resolves_min_max_clamp(string raw, double expectedPx)
     {
         Assert.True(CalcLengthEvaluator.TryEvaluate(raw, Ctx, out var px), raw);
@@ -63,6 +66,8 @@ public sealed class CalcLengthEvaluatorTests
     [InlineData("clamp(10px, 20px)")]      // clamp takes exactly three
     [InlineData("clamp(10px, 20px, 30px, 40px)")]
     [InlineData("min(10px 20px)")]         // missing comma
+    [InlineData("clamp(12px, none, 24px)")]   // `none` is a BOUNDS keyword — never the center VAL
+    [InlineData("min(none, 1px)")]            // …and clamp-only (§10.2)
     public void TryEvaluate_rejects_invalid_min_max_clamp(string raw)
     {
         Assert.False(CalcLengthEvaluator.TryEvaluate(raw, Ctx, out _), raw);
@@ -127,14 +132,17 @@ public sealed class CalcLengthEvaluatorTests
     }
 
     [Fact]
-    public void TryEvaluate_rejects_a_body_beyond_the_shared_length_cap()
+    public void TryEvaluate_caps_the_function_BODY_length_at_the_exact_boundary()
     {
-        // Post-PR-#157 review P2: the evaluator shares CalcResolver.MaxBodyLength — a huge flat
-        // operand chain (breadth, which the depth cap alone wouldn't catch) is rejected up front
-        // instead of burning CPU.
-        var manyTerms = "calc(10px" + string.Concat(
-            System.Linq.Enumerable.Repeat(" + 10px", NetPdf.Css.Cascade.CalcResolver.MaxBodyLength / 7)) + ")";
-        Assert.True(manyTerms.Length > NetPdf.Css.Cascade.CalcResolver.MaxBodyLength);
-        Assert.False(CalcLengthEvaluator.TryEvaluate(manyTerms, Ctx, out _));
+        // Post-PR-#157 review P2 + post-PR-#158 review P3: the cap measures the function BODY (the
+        // text between the outer parens) — the same measure CalcResolver.MaxBodyLength is defined
+        // for — NOT the full raw with the name + parens. A body of exactly MaxBodyLength evaluates;
+        // one more char rejects.
+        string WithBodyLength(int length) =>
+            "calc(1px" + new string(' ', length - 3) + ")";   // body = "1px" + padding spaces
+        var max = NetPdf.Css.Cascade.CalcResolver.MaxBodyLength;
+        Assert.True(CalcLengthEvaluator.TryEvaluate(WithBodyLength(max), Ctx, out var px));
+        Assert.Equal(1.0, px, 3);
+        Assert.False(CalcLengthEvaluator.TryEvaluate(WithBodyLength(max + 1), Ctx, out _));
     }
 }

@@ -183,7 +183,11 @@ internal static class PageMarginBoxPainter
         // BEFORE the boxes inherit from it (font-size cycle): a box's parent-relative `1.5em` resolves
         // against the parent's LengthPx slot (DeferredFontResolver), which must be the used px — a
         // still-deferred parent raw would read as the 16px default.
-        ResolveDeferredFontSizeInPlace(pageContextStyle, rootEmPx, pageWidthPx, pageHeightPx);
+        ResolveDeferredFontSizeInPlace(
+            pageContextStyle, rootEmPx, rootEmPx, pageWidthPx, pageHeightPx, "page context", diagnostics);
+        // The boxes' PARENT font-size — read AFTER the page-context resolve so a box's parent-relative
+        // % / em (in a math function) scales by the page context's USED px.
+        var pageContextEmPx = pageContextStyle.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
 
         // PASS 1 — compute each box's style, content layout, and DESIRED box geometry (shrink-to-fit /
         // explicit size, positioned by its name-derived role). The boxes are COLLECTED (not emitted yet)
@@ -240,9 +244,12 @@ internal static class PageMarginBoxPainter
             // resolves only the PARENT-relative forms) resolves HERE against the root font-size / page
             // box (font-size cycle), BEFORE anything reads the font: the shaper, the line height, and
             // the `em` bases of the size/padding resolves below all see the used px.
-            ResolveDeferredFontSizeInPlace(style, rootEmPx, pageWidthPx, pageHeightPx);
+            ResolveDeferredFontSizeInPlace(
+                style, pageContextEmPx, rootEmPx, pageWidthPx, pageHeightPx, $"page margin box @{mb.Name}", diagnostics);
             if (!ReferenceEquals(contentStyle, style))
-                ResolveDeferredFontSizeInPlace(contentStyle, rootEmPx, pageWidthPx, pageHeightPx);
+                ResolveDeferredFontSizeInPlace(
+                    contentStyle, pageContextEmPx, rootEmPx, pageWidthPx, pageHeightPx,
+                    $"page margin box @{mb.Name}", diagnostics);
 
             // currentcolor ORIGIN (CSS Color 4 §6.2 — currentcolor resolves to the `color` of the style that
             // OWNS the property). The box's declarations WIN the cascade (appended last), so a decoration
@@ -858,18 +865,41 @@ internal static class PageMarginBoxPainter
     /// <summary>Resolve a still-DEFERRED <c>font-size</c> raw on <paramref name="style"/> — a
     /// root-/viewport-relative form (<c>rem</c>/<c>vw</c>/<c>vh</c>/<c>vmin</c>/<c>vmax</c>) that
     /// <see cref="DeferredFontResolver"/> deliberately leaves for a later stage (it resolves only the
-    /// PARENT-relative <c>em</c>/<c>ex</c>/<c>ch</c>/<c>%</c>/keywords) — to used px IN PLACE against
-    /// the root font-size / page box (font-size cycle; closes the long-standing "rem/viewport
-    /// font-size falls back to 16px" gap for margin boxes). The em base is passed defensively (any
-    /// em-relative raw was already consumed upstream). A still-unresolvable raw (container units)
-    /// stays deferred → the 16px reader default (documented).</summary>
+    /// PARENT-relative <c>em</c>/<c>ex</c>/<c>ch</c>/<c>%</c>/keywords), or a MATH FUNCTION
+    /// (<c>font-size: clamp(12px, 5vw, 24px)</c> — admitted by <see cref="MarginBoxStyle"/>,
+    /// post-PR-#158 review P2) — to used px IN PLACE (font-size cycle; closes the long-standing
+    /// "rem/viewport font-size falls back to 16px" gap for margin boxes). For <c>font-size</c>, both
+    /// <c>%</c> and <c>em</c> terms scale by the PARENT's font-size (CSS Fonts 4 §3.4) —
+    /// <paramref name="parentEmPx"/> feeds both calc bases. A failed math-function evaluation is
+    /// SURFACED (the admit gate is syntactic — same contract as sizes/padding) before the inherited/
+    /// default fallback; a non-math unresolvable raw (container units) stays deferred → the default
+    /// (documented).</summary>
     private static void ResolveDeferredFontSizeInPlace(
-        ComputedStyle style, double rootEmPx, double pageWidthPx, double pageHeightPx)
+        ComputedStyle style, double parentEmPx, double rootEmPx, double pageWidthPx, double pageHeightPx,
+        string scopeName, IDiagnosticsSink diagnostics)
     {
         if (!style.TryGetDeferred(PropertyId.FontSize, out var raw) || raw is null) return;
-        var emBasePx = style.ReadLengthPxOrDefault(PropertyId.FontSize, defaultPx: 16);
-        if (RelativeLengthResolver.TryResolve(raw, emBasePx, rootEmPx, pageWidthPx, pageHeightPx, out var px))
+        double px;
+        var isMathFunction = CalcLengthEvaluator.IsMathFunction(raw);
+        var resolved = isMathFunction
+            ? CalcLengthEvaluator.TryEvaluate(raw,
+                new CalcLengthEvaluator.CalcContext(parentEmPx, parentEmPx, rootEmPx, pageWidthPx, pageHeightPx),
+                out px)
+            : RelativeLengthResolver.TryResolve(raw, parentEmPx, rootEmPx, pageWidthPx, pageHeightPx, out px);
+        if (resolved)
+        {
             style.Set(PropertyId.FontSize, ComputedSlot.FromLengthPx(px));
+            return;
+        }
+        if (isMathFunction)
+        {
+            diagnostics.Emit(new Diagnostic(
+                DiagnosticCodes.CssPropertyValueInvalid001,
+                $"The {scopeName} font-size '{DiagnosticTextSanitizer.Sanitize(raw)}' could not be " +
+                "resolved — the math-function expression is malformed/unsupported or its result is not " +
+                "a finite non-negative size. The inherited/default font-size is used instead.",
+                DiagnosticSeverity.Warning));
+        }
     }
 
     /// <summary>Whether the box computes <c>box-sizing: border-box</c> (CSS Basic UI 4 §10) — its

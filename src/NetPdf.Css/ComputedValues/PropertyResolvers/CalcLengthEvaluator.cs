@@ -20,8 +20,8 @@ namespace NetPdf.Css.ComputedValues.PropertyResolvers;
 /// surrounded by whitespace — <c>calc(10px+5px)</c> is invalid, §10.3);
 /// <c>&lt;product&gt; = &lt;value&gt; [ '*' &lt;value&gt; | '/' &lt;value&gt; ]*</c>;
 /// <c>&lt;value&gt; = &lt;number&gt; | &lt;dimension&gt; | &lt;percentage&gt; | ( &lt;sum&gt; ) |
-/// calc( &lt;sum&gt; ) | min( &lt;sum&gt;# ) | max( &lt;sum&gt;# ) | clamp( &lt;sum&gt;, &lt;sum&gt;,
-/// &lt;sum&gt; )</c> (a nested <c>calc()</c> is equivalent to parentheses per §10.1; the §10.2
+/// calc( &lt;sum&gt; ) | min( &lt;sum&gt;# ) | max( &lt;sum&gt;# ) | clamp( [&lt;sum&gt;|none],
+/// &lt;sum&gt;, [&lt;sum&gt;|none] )</c> (a nested <c>calc()</c> is equivalent to parentheses per §10.1; the §10.2
 /// comparison functions take same-type arguments — <c>clamp(MIN, VAL, MAX)</c> =
 /// <c>max(MIN, min(VAL, MAX))</c> — and are also valid as the WHOLE value, min/max/clamp cycle).
 /// </para>
@@ -80,7 +80,12 @@ internal static class CalcLengthEvaluator
         px = 0;
         if (!IsMathFunction(rawText)) return false;
         var expr = rawText.AsSpan().Trim();
-        if (expr.Length > CalcResolver.MaxBodyLength) return false; // breadth guard (long operand chains).
+        // Breadth guard (long operand chains): cap the function BODY — the text between the outer
+        // parens — the SAME measure CalcResolver.MaxBodyLength is defined for (post-PR-#158 review
+        // P3; capping the full raw also counted the function name + parens, rejecting
+        // boundary-valid inputs the cascade resolver accepts). IsMathFunction guarantees a '('.
+        var bodyStartIndex = expr.IndexOf('(');
+        if (expr.Length - bodyStartIndex - 2 > CalcResolver.MaxBodyLength) return false;
 
         // The whole value is one math-function <value> — TryParseValue recognizes calc( (≡ parens,
         // §10.1) and min(/max(/clamp( (§10.2 comparison functions) and consumes through the
@@ -274,25 +279,52 @@ internal static class CalcLengthEvaluator
         }
     }
 
-    /// <summary><c>clamp(MIN, VAL, MAX)</c> — §10.2: exactly three same-type arguments, computed as
-    /// <c>max(MIN, min(VAL, MAX))</c> (when MIN &gt; MAX, MIN wins — per spec). The caller consumed
-    /// the name + <c>(</c>. Depth-capped like parentheses.</summary>
+    /// <summary><c>clamp([MIN | none], VAL, [MAX | none])</c> — §10.2: three same-type arguments,
+    /// computed as <c>max(MIN, min(VAL, MAX))</c> (when MIN &gt; MAX, MIN wins — per spec). Either
+    /// BOUND may be the keyword <c>none</c> (post-PR-#158 review P2): <c>clamp(none, VAL, MAX)</c> =
+    /// <c>min(VAL, MAX)</c>, <c>clamp(MIN, VAL, none)</c> = <c>max(MIN, VAL)</c>,
+    /// <c>clamp(none, VAL, none)</c> = <c>VAL</c>; the CENTER argument must be a real
+    /// <c>&lt;calc-sum&gt;</c>. The caller consumed the name + <c>(</c>. Depth-capped like
+    /// parentheses.</summary>
     private static bool TryParseClamp(
         ReadOnlySpan<char> s, ref int pos, in CalcContext ctx, int depth, out Term result)
     {
         result = default;
         if (depth >= CalcResolver.MaxDepth) return false;
         Span<Term> args = stackalloc Term[3];
+        Span<bool> isNone = stackalloc bool[3];
         for (var i = 0; i < 3; i++)
         {
-            if (!TryParseSum(s, ref pos, ctx, depth + 1, out args[i])) return false;
+            // `none` is admitted for the BOUNDS (i == 0 / 2) only — never the center value.
+            if (i != 1 && TryMatchNoneKeyword(s, ref pos))
+                isNone[i] = true;
+            else if (!TryParseSum(s, ref pos, ctx, depth + 1, out args[i]))
+                return false;
             SkipWhitespace(s, ref pos);
             var wantComma = i < 2;
             if (pos >= s.Length || s[pos] != (wantComma ? ',' : ')')) return false;
             pos++;
         }
-        if (args[0].IsNumber != args[1].IsNumber || args[1].IsNumber != args[2].IsNumber) return false;
-        result = args[0] with { Value = Math.Max(args[0].Value, Math.Min(args[1].Value, args[2].Value)) };
+        if (!isNone[0] && args[0].IsNumber != args[1].IsNumber) return false; // §10.4: same-type
+        if (!isNone[2] && args[1].IsNumber != args[2].IsNumber) return false; //   arguments only.
+        var value = args[1].Value;
+        if (!isNone[2]) value = Math.Min(value, args[2].Value);
+        if (!isNone[0]) value = Math.Max(args[0].Value, value); // MIN applied last → MIN wins over MAX.
+        result = args[1] with { Value = value };
+        return true;
+    }
+
+    /// <summary>Match the <c>none</c> keyword (a clamp bound, §10.2) at <paramref name="pos"/> —
+    /// case-insensitive, and only when followed by a non-identifier character (so a hypothetical
+    /// <c>nonex</c> token is not half-consumed). Advances past it on success.</summary>
+    private static bool TryMatchNoneKeyword(ReadOnlySpan<char> s, ref int pos)
+    {
+        SkipWhitespace(s, ref pos);
+        if (pos + 4 > s.Length || !s.Slice(pos, 4).Equals("none", StringComparison.OrdinalIgnoreCase))
+            return false;
+        if (pos + 4 < s.Length && (char.IsAsciiLetterOrDigit(s[pos + 4]) || s[pos + 4] == '-'))
+            return false;
+        pos += 4;
         return true;
     }
 

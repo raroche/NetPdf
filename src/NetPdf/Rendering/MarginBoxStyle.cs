@@ -242,16 +242,19 @@ internal static class MarginBoxStyle
                         continue;
                     }
 
-                    // A math-function SIZE / PADDING — calc(), and min()/max()/clamp() standalone
-                    // (min/max/clamp cycle) — is admitted BEFORE the leaf resolver (calc cycle):
-                    // LengthResolver has no calc machinery and would reject the value as unparseable,
-                    // but the margin-box painter CAN evaluate it (CalcLengthEvaluator — percent terms
-                    // against the band, relative terms against the box font / root / page box). Store
-                    // the raw as a DEFERRED value, mirroring the kept relative-length path; the painter
-                    // resolves it or surfaces the contextual failure. Margin-box-scoped — a BODY calc()
-                    // keeps the resolver's invalid-value diagnostic (body calc machinery is a separate
-                    // pickup, deferrals.md).
-                    if ((IsSizeId(id) || IsPaddingId(id)) && CalcLengthEvaluator.IsMathFunction(w.Value))
+                    // A math-function SIZE / PADDING / FONT-SIZE — calc(), and min()/max()/clamp()
+                    // standalone (min/max/clamp cycle; font-size joined in the post-PR-#158 review P2 —
+                    // `font-size: clamp(12px, 5vw, 24px)` is the canonical responsive-typography form) —
+                    // is admitted BEFORE the leaf resolver (calc cycle): the leaf resolvers have no calc
+                    // machinery and would reject the value as unparseable, but the margin-box painter CAN
+                    // evaluate it (CalcLengthEvaluator — percent terms against the band for sizes/padding
+                    // and against the PARENT font-size for font-size, relative terms against the box
+                    // font / root / page box). Store the raw as a DEFERRED value, mirroring the kept
+                    // relative-length path; the painter resolves it or surfaces the contextual failure.
+                    // Margin-box-scoped — a BODY calc() keeps the resolver's invalid-value diagnostic
+                    // (body calc machinery is a separate pickup, deferrals.md).
+                    if ((IsSizeId(id) || IsPaddingId(id) || id == PropertyId.FontSize)
+                        && CalcLengthEvaluator.IsMathFunction(w.Value))
                     {
                         style.SetDeferred(id, w.Value);
                         continue;

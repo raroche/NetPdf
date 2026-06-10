@@ -109,7 +109,7 @@ internal static class FragmentPainter
 
     /// <summary>The <c>currentcolor</c> fallback for each border edge — the colour of the style that
     /// OWNS that edge (CSS Color 4 §6.2). The body path uses one colour for all four (a body box's
-    /// border and its <c>color</c> belong to the same element — see <see cref="Uniform"/>); the
+    /// border and its <c>color</c> belong to the same element — see <see cref="BorderEdgeCurrentColors.Uniform(uint)"/>); the
     /// page-margin-box painter resolves ownership PER EDGE (per-edge currentcolor cycle — a
     /// box-declared edge falls back to the box's colour, an element-declared edge to the running
     /// element's).</summary>

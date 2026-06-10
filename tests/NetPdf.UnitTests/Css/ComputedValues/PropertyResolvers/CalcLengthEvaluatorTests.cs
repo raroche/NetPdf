@@ -41,6 +41,39 @@ public sealed class CalcLengthEvaluatorTests
     }
 
     [Theory]
+    [InlineData("min(50%, 300px)", 200.0)]            // §10.2 — standalone (no calc() wrapper needed)
+    [InlineData("max(10px, 2em, 1rem)", 40.0)]        // 1+ args; the largest of 10/40/10
+    [InlineData("min(10px)", 10.0)]                   // a single argument is valid
+    [InlineData("clamp(50px, 10px, 200px)", 50.0)]    // VAL below MIN → MIN
+    [InlineData("clamp(50px, 100px, 200px)", 100.0)]  // VAL within → VAL
+    [InlineData("clamp(50px, 999px, 200px)", 200.0)]  // VAL above MAX → MAX
+    [InlineData("clamp(200px, 100px, 50px)", 200.0)]  // MIN > MAX → MIN wins (max(MIN, min(VAL, MAX)))
+    [InlineData("calc(min(10px, 2em) + 5px)", 15.0)]  // nested inside calc (min(10, 40) + 5)
+    [InlineData("MIN(10px, 20px)", 10.0)]             // function names are case-insensitive
+    [InlineData("calc(100% - max(20px, 10px))", 380.0)]
+    [InlineData("clamp(none, 5vw, 24px)", 24.0)]      // §10.2: `none` MIN → min(VAL, MAX); 5vw = 40
+    [InlineData("clamp(12px, 5vw, none)", 40.0)]      // `none` MAX → max(MIN, VAL)
+    [InlineData("clamp(NONE, 5vw, none)", 40.0)]      // both bounds none (case-insensitive) → VAL
+    public void TryEvaluate_resolves_min_max_clamp(string raw, double expectedPx)
+    {
+        Assert.True(CalcLengthEvaluator.TryEvaluate(raw, Ctx, out var px), raw);
+        Assert.Equal(expectedPx, px, 3);
+    }
+
+    [Theory]
+    [InlineData("min()")]                  // no arguments
+    [InlineData("min(10px, 5)")]           // mixed-type arguments (§10.4)
+    [InlineData("clamp(10px, 20px)")]      // clamp takes exactly three
+    [InlineData("clamp(10px, 20px, 30px, 40px)")]
+    [InlineData("min(10px 20px)")]         // missing comma
+    [InlineData("clamp(12px, none, 24px)")]   // `none` is a BOUNDS keyword — never the center VAL
+    [InlineData("min(none, 1px)")]            // …and clamp-only (§10.2)
+    public void TryEvaluate_rejects_invalid_min_max_clamp(string raw)
+    {
+        Assert.False(CalcLengthEvaluator.TryEvaluate(raw, Ctx, out _), raw);
+    }
+
+    [Theory]
     [InlineData("calc(10px+5px)")]      // §10.3: + must be surrounded by whitespace
     [InlineData("calc(10px -5px)")]     // §10.3: - needs whitespace on BOTH sides
     [InlineData("calc(10px * 5px)")]    // length × length has no CSS type (§10.4)
@@ -51,7 +84,7 @@ public sealed class CalcLengthEvaluatorTests
     [InlineData("calc(10px + 5)")]      // mixed-type sum (length + number, §10.4)
     [InlineData("calc(5)")]             // a bare-number result is not a length
     [InlineData("calc(10cqw + 5px)")]   // container units — unsupported
-    [InlineData("calc(min(1px, 2px))")] // min()/max()/clamp() — unsupported
+    [InlineData("calc(round(1px))")]    // round()/mod()/abs() etc. — unsupported
     [InlineData("calc(10px")]           // unbalanced — not even calc-shaped
     [InlineData("calc()")]
     [InlineData("10px")]                // not a calc() at all
@@ -63,12 +96,16 @@ public sealed class CalcLengthEvaluatorTests
     [Theory]
     [InlineData("calc(100% - 10px)", true)]
     [InlineData("CALC(1px)", true)]
+    [InlineData("min(1px, 2px)", true)]     // §10.2 functions are whole-value math functions too
+    [InlineData("max(1px, 2px)", true)]
+    [InlineData("clamp(1px, 2px, 3px)", true)]
     [InlineData("calc(", false)]
+    [InlineData("min(1px", false)]
     [InlineData("10px", false)]
     [InlineData("", false)]
-    public void IsCalc_matches_the_calc_shape(string raw, bool expected)
+    public void IsMathFunction_matches_the_math_function_shape(string raw, bool expected)
     {
-        Assert.Equal(expected, CalcLengthEvaluator.IsCalc(raw));
+        Assert.Equal(expected, CalcLengthEvaluator.IsMathFunction(raw));
     }
 
     [Fact]
@@ -84,23 +121,28 @@ public sealed class CalcLengthEvaluatorTests
     public void TryEvaluate_rejects_nesting_beyond_the_shared_depth_cap()
     {
         // Post-PR-#157 review P2: the evaluator shares CalcResolver.MaxDepth so pathological nesting
-        // can't grow the recursion unboundedly. MaxDepth parens still evaluate; MaxDepth + 1 reject.
+        // can't grow the recursion unboundedly. The OUTER calc( consumes the first depth level
+        // (min/max/clamp cycle — the whole value parses as one math-function <value>), so
+        // MaxDepth − 1 inner parens still evaluate and MaxDepth inner parens reject.
         string Nested(int parens) =>
             "calc(" + new string('(', parens) + "10px" + new string(')', parens) + ")";
-        Assert.True(CalcLengthEvaluator.TryEvaluate(Nested(NetPdf.Css.Cascade.CalcResolver.MaxDepth), Ctx, out var px));
+        Assert.True(CalcLengthEvaluator.TryEvaluate(Nested(NetPdf.Css.Cascade.CalcResolver.MaxDepth - 1), Ctx, out var px));
         Assert.Equal(10.0, px, 3);
-        Assert.False(CalcLengthEvaluator.TryEvaluate(Nested(NetPdf.Css.Cascade.CalcResolver.MaxDepth + 1), Ctx, out _));
+        Assert.False(CalcLengthEvaluator.TryEvaluate(Nested(NetPdf.Css.Cascade.CalcResolver.MaxDepth), Ctx, out _));
     }
 
     [Fact]
-    public void TryEvaluate_rejects_a_body_beyond_the_shared_length_cap()
+    public void TryEvaluate_caps_the_function_BODY_length_at_the_exact_boundary()
     {
-        // Post-PR-#157 review P2: the evaluator shares CalcResolver.MaxBodyLength — a huge flat
-        // operand chain (breadth, which the depth cap alone wouldn't catch) is rejected up front
-        // instead of burning CPU.
-        var manyTerms = "calc(10px" + string.Concat(
-            System.Linq.Enumerable.Repeat(" + 10px", NetPdf.Css.Cascade.CalcResolver.MaxBodyLength / 7)) + ")";
-        Assert.True(manyTerms.Length > NetPdf.Css.Cascade.CalcResolver.MaxBodyLength);
-        Assert.False(CalcLengthEvaluator.TryEvaluate(manyTerms, Ctx, out _));
+        // Post-PR-#157 review P2 + post-PR-#158 review P3: the cap measures the function BODY (the
+        // text between the outer parens) — the same measure CalcResolver.MaxBodyLength is defined
+        // for — NOT the full raw with the name + parens. A body of exactly MaxBodyLength evaluates;
+        // one more char rejects.
+        string WithBodyLength(int length) =>
+            "calc(1px" + new string(' ', length - 3) + ")";   // body = "1px" + padding spaces
+        var max = NetPdf.Css.Cascade.CalcResolver.MaxBodyLength;
+        Assert.True(CalcLengthEvaluator.TryEvaluate(WithBodyLength(max), Ctx, out var px));
+        Assert.Equal(1.0, px, 3);
+        Assert.False(CalcLengthEvaluator.TryEvaluate(WithBodyLength(max + 1), Ctx, out _));
     }
 }

@@ -355,7 +355,17 @@ surfaced + falls back. **(B)** margin-box `white-space` is CASCADED + inherited 
 declared `nowrap`/`pre` keeps a rigid single (clipped) line. **(C)** padding `%` (vs the region width, CSS
 B&B §8.4) + font-/viewport-relative + calc() resolve — `ResolveUsedPaddingInPlace` rewrites USED px into the
 slots so insets/TextPainter/FragmentPainter agree; element() own padding follows (em vs the BOX font —
-approximation). HEIGHT flex: resolved by design (rigid at fixed width → clamp + clip). Next (in order): cross-page running +
+approximation). HEIGHT flex: resolved by design (rigid at fixed width → clamp + clip). Merged as PR #157 incl. its review
+(P2 case-insensitive calc units; P2 shared CalcResolver.MaxDepth/MaxBodyLength guards; P3 doc refresh; Copilot
+exact-zero divisor). **Min/max-clamp / font-size / per-edge-currentcolor cycles (in progress, branch
+`phase-3-task-21-calc-minmax-fontsize-border-currentcolor`) — the next three deferrals, one PR:** **(A)** the
+§10.2 comparison functions `min()`/`max()`/`clamp()` evaluate, nested in calc() AND standalone
+(`width: min(50%, 150px)`); `IsMathFunction` replaces `IsCalc` as the keep gate. **(B)** a root-/viewport-
+relative margin-box `font-size` (`2rem`/`5vw`) resolves at paint time (`ResolveDeferredFontSizeInPlace` — page
+context first, then each box before the shaper/em bases read it) — closes the 16px-fallback gap. **(C)** border
+`currentcolor` is per-EDGE (CSS Color 4 §6.2): each edge falls back to its OWNER's colour (box-declared edge →
+box colour, element-declared → element's) via `FragmentPainter.BorderEdgeCurrentColors` (uniform body overload
+delegates, byte-identical). Next (in order): cross-page running +
 `@page :left`/`:right`/`:blank` + named pages (all multi-page-gated). Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).

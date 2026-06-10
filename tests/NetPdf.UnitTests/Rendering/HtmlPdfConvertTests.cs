@@ -1195,15 +1195,16 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
-    public void Page_margin_box_rem_font_size_stays_deferred_and_falls_back()
+    public void Page_margin_box_rem_font_size_resolves_against_the_default_root()
     {
-        // PIN: rem isn't parent-relative (it needs the root font-size threaded through) → it stays
-        // deferred and falls back to the 16px reader default → 12pt Tf. Documents the remaining gap.
+        // font-size cycle (flips the old "stays deferred → 16px" pin): rem now resolves against the
+        // root font-size at paint time — with no html font-size declared, the 16px default root makes
+        // 2rem = 32px → 24pt Tf.
         var pdf = Latin1(HtmlPdf.Convert(
             "<!DOCTYPE html><html><head><style>@page { @bottom-center { content:\"AB\"; font-size: 2rem } }</style>" +
             "</head><body></body></html>",
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
-        Assert.Equal(12.0, FirstTf(pdf), 1);   // 16px default × 0.75 (2rem not resolved)
+        Assert.Equal(24.0, FirstTf(pdf), 1);   // 2 × 16px root × 0.75 (resolved, no longer the fallback)
     }
 
     [Fact]
@@ -2066,6 +2067,106 @@ public sealed class HtmlPdfConvertTests
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
         Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
         Assert.InRange(FirstRect(Latin1(result.Pdf)).W, 46.0, 50.0);   // 64px × 0.75 = 48pt
+    }
+
+    [Fact]
+    public void Page_margin_box_min_max_clamp_size_functions_resolve()
+    {
+        // min/max/clamp cycle (CSS Values 4 §10.2): the comparison functions work STANDALONE as the
+        // whole value — width: min(50%, 150px) picks the smaller 150px → 112.5pt band; a left box's
+        // height: clamp(100px, 50px, 300px) raises VAL to MIN → 100px → 75pt.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var min = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; " +
+            "width: min(50%, 150px); background-color: red } }</style></head><body></body></html>", opts);
+        Assert.DoesNotContain(min.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
+        Assert.InRange(FirstRect(Latin1(min.Pdf)).W, 110.5, 114.5);   // 150px × 0.75 = 112.5pt
+        var clamp = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { @left-middle { content:\"AB\"; " +
+            "height: clamp(100px, 50px, 300px); background-color: red } }</style></head><body></body></html>", opts));
+        Assert.InRange(FirstRect(clamp).H, 73.0, 77.0);               // 100px × 0.75 = 75pt
+    }
+
+    // ---- rem / viewport-relative margin-box font-size (Task 21, font-size cycle) ----
+
+    [Fact]
+    public void Page_margin_box_rem_and_viewport_font_size_resolve()
+    {
+        // font-size cycle: a root-/viewport-relative font-size no longer falls back to 16px —
+        // `5vw` of an 800px page = 40px glyphs (30pt Tf), and `2rem` against a 20px root = 40px too.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var vw = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { size: 800px 600px; " +
+            "@top-center { content:\"AB\"; font-size: 5vw } }</style></head><body></body></html>", opts));
+        Assert.Contains(" 30 Tf", vw);   // 40px × 0.75 = 30pt (was 12pt from the 16px fallback)
+        var rem = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>html { font-size: 20px } " +
+            "@page { @top-center { content:\"AB\"; font-size: 2rem } }</style></head><body></body></html>", opts));
+        Assert.Contains(" 30 Tf", rem);  // 2 × 20px × 0.75 = 30pt
+    }
+
+    [Fact]
+    public void Page_margin_box_math_function_font_size_resolves()
+    {
+        // Post-PR-#158 review P2: font-size math functions evaluate — clamp(12px, 5vw, 24px) on an
+        // 800px page clamps 40px down to 24px → 18pt Tf, and calc(50% + 10px)'s % term scales by the
+        // PARENT (page-context) font-size per CSS Fonts (20px → 10 + 10 = 20px → 15pt Tf).
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var clamp = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { size: 800px 600px; " +
+            "@top-center { content:\"AB\"; font-size: clamp(12px, 5vw, 24px) } }</style></head><body></body></html>", opts));
+        Assert.Contains(" 18 Tf", clamp);   // 24px × 0.75
+        var pct = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>@page { font-size: 20px; " +
+            "@top-center { content:\"AB\"; font-size: calc(50% + 10px) } }</style></head><body></body></html>", opts));
+        Assert.Contains(" 15 Tf", pct);     // (10 + 10)px × 0.75
+    }
+
+    [Fact]
+    public void Page_margin_box_malformed_math_font_size_is_surfaced()
+    {
+        // A kept-but-unevaluable math-function font-size (length × length) is SURFACED before the
+        // default fallback — not silently 16px (the admit gate is syntactic).
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content:\"AB\"; " +
+            "font-size: calc(10px * 5px) } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001
+            && d.Message.Contains("font-size"));
+        Assert.Contains(" 12 Tf", Latin1(result.Pdf));   // falls back to the 16px default → 12pt
+    }
+
+    [Fact]
+    public void Page_margin_box_rem_font_size_feeds_the_em_width_base()
+    {
+        // Resolve ORDER: the font-size resolves BEFORE the size bases are read, so `width: 10em`
+        // scales by the RESOLVED 2rem (= 40px) font → a 400px → 300pt band.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>html { font-size: 20px } " +
+            "@page { @top-center { content:\"AB\"; font-size: 2rem; width: 10em; background-color: red } }" +
+            "</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        Assert.InRange(FirstRect(pdf).W, 298.0, 302.0);   // 10 × 40px × 0.75 = 300pt
+    }
+
+    // ---- per-edge border currentcolor (Task 21, per-edge currentcolor cycle) ----
+
+    [Fact]
+    public void Page_margin_box_border_currentcolor_resolves_per_edge()
+    {
+        // CSS Color 4 §6.2 per edge: the BOX declares border-left (its blue currentcolor), the
+        // running ELEMENT declares border-right (its red). Each edge falls back to ITS owner's
+        // colour — blue left + red right. (The old whole-border rule painted BOTH edges blue
+        // because the box declared "a border".)
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>" +
+            ".rh { position: running(rh); color: red; border-right: 4px solid } " +
+            "@page { @top-center { content: element(rh); color: blue; border-left: 4px solid } }" +
+            "</style></head><body><div class=\"rh\">AB</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+        var colors = RectFillColors(pdf);
+        Assert.Contains("0 0 1", colors);   // the box-owned left edge strokes the box's blue
+        Assert.Contains("1 0 0", colors);   // the element-owned right edge strokes the element's red
     }
 
     [Fact]

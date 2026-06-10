@@ -3216,8 +3216,21 @@ flags the categories):
          BOX font — documented approximation). A HEIGHT flex for overlapping vertical siblings is
          RESOLVED BY DESIGN: their heights are rigid at the fixed band width (re-wrapping can't change a
          height without changing the width), so the center-priority clamp + line clip IS the §5.3
-         resolution. STILL DEFERRED: container-relative units (no container context — diagnosed +
-         dropped), calc `min()`/`max()`/`clamp()`, and BODY calc machinery (body lengths still reject
+         resolution. **min()/max()/clamp() + rem/viewport font-size + per-edge border currentcolor — DONE
+         (min/max-clamp / font-size / per-edge-currentcolor cycles):** the §10.2 comparison functions
+         evaluate (in calc() AND standalone — `width: min(50%, 150px)`; same-type args,
+         `clamp(MIN, VAL, MAX) = max(MIN, min(VAL, MAX))`, depth-capped like parens;
+         `CalcLengthEvaluator.IsMathFunction` is the keep gate). A root-/viewport-relative margin-box
+         `font-size` (`2rem`/`5vw`) resolves at paint time against the root font-size / page box
+         (`PageMarginBoxPainter.ResolveDeferredFontSizeInPlace`, run on the page context BEFORE boxes
+         inherit + before the em size/padding bases are read — closes the old 16px-fallback gap;
+         container units still fall back). Border `currentcolor` is per-EDGE (CSS Color 4 §6.2): each
+         edge falls back to its OWNER's colour — the box's when the box declares that edge's color or
+         style longhand, else the running element's (`FragmentPainter.BorderEdgeCurrentColors`; the
+         uniform body path delegates, byte-identical — replaces the whole-border ownership rule whose
+         mixed-origin case painted every edge with the box colour). STILL DEFERRED: container-relative
+         units (no container context — diagnosed + dropped), the §10.3+ math functions
+         (`round()`/`mod()`/`abs()`/…), and BODY calc machinery (body lengths still reject
          calc with the resolver's invalid-value diagnostic).
        - **`@page :first` selector (cycle 10) — DONE:** `@page :first` rules apply on the single
          (first) page, overriding the bare `@page` by cascade specificity — `AtPageRules.EnumeratePageRules`

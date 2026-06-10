@@ -107,15 +107,39 @@ internal static class FragmentPainter
         }
     }
 
+    /// <summary>The <c>currentcolor</c> fallback for each border edge — the colour of the style that
+    /// OWNS that edge (CSS Color 4 §6.2). The body path uses one colour for all four (a body box's
+    /// border and its <c>color</c> belong to the same element — see <see cref="BorderEdgeCurrentColors.Uniform(uint)"/>); the
+    /// page-margin-box painter resolves ownership PER EDGE (per-edge currentcolor cycle — a
+    /// box-declared edge falls back to the box's colour, an element-declared edge to the running
+    /// element's).</summary>
+    internal readonly record struct BorderEdgeCurrentColors(uint Top, uint Right, uint Bottom, uint Left)
+    {
+        /// <summary>All four edges fall back to the same colour (the body path / a single owner).</summary>
+        public static BorderEdgeCurrentColors Uniform(uint argb) => new(argb, argb, argb, argb);
+    }
+
     /// <summary>Paint all four border edges of a box (top / right / bottom / left) declared on
     /// <paramref name="style"/>, around the box rect (<paramref name="leftPx"/> /
     /// <paramref name="topPx"/> / <paramref name="widthPx"/> / <paramref name="heightPx"/>, CSS px,
     /// page-top origin). Reused by the page-margin-box painter. <paramref name="styleApproximationReported"/>
-    /// is threaded so a non-solid-border-style approximation is diagnosed at most once per render.</summary>
+    /// is threaded so a non-solid-border-style approximation is diagnosed at most once per render.
+    /// This overload uses ONE currentcolor for all four edges (the body path).</summary>
     internal static void PaintBorders(
         PdfPage page, ComputedStyle style, double pageHeightPt,
         double leftPx, double topPx, double widthPx, double heightPx,
-        uint currentColorArgb, IDiagnosticsSink? diagnostics, ref bool styleApproximationReported)
+        uint currentColorArgb, IDiagnosticsSink? diagnostics, ref bool styleApproximationReported) =>
+        PaintBorders(page, style, pageHeightPt, leftPx, topPx, widthPx, heightPx,
+            BorderEdgeCurrentColors.Uniform(currentColorArgb), diagnostics, ref styleApproximationReported);
+
+    /// <summary>Per-edge-currentcolor overload (per-edge currentcolor cycle): each edge's
+    /// <c>border-*-color: currentcolor</c> (or its initial) falls back to that edge's OWNER colour
+    /// from <paramref name="currentColors"/>. The uniform overload delegates here, so the body path
+    /// is byte-identical.</summary>
+    internal static void PaintBorders(
+        PdfPage page, ComputedStyle style, double pageHeightPt,
+        double leftPx, double topPx, double widthPx, double heightPx,
+        in BorderEdgeCurrentColors currentColors, IDiagnosticsSink? diagnostics, ref bool styleApproximationReported)
     {
         // A zero-area or non-finite border box has no edges to stroke. The body path guards this
         // upstream (PaintFragments skips width/height <= 0), but the page-margin-box painter forwards
@@ -128,13 +152,13 @@ internal static class FragmentPainter
             return;
 
         PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Top, leftPx, topPx, widthPx, heightPx,
-            currentColorArgb, diagnostics, ref styleApproximationReported);
+            currentColors.Top, diagnostics, ref styleApproximationReported);
         PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Right, leftPx, topPx, widthPx, heightPx,
-            currentColorArgb, diagnostics, ref styleApproximationReported);
+            currentColors.Right, diagnostics, ref styleApproximationReported);
         PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Bottom, leftPx, topPx, widthPx, heightPx,
-            currentColorArgb, diagnostics, ref styleApproximationReported);
+            currentColors.Bottom, diagnostics, ref styleApproximationReported);
         PaintBorderEdge(page, style, pageHeightPt, BorderEdge.Left, leftPx, topPx, widthPx, heightPx,
-            currentColorArgb, diagnostics, ref styleApproximationReported);
+            currentColors.Left, diagnostics, ref styleApproximationReported);
     }
 
     private static void PaintBackground(

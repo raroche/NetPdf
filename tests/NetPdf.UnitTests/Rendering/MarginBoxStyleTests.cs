@@ -458,22 +458,48 @@ public sealed class MarginBoxStyleTests
     }
 
     [Theory]
-    [InlineData("padding-left", "10%")]    // a percentage (resolves against the containing block)
+    [InlineData("padding-left", "10%")]    // a percentage slot — the painter resolves it vs the band
     [InlineData("padding-top", "25%")]
-    [InlineData("padding-left", "1em")]     // a font-relative length (left deferred by the resolver)
-    [InlineData("padding-right", "1rem")]
-    [InlineData("padding-bottom", "5vw")]   // a viewport-relative length
-    public void Build_diagnoses_and_drops_non_absolute_padding(string property, string value)
+    public void Build_keeps_a_percentage_padding_without_a_diagnostic(string property, string value)
     {
-        // A percentage or a font-/viewport-relative padding is a VALID value (the cascade accepts it)
-        // but the margin-box painter can't resolve it to used px yet — it reads padding via
-        // ReadLengthPxOrZero, which honors only a LengthPx slot. So it must be diagnosed + DROPPED
-        // (unset → 0), not left as a slot the painter silently renders as 0 (review P2 + Copilot).
+        // Relative-padding cycle: a percentage padding is KEPT as a Percentage slot — the painter
+        // resolves it against the box's containing-block width (CSS B&B §8.4) and rewrites the used
+        // px in place — with NO diagnostic (was diagnosed + dropped pre-cycle).
         var sink = new CapturingSink();
         var style = MarginBoxStyle.Build(
             ImmutableArray.Create(Decl(property, value)), parentStyle: null, diagnostics: sink);
+        Assert.Empty(sink.Diagnostics);
+        Assert.Equal(ComputedSlotTag.Percentage, style.Get(PropertyMetadata.NameToId[property]).Tag);
+    }
+
+    [Theory]
+    [InlineData("padding-left", "1em")]     // a font-relative length (left deferred by the resolver)
+    [InlineData("padding-right", "1rem")]
+    [InlineData("padding-bottom", "5vw")]   // a viewport-relative length
+    [InlineData("padding-top", "calc(10px + 1em)")]   // calc — evaluated by the painter (calc cycle)
+    public void Build_keeps_a_relative_or_calc_padding_as_a_deferred_raw(string property, string value)
+    {
+        // Relative-padding cycle: a font-/viewport-relative or calc() padding is KEPT as a deferred
+        // raw — the painter resolves it (RelativeLengthResolver / CalcLengthEvaluator) and rewrites
+        // the used px in place — with NO diagnostic (was diagnosed + dropped pre-cycle).
+        var sink = new CapturingSink();
+        var style = MarginBoxStyle.Build(
+            ImmutableArray.Create(Decl(property, value)), parentStyle: null, diagnostics: sink);
+        Assert.Empty(sink.Diagnostics);
+        Assert.True(style.TryGetDeferred(PropertyMetadata.NameToId[property], out var raw));
+        Assert.Equal(value, raw);
+    }
+
+    [Fact]
+    public void Build_diagnoses_and_drops_an_unsupported_padding()
+    {
+        // What the painter still can't resolve (container units) keeps the diagnose-and-drop path —
+        // not a silent 0 (CLAUDE.md #7).
+        var sink = new CapturingSink();
+        var style = MarginBoxStyle.Build(
+            ImmutableArray.Create(Decl("padding-left", "10cqw")), parentStyle: null, diagnostics: sink);
         Assert.Contains(sink.Diagnostics, d => d.Code == CssDiagnosticCodes.CssPropertyValueInvalid001);
-        Assert.False(style.IsSet(PropertyMetadata.NameToId[property]));   // dropped, not a non-px slot
+        Assert.False(style.IsSet(PropertyId.PaddingLeft));   // dropped, not a non-px slot
     }
 
     [Theory]
@@ -496,6 +522,8 @@ public sealed class MarginBoxStyleTests
     [InlineData("width", "2rem")]
     [InlineData("height", "5vw")]
     [InlineData("width", "3vmin")]
+    [InlineData("width", "calc(100% - 10px)")]   // calc — evaluated by the painter (calc cycle)
+    [InlineData("height", "calc(2em + 5px)")]
     public void Build_keeps_a_relative_explicit_size_as_a_deferred_raw(string property, string value)
     {
         // Relative-units cycle: a font-/viewport-relative width/height is KEPT as a deferred raw — the
@@ -511,17 +539,40 @@ public sealed class MarginBoxStyleTests
     }
 
     [Theory]
-    [InlineData("width", "calc(100% - 10px)")]   // calc() — needs calc machinery, still unsupported
-    [InlineData("height", "-2em")]               // negative relative — rejected (non-negative property)
+    [InlineData("width", "10cqw")]    // container units — no container context, still unsupported
+    [InlineData("height", "-2em")]    // negative relative — rejected (non-negative property)
     public void Build_diagnoses_and_drops_an_unresolvable_explicit_size(string property, string value)
     {
         // What the painter still can't resolve to a used size must keep the diagnose-and-drop path
         // (post-PR-#144 review P2 — an explicit deferral, not a silent shrink-to-fit fallback).
+        // (calc() moved to the keep side in the calc cycle.)
         var sink = new CapturingSink();
         var style = MarginBoxStyle.Build(
             ImmutableArray.Create(Decl(property, value)), parentStyle: null, diagnostics: sink);
         Assert.Contains(sink.Diagnostics, d => d.Code == CssDiagnosticCodes.CssPropertyValueInvalid001);
         Assert.False(style.IsSet(PropertyMetadata.NameToId[property]));   // dropped, not a deferred slot
+    }
+
+    [Theory]
+    [InlineData("nowrap")]
+    [InlineData("pre")]
+    public void Build_materializes_white_space(string value)
+    {
+        // white-space joins the inherited whitelist (white-space cycle) → a keyword slot the painter's
+        // ReadInlineTextPolicy honors for the wrap policy (canWrap / vertical-edge wrap / re-wrap).
+        var style = MarginBoxStyle.Build(ImmutableArray.Create(Decl("white-space", value)));
+        Assert.Equal(ComputedSlotTag.Keyword, style.Get(PropertyId.WhiteSpace).Tag);
+    }
+
+    [Fact]
+    public void Build_inherits_white_space_from_the_parent()
+    {
+        // white-space is a CSS inherited property — `@page { white-space: nowrap }` flows into every
+        // margin box (root → page context → box).
+        var parent = MarginBoxStyle.Build(ImmutableArray.Create(Decl("white-space", "nowrap")));
+        var child = MarginBoxStyle.Build(ImmutableArray<CssDeclaration>.Empty, parent);
+        Assert.Equal(ComputedSlotTag.Keyword, child.Get(PropertyId.WhiteSpace).Tag);
+        Assert.Equal(parent.Get(PropertyId.WhiteSpace).AsKeyword(), child.Get(PropertyId.WhiteSpace).AsKeyword());
     }
 
     [Theory]

@@ -37,22 +37,25 @@ namespace NetPdf.Rendering;
 /// </para>
 /// <para>
 /// <b>Supported properties (a WHITELIST).</b> The inherited <c>font-family</c> / <c>font-size</c> /
-/// <c>font-weight</c> / <c>font-style</c> / <c>color</c> are materialized + inherited. The
+/// <c>font-weight</c> / <c>font-style</c> / <c>color</c> / <c>white-space</c> (white-space cycle —
+/// drives the painter's wrap policy) are materialized + inherited. The
 /// non-inherited <c>background-color</c> (cycle 8), the 12 <c>border-*-width</c> / <c>-style</c> /
 /// <c>-color</c> longhands (border cycle), the 4 <c>padding-*</c> longhands (padding cycle),
 /// <c>width</c> / <c>height</c> (explicit-size cycle), and <c>box-sizing</c> (box-sizing cycle) are
 /// materialized from the box's OWN declarations — the painter fills a band behind the box's content,
 /// strokes the border around its region, insets the text content origin by the used
 /// border-width + padding on each side, and sizes the box along its §5.3 VARIABLE axis from an explicit
-/// <c>width</c> (top/bottom) / <c>height</c> (left/right) — an absolute length or a percentage of the
-/// band; <c>auto</c> shrink-to-fits (cycle 14); per CSS Basic UI 4 §10 the explicit size specifies the
-/// content box (<c>box-sizing: content-box</c>, the initial) or the border box
-/// (<c>box-sizing: border-box</c>). (A <i>non-absolute</i> padding — a percentage or a font-/
-/// viewport-relative length — is accepted by the cascade but can't be resolved to used px here yet, so
-/// it's diagnosed + dropped rather than silently zeroed; likewise a DEFERRED <c>width</c>/<c>height</c>
-/// — a font-/viewport-relative or <c>calc()</c> size (a percentage IS supported) — is diagnosed +
-/// dropped so the box EXPLICITLY shrink-to-fits rather than silently. The §5.3 margin-box sizing / font
-/// context they would resolve against is deferred.) <c>text-align</c> /
+/// <c>width</c> (top/bottom) / <c>height</c> (left/right); <c>auto</c> shrink-to-fits (cycle 14); per
+/// CSS Basic UI 4 §10 the explicit size specifies the content box (<c>box-sizing: content-box</c>, the
+/// initial) or the border box (<c>box-sizing: border-box</c>). Sizes AND paddings take an absolute
+/// length, a percentage (sizes against the band; padding against the containing-block width, CSS B&amp;B
+/// §8.4), a font-/viewport-relative length, or <c>calc()</c> (relative-units / calc / relative-padding
+/// cycles): a relative or calc raw is KEPT as a DEFERRED value here (a calc size/padding is admitted
+/// BEFORE the leaf resolver — LengthResolver has no calc machinery) and the PAINTER resolves it against
+/// the box font / root font / page box / band (<c>RelativeLengthResolver</c> /
+/// <c>CalcLengthEvaluator</c>), surfacing a contextual failure instead of falling back silently. Only
+/// what the painter still can't resolve (container units, malformed/negative relatives) is diagnosed +
+/// dropped at cascade time. <c>text-align</c> /
 /// <c>vertical-align</c> are NOT inherited
 /// here — alignment is read from the box's OWN declarations (<see cref="HorizontalAlignFactor"/> /
 /// <see cref="VerticalAlignFactor"/>) and overrides the box's name-derived default; inheriting the
@@ -70,24 +73,27 @@ namespace NetPdf.Rendering;
 /// </para>
 /// <para>
 /// <b>Deferred (later cycles, deferrals.md#layout-to-pdf-pipeline).</b> <c>rem</c> / viewport-relative
-/// font-size, page-context inheritance of alignment, precise <c>revert</c>, and — for the §5.3
-/// three-box-per-edge sizing (shrink-to-fit + explicit <c>width</c>/<c>height</c> + the min/max-content
-/// overlap distribution + <c>box-sizing</c> + line-granularity overflow clipping have shipped) —
-/// unsupported relative/<c>calc()</c> <c>width</c>/<c>height</c> and partial-glyph clip paths.
+/// font-size, page-context inheritance of alignment, precise <c>revert</c>, container-relative units,
+/// and calc <c>min()</c>/<c>max()</c>/<c>clamp()</c>. The §5.3 three-box-per-edge sizing is COMPLETE
+/// (shrink-to-fit, explicit <c>width</c>/<c>height</c> incl. relative + <c>calc()</c>, the
+/// min/max-content overlap distribution, <c>box-sizing</c>, line-granularity overflow clipping + the
+/// padding-box clip path, and relative/percent/calc padding have all shipped).
 /// </para>
 /// </remarks>
 internal static class MarginBoxStyle
 {
-    /// <summary>The INHERITED longhands, in a fixed order (deterministic materialization). All feed
-    /// the shaper + text fill and are CSS inherited properties, so they flow root → page context →
-    /// margin box. <c>text-align</c> / <c>vertical-align</c> are NOT here — alignment is read from the
-    /// box's OWN declarations (<see cref="HorizontalAlignFactor"/> / <see cref="VerticalAlignFactor"/>)
-    /// and overrides the box's name-derived default; it is NOT inherited from the page/root, whose
-    /// (UA-default) <c>text-align: start</c> would otherwise spuriously override the name-derived
-    /// centering (post-PR-#134 review).</summary>
+    /// <summary>The INHERITED longhands, in a fixed order (deterministic materialization). The font +
+    /// color set feeds the shaper + text fill; <c>white-space</c> (white-space cycle) drives the
+    /// painter's wrap policy (<c>canWrap</c> / the vertical-edge wrap / the §5.3 re-wrap — a declared
+    /// <c>nowrap</c>/<c>pre</c> keeps a rigid single line). All are CSS inherited properties, so they
+    /// flow root → page context → margin box. <c>text-align</c> / <c>vertical-align</c> are NOT here —
+    /// alignment is read from the box's OWN declarations (<see cref="HorizontalAlignFactor"/> /
+    /// <see cref="VerticalAlignFactor"/>) and overrides the box's name-derived default; it is NOT
+    /// inherited from the page/root, whose (UA-default) <c>text-align: start</c> would otherwise
+    /// spuriously override the name-derived centering (post-PR-#134 review).</summary>
     private static readonly ImmutableArray<PropertyId> SupportedStyleIds = ImmutableArray.Create(
         PropertyId.FontFamily, PropertyId.FontSize, PropertyId.FontWeight, PropertyId.FontStyle,
-        PropertyId.Color);
+        PropertyId.Color, PropertyId.WhiteSpace);
 
     /// <summary>The inherited subset of <see cref="CascadedStyleIds"/> — drives the inheritance copy
     /// and the property-aware CSS-wide keyword handling (<c>unset</c>/<c>revert</c> behave as
@@ -234,51 +240,72 @@ internal static class MarginBoxStyle
                         continue;
                     }
 
+                    // A calc() SIZE / PADDING is admitted BEFORE the leaf resolver (calc cycle):
+                    // LengthResolver has no calc machinery and would reject the value as unparseable,
+                    // but the margin-box painter CAN evaluate it (CalcLengthEvaluator — percent terms
+                    // against the band, relative terms against the box font / root / page box). Store
+                    // the raw as a DEFERRED value, mirroring the kept relative-length path; the painter
+                    // resolves it or surfaces the contextual failure. Margin-box-scoped — a BODY calc()
+                    // keeps the resolver's invalid-value diagnostic (body calc machinery is a separate
+                    // pickup, deferrals.md).
+                    if ((IsSizeId(id) || IsPaddingId(id)) && CalcLengthEvaluator.IsCalc(w.Value))
+                    {
+                        style.SetDeferred(id, w.Value);
+                        continue;
+                    }
+
                     var resolved = PropertyResolverDispatch.Resolve(id, w.Value, diagnostics, w.Location);
                     resolved.MaterializeInto(style, id);
 
-                    // Non-absolute padding — a percentage (CSS B&B §8.4: resolves against the containing
-                    // block inline size) or a font-/viewport-relative length (`1em` / `5vw`, left
-                    // DEFERRED by the resolver) — is a VALID value, but the margin-box painter can't
-                    // resolve it to used px yet: it reads padding via ReadLengthPxOrZero, which honors
-                    // ONLY a LengthPx slot and otherwise reads 0, so such a padding would SILENTLY
-                    // vanish. Diagnose + drop it (an EXPLICIT deferral, not silent corruption — CLAUDE.md
-                    // #7, review P2 + Copilot), pending the §5.3 margin-box sizing / a font-context
-                    // resolve. `!resolved.IsInvalid` skips a genuinely-invalid value (Resolve already
-                    // diagnosed it); border-*-width can't be non-px and the other cascaded properties
-                    // aren't lengths, so padding is the only case here.
-                    if (IsPaddingId(id) && !resolved.IsInvalid && style.Get(id).Tag != ComputedSlotTag.LengthPx)
+                    // Padding (relative-padding cycle): a LengthPx slot is used as-is, a PERCENTAGE slot
+                    // is kept (the painter resolves it against the box's containing-block width per CSS
+                    // B&B §8.4), and a DEFERRED font-/viewport-relative or calc() raw is kept for the
+                    // painter's contextual resolve (RelativeLengthResolver / CalcLengthEvaluator —
+                    // mirroring the width/height policy). Anything else the resolver deferred (container
+                    // units, malformed relatives) still can't resolve to used px — the painter would read
+                    // it as 0, silently vanishing the padding — so diagnose + drop it (an EXPLICIT
+                    // deferral, not silent corruption — CLAUDE.md #7). `!resolved.IsInvalid` skips a
+                    // genuinely-invalid value (Resolve already diagnosed it); border-*-width can't be
+                    // non-px and the other cascaded properties aren't lengths, so padding is the only
+                    // case here.
+                    if (IsPaddingId(id) && !resolved.IsInvalid
+                        && style.Get(id).Tag is not (ComputedSlotTag.LengthPx or ComputedSlotTag.Percentage)
+                        && !(resolved.IsDeferred
+                            && (RelativeLengthResolver.IsSupported(w.Value) || CalcLengthEvaluator.IsCalc(w.Value))))
                     {
                         diagnostics?.Emit(new CssDiagnostic(
                             CssDiagnosticCodes.CssPropertyValueInvalid001,
                             $"Padding '{DiagnosticTextSanitizer.Sanitize(w.Value)}' in an @page margin box " +
-                            "isn't an absolute length — percentage and font-/viewport-relative padding " +
-                            "aren't resolved to used px here yet (they would resolve to 0); use an " +
-                            "absolute length (px/pt/cm/in). (deferrals.md)",
+                            "isn't a supported padding — container-relative and malformed values aren't " +
+                            "resolved to used px here (they would resolve to 0); use an absolute length " +
+                            "(px/pt/cm/in), a percentage, a font-/viewport-relative length " +
+                            "(em/ex/ch/rem/vw/vh/vmin/vmax), or calc(). (deferrals.md)",
                             CssDiagnosticSeverity.Warning,
                             w.Location));
                         style.Unset(id);
                     }
                     // A DEFERRED `width`/`height` the painter CAN now resolve — a font-/viewport-relative
-                    // length (`10em` / `1.5rem` / `50vw`, relative-units cycle) — is KEPT as a deferred raw
-                    // on the style; PageMarginBoxPainter.TryReadExplicitSizePx resolves it against the box
-                    // font-size / root font-size / page box via RelativeLengthResolver. Anything ELSE the
-                    // resolver deferred (`calc()`, container units, a negative/malformed relative) still
-                    // can't resolve to a used size — diagnose + drop it (an EXPLICIT deferral, not a silent
-                    // shrink-to-fit fallback — CLAUDE.md #7, post-PR-#144 review P2), mirroring the padding
-                    // policy. Only the Deferred state reaches here: `auto` (a Resolved keyword), an absolute
-                    // length (LengthPx), and a percentage (Percentage) are honored as-is, and an invalid
-                    // value was already diagnosed by Resolve.
-                    else if (IsSizeId(id) && resolved.IsDeferred && !RelativeLengthResolver.IsSupported(w.Value))
+                    // length (`10em` / `1.5rem` / `50vw`, relative-units cycle) or a `calc()` expression
+                    // (calc cycle) — is KEPT as a deferred raw on the style;
+                    // PageMarginBoxPainter.TryReadExplicitSizePx resolves it against the box font-size /
+                    // root font-size / page box / band via RelativeLengthResolver / CalcLengthEvaluator.
+                    // Anything ELSE the resolver deferred (container units, a negative/malformed relative)
+                    // still can't resolve to a used size — diagnose + drop it (an EXPLICIT deferral, not a
+                    // silent shrink-to-fit fallback — CLAUDE.md #7, post-PR-#144 review P2), mirroring the
+                    // padding policy. Only the Deferred state reaches here: `auto` (a Resolved keyword), an
+                    // absolute length (LengthPx), and a percentage (Percentage) are honored as-is, and an
+                    // invalid value was already diagnosed by Resolve.
+                    else if (IsSizeId(id) && resolved.IsDeferred
+                        && !RelativeLengthResolver.IsSupported(w.Value) && !CalcLengthEvaluator.IsCalc(w.Value))
                     {
                         diagnostics?.Emit(new CssDiagnostic(
                             CssDiagnosticCodes.CssPropertyValueInvalid001,
                             $"The margin-box {(id == PropertyId.Width ? "width" : "height")} " +
                             $"'{DiagnosticTextSanitizer.Sanitize(w.Value)}' isn't a supported size — " +
-                            "calc(), container-relative, and malformed/negative sizes aren't resolved to a " +
-                            "used size here (the box falls back to shrink-to-fit); use an absolute length " +
-                            "(px/pt/cm/in), a percentage, or a font-/viewport-relative length " +
-                            "(em/ex/ch/rem/vw/vh/vmin/vmax). (deferrals.md)",
+                            "container-relative and malformed/negative sizes aren't resolved to a used " +
+                            "size here (the box falls back to shrink-to-fit); use an absolute length " +
+                            "(px/pt/cm/in), a percentage, a font-/viewport-relative length " +
+                            "(em/ex/ch/rem/vw/vh/vmin/vmax), or calc(). (deferrals.md)",
                             CssDiagnosticSeverity.Warning,
                             w.Location));
                         style.Unset(id);

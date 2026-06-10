@@ -344,7 +344,18 @@ of truncation + clip + diagnostic (`MarginBoxStyle.OverflowVisible`; clip-by-def
 `visible` — documented). **(C)** font-/viewport-relative explicit `width`/`height`
 (`em`/`ex`/`ch`/`rem`/`vw`/`vh`/`vmin`/`vmax`) RESOLVE via the new shared `RelativeLengthResolver` (`em` →
 box font, `rem` → root, viewport → page box; `ex`/`ch` ≈ 0.5em) — kept as deferred raws by `MarginBoxStyle`;
-`calc()` still diagnosed + dropped. Next (in order): cross-page running +
+`calc()` still diagnosed + dropped (resolved in the NEXT cycle). Merged as PR #156 incl. its review (P2
+padding-box clip predicate; P2 surfaced unresolvable relative size; P3 clip doc + `PdfPageClipTests`; P3 stale
+notes). **Calc / white-space / relative-padding cycles (in progress, branch
+`phase-3-task-21-calc-white-space-relative-padding`) — the next three §5.3 deferrals, one PR:** **(A)**
+`width`/`height`/`padding-*: calc(…)` EVALUATES via the new shared `CalcLengthEvaluator` (CSS Values 4 §10
+grammar; % against the band, relative terms via `RelativeLengthResolver`, §10.5 range clamp; admitted before
+the leaf resolver as a deferred raw — margin-box-scoped, BODY calc still rejects); a failed evaluation is
+surfaced + falls back. **(B)** margin-box `white-space` is CASCADED + inherited (`SupportedStyleIds`) — a
+declared `nowrap`/`pre` keeps a rigid single (clipped) line. **(C)** padding `%` (vs the region width, CSS
+B&B §8.4) + font-/viewport-relative + calc() resolve — `ResolveUsedPaddingInPlace` rewrites USED px into the
+slots so insets/TextPainter/FragmentPainter agree; element() own padding follows (em vs the BOX font —
+approximation). HEIGHT flex: resolved by design (rigid at fixed width → clamp + clip). Next (in order): cross-page running +
 `@page :left`/`:right`/`:blank` + named pages (all multi-page-gated). Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).

@@ -58,20 +58,52 @@ internal static class RelativeLengthResolver
         px = 0;
         if (!TryClassify(rawText, out var unit, out var n) || n < 0) return false;
 
-        var value = unit switch
-        {
-            RelativeUnit.Em => n * emBasePx,
-            RelativeUnit.Ex or RelativeUnit.Ch => n * emBasePx * ExChEmFactor,
-            RelativeUnit.Rem => n * rootEmPx,
-            RelativeUnit.Vw => n / 100.0 * viewportWidthPx,
-            RelativeUnit.Vh => n / 100.0 * viewportHeightPx,
-            RelativeUnit.Vmin => n / 100.0 * Math.Min(viewportWidthPx, viewportHeightPx),
-            _ => n / 100.0 * Math.Max(viewportWidthPx, viewportHeightPx), // Vmax
-        };
+        var value = ResolveUnit(unit, n, emBasePx, rootEmPx, viewportWidthPx, viewportHeightPx);
         if (!double.IsFinite(value) || value < 0) return false;
         px = value;
         return true;
     }
+
+    /// <summary>Resolve a bare <c>(number, unit-name)</c> pair against the same contexts —
+    /// the <c>calc()</c> evaluator's per-term hook (calc cycle), so a relative term inside
+    /// <c>calc(50vw - 2em)</c> scales EXACTLY like a standalone relative length. Unlike
+    /// <see cref="TryResolve"/>, a NEGATIVE number is allowed (a calc intermediate may be negative —
+    /// the final used value is range-clamped by the evaluator) and the result is returned as-is
+    /// (the caller checks finiteness). Returns <see langword="false"/> for an unrecognized unit.</summary>
+    internal static bool TryResolveNumberUnit(
+        double number, string unitName, double emBasePx, double rootEmPx,
+        double viewportWidthPx, double viewportHeightPx, out double px)
+    {
+        px = 0;
+        RelativeUnit unit;
+        switch (unitName.ToLowerInvariant())
+        {
+            case "em": unit = RelativeUnit.Em; break;
+            case "ex": unit = RelativeUnit.Ex; break;
+            case "ch": unit = RelativeUnit.Ch; break;
+            case "rem": unit = RelativeUnit.Rem; break;
+            case "vw": unit = RelativeUnit.Vw; break;
+            case "vh": unit = RelativeUnit.Vh; break;
+            case "vmin": unit = RelativeUnit.Vmin; break;
+            case "vmax": unit = RelativeUnit.Vmax; break;
+            default: return false;
+        }
+        px = ResolveUnit(unit, number, emBasePx, rootEmPx, viewportWidthPx, viewportHeightPx);
+        return true;
+    }
+
+    private static double ResolveUnit(
+        RelativeUnit unit, double n, double emBasePx, double rootEmPx,
+        double viewportWidthPx, double viewportHeightPx) => unit switch
+    {
+        RelativeUnit.Em => n * emBasePx,
+        RelativeUnit.Ex or RelativeUnit.Ch => n * emBasePx * ExChEmFactor,
+        RelativeUnit.Rem => n * rootEmPx,
+        RelativeUnit.Vw => n / 100.0 * viewportWidthPx,
+        RelativeUnit.Vh => n / 100.0 * viewportHeightPx,
+        RelativeUnit.Vmin => n / 100.0 * Math.Min(viewportWidthPx, viewportHeightPx),
+        _ => n / 100.0 * Math.Max(viewportWidthPx, viewportHeightPx), // Vmax
+    };
 
     private enum RelativeUnit { Em, Ex, Ch, Rem, Vw, Vh, Vmin, Vmax }
 

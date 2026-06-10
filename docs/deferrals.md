@@ -3137,9 +3137,9 @@ flags the categories):
          block child) + deep recursion (each direct block child → one line); the box/element being SEPARATELY-decorated
          boxes (they COINCIDE — a box property overrides rather than nesting); only RELATIVE UNITS (`%`/`em`/
          `calc()`) in the element's style resolve against the page context (an approximation — exact for
-         absolute font-size/color, and CSS-wide `inherit`/`initial` now resolved); a non-absolute
-         (`%`/`em`/`calc()`) element padding is diagnosed + dropped like the
-         box's; a MIXED list (`"x" element(rh)`) keeps the box style (GCPM: element() is standalone); (d) the `string(name, first |
+         absolute font-size/color, and CSS-wide `inherit`/`initial` now resolved); the element's own `%`/`em`/`calc()`
+         padding RESOLVES like the box's (relative-padding cycle; its `em` against the BOX font — an
+         approximation); a MIXED list (`"x" element(rh)`) keeps the box style (GCPM: element() is standalone); (d) the `string(name, first |
          last)` position keyword is DONE (Task 21):
          `MarginContentCollector` keeps both the FIRST and LAST assignment per name (`MarginContentContext`
          gained `NamedStringsFirst`); `string(name, first)` AND the no-keyword DEFAULT → the first
@@ -3195,13 +3195,30 @@ flags the categories):
          a deferred raw by `MarginBoxStyle`, resolved by `PageMarginBoxPainter.TryReadExplicitSizePx` via
          the shared `RelativeLengthResolver` (`em` against the BOX's resolved font-size, `rem` the root's,
          viewport units the PAGE box per CSS Paged Media; `ex`/`ch` ≈ 0.5em per CSS Values 4 §6.1.2).
-         STILL DEFERRED: `calc()` + container-relative sizes (diagnosed + dropped → shrink-to-fit, needs
-         calc machinery); margin-box `white-space` is NOT cascaded (not in `CascadedStyleIds` — boxes
-         always wrap as `normal`; a declared `nowrap`/`pre` is currently ignored, so the PR-#147
-         computed-white-space paths are reachable only via defaults — pickup: add `white-space` to the
-         whitelist when an author needs it); a HEIGHT flex for overlapping vertical siblings (their
-         heights are rigid at the fixed band width — they take the clamp + clip); relative-unit margin-box
-         PADDING (still diagnosed + dropped, unlike width/height).
+         **calc() sizes + `white-space` + relative/percent PADDING — DONE (calc / white-space /
+         relative-padding cycles):** an explicit `width`/`height`/`padding-*` in `calc()` now EVALUATES —
+         a margin-box-scoped pre-resolver admit keeps the raw as a deferred value (`MarginBoxStyle` —
+         LengthResolver has no calc machinery and would reject it; BODY calc() keeps its invalid-value
+         diagnostic, a separate pickup) and the painter evaluates it via the new shared
+         `CalcLengthEvaluator` (CSS Values 4 §10: sum/product grammar, whitespace-required `+`/`-`,
+         type-checked `*`/`/`, nested parens/calc(), % terms against the band, relative terms via
+         `RelativeLengthResolver`, used-value range clamp per §10.5; a malformed/unsupported calc — e.g.
+         length×length, min()/max(), container units — is KEPT by the syntactic gate then SURFACED at
+         paint time and falls back). Margin-box `white-space` IS cascaded now (an INHERITED
+         `MarginBoxStyle` longhand — root → page context → box): a declared `nowrap`/`pre` keeps a rigid
+         single line (no vertical-edge wrap, no min-content flex — the clamp + clip path), making the
+         PR-#147 computed-white-space paths reachable by declaration. PADDING percentages resolve against
+         the box's containing-block width (the edge region width — CSS B&B §8.4: all four sides use the
+         INLINE-axis base) and font-/viewport-relative + calc() paddings resolve like sizes —
+         `PageMarginBoxPainter.ResolveUsedPaddingInPlace` rewrites the USED px into the slot so every
+         downstream reader (insets, `TextPainter`'s content origin, `FragmentPainter`) sees the same
+         value; the element()'s own captured padding takes the same path (its `em` resolves against the
+         BOX font — documented approximation). A HEIGHT flex for overlapping vertical siblings is
+         RESOLVED BY DESIGN: their heights are rigid at the fixed band width (re-wrapping can't change a
+         height without changing the width), so the center-priority clamp + line clip IS the §5.3
+         resolution. STILL DEFERRED: container-relative units (no container context — diagnosed +
+         dropped), calc `min()`/`max()`/`clamp()`, and BODY calc machinery (body lengths still reject
+         calc with the resolver's invalid-value diagnostic).
        - **`@page :first` selector (cycle 10) — DONE:** `@page :first` rules apply on the single
          (first) page, overriding the bare `@page` by cascade specificity — `AtPageRules.EnumeratePageRules`
          yields bare-then-`:first` so the resolvers' last-wins cascade lets `:first` win (a bare

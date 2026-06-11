@@ -2386,6 +2386,88 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Page_margin_box_segment_decoration_paints_a_per_line_band()
+    {
+        // Segment-decor cycle — a leaf block's own background paints a band exactly ONE line tall
+        // behind ITS line: the h1 (32px → 38.4px = 28.8pt line) gets a blue 28.8pt band; the
+        // second (16px) line gets none.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } " +
+            ".rh h1 { font-size: 32px; background-color: #3366cc } " +
+            "@page { @top-center { content: element(rh) } }</style></head>" +
+            "<body><div class=\"rh\"><h1>Title</h1><div>Sub</div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+
+        Assert.Contains("0.2 0.4 0.8 rg", pdf);                            // the h1's own blue
+        Assert.Contains(AllRects(pdf), r => Math.Abs(r.H - 28.8) < 0.1);   // one 38.4px line band
+    }
+
+    [Fact]
+    public void Page_margin_box_segment_pitch_follows_each_lines_own_font()
+    {
+        // Segment-pitch cycle — with a decorated element, the nested element band's height equals
+        // the SUM of per-line heights: 32px h1 (38.4) + two 16px lines (19.2 × 2) = 76.8px = 57.6pt
+        // (the old max-font approximation gave 3 × 38.4 = 115.2px = 86.4pt).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); background-color: #cc3366 } " +
+            ".rh h1 { font-size: 32px } " +
+            "@page { @top-center { content: element(rh); background-color: #3366cc } }</style></head>" +
+            "<body><div class=\"rh\"><h1>Title</h1><div>Sub</div><div>More</div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+
+        Assert.Contains(AllRects(pdf), r => Math.Abs(r.H - 57.6) < 0.1);   // Σ per-line, not 86.4
+    }
+
+    [Fact]
+    public void Page_margin_box_segment_text_align_aligns_its_own_line()
+    {
+        // Segment-align cycle — a leaf block's own text-align aligns ITS line within the content
+        // box (the box declares an explicit width so there's room): the right-aligned second line
+        // starts further right than the left-aligned first.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } " +
+            ".rh .r { text-align: right } " +
+            "@page { @top-center { content: element(rh); width: 300px } }</style></head>" +
+            "<body><div class=\"rh\"><div>AB</div><div class=\"r\">AB</div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+
+        var tds = AllTdXs(pdf);
+        Assert.True(tds.Count >= 2, "expected two margin lines");
+        Assert.True(tds[1] > tds[0] + 10, $"right-aligned line at {tds[1]} should sit right of {tds[0]}");
+    }
+
+    [Fact]
+    public void Page_margin_box_box_text_align_still_wins_over_segment_align()
+    {
+        // The box's own declared text-align beats per-segment alignment (the established
+        // box-wins rule): both lines align right despite the first segment's left.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } " +
+            ".rh .l { text-align: left } " +
+            "@page { @top-center { content: element(rh); width: 300px; text-align: right } }</style></head>" +
+            "<body><div class=\"rh\"><div class=\"l\">AB</div><div>AB</div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+
+        var tds = AllTdXs(pdf);
+        Assert.True(tds.Count >= 2);
+        Assert.True(Math.Abs(tds[0] - tds[1]) < 0.5, $"both right-aligned: {tds[0]} vs {tds[1]}");
+    }
+
+    /// <summary>Every text-positioning X (the <c>… &lt;x&gt; &lt;y&gt; Td</c> operands), in emission
+    /// order — for comparing per-line alignment shifts.</summary>
+    private static List<double> AllTdXs(string pdf)
+    {
+        var xs = new List<double>();
+        for (var i = pdf.IndexOf(" Td", StringComparison.Ordinal); i > 0;
+             i = pdf.IndexOf(" Td", i + 3, StringComparison.Ordinal))
+        {
+            var nums = pdf[..i].TrimEnd().Split(' ');
+            xs.Add(double.Parse(nums[^2], CultureInfo.InvariantCulture));
+        }
+        return xs;
+    }
+
+    [Fact]
     public void Page_margin_box_element_single_styled_block_renders_in_its_own_font()
     {
         // Post-PR-#160 review P2 — a running element whose ONLY child is a styled block records

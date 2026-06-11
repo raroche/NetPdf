@@ -224,15 +224,27 @@ internal static class TextPainter
             clipPt = (cx, cy, cw, ch);
         }
 
+        var cumulativeTopPx = 0.0;   // per-line pitch (segment-pitch cycle): cumulative line tops.
         for (var li = 0; li < lines.Length; li++)
         {
             var line = lines[li];
-            var lineTopPx = contentTopPx + (li * lineHeightPx);
-            // Per-line inline alignment (wrapped-line content-alignment, Task 21): shift each line by its
-            // own leftover × the fragment's align factor (0 = start; default, so non-margin fragments are
-            // unchanged). Clamped to ≥ 0 so a line wider than the content box still starts at the left edge.
-            var xCursorPx = fragment.LineAlignFactor != 0.0
-                ? Math.Max(0.0, (fragment.InlineSize - line.TotalAdvance) * fragment.LineAlignFactor)
+            // Per-line pitch (segment-pitch cycle): when the fragment carries per-line heights,
+            // line i sits below the SUM of its predecessors' heights and uses ITS OWN height for
+            // the half-leading below; the null default keeps the uniform li × pitch, byte-identical.
+            var thisLineHeightPx = fragment.PerLineHeightsPx is { } heights && li < heights.Count
+                ? heights[li] : lineHeightPx;
+            var lineTopPx = contentTopPx + (fragment.PerLineHeightsPx is null
+                ? li * lineHeightPx : cumulativeTopPx);
+            cumulativeTopPx += thisLineHeightPx;
+            // Per-line inline alignment (wrapped-line content-alignment, Task 21; per-line factors —
+            // segment-align cycle): shift each line by its own leftover × the line's align factor
+            // (the fragment-wide factor unless per-line factors are present; 0 = start; default, so
+            // non-margin fragments are unchanged). Clamped to ≥ 0 so a line wider than the content
+            // box still starts at the left edge.
+            var lineAlignFactor = fragment.PerLineAlignFactors is { } factors && li < factors.Count
+                ? factors[li] : fragment.LineAlignFactor;
+            var xCursorPx = lineAlignFactor != 0.0
+                ? Math.Max(0.0, (fragment.InlineSize - line.TotalAdvance) * lineAlignFactor)
                 : 0.0;
 
             foreach (var slice in line.Slices)
@@ -271,7 +283,7 @@ internal static class TextPainter
                 var unitsPerEm = fc.Font.Head.UnitsPerEm;
                 var ascentPx = fc.Font.Hhea.Ascender * fontSizePx / unitsPerEm;
                 var descentPx = fc.Font.Hhea.Descender * fontSizePx / unitsPerEm; // negative for Latin.
-                var halfLeadingPx = (lineHeightPx - (ascentPx - descentPx)) / 2.0;
+                var halfLeadingPx = (thisLineHeightPx - (ascentPx - descentPx)) / 2.0;
                 var baselineTopPx = lineTopPx + halfLeadingPx + ascentPx;
 
                 // The first glyph's shaped x-offset shifts the run origin; subsequent glyphs

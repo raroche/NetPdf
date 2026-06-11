@@ -119,7 +119,11 @@ internal static class CssContentList
     /// heterogeneous running header (an <c>h1</c> title line over a styled subtitle line) renders
     /// each line in its own font + colour.</summary>
     public readonly record struct RunningSegment(
-        string Text, IReadOnlyList<KeyValuePair<string, string>> OwnStyle);
+        string Text, IReadOnlyList<KeyValuePair<string, string>> OwnStyle,
+        // The leaf block's OWN (self-only) decoration — background-color / border-* longhands —
+        // painted as a PER-LINE band behind the segment's line (segment-decor cycle). Empty for
+        // an undecorated leaf. Vertical margins/padding per line stay deferred (deferrals.md).
+        IReadOnlyList<KeyValuePair<string, string>>? Decoration = null);
 
     /// <summary>Sink-less convenience overload — see the four-argument form
     /// for the diagnostic-emitting path. Returns <see langword="true"/> + the

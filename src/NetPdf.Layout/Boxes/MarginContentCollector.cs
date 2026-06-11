@@ -530,15 +530,35 @@ internal static class MarginContentCollector
         IElement element, ResolvedCascadeResult cascade)
     {
         if (segments is null || string.IsNullOrEmpty(text)) return;
-        segments.Add(new CssContentList.RunningSegment(text, CaptureSegmentStyle(element, cascade)));
+        segments.Add(new CssContentList.RunningSegment(
+            text, CaptureSegmentStyle(element, cascade), CaptureSegmentDecoration(element, cascade)));
+    }
+
+    /// <summary>The leaf block's OWN (self-only, no ancestor walk — decoration isn't inherited)
+    /// background/border longhand winners for its PER-LINE band (segment-decor cycle). The
+    /// background-color + 12 border longhands only — per-line padding/margins stay deferred.
+    /// Empty (never <see langword="null"/>) for an undecorated or unstyled leaf.</summary>
+    private static IReadOnlyList<KeyValuePair<string, string>> CaptureSegmentDecoration(
+        IElement element, ResolvedCascadeResult cascade)
+    {
+        var rules = cascade.TryGetStylesFor(element);
+        if (rules is null) return EmptyOwnStyle;
+        List<KeyValuePair<string, string>>? captured = null;
+        foreach (var prop in DecorationOwnProperties)
+        {
+            if (prop.StartsWith("padding-", StringComparison.Ordinal)) continue; // band = the line rect; padding deferred.
+            var value = rules.GetWinner(prop)?.ResolvedValue;
+            if (!string.IsNullOrWhiteSpace(value))
+                (captured ??= new()).Add(new KeyValuePair<string, string>(prop, value));
+        }
+        return captured is null ? EmptyOwnStyle : captured.ToArray();
     }
 
     /// <summary>The INHERITED own-style slice for one segment — the same nearest-self-or-ancestor
-    /// winner walk as <see cref="CaptureOwnStyle"/>'s inherited loop, WITHOUT the non-inherited
-    /// decoration props (per-segment decoration — a leaf block's own background/border band — stays
-    /// deferred; the box decoration comes from the running ROOT's capture). Per-segment
-    /// <c>text-align</c> is captured but not yet consumed (the box has ONE line-align factor) —
-    /// deferred alongside.</summary>
+    /// winner walk as <see cref="CaptureOwnStyle"/>'s inherited loop. The leaf's self-only
+    /// decoration is captured SEPARATELY (<see cref="CaptureSegmentDecoration"/> — its per-line
+    /// band, segment-decor cycle); per-segment <c>text-align</c> here aligns the segment's own
+    /// line (segment-align cycle — the box's own declared <c>text-align</c> still wins).</summary>
     private static IReadOnlyList<KeyValuePair<string, string>> CaptureSegmentStyle(
         IElement element, ResolvedCascadeResult cascade)
     {

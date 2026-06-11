@@ -138,6 +138,11 @@ namespace NetPdf.Layout.Layouters;
 /// unclipped — every other fragment is byte-identical. The page-margin box sets it (to its padding box)
 /// when its content overflows, so protruding glyphs clip at the box edge instead of spilling over the
 /// page; an explicit <c>overflow: visible</c> on the box leaves it unset.</param>
+/// <param name="PerLineHeightsPx">Per-line PITCH (segment-pitch cycle) — line i advances by
+/// its own height (a 32px h1 line over a 16px subtitle). Null = the uniform
+/// <paramref name="TextMetricsStyle"/> pitch, byte-identical.</param>
+/// <param name="PerLineAlignFactors">Per-line ALIGNMENT (segment-align cycle) — line i aligns by
+/// its own factor. Null = the fragment-wide <paramref name="LineAlignFactor"/>.</param>
 internal readonly record struct BoxFragment(
     Box Box,
     double InlineOffset,
@@ -147,7 +152,14 @@ internal readonly record struct BoxFragment(
     InlineLayoutResult? InlineLayout = null,
     double LineAlignFactor = 0.0,
     ComputedStyle? TextMetricsStyle = null,
-    FragmentClipRect? ClipRect = null);
+    FragmentClipRect? ClipRect = null,
+    // Per-line PITCH (segment-pitch cycle): line i advances by PerLineHeightsPx[i] instead of the
+    // uniform TextMetricsStyle pitch — a 32px h1 line over a 16px subtitle each gets its own
+    // height. Null (the default) = the uniform pitch, byte-identical.
+    System.Collections.Generic.IReadOnlyList<double>? PerLineHeightsPx = null,
+    // Per-line ALIGNMENT (segment-align cycle): line i aligns by PerLineAlignFactors[i] instead of
+    // the fragment-wide LineAlignFactor. Null = the uniform factor, byte-identical.
+    System.Collections.Generic.IReadOnlyList<double>? PerLineAlignFactors = null);
 
 /// <summary>An axis-aligned fragment clip rectangle (content-area-relative CSS px, y-down — the
 /// <see cref="BoxFragment.InlineOffset"/>/<see cref="BoxFragment.BlockOffset"/> space). See

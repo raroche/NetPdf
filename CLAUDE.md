@@ -383,14 +383,17 @@ units AND math functions (no %) — resolve via the new post-build `DeferredLeng
 (`PdfRenderPipeline`, page box final; em per owning box, rem per root, viewport per page box; negatives for
 margins/offsets); % terms stay diagnosed. **(C)** a standalone `element()`'s stacked lines render in each LEAF
 block's OWN font + colour (`RunningSegment` capture lockstep with the text; one `TextRun` per segment; pitch
-follows the largest segment font). **Nested-decor / border-radius / content-pseudo cycles (in progress, branch
-`phase-3-task-21-23-nested-decor-border-radius-content-pseudo`) — the next three deferrals, one PR:** **(A)** a
+follows the largest segment font). **Nested-decor / border-radius / content-pseudo cycles (merged as PR #161 incl. its review — border-radius
+through the production tokenizer incl. any-zero spelling; stale wording):** **(A)** a
 co-declared element()'s decoration paints as a NESTED band at its content block. **(B)** a uniform absolute
 margin-box `border-radius` rounds the background band (`PdfPage.FillRoundedRectangle`; strokes/body deferred).
 **(C)** `content(before|after)` resolves the host's pseudo content in `string-set` — plus a REAL adapter fix
-(a wholly-dropped rule now synthesizes from its recovery instead of losing it). Next (in order): per-line
-decoration/pitch, body % lengths, then the multi-page driver (cross-page running + `@page :left`/`:right`/
-`:blank` + named pages). Blocked (see `deferrals.md`):
+(a wholly-dropped rule now synthesizes from its recovery instead of losing it). **Segment-decor/-align/-pitch cycles (in progress, branch
+`phase-3-task-23-segment-decor-align-pitch`):** a leaf block's own background/border paints a PER-LINE band;
+a segment's own `text-align` aligns its line (box wins); each line advances by its segment's pitch (true
+per-line pitch — `BoxFragment.PerLineHeightsPx`/`PerLineAlignFactors` → `TextPainter`). Next (in order):
+body % lengths, per-line margins/padding, then the multi-page driver (cross-page running +
+`@page :left`/`:right`/`:blank` + named pages). Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).
 For the live state, read the **current-state pointer at the top of [PROGRESS.md](PROGRESS.md)**

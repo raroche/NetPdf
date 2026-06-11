@@ -3281,6 +3281,14 @@ flags the categories):
          background/border/margin band), per-line `text-align` (captured, not consumed — one
          line-align factor per box), true per-line pitch, and the box/element separately-decorated
          nesting.
+       - **element() segments part 2: per-line decoration + text-align + pitch — DONE
+         (segment-decor / segment-align / segment-pitch cycles):** a leaf block's own
+         background/border paints a per-LINE band behind its line; a segment's own `text-align`
+         aligns its line (the box's declared text-align wins); each line advances by ITS segment's
+         pitch (font × 1.2 — replaces the max-font uniform approximation; cumulative tops,
+         per-line half-leading, per-line truncation). STILL DEFERRED: per-line margins/padding
+         (vertical gaps between segment lines), per-segment line-height (the pitch uses font ×
+         the normal factor), real nested block LAYOUT (separately laid-out sub-boxes).
        - **Box/element separately-decorated + margin-box border-radius + content(before|after) — DONE
          (nested-decor / border-radius / content-pseudo cycles):** a co-declared standalone element()'s
          decoration paints as a NESTED band at its content block (box band at the box rect; element-only

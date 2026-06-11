@@ -233,8 +233,17 @@ internal static class TextPainter
             // the half-leading below; the null default keeps the uniform li × pitch, byte-identical.
             var thisLineHeightPx = fragment.PerLineHeightsPx is { } heights && li < heights.Count
                 ? heights[li] : lineHeightPx;
-            var lineTopPx = contentTopPx + (fragment.PerLineHeightsPx is null
-                ? li * lineHeightPx : cumulativeTopPx);
+            // Per-line TOP GAP (segment-margins cycle): a leaf block's collapsed vertical margin
+            // pushes its line down BEFORE placement (the gap is transparent — the painter's band
+            // starts after it). Null = no gaps, byte-identical.
+            if (fragment.PerLineTopOffsetsPx is { } gaps && li < gaps.Count)
+                cumulativeTopPx += gaps[li];
+            // The cumulative path keys on EITHER per-line array (post-PR-#163 review P3): the
+            // margin-box producer sends both together, but the fragment contract exposes them
+            // independently — an offsets-only fragment must not silently drop its gaps.
+            var lineTopPx = contentTopPx
+                + (fragment.PerLineHeightsPx is null && fragment.PerLineTopOffsetsPx is null
+                    ? li * lineHeightPx : cumulativeTopPx);
             cumulativeTopPx += thisLineHeightPx;
             // Per-line inline alignment (wrapped-line content-alignment, Task 21; per-line factors —
             // segment-align cycle): shift each line by its own leftover × the line's align factor

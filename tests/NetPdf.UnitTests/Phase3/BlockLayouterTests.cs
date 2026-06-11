@@ -11,6 +11,9 @@ using NetPdf.Layout.Boxes;
 using NetPdf.Layout.Layouters;
 using NetPdf.Paginate;
 using NetPdf.Paginate.Diagnostics;
+using NetPdf.Layout.Inline;
+using NetPdf.Text.Shaping;
+using NetPdf.UnitTests.Text.Fonts.OpenType;
 using Xunit;
 
 namespace NetPdf.UnitTests.Phase3;
@@ -171,6 +174,119 @@ public sealed class BlockLayouterTests
         Assert.Equal(200, sink.Fragments[0].InlineSize);
         Assert.Equal(64, sink.Fragments[1].InlineSize);
         Assert.Equal(200, sink.Fragments[2].InlineSize);
+    }
+
+    [Fact]
+    public void Percentage_width_and_margins_resolve_against_the_containing_block()
+    {
+        // Body-percent cycle — CSS 2.2 §10.2/§8.3: width: 50% of the 600px containing block =
+        // 300; margin-left: 10% = 60 (the inline-axis base on every side).
+        var sink = new RecordingFragmentSink();
+        var style = MakeStyle();
+        style.Set(PropertyId.Width, ComputedSlot.FromPercentage(50));
+        style.Set(PropertyId.MarginLeft, ComputedSlot.FromPercentage(10));
+        SetLengthPx(style, PropertyId.Height, 40);
+
+        var root = Box.CreateRoot(MakeStyle());
+        root.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Single(sink.Fragments);
+        Assert.Equal(300, sink.Fragments[0].InlineSize);
+        Assert.Equal(60, sink.Fragments[0].InlineOffset);
+    }
+
+    [Fact]
+    public void Percentage_padding_resolves_against_the_inline_axis_even_vertically()
+    {
+        // §8.4 — padding-top: 10% resolves against the containing block's WIDTH (600 → 60),
+        // growing the border-box block size: 60 + 40 + 60 = 160.
+        var sink = new RecordingFragmentSink();
+        var style = MakeStyle();
+        style.Set(PropertyId.PaddingTop, ComputedSlot.FromPercentage(10));
+        style.Set(PropertyId.PaddingBottom, ComputedSlot.FromPercentage(10));
+        SetLengthPx(style, PropertyId.Height, 40);
+
+        var root = Box.CreateRoot(MakeStyle());
+        root.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(160, sink.Fragments[0].BlockSize);
+    }
+
+    [Fact]
+    public void Percentage_width_in_the_nested_recursion_uses_the_parent_content_box()
+    {
+        // The recursion resolves % against the PARENT's content box: a 50% child of a 400px
+        // parent is 200.
+        var sink = new RecordingFragmentSink();
+        var parentStyle = MakeStyle();
+        SetLengthPx(parentStyle, PropertyId.Width, 400);
+        var childStyle = MakeStyle();
+        childStyle.Set(PropertyId.Width, ComputedSlot.FromPercentage(50));
+        SetLengthPx(childStyle, PropertyId.Height, 40);
+
+        var root = Box.CreateRoot(MakeStyle());
+        var parent = Box.ForElement(BoxKind.BlockContainer, parentStyle, MakeElement());
+        parent.AppendChild(Box.ForElement(BoxKind.BlockContainer, childStyle, MakeElement()));
+        root.AppendChild(parent);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(2, sink.Fragments.Count);
+        Assert.Equal(400, sink.Fragments[0].InlineSize);
+        Assert.Equal(200, sink.Fragments[1].InlineSize);
+    }
+
+    [Fact]
+    public void Percentage_margin_top_positions_a_nested_inline_only_child()
+    {
+        // Post-PR-#163 review P1 — the nested inline-only path read margin-top with the
+        // percent-blind helper for the fragment POSITION while the cursor advance was
+        // percent-aware: `margin-top: 10%` of the 400px parent must push the child 40px DOWN
+        // (not reserve 40px after it).
+        var sink = new RecordingFragmentSink();
+        using var shaper = new SyntheticShaperResolver();
+        var parentStyle = MakeStyle();
+        SetLengthPx(parentStyle, PropertyId.Width, 400);
+        var childStyle = MakeStyle();
+        childStyle.Set(PropertyId.MarginTop, ComputedSlot.FromPercentage(10));
+        SetLengthPx(childStyle, PropertyId.FontSize, 16);
+
+        var root = Box.CreateRoot(MakeStyle());
+        var parent = Box.ForElement(BoxKind.BlockContainer, parentStyle, MakeElement());
+        var blockChild = Box.ForElement(BoxKind.BlockContainer, MakeStyle(), MakeElement());
+        SetLengthPx(blockChild.Style, PropertyId.Height, 10);
+        var inlineOnly = Box.ForElement(BoxKind.BlockContainer, childStyle, MakeElement());
+        inlineOnly.AppendChild(Box.TextRun("AB", childStyle));
+        parent.AppendChild(blockChild);    // forces the RECURSIVE (mixed-children) path
+        parent.AppendChild(inlineOnly);
+        root.AppendChild(parent);
+
+        using var layouter = new BlockLayouter(root, sink, shaperResolver: shaper);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // Fragments: parent, blockChild (10 tall at parent top), the inline-only line.
+        // The inline-only border box must start at blockChild bottom + 40 (10% of 400).
+        var inlineFrag = sink.Fragments[^1];
+        Assert.Equal(10 + 40, inlineFrag.BlockOffset, 3);
     }
 
     // --- Multi-block stacking ----------------------------------------
@@ -6547,6 +6663,13 @@ public sealed class BlockLayouterTests
             Assert.Equal(40.0, f.InlineSize, precision: 3);
             Assert.Equal(40.0, f.BlockSize, precision: 3);
         });
+    }
+
+    private sealed class SyntheticShaperResolver : IShaperResolver
+    {
+        private readonly HbShaper _shaper = new(SyntheticFont.Build(), fontSizePx: 12);
+        public HbShaper Resolve(ComputedStyle style) => _shaper;
+        public void Dispose() => _shaper.Dispose();
     }
 
     private static ComputedStyle MakeStyle() => ComputedStyle.RentForExclusiveTesting();

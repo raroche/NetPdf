@@ -3281,14 +3281,23 @@ flags the categories):
          background/border/margin band), per-line `text-align` (captured, not consumed — one
          line-align factor per box), true per-line pitch, and the box/element separately-decorated
          nesting.
+       - **Body % lengths + per-line segment margins + per-segment line-height — DONE
+         (body-percent / segment-margins / segment-line-height cycles):** body `width`/`margin-*`/
+         `padding-*` PERCENTAGES resolve at layout time against the containing block's INLINE size
+         (CSS 2.2 §10.2/§8.3/§8.4; % padding is rewritten to used px in place so paint agrees;
+         STILL DEFERRED: `% height` (needs a definite container), floats/abspos %, `margin: auto`,
+         % in body calc()). A leaf block's own ABSOLUTE vertical margins insert collapsed
+         inter-line gaps (max of adjoining, floored at 0; %/relative/`auto` read 0); its own
+         `line-height` (absolute, unitless, or em) drives its line's pitch (`normal`/%/other →
+         font × 1.2). STILL DEFERRED: per-line padding, real nested block LAYOUT.
        - **element() segments part 2: per-line decoration + text-align + pitch — DONE
          (segment-decor / segment-align / segment-pitch cycles):** a leaf block's own
          background/border paints a per-LINE band behind its line; a segment's own `text-align`
          aligns its line (the box's declared text-align wins); each line advances by ITS segment's
          pitch (font × 1.2 — replaces the max-font uniform approximation; cumulative tops,
-         per-line half-leading, per-line truncation). STILL DEFERRED: per-line margins/padding
-         (vertical gaps between segment lines), per-segment line-height (the pitch uses font ×
-         the normal factor), real nested block LAYOUT (separately laid-out sub-boxes).
+         per-line half-leading, per-line truncation). STILL DEFERRED: per-line padding,
+         real nested block LAYOUT (separately laid-out sub-boxes). (Per-line vertical MARGINS +
+         per-segment LINE-HEIGHT shipped in the NEXT cycle — see the entry above.)
        - **Box/element separately-decorated + margin-box border-radius + content(before|after) — DONE
          (nested-decor / border-radius / content-pseudo cycles):** a co-declared standalone element()'s
          decoration paints as a NESTED band at its content block (box band at the box rect; element-only

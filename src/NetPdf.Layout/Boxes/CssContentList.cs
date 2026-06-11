@@ -122,8 +122,12 @@ internal static class CssContentList
         string Text, IReadOnlyList<KeyValuePair<string, string>> OwnStyle,
         // The leaf block's OWN (self-only) decoration — background-color / border-* longhands —
         // painted as a PER-LINE band behind the segment's line (segment-decor cycle). Empty for
-        // an undecorated leaf. Vertical margins/padding per line stay deferred (deferrals.md).
-        IReadOnlyList<KeyValuePair<string, string>>? Decoration = null);
+        // an undecorated leaf. Per-line padding stays deferred (deferrals.md).
+        IReadOnlyList<KeyValuePair<string, string>>? Decoration = null,
+        // The leaf block's OWN vertical margins in used px (segment-margins cycle) — inter-line
+        // GAPS between segment lines (adjacent gaps collapse via max, CSS 2.2 §8.3.1's simple
+        // case). Absolute lengths only; %/relative/auto read 0.
+        double MarginTopPx = 0, double MarginBottomPx = 0);
 
     /// <summary>Sink-less convenience overload — see the four-argument form
     /// for the diagnostic-emitting path. Returns <see langword="true"/> + the

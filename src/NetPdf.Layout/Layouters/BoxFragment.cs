@@ -143,6 +143,9 @@ namespace NetPdf.Layout.Layouters;
 /// <paramref name="TextMetricsStyle"/> pitch, byte-identical.</param>
 /// <param name="PerLineAlignFactors">Per-line ALIGNMENT (segment-align cycle) — line i aligns by
 /// its own factor. Null = the fragment-wide <paramref name="LineAlignFactor"/>.</param>
+/// <param name="PerLineTopOffsetsPx">Per-line TOP GAPS (segment-margins cycle) — line i is pushed
+/// down by its offset before placement (a leaf block's collapsed vertical margin; the band the
+/// painter emits starts AFTER the gap, margins staying transparent). Null = no gaps.</param>
 internal readonly record struct BoxFragment(
     Box Box,
     double InlineOffset,
@@ -159,7 +162,10 @@ internal readonly record struct BoxFragment(
     System.Collections.Generic.IReadOnlyList<double>? PerLineHeightsPx = null,
     // Per-line ALIGNMENT (segment-align cycle): line i aligns by PerLineAlignFactors[i] instead of
     // the fragment-wide LineAlignFactor. Null = the uniform factor, byte-identical.
-    System.Collections.Generic.IReadOnlyList<double>? PerLineAlignFactors = null);
+    System.Collections.Generic.IReadOnlyList<double>? PerLineAlignFactors = null,
+    // Per-line TOP GAPS (segment-margins cycle): line i is pushed down by PerLineTopOffsetsPx[i]
+    // BEFORE it is placed (a leaf block's collapsed vertical margin). Null = no gaps.
+    System.Collections.Generic.IReadOnlyList<double>? PerLineTopOffsetsPx = null);
 
 /// <summary>An axis-aligned fragment clip rectangle (content-area-relative CSS px, y-down — the
 /// <see cref="BoxFragment.InlineOffset"/>/<see cref="BoxFragment.BlockOffset"/> space). See

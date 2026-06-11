@@ -252,9 +252,14 @@ internal static class TextPainter
             // box still starts at the left edge.
             var lineAlignFactor = fragment.PerLineAlignFactors is { } factors && li < factors.Count
                 ? factors[li] : fragment.LineAlignFactor;
-            var xCursorPx = lineAlignFactor != 0.0
-                ? Math.Max(0.0, (fragment.InlineSize - line.TotalAdvance) * lineAlignFactor)
-                : 0.0;
+            // Per-line HORIZONTAL INSETS (hpadding cycle): the line starts at its left inset and
+            // aligns within the inset-shrunk extent (a leaf block's own horizontal padding); null
+            // arrays keep the pre-cycle arithmetic byte-identical.
+            var insetLeftPx = fragment.PerLineInsetLeftPx is { } iLs && li < iLs.Count ? iLs[li] : 0.0;
+            var insetRightPx = fragment.PerLineInsetRightPx is { } iRs && li < iRs.Count ? iRs[li] : 0.0;
+            var xCursorPx = insetLeftPx + (lineAlignFactor != 0.0
+                ? Math.Max(0.0, (fragment.InlineSize - insetLeftPx - insetRightPx - line.TotalAdvance) * lineAlignFactor)
+                : 0.0);
 
             foreach (var slice in line.Slices)
             {

@@ -551,29 +551,32 @@ internal static class MarginContentCollector
         var (marginTopPx, marginBottomPx) = captureDecoration
             ? CaptureSegmentMargins(element, cascade)
             : (0.0, 0.0);   // the running ROOT's margins are the box's business, like its decoration.
-        var (paddingTopPx, paddingBottomPx) = captureDecoration
-            ? CaptureSegmentVerticalPadding(element, cascade)
-            : (0.0, 0.0);   // the root's padding already insets via the element() box-model path.
+        var (paddingTopPx, paddingBottomPx, paddingLeftPx, paddingRightPx) = captureDecoration
+            ? CaptureSegmentPadding(element, cascade)
+            : (0.0, 0.0, 0.0, 0.0);   // the root's padding already insets via the element() box-model path.
         segments.Add(new CssContentList.RunningSegment(
             text, CaptureSegmentStyle(element, cascade),
             captureDecoration ? CaptureSegmentDecoration(element, cascade) : EmptyOwnStyle,
-            marginTopPx, marginBottomPx, paddingTopPx, paddingBottomPx));
+            marginTopPx, marginBottomPx, paddingTopPx, paddingBottomPx,
+            paddingLeftPx, paddingRightPx));
     }
 
-    /// <summary>The leaf block's OWN vertical padding in used px (segment-padding cycle) — the
-    /// self-only winners (padding isn't inherited), ABSOLUTE lengths only (%/relative read 0,
-    /// like the margins below). Grows the line's band/pitch; horizontal padding stays deferred
-    /// (per-line X insets need per-line glyph offsets — deferrals.md).</summary>
-    private static (double TopPx, double BottomPx) CaptureSegmentVerticalPadding(
+    /// <summary>The leaf block's OWN padding in used px (segment-padding + hpadding cycles) —
+    /// the self-only winners (padding isn't inherited), ABSOLUTE lengths only (%/relative read 0,
+    /// like the margins below). The vertical sides grow the line's band/pitch; the horizontal
+    /// sides inset the line's glyphs + alignment extent.</summary>
+    private static (double TopPx, double BottomPx, double LeftPx, double RightPx) CaptureSegmentPadding(
         IElement element, ResolvedCascadeResult cascade)
     {
         var rules = cascade.TryGetStylesFor(element);
-        if (rules is null) return (0, 0);
+        if (rules is null) return (0, 0, 0, 0);
         // Padding is a NON-NEGATIVE property (unlike the sign-preserving margins below) — clamp
         // a negative fold at 0 (post-PR-#164 review P2; defensive — AngleSharp drops invalid
         // negative padding upstream, the same boundary as the 16PX canary).
         return (Math.Max(0, AbsoluteSidePx(rules, "padding-top")),
-                Math.Max(0, AbsoluteSidePx(rules, "padding-bottom")));
+                Math.Max(0, AbsoluteSidePx(rules, "padding-bottom")),
+                Math.Max(0, AbsoluteSidePx(rules, "padding-left")),
+                Math.Max(0, AbsoluteSidePx(rules, "padding-right")));
     }
 
     /// <summary>The self-only winner of an absolute-length side property in used px — the shared

@@ -283,6 +283,8 @@ internal static class PageMarginBoxPainter
             double[]? segmentMarginBottomsPx = null;
             double[]? segmentPaddingTopsPx = null;   // per-SEGMENT vertical padding (segment-padding cycle).
             double[]? segmentPaddingBottomsPx = null;
+            double[]? segmentPaddingLeftsPx = null;  // per-SEGMENT horizontal padding (hpadding cycle).
+            double[]? segmentPaddingRightsPx = null;
             if (isStandaloneElement
                 && TryGetRunningElementSegments(marginContext, elName, elFirst) is { } segs)
             {
@@ -295,6 +297,8 @@ internal static class PageMarginBoxPainter
                 segmentMarginBottomsPx = new double[segs.Count];
                 segmentPaddingTopsPx = new double[segs.Count];
                 segmentPaddingBottomsPx = new double[segs.Count];
+                segmentPaddingLeftsPx = new double[segs.Count];
+                segmentPaddingRightsPx = new double[segs.Count];
                 var maxFontPx = 0.0;
                 for (var si = 0; si < segs.Count; si++)
                 {
@@ -331,6 +335,8 @@ internal static class PageMarginBoxPainter
                         SegmentLineHeightPx(seg.OwnStyle, segFontPx) ?? segFontPx * NormalLineHeightFactor;
                     segmentPaddingTopsPx[si] = seg.PaddingTopPx;
                     segmentPaddingBottomsPx[si] = seg.PaddingBottomPx;
+                    segmentPaddingLeftsPx[si] = seg.PaddingLeftPx;   // hpadding cycle — per-line X insets.
+                    segmentPaddingRightsPx[si] = seg.PaddingRightPx;
                     segmentAlignFactors[si] = ElementHorizontalAlignFactor(seg.OwnStyle);
                     segmentMarginTopsPx[si] = seg.MarginTopPx;       // segment-margins cycle —
                     segmentMarginBottomsPx[si] = seg.MarginBottomPx; //   inter-line gaps below.
@@ -593,6 +599,8 @@ internal static class PageMarginBoxPainter
                 SegmentMarginBottomsPx = contentRuns is null ? null : segmentMarginBottomsPx,
                 SegmentPaddingTopsPx = contentRuns is null ? null : segmentPaddingTopsPx,
                 SegmentPaddingBottomsPx = contentRuns is null ? null : segmentPaddingBottomsPx,
+                SegmentPaddingLeftsPx = contentRuns is null ? null : segmentPaddingLeftsPx,
+                SegmentPaddingRightsPx = contentRuns is null ? null : segmentPaddingRightsPx,
                 SegmentAlignFactors = contentRuns is null ? null : segmentAlignFactors,
                 SegmentDecorStyles = contentRuns is null ? null : segmentDecorStyles,
                 SegmentColorArgbs = contentRuns is null ? null : segmentColorArgbs,
@@ -697,11 +705,33 @@ internal static class PageMarginBoxPainter
             var lineSegments = LineSegmentIndices(inline);
             double[]? perLineHeights = null;
             double[]? perLineGaps = null;
+            double[]? perLineInsetL = null;
+            double[]? perLineInsetR = null;
             if (item.SegmentLineHeightsPx is { } segHeightsForGeometry)
             {
                 (perLineHeights, perLineGaps) = PerLineGeometry(
                     inline, segHeightsForGeometry, item.SegmentMarginTopsPx, item.SegmentMarginBottomsPx,
                     item.SegmentPaddingTopsPx, item.SegmentPaddingBottomsPx, lineHeightPx);
+                // Per-line HORIZONTAL insets (hpadding cycle): a leaf's own padding-left/right
+                // shift ITS lines' glyphs + shrink their alignment extent (the band keeps the full
+                // content-box width — a block's background spans its border box).
+                if (item.SegmentPaddingLeftsPx is { } segPadL && item.SegmentPaddingRightsPx is { } segPadR)
+                {
+                    perLineInsetL = new double[lineSegments.Length];
+                    perLineInsetR = new double[lineSegments.Length];
+                    var anyInset = false;
+                    for (var li = 0; li < lineSegments.Length; li++)
+                    {
+                        var segIdx = lineSegments[li];
+                        if (segIdx >= 0 && segIdx < segPadL.Length)
+                        {
+                            perLineInsetL[li] = segPadL[segIdx];
+                            perLineInsetR[li] = segPadR[segIdx];
+                            anyInset |= segPadL[segIdx] > 0 || segPadR[segIdx] > 0;
+                        }
+                    }
+                    if (!anyInset) { perLineInsetL = null; perLineInsetR = null; }
+                }
             }
             var blockHeightPx = perLineHeights is null
                 ? lineHeightPx * inline.Lines.Length
@@ -749,14 +779,16 @@ internal static class PageMarginBoxPainter
             // `q <rect> re W n … Q` clip path, so the protruding GLYPHS clip at the box edge
             // (partial-glyph clipping — the vertically-truncated lines above stay whole-line). The
             // predicate uses the SAME geometry as the rect (post-PR-#156 review P2): a line starts at the
-            // CONTENT-box left (= padding-box left + padding-left; a line wider than the content box
-            // isn't alignment-shifted — TextPainter clamps its shift to ≥ 0), so it crosses the clip edge
-            // only when padding-left + advance exceeds the PADDING-box width — overflow into the right
-            // padding stays inside the clip edge and must trip neither the clip nor the diagnostic.
+            // CONTENT-box left + its own per-line LEFT inset (segment padding, hpadding cycle — 0 when
+            // none; a line wider than its extent isn't alignment-shifted — TextPainter clamps its shift
+            // to ≥ 0), so it crosses the clip edge only when padding-left + inset + advance exceeds the
+            // PADDING-box width (PR #165 review P2 — the bare advance missed inset-pushed lines) —
+            // overflow into the right padding stays inside the clip edge and must trip neither the clip
+            // nor the diagnostic.
             // Surfaced per box (same code, width-phrased — CLAUDE.md #7); `overflow: visible` opts out. A
             // box whose content fits carries no clip rect, so its stream is byte-identical.
             FragmentClipRect? clipRect = null;
-            var widestSurvivingPx = WidestLineAdvancePx(inline);
+            var widestSurvivingPx = WidestLineOccupiedPx(inline, perLineInsetL);
             var borderLeftPx = style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
             var paddingBoxWidthPx = Math.Max(
                 0, boxWidthPx - borderLeftPx - style.ReadLengthPxOrZero(PropertyId.BorderRightWidth));
@@ -880,7 +912,9 @@ internal static class PageMarginBoxPainter
                 ClipRect: clipRect,
                 PerLineHeightsPx: perLineHeights,
                 PerLineAlignFactors: perLineAligns,
-                PerLineTopOffsetsPx: perLineGaps));
+                PerLineTopOffsetsPx: perLineGaps,
+                PerLineInsetLeftPx: perLineInsetL,
+                PerLineInsetRightPx: perLineInsetR));
         }
 
         // The page-context style is only a parent — each box copied the slots it needs — so return
@@ -1141,6 +1175,27 @@ internal static class PageMarginBoxPainter
         var widest = 0.0;
         foreach (var line in inline.Lines)
             if (line.TotalAdvance > widest) widest = line.TotalAdvance;
+        return widest;
+    }
+
+    /// <summary>The widest line's OCCUPIED width (px) — its LEFT inset + advance. With per-line
+    /// horizontal insets (segment padding, hpadding cycle) a line paints from its OWN left inset
+    /// inside the content box, so the horizontal-overflow predicate must measure inset + advance,
+    /// not the bare advance: a 40px line with an 80px padding-left in a 100px box paints to 120px
+    /// (PR #165 review P2). The RIGHT inset is deliberately EXCLUDED — it only shrinks the
+    /// alignment EXTENT (TextPainter clamps the alignment shift to ≥ 0 and an aligned-within-extent
+    /// line stays left of content-right − insetRight), so it never pushes glyphs past the clip
+    /// edge. No insets → identical to <see cref="WidestLineAdvancePx"/>.</summary>
+    private static double WidestLineOccupiedPx(InlineLayoutResult inline, double[]? perLineInsetLeft)
+    {
+        var widest = 0.0;
+        for (var li = 0; li < inline.Lines.Length; li++)
+        {
+            var occupied = inline.Lines[li].TotalAdvance
+                + (perLineInsetLeft is not null && li < perLineInsetLeft.Length
+                    ? perLineInsetLeft[li] : 0.0);
+            if (occupied > widest) widest = occupied;
+        }
         return widest;
     }
 
@@ -1554,6 +1609,8 @@ internal static class PageMarginBoxPainter
         public double[]? SegmentMarginBottomsPx;
         public double[]? SegmentPaddingTopsPx;   // per-SEGMENT vertical padding (segment-padding cycle).
         public double[]? SegmentPaddingBottomsPx;
+        public double[]? SegmentPaddingLeftsPx;  // per-SEGMENT horizontal padding (hpadding cycle).
+        public double[]? SegmentPaddingRightsPx;
         public double?[]? SegmentAlignFactors;   // per-SEGMENT own text-align (segment-align cycle).
         public ComputedStyle?[]? SegmentDecorStyles; // per-SEGMENT own decoration band (segment-decor cycle).
         public uint[]? SegmentColorArgbs;        // per-SEGMENT colour — the band's currentcolor owner.

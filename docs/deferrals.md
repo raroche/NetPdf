@@ -3281,6 +3281,15 @@ flags the categories):
          background/border/margin band), per-line `text-align` (captured, not consumed — one
          line-align factor per box), true per-line pitch, and the box/element separately-decorated
          nesting.
+       - **Horizontal per-line padding + float % lengths + body box-sizing — DONE
+         (hpadding / float-percent / box-sizing cycles):** a leaf block's own absolute
+         `padding-left/right` insets its line's glyphs + alignment extent (the band keeps the
+         full width; the wrap width isn't narrowed per segment — a padded long line clips via
+         the clip-path safety net). Float `width`/`margin-*`/`padding-*` percentages resolve
+         against the BFC content box (float `% height` deferred; abspos % was already live).
+         An explicit body width under `box-sizing: border-box` IS the border box (floored at
+         the insets), at both the block and inline-only paths. STILL DEFERRED: per-line
+         horizontal margins, background images (body image pipeline), real nested block LAYOUT.
        - **Per-line segment padding + body % height + margin:auto centering — DONE
          (segment-padding / percent-height / auto-margins cycles):** a leaf block's own absolute
          VERTICAL padding grows its line's band/pitch (background covers the padding box;

@@ -131,8 +131,14 @@ internal static class CssContentList
         // The leaf block's OWN vertical padding in used px (segment-padding cycle) — grows the
         // line's band/pitch (the background covers the padding box per CSS B&B §4.2); the glyphs
         // centre within the padded pitch (exact for symmetric padding — a documented
-        // approximation for asymmetric). Horizontal per-line padding stays deferred.
-        double PaddingTopPx = 0, double PaddingBottomPx = 0);
+        // approximation for asymmetric).
+        double PaddingTopPx = 0, double PaddingBottomPx = 0,
+        // The leaf block's OWN horizontal padding in used px (hpadding cycle) — insets ITS line's
+        // glyphs + alignment extent within the content box (the band keeps the full width: a
+        // block's background spans its border box). The wrap width is NOT narrowed per segment
+        // (one shared inline pass — a padded long line clips via the existing clip-path safety
+        // net; documented approximation).
+        double PaddingLeftPx = 0, double PaddingRightPx = 0);
 
     /// <summary>Sink-less convenience overload — see the four-argument form
     /// for the diagnostic-emitting path. Returns <see langword="true"/> + the

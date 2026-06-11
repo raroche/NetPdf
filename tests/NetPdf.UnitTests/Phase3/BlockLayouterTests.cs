@@ -445,6 +445,152 @@ public sealed class BlockLayouterTests
         Assert.Equal(250, centred.InlineOffset, 3);
     }
 
+    [Fact]
+    public void Border_box_sizing_makes_the_declared_width_the_border_box()
+    {
+        // Body box-sizing cycle (CSS Basic UI 4 §10) — width: 200 + 20px padding each side:
+        // border-box → the fragment IS 200 (content 160); content-box default → 240.
+        foreach (var (borderBox, expected) in new[] { (true, 200.0), (false, 240.0) })
+        {
+            var sink = new RecordingFragmentSink();
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 200);
+            SetLengthPx(style, PropertyId.PaddingLeft, 20);
+            SetLengthPx(style, PropertyId.PaddingRight, 20);
+            SetLengthPx(style, PropertyId.Height, 40);
+            if (borderBox) SetKeyword(style, PropertyId.BoxSizing, 1);   // border-box
+
+            var root = Box.CreateRoot(MakeStyle());
+            root.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+            using var layouter = new BlockLayouter(root, sink);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var layoutCtx = new LayoutContext(ctx);
+            using var resolver = new BreakResolver();
+            layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+            Assert.Equal(expected, sink.Fragments[0].InlineSize);
+        }
+    }
+
+    [Fact]
+    public void Border_box_sizing_floors_at_the_insets()
+    {
+        // A border-box width SMALLER than the insets floors there (content box at 0) —
+        // the PR #155 margin-box rule, mirrored for the body.
+        var sink = new RecordingFragmentSink();
+        var style = MakeStyle();
+        SetLengthPx(style, PropertyId.Width, 10);
+        SetLengthPx(style, PropertyId.PaddingLeft, 20);
+        SetLengthPx(style, PropertyId.PaddingRight, 20);
+        SetLengthPx(style, PropertyId.Height, 40);
+        SetKeyword(style, PropertyId.BoxSizing, 1);
+
+        var root = Box.CreateRoot(MakeStyle());
+        root.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(40, sink.Fragments[0].InlineSize);
+    }
+
+    [Fact]
+    public void Float_percentage_width_resolves_against_the_bfc()
+    {
+        // Float-percent cycle — a float's width: 50% resolves against the 600px BFC content box.
+        var sink = new RecordingFragmentSink();
+        var floatStyle = MakeStyle();
+        floatStyle.Set(PropertyId.Width, ComputedSlot.FromPercentage(50));
+        SetLengthPx(floatStyle, PropertyId.Height, 40);
+        SetKeyword(floatStyle, PropertyId.Float, 1);   // left
+
+        var root = Box.CreateRoot(MakeStyle());
+        root.AppendChild(Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement()));
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(300, sink.Fragments[0].InlineSize);
+    }
+
+    [Fact]
+    public void Float_percentage_padding_defers_at_the_page_boundary()
+    {
+        // PR #165 review P1 — the WouldFloatOverflow pre-check resolves % lengths like
+        // EmitFloat (the shared ReadFloatBoxModel): a float with padding-top: 10% (= 60px of
+        // the 600px BFC) after a 700-tall block totals 700 + 60 + 50 = 810 > 800 → DEFER to
+        // the next page. Pre-fix the check read the % as 0 → 750 ≤ 800 → emitted + overflowed
+        // (a PAGINATION-FORCED-OVERFLOW-001 instead of a clean deferral).
+        var sink = new RecordingFragmentSink();
+        var diagSink = new RecordingDiagnosticsSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var blockStyle = MakeStyle();
+        SetLengthPx(blockStyle, PropertyId.Height, 700);
+        root.AppendChild(Box.ForElement(BoxKind.BlockContainer, blockStyle, MakeElement()));
+
+        var floatStyle = MakeStyle();
+        SetKeyword(floatStyle, PropertyId.Float, 1);   // left
+        SetLengthPx(floatStyle, PropertyId.Width, 100);
+        SetLengthPx(floatStyle, PropertyId.Height, 50);
+        floatStyle.Set(PropertyId.PaddingTop, ComputedSlot.FromPercentage(10));
+        root.AppendChild(Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement()));
+
+        using var layouter = new BlockLayouter(
+            root, sink, incomingContinuation: null, diagnostics: diagSink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        var result = layouter.AttemptLayout(
+            ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(LayoutAttemptOutcome.PageComplete, result.Outcome);
+        var cont = Assert.IsType<BlockContinuation>(result.Continuation);
+        Assert.Equal(1, cont.ResumeAtChild);
+        Assert.Single(sink.Fragments);   // only the 700 block; the float deferred cleanly.
+        Assert.Empty(diagSink.Diagnostics);
+    }
+
+    [Fact]
+    public void Float_percentage_padding_insets_its_children_after_the_used_value_rewrite()
+    {
+        // PR #165 review P1 — EmitFloat rewrites the used % padding IN PLACE before the child
+        // recursion, so the float's child block is placed at the float's CONTENT box:
+        // padding-left: 10% of 600 = 60px → child InlineOffset 60, fill width 360 − 60 = 300.
+        // Pre-fix the recursion's absolute-only reads saw 0 → the child painted at the border
+        // edge at the full border-box width.
+        var sink = new RecordingFragmentSink();
+        var root = Box.CreateRoot(MakeStyle());
+
+        var floatStyle = MakeStyle();
+        SetKeyword(floatStyle, PropertyId.Float, 1);   // left
+        floatStyle.Set(PropertyId.Width, ComputedSlot.FromPercentage(50));       // 300
+        floatStyle.Set(PropertyId.PaddingLeft, ComputedSlot.FromPercentage(10)); // 60
+        SetLengthPx(floatStyle, PropertyId.Height, 100);
+        var floatBox = Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement());
+        var childStyle = MakeStyle();
+        SetLengthPx(childStyle, PropertyId.Height, 30);
+        floatBox.AppendChild(Box.ForElement(BoxKind.BlockContainer, childStyle, MakeElement()));
+        root.AppendChild(floatBox);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        // Fragment 0 = the float (border box 60 + 300 = 360 wide); fragment 1 = its child at
+        // the content-box left (60) and the content-box fill width (300).
+        Assert.Equal(2, sink.Fragments.Count);
+        Assert.Equal(360, sink.Fragments[0].InlineSize);
+        Assert.Equal(60, sink.Fragments[1].InlineOffset);
+        Assert.Equal(300, sink.Fragments[1].InlineSize);
+    }
+
     // --- Multi-block stacking ----------------------------------------
 
     [Fact]

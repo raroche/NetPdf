@@ -139,7 +139,7 @@ namespace NetPdf.Layout.Layouters;
 /// so containers with overflowing block-level descendants silently
 /// clipped past the fragmentainer boundary + subsequent siblings
 /// visually overlapped the overflow. Cycle 2c adds
-/// <see cref="MeasureSubtreeVisualBlockExtent(Box, CancellationToken)"/> — a pre-measure
+/// <see cref="MeasureSubtreeVisualBlockExtent(Box, CancellationToken, double)"/> — a pre-measure
 /// pass that returns the maximum block-axis extent reached by any
 /// descendant. The break-fit chunk size + cursor advance both use
 /// this measured extent (max of own border-box + descendant bottoms),
@@ -1266,13 +1266,16 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // axis reads (TODO cycle 3 wires logical-axis helpers).
             // Body % lengths (body-percent cycle): margin/padding percentages on EVERY side
             // resolve against the containing block's INLINE size (CSS 2.2 §8.3/§8.4 — including
-            // the top/bottom ones); a % height still needs a definite container height (deferred).
+            // the top/bottom ones); a % HEIGHT resolves against the fragmentainer's definite
+            // content height below (percent-height cycle).
             var pctBase = fragmentainer.ContentInlineSize;
             child.Style.ResolveUsedPercentPaddingInPlace(pctBase);   // paint reads the slots later.
             var marginStart = child.Style.ReadLengthOrPercentPx(PropertyId.MarginTop, pctBase);
             var borderStart = child.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
             var paddingStart = child.Style.ReadLengthOrPercentPx(PropertyId.PaddingTop, pctBase);
-            var contentBlock = child.Style.ReadLengthPxOrZero(PropertyId.Height);
+            // % height resolves against the fragmentainer's DEFINITE content height (the page
+            // content area — percent-height cycle, CSS 2.2 §10.5).
+            var contentBlock = child.Style.ReadLengthOrPercentPx(PropertyId.Height, fragmentainer.BlockSize);
             var paddingEnd = child.Style.ReadLengthOrPercentPx(PropertyId.PaddingBottom, pctBase);
             var borderEnd = child.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
             var marginEnd = child.Style.ReadLengthOrPercentPx(PropertyId.MarginBottom, pctBase);
@@ -1381,6 +1384,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // `width` on a plain block container overrides the fill.
             var borderBoxInlineSize = ResolveInFlowBorderBoxInlineSize(
                 child, availInlineSize, fragmentainer.ContentInlineSize, marginInlineStart, marginInlineEnd);
+            // §10.3.3 auto margins (auto-margins cycle): `margin: 0 auto` centres an explicit-width
+            // block — must run before any inline-offset consumption below. The distribution range
+            // is the FLOAT-ADJUSTED available range (the same range placement uses — review P1).
+            ResolveAutoInlineMargins(
+                child, borderBoxInlineSize, availInlineSize,
+                ref marginInlineStart, ref marginInlineEnd);
 
             // Per Phase 3 Task 12 sub-cycle 1 hardening (Finding 1) —
             // for Table / InlineTable wrappers, pre-measure the
@@ -2067,7 +2076,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // recursive continuation tokens + break consultation
             // inside `EmitBlockSubtreeRecursive`. Deferred to cycle
             // 2d.
-            var subtreeBlockExtent = MeasureSubtreeVisualBlockExtent(child, cancellationToken);
+            var subtreeBlockExtent = MeasureSubtreeVisualBlockExtent(
+                child, cancellationToken, parentContentBlockSize: fragmentainer.BlockSize);
             // Per Phase 3 Task 13 cycle 1 hardening (Finding 2) — for
             // Table / InlineTable wrappers in the OUTER dispatch path,
             // the subtree extent must reflect the SINGLE-PAGE-COMMITTED
@@ -2579,7 +2589,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                         depth: 1,
                         propagatingResolver: resolver,
                         propagatingFragmentainer: fragmentainer,
-                        incomingContinuation: forcedRecIncoming);
+                        incomingContinuation: forcedRecIncoming,
+                        parentContentBlockSize: contentBlock);   // % height base (percent-height cycle).
                     if (forcedNestedRet is BlockContinuation forcedDeep)
                     {
                         return LayoutAttemptResult.PageComplete(
@@ -3483,7 +3494,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 depth: 1,
                 propagatingResolver: resolver,
                 propagatingFragmentainer: fragmentainer,
-                incomingContinuation: recIncoming);
+                incomingContinuation: recIncoming,
+                parentContentBlockSize: contentBlock);   // % height base (percent-height cycle).
 
             // Stitching (up): on non-null return propagate as a
             // `PageComplete(BlockContinuation(rc=childIdx, ls=<chain>))`
@@ -4218,7 +4230,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     ///
     /// <para><b>Cycle 2c subtree-aware cursor advance (this revision).</b>
     /// Per cycle 2c post-PR-29 review #2 — the recursion now also calls
-    /// <see cref="MeasureSubtreeVisualBlockExtent(Box, CancellationToken)"/>
+    /// <see cref="MeasureSubtreeVisualBlockExtent(Box, CancellationToken, double)"/>
     /// for each child + advances the inner cursor by
     /// <c>max(childBorderBox, childSubtreeExtent)</c>, mirroring the
     /// outer loop's behavior. Pre-cycle-2c-fix the recursion advanced
@@ -4270,7 +4282,11 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         int depth,
         IBreakResolver? propagatingResolver = null,
         FragmentainerContext? propagatingFragmentainer = null,
-        LayoutContinuation? incomingContinuation = null)
+        LayoutContinuation? incomingContinuation = null,
+        // Body % height (percent-height cycle): the parent's DEFINITE content height in px —
+        // a child `height: N%` resolves against it (CSS 2.2 §10.5); 0 = indefinite (the parent's
+        // height is auto), the percentage then computes to auto (reads 0).
+        double parentContentBlockSize = 0)
     {
         // Per cycle-2b post-PR-28 review #2 + Copilot #1 — DoS
         // protection. Untrusted HTML can construct pathologically
@@ -4513,7 +4529,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             var borderEnd = child.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
             var paddingStart = child.Style.ReadLengthOrPercentPx(PropertyId.PaddingTop, contentInlineSize);
             var paddingEnd = child.Style.ReadLengthOrPercentPx(PropertyId.PaddingBottom, contentInlineSize);
-            var contentBlock = child.Style.ReadLengthPxOrZero(PropertyId.Height);
+            // % height resolves against the parent's DEFINITE content height (0 = indefinite →
+            // auto, CSS 2.2 §10.5 — percent-height cycle).
+            var contentBlock = child.Style.ReadLengthOrPercentPx(PropertyId.Height, parentContentBlockSize);
 
             var childBorderBoxBlockSize = borderStart + paddingStart + contentBlock
                 + paddingEnd + borderEnd;
@@ -4523,6 +4541,9 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // sizes identically to a top-level one.
             var childBorderBoxInlineSize = ResolveInFlowBorderBoxInlineSize(
                 child, contentInlineSize, contentInlineSize, marginInlineStart, marginInlineEnd);
+            ResolveAutoInlineMargins(
+                child, childBorderBoxInlineSize, contentInlineSize,
+                ref marginInlineStart, ref marginInlineEnd);   // §10.3.3 — auto-margins cycle.
 
             // Per cycle 2c post-PR-29 review #2 — measure/emit cursor
             // mismatch fix. Pre-fix the recursion advanced by
@@ -4540,7 +4561,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // Cycle 2d (mid-splits) will redesign to share extents
             // between measure + emit (avoiding the duplicate walk).
             var childSubtreeExtent = MeasureSubtreeVisualBlockExtentRecursive(
-                child, cancellationToken, depth + 1);
+                child, cancellationToken, depth + 1,
+                parentContentBlockSize: contentBlock);   // % height base (percent-height cycle).
             // Per Phase 3 Task 15 L6 post-PR-#66 review F#1 — mirror
             // the outer-dispatch column-wrap clamp at the recursion
             // site. The unconditional clamp later in the flex grow
@@ -5603,7 +5625,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
                 depth: depth + 1,
                 propagatingResolver: propagatingResolver,
                 propagatingFragmentainer: propagatingFragmentainer,
-                incomingContinuation: incomingForChild);
+                incomingContinuation: incomingForChild,
+                parentContentBlockSize: contentBlock);   // % height base (percent-height cycle).
             if (nestedRet is not null)
             {
                 return new BlockContinuation(
@@ -6335,11 +6358,27 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // Rewrite % padding to used px FIRST (body-percent cycle) — TextPainter's content-origin
         // inset reads the same slots at paint time.
         block.Style.ResolveUsedPercentPaddingInPlace(containingInlinePx);
+        // §10.3.3 auto margins (auto-margins cycle) — the same distribution as the block paths,
+        // so a text-bearing `width: …; margin: 0 auto` block centres like an empty one. The
+        // declared width must be explicit (the fill path's auto margins stay 0).
+        var marginInlineStart = block.Style.ReadLengthOrPercentPx(PropertyId.MarginLeft, containingInlinePx);
+        var marginInlineEnd = block.Style.ReadLengthOrPercentPx(PropertyId.MarginRight, containingInlinePx);
+        var declaredWidth = block.Style.ReadLengthOrPercentPx(PropertyId.Width, containingInlinePx);
+        if (HasExplicitWidth(block))
+        {
+            var borderBox = declaredWidth
+                + block.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth)
+                + block.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth)
+                + block.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft)
+                + block.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
+            ResolveAutoInlineMargins(
+                block, borderBox, containingInlinePx, ref marginInlineStart, ref marginInlineEnd);
+        }
         return new(
             // Body % lengths (body-percent cycle): margins/paddings/width take percentages against
             // the containing block's INLINE size (CSS 2.2 §8.3/§8.4/§10.2), like the block paths.
-            MarginInlineStart: block.Style.ReadLengthOrPercentPx(PropertyId.MarginLeft, containingInlinePx),
-            MarginInlineEnd: block.Style.ReadLengthOrPercentPx(PropertyId.MarginRight, containingInlinePx),
+            MarginInlineStart: marginInlineStart,
+            MarginInlineEnd: marginInlineEnd,
             MarginBlockStart: block.Style.ReadLengthOrPercentPx(PropertyId.MarginTop, containingInlinePx),
             MarginBlockEnd: block.Style.ReadLengthOrPercentPx(PropertyId.MarginBottom, containingInlinePx),
             BorderInlineStart: block.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth),
@@ -6357,6 +6396,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // rule (max of constituent runs' line-heights).
             LineHeightOverridePx: block.Style.ReadLengthPxOrZero(PropertyId.LineHeight));
     }
+
+    /// <summary>Whether the box DECLARES an explicit <c>width</c> — a LengthPx or Percentage
+    /// slot, INCLUDING the legal zero (`width: 0` / `0%`); `auto`/keywords/unset are not
+    /// explicit. The §10.3.3 gates key on this tag test (post-PR-#164 review P3).</summary>
+    private static bool HasExplicitWidth(Box child) =>
+        child.Style.Get(PropertyId.Width).Tag is ComputedSlotTag.LengthPx or ComputedSlotTag.Percentage;
 
     /// <summary>Used border-box inline size for an in-flow block-level child (the CSS 2.2
     /// §10.3.3 cycle-1 subset; body-explicit-width gap fix). A plain block container
@@ -6379,8 +6424,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     ///   replaced boxes keep the documented cycle-1 fill behavior (their explicit-width
     ///   honoring is its own cycle — see <c>docs/deferrals.md</c>).</item>
     /// </list>
-    /// §10.3.3 margin DISTRIBUTION (<c>margin: auto</c> centering, the over-constrained
-    /// rule) stays deferred — the box keeps its inline-start edge.</summary>
+    /// §10.3.3 margin DISTRIBUTION ships in the auto-margins cycle — see
+    /// <see cref="ResolveAutoInlineMargins"/> (the caller applies it right after this).</summary>
     private static double ResolveInFlowBorderBoxInlineSize(
         Box child, double availableInlineSize, double containingInlinePx,
         double marginInlineStart, double marginInlineEnd)
@@ -6389,10 +6434,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         {
             // Body % lengths (body-percent cycle): an explicit PERCENTAGE width resolves against
             // the CONTAINING block's inline size (CSS 2.2 §10.2 — not the float-adjusted available
-            // range), as do the padding percentages (§8.4).
-            var declaredWidth = child.Style.ReadLengthOrPercentPx(PropertyId.Width, containingInlinePx);
-            if (declaredWidth > 0)
+            // range), as do the padding percentages (§8.4). Explicitness is a TAG test, so the
+            // legal `width: 0` / `0%` sizes a zero-content border box instead of filling
+            // (post-PR-#164 review P3).
+            if (HasExplicitWidth(child))
             {
+                var declaredWidth = child.Style.ReadLengthOrPercentPx(PropertyId.Width, containingInlinePx);
                 return declaredWidth
                     + child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth)
                     + child.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth)
@@ -6401,6 +6448,52 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             }
         }
         return Math.Max(0, availableInlineSize - marginInlineStart - marginInlineEnd);
+    }
+
+    /// <summary>§10.3.3 auto-margin DISTRIBUTION (auto-margins cycle) — for a plain in-flow block
+    /// with an EXPLICIT width (a LengthPx/Percentage slot, INCLUDING the legal zero),
+    /// <c>margin-left/right: auto</c> (a Keyword slot — the initial unset margin is 0, so
+    /// Keyword = the authored <c>auto</c>) absorb the leftover of
+    /// <paramref name="distributionRangePx"/>: both auto → CENTRED (equal split); one auto →
+    /// that side takes the rest. A non-positive leftover clamps the auto side(s) at 0
+    /// (§10.3.3's over-constrained rule). The range is the SAME inline range that drives
+    /// placement (post-PR-#164 review P1: the outer dispatch passes the FLOAT-ADJUSTED
+    /// available range — the engine's cycle-1 model places in-flow blocks within it, so the
+    /// distribution must match or a centred box drifts; the recursion passes the parent's
+    /// content box). A box with AUTO width keeps the fill behavior (auto margins read 0), and
+    /// non-plain kinds (tables/flex/grid/anonymous) are untouched like the width override.</summary>
+    private static void ResolveAutoInlineMargins(
+        Box child, double borderBoxInlineSize, double distributionRangePx,
+        ref double marginInlineStart, ref double marginInlineEnd)
+    {
+        if (child.Kind is not (BoxKind.BlockContainer or BoxKind.ListItem)) return;
+        // EXPLICIT width only (a tag test, so the legal `width: 0` / `0%` distributes too —
+        // post-PR-#164 review P3); auto-width boxes keep the fill (auto margins read 0).
+        if (!HasExplicitWidth(child)) return;
+        var leftAuto = child.Style.Get(PropertyId.MarginLeft).Tag == ComputedSlotTag.Keyword;
+        var rightAuto = child.Style.Get(PropertyId.MarginRight).Tag == ComputedSlotTag.Keyword;
+        if (!leftAuto && !rightAuto) return;
+        var leftover = distributionRangePx - borderBoxInlineSize
+            - (leftAuto ? 0 : marginInlineStart) - (rightAuto ? 0 : marginInlineEnd);
+        if (leftover <= 0)
+        {
+            if (leftAuto) marginInlineStart = 0;
+            if (rightAuto) marginInlineEnd = 0;
+            return;
+        }
+        if (leftAuto && rightAuto)
+        {
+            marginInlineStart = leftover / 2;
+            marginInlineEnd = leftover / 2;
+        }
+        else if (leftAuto)
+        {
+            marginInlineStart = leftover;
+        }
+        else
+        {
+            marginInlineEnd = leftover;
+        }
     }
 
     /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 — compute the
@@ -7140,18 +7233,25 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// CancellationToken — it's a pure traversal called once per
     /// outer-loop child + the depth cap bounds the work; the outer
     /// loop's CT check still runs between children.</para></summary>
-    private double MeasureSubtreeVisualBlockExtent(Box parent, CancellationToken cancellationToken)
-        => MeasureSubtreeVisualBlockExtentRecursive(parent, cancellationToken, depth: 0);
+    private double MeasureSubtreeVisualBlockExtent(
+        Box parent, CancellationToken cancellationToken, double parentContentBlockSize = 0)
+        => MeasureSubtreeVisualBlockExtentRecursive(
+            parent, cancellationToken, depth: 0, parentContentBlockSize);
 
     /// <summary>Per cycle 2c post-PR-29 review #1 (P0) + #3 (P1) —
-    /// recursive worker for <see cref="MeasureSubtreeVisualBlockExtent(Box, CancellationToken)"/>.
+    /// recursive worker for <see cref="MeasureSubtreeVisualBlockExtent(Box, CancellationToken, double)"/>.
     /// Renamed from the same-name overload to fix CS0419 ambiguous cref
     /// errors in class-level XML docs. CT plumbing matches
     /// <see cref="EmitBlockSubtreeRecursive"/> so an oversized broad
     /// subtree (large fan-out, not just deep nesting) doesn't make
     /// AttemptLayout unresponsive to cancellation.</summary>
     private double MeasureSubtreeVisualBlockExtentRecursive(
-        Box parent, CancellationToken cancellationToken, int depth)
+        Box parent, CancellationToken cancellationToken, int depth,
+        // Body % height (percent-height cycle, post-PR-#164 review P1): the measured box's
+        // DEFINITE containing height — its own `height: N%` resolves against it, and ITS resolved
+        // content height chains to the children, mirroring the EMIT pass exactly (a desync here
+        // under-reserved the cursor/pagination for %-height subtrees). 0 = indefinite → auto.
+        double parentContentBlockSize = 0)
     {
         if (depth > MaxRecursionDepth)
         {
@@ -7167,7 +7267,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         var pPaddingStart = parent.Style.ReadLengthPxOrZero(PropertyId.PaddingTop);
         var pBorderEnd = parent.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
         var pPaddingEnd = parent.Style.ReadLengthPxOrZero(PropertyId.PaddingBottom);
-        var pHeight = parent.Style.ReadLengthPxOrZero(PropertyId.Height);
+        var pHeight = parent.Style.ReadLengthOrPercentPx(PropertyId.Height, parentContentBlockSize);
         var parentBorderBoxBlockSize = pBorderStart + pPaddingStart + pHeight
             + pPaddingEnd + pBorderEnd;
 
@@ -7391,7 +7491,8 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             // Recurse — child's subtree extent (= max of child's own
             // border-box + its descendants).
             var childSubtreeExtent = MeasureSubtreeVisualBlockExtentRecursive(
-                child, cancellationToken, depth + 1);
+                child, cancellationToken, depth + 1,
+                parentContentBlockSize: pHeight);   // % height base chains (percent-height cycle).
 
             double topShift;
             if (!hasPrior)
@@ -7794,7 +7895,7 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// <summary>Per Phase 3 Task 15 L3 post-PR-#63 hardening F#1 —
     /// compute the flex wrapper's auto cross-extent WITHOUT stacking
     /// its children vertically. The default
-    /// <see cref="MeasureSubtreeVisualBlockExtent(Box, CancellationToken)"/>
+    /// <see cref="MeasureSubtreeVisualBlockExtent(Box, CancellationToken, double)"/>
     /// path (used by every non-flex wrapper) sums the children's
     /// block-axis extents as if they were laid out in block-flow — for
     /// a flex container with <c>height: auto</c> + items 50/100/75 it

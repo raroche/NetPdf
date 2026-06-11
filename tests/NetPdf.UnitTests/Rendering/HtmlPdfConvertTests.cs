@@ -2524,6 +2524,202 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Body_auto_margins_center_an_explicit_width_band()
+    {
+        // Auto-margins cycle — `width: 100px; margin: 0 auto` centres in the 602px content area:
+        // x = 72 + (451.5 − 75) / 2 = 260.25pt; the band stays 75pt wide.
+        var r = FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:100px;height:20px;margin:0 auto;background-color:#3366cc\"></div>" +
+            "</body></html>")));
+        Assert.Equal(75.0, r.W, 1);
+        Assert.Equal(260.25, r.X, 1);
+    }
+
+    [Fact]
+    public void Body_percentage_height_resolves_through_a_definite_chain()
+    {
+        // Percent-height cycle — a % height needs a DEFINITE ancestor chain (CSS 2.2 §10.5: a %
+        // against an auto-height parent computes to auto, like browsers): with
+        // `html, body { height: 100% }` the div's 25% resolves against the 931px page content
+        // height = 232.75px → 174.56pt.
+        var r = FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>html, body { height: 100% }</style></head><body>" +
+            "<div style=\"width:64px;height:25%;background-color:#3366cc\"></div>" +
+            "</body></html>")));
+        Assert.Equal(174.56, r.H, 1);
+    }
+
+    [Fact]
+    public void Body_percentage_height_against_an_auto_parent_computes_to_auto()
+    {
+        // The counterpart pin: WITHOUT the definite chain the 25% computes to auto — the empty
+        // div has no height, so no band paints (browser-equivalent).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:64px;height:25%;background-color:#3366cc\"></div>" +
+            "</body></html>"));
+        Assert.Empty(AllRects(pdf));   // post-PR-#164 review P3 — track filled rects, not raw spelling
+    }
+
+    [Fact]
+    public void Page_margin_box_segment_vertical_padding_grows_its_line_band()
+    {
+        // Segment-padding cycle — the h1's own vertical padding grows ITS band/pitch:
+        // the h1's one-line band is 38.4 + 8 + 8 = 54.4px → 40.8pt (background covers the
+        // padding box), and the NESTED element band (the box co-declares a background, forcing
+        // the nesting) totals (54.4 + 19.2)px = 73.6px → 55.2pt.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); background-color: #cc3366 } " +
+            ".rh h1 { font-size: 32px; padding-top: 8px; padding-bottom: 8px; background-color: #3366cc } " +
+            "@page { @top-center { content: element(rh); background-color: #00ff00 } }</style></head>" +
+            "<body><div class=\"rh\"><h1>Big</h1><div>Sub</div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+
+        Assert.Contains(AllRects(pdf), r => Math.Abs(r.H - 55.2) < 0.1);   // the nested element band
+        Assert.Contains(AllRects(pdf), r => Math.Abs(r.H - 40.8) < 0.1);   // the h1's padded line band
+    }
+
+    [Fact]
+    public void Page_margin_box_wrapped_segment_pads_the_block_once_not_per_line()
+    {
+        // Post-PR-#164 review P2 — a leaf block WRAPPING under an explicit box width pads the
+        // BLOCK once (pad-top above its first line, pad-bottom below its last), not every line.
+        // Wrap-count-independent comparison: the padded render's element band exceeds the
+        // unpadded one by EXACTLY 16px = 12pt (the per-line duplication bug added 12pt × lines).
+        const string body =
+            "<body><div class=\"rh\"><div>AB AB AB AB AB AB AB AB</div></div></body></html>";
+        const string head =
+            "<!DOCTYPE html><html><head><style>.rh {{ position: running(rh); background-color: #cc3366 }} " +
+            "{0}@page {{ @top-center {{ content: element(rh); background-color: #00ff00; width: 60px }} }}" +
+            "</style></head>";
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+
+        double ElementBandH(string pdf)
+        {
+            // The pink element band is the tallest #cc3366 fill; identify rects by colour.
+            var rects = AllRects(pdf);
+            var colors = RectFillColors(pdf);
+            var best = 0.0;
+            for (var i = 0; i < rects.Count && i < colors.Count; i++)
+                if (colors[i] == "0.8 0.2 0.4" && rects[i].H > best) best = rects[i].H;
+            return best;
+        }
+
+        var unpadded = ElementBandH(Latin1(HtmlPdf.Convert(string.Format(head, "") + body, opts)));
+        var padded = ElementBandH(Latin1(HtmlPdf.Convert(
+            string.Format(head, ".rh div { padding-top: 8px; padding-bottom: 8px } ") + body, opts)));
+
+        Assert.True(unpadded >= 28.8 - 0.1, $"expected a wrapped (≥2-line) band, got {unpadded}pt");
+        Assert.Equal(unpadded + 12.0, padded, 1);   // ONE 16px padding, regardless of line count
+    }
+
+    [Fact]
+    public void Body_percentage_height_overflowing_child_reserves_its_emitted_extent()
+    {
+        // Post-PR-#164 review P1 — the MEASURE pass resolves % heights like the EMIT pass: a
+        // height:200% child of a definite 100px parent emits 200px tall, and the following
+        // sibling must start BELOW it (pre-fix the measure read 0 → the cursor under-reserved
+        // and the sibling overlapped).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>html, body { height: 100% }</style></head><body>" +
+            "<div style=\"height:100px\"><div style=\"width:64px;height:200%;background-color:#3366cc\"></div></div>" +
+            "<div style=\"width:64px;height:20px;background-color:#cc3366\"></div>" +
+            "</body></html>"));
+
+        var rects = AllRects(pdf);
+        var blue = rects.Find(r => Math.Abs(r.H - 150.0) < 0.5);    // 200px → 150pt
+        var pink = rects.Find(r => Math.Abs(r.H - 15.0) < 0.5);     // the 20px sibling
+        Assert.True(blue.H > 0, "expected the 200% child band");
+        Assert.True(pink.H > 0, "expected the sibling band");
+        // PDF y-down flip: the sibling's TOP (Y + H) must be at/below the child's BOTTOM (Y).
+        Assert.True(pink.Y + pink.H <= blue.Y + 0.5,
+            $"sibling (top {pink.Y + pink.H}) must start below the % child (bottom {blue.Y})");
+    }
+
+    [Fact]
+    public void Body_auto_margins_beside_a_float_keep_the_recursion_models_centering()
+    {
+        // Post-PR-#164 review P1 — the facade path lays the body out through the RECURSION,
+        // which has NO float avoidance for in-flow siblings (a pre-existing cycle-1 gap, distinct
+        // from the OUTER path's float-adjusted range — that consistency is pinned at the unit
+        // level in BlockLayouterTests). Here the centred box ignores the float: x = 260.25pt
+        // (the full-content-box centre).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"float:left;width:100px;height:40px\"></div>" +
+            "<div style=\"width:100px;height:20px;margin:0 auto;background-color:#3366cc\"></div>" +
+            "</body></html>"));
+
+        var band = AllRects(pdf).Find(r => Math.Abs(r.W - 75.0) < 0.5);
+        Assert.True(band.W > 0, "expected the centred band");
+        Assert.Equal(260.25, band.X, 1);
+    }
+
+    [Fact]
+    public void Body_zero_width_with_auto_margins_centers_the_border_box()
+    {
+        // Post-PR-#164 review P3 — `width: 0` is EXPLICIT (a zero-content border box), so
+        // `border: 2px solid` + auto margins centre the 4px box: x = 72 + (451.5 − 3)/2
+        // = 296.25pt; the border edges paint (the background is empty at width 0).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:0;height:20px;margin:0 auto;border:2px solid #3366cc\"></div>" +
+            "</body></html>"));
+
+        var rects = AllRects(pdf).FindAll(r => Math.Abs(r.W - 1.5) < 0.2);
+        Assert.True(rects.Count >= 2, "expected the two vertical border edges");
+        // The LEFT border edge (the minimum-X 1.5pt rect) sits at the centred border-box X.
+        var leftX = double.MaxValue;
+        foreach (var r in rects) leftX = Math.Min(leftX, r.X);
+        Assert.Equal(296.25, leftX, 1);
+    }
+
+    [Fact]
+    public void Page_margin_box_negative_segment_padding_is_ignored()
+    {
+        // Post-PR-#164 review P2 — a negative padding (invalid CSS) never shrinks the pitch:
+        // the band stays the unpadded 2 × 19.2px = 28.8pt whether AngleSharp drops the
+        // declaration upstream or the collector clamp catches it.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); background-color: #cc3366 } " +
+            ".rh .neg { padding-top: -8px } " +
+            "@page { @top-center { content: element(rh); background-color: #00ff00 } }</style></head>" +
+            "<body><div class=\"rh\"><div class=\"neg\">One</div><div>Two</div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+
+        Assert.Contains(AllRects(pdf), r => Math.Abs(r.H - 28.8) < 0.1);
+    }
+
+    [Fact]
+    public void Body_percent_width_with_auto_margins_centers()
+    {
+        // Post-PR-#164 review P3 coverage — the §10.3.3 gate composes with a PERCENT width:
+        // width: 50% (301px = 225.75pt) centred in 602px → x = 72 + 112.875 = 184.875pt.
+        var r = FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:50%;height:20px;margin:0 auto;background-color:#3366cc\"></div>" +
+            "</body></html>")));
+        Assert.Equal(225.75, r.W, 1);
+        Assert.Equal(184.88, r.X, 1);
+    }
+
+    [Fact]
+    public void Body_text_bearing_auto_margin_block_centers_like_an_empty_one()
+    {
+        // Post-PR-#164 review P3 coverage — the INLINE-ONLY path's §10.3.3 wiring: a
+        // text-bearing `width: 100px; margin: 0 auto` div's first glyph starts at the centred
+        // content-box left (compare against the same div without auto margins, shifted by
+        // (451.5 − 75)/2 = 188.25pt).
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var plain = FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><div style=\"width:100px\">AB</div></body></html>", opts)));
+        var centred = FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><div style=\"width:100px;margin:0 auto\">AB</div></body></html>", opts)));
+        Assert.Equal(plain.X + 188.25, centred.X, 1);
+    }
+
+    [Fact]
     public void Page_margin_box_flat_element_decoration_paints_once_not_per_line_too()
     {
         // Post-PR-#162 review P1 — a FLAT running element's own background/border already rides

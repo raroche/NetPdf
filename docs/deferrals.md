@@ -3281,12 +3281,22 @@ flags the categories):
          background/border/margin band), per-line `text-align` (captured, not consumed — one
          line-align factor per box), true per-line pitch, and the box/element separately-decorated
          nesting.
+       - **Per-line segment padding + body % height + margin:auto centering — DONE
+         (segment-padding / percent-height / auto-margins cycles):** a leaf block's own absolute
+         VERTICAL padding grows its line's band/pitch (background covers the padding box;
+         horizontal per-line padding deferred — needs per-line X insets). `height: N%` resolves
+         against a DEFINITE containing height (fragmentainer at the outer level; the parent's
+         resolved content height threaded through the recursion — an auto parent computes to
+         auto per §10.5, browser-equivalent). `margin-left/right: auto` with an explicit width
+         distributes per §10.3.3 (centred / one-sided / over-constrained-clamped), incl. the
+         inline-only path. STILL DEFERRED: horizontal per-line padding, floats/abspos %,
+         `% height` on floats, real nested block LAYOUT.
        - **Body % lengths + per-line segment margins + per-segment line-height — DONE
          (body-percent / segment-margins / segment-line-height cycles):** body `width`/`margin-*`/
          `padding-*` PERCENTAGES resolve at layout time against the containing block's INLINE size
          (CSS 2.2 §10.2/§8.3/§8.4; % padding is rewritten to used px in place so paint agrees;
-         STILL DEFERRED: `% height` (needs a definite container), floats/abspos %, `margin: auto`,
-         % in body calc()). A leaf block's own ABSOLUTE vertical margins insert collapsed
+         still deferred THEN: floats/abspos %, % in body calc() — `% height` and `margin: auto`
+         shipped in the NEXT cycle, see the entry above). A leaf block's own ABSOLUTE vertical margins insert collapsed
          inter-line gaps (max of adjoining, floored at 0; %/relative/`auto` read 0); its own
          `line-height` (absolute, unitless, or em) drives its line's pitch (`normal`/%/other →
          font × 1.2). STILL DEFERRED: per-line padding, real nested block LAYOUT.

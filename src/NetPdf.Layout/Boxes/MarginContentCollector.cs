@@ -551,10 +551,45 @@ internal static class MarginContentCollector
         var (marginTopPx, marginBottomPx) = captureDecoration
             ? CaptureSegmentMargins(element, cascade)
             : (0.0, 0.0);   // the running ROOT's margins are the box's business, like its decoration.
+        var (paddingTopPx, paddingBottomPx) = captureDecoration
+            ? CaptureSegmentVerticalPadding(element, cascade)
+            : (0.0, 0.0);   // the root's padding already insets via the element() box-model path.
         segments.Add(new CssContentList.RunningSegment(
             text, CaptureSegmentStyle(element, cascade),
             captureDecoration ? CaptureSegmentDecoration(element, cascade) : EmptyOwnStyle,
-            marginTopPx, marginBottomPx));
+            marginTopPx, marginBottomPx, paddingTopPx, paddingBottomPx));
+    }
+
+    /// <summary>The leaf block's OWN vertical padding in used px (segment-padding cycle) — the
+    /// self-only winners (padding isn't inherited), ABSOLUTE lengths only (%/relative read 0,
+    /// like the margins below). Grows the line's band/pitch; horizontal padding stays deferred
+    /// (per-line X insets need per-line glyph offsets — deferrals.md).</summary>
+    private static (double TopPx, double BottomPx) CaptureSegmentVerticalPadding(
+        IElement element, ResolvedCascadeResult cascade)
+    {
+        var rules = cascade.TryGetStylesFor(element);
+        if (rules is null) return (0, 0);
+        // Padding is a NON-NEGATIVE property (unlike the sign-preserving margins below) — clamp
+        // a negative fold at 0 (post-PR-#164 review P2; defensive — AngleSharp drops invalid
+        // negative padding upstream, the same boundary as the 16PX canary).
+        return (Math.Max(0, AbsoluteSidePx(rules, "padding-top")),
+                Math.Max(0, AbsoluteSidePx(rules, "padding-bottom")));
+    }
+
+    /// <summary>The self-only winner of an absolute-length side property in used px — the shared
+    /// margin/padding capture fold (a non-absolute / negative-disallowed check stays the caller's
+    /// concern; this returns the raw fold, 0 for unset/unsupported).</summary>
+    private static double AbsoluteSidePx(ResolvedRuleSet rules, string property)
+    {
+        var raw = rules.GetWinner(property)?.ResolvedValue;
+        if (string.IsNullOrWhiteSpace(raw)) return 0;
+        var v = raw.Trim();
+        if (v == "0") return 0;
+        return LengthResolver.TrySplitNumberAndUnit(v, out var n, out var unit)
+            && unit.Length > 0
+            && LengthResolver.TryAbsoluteUnitToPx(unit.ToLowerInvariant(), n, out var px)
+            && double.IsFinite(px)
+            ? px : 0;
     }
 
     /// <summary>The leaf block's OWN vertical margins in used px (segment-margins cycle) — the
@@ -569,23 +604,7 @@ internal static class MarginContentCollector
     {
         var rules = cascade.TryGetStylesFor(element);
         if (rules is null) return (0, 0);
-        return (AbsoluteMarginPx(rules, "margin-top"), AbsoluteMarginPx(rules, "margin-bottom"));
-
-        static double AbsoluteMarginPx(ResolvedRuleSet rules, string property)
-        {
-            var raw = rules.GetWinner(property)?.ResolvedValue;
-            if (string.IsNullOrWhiteSpace(raw)) return 0;
-            var v = raw.Trim();
-            if (v == "0") return 0;
-            // Units are ASCII case-insensitive (CSS Syntax §4) — TryAbsoluteUnitToPx matches
-            // lowercase only, so `16PX` silently read 0 (post-PR-#163 review P3; matches
-            // SegmentLineHeightPx's normalization).
-            return LengthResolver.TrySplitNumberAndUnit(v, out var n, out var unit)
-                && unit.Length > 0
-                && LengthResolver.TryAbsoluteUnitToPx(unit.ToLowerInvariant(), n, out var px)
-                && double.IsFinite(px)
-                ? px : 0;
-        }
+        return (AbsoluteSidePx(rules, "margin-top"), AbsoluteSidePx(rules, "margin-bottom"));
     }
 
     /// <summary>The leaf block's OWN (self-only, no ancestor walk — decoration isn't inherited)

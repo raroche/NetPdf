@@ -368,7 +368,10 @@ internal static class LengthResolver
     /// <summary>Splits a CSS dimension into number + unit. Accepts optional sign,
     /// optional decimal, optional exponent. Unit may be empty (bare number).
     /// Returns false on garbled input.</summary>
-    private static bool TrySplitNumberAndUnit(string value, out double number, out string unit)
+    /// <summary>INTERNAL for the margin-box border-radius parse (post-PR-#161 review P2) — the
+    /// production CSS number+unit tokenizer, so every raw-length consumer shares ONE grammar
+    /// (sign, decimal, e-notation per CSS Syntax §4.3.12 with the `2em` trap guard below).</summary>
+    internal static bool TrySplitNumberAndUnit(string value, out double number, out string unit)
     {
         number = 0;
         unit = string.Empty;

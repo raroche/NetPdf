@@ -700,8 +700,10 @@ internal static class CssContentList
 
     /// <summary>Parse a GCPM <c>content()</c> call in a <c>string-set</c> value (the <c>content(</c>
     /// already consumed): bare <c>content()</c> or <c>content(text)</c> → <paramref name="host"/>'s text
-    /// content; the typographic targets <c>content(before|after|first-letter|marker)</c> + any multi-arg
-    /// form are deferred → <see langword="false"/> (the caller bails to the unsupported diagnostic).</summary>
+    /// content. <c>content(before|after)</c> never reaches here (TryReadPseudoTarget consumed it —
+    /// content-pseudo cycle); the remaining typographic targets <c>content(first-letter|marker)</c> +
+    /// any multi-arg form are deferred → <see langword="false"/> (the caller bails to the unsupported
+    /// diagnostic).</summary>
     /// <remarks>Per CSS GCPM L3 §3.1, the element's string is taken "as if <c>white-space: normal</c> were
     /// in effect" — so the raw <see cref="INode.TextContent"/> (which keeps the source indentation /
     /// newlines / runs of spaces of formatted HTML) is collapsed with the SAME normalizer the body inline

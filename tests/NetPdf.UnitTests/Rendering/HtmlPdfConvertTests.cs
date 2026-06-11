@@ -2295,6 +2295,65 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Page_margin_box_border_radius_e_notation_parses_like_every_other_length()
+    {
+        // Post-PR-#161 review P2 — the radius parses through the PRODUCTION tokenizer
+        // (LengthResolver.TrySplitNumberAndUnit), so it accepts exactly the grammar every other
+        // raw length does: e-notation is a valid CSS number (CSS Syntax §4.3.12; the body path
+        // resolves `width: 1e2px` to 100px and the calc evaluator pins `calc(1e2px + 0px)`).
+        // `border-radius: 1e1px` = 10px → a rounded (Bézier) band, with NO invalid diagnostic.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"H\"; " +
+            "background-color: #3366cc; border-radius: 1e1px } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
+        var pdf = Latin1(result.Pdf);
+        var i = pdf.IndexOf("0.2 0.4 0.8 rg", StringComparison.Ordinal);
+        Assert.True(i >= 0);
+        Assert.Contains(" c ", pdf[i..pdf.IndexOf('Q', i)]);
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("0.0")]
+    [InlineData("-0")]
+    [InlineData("0e0")]
+    public void Page_margin_box_border_radius_any_zero_spelling_is_a_valid_square(string zero)
+    {
+        // PR #161 Copilot — the unitless ZERO (CSS Values §6.2) is valid in any spelling the
+        // number token admits, not just the literal "0": no diagnostic, square band.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"H\"; " +
+            "background-color: #3366cc; border-radius: " + zero + " } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
+        var pdf = Latin1(result.Pdf);
+        var i = pdf.IndexOf("0.2 0.4 0.8 rg", StringComparison.Ordinal);
+        Assert.True(i >= 0);
+        Assert.DoesNotContain(" c ", pdf[i..pdf.IndexOf('Q', i)]);
+    }
+
+    [Fact]
+    public void Page_margin_box_border_radius_em_trap_is_surfaced_not_misparsed()
+    {
+        // The shared tokenizer's `2em` trap guard: the `e` is the unit's first letter, not an
+        // exponent — `em` is a (relative) unit the absolute fold rejects → surfaced + square.
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>@page { @top-center { content: \"H\"; " +
+            "background-color: #3366cc; border-radius: 2em } }</style></head><body></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() });
+
+        Assert.Contains(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001
+            && d.Message.Contains("border-radius"));
+        var pdf = Latin1(result.Pdf);
+        var i = pdf.IndexOf("0.2 0.4 0.8 rg", StringComparison.Ordinal);
+        Assert.True(i >= 0);
+        Assert.DoesNotContain(" c ", pdf[i..pdf.IndexOf('Q', i)]);   // square band
+    }
+
+    [Fact]
     public void Page_margin_box_border_radius_unsupported_form_is_surfaced()
     {
         // %, per-corner, elliptical, relative forms are diagnosed + ignored (first cut).

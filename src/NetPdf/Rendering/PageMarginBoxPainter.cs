@@ -58,8 +58,9 @@ namespace NetPdf.Rendering;
 /// Unspecified properties fall back to the reader defaults
 /// (16px / default family / black / transparent / no border / no padding / auto size / name-derived alignment).
 /// The <c>border-width</c>/<c>-style</c>/<c>-color</c> box shorthands distribute across the edges as
-/// well; <c>border-radius</c> + background images are tracked follow-ups
-/// (deferrals.md#layout-to-pdf-pipeline).
+/// well. A single uniform absolute <c>border-radius</c> ROUNDS the background band (border-radius
+/// cycle); rounded border STROKES, per-corner/elliptical/relative radii, the body path, and
+/// background images stay tracked follow-ups (deferrals.md#layout-to-pdf-pipeline).
 /// </para>
 /// <para>
 /// <b>Content scope.</b> Literal-string + <c>attr()</c> content, plus <c>counter(page)</c> /
@@ -1167,20 +1168,26 @@ internal static class PageMarginBoxPainter
             EmitBorderRadiusUnsupported(diagnostics, boxName, raw);
             return 0;
         }
-        if (v == "0") return 0;
-        var unitStart = v.Length;
-        while (unitStart > 0 && char.IsAsciiLetter(v[unitStart - 1])) unitStart--;
-        if (unitStart == 0 || unitStart == v.Length
-            || !double.TryParse(v[..unitStart], System.Globalization.NumberStyles.Float,
-                System.Globalization.CultureInfo.InvariantCulture, out var n)
-            || n < 0
-            || !LengthResolver.TryAbsoluteUnitToPx(v[unitStart..].ToLowerInvariant(), n, out var px)
-            || !double.IsFinite(px) || px < 0)
+        // Post-PR-#161 review P2 — parse through the PRODUCTION tokenizer
+        // (LengthResolver.TrySplitNumberAndUnit), not a bespoke scan, so border-radius accepts
+        // exactly the grammar every other raw length does: sign + decimal + e-notation per CSS
+        // Syntax §4.3.12 (`1e2px` = 100px, matching the body path and the calc evaluator's pinned
+        // row) with the `2em` trap guard (the `e` only reads as an exponent before a digit).
+        // Relative/percent/unknown units then fail the ABSOLUTE-unit fold below → surfaced.
+        if (LengthResolver.TrySplitNumberAndUnit(v, out var n, out var unit))
         {
-            EmitBorderRadiusUnsupported(diagnostics, boxName, raw);
-            return 0;
+            // The unitless ZERO (CSS Values §6.2) — valid in ANY zero spelling the number token
+            // admits ("0" / "0.0" / "-0" / "0e0"), not just the literal "0" (PR #161 Copilot).
+            if (unit.Length == 0 && n == 0.0) return 0;
+            if (unit.Length > 0 && n >= 0
+                && LengthResolver.TryAbsoluteUnitToPx(unit, n, out var px)
+                && double.IsFinite(px) && px >= 0)
+            {
+                return px;
+            }
         }
-        return px;
+        EmitBorderRadiusUnsupported(diagnostics, boxName, raw);
+        return 0;
     }
 
     private static void EmitBorderRadiusUnsupported(

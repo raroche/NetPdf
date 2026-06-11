@@ -34,7 +34,8 @@ namespace NetPdf.Layout.Boxes;
 /// <c>string-set</c> whose value contains <c>content()</c> (an unknown function in an unknown property),
 /// so <see cref="NetPdf.Css.Parser.Preprocessing.CssPreprocessor"/>'s recovery re-injects the declaration
 /// into the cascade, where this collector reads it + resolves <c>content()</c> to the element's text.
-/// (The typographic targets <c>content(before|after|first-letter|marker)</c> stay deferred.)
+/// <c>content(before|after)</c> resolves the host's pseudo content via the cascade (content-pseudo
+/// cycle); <c>content(first-letter|marker)</c> stays deferred.
 /// <c>element(name)</c> pulls the running element's TEXT; a STANDALONE <c>element(name)</c> renders the
 /// running element's box AS the margin box's content box — its text in the element's OWN font + color +
 /// <c>text-align</c> (inherited values walked from ancestors, CSS-wide keywords resolved — post-PR-#151

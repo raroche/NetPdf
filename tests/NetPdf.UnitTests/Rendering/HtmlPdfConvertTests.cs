@@ -2250,6 +2250,25 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Page_margin_box_element_single_styled_block_renders_in_its_own_font()
+    {
+        // Post-PR-#160 review P2 — a running element whose ONLY child is a styled block records
+        // ONE leaf segment; its font/colour must drive the shaping (the root has no own style, so
+        // the pre-fix single-run path painted the box default 12pt instead of the h1's 24pt).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } " +
+            ".rh h1 { font-size: 32px; color: #ff0000 } " +
+            "@page { @top-center { content: element(rh) } }</style></head>" +
+            "<body><div class=\"rh\"><h1>Title</h1></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+
+        Assert.Equal(1, TdCount(pdf));
+        Assert.Contains(" 24 Tf", pdf);         // 32px × 0.75 — the h1 segment's own size
+        Assert.DoesNotContain(" 12 Tf", pdf);   // not the 16px box default
+        Assert.Contains("1 0 0 rg", pdf);
+    }
+
+    [Fact]
     public void Page_margin_box_element_uniform_segments_keep_the_single_style()
     {
         // Unstyled nested blocks (no per-leaf overrides) — both lines render at the default size,

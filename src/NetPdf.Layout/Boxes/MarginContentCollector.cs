@@ -366,13 +366,16 @@ internal static class MarginContentCollector
     /// <c>U+000A</c> → the painter keeps its single-line <c>nowrap</c> path, byte-identical). The whole
     /// result is BOUNDED to <paramref name="maxChars"/> TOTAL — a SINGLE budget is shared across every block
     /// read + inline run + newline separator, and the walk STOPS once exhausted, so N huge block children
-    /// can't store N × the cap (post-PR-#154 review P1 / Copilot). APPROXIMATION: nested blocks are FLATTENED
-    /// (each direct block child is one line — its own further block structure / decoration / margins stay
-    /// deferred, deferrals.md); a <c>display: none</c> child renders nothing; a <c>display: contents</c>
-    /// child's block grandchildren aren't promoted (treated as an inline run). DEEP RECURSION
-    /// (deep-recursion cycle): a block child that itself has block-level children RECURSES (each
-    /// nested block its own stacked line) up to <see cref="MaxRunningBlockDepth"/> levels — a deeper
-    /// nest flattens to one line; the SAME total budget threads through every level.</summary>
+    /// can't store N × the cap (post-PR-#154 review P1 / Copilot). SHIPPED here (post-PR-#160 review P3
+    /// wording): nested-block TEXT SEGMENTATION — a block child that itself has block-level children
+    /// RECURSES (deep-recursion cycle; each nested block its own stacked line) up to
+    /// <see cref="MaxRunningBlockDepth"/> levels with the SAME total budget threading through every
+    /// level (a deeper nest flattens to one line), and each line is recorded as a
+    /// <c>CssContentList.RunningSegment</c> carrying its LEAF element's own font/colour (segment-style
+    /// cycle) so the painter shapes it per line. STILL DEFERRED (deferrals.md): real nested block
+    /// LAYOUT (separately laid-out sub-boxes), per-line decoration/margins, per-line
+    /// <c>text-align</c>. A <c>display: none</c> child renders nothing; a <c>display: contents</c>
+    /// child's block grandchildren aren't promoted (treated as an inline run).</summary>
     private static string ReadRunningElementContent(
         IElement element, ResolvedCascadeResult cascade, int maxChars, int depth = 0,
         List<CssContentList.RunningSegment>? segments = null)
@@ -414,14 +417,16 @@ internal static class MarginContentCollector
                     // SEGMENTS (segment-style cycle): the recursion records one segment per LEAF
                     // line itself (the nested call appends to the same list); a flattened leaf —
                     // no nested blocks, or past the depth cap — records one segment styled by the
-                    // block child element. Segment text mirrors the budget-capped appended line;
-                    // at the exact budget boundary a recursion-level separator can truncate the
-                    // JOINED text one char short of the segments (both stay budget-bounded — the
-                    // segments came from the remaining-budget nested call).
+                    // block child element. The recursive budget RESERVES the parent's pending '\n'
+                    // separator (post-PR-#160 review P2): AppendLine consumes one char for it when
+                    // output is non-empty, so without the reservation a nested call at the budget
+                    // boundary could record segment text the joined string can't fit — the
+                    // segments now concatenate to EXACTLY the stored capped text.
                     if (depth < MaxRunningBlockDepth && HasBlockLevelChild(el, cascade))
                     {
+                        var nestedBudget = maxChars - output.Length - (output.Length > 0 ? 1 : 0);
                         var block = ReadRunningElementContent(
-                            el, cascade, maxChars - output.Length, depth + 1, segments);
+                            el, cascade, nestedBudget, depth + 1, segments);
                         AppendLine(output, block, maxChars);
                     }
                     else

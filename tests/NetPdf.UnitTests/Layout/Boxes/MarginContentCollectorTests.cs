@@ -373,6 +373,30 @@ public sealed class MarginContentCollectorTests
     }
 
     [Fact]
+    public async Task Collect_segments_concatenate_to_the_capped_text_at_the_budget_boundary()
+    {
+        // Post-PR-#160 review P2 — the recursive budget reserves the parent's pending '\n'
+        // separator. The first block consumes all but 2 chars of the 64 KiB budget; the nested
+        // second block then has 1 char of real room (separator + 1). Pre-fix the nested call
+        // recorded 2 chars of segment text while the joined string could only fit 1 — the
+        // segments must concatenate to EXACTLY the stored capped text.
+        var first = new string('A', (64 * 1024) - 2);
+        var ctx = await CollectAsync(
+            "<div class='rh'><div>" + first + "</div><div><div>XYZ</div></div></div>",
+            ".rh { position: running(rh) }");
+
+        var segs = ctx.RunningElementSegmentsFirst!["rh"];
+        var joined = new System.Text.StringBuilder();
+        for (var i = 0; i < segs.Count; i++)
+        {
+            if (i > 0) joined.Append('\n');
+            joined.Append(segs[i].Text);
+        }
+        Assert.Equal(ctx.RunningElementsFirst!["rh"], joined.ToString());
+        Assert.Equal(64 * 1024, joined.Length);   // budget exactly exhausted: 65534 + '\n' + "X"
+    }
+
+    [Fact]
     public async Task Collect_records_nested_recursion_segments_per_nested_block()
     {
         // Deep recursion: each NESTED block is its own segment, styled by ITS element — the inner

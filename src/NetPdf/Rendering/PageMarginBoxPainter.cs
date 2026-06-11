@@ -221,7 +221,10 @@ internal static class PageMarginBoxPainter
             // differ from the content's, so the paint-time line metrics follow `contentStyle` (post-PR-#151
             // review P1, BoxFragment.TextMetricsStyle). Mixed / non-element() content keeps the box's own style
             // for both. APPROXIMATION: the running element's box and the margin box COINCIDE (no separately-
-            // decorated nesting); the element's nested BLOCK children stay deferred (deferrals.md). Relative
+            // decorated nesting). Its nested BLOCK children DO render — stacked lines, 16-deep recursion,
+            // per-line leaf font/colour via the segment runs below (deep-recursion + segment-style cycles);
+            // real nested block LAYOUT (sub-boxes with own decoration/margins) stays deferred
+            // (deferrals.md). Relative
             // units / `inherit` resolve against the page context (exact for the common absolute values).
             ComputedStyle style, contentStyle;
             double? elementHAlign = null;   // the running element's own text-align factor (Task 23), if any.
@@ -253,19 +256,23 @@ internal static class PageMarginBoxPainter
                     contentStyle, pageContextEmPx, rootEmPx, pageWidthPx, pageHeightPx,
                     $"page margin box @{mb.Name}", diagnostics);
 
-            // SEGMENT RUNS (Task 23, segment-style cycle): a standalone element() whose running
-            // content stacked MULTIPLE lines shapes each line as its own TextRun in the LEAF
-            // block's own (ancestor-walked) font/colour — an h1 title line over a styled subtitle
-            // renders heterogeneously ("real nested block layout" first cut: per-line text style;
-            // per-line decoration/margins stay deferred). The '\n' terminators ride inside the run
-            // texts, so the pre-line/pre layout still sees the mandatory breaks. The line PITCH +
-            // TextMetricsStyle follow the LARGEST segment font (uniform-pitch approximation — no
-            // line can overlap a taller neighbour; true per-line pitch is the refinement).
-            // Single-segment / non-element content keeps the single-run path byte-identical.
+            // SEGMENT RUNS (Task 23, segment-style cycle): a standalone element()'s stacked lines
+            // each shape as their own TextRun in the LEAF block's own (ancestor-walked) font/colour
+            // — an h1 title line over a styled subtitle renders heterogeneously ("real nested block
+            // layout" first cut: per-line text style; per-line decoration/margins stay deferred).
+            // The '\n' terminators ride inside the run texts, so the pre-line/pre layout still sees
+            // the mandatory breaks. The line PITCH + TextMetricsStyle follow the LARGEST segment
+            // font (uniform-pitch approximation — no line can overlap a taller neighbour; true
+            // per-line pitch is the refinement). A SINGLE segment also takes this path (post-PR-#160
+            // review P2: `<div class=rh><h1>…</h1></div>` records ONE styled leaf segment whose
+            // font/colour must drive the shaping — the root's own-style capture sees only the
+            // ROOT's declarations, not the leaf's); an unstyled segment falls back to contentStyle,
+            // so flat unstyled content stays on an identical single-run layout. Non-element content
+            // keeps the single-run path untouched.
             TextRun[]? contentRuns = null;
             var contentMetricsStyle = contentStyle;
             if (isStandaloneElement
-                && TryGetRunningElementSegments(marginContext, elName, elFirst) is { Count: > 1 } segs)
+                && TryGetRunningElementSegments(marginContext, elName, elFirst) is { } segs)
             {
                 var runs = new TextRun[segs.Count];
                 var maxFontPx = 0.0;

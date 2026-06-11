@@ -233,6 +233,11 @@ internal static class TextPainter
             // the half-leading below; the null default keeps the uniform li × pitch, byte-identical.
             var thisLineHeightPx = fragment.PerLineHeightsPx is { } heights && li < heights.Count
                 ? heights[li] : lineHeightPx;
+            // Per-line TOP GAP (segment-margins cycle): a leaf block's collapsed vertical margin
+            // pushes its line down BEFORE placement (the gap is transparent — the painter's band
+            // starts after it). Null = no gaps, byte-identical.
+            if (fragment.PerLineTopOffsetsPx is { } gaps && li < gaps.Count)
+                cumulativeTopPx += gaps[li];
             var lineTopPx = contentTopPx + (fragment.PerLineHeightsPx is null
                 ? li * lineHeightPx : cumulativeTopPx);
             cumulativeTopPx += thisLineHeightPx;

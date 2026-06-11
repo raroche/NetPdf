@@ -2403,6 +2403,89 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Body_percentage_width_sizes_the_background_band()
+    {
+        // Body-percent cycle — width: 50% of the 602px default content area = 301px → 225.75pt.
+        var r = FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:50%;height:20px;background-color:#3366cc\"></div>" +
+            "</body></html>")));
+        Assert.Equal(225.75, r.W, 1);
+    }
+
+    [Fact]
+    public void Body_percentage_padding_shifts_the_text()
+    {
+        // padding-left: 10% of the 602px content area = 60.2px → a 45.15pt shift.
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var without = FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body><div>AB</div></body></html>", opts)));
+        var with_ = FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>div { padding-left: 10% }</style></head>" +
+            "<body><div>AB</div></body></html>", opts)));
+        Assert.Equal(without.X + 45.15, with_.X, 1);
+    }
+
+    [Fact]
+    public void Page_margin_box_segment_margin_inserts_a_collapsed_gap_between_lines()
+    {
+        // Segment-margins cycle — the second leaf block's margin-top: 16px inserts a gap, growing
+        // the decorated element band: 19.2 + 16 + 19.2 = 54.4px → 40.8pt (no gap: 38.4px = 28.8pt).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); background-color: #cc3366 } " +
+            ".rh .gap { margin-top: 16px } " +
+            "@page { @top-center { content: element(rh); background-color: #3366cc } }</style></head>" +
+            "<body><div class=\"rh\"><div>One</div><div class=\"gap\">Two</div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+
+        Assert.Contains(AllRects(pdf), r => Math.Abs(r.H - 40.8) < 0.1);
+    }
+
+    [Fact]
+    public void Page_margin_box_segment_adjacent_margins_collapse_to_the_max()
+    {
+        // CSS 2.2 §8.3.1's adjoining case — margin-bottom: 20px meets margin-top: 16px → ONE
+        // 20px gap (not 36): band = 19.2 + 20 + 19.2 = 58.4px → 43.8pt.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); background-color: #cc3366 } " +
+            ".rh .a { margin-bottom: 20px } .rh .b { margin-top: 16px } " +
+            "@page { @top-center { content: element(rh); background-color: #3366cc } }</style></head>" +
+            "<body><div class=\"rh\"><div class=\"a\">One</div><div class=\"b\">Two</div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+
+        Assert.Contains(AllRects(pdf), r => Math.Abs(r.H - 43.8) < 0.1);
+    }
+
+    [Fact]
+    public void Page_margin_box_segment_line_height_drives_its_own_pitch()
+    {
+        // Segment-line-height cycle — the h1's own line-height: 48px replaces its font × 1.2
+        // pitch: band = 48 + 19.2 = 67.2px → 50.4pt (font-default pitch would be 38.4 + 19.2).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); background-color: #cc3366 } " +
+            ".rh h1 { font-size: 32px; line-height: 48px } " +
+            "@page { @top-center { content: element(rh); background-color: #3366cc } }</style></head>" +
+            "<body><div class=\"rh\"><h1>Big</h1><div>Sub</div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+
+        Assert.Contains(AllRects(pdf), r => Math.Abs(r.H - 50.4) < 0.1);
+    }
+
+    [Fact]
+    public void Page_margin_box_segment_unitless_line_height_multiplies_the_font()
+    {
+        // A unitless line-height multiplies the SEGMENT's font: 32px × 2 + 19.2 = 83.2px → 62.4pt.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); background-color: #cc3366 } " +
+            ".rh h1 { font-size: 32px; line-height: 2 } " +
+            "@page { @top-center { content: element(rh); background-color: #3366cc } }</style></head>" +
+            "<body><div class=\"rh\"><h1>Big</h1><div>Sub</div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+
+        Assert.Contains(AllRects(pdf), r => Math.Abs(r.H - 62.4) < 0.1);
+    }
+
+    [Fact]
     public void Page_margin_box_flat_element_decoration_paints_once_not_per_line_too()
     {
         // Post-PR-#162 review P1 — a FLAT running element's own background/border already rides

@@ -70,6 +70,44 @@ internal static class ComputedStyleLayoutExtensions
         return style.ReadLengthPxOrDefault(id, defaultPx: 0);
     }
 
+    /// <summary>Body % lengths (body-percent cycle) — like
+    /// <see cref="ReadLengthPxOrZero(ComputedStyle, PropertyId)"/> but a PERCENTAGE slot resolves
+    /// against <paramref name="containingInlinePx"/> (the containing block's INLINE size: CSS 2.2
+    /// §8.3/§8.4 resolve margin/padding percentages on EVERY side against the inline axis, §10.2
+    /// width likewise). A negative containing size reads as 0 (defensive). `auto`/keyword/deferred
+    /// slots still read 0 (the cycle-1 contract).</summary>
+    public static double ReadLengthOrPercentPx(
+        this ComputedStyle style, PropertyId id, double containingInlinePx)
+    {
+        var slot = style.Get(id);
+        if (slot.Tag == ComputedSlotTag.Percentage)
+            return slot.AsPercentage() / 100.0 * Math.Max(0, containingInlinePx);
+        return style.ReadLengthPxOrZero(id);
+    }
+
+    /// <summary>Body % lengths (body-percent cycle) — rewrite a PERCENTAGE padding slot into its
+    /// USED px (against the containing block's inline size, §8.4) IN PLACE, so every downstream
+    /// reader agrees with layout: <c>TextPainter</c>'s content-origin inset and
+    /// <c>FragmentPainter</c> read the slots with <see cref="ReadLengthPxOrZero(ComputedStyle, PropertyId)"/>
+    /// at paint time, where the containing size is long gone (the same used-value-rewrite pattern
+    /// as the margin-box painter's <c>ResolveUsedPaddingInPlace</c>). Margins/width need no
+    /// rewrite — they are layout-only inputs. Idempotent (the slot becomes LengthPx).</summary>
+    public static void ResolveUsedPercentPaddingInPlace(
+        this ComputedStyle style, double containingInlinePx)
+    {
+        ReadOnlySpan<PropertyId> paddings =
+            [PropertyId.PaddingTop, PropertyId.PaddingRight, PropertyId.PaddingBottom, PropertyId.PaddingLeft];
+        foreach (var id in paddings)
+        {
+            var slot = style.Get(id);
+            if (slot.Tag == ComputedSlotTag.Percentage)
+            {
+                style.Set(id, ComputedSlot.FromLengthPx(
+                    slot.AsPercentage() / 100.0 * Math.Max(0, containingInlinePx)));
+            }
+        }
+    }
+
     /// <summary>Maps a <c>border-*-width</c> PropertyId to its sibling
     /// <c>border-*-style</c> PropertyId for the §4.3 used-width style gate;
     /// returns <see langword="false"/> for any other property.</summary>

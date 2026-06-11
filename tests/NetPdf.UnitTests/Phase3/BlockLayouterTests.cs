@@ -173,6 +173,82 @@ public sealed class BlockLayouterTests
         Assert.Equal(200, sink.Fragments[2].InlineSize);
     }
 
+    [Fact]
+    public void Percentage_width_and_margins_resolve_against_the_containing_block()
+    {
+        // Body-percent cycle — CSS 2.2 §10.2/§8.3: width: 50% of the 600px containing block =
+        // 300; margin-left: 10% = 60 (the inline-axis base on every side).
+        var sink = new RecordingFragmentSink();
+        var style = MakeStyle();
+        style.Set(PropertyId.Width, ComputedSlot.FromPercentage(50));
+        style.Set(PropertyId.MarginLeft, ComputedSlot.FromPercentage(10));
+        SetLengthPx(style, PropertyId.Height, 40);
+
+        var root = Box.CreateRoot(MakeStyle());
+        root.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Single(sink.Fragments);
+        Assert.Equal(300, sink.Fragments[0].InlineSize);
+        Assert.Equal(60, sink.Fragments[0].InlineOffset);
+    }
+
+    [Fact]
+    public void Percentage_padding_resolves_against_the_inline_axis_even_vertically()
+    {
+        // §8.4 — padding-top: 10% resolves against the containing block's WIDTH (600 → 60),
+        // growing the border-box block size: 60 + 40 + 60 = 160.
+        var sink = new RecordingFragmentSink();
+        var style = MakeStyle();
+        style.Set(PropertyId.PaddingTop, ComputedSlot.FromPercentage(10));
+        style.Set(PropertyId.PaddingBottom, ComputedSlot.FromPercentage(10));
+        SetLengthPx(style, PropertyId.Height, 40);
+
+        var root = Box.CreateRoot(MakeStyle());
+        root.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(160, sink.Fragments[0].BlockSize);
+    }
+
+    [Fact]
+    public void Percentage_width_in_the_nested_recursion_uses_the_parent_content_box()
+    {
+        // The recursion resolves % against the PARENT's content box: a 50% child of a 400px
+        // parent is 200.
+        var sink = new RecordingFragmentSink();
+        var parentStyle = MakeStyle();
+        SetLengthPx(parentStyle, PropertyId.Width, 400);
+        var childStyle = MakeStyle();
+        childStyle.Set(PropertyId.Width, ComputedSlot.FromPercentage(50));
+        SetLengthPx(childStyle, PropertyId.Height, 40);
+
+        var root = Box.CreateRoot(MakeStyle());
+        var parent = Box.ForElement(BoxKind.BlockContainer, parentStyle, MakeElement());
+        parent.AppendChild(Box.ForElement(BoxKind.BlockContainer, childStyle, MakeElement()));
+        root.AppendChild(parent);
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(2, sink.Fragments.Count);
+        Assert.Equal(400, sink.Fragments[0].InlineSize);
+        Assert.Equal(200, sink.Fragments[1].InlineSize);
+    }
+
     // --- Multi-block stacking ----------------------------------------
 
     [Fact]

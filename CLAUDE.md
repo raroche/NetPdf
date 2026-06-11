@@ -388,12 +388,15 @@ through the production tokenizer incl. any-zero spelling; stale wording):** **(A
 co-declared element()'s decoration paints as a NESTED band at its content block. **(B)** a uniform absolute
 margin-box `border-radius` rounds the background band (`PdfPage.FillRoundedRectangle`; strokes/body deferred).
 **(C)** `content(before|after)` resolves the host's pseudo content in `string-set` — plus a REAL adapter fix
-(a wholly-dropped rule now synthesizes from its recovery instead of losing it). **Segment-decor/-align/-pitch cycles (in progress, branch
-`phase-3-task-23-segment-decor-align-pitch`):** a leaf block's own background/border paints a PER-LINE band;
-a segment's own `text-align` aligns its line (box wins); each line advances by its segment's pitch (true
-per-line pitch — `BoxFragment.PerLineHeightsPx`/`PerLineAlignFactors` → `TextPainter`). Next (in order):
-body % lengths, per-line margins/padding, then the multi-page driver (cross-page running +
-`@page :left`/`:right`/`:blank` + named pages). Blocked (see `deferrals.md`):
+(a wholly-dropped rule now synthesizes from its recovery instead of losing it). **Segment-decor/-align/-pitch cycles (merged as PR #162 incl. its review — no double
+root decoration; band Y origin includes the box insets; shipped wording):** per-line bands/alignment/pitch for
+element() segments. **Body-percent / segment-margins / segment-line-height cycles (in progress, branch
+`phase-3-task-21-23-body-percent-segment-margins-line-height`):** body `width`/`margin-*`/`padding-*` %
+resolve against the containing block's inline size at layout time (used % padding rewritten in place for
+paint); a leaf block's absolute vertical margins insert collapsed inter-line gaps; its own `line-height`
+drives its line's pitch. Next (in order): per-line padding, background images (gated on the body image
+pipeline), `% height`, then the multi-page driver (cross-page running + `@page :left`/`:right`/`:blank` +
+named pages). Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).
 For the live state, read the **current-state pointer at the top of [PROGRESS.md](PROGRESS.md)**

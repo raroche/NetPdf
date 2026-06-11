@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Text;
 using AngleSharp.Dom;
 using NetPdf.Css.Cascade;
+using NetPdf.Css.ComputedValues.PropertyResolvers;
 using NetPdf.Layout.Inline;
 
 namespace NetPdf.Layout.Boxes;
@@ -143,7 +144,9 @@ internal static class MarginContentCollector
     /// a <c>MarginBoxStyle</c> longhand) to align the line. All are inherited, so <see cref="CaptureOwnStyle"/>
     /// walks ANCESTORS for each (post-PR-#151 review P2).</summary>
     private static readonly string[] InheritedOwnProperties =
-        { "color", "font-family", "font-size", "font-weight", "font-style", "text-align" };
+        // line-height joined for the per-segment pitch (segment-line-height cycle) — read straight
+        // from the captured pairs by the painter (like text-align; not a MarginBoxStyle longhand).
+        { "color", "font-family", "font-size", "font-weight", "font-style", "text-align", "line-height" };
 
     /// <summary>The NON-inherited <c>background-color</c> + <c>border-*</c> + <c>padding-*</c> longhands
     /// element()'s full-block first cut pulls from the running element for its DECORATION + box model (Task 23
@@ -545,9 +548,40 @@ internal static class MarginContentCollector
         IElement element, ResolvedCascadeResult cascade, bool captureDecoration)
     {
         if (segments is null || string.IsNullOrEmpty(text)) return;
+        var (marginTopPx, marginBottomPx) = captureDecoration
+            ? CaptureSegmentMargins(element, cascade)
+            : (0.0, 0.0);   // the running ROOT's margins are the box's business, like its decoration.
         segments.Add(new CssContentList.RunningSegment(
             text, CaptureSegmentStyle(element, cascade),
-            captureDecoration ? CaptureSegmentDecoration(element, cascade) : EmptyOwnStyle));
+            captureDecoration ? CaptureSegmentDecoration(element, cascade) : EmptyOwnStyle,
+            marginTopPx, marginBottomPx));
+    }
+
+    /// <summary>The leaf block's OWN vertical margins in used px (segment-margins cycle) — the
+    /// self-only winners (margins aren't inherited), ABSOLUTE lengths only (a %/relative/`auto`
+    /// margin reads 0 — the per-line gap model has no containing-block/font context here;
+    /// deferrals.md). Negative margins are kept (legal per CSS 2.2 §8.3 — a negative gap pulls
+    /// lines together; the painter floors the COLLAPSED gap at 0 to keep bands non-overlapping,
+    /// a documented approximation).</summary>
+    private static (double TopPx, double BottomPx) CaptureSegmentMargins(
+        IElement element, ResolvedCascadeResult cascade)
+    {
+        var rules = cascade.TryGetStylesFor(element);
+        if (rules is null) return (0, 0);
+        return (AbsoluteMarginPx(rules, "margin-top"), AbsoluteMarginPx(rules, "margin-bottom"));
+
+        static double AbsoluteMarginPx(ResolvedRuleSet rules, string property)
+        {
+            var raw = rules.GetWinner(property)?.ResolvedValue;
+            if (string.IsNullOrWhiteSpace(raw)) return 0;
+            var v = raw.Trim();
+            if (v == "0") return 0;
+            return LengthResolver.TrySplitNumberAndUnit(v, out var n, out var unit)
+                && unit.Length > 0
+                && LengthResolver.TryAbsoluteUnitToPx(unit, n, out var px)
+                && double.IsFinite(px)
+                ? px : 0;
+        }
     }
 
     /// <summary>The leaf block's OWN (self-only, no ancestor walk — decoration isn't inherited)

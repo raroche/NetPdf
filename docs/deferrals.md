@@ -3281,6 +3281,15 @@ flags the categories):
          background/border/margin band), per-line `text-align` (captured, not consumed — one
          line-align factor per box), true per-line pitch, and the box/element separately-decorated
          nesting.
+       - **Body % lengths + per-line segment margins + per-segment line-height — DONE
+         (body-percent / segment-margins / segment-line-height cycles):** body `width`/`margin-*`/
+         `padding-*` PERCENTAGES resolve at layout time against the containing block's INLINE size
+         (CSS 2.2 §10.2/§8.3/§8.4; % padding is rewritten to used px in place so paint agrees;
+         STILL DEFERRED: `% height` (needs a definite container), floats/abspos %, `margin: auto`,
+         % in body calc()). A leaf block's own ABSOLUTE vertical margins insert collapsed
+         inter-line gaps (max of adjoining, floored at 0; %/relative/`auto` read 0); its own
+         `line-height` (absolute, unitless, or em) drives its line's pitch (`normal`/%/other →
+         font × 1.2). STILL DEFERRED: per-line padding, real nested block LAYOUT.
        - **element() segments part 2: per-line decoration + text-align + pitch — DONE
          (segment-decor / segment-align / segment-pitch cycles):** a leaf block's own
          background/border paints a per-LINE band behind its line; a segment's own `text-align`

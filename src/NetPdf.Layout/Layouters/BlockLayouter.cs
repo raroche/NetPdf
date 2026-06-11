@@ -6397,6 +6397,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             LineHeightOverridePx: block.Style.ReadLengthPxOrZero(PropertyId.LineHeight));
     }
 
+    /// <summary>Whether the box DECLARES an explicit <c>width</c> — a LengthPx or Percentage
+    /// slot, INCLUDING the legal zero (`width: 0` / `0%`); `auto`/keywords/unset are not
+    /// explicit. The §10.3.3 gates key on this tag test (post-PR-#164 review P3).</summary>
+    private static bool HasExplicitWidth(Box child) =>
+        child.Style.Get(PropertyId.Width).Tag is ComputedSlotTag.LengthPx or ComputedSlotTag.Percentage;
+
     /// <summary>Used border-box inline size for an in-flow block-level child (the CSS 2.2
     /// §10.3.3 cycle-1 subset; body-explicit-width gap fix). A plain block container
     /// (<see cref="BoxKind.BlockContainer"/> / <see cref="BoxKind.ListItem"/>) with an explicit
@@ -6420,6 +6426,30 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     /// </list>
     /// §10.3.3 margin DISTRIBUTION ships in the auto-margins cycle — see
     /// <see cref="ResolveAutoInlineMargins"/> (the caller applies it right after this).</summary>
+    private static double ResolveInFlowBorderBoxInlineSize(
+        Box child, double availableInlineSize, double containingInlinePx,
+        double marginInlineStart, double marginInlineEnd)
+    {
+        if (child.Kind is BoxKind.BlockContainer or BoxKind.ListItem)
+        {
+            // Body % lengths (body-percent cycle): an explicit PERCENTAGE width resolves against
+            // the CONTAINING block's inline size (CSS 2.2 §10.2 — not the float-adjusted available
+            // range), as do the padding percentages (§8.4). Explicitness is a TAG test, so the
+            // legal `width: 0` / `0%` sizes a zero-content border box instead of filling
+            // (post-PR-#164 review P3).
+            if (HasExplicitWidth(child))
+            {
+                var declaredWidth = child.Style.ReadLengthOrPercentPx(PropertyId.Width, containingInlinePx);
+                return declaredWidth
+                    + child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth)
+                    + child.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth)
+                    + child.Style.ReadLengthOrPercentPx(PropertyId.PaddingLeft, containingInlinePx)
+                    + child.Style.ReadLengthOrPercentPx(PropertyId.PaddingRight, containingInlinePx);
+            }
+        }
+        return Math.Max(0, availableInlineSize - marginInlineStart - marginInlineEnd);
+    }
+
     /// <summary>§10.3.3 auto-margin DISTRIBUTION (auto-margins cycle) — for a plain in-flow block
     /// with an EXPLICIT width (a LengthPx/Percentage slot, INCLUDING the legal zero),
     /// <c>margin-left/right: auto</c> (a Keyword slot — the initial unset margin is 0, so
@@ -6464,36 +6494,6 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         {
             marginInlineEnd = leftover;
         }
-    }
-
-    /// <summary>Whether the box DECLARES an explicit <c>width</c> — a LengthPx or Percentage
-    /// slot, INCLUDING the legal zero (`width: 0` / `0%`); `auto`/keywords/unset are not
-    /// explicit. The §10.3.3 gates key on this tag test (post-PR-#164 review P3).</summary>
-    private static bool HasExplicitWidth(Box child) =>
-        child.Style.Get(PropertyId.Width).Tag is ComputedSlotTag.LengthPx or ComputedSlotTag.Percentage;
-
-    private static double ResolveInFlowBorderBoxInlineSize(
-        Box child, double availableInlineSize, double containingInlinePx,
-        double marginInlineStart, double marginInlineEnd)
-    {
-        if (child.Kind is BoxKind.BlockContainer or BoxKind.ListItem)
-        {
-            // Body % lengths (body-percent cycle): an explicit PERCENTAGE width resolves against
-            // the CONTAINING block's inline size (CSS 2.2 §10.2 — not the float-adjusted available
-            // range), as do the padding percentages (§8.4). Explicitness is a TAG test, so the
-            // legal `width: 0` / `0%` sizes a zero-content border box instead of filling
-            // (post-PR-#164 review P3).
-            if (HasExplicitWidth(child))
-            {
-                var declaredWidth = child.Style.ReadLengthOrPercentPx(PropertyId.Width, containingInlinePx);
-                return declaredWidth
-                    + child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth)
-                    + child.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth)
-                    + child.Style.ReadLengthOrPercentPx(PropertyId.PaddingLeft, containingInlinePx)
-                    + child.Style.ReadLengthOrPercentPx(PropertyId.PaddingRight, containingInlinePx);
-            }
-        }
-        return Math.Max(0, availableInlineSize - marginInlineStart - marginInlineEnd);
     }
 
     /// <summary>Per Phase 3 Task 11 cycle 1 sub-cycle 1 — compute the

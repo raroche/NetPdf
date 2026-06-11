@@ -2720,6 +2720,65 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Page_margin_box_segment_horizontal_padding_insets_its_own_line()
+    {
+        // Hpadding cycle — the padded leaf's line starts 20px = 15pt right of its sibling
+        // (both left-aligned in a 300px box); the unpadded line is unaffected.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } " +
+            ".rh .pad { padding-left: 20px } " +
+            "@page { @top-center { content: element(rh); width: 300px; text-align: left } }</style></head>" +
+            "<body><div class=\"rh\"><div>AB</div><div class=\"pad\">AB</div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+
+        var tds = AllTdXs(pdf);
+        Assert.True(tds.Count >= 2, "expected two margin lines");
+        Assert.Equal(tds[0] + 15.0, tds[1], 1);
+    }
+
+    [Fact]
+    public void Page_margin_box_segment_horizontal_padding_shrinks_the_aligned_extent()
+    {
+        // A right-aligned padded line ends padding-right SHORT of its unpadded sibling: the
+        // second Td sits 15pt (20px) left of the first.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } " +
+            ".rh .pad { padding-right: 20px } " +
+            "@page { @top-center { content: element(rh); width: 300px; text-align: right } }</style></head>" +
+            "<body><div class=\"rh\"><div>AB</div><div class=\"pad\">AB</div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+
+        var tds = AllTdXs(pdf);
+        Assert.True(tds.Count >= 2, "expected two margin lines");
+        Assert.Equal(tds[0] - 15.0, tds[1], 1);
+    }
+
+    [Fact]
+    public void Body_float_percentage_width_sizes_the_band()
+    {
+        // Float-percent cycle — float: left; width: 25% of the 602px content area = 150.5px
+        // → 112.875pt.
+        var r = FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"float:left;width:25%;height:20px;background-color:#3366cc\"></div>" +
+            "</body></html>")));
+        Assert.Equal(112.88, r.W, 1);
+    }
+
+    [Fact]
+    public void Body_border_box_sizing_keeps_the_declared_band_width()
+    {
+        // Body box-sizing cycle — width: 200px; padding: 20px; box-sizing: border-box → the band
+        // IS 200px = 150pt (content-box would be 240px = 180pt).
+        var r = FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:200px;height:20px;padding:20px;box-sizing:border-box;" +
+            "background-color:#3366cc\"></div>" +
+            "</body></html>")));
+        Assert.Equal(150.0, r.W, 1);
+    }
+
+    [Fact]
     public void Page_margin_box_flat_element_decoration_paints_once_not_per_line_too()
     {
         // Post-PR-#162 review P1 — a FLAT running element's own background/border already rides

@@ -393,13 +393,16 @@ root decoration; band Y origin includes the box insets; shipped wording):** per-
 element() segments. **Body-percent / segment-margins / segment-line-height cycles (merged as PR #163 incl. its
 review — percent-aware nested inline-only margin-top; zero line-height; single-pass geometry; the
 AngleSharp-eats-`16PX` canary):** body %, segment margin gaps, per-segment line-height.
-**Segment-padding / percent-height / auto-margins cycles (in progress, branch
-`phase-3-task-21-23-segment-padding-percent-height-auto-margins`):** a leaf block's vertical padding grows
-its line band/pitch; `height: N%` resolves against a definite containing height (fragmentainer at the top,
-the parent's resolved height through the recursion — auto parent → auto per §10.5); `margin: auto` with an
-explicit width centres per §10.3.3 (both fill sites + the inline-only path). Next (in order): horizontal
-per-line padding, background images (gated on the body image pipeline), floats/abspos %, then the
-multi-page driver (cross-page running + `@page :left`/`:right`/`:blank` + named pages). Blocked (see `deferrals.md`):
+**Segment-padding / percent-height / auto-margins cycles (merged as PR #164 incl. its dual
+review — block-once boundary padding; % height through the MEASURE pass too; float-range auto margins;
+explicit `width: 0`):** vertical segment padding, definite-chain % height, §10.3.3 centering.
+**Hpadding / float-percent / box-sizing cycles (in progress, branch
+`phase-3-task-21-23-hpadding-float-percent-box-sizing`):** a leaf's horizontal padding insets its line's
+glyphs + alignment extent (band keeps full width); float `width`/`margin-*`/`padding-*` % resolve against
+the BFC content box (abspos % was already live); an explicit body width under `box-sizing: border-box` IS
+the border box (floored at the insets). Next (in order): background images (gated on the body image
+pipeline), per-line horizontal margins, then the multi-page driver (cross-page running +
+`@page :left`/`:right`/`:blank` + named pages). Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).
 For the live state, read the **current-state pointer at the top of [PROGRESS.md](PROGRESS.md)**

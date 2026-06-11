@@ -445,6 +445,78 @@ public sealed class BlockLayouterTests
         Assert.Equal(250, centred.InlineOffset, 3);
     }
 
+    [Fact]
+    public void Border_box_sizing_makes_the_declared_width_the_border_box()
+    {
+        // Body box-sizing cycle (CSS Basic UI 4 §10) — width: 200 + 20px padding each side:
+        // border-box → the fragment IS 200 (content 160); content-box default → 240.
+        foreach (var (borderBox, expected) in new[] { (true, 200.0), (false, 240.0) })
+        {
+            var sink = new RecordingFragmentSink();
+            var style = MakeStyle();
+            SetLengthPx(style, PropertyId.Width, 200);
+            SetLengthPx(style, PropertyId.PaddingLeft, 20);
+            SetLengthPx(style, PropertyId.PaddingRight, 20);
+            SetLengthPx(style, PropertyId.Height, 40);
+            if (borderBox) SetKeyword(style, PropertyId.BoxSizing, 1);   // border-box
+
+            var root = Box.CreateRoot(MakeStyle());
+            root.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+            using var layouter = new BlockLayouter(root, sink);
+            var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+            var layoutCtx = new LayoutContext(ctx);
+            using var resolver = new BreakResolver();
+            layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+            Assert.Equal(expected, sink.Fragments[0].InlineSize);
+        }
+    }
+
+    [Fact]
+    public void Border_box_sizing_floors_at_the_insets()
+    {
+        // A border-box width SMALLER than the insets floors there (content box at 0) —
+        // the PR #155 margin-box rule, mirrored for the body.
+        var sink = new RecordingFragmentSink();
+        var style = MakeStyle();
+        SetLengthPx(style, PropertyId.Width, 10);
+        SetLengthPx(style, PropertyId.PaddingLeft, 20);
+        SetLengthPx(style, PropertyId.PaddingRight, 20);
+        SetLengthPx(style, PropertyId.Height, 40);
+        SetKeyword(style, PropertyId.BoxSizing, 1);
+
+        var root = Box.CreateRoot(MakeStyle());
+        root.AppendChild(Box.ForElement(BoxKind.BlockContainer, style, MakeElement()));
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(40, sink.Fragments[0].InlineSize);
+    }
+
+    [Fact]
+    public void Float_percentage_width_resolves_against_the_bfc()
+    {
+        // Float-percent cycle — a float's width: 50% resolves against the 600px BFC content box.
+        var sink = new RecordingFragmentSink();
+        var floatStyle = MakeStyle();
+        floatStyle.Set(PropertyId.Width, ComputedSlot.FromPercentage(50));
+        SetLengthPx(floatStyle, PropertyId.Height, 40);
+        SetKeyword(floatStyle, PropertyId.Float, 1);   // left
+
+        var root = Box.CreateRoot(MakeStyle());
+        root.AppendChild(Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement()));
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        Assert.Equal(300, sink.Fragments[0].InlineSize);
+    }
+
     // --- Multi-block stacking ----------------------------------------
 
     [Fact]

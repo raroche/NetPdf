@@ -5740,21 +5740,24 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         double currentBfcY,
         CancellationToken cancellationToken)
     {
-        // Box-model reads — same set as the in-flow path.
-        var marginStart = child.Style.ReadLengthPxOrZero(PropertyId.MarginTop);
-        var marginEnd = child.Style.ReadLengthPxOrZero(PropertyId.MarginBottom);
-        var marginInlineStart = child.Style.ReadLengthPxOrZero(PropertyId.MarginLeft);
-        var marginInlineEnd = child.Style.ReadLengthPxOrZero(PropertyId.MarginRight);
+        // Box-model reads — same set as the in-flow path. PERCENT-aware on the inline axis
+        // (float-percent cycle, CSS 2.2 §8.3/§8.4/§10.3.5: the float's containing block is the
+        // BFC content box); % height stays deferred (a float's containing height is the same
+        // indefinite story as the body's pre-percent-height-cycle).
+        var marginStart = child.Style.ReadLengthOrPercentPx(PropertyId.MarginTop, _bfcContentInlineSize);
+        var marginEnd = child.Style.ReadLengthOrPercentPx(PropertyId.MarginBottom, _bfcContentInlineSize);
+        var marginInlineStart = child.Style.ReadLengthOrPercentPx(PropertyId.MarginLeft, _bfcContentInlineSize);
+        var marginInlineEnd = child.Style.ReadLengthOrPercentPx(PropertyId.MarginRight, _bfcContentInlineSize);
         var borderStart = child.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
         var borderEnd = child.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
         var borderInlineStart = child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
         var borderInlineEnd = child.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
-        var paddingStart = child.Style.ReadLengthPxOrZero(PropertyId.PaddingTop);
-        var paddingEnd = child.Style.ReadLengthPxOrZero(PropertyId.PaddingBottom);
-        var paddingInlineStart = child.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
-        var paddingInlineEnd = child.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
+        var paddingStart = child.Style.ReadLengthOrPercentPx(PropertyId.PaddingTop, _bfcContentInlineSize);
+        var paddingEnd = child.Style.ReadLengthOrPercentPx(PropertyId.PaddingBottom, _bfcContentInlineSize);
+        var paddingInlineStart = child.Style.ReadLengthOrPercentPx(PropertyId.PaddingLeft, _bfcContentInlineSize);
+        var paddingInlineEnd = child.Style.ReadLengthOrPercentPx(PropertyId.PaddingRight, _bfcContentInlineSize);
         var contentBlock = child.Style.ReadLengthPxOrZero(PropertyId.Height);
-        var contentInline = child.Style.ReadLengthPxOrZero(PropertyId.Width);
+        var contentInline = child.Style.ReadLengthOrPercentPx(PropertyId.Width, _bfcContentInlineSize);
 
         var borderBoxBlockSize = borderStart + paddingStart + contentBlock
             + paddingEnd + borderEnd;
@@ -5953,20 +5956,22 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         // placed at the right vertical position.
         var currentBfcY = currentBfcYOverride ?? fragmentainer.UsedBlockSize;
         // Box-model reads — same set as the in-flow path.
-        var marginStart = child.Style.ReadLengthPxOrZero(PropertyId.MarginTop);
-        var marginEnd = child.Style.ReadLengthPxOrZero(PropertyId.MarginBottom);
-        var marginInlineStart = child.Style.ReadLengthPxOrZero(PropertyId.MarginLeft);
-        var marginInlineEnd = child.Style.ReadLengthPxOrZero(PropertyId.MarginRight);
+        // PERCENT-aware on the inline axis (float-percent cycle — the float's containing block
+        // is the BFC content box; % height stays deferred like the nested-float path).
+        var marginStart = child.Style.ReadLengthOrPercentPx(PropertyId.MarginTop, fragmentainer.ContentInlineSize);
+        var marginEnd = child.Style.ReadLengthOrPercentPx(PropertyId.MarginBottom, fragmentainer.ContentInlineSize);
+        var marginInlineStart = child.Style.ReadLengthOrPercentPx(PropertyId.MarginLeft, fragmentainer.ContentInlineSize);
+        var marginInlineEnd = child.Style.ReadLengthOrPercentPx(PropertyId.MarginRight, fragmentainer.ContentInlineSize);
         var borderStart = child.Style.ReadLengthPxOrZero(PropertyId.BorderTopWidth);
         var borderEnd = child.Style.ReadLengthPxOrZero(PropertyId.BorderBottomWidth);
         var borderInlineStart = child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
         var borderInlineEnd = child.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth);
-        var paddingStart = child.Style.ReadLengthPxOrZero(PropertyId.PaddingTop);
-        var paddingEnd = child.Style.ReadLengthPxOrZero(PropertyId.PaddingBottom);
-        var paddingInlineStart = child.Style.ReadLengthPxOrZero(PropertyId.PaddingLeft);
-        var paddingInlineEnd = child.Style.ReadLengthPxOrZero(PropertyId.PaddingRight);
+        var paddingStart = child.Style.ReadLengthOrPercentPx(PropertyId.PaddingTop, fragmentainer.ContentInlineSize);
+        var paddingEnd = child.Style.ReadLengthOrPercentPx(PropertyId.PaddingBottom, fragmentainer.ContentInlineSize);
+        var paddingInlineStart = child.Style.ReadLengthOrPercentPx(PropertyId.PaddingLeft, fragmentainer.ContentInlineSize);
+        var paddingInlineEnd = child.Style.ReadLengthOrPercentPx(PropertyId.PaddingRight, fragmentainer.ContentInlineSize);
         var contentBlock = child.Style.ReadLengthPxOrZero(PropertyId.Height);
-        var contentInline = child.Style.ReadLengthPxOrZero(PropertyId.Width);
+        var contentInline = child.Style.ReadLengthOrPercentPx(PropertyId.Width, fragmentainer.ContentInlineSize);
 
         var borderBoxBlockSize = borderStart + paddingStart + contentBlock
             + paddingEnd + borderEnd;
@@ -6403,6 +6408,12 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
     private static bool HasExplicitWidth(Box child) =>
         child.Style.Get(PropertyId.Width).Tag is ComputedSlotTag.LengthPx or ComputedSlotTag.Percentage;
 
+    /// <summary>Body `box-sizing: border-box` (box-sizing cycle) — the KeywordResolver box-sizing
+    /// table: 0 = content-box (the initial), 1 = border-box. Mirrors the margin-box reader
+    /// (PR #155).</summary>
+    private static bool IsBorderBoxSizing(ComputedStyle style) =>
+        style.ReadKeywordOrDefault(PropertyId.BoxSizing, defaultIndex: 0) == 1;
+
     /// <summary>Used border-box inline size for an in-flow block-level child (the CSS 2.2
     /// §10.3.3 cycle-1 subset; body-explicit-width gap fix). A plain block container
     /// (<see cref="BoxKind.BlockContainer"/> / <see cref="BoxKind.ListItem"/>) with an explicit
@@ -6440,11 +6451,17 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
             if (HasExplicitWidth(child))
             {
                 var declaredWidth = child.Style.ReadLengthOrPercentPx(PropertyId.Width, containingInlinePx);
-                return declaredWidth
-                    + child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth)
+                var inlineInsets = child.Style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth)
                     + child.Style.ReadLengthPxOrZero(PropertyId.BorderRightWidth)
                     + child.Style.ReadLengthOrPercentPx(PropertyId.PaddingLeft, containingInlinePx)
                     + child.Style.ReadLengthOrPercentPx(PropertyId.PaddingRight, containingInlinePx);
+                // Body `box-sizing` (box-sizing cycle, CSS Basic UI 4 §10): under `border-box` the
+                // declared width IS the border box (floored at the insets — the content box
+                // bottoms out at 0, like the margin-box rule from PR #155); `content-box`
+                // (initial) adds the insets.
+                return IsBorderBoxSizing(child.Style)
+                    ? Math.Max(declaredWidth, inlineInsets)
+                    : declaredWidth + inlineInsets;
             }
         }
         return Math.Max(0, availableInlineSize - marginInlineStart - marginInlineEnd);
@@ -6542,10 +6559,13 @@ internal sealed class BlockLayouter : ILayouter, IDisposable
         double borderBoxInlineSize;
         if (metrics.DeclaredWidthPx > 0)
         {
-            borderBoxInlineSize = Math.Max(0,
-                metrics.DeclaredWidthPx
-                + metrics.BorderInlineStart + metrics.BorderInlineEnd
-                + metrics.PaddingInlineStart + metrics.PaddingInlineEnd);
+            // Body `box-sizing` (box-sizing cycle): border-box → the declared width IS the
+            // border box (floored at the insets); content-box (initial) adds them.
+            var inlineInsets = metrics.BorderInlineStart + metrics.BorderInlineEnd
+                + metrics.PaddingInlineStart + metrics.PaddingInlineEnd;
+            borderBoxInlineSize = IsBorderBoxSizing(inlineOnlyBlock.Style)
+                ? Math.Max(metrics.DeclaredWidthPx, inlineInsets)
+                : Math.Max(0, metrics.DeclaredWidthPx + inlineInsets);
         }
         else
         {

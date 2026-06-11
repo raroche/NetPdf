@@ -146,6 +146,10 @@ namespace NetPdf.Layout.Layouters;
 /// <param name="PerLineTopOffsetsPx">Per-line TOP GAPS (segment-margins cycle) — line i is pushed
 /// down by its offset before placement (a leaf block's collapsed vertical margin; the band the
 /// painter emits starts AFTER the gap, margins staying transparent). Null = no gaps.</param>
+/// <param name="PerLineInsetLeftPx">Per-line LEFT INSETS (hpadding cycle) — line i's glyphs start
+/// at its inset (a leaf block's own padding-left). Null = none.</param>
+/// <param name="PerLineInsetRightPx">Per-line RIGHT INSETS (hpadding cycle) — together with the
+/// left inset, shrinks line i's alignment extent. Null = none.</param>
 internal readonly record struct BoxFragment(
     Box Box,
     double InlineOffset,
@@ -165,7 +169,12 @@ internal readonly record struct BoxFragment(
     System.Collections.Generic.IReadOnlyList<double>? PerLineAlignFactors = null,
     // Per-line TOP GAPS (segment-margins cycle): line i is pushed down by PerLineTopOffsetsPx[i]
     // BEFORE it is placed (a leaf block's collapsed vertical margin). Null = no gaps.
-    System.Collections.Generic.IReadOnlyList<double>? PerLineTopOffsetsPx = null);
+    System.Collections.Generic.IReadOnlyList<double>? PerLineTopOffsetsPx = null,
+    // Per-line HORIZONTAL INSETS (hpadding cycle): line i's glyphs start at PerLineInsetLeftPx[i]
+    // and its alignment extent shrinks by both insets (a leaf block's own horizontal padding).
+    // Null = no insets.
+    System.Collections.Generic.IReadOnlyList<double>? PerLineInsetLeftPx = null,
+    System.Collections.Generic.IReadOnlyList<double>? PerLineInsetRightPx = null);
 
 /// <summary>An axis-aligned fragment clip rectangle (content-area-relative CSS px, y-down — the
 /// <see cref="BoxFragment.InlineOffset"/>/<see cref="BoxFragment.BlockOffset"/> space). See

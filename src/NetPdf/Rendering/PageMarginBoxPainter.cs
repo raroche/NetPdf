@@ -779,14 +779,16 @@ internal static class PageMarginBoxPainter
             // `q <rect> re W n … Q` clip path, so the protruding GLYPHS clip at the box edge
             // (partial-glyph clipping — the vertically-truncated lines above stay whole-line). The
             // predicate uses the SAME geometry as the rect (post-PR-#156 review P2): a line starts at the
-            // CONTENT-box left (= padding-box left + padding-left; a line wider than the content box
-            // isn't alignment-shifted — TextPainter clamps its shift to ≥ 0), so it crosses the clip edge
-            // only when padding-left + advance exceeds the PADDING-box width — overflow into the right
-            // padding stays inside the clip edge and must trip neither the clip nor the diagnostic.
+            // CONTENT-box left + its own per-line LEFT inset (segment padding, hpadding cycle — 0 when
+            // none; a line wider than its extent isn't alignment-shifted — TextPainter clamps its shift
+            // to ≥ 0), so it crosses the clip edge only when padding-left + inset + advance exceeds the
+            // PADDING-box width (PR #165 review P2 — the bare advance missed inset-pushed lines) —
+            // overflow into the right padding stays inside the clip edge and must trip neither the clip
+            // nor the diagnostic.
             // Surfaced per box (same code, width-phrased — CLAUDE.md #7); `overflow: visible` opts out. A
             // box whose content fits carries no clip rect, so its stream is byte-identical.
             FragmentClipRect? clipRect = null;
-            var widestSurvivingPx = WidestLineAdvancePx(inline);
+            var widestSurvivingPx = WidestLineOccupiedPx(inline, perLineInsetL);
             var borderLeftPx = style.ReadLengthPxOrZero(PropertyId.BorderLeftWidth);
             var paddingBoxWidthPx = Math.Max(
                 0, boxWidthPx - borderLeftPx - style.ReadLengthPxOrZero(PropertyId.BorderRightWidth));
@@ -1173,6 +1175,27 @@ internal static class PageMarginBoxPainter
         var widest = 0.0;
         foreach (var line in inline.Lines)
             if (line.TotalAdvance > widest) widest = line.TotalAdvance;
+        return widest;
+    }
+
+    /// <summary>The widest line's OCCUPIED width (px) — its LEFT inset + advance. With per-line
+    /// horizontal insets (segment padding, hpadding cycle) a line paints from its OWN left inset
+    /// inside the content box, so the horizontal-overflow predicate must measure inset + advance,
+    /// not the bare advance: a 40px line with an 80px padding-left in a 100px box paints to 120px
+    /// (PR #165 review P2). The RIGHT inset is deliberately EXCLUDED — it only shrinks the
+    /// alignment EXTENT (TextPainter clamps the alignment shift to ≥ 0 and an aligned-within-extent
+    /// line stays left of content-right − insetRight), so it never pushes glyphs past the clip
+    /// edge. No insets → identical to <see cref="WidestLineAdvancePx"/>.</summary>
+    private static double WidestLineOccupiedPx(InlineLayoutResult inline, double[]? perLineInsetLeft)
+    {
+        var widest = 0.0;
+        for (var li = 0; li < inline.Lines.Length; li++)
+        {
+            var occupied = inline.Lines[li].TotalAdvance
+                + (perLineInsetLeft is not null && li < perLineInsetLeft.Length
+                    ? perLineInsetLeft[li] : 0.0);
+            if (occupied > widest) widest = occupied;
+        }
         return widest;
     }
 

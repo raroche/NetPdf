@@ -396,8 +396,12 @@ AngleSharp-eats-`16PX` canary):** body %, segment margin gaps, per-segment line-
 **Segment-padding / percent-height / auto-margins cycles (merged as PR #164 incl. its dual
 review — block-once boundary padding; % height through the MEASURE pass too; float-range auto margins;
 explicit `width: 0`):** vertical segment padding, definite-chain % height, §10.3.3 centering.
-**Hpadding / float-percent / box-sizing cycles (in progress, branch
-`phase-3-task-21-23-hpadding-float-percent-box-sizing`):** a leaf's horizontal padding insets its line's
+**Hpadding / float-percent / box-sizing cycles (merged as PR #165 incl. its review — P1 float % padding
+carried through to PAINT via the shared `ReadFloatBoxModel` in-place used-% rewrite at both emit paths;
+P1 the `WouldFloatOverflow` pre-check shares those percent-aware metrics so boundary floats defer cleanly;
+P2 the margin-box h-overflow predicate measures per-line OCCUPIED width [left inset + advance]; P2 the
+inline-only auto-margin distribution sizes through the shared `DeclaredWidthToBorderBox`; P3 inline-only
+explicit `width: 0` no longer fills [kind-gated tag test]):** a leaf's horizontal padding insets its line's
 glyphs + alignment extent (band keeps full width); float `width`/`margin-*`/`padding-*` % resolve against
 the BFC content box (abspos % was already live); an explicit body width under `box-sizing: border-box` IS
 the border box (floored at the insets). Next (in order): background images (gated on the body image

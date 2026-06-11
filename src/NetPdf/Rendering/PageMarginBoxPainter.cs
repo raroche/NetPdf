@@ -281,6 +281,8 @@ internal static class PageMarginBoxPainter
             uint[]? segmentColorArgbs = null;        // per-SEGMENT colour — the band's currentcolor owner.
             double[]? segmentMarginTopsPx = null;    // per-SEGMENT vertical margins (segment-margins cycle).
             double[]? segmentMarginBottomsPx = null;
+            double[]? segmentPaddingTopsPx = null;   // per-SEGMENT vertical padding (segment-padding cycle).
+            double[]? segmentPaddingBottomsPx = null;
             if (isStandaloneElement
                 && TryGetRunningElementSegments(marginContext, elName, elFirst) is { } segs)
             {
@@ -291,6 +293,8 @@ internal static class PageMarginBoxPainter
                 segmentColorArgbs = new uint[segs.Count];
                 segmentMarginTopsPx = new double[segs.Count];
                 segmentMarginBottomsPx = new double[segs.Count];
+                segmentPaddingTopsPx = new double[segs.Count];
+                segmentPaddingBottomsPx = new double[segs.Count];
                 var maxFontPx = 0.0;
                 for (var si = 0; si < segs.Count; si++)
                 {
@@ -314,16 +318,19 @@ internal static class PageMarginBoxPainter
                     // its own text-align factor (the box's declared text-align still WINS — see the
                     // hAlign cascade below), its own per-LINE decoration band style, and its colour
                     // (the band's currentcolor owner).
-                    // Per-segment pitch: the leaf's own line-height (segment-line-height cycle —
-                    // read straight from the captured pairs, like text-align: an absolute length,
-                    // a unitless multiplier, or an em factor; `normal`/%/other → the font default)
-                    // PLUS its own vertical padding (segment-padding cycle): the band/pitch grows
-                    // so the background covers the padding box (CSS B&B §4.2); the glyphs centre
-                    // within the padded pitch via the half-leading (exact for symmetric padding,
-                    // a documented approximation for asymmetric).
+                    // Per-segment BASE pitch: the leaf's own line-height (segment-line-height
+                    // cycle — read straight from the captured pairs, like text-align: an absolute
+                    // length, a unitless multiplier, or an em factor; `normal`/%/other → the font
+                    // default). The vertical padding (segment-padding cycle) is kept SEPARATE and
+                    // applied at the segment's BOUNDARY lines by PerLineGeometry — pad-top on its
+                    // FIRST line, pad-bottom on its LAST — so a WRAPPED segment pads the block
+                    // once, not per line (post-PR-#164 review P2; CSS B&B §4.2 — the band still
+                    // covers the padding box; glyphs centre in the padded boundary line, a
+                    // documented approximation).
                     segmentLineHeightsPx[si] =
-                        (SegmentLineHeightPx(seg.OwnStyle, segFontPx) ?? segFontPx * NormalLineHeightFactor)
-                        + seg.PaddingTopPx + seg.PaddingBottomPx;
+                        SegmentLineHeightPx(seg.OwnStyle, segFontPx) ?? segFontPx * NormalLineHeightFactor;
+                    segmentPaddingTopsPx[si] = seg.PaddingTopPx;
+                    segmentPaddingBottomsPx[si] = seg.PaddingBottomPx;
                     segmentAlignFactors[si] = ElementHorizontalAlignFactor(seg.OwnStyle);
                     segmentMarginTopsPx[si] = seg.MarginTopPx;       // segment-margins cycle —
                     segmentMarginBottomsPx[si] = seg.MarginBottomPx; //   inter-line gaps below.
@@ -549,7 +556,8 @@ internal static class PageMarginBoxPainter
                 else if (hasLine)
                     boxHeightPx = Math.Min(region.Height,
                         SumLineHeightsPx(inline, segmentLineHeightsPx, segmentMarginTopsPx,
-                            segmentMarginBottomsPx, lineHeightPx, inline.Lines.Length)
+                            segmentMarginBottomsPx, segmentPaddingTopsPx, segmentPaddingBottomsPx,
+                            lineHeightPx, inline.Lines.Length)
                         + insetTopPx + insetBottomPx);
             }
 
@@ -583,6 +591,8 @@ internal static class PageMarginBoxPainter
                 SegmentLineHeightsPx = contentRuns is null ? null : segmentLineHeightsPx,
                 SegmentMarginTopsPx = contentRuns is null ? null : segmentMarginTopsPx,
                 SegmentMarginBottomsPx = contentRuns is null ? null : segmentMarginBottomsPx,
+                SegmentPaddingTopsPx = contentRuns is null ? null : segmentPaddingTopsPx,
+                SegmentPaddingBottomsPx = contentRuns is null ? null : segmentPaddingBottomsPx,
                 SegmentAlignFactors = contentRuns is null ? null : segmentAlignFactors,
                 SegmentDecorStyles = contentRuns is null ? null : segmentDecorStyles,
                 SegmentColorArgbs = contentRuns is null ? null : segmentColorArgbs,
@@ -691,7 +701,7 @@ internal static class PageMarginBoxPainter
             {
                 (perLineHeights, perLineGaps) = PerLineGeometry(
                     inline, segHeightsForGeometry, item.SegmentMarginTopsPx, item.SegmentMarginBottomsPx,
-                    lineHeightPx);
+                    item.SegmentPaddingTopsPx, item.SegmentPaddingBottomsPx, lineHeightPx);
             }
             var blockHeightPx = perLineHeights is null
                 ? lineHeightPx * inline.Lines.Length
@@ -976,7 +986,9 @@ internal static class PageMarginBoxPainter
     /// margin is approximated as touching); WRAPPED lines within one segment get no gap.</summary>
     private static (double[] HeightsPx, double[] GapsPx) PerLineGeometry(
         InlineLayoutResult inline, double[] segmentLineHeightsPx,
-        double[]? segmentMarginTopsPx, double[]? segmentMarginBottomsPx, double uniformLineHeightPx)
+        double[]? segmentMarginTopsPx, double[]? segmentMarginBottomsPx,
+        double[]? segmentPaddingTopsPx, double[]? segmentPaddingBottomsPx,
+        double uniformLineHeightPx)
     {
         var lineSegments = LineSegmentIndices(inline);
         var heights = new double[inline.Lines.Length];
@@ -987,6 +999,21 @@ internal static class PageMarginBoxPainter
             var segIdx = li < lineSegments.Length ? lineSegments[li] : -1;
             heights[li] = segIdx >= 0 && segIdx < segmentLineHeightsPx.Length
                 ? segmentLineHeightsPx[segIdx] : uniformLineHeightPx;
+            // Vertical PADDING applies at the segment's BOUNDARY lines only (post-PR-#164 review
+            // P2 — a wrapped segment pads the BLOCK once, not every line): pad-top on the
+            // segment's FIRST line (the segment changes here), pad-bottom on its LAST (the next
+            // line belongs to a different segment, or this is the final line).
+            if (segIdx >= 0 && segmentPaddingTopsPx is not null && segIdx != prevSeg
+                && segIdx < segmentPaddingTopsPx.Length)
+            {
+                heights[li] += segmentPaddingTopsPx[segIdx];
+            }
+            if (segIdx >= 0 && segmentPaddingBottomsPx is not null
+                && segIdx < segmentPaddingBottomsPx.Length
+                && (li + 1 >= lineSegments.Length || lineSegments[li + 1] != segIdx))
+            {
+                heights[li] += segmentPaddingBottomsPx[segIdx];
+            }
             if (segIdx >= 0 && segIdx != prevSeg && segmentMarginTopsPx is not null)
             {
                 var topMargin = segIdx < segmentMarginTopsPx.Length ? segmentMarginTopsPx[segIdx] : 0;
@@ -1004,11 +1031,12 @@ internal static class PageMarginBoxPainter
     /// <paramref name="uniformLineHeightPx"/> × the count (byte-identical pre-cycle).</summary>
     private static double SumLineHeightsPx(
         InlineLayoutResult inline, double[]? segmentLineHeightsPx, double[]? segmentMarginTopsPx,
-        double[]? segmentMarginBottomsPx, double uniformLineHeightPx, int lineCount)
+        double[]? segmentMarginBottomsPx, double[]? segmentPaddingTopsPx,
+        double[]? segmentPaddingBottomsPx, double uniformLineHeightPx, int lineCount)
     {
         if (segmentLineHeightsPx is null) return uniformLineHeightPx * lineCount;
         // Single pass, no array allocations (PR #163 Copilot — this runs in the pass-1 sizing
-        // path; the same gap/collapse rules as PerLineGeometry, summed inline).
+        // path; the same gap/collapse + boundary-padding rules as PerLineGeometry, summed inline).
         var lineSegments = LineSegmentIndices(inline);
         var sum = 0.0;
         var prevSeg = -1;
@@ -1017,6 +1045,17 @@ internal static class PageMarginBoxPainter
             var segIdx = li < lineSegments.Length ? lineSegments[li] : -1;
             sum += segIdx >= 0 && segIdx < segmentLineHeightsPx.Length
                 ? segmentLineHeightsPx[segIdx] : uniformLineHeightPx;
+            if (segIdx >= 0 && segmentPaddingTopsPx is not null && segIdx != prevSeg
+                && segIdx < segmentPaddingTopsPx.Length)
+            {
+                sum += segmentPaddingTopsPx[segIdx];
+            }
+            if (segIdx >= 0 && segmentPaddingBottomsPx is not null
+                && segIdx < segmentPaddingBottomsPx.Length
+                && (li + 1 >= lineSegments.Length || lineSegments[li + 1] != segIdx))
+            {
+                sum += segmentPaddingBottomsPx[segIdx];
+            }
             if (segIdx >= 0 && segIdx != prevSeg && segmentMarginTopsPx is not null)
             {
                 var topMargin = segIdx < segmentMarginTopsPx.Length ? segmentMarginTopsPx[segIdx] : 0;
@@ -1513,6 +1552,8 @@ internal static class PageMarginBoxPainter
         public double[]? SegmentLineHeightsPx;   // per-SEGMENT pitch (segment-pitch cycle); null = uniform.
         public double[]? SegmentMarginTopsPx;    // per-SEGMENT vertical margins (segment-margins cycle).
         public double[]? SegmentMarginBottomsPx;
+        public double[]? SegmentPaddingTopsPx;   // per-SEGMENT vertical padding (segment-padding cycle).
+        public double[]? SegmentPaddingBottomsPx;
         public double?[]? SegmentAlignFactors;   // per-SEGMENT own text-align (segment-align cycle).
         public ComputedStyle?[]? SegmentDecorStyles; // per-SEGMENT own decoration band (segment-decor cycle).
         public uint[]? SegmentColorArgbs;        // per-SEGMENT colour — the band's currentcolor owner.

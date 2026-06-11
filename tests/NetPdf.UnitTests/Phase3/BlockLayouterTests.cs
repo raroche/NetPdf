@@ -412,6 +412,39 @@ public sealed class BlockLayouterTests
         Assert.Equal(100, sink.Fragments[1].BlockSize);   // 25% × the parent's definite 400
     }
 
+    [Fact]
+    public void Auto_margins_distribute_within_the_float_adjusted_range()
+    {
+        // Post-PR-#164 review P1 — the OUTER path distributes auto margins across the SAME
+        // float-adjusted range placement uses: a 100px left float leaves [100, 600] (500 wide);
+        // the centred 200px box sits at 100 + (500 − 200)/2 = 250 (distributing across the full
+        // 600px containing block then adding the float offset would drift it to 300).
+        var sink = new RecordingFragmentSink();
+        var floatStyle = MakeStyle();
+        SetLengthPx(floatStyle, PropertyId.Width, 100);
+        SetLengthPx(floatStyle, PropertyId.Height, 40);
+        SetKeyword(floatStyle, PropertyId.Float, 1);   // float: left
+        var centredStyle = MakeStyle();
+        SetLengthPx(centredStyle, PropertyId.Width, 200);
+        SetKeyword(centredStyle, PropertyId.MarginLeft, 0);
+        SetKeyword(centredStyle, PropertyId.MarginRight, 0);
+        SetLengthPx(centredStyle, PropertyId.Height, 20);
+
+        var root = Box.CreateRoot(MakeStyle());
+        root.AppendChild(Box.ForElement(BoxKind.BlockContainer, floatStyle, MakeElement()));
+        root.AppendChild(Box.ForElement(BoxKind.BlockContainer, centredStyle, MakeElement()));
+
+        using var layouter = new BlockLayouter(root, sink);
+        var ctx = new FragmentainerContext(contentInlineSize: 600, blockSize: 800);
+        var layoutCtx = new LayoutContext(ctx);
+        using var resolver = new BreakResolver();
+        layouter.AttemptLayout(ctx, ref layoutCtx, resolver, LayoutAttemptStrategy.Strict);
+
+        var centred = sink.Fragments[^1];
+        Assert.Equal(200, centred.InlineSize);
+        Assert.Equal(250, centred.InlineOffset, 3);
+    }
+
     // --- Multi-block stacking ----------------------------------------
 
     [Fact]

@@ -569,7 +569,11 @@ internal static class MarginContentCollector
     {
         var rules = cascade.TryGetStylesFor(element);
         if (rules is null) return (0, 0);
-        return (AbsoluteSidePx(rules, "padding-top"), AbsoluteSidePx(rules, "padding-bottom"));
+        // Padding is a NON-NEGATIVE property (unlike the sign-preserving margins below) — clamp
+        // a negative fold at 0 (post-PR-#164 review P2; defensive — AngleSharp drops invalid
+        // negative padding upstream, the same boundary as the 16PX canary).
+        return (Math.Max(0, AbsoluteSidePx(rules, "padding-top")),
+                Math.Max(0, AbsoluteSidePx(rules, "padding-bottom")));
     }
 
     /// <summary>The self-only winner of an absolute-length side property in used px — the shared

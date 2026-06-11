@@ -3295,8 +3295,8 @@ flags the categories):
          (body-percent / segment-margins / segment-line-height cycles):** body `width`/`margin-*`/
          `padding-*` PERCENTAGES resolve at layout time against the containing block's INLINE size
          (CSS 2.2 §10.2/§8.3/§8.4; % padding is rewritten to used px in place so paint agrees;
-         STILL DEFERRED: `% height` (needs a definite container), floats/abspos %, `margin: auto`,
-         % in body calc()). A leaf block's own ABSOLUTE vertical margins insert collapsed
+         still deferred THEN: floats/abspos %, % in body calc() — `% height` and `margin: auto`
+         shipped in the NEXT cycle, see the entry above). A leaf block's own ABSOLUTE vertical margins insert collapsed
          inter-line gaps (max of adjoining, floored at 0; %/relative/`auto` read 0); its own
          `line-height` (absolute, unitless, or em) drives its line's pitch (`normal`/%/other →
          font × 1.2). STILL DEFERRED: per-line padding, real nested block LAYOUT.

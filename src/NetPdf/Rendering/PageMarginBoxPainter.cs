@@ -275,10 +275,18 @@ internal static class PageMarginBoxPainter
             // keeps the single-run path untouched.
             TextRun[]? contentRuns = null;
             var contentMetricsStyle = contentStyle;
+            double[]? segmentLineHeightsPx = null;   // per-SEGMENT pitch (segment-pitch cycle).
+            double?[]? segmentAlignFactors = null;   // per-SEGMENT own text-align (segment-align cycle).
+            ComputedStyle?[]? segmentDecorStyles = null; // per-SEGMENT own decoration (segment-decor cycle).
+            uint[]? segmentColorArgbs = null;        // per-SEGMENT colour — the band's currentcolor owner.
             if (isStandaloneElement
                 && TryGetRunningElementSegments(marginContext, elName, elFirst) is { } segs)
             {
                 var runs = new TextRun[segs.Count];
+                segmentLineHeightsPx = new double[segs.Count];
+                segmentAlignFactors = new double?[segs.Count];
+                segmentDecorStyles = new ComputedStyle?[segs.Count];
+                segmentColorArgbs = new uint[segs.Count];
                 var maxFontPx = 0.0;
                 for (var si = 0; si < segs.Count; si++)
                 {
@@ -297,6 +305,19 @@ internal static class PageMarginBoxPainter
                         maxFontPx = segFontPx;
                         contentMetricsStyle = segStyle;
                     }
+                    // Per-segment metadata (segments part 2): the segment's own line pitch (its font
+                    // × the normal factor — true per-line pitch replaces the max-font approximation),
+                    // its own text-align factor (the box's declared text-align still WINS — see the
+                    // hAlign cascade below), its own per-LINE decoration band style, and its colour
+                    // (the band's currentcolor owner).
+                    segmentLineHeightsPx[si] = segFontPx * NormalLineHeightFactor;
+                    segmentAlignFactors[si] = ElementHorizontalAlignFactor(seg.OwnStyle);
+                    if (seg.Decoration is { Count: > 0 } segDecor)
+                        segmentDecorStyles[si] = BuildFromOwnStyle(segDecor, decorationOnly: true,
+                            ImmutableArray<CssDeclaration>.Empty, pageContextStyle, styleDiagnostics);
+                    segmentColorArgbs[si] =
+                        FragmentPainter.TryResolveColor(segStyle.Get(PropertyId.Color), DefaultColorArgb, out var segC)
+                            ? segC : DefaultColorArgb;
                     runs[si] = new TextRun(
                         si < segs.Count - 1 ? seg.Text + "\n" : seg.Text, segStyle);
                 }
@@ -511,7 +532,9 @@ internal static class PageMarginBoxPainter
                     boxHeightPx = Math.Min(region.Height,
                         borderBoxSizing ? Math.Max(h, insetTopPx + insetBottomPx) : h + insetTopPx + insetBottomPx);
                 else if (hasLine)
-                    boxHeightPx = Math.Min(region.Height, (lineHeightPx * inline.Lines.Length) + insetTopPx + insetBottomPx);
+                    boxHeightPx = Math.Min(region.Height,
+                        SumLineHeightsPx(inline, segmentLineHeightsPx, lineHeightPx, inline.Lines.Length)
+                        + insetTopPx + insetBottomPx);
             }
 
             // Min-content border-box size along the VARIABLE axis — drives the §5.3 min/max-content flex
@@ -541,6 +564,11 @@ internal static class PageMarginBoxPainter
                 BgCurrentColorArgb = bgCurrentColor, BorderCurrentColors = borderCurrentColors,
                 Inline = inline, HasLine = hasLine, Text = text, MinVarSizePx = minVarSizePx,
                 ContentRuns = layoutRuns, MetricsStyle = contentRuns is null ? null : contentMetricsStyle,
+                SegmentLineHeightsPx = contentRuns is null ? null : segmentLineHeightsPx,
+                SegmentAlignFactors = contentRuns is null ? null : segmentAlignFactors,
+                SegmentDecorStyles = contentRuns is null ? null : segmentDecorStyles,
+                SegmentColorArgbs = contentRuns is null ? null : segmentColorArgbs,
+                BoxAlignDeclared = MarginBoxDeclares(mb.Declarations, "text-align"),
                 ElementDecorStyle = elementDecorStyle, ElementColorArgb = elementColor,
                 RadiusPx = borderRadiusPx,
                 ReflowWhiteSpace = reflowWhiteSpace, CanWrap = canWrap, Name = mb.Name,
@@ -632,7 +660,11 @@ internal static class PageMarginBoxPainter
             // its leftover (contentBoxWidth − lineAdvance) × hAlign is exactly what was pre-applied before.
             // A SHRINK-TO-FIT box is content-sized so the leftover is ~0 (no visible shift); an explicit-
             // width / flexed / wrapped box has room, so the alignment is observable.
-            var blockHeightPx = lineHeightPx * inline.Lines.Length;
+            // Per-line PITCH (segment-pitch cycle): each line advances by ITS segment's height
+            // (line→segment via the first glyph slice's source-run index); uniform for non-segment
+            // content (heights == null → lineHeightPx × count, byte-identical).
+            var lineSegments = LineSegmentIndices(inline);
+            var blockHeightPx = SumLineHeightsPx(inline, item.SegmentLineHeightsPx, lineHeightPx, inline.Lines.Length);
             var contentBoxWidthPx = Math.Max(0, boxWidthPx - insetLeftPx - insetRightPx);
             var contentBoxHeightPx = Math.Max(0, boxHeightPx - insetTopPx - insetBottomPx);
             // Vertical-edge (height) OVERFLOW (Task 23 + the overflow-clipping cycle): when the content
@@ -650,12 +682,14 @@ internal static class PageMarginBoxPainter
             // pre-clipping builds — authored overflow, so no truncation, no clip, and no diagnostic.
             if (!item.OverflowVisible && blockHeightPx > contentBoxHeightPx + OverflowEpsilonPx)
             {
-                var keptLines = MaxLinesThatFit(contentBoxHeightPx, lineHeightPx, inline.Lines.Length);
+                var keptLines = item.SegmentLineHeightsPx is null
+                    ? MaxLinesThatFit(contentBoxHeightPx, lineHeightPx, inline.Lines.Length)
+                    : MaxLinesThatFitPerLine(contentBoxHeightPx, inline, item.SegmentLineHeightsPx, lineHeightPx);
                 EmitContentOverflow(
                     diagnostics, item.Name, blockHeightPx, contentBoxHeightPx, keptLines, inline.Lines.Length);
                 if (keptLines <= 0) continue; // nothing fits — decoration only, no text fragment.
                 inline = inline with { Lines = inline.Lines[..keptLines] };
-                blockHeightPx = lineHeightPx * keptLines;
+                blockHeightPx = SumLineHeightsPx(inline, item.SegmentLineHeightsPx, lineHeightPx, keptLines);
             }
             // HORIZONTAL overflow of the surviving lines (clip-path cycle): a line that protrudes past
             // the box's CLIP EDGE — an unbreakable run wider than the box (a long word in a narrow
@@ -702,19 +736,76 @@ internal static class PageMarginBoxPainter
             // block, so the band never exceeds the box.
             if (item.ElementDecorStyle is { } elemDecor)
             {
+                // The band's origin is the CONTENT-BOX top-left: TextPainter adds the box style's
+                // border+padding to the fragment offset before placing glyphs, so the band must add
+                // the SAME insets on BOTH axes — post-PR-#162 review P1: only X added them, shifting
+                // the band up into the box's padding/border while the glyphs painted lower.
                 var elemXPx = boxXPx + insetLeftPx;
+                var elemYPx = absTopPx + insetTopPx;
                 if (FragmentPainter.TryResolveColor(
                         elemDecor.Get(PropertyId.BackgroundColor), item.ElementColorArgb, out var elemBgArgb)
                     && FragmentPainter.Alpha(elemBgArgb) != 0)
                 {
                     backgrounds.Add(new MarginBoxBackgroundFill(
-                        elemXPx, absTopPx, contentBoxWidthPx, blockHeightPx, elemBgArgb));
+                        elemXPx, elemYPx, contentBoxWidthPx, blockHeightPx, elemBgArgb));
                 }
                 if (HasBorder(elemDecor))
                 {
                     borders.Add(new MarginBoxBorder(
-                        elemXPx, absTopPx, contentBoxWidthPx, blockHeightPx, elemDecor,
+                        elemXPx, elemYPx, contentBoxWidthPx, blockHeightPx, elemDecor,
                         FragmentPainter.BorderEdgeCurrentColors.Uniform(item.ElementColorArgb)));
+                }
+            }
+
+            // Per-line DECORATION + ALIGNMENT + PITCH (element segments part 2): each surviving
+            // line maps to its SEGMENT (the first glyph slice's source-run index — runs == segments);
+            // a decorated segment paints a per-LINE band behind its line (background + border, the
+            // segment's own colour as currentcolor owner, spanning the content-box width per the
+            // block-fills-its-containing-block rule); a segment's own text-align aligns ITS line
+            // (the box's declared text-align still WINS — uniform hAlign); each line advances by
+            // its segment's pitch. Non-segment content: all three stay null → byte-identical.
+            double[]? perLineHeights = null;
+            double[]? perLineAligns = null;
+            if (item.SegmentLineHeightsPx is { } segHeights)
+            {
+                perLineHeights = new double[inline.Lines.Length];
+                // Content-box top (review P1) — the same + insetTop the glyph pass applies.
+                var lineTopCursorPx = absTopPx + insetTopPx;
+                for (var li = 0; li < inline.Lines.Length; li++)
+                {
+                    var segIdx = li < lineSegments.Length ? lineSegments[li] : -1;
+                    var h = segIdx >= 0 && segIdx < segHeights.Length ? segHeights[segIdx] : lineHeightPx;
+                    perLineHeights[li] = h;
+                    if (segIdx >= 0 && item.SegmentDecorStyles?[segIdx] is { } segDecorStyle)
+                    {
+                        var segColor = item.SegmentColorArgbs is { } sc && segIdx < sc.Length
+                            ? sc[segIdx] : item.ElementColorArgb;
+                        var bandXPx = boxXPx + insetLeftPx;
+                        if (FragmentPainter.TryResolveColor(
+                                segDecorStyle.Get(PropertyId.BackgroundColor), segColor, out var segBgArgb)
+                            && FragmentPainter.Alpha(segBgArgb) != 0)
+                        {
+                            backgrounds.Add(new MarginBoxBackgroundFill(
+                                bandXPx, lineTopCursorPx, contentBoxWidthPx, h, segBgArgb));
+                        }
+                        if (HasBorder(segDecorStyle))
+                        {
+                            borders.Add(new MarginBoxBorder(
+                                bandXPx, lineTopCursorPx, contentBoxWidthPx, h, segDecorStyle,
+                                FragmentPainter.BorderEdgeCurrentColors.Uniform(segColor)));
+                        }
+                    }
+                    lineTopCursorPx += h;
+                }
+                if (!item.BoxAlignDeclared && item.SegmentAlignFactors is { } segAligns)
+                {
+                    perLineAligns = new double[inline.Lines.Length];
+                    for (var li = 0; li < inline.Lines.Length; li++)
+                    {
+                        var segIdx = li < lineSegments.Length ? lineSegments[li] : -1;
+                        perLineAligns[li] = segIdx >= 0 && segIdx < segAligns.Length
+                            ? segAligns[segIdx] ?? hAlign : hAlign;
+                    }
                 }
             }
 
@@ -734,7 +825,9 @@ internal static class PageMarginBoxPainter
                 TextMetricsStyle: item.MetricsStyle ?? item.ContentStyle,
                 // The padding-box clip for horizontally-overflowing content (clip-path cycle) — null for
                 // a fitting box, so its stream is byte-identical.
-                ClipRect: clipRect));
+                ClipRect: clipRect,
+                PerLineHeightsPx: perLineHeights,
+                PerLineAlignFactors: perLineAligns));
         }
 
         // The page-context style is only a parent — each box copied the slots it needs — so return
@@ -829,6 +922,68 @@ internal static class PageMarginBoxPainter
         if (!TryLayoutContent(runs, shaper, 1.0, whiteSpace, out var laid)) return false;
         minContentPx = WidestLineAdvancePx(laid);
         return true;
+    }
+
+    /// <summary>The block height of the first <paramref name="lineCount"/> lines: each line's
+    /// SEGMENT pitch when <paramref name="segmentLineHeightsPx"/> is present (line→segment via
+    /// <see cref="LineSegmentIndices"/>; an unmapped line falls back to the uniform pitch), else
+    /// <paramref name="uniformLineHeightPx"/> × the count (byte-identical pre-cycle).</summary>
+    private static double SumLineHeightsPx(
+        InlineLayoutResult inline, double[]? segmentLineHeightsPx, double uniformLineHeightPx, int lineCount)
+    {
+        if (segmentLineHeightsPx is null) return uniformLineHeightPx * lineCount;
+        var lineSegments = LineSegmentIndices(inline);
+        var sum = 0.0;
+        for (var li = 0; li < lineCount && li < inline.Lines.Length; li++)
+        {
+            var segIdx = li < lineSegments.Length ? lineSegments[li] : -1;
+            sum += segIdx >= 0 && segIdx < segmentLineHeightsPx.Length
+                ? segmentLineHeightsPx[segIdx] : uniformLineHeightPx;
+        }
+        return sum;
+    }
+
+    /// <summary>The per-line-pitch counterpart of <see cref="MaxLinesThatFit"/>: keeps whole lines
+    /// while their CUMULATIVE per-segment heights fit the content-box height (+ the shared epsilon),
+    /// in reading order.</summary>
+    private static int MaxLinesThatFitPerLine(
+        double contentBoxHeightPx, InlineLayoutResult inline, double[] segmentLineHeightsPx,
+        double uniformLineHeightPx)
+    {
+        var lineSegments = LineSegmentIndices(inline);
+        var budget = Math.Max(0, contentBoxHeightPx) + OverflowEpsilonPx;
+        var kept = 0;
+        var sum = 0.0;
+        for (var li = 0; li < inline.Lines.Length; li++)
+        {
+            var segIdx = li < lineSegments.Length ? lineSegments[li] : -1;
+            sum += segIdx >= 0 && segIdx < segmentLineHeightsPx.Length
+                ? segmentLineHeightsPx[segIdx] : uniformLineHeightPx;
+            if (sum > budget) break;
+            kept++;
+        }
+        return kept;
+    }
+
+    /// <summary>Each line's SEGMENT index — the source-run index of the line's first GLYPH slice
+    /// (segment runs are one TextRun per segment, so run index == segment index). A line with no
+    /// glyph slice (defensive) inherits the previous line's segment (first line → 0).</summary>
+    private static int[] LineSegmentIndices(InlineLayoutResult inline)
+    {
+        var lines = inline.Lines;
+        var result = new int[lines.Length];
+        var current = 0;
+        for (var li = 0; li < lines.Length; li++)
+        {
+            foreach (var slice in lines[li].Slices)
+            {
+                if (slice.GlyphLength <= 0) continue;
+                current = inline.ShapedRuns[slice.ShapedRunIndex].Source.SourceTextRunIndex;
+                break;
+            }
+            result[li] = current;
+        }
+        return result;
     }
 
     /// <summary>The number of whole lines (at <paramref name="lineHeightPx"/> pitch) that fit
@@ -1233,6 +1388,11 @@ internal static class PageMarginBoxPainter
         public string Name = string.Empty;      // the margin-box name (e.g. "top-center") — for the overflow diagnostic.
         public string Text = string.Empty;     // raw content text — re-laid-out (wrapped) if the box shrinks.
         public TextRun[] ContentRuns = [];      // the layout runs (per-SEGMENT styles when >1 — segment-style cycle).
+        public double[]? SegmentLineHeightsPx;   // per-SEGMENT pitch (segment-pitch cycle); null = uniform.
+        public double?[]? SegmentAlignFactors;   // per-SEGMENT own text-align (segment-align cycle).
+        public ComputedStyle?[]? SegmentDecorStyles; // per-SEGMENT own decoration band (segment-decor cycle).
+        public uint[]? SegmentColorArgbs;        // per-SEGMENT colour — the band's currentcolor owner.
+        public bool BoxAlignDeclared;            // the box declares text-align → it wins over per-segment.
         public ComputedStyle? ElementDecorStyle; // the running element's OWN decoration for the NESTED band
                                                  // (separately-decorated cycle) — null = coinciding single band.
         public uint ElementColorArgb;            // the element's own colour — the nested band's currentcolor.

@@ -58,8 +58,9 @@ namespace NetPdf.Rendering;
 /// Unspecified properties fall back to the reader defaults
 /// (16px / default family / black / transparent / no border / no padding / auto size / name-derived alignment).
 /// The <c>border-width</c>/<c>-style</c>/<c>-color</c> box shorthands distribute across the edges as
-/// well; <c>border-radius</c> + background images are tracked follow-ups
-/// (deferrals.md#layout-to-pdf-pipeline).
+/// well. A single uniform absolute <c>border-radius</c> ROUNDS the background band (border-radius
+/// cycle); rounded border STROKES, per-corner/elliptical/relative radii, the body path, and
+/// background images stay tracked follow-ups (deferrals.md#layout-to-pdf-pipeline).
 /// </para>
 /// <para>
 /// <b>Content scope.</b> Literal-string + <c>attr()</c> content, plus <c>counter(page)</c> /
@@ -99,7 +100,8 @@ internal static class PageMarginBoxPainter
     /// page-top origin) + the resolved packed 0xAARRGGBB color. Painted by
     /// <see cref="PaintBackgrounds"/> before the shared text pass, so the text paints over it.</summary>
     internal readonly record struct MarginBoxBackgroundFill(
-        double LeftPx, double TopPx, double WidthPx, double HeightPx, uint Argb);
+        double LeftPx, double TopPx, double WidthPx, double HeightPx, uint Argb,
+        double RadiusPx = 0); // > 0 → rounded corners (border-radius cycle).
 
     /// <summary>A margin box's declared borders to stroke around its region rect (border cycle):
     /// the page-px rect + the box's <see cref="ComputedStyle"/> (carrying the <c>border-*</c>
@@ -228,6 +230,7 @@ internal static class PageMarginBoxPainter
             // units / `inherit` resolve against the page context (exact for the common absolute values).
             ComputedStyle style, contentStyle;
             double? elementHAlign = null;   // the running element's own text-align factor (Task 23), if any.
+            IReadOnlyList<KeyValuePair<string, string>>? elementOwnPairs = null;
             var isStandaloneElement =
                 CssContentList.TryGetStandaloneElement(mb.ContentRawValue, out var elName, out var elFirst);
             if (isStandaloneElement
@@ -238,6 +241,7 @@ internal static class PageMarginBoxPainter
                 style = BuildFromOwnStyle(ownPairs, decorationOnly: true,
                     mb.Declarations, pageContextStyle, styleDiagnostics);
                 elementHAlign = ElementHorizontalAlignFactor(ownPairs);
+                elementOwnPairs = ownPairs;   // kept for the nested-decoration build below.
             }
             else
             {
@@ -346,6 +350,31 @@ internal static class PageMarginBoxPainter
             else
                 hAlign = elementHAlign ?? region.HAlign;             // box silent → the element's own, then name-derived
             var vAlign = MarginBoxStyle.VerticalAlignFactor(mb.Declarations) ?? region.VAlign;
+
+            // NESTED element decoration (separately-decorated cycle, first cut): when the BOX
+            // declares its own decoration AND the running element also carries some, the element's
+            // no longer vanishes under the box's cascade win — it paints as a NESTED band at the
+            // element's content block (PASS 2), the box's at the box rect. A box that declares NO
+            // decoration keeps the coinciding single-band behavior (the element decorates the box
+            // band — byte-identical to the full-block first cut). APPROXIMATION: the nested band
+            // sits at the CONTENT-box rect — the element's own border/padding share of the merged
+            // insets isn't re-attributed per side (deferrals.md).
+            ComputedStyle? elementDecorStyle = null;
+            if (elementOwnPairs is not null
+                && HasDecorationPair(elementOwnPairs)
+                && BoxDeclaresDecoration(mb.Declarations))
+            {
+                elementDecorStyle = BuildFromOwnStyle(elementOwnPairs, decorationOnly: true,
+                    ImmutableArray<CssDeclaration>.Empty, pageContextStyle, styleDiagnostics);
+            }
+
+            // Margin-box BORDER-RADIUS (border-radius cycle, first cut): a single uniform
+            // non-negative absolute <length> rounds the BACKGROUND band's corners
+            // (PdfPage.FillRoundedRectangle). Border strokes stay rectangular (per-edge strokes
+            // with arc joins are the follow-up); %, per-corner, elliptical, relative/calc()
+            // values, and the BODY path are deferred (border-radius isn't a cascaded PropertyId
+            // yet — read from the box's RAW declaration; unsupported forms are surfaced + ignored).
+            var borderRadiusPx = ReadBorderRadiusPx(mb.Declarations, mb.Name, diagnostics);
 
             // Relative-size bases (relative-units cycle): `em` against the BOX's resolved font-size
             // (width/height/padding are box properties — CSS Values 4 §6.1.1), `rem` against the
@@ -512,6 +541,8 @@ internal static class PageMarginBoxPainter
                 BgCurrentColorArgb = bgCurrentColor, BorderCurrentColors = borderCurrentColors,
                 Inline = inline, HasLine = hasLine, Text = text, MinVarSizePx = minVarSizePx,
                 ContentRuns = layoutRuns, MetricsStyle = contentRuns is null ? null : contentMetricsStyle,
+                ElementDecorStyle = elementDecorStyle, ElementColorArgb = elementColor,
+                RadiusPx = borderRadiusPx,
                 ReflowWhiteSpace = reflowWhiteSpace, CanWrap = canWrap, Name = mb.Name,
                 OverflowVisible = MarginBoxStyle.OverflowVisible(mb.Declarations),
                 InsetLeftPx = insetLeftPx, InsetTopPx = insetTopPx,
@@ -582,7 +613,8 @@ internal static class PageMarginBoxPainter
             if (FragmentPainter.TryResolveColor(style.Get(PropertyId.BackgroundColor), bgCurrentColor, out var bgArgb)
                 && FragmentPainter.Alpha(bgArgb) != 0)
             {
-                backgrounds.Add(new MarginBoxBackgroundFill(boxXPx, boxYPx, boxWidthPx, boxHeightPx, bgArgb));
+                backgrounds.Add(new MarginBoxBackgroundFill(
+                    boxXPx, boxYPx, boxWidthPx, boxHeightPx, bgArgb, item.RadiusPx));
             }
 
             // Border (border cycle): strokes the BOX. `currentcolor` resolves against the OWNER's color
@@ -663,6 +695,29 @@ internal static class PageMarginBoxPainter
             // box. (Single-line content → blockHeight == lineHeight, so this is byte-identical there.)
             var absTopPx = boxYPx + (contentBoxHeightPx - blockHeightPx) * vAlign;
 
+            // NESTED element decoration (separately-decorated cycle): the running element's own
+            // band at its content block — background then border, ON TOP of the box's band (list
+            // order = paint order). currentcolor resolves to the ELEMENT's own colour (it owns
+            // every property here, CSS Color 4 §6.2). Wraps the PAINTED (possibly line-clipped)
+            // block, so the band never exceeds the box.
+            if (item.ElementDecorStyle is { } elemDecor)
+            {
+                var elemXPx = boxXPx + insetLeftPx;
+                if (FragmentPainter.TryResolveColor(
+                        elemDecor.Get(PropertyId.BackgroundColor), item.ElementColorArgb, out var elemBgArgb)
+                    && FragmentPainter.Alpha(elemBgArgb) != 0)
+                {
+                    backgrounds.Add(new MarginBoxBackgroundFill(
+                        elemXPx, absTopPx, contentBoxWidthPx, blockHeightPx, elemBgArgb));
+                }
+                if (HasBorder(elemDecor))
+                {
+                    borders.Add(new MarginBoxBorder(
+                        elemXPx, absTopPx, contentBoxWidthPx, blockHeightPx, elemDecor,
+                        FragmentPainter.BorderEdgeCurrentColors.Uniform(item.ElementColorArgb)));
+                }
+            }
+
             fragments.Add(new BoxFragment(
                 Box: Box.TextRun(string.Empty, style),
                 InlineOffset: boxXPx - contentOriginLeftPx,   // border-box X; TextPainter aligns each line
@@ -703,7 +758,16 @@ internal static class PageMarginBoxPainter
             FragmentPainter.ColorChannels(bg.Argb, out var r, out var g, out var b);
             FragmentPainter.ToPdfRect(
                 bg.LeftPx, bg.TopPx, bg.WidthPx, bg.HeightPx, pageHeightPt, out var x, out var y, out var w, out var h);
-            page.FillRectangle(x, y, w, h, r, g, b, FragmentPainter.Alpha(bg.Argb) / 255.0);
+            if (bg.RadiusPx > 0)
+            {
+                // border-radius cycle — the radius converts px→pt like the rect (PdfUnits ×0.75).
+                page.FillRoundedRectangle(x, y, w, h, PdfUnits.PxToPt(bg.RadiusPx),
+                    r, g, b, FragmentPainter.Alpha(bg.Argb) / 255.0);
+            }
+            else
+            {
+                page.FillRectangle(x, y, w, h, r, g, b, FragmentPainter.Alpha(bg.Argb) / 255.0);
+            }
         }
     }
 
@@ -1049,6 +1113,94 @@ internal static class PageMarginBoxPainter
         return false;
     }
 
+    /// <summary>Whether the captured element pairs carry any DECORATION the nested band could paint
+    /// (separately-decorated cycle): a background-color or a border-* longhand. Padding alone doesn't
+    /// warrant a band (nothing visible to nest).</summary>
+    private static bool HasDecorationPair(IReadOnlyList<KeyValuePair<string, string>> pairs)
+    {
+        foreach (var kv in pairs)
+        {
+            if (kv.Key.Equals("background-color", StringComparison.OrdinalIgnoreCase)
+                || kv.Key.StartsWith("border-", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>Whether the BOX's own declarations carry decoration (separately-decorated cycle) —
+    /// the nesting trigger: only when the box paints its OWN band does the element's need a separate
+    /// one (otherwise the element decorates the box band, the coinciding pre-cycle behavior).</summary>
+    private static bool BoxDeclaresDecoration(ImmutableArray<CssDeclaration> declarations)
+    {
+        if (declarations.IsDefaultOrEmpty) return false;
+        foreach (var d in declarations)
+        {
+            if (d.Property.Equals("background-color", StringComparison.OrdinalIgnoreCase)
+                || d.Property.StartsWith("border-", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>The box's declared uniform <c>border-radius</c> in used px (border-radius cycle,
+    /// first cut) — a single non-negative absolute <c>&lt;length&gt;</c> (or the 0 literal); the
+    /// LAST declaration wins (cascade order). Percentages, multi-value/per-corner forms, elliptical
+    /// <c>/</c> radii, and relative/calc() values are SURFACED + ignored (deferrals.md). 0 = square
+    /// (no radius declared, or an unsupported form).</summary>
+    private static double ReadBorderRadiusPx(
+        ImmutableArray<CssDeclaration> declarations, string boxName, IDiagnosticsSink diagnostics)
+    {
+        if (declarations.IsDefaultOrEmpty) return 0;
+        string? raw = null;
+        foreach (var d in declarations)
+            if (d.Property.Equals("border-radius", StringComparison.OrdinalIgnoreCase))
+                raw = d.Value.RawText;
+        if (string.IsNullOrWhiteSpace(raw)) return 0;
+
+        var v = raw.Trim();
+        // Multi-token (per-corner) / elliptical forms — unsupported in the first cut.
+        if (v.Contains('/') || v.Contains(' ') || v.Contains('\t'))
+        {
+            EmitBorderRadiusUnsupported(diagnostics, boxName, raw);
+            return 0;
+        }
+        // Post-PR-#161 review P2 — parse through the PRODUCTION tokenizer
+        // (LengthResolver.TrySplitNumberAndUnit), not a bespoke scan, so border-radius accepts
+        // exactly the grammar every other raw length does: sign + decimal + e-notation per CSS
+        // Syntax §4.3.12 (`1e2px` = 100px, matching the body path and the calc evaluator's pinned
+        // row) with the `2em` trap guard (the `e` only reads as an exponent before a digit).
+        // Relative/percent/unknown units then fail the ABSOLUTE-unit fold below → surfaced.
+        if (LengthResolver.TrySplitNumberAndUnit(v, out var n, out var unit))
+        {
+            // The unitless ZERO (CSS Values §6.2) — valid in ANY zero spelling the number token
+            // admits ("0" / "0.0" / "-0" / "0e0"), not just the literal "0" (PR #161 Copilot).
+            if (unit.Length == 0 && n == 0.0) return 0;
+            if (unit.Length > 0 && n >= 0
+                && LengthResolver.TryAbsoluteUnitToPx(unit, n, out var px)
+                && double.IsFinite(px) && px >= 0)
+            {
+                return px;
+            }
+        }
+        EmitBorderRadiusUnsupported(diagnostics, boxName, raw);
+        return 0;
+    }
+
+    private static void EmitBorderRadiusUnsupported(
+        IDiagnosticsSink diagnostics, string boxName, string raw) =>
+        diagnostics.Emit(new Diagnostic(
+            DiagnosticCodes.CssPropertyValueInvalid001,
+            $"The page margin box @{boxName} declares 'border-radius: " +
+            DiagnosticTextSanitizer.Sanitize(raw) + "', but only a single non-negative absolute " +
+            "<length> is supported (border-radius cycle first cut) — percentages, per-corner " +
+            "values, elliptical radii, and relative/calc() values are deferred " +
+            "(deferrals.md#layout-to-pdf-pipeline). The radius was ignored.",
+            DiagnosticSeverity.Warning));
+
     /// <summary>The <c>currentcolor</c> OWNER colour for ONE border edge (per-edge currentcolor
     /// cycle — replaces the whole-border ownership rule, whose mixed-origin case used the box colour
     /// for every edge): the BOX's colour when the box's own declarations claim the edge — its
@@ -1081,6 +1233,10 @@ internal static class PageMarginBoxPainter
         public string Name = string.Empty;      // the margin-box name (e.g. "top-center") — for the overflow diagnostic.
         public string Text = string.Empty;     // raw content text — re-laid-out (wrapped) if the box shrinks.
         public TextRun[] ContentRuns = [];      // the layout runs (per-SEGMENT styles when >1 — segment-style cycle).
+        public ComputedStyle? ElementDecorStyle; // the running element's OWN decoration for the NESTED band
+                                                 // (separately-decorated cycle) — null = coinciding single band.
+        public uint ElementColorArgb;            // the element's own colour — the nested band's currentcolor.
+        public double RadiusPx;                  // uniform border-radius for the box's background band (0 = square).
         public ComputedStyle? MetricsStyle;     // line-pitch style override (the LARGEST segment font) — null = ContentStyle.
         public double MinVarSizePx;             // min-content border-box size along the VARIABLE axis (= the
                                                 // box's desired/max size for rigid/explicit/vertical boxes,

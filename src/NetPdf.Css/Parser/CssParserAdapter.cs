@@ -235,7 +235,32 @@ internal static class CssParserAdapter
                 return AdaptAngleSharpRuleWithSlot(ang, slot, preprocess, ref ctx);
             }
         }
-        // Mismatch (or no AngleSharp rule left): emit opaque from the slot's metadata.
+        // Mismatch (or no AngleSharp rule left): AngleSharp dropped this rule. For a STYLE-RULE
+        // slot, that's exactly the case the preprocessor recovery exists for (a rule whose ONLY
+        // declaration carries a dropped function — `h1 { string-set: t content(before) }` — loses
+        // the WHOLE rule, not just the declaration): synthesize a real style rule from the slot's
+        // prelude + the recovered declarations (content-pseudo cycle; pre-fix the slot demoted to
+        // opaque, silently losing the recovery, and the style-rule ordinal counter desynced from
+        // the preprocessor's slot indices so a LATER rule could steal this rule's recovery). The
+        // ordinal advances on this path too, keeping both sides counting style-rule SLOTS.
+        if (slot.Kind == CssRuleSlotKind.StyleRule)
+        {
+            var ordinal = ctx.StyleRuleOrdinal++;
+            if (LookupStyleRuleRecovery(preprocess, ordinal) is { } dropped
+                && !dropped.Declarations.IsEmpty)
+            {
+                var declarations = ImmutableArray.CreateBuilder<CssDeclaration>(dropped.Declarations.Length);
+                foreach (var d in dropped.Declarations)
+                {
+                    declarations.Add(new CssDeclaration(
+                        d.Property, new CssValue(d.RawValueText), d.IsImportant, slot.Location));
+                }
+                return new CssStyleRule(
+                    new CssSelector(slot.Prelude ?? string.Empty),
+                    declarations.ToImmutable(),
+                    slot.Location);
+            }
+        }
         return EmitOpaqueFromSlot(slot);
     }
 

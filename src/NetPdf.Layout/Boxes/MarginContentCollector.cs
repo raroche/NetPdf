@@ -29,12 +29,13 @@ namespace NetPdf.Layout.Boxes;
 /// <b>First-cut scope (single page).</b> The CSS GCPM L3 cross-page "running" semantics (a named string
 /// / running element persists onto later pages until re-set) need the multi-page driver and are
 /// deferred. A <c>string-set</c> pair resolves literal strings + <c>attr()</c> + <c>content()</c> (via
-/// <see cref="CssContentList.TryParseStringSet"/>). <c>content()</c> (the element's own text — the common
+/// <see cref="CssContentList.TryParseStringSet(string, IElement, out string)"/>). <c>content()</c> (the element's own text — the common
 /// running-header form <c>h1 { string-set: title content() }</c>) works end-to-end: AngleSharp.Css DROPS a
 /// <c>string-set</c> whose value contains <c>content()</c> (an unknown function in an unknown property),
 /// so <see cref="NetPdf.Css.Parser.Preprocessing.CssPreprocessor"/>'s recovery re-injects the declaration
 /// into the cascade, where this collector reads it + resolves <c>content()</c> to the element's text.
-/// (The typographic targets <c>content(before|after|first-letter|marker)</c> stay deferred.)
+/// <c>content(before|after)</c> resolves the host's pseudo content via the cascade (content-pseudo
+/// cycle); <c>content(first-letter|marker)</c> stays deferred.
 /// <c>element(name)</c> pulls the running element's TEXT; a STANDALONE <c>element(name)</c> renders the
 /// running element's box AS the margin box's content box — its text in the element's OWN font + color +
 /// <c>text-align</c> (inherited values walked from ancestors, CSS-wide keywords resolved — post-PR-#151
@@ -87,7 +88,7 @@ internal static class MarginContentCollector
             {
                 foreach (var pair in SplitTopLevelCommas(stringSet))
                 {
-                    if (TryResolveStringSetPair(pair, element, out var name, out var value))
+                    if (TryResolveStringSetPair(pair, element, cascade, out var name, out var value))
                     {
                         (c.Named ??= new(StringComparer.Ordinal))[name] = value;            // last-wins
                         (c.NamedFirst ??= new(StringComparer.Ordinal)).TryAdd(name, value); // first-wins (kept)
@@ -287,11 +288,11 @@ internal static class MarginContentCollector
 
     /// <summary>Resolve ONE <c>string-set</c> pair (<c>&lt;custom-ident&gt; &lt;content-list&gt;</c>):
     /// read + strictly validate the leading name (a CSS <c>&lt;custom-ident&gt;</c>), then resolve the
-    /// content-list via <see cref="CssContentList.TryParseStringSet"/> (literal strings + <c>attr()</c> +
+    /// content-list via <see cref="CssContentList.TryParseStringSet(string, IElement, out string)"/> (literal strings + <c>attr()</c> +
     /// <c>content()</c> → the element's own text). The <c>content()</c> form reaches the collector via the
     /// preprocessor recovery (see the class remarks). Returns <see langword="false"/> for an invalid name,
     /// a missing content-list, or an unresolvable one.</summary>
-    private static bool TryResolveStringSetPair(string pair, IElement element, out string name, out string value)
+    private static bool TryResolveStringSetPair(string pair, IElement element, ResolvedCascadeResult cascade, out string name, out string value)
     {
         name = string.Empty;
         value = string.Empty;
@@ -312,7 +313,11 @@ internal static class MarginContentCollector
         // content() host). content() (the element's own text — the common running-header form) resolves
         // via TryParseStringSet when the raw declaration survives to the cascade; when AngleSharp drops it
         // (content() makes the declaration invalid), the raw-CSS pre-pass recovers it (see Collect).
-        return CssContentList.TryParseStringSet(rest, element, out value);
+        // content(before|after) (content-pseudo cycle) resolves the host's ::before/::after pseudo
+        // `content` raw from the cascade — a missing pseudo/declaration yields the empty string.
+        return CssContentList.TryParseStringSet(rest, element,
+            pseudoName => cascade.TryGetStylesForPseudo(element, pseudoName)?.GetWinner("content")?.ResolvedValue,
+            out value);
     }
 
     /// <summary><see langword="true"/> when <paramref name="rawPosition"/> is a

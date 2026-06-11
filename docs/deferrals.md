@@ -3281,6 +3281,17 @@ flags the categories):
          background/border/margin band), per-line `text-align` (captured, not consumed — one
          line-align factor per box), true per-line pitch, and the box/element separately-decorated
          nesting.
+       - **Box/element separately-decorated + margin-box border-radius + content(before|after) — DONE
+         (nested-decor / border-radius / content-pseudo cycles):** a co-declared standalone element()'s
+         decoration paints as a NESTED band at its content block (box band at the box rect; element-only
+         decoration keeps the coinciding band; per-side inset re-attribution deferred). A single uniform
+         absolute `border-radius` rounds the margin-box BACKGROUND band (`PdfPage.FillRoundedRectangle`,
+         kappa Béziers, half-min clamp; %, per-corner, elliptical, relative/calc(), body path, and
+         rounded border STROKES surfaced/deferred). `content(before|after)` resolves the host's pseudo
+         `content` raw as a plain content-list (missing/none/normal → empty; first-letter/marker stay
+         the unsupported bail). The cycle also fixed a REAL adapter bug: a rule AngleSharp drops
+         ENTIRELY now synthesizes from its preprocessor recovery instead of demoting to opaque (which
+         lost the recovery and desynced recovery ordinals).
        - **Body explicit `width` (post-PR-#159 handoff-spotted gap) — first cut DONE:** an in-flow
          `BlockContainer`/`ListItem` with an explicit `width` sizes its border box to
          width + inline borders + padding at BOTH `BlockLayouter` fill sites (outer dispatch +

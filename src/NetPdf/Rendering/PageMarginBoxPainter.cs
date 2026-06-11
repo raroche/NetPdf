@@ -736,18 +736,23 @@ internal static class PageMarginBoxPainter
             // block, so the band never exceeds the box.
             if (item.ElementDecorStyle is { } elemDecor)
             {
+                // The band's origin is the CONTENT-BOX top-left: TextPainter adds the box style's
+                // border+padding to the fragment offset before placing glyphs, so the band must add
+                // the SAME insets on BOTH axes — post-PR-#162 review P1: only X added them, shifting
+                // the band up into the box's padding/border while the glyphs painted lower.
                 var elemXPx = boxXPx + insetLeftPx;
+                var elemYPx = absTopPx + insetTopPx;
                 if (FragmentPainter.TryResolveColor(
                         elemDecor.Get(PropertyId.BackgroundColor), item.ElementColorArgb, out var elemBgArgb)
                     && FragmentPainter.Alpha(elemBgArgb) != 0)
                 {
                     backgrounds.Add(new MarginBoxBackgroundFill(
-                        elemXPx, absTopPx, contentBoxWidthPx, blockHeightPx, elemBgArgb));
+                        elemXPx, elemYPx, contentBoxWidthPx, blockHeightPx, elemBgArgb));
                 }
                 if (HasBorder(elemDecor))
                 {
                     borders.Add(new MarginBoxBorder(
-                        elemXPx, absTopPx, contentBoxWidthPx, blockHeightPx, elemDecor,
+                        elemXPx, elemYPx, contentBoxWidthPx, blockHeightPx, elemDecor,
                         FragmentPainter.BorderEdgeCurrentColors.Uniform(item.ElementColorArgb)));
                 }
             }
@@ -764,7 +769,8 @@ internal static class PageMarginBoxPainter
             if (item.SegmentLineHeightsPx is { } segHeights)
             {
                 perLineHeights = new double[inline.Lines.Length];
-                var lineTopCursorPx = absTopPx;
+                // Content-box top (review P1) — the same + insetTop the glyph pass applies.
+                var lineTopCursorPx = absTopPx + insetTopPx;
                 for (var li = 0; li < inline.Lines.Length; li++)
                 {
                     var segIdx = li < lineSegments.Length ? lineSegments[li] : -1;

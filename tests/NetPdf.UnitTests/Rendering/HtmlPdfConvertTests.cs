@@ -2403,6 +2403,54 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Page_margin_box_flat_element_decoration_paints_once_not_per_line_too()
+    {
+        // Post-PR-#162 review P1 — a FLAT running element's own background/border already rides
+        // the standalone element() decoration path; the segment capture must NOT duplicate it as
+        // a per-line band. Pre-fix: 2 blue background fills + 8 green border-edge rects (the box
+        // path + a per-line copy). Post-fix: exactly 1 background fill + 4 border edges.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh); " +
+            "background-color: #0000ff; border: 4px solid #00ff00 } " +
+            "@page { @top-center { content: element(rh) } }</style></head>" +
+            "<body><div class=\"rh\">Head</div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+
+        var colors = RectFillColors(pdf);
+        Assert.Equal(1, colors.Count(c => c == "0 0 1"));   // ONE background band
+        Assert.Equal(4, colors.Count(c => c == "0 1 0"));   // FOUR border edges, not eight
+    }
+
+    [Fact]
+    public void Page_margin_box_segment_band_y_origin_includes_the_box_insets()
+    {
+        // Post-PR-#162 review P1 — the per-line band starts at the CONTENT-box top (TextPainter
+        // adds the box's border+padding before placing glyphs). A @top-center box is vertically
+        // CENTERED, so `padding-top: 20px` shrinks the content box by 20px (the centred block
+        // re-seats 10px higher within it) and then insets by the full 20px — a net 10px = 7.5pt
+        // shift down the page, exactly matching the glyph shift (pre-fix the band ignored the
+        // inset entirely and only moved by the recentre).
+        const string css =
+            "<!DOCTYPE html><html><head><style>.rh {{ position: running(rh) }} " +
+            ".rh h1 {{ font-size: 32px; background-color: #3366cc }} " +
+            "@page {{ @top-center {{ content: element(rh){0} }} }}</style></head>" +
+            "<body><div class=\"rh\"><h1>Title</h1><div>Sub</div></div></body></html>";
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+
+        var unpadded = BandY(Latin1(HtmlPdf.Convert(string.Format(css, ""), opts)));
+        var padded = BandY(Latin1(HtmlPdf.Convert(string.Format(css, "; padding-top: 20px"), opts)));
+
+        Assert.Equal(unpadded - 7.5, padded, 1);    // net 10px → 7.5pt further down (PDF y-down flip)
+
+        static double BandY(string pdf)
+        {
+            var band = AllRects(pdf).Find(r => Math.Abs(r.H - 28.8) < 0.1);   // the one-line h1 band
+            Assert.True(band.H > 0, "expected the 28.8pt segment band");
+            return band.Y;
+        }
+    }
+
+    [Fact]
     public void Page_margin_box_segment_pitch_follows_each_lines_own_font()
     {
         // Segment-pitch cycle — with a decorated element, the nested element band's height equals

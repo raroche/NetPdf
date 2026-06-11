@@ -377,9 +377,12 @@ internal static class MarginContentCollector
     /// <see cref="MaxRunningBlockDepth"/> levels with the SAME total budget threading through every
     /// level (a deeper nest flattens to one line), and each line is recorded as a
     /// <c>CssContentList.RunningSegment</c> carrying its LEAF element's own font/colour (segment-style
-    /// cycle) so the painter shapes it per line. STILL DEFERRED (deferrals.md): real nested block
-    /// LAYOUT (separately laid-out sub-boxes), per-line decoration/margins, per-line
-    /// <c>text-align</c>. A <c>display: none</c> child renders nothing; a <c>display: contents</c>
+    /// cycle) so the painter shapes it per line. Each LEAF segment also carries its
+    /// own DECORATION (a per-line band; the running ROOT's is excluded — it rides the standalone
+    /// element() decoration path) + <c>text-align</c> (per-line alignment, the box's winning) +
+    /// pitch (segments part 2). STILL DEFERRED (deferrals.md): real nested block LAYOUT
+    /// (separately laid-out sub-boxes), per-line margins/padding, per-segment
+    /// <c>line-height</c>. A <c>display: none</c> child renders nothing; a <c>display: contents</c>
     /// child's block grandchildren aren't promoted (treated as an inline run).</summary>
     private static string ReadRunningElementContent(
         IElement element, ResolvedCascadeResult cascade, int maxChars, int depth = 0,
@@ -391,7 +394,11 @@ internal static class MarginContentCollector
         if (!HasBlockLevelChild(element, cascade))
         {
             var flat = LineBuilder.PreprocessWhitespace(ReadBoundedDescendantText(element, maxChars), WhiteSpace.Normal);
-            AddSegment(segments, flat, element, cascade);
+            // Decoration only for a LEAF BLOCK segment (depth > 0): at depth 0 this element IS the
+            // running ROOT, whose own background/border already paints through the standalone
+            // element() decoration path — capturing it here would paint it TWICE (post-PR-#162
+            // review P1: a flat `.rh { border: … }` got an outer border plus a per-line copy).
+            AddSegment(segments, flat, element, cascade, captureDecoration: depth > 0);
             return flat;
         }
 
@@ -411,7 +418,7 @@ internal static class MarginContentCollector
                 if (result == DisplayMapper.DisplayMappingResult.Resolved && BoxKindFacts.IsBlockLevelOuter(kind))
                 {
                     // flush the pending inline run as a line (its segment owner: THIS element)
-                    FlushInlineRun(inlineBuf, output, maxChars, segments, element, cascade);
+                    FlushInlineRun(inlineBuf, output, maxChars, segments, element, cascade, depth);
                     if (output.Length >= maxChars) break;
                     // DEEP RECURSION (deep-recursion cycle): a block child that ITSELF has block-level
                     // children recurses, so each NESTED block contributes its own stacked line —
@@ -438,7 +445,8 @@ internal static class MarginContentCollector
                     {
                         var block = LineBuilder.PreprocessWhitespace(
                             ReadBoundedDescendantText(el, maxChars - output.Length), WhiteSpace.Normal);
-                        AddSegment(segments, AppendLine(output, block, maxChars), el, cascade);
+                        AddSegment(segments, AppendLine(output, block, maxChars), el, cascade,
+                            captureDecoration: true);   // a true LEAF BLOCK child — its own band.
                     }
                 }
                 else if (inlineBuf.Length < remaining)             // inline / inline-block / contents / unsupported
@@ -451,7 +459,7 @@ internal static class MarginContentCollector
                 inlineBuf.Append(t.Data, 0, Math.Min(t.Data.Length, remaining - inlineBuf.Length));
             }
         }
-        FlushInlineRun(inlineBuf, output, maxChars, segments, element, cascade);
+        FlushInlineRun(inlineBuf, output, maxChars, segments, element, cascade, depth);
         return output.ToString();
     }
 
@@ -493,13 +501,20 @@ internal static class MarginContentCollector
     /// of indented HTML like <c>&lt;div&gt;\n  &lt;div&gt;A&lt;/div&gt;…</c>) are dropped.</summary>
     private static void FlushInlineRun(
         StringBuilder inlineBuf, StringBuilder output, int maxChars,
-        List<CssContentList.RunningSegment>? segments, IElement owner, ResolvedCascadeResult cascade)
+        List<CssContentList.RunningSegment>? segments, IElement owner, ResolvedCascadeResult cascade,
+        int depth)
     {
         if (inlineBuf.Length == 0) return;
         var line = LineBuilder.PreprocessWhitespace(inlineBuf.ToString(), WhiteSpace.Normal);
         inlineBuf.Clear();
         if (!string.IsNullOrWhiteSpace(line))
-            AddSegment(segments, AppendLine(output, line, maxChars), owner, cascade);
+        {
+            // An inline run is owned by the CURRENT frame element: at depth 0 that's the running
+            // ROOT (decoration already on the standalone element() path — review P1), deeper it's
+            // a block child whose own band applies to its direct content line.
+            AddSegment(segments, AppendLine(output, line, maxChars), owner, cascade,
+                captureDecoration: depth > 0);
+        }
     }
 
     /// <summary>Append <paramref name="line"/> to <paramref name="output"/> as a stacked line (a leading
@@ -527,11 +542,12 @@ internal static class MarginContentCollector
     /// null list (a non-segment caller) or an empty line.</summary>
     private static void AddSegment(
         List<CssContentList.RunningSegment>? segments, string text,
-        IElement element, ResolvedCascadeResult cascade)
+        IElement element, ResolvedCascadeResult cascade, bool captureDecoration)
     {
         if (segments is null || string.IsNullOrEmpty(text)) return;
         segments.Add(new CssContentList.RunningSegment(
-            text, CaptureSegmentStyle(element, cascade), CaptureSegmentDecoration(element, cascade)));
+            text, CaptureSegmentStyle(element, cascade),
+            captureDecoration ? CaptureSegmentDecoration(element, cascade) : EmptyOwnStyle));
     }
 
     /// <summary>The leaf block's OWN (self-only, no ancestor walk — decoration isn't inherited)

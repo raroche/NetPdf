@@ -246,6 +246,57 @@ public sealed class HtmlPdfConvertTests
     }
 
     [Fact]
+    public void Body_em_width_sizes_the_background_band()
+    {
+        // Body context-dependent cycle — a font-relative body width resolves via the post-build
+        // in-place pass: font-size 20px × 5em = 100px → a 75pt band (rides the explicit-width
+        // border-box sizing from the PR #159 review).
+        var r = FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"font-size:20px;width:5em;height:20px;background-color:#3366cc\"></div>" +
+            "</body></html>")));
+        Assert.Equal(75.0, r.W, 1);
+    }
+
+    [Fact]
+    public void Body_viewport_relative_width_resolves_against_the_page_box()
+    {
+        // 50vw on the default A4 page box (794px wide) = 397px → 297.75pt.
+        var r = FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:50vw;height:20px;background-color:#3366cc\"></div>" +
+            "</body></html>")));
+        Assert.Equal(297.75, r.W, 1);
+    }
+
+    [Fact]
+    public void Body_font_relative_calc_padding_shifts_the_text()
+    {
+        // calc(1em + 8px) with the UA-default 16px font = 24px → an 18pt shift, with no
+        // invalid-value diagnostic (pre-cycle the declaration was diagnosed + dropped).
+        var opts = new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() };
+        var result = HtmlPdf.ConvertDetailed(
+            "<!DOCTYPE html><html><head><style>div { padding-left: calc(1em + 8px) }</style></head>" +
+            "<body><div>AB</div></body></html>", opts);
+        Assert.DoesNotContain(result.Warnings, d => d.Code == DiagnosticCodes.CssPropertyValueInvalid001);
+        var without = FirstTd(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head></head><body><div>AB</div></body></html>", opts)));
+        Assert.Equal(without.X + 18.0, FirstTd(Latin1(result.Pdf)).X, 1);
+    }
+
+    [Fact]
+    public void Body_trig_math_function_width_resolves()
+    {
+        // §10.8/§10.9 (trig/exp cycle) through the whole pipeline: an absolute-term math
+        // function folds at cascade time — hypot(30px, 40px) = 50px → a 37.5pt band.
+        var r = FirstRect(Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><body>" +
+            "<div style=\"width:hypot(30px, 40px);height:20px;background-color:#3366cc\"></div>" +
+            "</body></html>")));
+        Assert.Equal(37.5, r.W, 1);
+    }
+
+    [Fact]
     public void At_page_margin_overrides_the_content_area_width()
     {
         // A full-width (auto) block paints a background rect spanning the content width. With
@@ -2176,6 +2227,42 @@ public sealed class HtmlPdfConvertTests
             "<body><div class=\"rh\"><div><div>AB</div><div>AB</div></div><div>AB</div></div></body></html>",
             new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
         Assert.Equal(3, TdCount(pdf));
+    }
+
+    [Fact]
+    public void Page_margin_box_element_segment_lines_render_in_their_own_font_and_color()
+    {
+        // Segment-style cycle ("real nested block layout" first cut): each stacked line of a
+        // standalone element() shapes in the LEAF block's own font + colour — the h1 title line
+        // at 32px (24pt Tf) red, the subtitle line at the 16px default (12pt Tf). Pre-cycle both
+        // lines rendered in the running root's uniform style.
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } " +
+            ".rh h1 { font-size: 32px; color: #ff0000 } " +
+            "@page { @top-center { content: element(rh) } }</style></head>" +
+            "<body><div class=\"rh\"><h1>Title</h1><div>Sub</div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+
+        Assert.Equal(2, TdCount(pdf));          // two stacked lines
+        Assert.Contains(" 24 Tf", pdf);         // the h1 segment: 32px × 0.75
+        Assert.Contains(" 12 Tf", pdf);         // the plain segment: 16px default
+        Assert.Contains("1 0 0 rg", pdf);       // the h1 segment's red fill
+    }
+
+    [Fact]
+    public void Page_margin_box_element_uniform_segments_keep_the_single_style()
+    {
+        // Unstyled nested blocks (no per-leaf overrides) — both lines render at the default size,
+        // and no spurious second font size appears (the multi-run path degenerates cleanly).
+        var pdf = Latin1(HtmlPdf.Convert(
+            "<!DOCTYPE html><html><head><style>.rh { position: running(rh) } " +
+            "@page { @top-center { content: element(rh) } }</style></head>" +
+            "<body><div class=\"rh\"><div>AB</div><div>AB</div></div></body></html>",
+            new HtmlPdfOptions { FontResolver = new SyntheticFontResolver() }));
+
+        Assert.Equal(2, TdCount(pdf));
+        Assert.Contains(" 12 Tf", pdf);
+        Assert.DoesNotContain(" 24 Tf", pdf);
     }
 
     [Fact]

@@ -82,6 +82,36 @@ public sealed class LengthResolverTests
         Assert.DoesNotContain("context-dependent", d.Message);
     }
 
+    [Theory]
+    [InlineData("calc(2em + 10px)")]    // font-relative term — base known post-build
+    [InlineData("min(5vw, 100px)")]     // viewport-relative — the page box
+    [InlineData("calc(1rem * 2)")]
+    public void Body_font_viewport_relative_math_function_defers_for_the_post_build_pass(string input)
+    {
+        // Body context-dependent cycle — a math function whose ONLY context dependence is
+        // font-/viewport-relative (no %) DEFERS (raw kept) so DeferredLengthResolver can
+        // evaluate it once the element font-size + page box are known. No diagnostic.
+        var sink = new CapturingSink();
+        var result = LengthResolver.Resolve(input, PropertyType.LengthPercentageAuto,
+            PropertyId.Width, "width", sink, default);
+        Assert.True(result.IsDeferred, input);
+        Assert.Equal(input, result.RawText);
+        Assert.Empty(sink.Diagnostics);
+    }
+
+    [Fact]
+    public void Body_percentage_math_function_is_still_diagnosed_invalid()
+    {
+        // A % term needs the layout-time containing block — stays on the diagnosed path
+        // (the message names the percentage deferral).
+        var sink = new CapturingSink();
+        var result = LengthResolver.Resolve("calc(50% + 2em)", PropertyType.LengthPercentageAuto,
+            PropertyId.Width, "width", sink, default);
+        Assert.True(result.IsInvalid);
+        var d = Assert.Single(sink.Diagnostics);
+        Assert.Contains("percentage", d.Message);
+    }
+
     [Fact]
     public void Body_sign_of_a_percent_term_is_diagnosed_context_dependent_without_crashing()
     {

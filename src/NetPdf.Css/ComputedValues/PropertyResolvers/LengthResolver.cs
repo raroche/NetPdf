@@ -60,10 +60,19 @@ internal static class LengthResolver
     /// arbitrary finite bases (UA-default-ish, all non-zero so no term degenerates) succeeding
     /// proves the expression itself is well-formed and only its context-dependent terms were
     /// unresolvable; it failing too means the expression is malformed/unsupported (type error,
-    /// zero divisor/step, a number-typed whole value like <c>sign(…)</c>, a §10.8+ function).
+    /// zero divisor/step, a number-typed whole value like <c>sign(…)</c>, an unsupported function).
     /// The probe RESULT is never used — only success/failure.</summary>
     private static readonly CalcLengthEvaluator.CalcContext FiniteProbeCalcContext =
         new(PercentBasePx: 100, EmPx: 16, RootEmPx: 16, ViewportWidthPx: 800, ViewportHeightPx: 600);
+
+    /// <summary>Body context-dependent cycle — the DEFER-vs-reject classifier probe: a NaN percent
+    /// base but finite font/viewport bases. An expression that evaluates under it needs NO
+    /// containing-block base, so it can resolve at the post-build in-place pass
+    /// (<c>DeferredLengthResolver</c> — the element font-size + page box are known there); one that
+    /// still fails either carries a % term (kept diagnosed-invalid, the layout-time deferral) or is
+    /// malformed. The probe RESULT is never used — only success/failure.</summary>
+    private static readonly CalcLengthEvaluator.CalcContext FontViewportProbeCalcContext =
+        new(PercentBasePx: double.NaN, EmPx: 16, RootEmPx: 16, ViewportWidthPx: 800, ViewportHeightPx: 600);
 
     /// <summary>The single keyword id used by the dimension family for the property's
     /// admitted keyword (<c>auto</c>, <c>normal</c>, or <c>none</c>). v1 uses one id
@@ -132,17 +141,29 @@ internal static class LengthResolver
             {
                 return ResolverResult.Resolved(ComputedSlot.FromLengthPx(calcPx));
             }
-            // Post-PR-#159 Copilot review — the failure has TWO distinct causes and the
+            // Body context-dependent cycle — a math function whose only context dependence is
+            // FONT-/VIEWPORT-relative (em/rem/ex/ch/vw/vh/vmin/vmax, NO %) is resolvable once the
+            // element's font-size + the page box are known: DEFER it (raw kept) for the post-build
+            // in-place pass (DeferredLengthResolver), exactly like a plain relative-unit value
+            // below. The probe has a NaN percent base but finite font/viewport bases, so a % term
+            // still poisons it — success proves the expression needs no containing-block base.
+            if (CalcLengthEvaluator.TryEvaluate(
+                    value, FontViewportProbeCalcContext, clampNonNegative, out _))
+            {
+                return ResolverResult.Deferred(value);
+            }
+            // Post-PR-#159 Copilot review — the remaining failure has TWO distinct causes and the
             // diagnostic should name the right one. A finite-probe re-evaluation succeeding
-            // means the expression is well-formed and only failed under the NaN context
-            // (= it carries context-dependent terms, the documented deferral); the probe
-            // failing too means the expression itself is malformed or unsupported.
+            // means the expression is well-formed and only failed under the NaN bases
+            // (= it carries a PERCENTAGE term, whose containing-block base is layout-time — the
+            // documented deferral); the probe failing too means the expression itself is
+            // malformed or unsupported.
             EmitInvalid(diagnostics, propertyName, value,
                 CalcLengthEvaluator.TryEvaluate(value, FiniteProbeCalcContext, clampNonNegative, out _)
-                    ? "math functions with context-dependent terms (%/em/rem/viewport units) aren't resolved " +
-                      "for body properties yet — absolute-term expressions are (deferrals.md)"
+                    ? "math functions with context-dependent percentage terms aren't resolved for body " +
+                      "properties yet — absolute and font-/viewport-relative expressions are (deferrals.md)"
                     : "invalid or unsupported math function expression (type mismatch, zero divisor/step, " +
-                      "a number-valued result for a length property, or a §10.8+ function)",
+                      "a number- or angle-valued result for a length property, or an unsupported function)",
                 location);
             return ResolverResult.Invalid();
         }

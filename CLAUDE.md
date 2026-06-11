@@ -366,15 +366,27 @@ context first, then each box before the shaper/em bases read it) — closes the 
 `currentcolor` is per-EDGE (CSS Color 4 §6.2): each edge falls back to its OWNER's colour (box-declared edge →
 box colour, element-declared → element's) via `FragmentPainter.BorderEdgeCurrentColors` (uniform body overload
 delegates, byte-identical). Merged as PR #158 incl. its review (P2 clamp(…, none) bounds; P2 math-function
-font-size with parent-em bases; P3 body-length guard + cref). **Math-fns / body-calc / deep-recursion cycles (in
-progress, branch `phase-3-task-21-23-math-fns-body-calc-deep-recursion`) — the next three deferrals, one PR:**
-**(A)** `round()`/`mod()`/`rem()`/`abs()`/`sign()` (§10.6/10.7) evaluate in `CalcLengthEvaluator`. **(B)** BODY
+font-size with parent-em bases; P3 body-length guard + cref). **Math-fns / body-calc / deep-recursion cycles (merged as PR #159 incl. its
+review — 4 Copilot findings: round() |B| step normalization, a sign(NaN) crash guard, a finite-probe-classified
+failure diagnostic, ContainsMathFunction scanning INTO unknown functions — plus the handoff-spotted body
+explicit-width gap: `ResolveInFlowBorderBoxInlineSize` at both BlockLayouter fill sites sizes a plain
+BlockContainer/ListItem with `width > 0` to width + inline borders + padding):** **(A)**
+`round()`/`mod()`/`rem()`/`abs()`/`sign()` (§10.6/10.7) evaluate in `CalcLengthEvaluator`. **(B)** BODY
 properties evaluate ABSOLUTE-term math functions at cascade time (`LengthResolver` → the evaluator with a NaN
-context — %/em/viewport terms stay diagnosed; range-aware §10.5 clamp so a body negative margin calc works;
-`CssPreprocessor` recovers the AngleSharp-dropped declarations via `ContainsMathFunction`). **(C)** the running
-element's nested blocks RECURSE (one stacked line per NESTED block, depth-capped 16, single 64 KiB budget).
-Next (in order): cross-page running +
-`@page :left`/`:right`/`:blank` + named pages (all multi-page-gated). Blocked (see `deferrals.md`):
+context; range-aware §10.5 clamp; `CssPreprocessor` recovers the AngleSharp-dropped declarations via
+`ContainsMathFunction`). **(C)** the running element's nested blocks RECURSE (one stacked line per NESTED
+block, depth-capped 16, single 64 KiB budget). **Trig-exp / body-relative / element-segments cycles (in
+progress, branch `phase-3-task-21-23-trig-exp-body-relative-element-segments`) — the next three deferrals, one
+PR:** **(A)** the §10.8 trig (`sin`/`cos`/`tan`/`asin`/`acos`/`atan`/`atan2`, `deg`/`grad`/`rad`/`turn` angles,
+`e`/`pi`) + §10.9 exponential (`pow`/`sqrt`/`hypot`/`log`/`exp`) functions evaluate (the Term type system gained
+an ANGLE kind; `hypot()` over lengths is a valid whole value). **(B)** BODY font-/viewport-relative lengths —
+units AND math functions (no %) — resolve via the new post-build `DeferredLengthResolver` in-place pass
+(`PdfRenderPipeline`, page box final; em per owning box, rem per root, viewport per page box; negatives for
+margins/offsets); % terms stay diagnosed. **(C)** a standalone `element()`'s stacked lines render in each LEAF
+block's OWN font + colour (`RunningSegment` capture lockstep with the text; one `TextRun` per segment; pitch
+follows the largest segment font). Next (in order): cross-page running +
+`@page :left`/`:right`/`:blank` + named pages (all multi-page-gated — the multi-page driver is the next big
+move). Blocked (see `deferrals.md`):
 cycle 5b bundled DejaVu Sans fallback (needs the font binary + a dependency-dossier / THIRD-PARTY-NOTICES
 legal entry, CLAUDE.md #2); the multi-page driver (needs nested-container fragmentation in `BlockLayouter`).
 For the live state, read the **current-state pointer at the top of [PROGRESS.md](PROGRESS.md)**

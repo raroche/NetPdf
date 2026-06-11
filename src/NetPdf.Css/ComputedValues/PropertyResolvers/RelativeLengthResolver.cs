@@ -35,7 +35,7 @@ internal static class RelativeLengthResolver
     /// a non-negative number with an <c>em</c>/<c>ex</c>/<c>ch</c>/<c>rem</c>/<c>vw</c>/<c>vh</c>/
     /// <c>vmin</c>/<c>vmax</c> unit. <c>calc()</c>, container units, negatives, and malformed values
     /// are NOT supported (the caller diagnoses + drops them). NOTE this check is SYNTACTIC:
-    /// <see cref="TryResolve"/> can still fail IN CONTEXT when the product overflows to a non-finite
+    /// <see cref="TryResolve(string, double, double, double, double, out double)"/> can still fail IN CONTEXT when the product overflows to a non-finite
     /// value (e.g. <c>1e308em</c> × a 16px base) — a caller that keeps a value because it
     /// IsSupported must handle (and surface) that contextual failure rather than fall back silently
     /// (post-PR-#156 review P2; the margin-box painter diagnoses it).</summary>
@@ -53,13 +53,23 @@ internal static class RelativeLengthResolver
     /// <param name="px">The resolved used length (≥ 0) when supported.</param>
     public static bool TryResolve(
         string rawText, double emBasePx, double rootEmPx,
-        double viewportWidthPx, double viewportHeightPx, out double px)
+        double viewportWidthPx, double viewportHeightPx, out double px) =>
+        TryResolve(rawText, emBasePx, rootEmPx, viewportWidthPx, viewportHeightPx,
+            allowNegative: false, out px);
+
+    /// <summary><paramref name="allowNegative"/> admits a negative value (body context-dependent
+    /// cycle): the original margin-box consumers (width/height/padding/font-size) are non-negative
+    /// properties, but a BODY <c>margin-left: -2em</c> is legitimate — the body in-place pass
+    /// (<c>DeferredLengthResolver</c>) passes the property's actual range.</summary>
+    public static bool TryResolve(
+        string rawText, double emBasePx, double rootEmPx,
+        double viewportWidthPx, double viewportHeightPx, bool allowNegative, out double px)
     {
         px = 0;
-        if (!TryClassify(rawText, out var unit, out var n) || n < 0) return false;
+        if (!TryClassify(rawText, out var unit, out var n) || (!allowNegative && n < 0)) return false;
 
         var value = ResolveUnit(unit, n, emBasePx, rootEmPx, viewportWidthPx, viewportHeightPx);
-        if (!double.IsFinite(value) || value < 0) return false;
+        if (!double.IsFinite(value) || (!allowNegative && value < 0)) return false;
         px = value;
         return true;
     }
@@ -67,7 +77,7 @@ internal static class RelativeLengthResolver
     /// <summary>Resolve a bare <c>(number, unit-name)</c> pair against the same contexts —
     /// the <c>calc()</c> evaluator's per-term hook (calc cycle), so a relative term inside
     /// <c>calc(50vw - 2em)</c> scales EXACTLY like a standalone relative length. Unlike
-    /// <see cref="TryResolve"/>, a NEGATIVE number is allowed (a calc intermediate may be negative —
+    /// <see cref="TryResolve(string, double, double, double, double, out double)"/>, a NEGATIVE number is allowed (a calc intermediate may be negative —
     /// the final used value is range-clamped by the evaluator) and the result is returned as-is
     /// (the caller checks finiteness). Returns <see langword="false"/> for an unrecognized unit.</summary>
     internal static bool TryResolveNumberUnit(
